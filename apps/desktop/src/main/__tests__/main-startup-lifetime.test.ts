@@ -103,13 +103,40 @@ test('mounts the handoff overlay inside the locale providers', () => {
 });
 
 test('creates the main window before starting Local Host reconciliation', () => {
-  const managerCreate = bootSource.indexOf("runtimeHostManager = startupTasks.runTaskSync(\n  'connect-runtime-host'");
+  const managerCreate = bootSource.indexOf('runtimeHostManager = createLocalRuntimeHostManager()');
   const lifecycleWire = bootSource.indexOf('wireLifecycle();', managerCreate);
   const hostStart = bootSource.indexOf('runtimeHostManager?.start()', managerCreate);
   assert.ok(managerCreate >= 0);
   assert.ok(lifecycleWire > managerCreate && hostStart > lifecycleWire);
   assert.match(earlyWindowSource, /quitCoordinator\.focusOrCreateWindow\(\)/u);
   assert.doesNotMatch(mainSource, /startup-presentation/u);
+});
+
+test('preserves the three startup task gates', () => {
+  const registryImport = bootSource.indexOf(
+    'createRuntimeHostStartupTaskRegistry',
+  );
+  const registryCreate = bootSource.indexOf(
+    'const startupTasks = createRuntimeHostStartupTaskRegistry',
+  );
+  const hostStart = bootSource.indexOf('runtimeHostStart = shellEnvReady.then');
+  const immediateRun = bootSource.indexOf(
+    'runPhase(runtimeHostStartupTaskPhases.immediate)',
+  );
+  const shellEnvRun = bootSource.indexOf(
+    'runPhase(runtimeHostStartupTaskPhases.shellEnvReady)',
+  );
+  const runtimeHostRun = bootSource.indexOf(
+    'runPhase(runtimeHostStartupTaskPhases.runtimeHostReady)',
+    hostStart,
+  );
+
+  assert.ok(registryImport >= 0);
+  assert.ok(registryCreate > registryImport);
+  assert.ok(hostStart >= 0);
+  assert.ok(immediateRun >= registryCreate && immediateRun < hostStart);
+  assert.ok(shellEnvRun >= registryCreate && shellEnvRun < hostStart);
+  assert.ok(runtimeHostRun > hostStart);
 });
 
 test('does not release renderer IPC before persistent handlers are registered', () => {

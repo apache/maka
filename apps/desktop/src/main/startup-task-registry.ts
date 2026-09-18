@@ -18,6 +18,7 @@
  */
 
 export type StartupTaskExecution = 'foreground' | 'detached';
+type StartupTaskRun = () => unknown | Promise<unknown>;
 
 export interface StartupTaskDefinition<Name extends string = string> {
   name: Name;
@@ -26,39 +27,9 @@ export interface StartupTaskDefinition<Name extends string = string> {
   execution?: StartupTaskExecution;
 }
 
-interface StartupTaskEventBase<Name extends string> {
-  readonly name: Name;
-  readonly phase: string;
-  readonly execution: StartupTaskExecution;
-}
-
-export type StartupTaskEvent<Name extends string = string> =
-  | (StartupTaskEventBase<Name> & {
-      readonly status: 'started';
-      readonly at: number;
-    })
-  | (StartupTaskEventBase<Name> & {
-      readonly status: 'completed';
-      readonly startedAt: number;
-      readonly completedAt: number;
-      readonly durationMs: number;
-    })
-  | (StartupTaskEventBase<Name> & {
-      readonly status: 'failed';
-      readonly startedAt: number;
-      readonly completedAt: number;
-      readonly durationMs: number;
-      readonly error: unknown;
-    });
-
-export interface StartupTaskRegistryOptions<Name extends string = string> {
-  readonly now?: () => number;
-  readonly observe?: (event: StartupTaskEvent<Name>) => void;
-}
-
 export function createStartupTaskRegistry<Name extends string>(
   definitions: readonly StartupTaskDefinition<Name>[],
-  options: StartupTaskRegistryOptions<Name> = {},
+  implementations?: Readonly<Partial<Record<Name, StartupTaskRun>>>,
 ) {
   const definitionsByName = new Map<Name, StartupTaskDefinition<Name>>();
   for (const definition of definitions) {
@@ -77,35 +48,19 @@ export function createStartupTaskRegistry<Name extends string>(
     }
   }
 
-  const tasks = new Map<Name, () => unknown | Promise<unknown>>();
-  const registrationOrder = new Map<Name, number>();
-  const executions = new Map<Name, Promise<unknown>>();
-  const completed = new Set<Name>();
-  const now = options.now ?? Date.now;
-  const observe = (event: StartupTaskEvent<Name>): void => {
-    try {
-      options.observe?.(event);
-    } catch {
-      // Startup measurement must never change task behavior.
+  const tasks = new Map<Name, StartupTaskRun>();
+  for (const definition of definitions) {
+    const run = implementations?.[definition.name];
+    if (!run) {
+      throw new Error(`startup task is not implemented: ${definition.name}`);
     }
-  };
+    tasks.set(definition.name, run);
+  }
 
-  const register = <Result>(name: Name, run: () => Result | Promise<Result>): void => {
-    if (!definitionsByName.has(name)) throw new Error(`unknown startup task: ${name}`);
-    if (tasks.has(name)) {
-      throw new Error(`duplicate startup task registration: ${name}`);
-    }
-    registrationOrder.set(name, registrationOrder.size);
-    tasks.set(name, run as () => unknown | Promise<unknown>);
-  };
-
-  const orderedNames = (): readonly Name[] => {
-    for (const definition of definitions) {
-      if (!tasks.has(definition.name)) {
-        throw new Error(`startup task is not registered: ${definition.name}`);
-      }
-    }
-
+  const orderedNames = (() => {
+    const definitionOrder = new Map(
+      definitions.map((definition, index) => [definition.name, index]),
+    );
     const dependencyCounts = new Map<Name, number>();
     const dependents = new Map<Name, Name[]>();
     for (const definition of definitions) {
@@ -117,12 +72,12 @@ export function createStartupTaskRegistry<Name extends string>(
       }
     }
 
-    const byRegistrationOrder = (left: Name, right: Name): number =>
-      registrationOrder.get(left)! - registrationOrder.get(right)!;
+    const byDefinitionOrder = (left: Name, right: Name): number =>
+      definitionOrder.get(left)! - definitionOrder.get(right)!;
     const ready = definitions
       .filter((definition) => definition.dependencies.length === 0)
       .map((definition) => definition.name)
-      .sort(byRegistrationOrder);
+      .sort(byDefinitionOrder);
     const ordered: Name[] = [];
 
     while (ready.length > 0) {
@@ -133,156 +88,55 @@ export function createStartupTaskRegistry<Name extends string>(
         dependencyCounts.set(dependent, remaining);
         if (remaining === 0) {
           ready.push(dependent);
-          ready.sort(byRegistrationOrder);
+          ready.sort(byDefinitionOrder);
         }
       }
     }
 
     if (ordered.length !== definitions.length) {
-      const visiting = new Set<Name>();
-      const visited = new Set<Name>();
-      const path: Name[] = [];
-      const findCycle = (name: Name): readonly Name[] | undefined => {
-        if (visiting.has(name)) {
-          return [...path.slice(path.indexOf(name)), name];
-        }
-        if (visited.has(name)) return undefined;
-        visiting.add(name);
-        path.push(name);
-        for (const dependency of definitionsByName.get(name)!.dependencies) {
-          const cycle = findCycle(dependency);
-          if (cycle) return cycle;
-        }
-        path.pop();
-        visiting.delete(name);
-        visited.add(name);
-        return undefined;
-      };
-      for (const definition of definitions) {
-        const cycle = findCycle(definition.name);
-        if (cycle) throw new Error(`startup task dependency cycle: ${cycle.join(' -> ')}`);
-      }
-      throw new Error('startup task dependency cycle');
+      const unresolved = definitions
+        .map((definition) => definition.name)
+        .filter((name) => !ordered.includes(name));
+      throw new Error(`startup task dependency cycle: ${unresolved.join(' -> ')}`);
     }
     return ordered;
-  };
+  })();
 
-  const observeCompletion = (
-    definition: StartupTaskDefinition<Name>,
-    execution: StartupTaskExecution,
-    startedAt: number,
-    status: 'completed' | 'failed',
-    error?: unknown,
-  ): void => {
-    const completedAt = now();
-    const timing = {
-      name: definition.name,
-      phase: definition.phase,
-      execution,
-      startedAt,
-      completedAt,
-      durationMs: Math.max(0, completedAt - startedAt),
-    };
-    observe(
-      status === 'completed'
-        ? { status, ...timing }
-        : { status, ...timing, error },
-    );
-  };
+  const completed = new Set<Name>();
 
-  const execute = async (name: Name, ancestry: readonly Name[] = []): Promise<unknown> => {
-    if (ancestry.includes(name)) {
-      throw new Error(`startup task dependency cycle: ${[...ancestry, name].join(' -> ')}`);
-    }
-    if (completed.has(name)) return;
-    const pending = executions.get(name);
-    if (pending) return pending;
-
+  const execute = (name: Name): Promise<void> => {
     const definition = definitionsByName.get(name)!;
-    const run = tasks.get(name);
-    if (!run) throw new Error(`startup task is not registered: ${name}`);
-
-    const executionPromise = (async () => {
-      for (const dependency of definition.dependencies) {
-        await execute(dependency, [...ancestry, name]);
+    const run = tasks.get(name)!;
+    if (definition.execution === 'detached') {
+      try {
+        void Promise.resolve(run()).catch(() => undefined);
+      } catch {
+        // Detached tasks must not prevent later independent tasks from starting.
       }
-
-    const execution = definition.execution ?? 'foreground';
-    const startedAt = now();
-    observe({
-      status: 'started',
-      name,
-      phase: definition.phase,
-      execution,
-      at: startedAt,
-    });
-
-    try {
-      const result = run();
-      if (execution === 'detached') {
-        void Promise.resolve(result).then(
-          () => {
-            completed.add(name);
-            observeCompletion(definition, execution, startedAt, 'completed');
-          },
-          (error: unknown) => {
-            observeCompletion(definition, execution, startedAt, 'failed', error);
-          },
-        );
-        completed.add(name);
-        return undefined;
-      }
-      await result;
-      completed.add(name);
-      observeCompletion(definition, execution, startedAt, 'completed');
-      return result;
-    } catch (error) {
-      observeCompletion(definition, execution, startedAt, 'failed', error);
-      throw error;
+      return Promise.resolve();
     }
-    })();
-    executions.set(name, executionPromise);
-    try {
-      return await executionPromise;
-    } catch (error) {
-      executions.delete(name);
-      throw error;
-    }
+    return Promise.resolve().then(run).then(() => undefined);
   };
 
-  const runTaskSync = <Result>(name: Name, run: () => Result): Result => {
-    register(name, run);
-    const definition = definitionsByName.get(name)!;
-    for (const dependency of definition.dependencies) {
-      if (!completed.has(dependency)) {
-        throw new Error(
-          `startup task dependency has not completed: ${dependency} (required by ${name})`,
-        );
+  const runNames = async (names: readonly Name[]): Promise<void> => {
+    for (const name of names) {
+      const definition = definitionsByName.get(name)!;
+      if (definition.dependencies.some((dependency) => !completed.has(dependency))) {
+        throw new Error(`startup task phase dependency not ready: ${name}`);
       }
-    }
-    const startedAt = now();
-    const execution = definition.execution ?? 'foreground';
-    observe({ status: 'started', name, phase: definition.phase, execution, at: startedAt });
-    try {
-      const result = run();
+      await execute(name);
       completed.add(name);
-      observeCompletion(definition, execution, startedAt, 'completed');
-      return result;
-    } catch (error) {
-      observeCompletion(definition, execution, startedAt, 'failed', error);
-      throw error;
     }
   };
 
   return {
-    register,
-    runTask<Result>(name: Name, run: () => Result | Promise<Result>): Promise<Result> {
-      register(name, run);
-      return execute(name) as Promise<Result>;
+    async runPhase(phase: string): Promise<void> {
+      await runNames(
+        orderedNames.filter((name) => definitionsByName.get(name)!.phase === phase),
+      );
     },
-    runTaskSync,
     async runAll(): Promise<void> {
-      for (const name of orderedNames()) await execute(name);
+      await runNames(orderedNames);
     },
   };
 }

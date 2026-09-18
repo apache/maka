@@ -38,7 +38,7 @@ function read(path) {
 }
 
 test('the packaged boot path hands the harness feed to the update service', () => {
-  const boot = read('apps/desktop/src/main/runtime-host-legacy-boot.ts');
+  const boot = read('apps/desktop/src/main/runtime-host-boot.ts');
 
   assert.match(boot, /const updateTestFeed = process\.env\.MAKA_UPDATE_TEST_FEED;/u);
   // Bounded to the call's own argument object — the span may not cross a `});`

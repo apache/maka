@@ -254,7 +254,10 @@ import {
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
 import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
-import { runtimeHostStartupTaskPlan } from './runtime-host-startup-tasks.js';
+import {
+  createRuntimeHostStartupTaskRegistry,
+  runtimeHostStartupTaskPhases,
+} from './runtime-host-post-startup-tasks.js';
 import {
   registerSettingsBotsIpc,
   type SettingsBotsIpcHandle,
@@ -266,17 +269,11 @@ import {
   revealMode,
 } from "./startup-context.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
-import { createStartupTaskRegistry } from './startup-task-registry.js';
 import {
   parseDesktopSessionResourceKey,
   requireDesktopTargetScope,
   type DesktopTargetScope,
 } from "../shared/runtime-host-identity.js";
-
-const startupTasks = createStartupTaskRegistry(runtimeHostStartupTaskPlan);
-void startupTasks.runTask('resolve-shell-env', () => shellEnvReady).catch((error: unknown) =>
-  console.error('[runtime-host] login shell environment resolution failed:', error),
-);
 
 const MANAGED_UPDATE_RECONNECT_TIMEOUT_MS = 10_000;
 bootContext.prepareToQuit = prepareRuntimeHostDesktopQuit;
@@ -285,23 +282,18 @@ bootContext.activeRuntimeHostRef = activeRuntimeHostRef;
 bootContext.resolveRuntimeHostDiagnostics = resolveRuntimeHostDiagnostics;
 const clientPluginTransport = new ClientPluginTransport();
 protocol.handle(MAKA_CLIENT_PLUGIN_SCHEME, (request) => clientPluginTransport.serve(request.url));
-const runtimeHostPeerConfiguration = await startupTasks.runTask(
-  'configure-runtime-host-peer',
-  () =>
-    configureDesktopRuntimeHostPeerClient({
-      isPackaged: app.isPackaged,
-      enableDevelopmentPeer: process.argv.includes('--runtime-host-peer'),
-      appPath: app.getAppPath(),
-      resourcesPath: process.resourcesPath,
-      clientDataRoot: userDataDir,
-    }),
-);
+const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient({
+  isPackaged: app.isPackaged,
+  enableDevelopmentPeer: process.argv.includes('--runtime-host-peer'),
+  appPath: app.getAppPath(),
+  resourcesPath: process.resourcesPath,
+  clientDataRoot: userDataDir,
+});
 let runtimeHostPeerEndpointOwner: RuntimeHostPeerEndpointOwner | undefined;
 let runtimeHostPeerMeshComponent: RuntimeHostPeerMeshComponent | undefined;
 let runtimeHostPeerMesh: RuntimeHostPeerMeshComponent['mesh'] | undefined;
 let runtimeHostPeerClient: RuntimeHostPeerEndpointOwner['client'] | undefined;
-await startupTasks.runTask('open-runtime-host-peer', async () => {
-  if (runtimeHostPeerConfiguration) {
+if (runtimeHostPeerConfiguration) {
   try {
     runtimeHostPeerEndpointOwner = await openRuntimeHostPeerEndpointOwner({
       ...runtimeHostPeerConfiguration,
@@ -334,8 +326,7 @@ await startupTasks.runTask('open-runtime-host-peer', async () => {
   } catch (error) {
     console.error('[runtime-host] Direct peer is unavailable:', error);
   }
-  }
-});
+}
 const runtimeHostDirectPeerAvailable = runtimeHostPeerClient !== undefined;
 const runtimeHostCandidateLaunchBarrier = createRuntimeHostCandidateLaunchBarrier();
 const runtimeHostCredentialStore = createClientRuntimeHostCredentialStore(userDataDir);
@@ -344,18 +335,12 @@ const runtimeHostProfileCatalog = createClientRuntimeHostProfileCatalog(
   runtimeHostCredentialStore,
 );
 const [runtimeHostClientInstanceId, runtimeHostStartup] = await Promise.all([
-  startupTasks.runTask('load-runtime-host-client-instance', () =>
-    loadOrCreateRuntimeHostClientInstanceId(join(userDataDir, "runtime-host-client.json")),
-  ),
-  startupTasks.runTask('resolve-runtime-host-startup', () =>
-    resolveDesktopRuntimeHostStartup(userDataDir, {
-      catalog: runtimeHostProfileCatalog,
-      credentialStore: runtimeHostCredentialStore,
-    }),
-  ),
+  loadOrCreateRuntimeHostClientInstanceId(join(userDataDir, "runtime-host-client.json")),
+  resolveDesktopRuntimeHostStartup(userDataDir, {
+    catalog: runtimeHostProfileCatalog,
+    credentialStore: runtimeHostCredentialStore,
+  }),
 ]);
-startupTasks.runTaskSync('seed-e2e-fixture', () => {});
-startupTasks.runTaskSync('resolve-storage-root', () => {});
 let runtimeHostManager: RuntimeHostDesktopManager | undefined;
 function activeRuntimeHostRef(): DesktopTargetScope | undefined {
   const current = runtimeHostManager?.current();
@@ -982,24 +967,20 @@ mcpManager.onChange(() => {
   );
 });
 
-startupTasks.runTaskSync('register-persistent-client-ipc', registerPersistentClientIpc);
-startupTasks.runTaskSync('register-pet-pack-ipc', () => {
-  registerPetPackIpc({
-    ipcMain,
-    workspaceRoot,
-    mainWindowController,
-    settingsStore,
-    resolveLocale: () => desktopLocale.resolve(),
-  });
+registerPersistentClientIpc();
+registerPetPackIpc({
+  ipcMain,
+  workspaceRoot,
+  mainWindowController,
+  settingsStore,
+  resolveLocale: () => desktopLocale.resolve(),
 });
-startupTasks.runTaskSync('register-notifications-ipc', () => {
-  registerNotificationsIpc({
-    ipcMain,
-    settingsStore,
-    locale: desktopLocale,
-    mainWindowController,
-    e2e: isE2e,
-  });
+registerNotificationsIpc({
+  ipcMain,
+  settingsStore,
+  locale: desktopLocale,
+  mainWindowController,
+  e2e: isE2e,
 });
 
 const sessionCopyOwnerProcessId = randomUUID();
@@ -1299,30 +1280,100 @@ let runtimeHostDesktopShutdown: Promise<void> | undefined;
 // handoff cancelled while the main window is still loading.
 // The manager registers its IPC router on construction; starting the Local
 // Host is a background reconciliation, not a prerequisite for the window.
-runtimeHostManager = startupTasks.runTaskSync(
-  'connect-runtime-host',
-  createLocalRuntimeHostManager,
-);
+runtimeHostManager = createLocalRuntimeHostManager();
 bootContext.runtimeHostManager = runtimeHostManager;
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
 wireLifecycle();
 sessionLocal.wake();
 windowsAppTray.start();
-// Remote profiles do not depend on the Local Host: a handoff parked on a
-// user decision must not hold their activation for the whole session. Remote
-// transports spawn SSH/relay children, so they still wait on the shell PATH.
-void startupTasks.runTask('start-enabled-runtime-host-profiles', () => {
-  void runtimeHostProfileService.startEnabledProfiles();
-}).catch((error: unknown) =>
-  console.error('[runtime-host] enabled Runtime Host profiles failed to start:', error),
+let runtimeHostStart: Promise<void | undefined>;
+const startupTasks = createRuntimeHostStartupTaskRegistry({
+  'restore-guest-session-mounts': () =>
+    guestSessionMountService.start().catch((error: unknown) => {
+      console.error('[runtime-host] shared Sessions could not be restored:', error);
+    }),
+  'recover-local-runtime-host-access': () =>
+    localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
+      console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
+    }),
+  'start-enabled-runtime-host-profiles': () =>
+    runtimeHostProfileService.startEnabledProfiles(),
+  'offer-unavailable-default-runtime-host': () => {
+    const unavailableDefault = runtimeHostStartup.unavailable.get(
+      runtimeHostStartup.preferences.defaultProfileId,
+    );
+    if (!unavailableDefault) return;
+    return runtimeHostProfileService
+      .getSnapshot()
+      .then((snapshot) => {
+        const entry = snapshot.entries.find((candidate) => candidate.isDefault);
+        defaultRuntimeHostRecovery.offer({
+          profileId: runtimeHostStartup.preferences.defaultProfileId,
+          profileName:
+            entry?.profile.name ?? runtimeHostStartup.preferences.defaultProfileId,
+          error: unavailableDefault,
+        });
+      })
+      .catch((error) =>
+        console.error("[runtime-host] failed to resolve unavailable default Host:", error),
+      );
+  },
+  'start-desktop-background-services': () => {
+    const stopComputerUseSession = (sessionId: string): void => {
+      const ref = parseDesktopSessionResourceKey(sessionId);
+      void runtimeHostManager
+        ?.stopSession(ref)
+        .catch((error) => console.error("[runtime-host] stop failed:", error));
+    };
+    native.computerUsePip.setStopHandler(stopComputerUseSession);
+    native.computerUseStatusItem.setStopHandler(stopComputerUseSession);
+    updateService.start();
+  },
+  'start-mcp': () =>
+    ensureMcpReady()
+      .then(() => mcpCapabilityPublisher.refreshIfChanged())
+      .catch((error) => console.error("[runtime-host] MCP startup failed:", error)),
+  'resume-mcp-logins': () =>
+    mcpConfigStore
+      .get()
+      .then((config) => {
+        for (const serverId of Object.keys(config.mcpServers)) {
+          void mcpOAuthController
+            .resumeLogin(serverId)
+            .catch((error) =>
+              console.error(`[runtime-host] MCP login resume failed for ${serverId}:`, error),
+            );
+        }
+      })
+      .catch((error) =>
+        console.error("[runtime-host] MCP login resume scan failed:", error),
+      ),
+  'refresh-client-settings': () =>
+    clientSettingsEffects
+      .refresh(false)
+      .catch((error) =>
+        console.error("[runtime-host] Client settings startup failed:", error),
+      ),
+});
+
+void startupTasks
+  .runPhase(runtimeHostStartupTaskPhases.immediate)
+  .catch((error: unknown) =>
+    console.error('[runtime-host] immediate startup task failed:', error),
+  );
+void shellEnvReady
+  .then(() => startupTasks.runPhase(runtimeHostStartupTaskPhases.shellEnvReady))
+  .catch((error: unknown) =>
+    console.error('[runtime-host] shell environment startup task failed:', error),
+  );
+
+runtimeHostStart = shellEnvReady.then(() => runtimeHostManager?.start());
+void runtimeHostStart.catch((error: unknown) =>
+  console.error('[runtime-host] startup failed:', error),
 );
 // Starting the Local Host is deliberately independent from the renderer IPC
 // gate.  Work Board handlers are installed synchronously below; their lazy
 // store resolver waits for this reconciliation before opening the shared DB.
-const runtimeHostStart = shellEnvReady.then(() => runtimeHostManager?.start());
-void runtimeHostStart.catch((error: unknown) =>
-  console.error('[runtime-host] startup failed:', error),
-);
 // Scoped renderer calls use this stable gate before invoking a target-owned
 // channel.  The target router only installs those channels once its candidate
 // is ready, so first paint can proceed without turning a slow Host start into
@@ -1421,108 +1472,22 @@ const registerDesktopWorkBoard = (): boolean => {
 // synchronous handler registration; Host reconciliation, guest-session
 // restore, and recovery prompts continue in the background after first paint.
 export const runtimeHostBootReady = Promise.resolve(
-  startupTasks.runTaskSync('initialize-renderer', () => {
+  (() => {
     if (!registerDesktopWorkBoard()) {
       throw new Error('Work Board IPC registration failed');
     }
-  }),
+  })(),
 );
 
-void runtimeHostBootReady.then(async () => {
+void (async () => {
   await runtimeHostStart.catch((error: unknown) => {
     console.error('[runtime-host] background startup failed:', error);
   });
-  await startupTasks.runTask(
-    'restore-guest-session-mounts',
-    () =>
-      guestSessionMountService.start().catch((error: unknown) => {
-        console.error('[runtime-host] shared Sessions could not be restored:', error);
-      }),
-  );
-  await startupTasks.runTask(
-    'recover-local-runtime-host-access',
-    () =>
-      localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
-        console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
-      }),
-  );
-  await startupTasks.runTask('offer-unavailable-default-runtime-host', () => {
-    const unavailableDefault = runtimeHostStartup.unavailable.get(
-      runtimeHostStartup.preferences.defaultProfileId,
-    );
-    if (unavailableDefault) {
-      void runtimeHostProfileService
-        .getSnapshot()
-        .then((snapshot) => {
-          const entry = snapshot.entries.find((candidate) => candidate.isDefault);
-          defaultRuntimeHostRecovery.offer({
-            profileId: runtimeHostStartup.preferences.defaultProfileId,
-            profileName:
-              entry?.profile.name ?? runtimeHostStartup.preferences.defaultProfileId,
-            error: unavailableDefault,
-          });
-        })
-        .catch((error) =>
-          console.error("[runtime-host] failed to resolve unavailable default Host:", error),
-        );
-    }
-  });
-}).catch((error: unknown) =>
-  console.error("[runtime-host] background startup failed:", error),
+  registerDesktopWorkBoard();
+  await startupTasks.runPhase(runtimeHostStartupTaskPhases.runtimeHostReady);
+})().catch((error: unknown) =>
+  console.error('[runtime-host] background startup failed:', error),
 );
-startupTasks.runTaskSync('start-desktop-background-services', () => {
-  const stopComputerUseSession = (sessionId: string): void => {
-    const ref = parseDesktopSessionResourceKey(sessionId);
-    void runtimeHostManager
-      ?.stopSession(ref)
-      .catch((error) => console.error("[runtime-host] stop failed:", error));
-  };
-  native.computerUsePip.setStopHandler(stopComputerUseSession);
-  native.computerUseStatusItem.setStopHandler(stopComputerUseSession);
-  updateService.start();
-});
-startupTasks.runTaskSync('start-mcp', () => {
-  void ensureMcpReady()
-    .then(() => mcpCapabilityPublisher.refreshIfChanged())
-    .catch((error) => console.error("[runtime-host] MCP startup failed:", error));
-});
-// A login round persists its verifier and callback port; if the app
-// restarted mid-round, rebind the listener so the browser's redirect still
-// lands instead of hitting a dead port. Deliberately NOT chained behind the
-// connect/publish sequence above: a slow server or a publish failure must
-// not delay or block the rebind — it needs only the persisted state, and
-// the controller awaits readiness itself before the token exchange.
-startupTasks.runTaskSync('resume-mcp-logins', () => {
-  void mcpConfigStore
-    .get()
-    .then((config) => {
-    for (const serverId of Object.keys(config.mcpServers)) {
-      void mcpOAuthController
-        .resumeLogin(serverId)
-        // No explicit mcp:changed here: a successful resume ends in
-        // finishAuthorization → reconnect, whose onChange handler already
-        // emits AND refreshes capabilities — a second identical emit here
-        // was strictly weaker.
-        .catch((error) =>
-          console.error(
-            `[runtime-host] MCP login resume failed for ${serverId}:`,
-            error,
-          ),
-        );
-    }
-  })
-    .catch((error) =>
-      console.error("[runtime-host] MCP login resume scan failed:", error),
-    );
-});
-
-startupTasks.runTaskSync('refresh-client-settings', () => {
-  void clientSettingsEffects
-    .refresh(false)
-    .catch((error) =>
-      console.error("[runtime-host] Client settings startup failed:", error),
-    );
-});
 
 function registerHostClientIpc(
   client: DesktopRuntimeHostClient,

@@ -32,8 +32,6 @@ import { resolveStorageRoot, STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root
 import type { BrowserMessageBoxAppearance } from '../browser-message-box.js';
 import { showMessageBoxWithDiagnostics } from '../native-diagnostic-dialog.js';
 import { getNativeDiagnosticDialogCopy } from '../native-diagnostic-dialog-copy.js';
-import { runtimeHostStartupTaskPlan } from '../runtime-host-startup-tasks.js';
-import { createStartupTaskRegistry } from '../startup-task-registry.js';
 import { resolveDesktopStorageRoot } from '../storage-root-startup.js';
 import { startupStep } from '../startup-step.js';
 import { resolveWindowRevealMode } from '../window-reveal.js';
@@ -102,8 +100,6 @@ for (const accept of [false, true]) {
         registerClientPluginIpc: () => undefined,
         resolveSystemUiLocale,
         resolveShellEnv: async () => {},
-        createStartupTaskRegistry,
-        runtimeHostStartupTaskPlan,
         resolveBuildInfo: () => ({ mode: 'packaged' }),
         configureDesktopRuntimeHostPeerClient: async () => undefined,
         loadOrCreateRuntimeHostClientInstanceId: async () => 'test',

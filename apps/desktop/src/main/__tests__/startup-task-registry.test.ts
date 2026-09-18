@@ -19,111 +19,173 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { runtimeHostStartupTaskPlan } from '../runtime-host-startup-tasks.js';
+import {
+  runtimeHostStartupTaskPhases,
+  runtimeHostStartupTaskPlan,
+} from '../runtime-host-post-startup-tasks.js';
 import { createStartupTaskRegistry } from '../startup-task-registry.js';
 
-test('runs startup tasks in dependency order regardless of declaration order', async () => {
-  const events: string[] = [];
-  const registry = createStartupTaskRegistry([...runtimeHostStartupTaskPlan].reverse());
+test('production plan preserves the three independent startup gates', () => {
+  assert.deepEqual(
+    runtimeHostStartupTaskPlan
+      .filter(({ phase }) => phase === runtimeHostStartupTaskPhases.immediate)
+      .map(({ name }) => name),
+    [
+      'start-desktop-background-services',
+      'start-mcp',
+      'resume-mcp-logins',
+      'refresh-client-settings',
+    ],
+  );
+  assert.deepEqual(
+    runtimeHostStartupTaskPlan
+      .filter(({ phase }) => phase === runtimeHostStartupTaskPhases.shellEnvReady)
+      .map(({ name }) => name),
+    ['start-enabled-runtime-host-profiles'],
+  );
+  assert.deepEqual(
+    runtimeHostStartupTaskPlan
+      .filter(({ phase }) => phase === runtimeHostStartupTaskPhases.runtimeHostReady)
+      .map(({ name }) => name),
+    [
+      'restore-guest-session-mounts',
+      'recover-local-runtime-host-access',
+      'offer-unavailable-default-runtime-host',
+    ],
+  );
+});
 
-  for (const definition of runtimeHostStartupTaskPlan) {
-    registry.register(definition.name, () => {
-      events.push(definition.name);
-    });
-  }
+test('uses definition order as the deterministic tiebreak for dependency peers', async () => {
+  const events: string[] = [];
+  const registry = createStartupTaskRegistry(
+    [
+      { name: 'root', phase: 'test', dependencies: [] },
+      { name: 'defined-second', phase: 'test', dependencies: ['root'] },
+      { name: 'defined-first', phase: 'test', dependencies: ['root'] },
+      {
+        name: 'last',
+        phase: 'test',
+        dependencies: ['defined-first', 'defined-second'],
+      },
+    ] as const,
+    {
+      'defined-first': () => events.push('defined-first'),
+      root: () => events.push('root'),
+      last: () => events.push('last'),
+      'defined-second': () => events.push('defined-second'),
+    },
+  );
 
   await registry.runAll();
 
-  assert.equal(events.length, runtimeHostStartupTaskPlan.length);
-  for (const definition of runtimeHostStartupTaskPlan) {
-    const taskIndex = events.indexOf(definition.name);
-    for (const dependency of definition.dependencies) {
-      assert.ok(events.indexOf(dependency) < taskIndex, `${dependency} precedes ${definition.name}`);
-    }
-  }
+  assert.deepEqual(events, ['root', 'defined-second', 'defined-first', 'last']);
 });
 
-test('defers shell-dependent profile startup without blocking UI preparation', () => {
-  const tasks = new Map(runtimeHostStartupTaskPlan.map((task) => [task.name, task]));
+test('runs only the selected phase while preserving its dependencies', async () => {
+  const events: string[] = [];
+  const registry = createStartupTaskRegistry(
+    [
+      { name: 'immediate', phase: 'immediate', dependencies: [] },
+      { name: 'recovery', phase: 'recovery', dependencies: [] },
+      { name: 'after-recovery', phase: 'recovery', dependencies: ['recovery'] },
+    ] as const,
+    {
+      immediate: () => events.push('immediate'),
+      recovery: () => events.push('recovery'),
+      'after-recovery': () => events.push('after-recovery'),
+    },
+  );
 
-  const dependsOn = (name: string, dependency: string, seen = new Set<string>()): boolean => {
-    if (seen.has(name)) return false;
-    seen.add(name);
-    const task = tasks.get(name as (typeof runtimeHostStartupTaskPlan)[number]['name']);
-    if (!task) return false;
-    return task.dependencies.some(
-      (candidate) => candidate === dependency || dependsOn(candidate, dependency, seen),
-    );
-  };
+  await registry.runPhase('immediate');
+  assert.deepEqual(events, ['immediate']);
 
-  assert.equal(dependsOn('start-enabled-runtime-host-profiles', 'resolve-shell-env'), true);
-  assert.equal(dependsOn('initialize-renderer', 'resolve-shell-env'), false);
+  await registry.runPhase('recovery');
+  assert.deepEqual(events, ['immediate', 'recovery', 'after-recovery']);
 });
 
-test('keeps background startup tasks fire-and-forget', async () => {
+test('retains completed dependencies across phase gates', async () => {
+  const events: string[] = [];
+  const registry = createStartupTaskRegistry(
+    [
+      { name: 'prepare', phase: 'early', dependencies: [] },
+      { name: 'consume', phase: 'late', dependencies: ['prepare'] },
+    ] as const,
+    {
+      prepare: () => events.push('prepare'),
+      consume: () => events.push('consume'),
+    },
+  );
+
+  await registry.runPhase('early');
+  await registry.runPhase('late');
+
+  assert.deepEqual(events, ['prepare', 'consume']);
+});
+
+test('detached tasks do not block the graph', async () => {
   const events: string[] = [];
   let finishBackground: (() => void) | undefined;
   const background = new Promise<void>((resolve) => {
     finishBackground = resolve;
   });
-  const registry = createStartupTaskRegistry([
-    { name: 'foreground', phase: 'renderer', dependencies: [] },
-    { name: 'background', phase: 'background', dependencies: ['foreground'] },
+  const registry = createStartupTaskRegistry(
+    [
+      { name: 'foreground', phase: 'test', dependencies: [] },
+      {
+        name: 'background',
+        phase: 'test',
+        dependencies: ['foreground'],
+        execution: 'detached',
+      },
+      { name: 'after-start', phase: 'test', dependencies: ['background'] },
+    ] as const,
     {
-      name: 'after-background-start',
-      phase: 'background',
-      dependencies: ['background'],
+      foreground: () => events.push('foreground'),
+      background: async () => {
+        events.push('background:start');
+        await background;
+        events.push('background:done');
+      },
+      'after-start': () => events.push('after-start'),
     },
-  ] as const);
-
-  registry.register('foreground', () => {
-    events.push('foreground');
-  });
-  registry.register('background', () => {
-    events.push('background:start');
-    void background.then(() => events.push('background:done'));
-  });
-  registry.register('after-background-start', () => {
-    events.push('after-background-start');
-  });
+  );
 
   await registry.runAll();
-  assert.deepEqual(events, ['foreground', 'background:start', 'after-background-start']);
+  assert.deepEqual(events, ['foreground', 'background:start', 'after-start']);
 
   finishBackground?.();
   await background;
+  await Promise.resolve();
+
   assert.deepEqual(events, [
     'foreground',
     'background:start',
-    'after-background-start',
+    'after-start',
     'background:done',
   ]);
 });
 
-test('runs synchronous tasks inline and preserves thrown errors', () => {
-  const registry = createStartupTaskRegistry([
-    { name: 'first', phase: 'test', dependencies: [] },
-    { name: 'second', phase: 'test', dependencies: ['first'] },
-  ] as const);
+test('synchronous detached failures do not block later tasks', async () => {
   const events: string[] = [];
-
-  registry.runTaskSync('first', () => {
-    events.push('first');
-  });
-  assert.deepEqual(events, ['first']);
-
-  assert.throws(
-    () =>
-      registry.runTaskSync('second', () => {
-        events.push('second');
-        throw new Error('failed synchronously');
-      }),
-    /failed synchronously/u,
+  const registry = createStartupTaskRegistry(
+    [
+      { name: 'throws', phase: 'test', dependencies: [], execution: 'detached' },
+      { name: 'later', phase: 'test', dependencies: [] },
+    ] as const,
+    {
+      throws: () => {
+        events.push('throws');
+        throw new Error('detached failure');
+      },
+      later: () => events.push('later'),
+    },
   );
-  assert.deepEqual(events, ['first', 'second']);
+
+  await registry.runAll();
+  assert.deepEqual(events, ['throws', 'later']);
 });
 
-test('rejects missing dependencies and dependency cycles', async () => {
+test('validates the complete graph before executing any task', async () => {
   assert.throws(
     () =>
       createStartupTaskRegistry([
@@ -132,16 +194,29 @@ test('rejects missing dependencies and dependency cycles', async () => {
     /unknown startup task dependency: missing/u,
   );
 
-  const cyclic = createStartupTaskRegistry([
-    { name: 'first', phase: 'test', dependencies: ['second'] },
-    { name: 'second', phase: 'test', dependencies: ['first'] },
-  ] as const);
-  cyclic.register('first', () => {});
-  cyclic.register('second', () => {});
-  await assert.rejects(cyclic.runAll(), /startup task dependency cycle: first -> second -> first/u);
-
-  const incomplete = createStartupTaskRegistry([
-    { name: 'missing', phase: 'test', dependencies: [] },
-  ] as const);
-  await assert.rejects(incomplete.runAll(), /startup task is not registered: missing/u);
+  assert.throws(
+    () =>
+      createStartupTaskRegistry(
+        [
+          { name: 'first', phase: 'test', dependencies: ['second'] },
+          { name: 'second', phase: 'test', dependencies: ['first'] },
+        ] as const,
+        {
+          first: () => undefined,
+          second: () => undefined,
+        },
+      ),
+    /startup task dependency cycle/u,
+  );
+  assert.throws(
+    () =>
+      createStartupTaskRegistry(
+        [
+          { name: 'registered', phase: 'test', dependencies: [] },
+          { name: 'missing', phase: 'test', dependencies: ['registered'] },
+        ] as const,
+        { registered: () => undefined },
+      ),
+    /startup task is not implemented: missing/u,
+  );
 });
