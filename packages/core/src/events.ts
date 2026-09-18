@@ -277,6 +277,7 @@ export function normalizeMessageContent(content: MessageContent): MessageContent
           quotes: content.quotes.map((quote) => ({
             text: quote.text,
             ...(quote.label !== undefined ? { label: quote.label } : {}),
+            ...(quote.comment !== undefined ? { comment: quote.comment } : {}),
             ...(quote.sourceTurnId !== undefined ? { sourceTurnId: quote.sourceTurnId } : {}),
             ...(quote.sourceSessionId !== undefined
               ? { sourceSessionId: quote.sourceSessionId }
@@ -413,6 +414,7 @@ export function isQuoteRef(value: unknown): value is QuoteRef {
     hasExactShape(record, QUOTE_REF_SHAPE) &&
     typeof record.text === 'string' &&
     (record.label === undefined || typeof record.label === 'string') &&
+    (record.comment === undefined || typeof record.comment === 'string') &&
     (record.sourceTurnId === undefined || typeof record.sourceTurnId === 'string') &&
     (!hasSourceMetadata ||
       (typeof record.sourceSessionId === 'string' &&
@@ -587,6 +589,7 @@ function quoteRefsEqual(left: QuoteRef, right: QuoteRef): boolean {
   return (
     left.text === right.text &&
     left.label === right.label &&
+    left.comment === right.comment &&
     left.sourceTurnId === right.sourceTurnId &&
     left.sourceSessionId === right.sourceSessionId &&
     left.sourceSessionName === right.sourceSessionName &&
