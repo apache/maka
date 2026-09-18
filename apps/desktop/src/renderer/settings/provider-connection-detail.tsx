@@ -673,9 +673,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             ) : label;
             return (
                 <SettingsRow key={id} label={rowLabel} end={<>
-                  <IconButton variant="ghost" size="sm" icon={<Icon icon="wrench" size="sm" />}
-                    label={copy.declareCapabilitiesAria(label)} tooltip={copy.declareCapabilities}
-                    isDisabled={allActionsBusy} onClick={() => openRow({ model: id })} />
+                  {/* Astryx tooltips resolve a portal on mount, causing a style recalculation per model row. */}
+                  <span title={copy.declareCapabilities}>
+                    <IconButton variant="ghost" size="sm" icon={<Icon icon="wrench" size="sm" />}
+                      label={copy.declareCapabilitiesAria(label)}
+                      isDisabled={allActionsBusy} onClick={() => openRow({ model: id })} />
+                  </span>
                   {modelEnableSwitch(id, label)}
                 </>} />
 
