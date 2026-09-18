@@ -1813,6 +1813,8 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const r = await callComputer(fakeBackend({ accessibility: false }), { action: 'wait' });
     assert.match(r.text, /permission_missing/);
     assert.match(r.text, /Accessibility/);
+    assert.equal((r as { error?: string }).error, 'permission_missing');
+    assert.equal((r as { outcome?: string }).outcome, 'error');
   });
 
   test('requests Accessibility once on first use while every action still preflights', async () => {
@@ -2691,6 +2693,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     const backend = fakeBackend();
     const r = await callComputer(backend, { action: 'wait', duration: 0.001 }, ac.signal);
     assert.match(r.text, /aborted/);
+    assert.equal((r as { outcome?: string }).outcome, 'aborted');
     assert.equal(backend.last, undefined, 'backend.run must not be called after abort');
   });
 

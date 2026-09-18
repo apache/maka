@@ -18,6 +18,7 @@
  */
 
 import { TOOL_ACTIVITY_KINDS, type ToolActivityKind } from '@maka/core/events';
+import { isToolCallOutcome, type ToolCallOutcome } from '@maka/core/tool-result-status';
 import {
   decodeInteractionAnswer,
   projectInteractionFormRequest,
@@ -74,6 +75,7 @@ export type ClientCapabilityContentBlock =
   | { readonly type: 'unknown'; readonly value: unknown };
 
 export interface ClientCapabilityCallResult {
+  readonly outcome: ToolCallOutcome;
   readonly content: ClientCapabilityContentBlock[];
   readonly structuredContent?: unknown;
 }
@@ -649,12 +651,21 @@ export function decodeClientCapabilityHostFrame(value: unknown): ClientCapabilit
 
 export function decodeClientCapabilityResult(value: unknown): ClientCapabilityCallResult {
   const record = requireRecord(value, 'Client Capability result');
-  assertOptionalExactKeys(record, 'Client Capability result', ['content'], ['structuredContent']);
+  assertOptionalExactKeys(
+    record,
+    'Client Capability result',
+    ['outcome', 'content'],
+    ['structuredContent'],
+  );
+  if (!isToolCallOutcome(record.outcome)) {
+    throw invalidProtocolFrame('Invalid Client Capability result outcome');
+  }
   if (!Array.isArray(record.content) || record.content.length > 256) {
     throw invalidProtocolFrame('Invalid Client Capability result content');
   }
   const content = record.content.map(decodeContentBlock);
   return {
+    outcome: record.outcome,
     content,
     ...(Object.hasOwn(record, 'structuredContent')
       ? {

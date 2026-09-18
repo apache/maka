@@ -383,6 +383,21 @@ describe('applyLiveTurnEvent', () => {
     assert.equal(projection.steps[0]?.tools[0]?.status, 'interrupted');
   });
 
+  it('uses an explicit abort when the live result content is omitted', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'tool_result',
+      id: 'event-aborted',
+      turnId: 'turn-1',
+      toolUseId: 'tool-1',
+      isError: true,
+      outcome: 'aborted',
+      contentOmitted: true,
+      content: { kind: 'text', text: '' },
+      ts: 101,
+    });
+    assert.equal(projection.steps[0]?.tools[0]?.status, 'interrupted');
+  });
+
 
   it('moves an output-first tool into its real step without duplicating or regressing it', () => {
     const output = applyLiveTurnEvent(undefined, {

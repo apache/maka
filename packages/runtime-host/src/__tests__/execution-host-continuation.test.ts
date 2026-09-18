@@ -455,7 +455,7 @@ function resumeFixtureProvider(
     ],
     call: async (_frame, { accept }) => {
       await accept({ kind: 'none' });
-      return { content: [{ type: 'text', text: 'ok' }] };
+      return { outcome: 'success', content: [{ type: 'text', text: 'ok' }] };
     },
   };
 }

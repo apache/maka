@@ -276,7 +276,7 @@ export function materializeTools(
 function materializeToolResultStatus(
   result: Extract<StoredMessage, { type: "tool_result" }>,
 ): ToolActivityItem["status"] {
-  return toolResultActivityStatus(result.isError, result.content);
+  return toolResultActivityStatus(result.isError, result.content, result.outcome);
 }
 
 /**

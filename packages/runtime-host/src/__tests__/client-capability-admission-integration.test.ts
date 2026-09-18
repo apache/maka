@@ -106,7 +106,10 @@ test('cancels managed approval owners and joiners with the canonical provider id
           connection.accept({
             kind: 'client.capability.result',
             invocationId: frame.invocationId,
-            result: { content: [{ type: 'text', text: 'snapshot' }] },
+            result: {
+              outcome: 'success',
+              content: [{ type: 'text', text: 'snapshot' }],
+            },
           });
         }
       },
@@ -256,7 +259,10 @@ test('cancels managed approval owners and joiners with the canonical provider id
         ...retryRequest.request.target,
       });
       assert.equal(grant?.providerId, providerId);
-      assert.deepEqual(settlement.result, { content: [{ type: 'text', text: 'snapshot' }] });
+      assert.deepEqual(settlement.result, {
+        outcome: 'success',
+        content: [{ type: 'text', text: 'snapshot' }],
+      });
       assert.deepEqual(order, ['accepted', 'accepted', 'accepted', 'approved', 'T1', 'admitted']);
     } finally {
       snapshot?.release();

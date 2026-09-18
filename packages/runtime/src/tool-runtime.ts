@@ -18,6 +18,7 @@
  */
 
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { requireToolCallOutcome, type ToolCallOutcome } from '@maka/core/tool-result-status';
 import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
@@ -219,6 +220,8 @@ export interface MakaTool<P = any, R = unknown> {
    * settlement instead of detaching, so late side effects cannot outlive `exec`.
    */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
+  /** Explicit call status for tools with a declared result envelope. */
+  resultOutcome?(output: R): ToolCallOutcome;
   /** Best-effort compensation after T2 rejects a result that already produced side effects. */
   compensateDurableOutcomeCommitFailure?: (input: {
     readonly result: unknown;
@@ -449,6 +452,7 @@ interface DurableToolAttempt {
     isError: boolean,
     modelProjection: DurableToolResultProjection,
     durationMs?: number,
+    outcome?: ToolCallOutcome,
   ): Promise<{ id: string; operationId: string; ts: number }>;
 }
 
@@ -990,6 +994,7 @@ export class ToolRuntime {
     uncertainOutcome?: ToolUncertainOutcomeSignal,
     activityIdentity: ToolActivityIdentity = {},
     attempt?: DurableToolAttempt,
+    outcome?: ToolCallOutcome,
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
@@ -1016,6 +1021,7 @@ export class ToolRuntime {
           name: toolName,
           result: content,
           isError: true,
+          ...(outcome ? { outcome } : {}),
         },
         this.input.sessionId,
       ) ?? DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
@@ -1024,6 +1030,7 @@ export class ToolRuntime {
       turnId,
       toolUseId,
       isError: true,
+      ...(outcome ? { outcome } : {}),
       content,
       modelProjection,
       activityIdentity,
@@ -1036,6 +1043,7 @@ export class ToolRuntime {
     turnId: string;
     toolUseId: string;
     isError: boolean;
+    outcome?: ToolCallOutcome;
     content: ToolResultContent;
     modelProjection: DurableToolResultProjection;
     durationMs?: number;
@@ -1047,6 +1055,7 @@ export class ToolRuntime {
       input.isError,
       input.modelProjection,
       input.durationMs,
+      input.outcome,
     );
     input.queue.push({
       type: 'tool_result',
@@ -1056,6 +1065,7 @@ export class ToolRuntime {
       toolUseId: input.toolUseId,
       ...(durableOutcome ? { operationId: durableOutcome.operationId } : {}),
       isError: input.isError,
+      ...(input.outcome ? { outcome: input.outcome } : {}),
       content: input.content,
       modelProjection: input.modelProjection,
       ...(input.durationMs !== undefined ? { durationMs: input.durationMs } : {}),
@@ -1632,27 +1642,31 @@ export class ToolRuntime {
           const content = coerceResultContent(result);
           const projected = this.projectToolResult(tool, turnId, toolUseId, executionArgs, result);
           const modelProjection = isPromiseLike(projected) ? await projected : projected;
+          const outcome = tool.resultOutcome
+            ? requireToolCallOutcome(tool.resultOutcome(result))
+            : deriveToolResultStatus(content, result);
           return {
             result,
             content,
-            isError: deriveToolResultStatus(content, result) !== 'success',
+            outcome,
             durationMs: this.input.now() - startedAt,
             modelProjection,
           };
         };
-        const { result, content, isError, durationMs, modelProjection } =
+        const { result, content, outcome, durationMs, modelProjection } =
           await prepareOperationValue();
+        const isError = outcome !== 'success';
         output.flush();
-        // Keep the full provider-facing terminal classification. `isError` is
-        // sufficient for the durable response envelope, but it intentionally
-        // collapses `aborted` into an error bit and therefore cannot drive live
-        // tool status, telemetry, or subagent lifecycle projection.
-        const toolResultStatus = deriveToolResultStatus(content, result);
+        // Keep the full provider-facing terminal classification. `isError`
+        // remains a compatibility bit, while explicit outcomes preserve aborts
+        // for durable replay, live status, telemetry, and subagent projection.
+        const toolResultStatus = outcome;
         await this.commitAndPublishToolResult({
           queue,
           turnId,
           toolUseId,
           isError,
+          outcome,
           content,
           modelProjection,
           durationMs,
@@ -1755,6 +1769,7 @@ export class ToolRuntime {
         );
       }
       const uncertainOutcome = uncertainOutcomeSignalFromError(err);
+      const failureOutcome = ctx.abortSignal.aborted && !uncertainOutcome ? 'aborted' : 'error';
       const errorClass = uncertainOutcome ? 'OutcomeUnknown' : classifyError(err);
       const terminalFailure = coerceTerminalFailure(
         tool,
@@ -1792,6 +1807,7 @@ export class ToolRuntime {
           turnId,
           toolUseId,
           isError: true,
+          outcome: failureOutcome,
           content: terminalFailure.content,
           modelProjection,
           durationMs,
@@ -1806,7 +1822,7 @@ export class ToolRuntime {
           providerId: this.input.connection.providerType,
           modelId: this.input.modelId,
           durationMs,
-          status: 'error',
+          status: failureOutcome,
           errorClass,
           argsSummary:
             tool.categoryHint === 'computer_use'
@@ -1821,7 +1837,7 @@ export class ToolRuntime {
           toolUseId,
           toolName: tool.name,
           durationMs,
-          status: 'error',
+          status: failureOutcome,
           errorClass,
           ...(sandboxError ? { sandbox: sandboxError } : {}),
         });
@@ -1846,6 +1862,7 @@ export class ToolRuntime {
         uncertainOutcome,
         activityIdentity,
         durableAttempt,
+        failureOutcome,
       );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
@@ -1855,7 +1872,7 @@ export class ToolRuntime {
         providerId: this.input.connection.providerType,
         modelId: this.input.modelId,
         durationMs: Math.max(0, this.input.now() - startedAt),
-        status: 'error',
+        status: failureOutcome,
         errorClass,
         argsSummary:
           tool.categoryHint === 'computer_use'
@@ -1869,7 +1886,7 @@ export class ToolRuntime {
         toolUseId,
         toolName: tool.name,
         durationMs: Math.max(0, this.input.now() - startedAt),
-        status: 'error',
+        status: failureOutcome,
         errorClass,
         ...(sandboxError ? { sandbox: sandboxError } : {}),
       });
@@ -2012,6 +2029,7 @@ export class ToolRuntime {
       isError: boolean,
       modelProjection: DurableToolResultProjection,
       durationMs: number | undefined,
+      outcome: ToolCallOutcome | undefined,
       ts: number,
     ): RuntimeEvent => ({
       id: `${operationId}_response`,
@@ -2031,6 +2049,7 @@ export class ToolRuntime {
         name: input.tool.name,
         result,
         ...(isError ? { isError: true } : {}),
+        ...(outcome ? { outcome } : {}),
         modelProjection,
       },
       refs: {
@@ -2048,13 +2067,14 @@ export class ToolRuntime {
     let committedOutcome: { id: string; operationId: string; ts: number } | undefined;
     return {
       operationId,
-      commitOutcome: async (result, isError, modelProjection, durationMs) => {
+      commitOutcome: async (result, isError, modelProjection, durationMs, outcome) => {
         if (committedOutcome) return committedOutcome;
         const responseEvent = buildResponseEvent(
           result,
           isError,
           modelProjection,
           durationMs,
+          outcome,
           this.input.now(),
         );
         try {
@@ -3264,7 +3284,7 @@ function uncertainOutcomeSignalFromError(error: unknown): ToolUncertainOutcomeSi
   };
 }
 
-function coerceResultContent(raw: unknown): ToolResultContent {
+export function coerceResultContent(raw: unknown): ToolResultContent {
   if (typeof raw === 'string') return { kind: 'text', text: raw };
   if (raw && typeof raw === 'object') {
     const obj = raw as { kind?: string; text?: string };
@@ -3410,7 +3430,7 @@ function isBoundaryAuthorityAttempt(toolName: string, args: unknown): boolean {
   );
 }
 
-function deriveToolResultStatus(
+export function deriveToolResultStatus(
   content: ToolResultContent,
   raw?: unknown,
 ): ToolInvocationRecord['status'] {
@@ -3446,10 +3466,25 @@ function deriveToolResultStatus(
     content.operation.failed
   )
     return 'error';
-  // All other structured results are successful tool executions. That includes
-  // ShellRun observations: their embedded process status stays model-visible,
-  // but reading or returning the observation itself succeeded.
-  return 'success';
+  // Observing a failed process is still a successful call. Business JSON has
+  // the same legacy behavior unless its tool declares an outcome reader.
+  switch (content.kind) {
+    case 'text':
+    case 'json':
+    case 'file_diff':
+    case 'file_write':
+    case 'image':
+    case 'summary':
+    case 'archived_tool_result':
+    case 'web_search':
+    case 'shell_run':
+    case 'rive_workflow':
+      return 'success';
+    default: {
+      const exhaustive: never = content;
+      return exhaustive;
+    }
+  }
 }
 
 function summarizeToolResultForTelemetry(

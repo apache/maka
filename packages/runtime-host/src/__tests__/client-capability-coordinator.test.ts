@@ -22,7 +22,7 @@ import { describe, test } from 'node:test';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
-import type { McpCallResult } from '@maka/core/mcp';
+import type { ClientCapabilityCallResult } from '../protocol/index.js';
 import type {
   ClientCapabilityAdmissionEvidence,
   ClientCapabilityCallFrame,
@@ -2003,7 +2003,11 @@ test('Host services stay bound to the explicitly initiating Client connection', 
           connection.accept({
             kind: 'client.capability.result',
             invocationId: frame.invocationId,
-            result: { content: [], structuredContent: { kind: 'presented' } },
+            result: {
+              outcome: 'success',
+              content: [],
+              structuredContent: { kind: 'presented' },
+            },
           });
         }
       },
@@ -2253,8 +2257,8 @@ function toolAt(
   return snapshot?.tools[index];
 }
 
-function textResult(text: string): McpCallResult {
-  return { content: [{ type: 'text', text }] };
+function textResult(text: string): ClientCapabilityCallResult {
+  return { outcome: 'success', content: [{ type: 'text', text }] };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -31,6 +31,36 @@ import {
 } from '../protocol/index.js';
 
 describe('Client Capability protocol', () => {
+  test('requires a tri-state result outside business structuredContent', () => {
+    for (const outcome of ['success', 'error', 'aborted'] as const) {
+      assert.deepEqual(
+        decodeClientCapabilityResult({
+          outcome,
+          content: [],
+          structuredContent: { outcome: 'business' },
+        }),
+        {
+          outcome,
+          content: [],
+          structuredContent: { outcome: 'business' },
+        },
+      );
+    }
+    for (const outcome of [undefined, null, true, 'failed', 'SUCCESS']) {
+      assert.throws(
+        () => decodeClientCapabilityResult({ outcome, content: [] }),
+        RuntimeHostProtocolError,
+      );
+    }
+    assert.throws(
+      () =>
+        decodeClientCapabilityResult({
+          content: [],
+          structuredContent: { outcome: 'error' },
+        }),
+      RuntimeHostProtocolError,
+    );
+  });
   test('preserves opaque tool-call IDs while retaining identity bounds', () => {
     const frame = {
       kind: 'client.capability.call',
@@ -619,6 +649,7 @@ describe('Client Capability protocol', () => {
   test('rejects non-canonical media data and invalid image MIME types', () => {
     assert.deepEqual(
       decodeClientCapabilityResult({
+        outcome: 'success',
         content: [
           { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
           { type: 'audio', data: 'YQ==', mimeType: 'audio/wav' },
@@ -626,6 +657,7 @@ describe('Client Capability protocol', () => {
         ],
       }),
       {
+        outcome: 'success',
         content: [
           { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
           { type: 'audio', data: 'YQ==', mimeType: 'audio/wav' },
@@ -643,7 +675,7 @@ describe('Client Capability protocol', () => {
       [{ type: 'image', data: 'YQ==', mimeType: 'image/png; charset=binary' }],
     ]) {
       assert.throws(
-        () => decodeClientCapabilityResult({ content }),
+        () => decodeClientCapabilityResult({ outcome: 'success', content }),
         (error: unknown) => error instanceof RuntimeHostProtocolError,
       );
     }

@@ -872,7 +872,10 @@ test('an unbound WebSocket credential cannot claim an existing bound Client iden
           ],
         },
       ],
-      call: async () => ({ content: [{ type: 'text', text: 'bound' }] }),
+      call: async () => ({
+        outcome: 'success',
+        content: [{ type: 'text', text: 'bound' }],
+      }),
     });
 
     assert.deepEqual(

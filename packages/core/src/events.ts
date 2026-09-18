@@ -838,6 +838,8 @@ export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {
   /** The transport omitted durable result content; consumers must not treat the placeholder as authoritative. */
   contentOmitted?: true;
   isError: boolean;
+  /** Explicit call outcome; absent on legacy and non-migrated tools. */
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
   content: ToolResultContent;
   durationMs?: number;
 }

@@ -331,6 +331,8 @@ export type McpContentBlock =
 export interface McpCallResult {
   content: McpContentBlock[];
   structuredContent?: unknown;
+  /** Validated Client Capability metadata; ordinary MCP calls do not set it. */
+  outcome?: import('./tool-result-status.js').ToolCallOutcome;
 }
 
 export interface McpTestResult {

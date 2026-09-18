@@ -870,7 +870,7 @@ export function applyMakaSessionEventToTranscript(
       }
       if (tool) {
         if (tool.suppressed) unsuppressToolAtTail(state, tool);
-        tool.callStatus = toolResultActivityStatus(event.isError, event.content);
+        tool.callStatus = toolResultActivityStatus(event.isError, event.content, event.outcome);
         if (shellRun) {
           if (tool.toolName === 'Bash') {
             applyShellRunResult(tool, shellRun);
@@ -898,7 +898,7 @@ export function applyMakaSessionEventToTranscript(
           ...(!event.contentOmitted ? { result: event.content } : {}),
           resultVersion: event.contentOmitted ? 0 : 1,
           durationMs: event.durationMs,
-          callStatus: toolResultActivityStatus(event.isError, event.content),
+          callStatus: toolResultActivityStatus(event.isError, event.content, event.outcome),
           expanded: state.expandAllTools,
         });
       }
@@ -1149,7 +1149,7 @@ function storedToolToTranscriptEntry(
     resultVersion: result ? 1 : 0,
     ...(result?.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
     callStatus: result
-      ? toolResultActivityStatus(result.isError, result.content)
+      ? toolResultActivityStatus(result.isError, result.content, result.outcome)
       : unfinishedToolActivityStatus(turnStatus),
     expanded: false,
   };

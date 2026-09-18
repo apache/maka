@@ -37,7 +37,6 @@ export interface ModelPickerLeadingOption {
   providerType?: ProviderType;
   disabled?: boolean;
 }
-
 type ModelChoiceValueFn = (choice: ModelMenuGroup['choices'][number]) => string;
 
 export function providerMarkIcon(

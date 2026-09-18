@@ -476,7 +476,7 @@ function projectLiveTurnEvent(
     const tool: ToolActivityItem = {
       ...base,
       ...projectToolActivityIdentity(event),
-      status: toolResultActivityStatus(event.isError, event.content),
+      status: toolResultActivityStatus(event.isError, event.content, event.outcome),
       result: event.contentOmitted ? base.result : event.content,
       ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
     };
