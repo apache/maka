@@ -364,6 +364,7 @@ export function ChatComposerRegion({
         {activeForm && (
           <FormInteractionPrompt
             request={activeForm}
+            modelChoices={composerRest.modelChoices}
             onRespond={respondToUserForm}
           />
         )}

@@ -131,6 +131,8 @@ export type InteractionFormField =
       readonly minLength?: number;
       readonly maxLength?: number;
       readonly format?: 'email' | 'uri' | 'date' | 'date-time';
+      /** Render this Host-validated string through the client's canonical model catalog. */
+      readonly presentation?: 'model_picker';
     })
   | (InteractionFormFieldBase & {
       readonly kind: 'number';
@@ -152,7 +154,6 @@ export type InteractionFormField =
       readonly kind: 'single_select';
       readonly options: readonly InteractionFormOption[];
       readonly default?: string;
-      readonly presentation?: 'model_picker';
     })
   | (InteractionFormFieldBase & {
       readonly kind: 'multi_select';
@@ -389,7 +390,7 @@ const FORM_STRING_FIELD_SHAPE = defineObjectShape<
   Extract<InteractionFormField, { kind: 'string' }>
 >()(
   ['kind', 'name', 'label', 'required'],
-  ['description', 'default', 'minLength', 'maxLength', 'format'],
+  ['description', 'default', 'minLength', 'maxLength', 'format', 'presentation'],
 );
 const FORM_NUMBER_FIELD_SHAPE = defineObjectShape<
   Extract<InteractionFormField, { kind: 'number' | 'integer' }>
@@ -399,7 +400,7 @@ const FORM_BOOLEAN_FIELD_SHAPE = defineObjectShape<
 >()(['kind', 'name', 'label', 'required'], ['description', 'default']);
 const FORM_SINGLE_SELECT_FIELD_SHAPE = defineObjectShape<
   Extract<InteractionFormField, { kind: 'single_select' }>
->()(['kind', 'name', 'label', 'required', 'options'], ['description', 'default', 'presentation']);
+>()(['kind', 'name', 'label', 'required', 'options'], ['description', 'default']);
 const FORM_MULTI_SELECT_FIELD_SHAPE = defineObjectShape<
   Extract<InteractionFormField, { kind: 'multi_select' }>
 >()(
@@ -1011,7 +1012,19 @@ function decodeFormField(value: unknown): InteractionFormField {
               'form string format',
             ),
           }),
+      ...(record.presentation === undefined
+        ? {}
+        : {
+            presentation: oneOf(
+              record.presentation,
+              ['model_picker'] as const,
+              'string presentation',
+            ),
+          }),
     };
+    if (field.presentation === 'model_picker' && field.format !== undefined) {
+      throw new Error('Model picker string field cannot declare a format');
+    }
     if (field.default !== undefined && !isInteractionFormFieldValueValid(field, field.default)) {
       throw new Error('Invalid form string default');
     }
@@ -1055,15 +1068,6 @@ function decodeFormField(value: unknown): InteractionFormField {
       ...common,
       kind: 'single_select',
       options,
-      ...(record.presentation === undefined
-        ? {}
-        : {
-            presentation: oneOf(
-              record.presentation,
-              ['model_picker'] as const,
-              'single-select presentation',
-            ),
-          }),
       ...(record.default === undefined
         ? {}
         : {
@@ -1217,7 +1221,8 @@ export function isInteractionFormFieldValueValid(
     return (
       (field.minLength === undefined || length >= field.minLength) &&
       (field.maxLength === undefined || length <= field.maxLength) &&
-      matchesStringFormat(value, field.format)
+      matchesStringFormat(value, field.format) &&
+      (field.presentation !== 'model_picker' || isCanonicalModelChoiceValue(value))
     );
   }
   if (field.kind === 'number' || field.kind === 'integer') {
@@ -1330,7 +1335,9 @@ function formFieldMaximumEnvelope(field: InteractionFormField): InteractionFormV
       field.maxLength ?? INTERACTION_FORM_VALUE_MAX_BYTES,
       INTERACTION_FORM_VALUE_MAX_BYTES,
     );
-    if (field.format === 'date-time') return '0'.repeat(maximumCodePoints);
+    if (field.format === 'date-time' || field.presentation === 'model_picker') {
+      return '0'.repeat(maximumCodePoints);
+    }
     return '\u0001'.repeat(maximumCodePoints);
   }
   if (field.kind === 'number' || field.kind === 'integer') return -1.7976931348623157e308;
@@ -1346,6 +1353,19 @@ function formFieldMaximumEnvelope(field: InteractionFormField): InteractionFormV
     .sort((left, right) => serializedByteLength(right.value) - serializedByteLength(left.value))
     .slice(0, field.maxItems ?? field.options.length)
     .map((option) => option.value);
+}
+
+function isCanonicalModelChoiceValue(value: string): boolean {
+  const components = value.split(':');
+  if (components.length !== 3 || components.some((component) => component.length === 0))
+    return false;
+  try {
+    return components.every(
+      (component) => encodeURIComponent(decodeURIComponent(component)) === component,
+    );
+  } catch {
+    return false;
+  }
 }
 
 function serializedByteLength(value: string): number {
@@ -1383,6 +1403,8 @@ function formFieldWitness(field: InteractionFormField): InteractionFormValue {
       const base = '2000-01-01T00:00:00';
       const fractionalLength = minLength <= 20 ? 0 : Math.max(1, minLength - 21);
       value = fractionalLength === 0 ? `${base}Z` : `${base}.${'0'.repeat(fractionalLength)}Z`;
+    } else if (field.presentation === 'model_picker') {
+      value = `a:a:${'a'.repeat(Math.max(1, minLength - 4))}`;
     } else {
       value = 'a'.repeat(minLength);
     }

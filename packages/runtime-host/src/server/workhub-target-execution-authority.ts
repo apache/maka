@@ -19,13 +19,9 @@
 
 import { createHash } from 'node:crypto';
 import {
-  INTERACTION_FORM_FIELD_LABEL_MAX_BYTES,
-  INTERACTION_FORM_MAX_OPTIONS,
-} from '@maka/core/interaction';
-import {
   authorizeConnectionModel,
+  connectionModelChoiceValue,
   connectionEnabledModelIds,
-  providerMenuLabel,
 } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
@@ -71,8 +67,6 @@ export interface WorkHubTargetExecutionAuthorityOptions {
 
 interface ReplacementModel {
   readonly value: string;
-  readonly label: string;
-  readonly description: string;
   readonly target: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
 }
 
@@ -96,6 +90,7 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
     input: WorkHubTargetExecutionPreparationInput,
     context: ConnectionContext,
   ): Promise<void> {
+    const rejectedSelections: string[] = [];
     for (let attempt = 0; attempt < 3; attempt++) {
       const readiness = await this.#readiness(input.targetSessionId);
       if (readiness.kind === 'ready') return;
@@ -113,6 +108,7 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
             targetSessionId: input.targetSessionId,
             revision: readiness.record.revision,
             replacements: readiness.replacements.map(({ value }) => value),
+            rejectedSelections,
           }),
         )
         .digest('hex');
@@ -128,16 +124,12 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
           requester: { name: 'WorkHub' },
           fields: [
             {
-              kind: 'single_select',
+              kind: 'string',
               name: 'targetModel',
               label: `Model for ${input.targetSessionName}`,
               required: true,
               presentation: 'model_picker',
-              options: readiness.replacements.map(({ value, label, description }) => ({
-                value,
-                label,
-                description,
-              })),
+              minLength: 1,
             },
           ],
         }),
@@ -151,10 +143,8 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
       const value = choice.answer.values.targetModel;
       const replacement = readiness.replacements.find(({ value: offered }) => offered === value);
       if (!replacement) {
-        throw new WorkHubActionEffectFailure(
-          'operation_conflict',
-          'Selected model no longer belongs to the offered WorkHub repair',
-        );
+        if (typeof value === 'string') rejectedSelections.push(value);
+        continue;
       }
       const updated = await this.#options.updateModel(
         {
@@ -236,44 +226,19 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
             connectionSlug: connection.slug,
             model: modelId,
           };
-          const connectionLabel =
-            connection.name.trim() || providerMenuLabel(connection.providerType) || connection.slug;
-          const modelLabel = model.displayName?.trim() || modelId;
           return [
             {
-              value: createHash('sha256')
-                .update(`${target.connectionId}\0${target.connectionSlug}\0${target.model}`, 'utf8')
-                .digest('hex'),
-              label: boundedUtf8(modelLabel, INTERACTION_FORM_FIELD_LABEL_MAX_BYTES),
-              description: boundedUtf8(connectionLabel, INTERACTION_FORM_FIELD_LABEL_MAX_BYTES),
+              value: connectionModelChoiceValue(
+                target.connectionId,
+                target.connectionSlug,
+                target.model,
+              ),
               target,
             },
           ];
         });
       })
-      .sort((left, right) => {
-        const isSameConnection = (candidate: ReplacementModel) =>
-          header.llmConnectionId
-            ? candidate.target.connectionId === header.llmConnectionId
-            : candidate.target.connectionSlug === header.llmConnectionSlug;
-        const leftSameConnection = isSameConnection(left) ? 0 : 1;
-        const rightSameConnection = isSameConnection(right) ? 0 : 1;
-        return (
-          leftSameConnection - rightSameConnection ||
-          left.description.localeCompare(right.description) ||
-          left.label.localeCompare(right.label)
-        );
-      })
-      .slice(0, INTERACTION_FORM_MAX_OPTIONS);
+      .sort((left, right) => left.value.localeCompare(right.value));
     return { kind: 'model_repair_required', record, replacements };
   }
-}
-
-function boundedUtf8(value: string, maxBytes: number): string {
-  let bounded = '';
-  for (const character of value) {
-    if (Buffer.byteLength(bounded + character, 'utf8') > maxBytes) break;
-    bounded += character;
-  }
-  return bounded;
 }

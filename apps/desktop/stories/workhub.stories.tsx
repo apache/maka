@@ -35,6 +35,18 @@ const choices = ['model-a', 'model-b'].map((model, index) => ({
   connectionId: 'connection-test', connectionSlug: 'test', connectionName: 'Test', providerType: 'openai' as const,
   providerLabel: 'OpenAI', model, label: model, contextWindow: 100_000, isDefault: index === 0, thinkingLevels: ['low', 'high'] as ThinkingLevel[],
 }));
+const repairChoices = [
+  ['coding-plan', 'Coding Plan', 'qwen3.8-32b', 'Qwen 3.8 32B'],
+  ['deepseek', 'DeepSeek', 'deepseek-v4-pro', 'DeepSeek V4 Pro'],
+  ['anthropic', 'Anthropic', 'claude-sonnet-4.5', 'Claude Sonnet 4.5'],
+  ['openai', 'OpenAI', 'gpt-5.4', 'GPT-5.4'],
+  ['google', 'Google', 'gemini-3-pro', 'Gemini 3 Pro'],
+  ['moonshot', 'Moonshot', 'kimi-k2.5', 'Kimi K2.5'],
+].map(([connectionSlug, connectionName, model, label], index) => ({
+  connectionId: `connection-${connectionSlug}`, connectionSlug, connectionName,
+  providerType: 'openai' as const, providerLabel: connectionName, model, label,
+  contextWindow: 100_000, isDefault: index === 0, thinkingLevels: [] as ThinkingLevel[],
+}));
 function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false, repairModel = false): WorkHubServices {
   let failures = failFirst ? 1 : 0;
   let session: SessionSummary & { revision: number } = {
@@ -97,7 +109,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     bindBrowserSession: () => {},
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,
-    listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => choices,
+    listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => repairModel ? repairChoices : choices,
     delegationFeedback: async (references) => references.map(({ id }) => ({
       id,
       state: coloredHistory && id === 'link-1' ? 'waiting_for_user' as const : coloredHistory && id === 'link-2' ? 'running' as const : 'completed' as const,
@@ -135,18 +147,10 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
           message: repairModel
             ? '任务“支付回调幂等性”使用的模型“qwen3.8-27b-sglang”已不可用。请选择替代模型以继续。'
             : '选择要继续的工作', requester: { name: 'WorkHub' },
-          fields: [{ kind: 'single_select', name: repairModel ? 'targetModel' : 'target', label: repairModel ? '替代模型' : '工作 / 工作区', required: true,
-            ...(repairModel ? { presentation: 'model_picker' as const } : {}),
-            options: repairModel
-              ? [
-                  { value: 'qwen3.8-32b', label: 'Qwen 3.8 32B', description: 'Coding Plan' },
-                  { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', description: 'DeepSeek' },
-                  { value: 'claude-sonnet-4.5', label: 'Claude Sonnet 4.5', description: 'Anthropic' },
-                  { value: 'gpt-5.4', label: 'GPT-5.4', description: 'OpenAI' },
-                  { value: 'gemini-3-pro', label: 'Gemini 3 Pro', description: 'Google' },
-                  { value: 'kimi-k2.5', label: 'Kimi K2.5', description: 'Moonshot' },
-                ]
-              : [{ value: 'candidate-0', label: '支付回调幂等性 / maka' }, { value: 'candidate-1', label: '发布检查清单 / desktop' }] }] };
+          fields: [repairModel
+            ? { kind: 'string', name: 'targetModel', label: '替代模型', required: true, presentation: 'model_picker', minLength: 1 }
+            : { kind: 'single_select', name: 'target', label: '工作 / 工作区', required: true,
+                options: [{ value: 'candidate-0', label: '支付回调幂等性 / maka' }, { value: 'candidate-1', label: '发布检查清单 / desktop' }] }] };
         messages = [...messages, { type: 'user', id: input.turnId, turnId: input.turnId, ts: 4, text: input.text }];
         interactionUpdate?.({ sessionId, interactions: [pendingForm] });
         publish(); return { kind: 'admitted', turnId: input.turnId };

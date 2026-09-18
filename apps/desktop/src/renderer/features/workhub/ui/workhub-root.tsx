@@ -305,7 +305,15 @@ export function WorkHubRoot() {
                 )}
               </div>
             )}
-            {controller.activeForm && <FormInteractionPrompt request={controller.activeForm} onRespond={controller.respondToUserForm} onStop={controller.stop} stopPending={controller.stopPending} />}
+            {controller.activeForm && (
+              <FormInteractionPrompt
+                request={controller.activeForm}
+                modelChoices={controller.choices}
+                onRespond={controller.respondToUserForm}
+                onStop={controller.stop}
+                stopPending={controller.stopPending}
+              />
+            )}
             {controller.activeQuestion && <UserQuestionPrompt key={controller.activeQuestion.requestId}
               request={controller.activeQuestion} onRespond={controller.respondToUserQuestion}
               onStop={controller.stop} stopPending={controller.stopPending} />}

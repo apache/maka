@@ -1107,7 +1107,6 @@ describe('Interaction decoding and validity', () => {
           name: 'environment',
           label: 'Environment',
           required: true,
-          presentation: 'model_picker',
           options: [
             { value: 'staging', label: 'Staging', description: 'Local provider' },
             { value: 'production', label: 'Production' },
@@ -1169,20 +1168,12 @@ describe('Interaction decoding and validity', () => {
       },
       fields: [
         {
-          kind: 'single_select',
+          kind: 'string',
           name: 'environment',
           label: '\u0007 password=field-secret',
           description: '\nclient_secret=description-secret',
           required: true,
           presentation: 'model_picker',
-          options: [
-            {
-              value: 'production',
-              label: '\u202e token=option-secret',
-              description: '\npassword=option-description-secret',
-            },
-            { value: 'staging', label: 'Staging' },
-          ],
         },
       ],
     });
@@ -1193,25 +1184,14 @@ describe('Interaction decoding and validity', () => {
       source: '\\u{A}api_key=[redacted]',
     });
     assert.deepEqual(projected.fields[0], {
-      kind: 'single_select',
+      kind: 'string',
       name: 'environment',
       label: '\\u{7} password=[redacted]',
       description: '\\u{A}client_secret=[redacted]',
       required: true,
       presentation: 'model_picker',
-      options: [
-        {
-          value: 'production',
-          label: '\\u{202E} token=[redacted]',
-          description: '\\u{A}password=[redacted]',
-        },
-        { value: 'staging', label: 'Staging' },
-      ],
     });
-    assert.doesNotMatch(
-      JSON.stringify(projected),
-      /message-secret|requester-secret|source-secret|option-description-secret/,
-    );
+    assert.doesNotMatch(JSON.stringify(projected), /message-secret|requester-secret|source-secret/);
   });
 
   test('drops string defaults that cannot be represented without changing canonical semantics', () => {
