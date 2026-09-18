@@ -135,9 +135,9 @@ function applyComment(quotes: QuoteRef[], index: number, comment: string): Quote
 
 /** The loop the app wires: select → annotate → stage → reopen the note over
  *  the excerpt itself. Quotes live in story state the way AppShell holds them. */
-function TranscriptQuoteLoop() {
+function TranscriptQuoteLoop(props: { initialQuotes?: QuoteRef[] }) {
   const chatViewRef = useRef<ChatViewHandle>(null);
-  const [quotes, setQuotes] = useState<QuoteRef[]>([]);
+  const [quotes, setQuotes] = useState<QuoteRef[]>(props.initialQuotes ?? []);
   return (
     <ChatSurfaceLayout
       composer={
@@ -230,12 +230,8 @@ function Frame({ children, width = 960 }: { children: React.ReactNode; width?: n
 }
 
 /** The composer's staged quotes are host state, so the story holds them the
- *  way AppShell does: editing a note writes back to the staged quote. No
- *  ChatView is mounted here, so the handle stays null and the token falls
- *  back to the popover — the same path the app takes when the excerpt can
- *  no longer be located in the transcript. */
+ *  way AppShell does: editing a note writes back to the staged quote. */
 function AnnotatingComposer(props: { draftKey: string }) {
-  const chatViewRef = useRef<ChatViewHandle>(null);
   const [quotes, setQuotes] = useState<QuoteRef[]>([ANNOTATED_QUOTE, BARE_QUOTE]);
   return (
     <Composer
@@ -248,18 +244,6 @@ function AnnotatingComposer(props: { draftKey: string }) {
           current.map((quote, i) => (i === index ? { ...quote, comment } : quote)),
         )
       }
-      onAnnotateQuote={(index) => {
-        const quote = quotes[index];
-        return (
-          quote !== undefined &&
-          (chatViewRef.current?.openQuoteAnnotation({
-            index,
-            text: quote.text,
-            turnId: quote.sourceTurnId,
-            comment: quote.comment,
-          }) ?? false)
-        );
-      }}
     />
   );
 }
@@ -277,30 +261,33 @@ export const ComposerStagedQuoteWithNote: Story = {
   ),
 };
 
-// Real path, the fallback: when the excerpt cannot be anchored in the
-// transcript (the turn is gone or no transcript is mounted), clicking the
-// staged chip opens the editor in a popover beside the token instead.
-export const AnnotationPanelOpen: Story = {
+// Real path, the fallback: the staged quote outlives its source — the turn has
+// left the transcript (rewritten history, virtualized out, a different session)
+// — so clicking the token cannot anchor an editor at the excerpt and degrades
+// to the popover beside the token.
+const ORPHAN_QUOTE: QuoteRef = { ...ANNOTATED_QUOTE, sourceTurnId: 'turn-removed' };
+
+export const ComposerTokenFallback: Story = {
   render: () => (
     <Frame>
-      <div style={{ padding: '0 24px 24px', width: '100%' }}>
-        <AnnotatingComposer draftKey="composer-quote-panel" />
+      <div style={{ padding: '0 24px', width: '100%', display: 'flex' }}>
+        <TranscriptQuoteLoop initialQuotes={[ORPHAN_QUOTE]} />
       </div>
     </Frame>
   ),
   play: async () => {
-    await waitFor(() => expect(document.querySelector('.maka-composer-quote-token')).toBeTruthy());
-    const token = document.querySelector('.maka-composer-quote-token');
-    expect(token).toBeTruthy();
-    await userEvent.click(token as HTMLElement);
-    // The panel's content stays mounted while closed, so the assertion is
-    // about the one that is actually on screen.
-    await waitFor(() =>
-      expect(
-        [...document.querySelectorAll('.maka-quote-comment-panel')].filter((panel) =>
-          panel.checkVisibility(),
-        ),
-      ).toHaveLength(1),
+    const token = await waitFor(() => {
+      const el = document.querySelector('.maka-composer-quote-token');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    await userEvent.click(token);
+    const panel = await visiblePanel();
+    // Degraded, not anchored: the visible panel lives in the composer's
+    // popover, not the transcript's annotation layer over the excerpt.
+    expect(panel.closest('.maka-quote-annotation-layer')).toBeNull();
+    expect(panel.querySelector('textarea')).toHaveValue(
+      '按 debug 技能核对限流规则，再判断是否能降速继续。',
     );
   },
 };
