@@ -81,7 +81,9 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
       role="group"
       aria-label={props.title}
     >
-      <Text type="label">{props.title}</Text>
+      <Text type="label" weight="semibold">
+        {props.title}
+      </Text>
       <div className="maka-quote-comment-panel-excerpt">
         <Blockquote cite={props.quote.label}>{excerpt}</Blockquote>
       </div>

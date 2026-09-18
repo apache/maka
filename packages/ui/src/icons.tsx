@@ -117,6 +117,7 @@ export {
   MessageCircleQuestion,
   MessagesSquare,
   MessageSquare,
+  MessageSquareQuote,
   Mic,
   Maximize2,
   PictureInPicture2,
