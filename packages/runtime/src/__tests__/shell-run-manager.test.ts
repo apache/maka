@@ -349,9 +349,11 @@ describe('ShellRunProcessManager', () => {
         const initial = await manager.runBackgroundBash(
           shellInput({
             cwd,
+            // Keep READY last so observing it also observes the final cursor position,
+            // even when the PTY delivers the output in separate chunks.
             command: nodeCommand(`
               const { existsSync } = require('node:fs');
-              process.stdout.write('READY\\n');
+              process.stdout.write('READY');
               setInterval(() => {
                 if (existsSync(${JSON.stringify(exitGate)})) process.exit(0);
               }, 10);
