@@ -96,6 +96,86 @@ for (const settlement of ['resolve', 'reject'] as const) {
   });
 }
 
+for (const mutation of ['replace', 'unregister'] as const) {
+  test(`capability ${mutation} without an explicit timeout bounds an unresponsive Host`, async (t) => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    t.after(async () => {
+      for (const client of server.clients) client.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const observed: string[] = [];
+    server.once('connection', (socket) => {
+      servePendingRequests(socket, deferred<void>());
+      socket.on('message', (data) => {
+        const frame = JSON.parse(data.toString()) as RequestFrame;
+        if (!frame.operation) return;
+        observed.push(frame.operation);
+        if (mutation === 'unregister' && frame.operation === 'client.capability.replace') {
+          socket.send(
+            JSON.stringify({
+              requestId: frame.requestId,
+              operation: frame.operation,
+              ok: true,
+              result: { registrationId: frame.input.registrationId, revision: 1 },
+            }),
+          );
+        }
+      });
+    });
+    const connected = await connectRemoteRuntimeHost({
+      url: `ws://127.0.0.1:${address.port}`,
+      allowInsecureRemote: true,
+      credential: 'test-credential',
+      expectedRootId: ROOT_ID,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      protocol: PROTOCOL,
+      livenessIntervalMs: 60_000,
+    });
+    assert.equal(connected.kind, 'connected');
+    if (connected.kind !== 'connected') return;
+    const connection = connected.connection;
+    t.after(() => connection.close());
+    const provider = {
+      offers: () => [],
+      services: () => [{ serviceId: 'fixture', version: '1' }],
+      callService: async () => ({ kind: 'done' }),
+    };
+    if (mutation === 'unregister') await connection.replaceClientCapabilities(provider);
+    const started = performance.now();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await assert.rejects(
+        Promise.race([
+          mutation === 'replace'
+            ? connection.replaceClientCapabilities(provider)
+            : connection.unregisterClientCapabilities(),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(new Error('capability mutation exceeded its default budget')),
+              4_000,
+            );
+          }),
+        ]),
+        (error: unknown) => {
+          assert.ok(error instanceof RuntimeHostRequestInterruptedError);
+          assert.equal(error.operation, `client.capability.${mutation}`);
+          assert.ok(error.cause instanceof RuntimeHostTransportError);
+          assert.equal(error.cause.code, 'read_timeout');
+          return true;
+        },
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    assert.ok(performance.now() - started < 4_000);
+    assert.ok(observed.includes(`client.capability.${mutation}`));
+    await connection.closed;
+  });
+}
+
 function servePendingRequests(socket: WebSocket, requestsObserved: Deferred<void>): void {
   let requestCount = 0;
   socket.on('message', (data) => {
