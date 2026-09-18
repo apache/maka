@@ -1116,6 +1116,128 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     ]);
   });
 
+  test('a sequence closing observation is immediately usable by the next action', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    backend.captureObservation = async () => observation();
+    let dispatches = 0;
+    backend.runSemantic = async () => {
+      dispatches += 1;
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    };
+    const [tool] = buildComputerUseTools({ backend });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const sequence = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: JSON.parse(observed.text).observation_id,
+        steps: [{ label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { modelText?: string; error?: string };
+    assert.equal(sequence.error, undefined);
+    const freshId = observationIdOf(sequence.modelText);
+    assert.ok(freshId);
+    const next = (await tool.impl(
+      { action: 'click_element', observation_id: freshId, element_id: '5' } as never,
+      ctx(undefined, { toolCallId: 'next' }),
+    )) as { error?: string };
+    assert.equal(next.error, undefined);
+    assert.equal(dispatches, 2);
+  });
+
+  test('a sequence does not publish a closing capture invalidated in flight', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    const tools = buildComputerUseTools({ backend });
+    backend.captureObservation = async () => {
+      tools.sessionEvents.reobserveRequired('s1');
+      return observation();
+    };
+    backend.runSemantic = async () => ({ outcome: { ok: true, tier: 'ax', verified: true } });
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const result = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: JSON.parse(observed.text).observation_id,
+        steps: [{ label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { modelText?: string };
+    assert.doesNotMatch(result.modelText ?? '', /Fresh observation/);
+    assert.equal(tools.sessionEvents.snapshot('s1').status, 'reobserve_required');
+  });
+
+  test('a sequence stops before the next step when its intermediate capture is invalidated', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    const tools = buildComputerUseTools({ backend });
+    let captures = 0;
+    let dispatches = 0;
+    backend.captureObservation = async () => {
+      if (++captures === 1) tools.sessionEvents.userStopped('s1');
+      return observation();
+    };
+    backend.runSemantic = async () => {
+      dispatches += 1;
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    };
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const result = (await tool.impl(
+      {
+        action: 'element_sequence',
+        observation_id: JSON.parse(observed.text).observation_id,
+        steps: [{ label: 'Continue' }, { label: 'Continue' }],
+      } as never,
+      ctx(undefined, { toolCallId: 'sequence' }),
+    )) as { modelText?: string; text: string };
+    assert.equal(dispatches, 1);
+    assert.match(result.text, /stopped at step 1 of 2: user_stopped/);
+    assert.doesNotMatch(result.modelText ?? '', /Fresh observation/);
+  });
+
+  test('a condition wait does not accept an observation invalidated during polling', async () => {
+    const backend = fakeBackend();
+    const tools = buildComputerUseTools({ backend });
+    let polls = 0;
+    backend.observeApp = async () => {
+      if (++polls === 2) tools.sessionEvents.userStopped('s1');
+      return observation();
+    };
+    const [tool] = tools;
+    await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx());
+    const result = (await tool.impl(
+      { action: 'wait', wait_for_text: 'Continue', duration: 0.01 } as never,
+      ctx(undefined, { toolCallId: 'wait' }),
+    )) as { error?: string; modelText?: string };
+    assert.equal(result.error, 'user_stopped');
+    assert.doesNotMatch(result.modelText ?? '', /observation_id=/);
+  });
+
+  test('a new turn accepts its observation after retiring the previous turn frame', async () => {
+    const backend = fakeBackend();
+    backend.observeApp = async () => observation();
+    const [tool] = buildComputerUseTools({ backend });
+    const first = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      modelText?: string;
+    };
+    assert.ok(observationIdOf(first.modelText));
+    const next = (await tool.impl(
+      { action: 'observe', app: 'Fixture' } as never,
+      ctx(undefined, { turnId: 't2', toolCallId: 'new-turn-observe' }),
+    )) as { error?: string; modelText?: string };
+    assert.equal(next.error, undefined);
+    assert.ok(observationIdOf(next.modelText));
+  });
+
   test('a sequence stops at the step it cannot resolve, and says which', async () => {
     const backend = fakeBackend() as CuDispatchBackend & {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;

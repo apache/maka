@@ -902,10 +902,13 @@ export function buildComputerUseTools(deps: {
     };
   }
 
-  function registerObservation(
+  function acceptObservation(
+    state: CuaSessionState,
     record: SessionObservationRecord,
+    lease: CuaActionLease,
     observation: CuObservation,
-  ): CuObservation {
+  ): CuObservation | undefined {
+    if (!state.validateObservationLease(lease).ok) return undefined;
     const normalized = {
       ...observation,
       elements: observation.elements.map((element) => ({
@@ -930,6 +933,7 @@ export function buildComputerUseTools(deps: {
     record.windowId = observation.windowId;
     record.obscuringRects = observation.obscuringRects;
     record.elements = new Map(normalized.elements.map((element) => [element.elementId, element]));
+    state.freshObservationSucceeded();
     return { ...normalized, observationId: frame.frameId };
   }
 
@@ -1253,12 +1257,7 @@ export function buildComputerUseTools(deps: {
       captured && result.screenshot && !captured.screenshot
         ? { ...captured, screenshot: result.screenshot }
         : captured;
-    if (!fresh || !state.validateObservationLease(observationLease.lease).ok) {
-      return undefined;
-    }
-    const registered = registerObservation(record, fresh);
-    const snapshot = state.freshObservationSucceeded();
-    return snapshot.status === 'active' ? registered : undefined;
+    return fresh ? acceptObservation(state, record, observationLease.lease, fresh) : undefined;
   }
 
   async function withInvocationQueue<T>(
@@ -1602,6 +1601,10 @@ export function buildComputerUseTools(deps: {
             state.screenLocked();
             return sessionFailure('screen_locked');
           }
+          // A new Turn retires the previous frame and advances the session
+          // generation. Do that before leasing an observe, not after capture.
+          const observingRecord =
+            input.action === 'observe' ? sessionObservation(sessionId, turnId) : undefined;
           // Both halves of the wire enum are partitioned in `@maka/core`, so a
           // new action cannot be added without landing on one side or the
           // other — and offline consumers read the same partition.
@@ -1719,12 +1722,12 @@ export function buildComputerUseTools(deps: {
                   stopped = 'capture_failed';
                   break;
                 }
-                current = registerObservation(record, recaptured);
-                // A frame the host just captured is a live frame. Without this
-                // the session stays in `reobserve_required` from the previous
-                // step and the next action is refused — the sequence would take
-                // exactly one step and stop.
-                state.freshObservationSucceeded();
+                current = acceptObservation(state, record, lease.lease, recaptured);
+                if (!current) {
+                  const valid = state.validateObservationLease(lease.lease);
+                  stopped = valid.ok ? 'reobserve_required' : valid.reason;
+                  break;
+                }
               }
               const wanted = step.label.trim().toLowerCase();
               const matches = (current?.elements ?? []).filter(
@@ -1845,8 +1848,10 @@ export function buildComputerUseTools(deps: {
                     abortSignal,
                     runCtx,
                   );
-                final = registerObservation(
+                final = acceptObservation(
+                  state,
                   record,
+                  lease.lease,
                   await capture(true).catch(() => capture(false)),
                 );
               }
@@ -2052,8 +2057,13 @@ export function buildComputerUseTools(deps: {
                   .some((part) => part.toLowerCase().includes(needle)),
               );
               if (found === wantPresent) {
-                const observation = registerObservation(record, last);
-                state.freshObservationSucceeded();
+                const observation = observationLease?.ok
+                  ? acceptObservation(state, record, observationLease.lease, last)
+                  : undefined;
+                if (!observation) {
+                  const valid = state.beforeAction();
+                  return sessionFailure(valid.ok ? 'reobserve_required' : valid.reason, 'wait');
+                }
                 const waited = (
                   (Date.now() - (deadline - Math.round((input.duration ?? 5) * 1000))) /
                   1000
@@ -2069,8 +2079,13 @@ export function buildComputerUseTools(deps: {
                 // holds instead is the whole question a model asks next, and
                 // making it spend another call on that is the round trip this
                 // action exists to remove.
-                const observation = registerObservation(record, last);
-                state.freshObservationSucceeded();
+                const observation = observationLease?.ok
+                  ? acceptObservation(state, record, observationLease.lease, last)
+                  : undefined;
+                if (!observation) {
+                  const valid = state.beforeAction();
+                  return sessionFailure(valid.ok ? 'reobserve_required' : valid.reason, 'wait');
+                }
                 const text = `maka_computer.wait failed: timeout — ${JSON.stringify(input.wait_for_text ?? input.wait_for_text_gone)} was still ${wantPresent ? 'absent' : 'present'} after ${(input.duration ?? 5).toFixed(1)}s and ${polls} looks. This is the window as it stands.`;
                 return {
                   text: `${text}\n${persistedObservationText(observation)}`,
@@ -2224,15 +2239,11 @@ export function buildComputerUseTools(deps: {
                 error: code,
               };
             }
-            if (
-              !observationLease?.ok ||
-              !state.validateObservationLease(observationLease.lease).ok
-            ) {
+            if (!observationLease?.ok) {
               const blocked = state.beforeAction();
               return sessionFailure(blocked.ok ? 'reobserve_required' : blocked.reason, 'observe');
             }
-            const record = sessionObservation(sessionId, turnId);
-            const observation = registerObservation(record, {
+            const observation = acceptObservation(state, observingRecord!, observationLease.lease, {
               ...withRequestedView(backendObservation, {
                 ...(input.query ? { query: input.query } : {}),
                 ...(input.menu ? { menu: input.menu } : {}),
@@ -2248,12 +2259,9 @@ export function buildComputerUseTools(deps: {
                 ? { appAlias: input.app }
                 : {}),
             });
-            const activated = state.freshObservationSucceeded();
-            if (activated.status !== 'active') {
-              invalidateObservation(sessionId);
-              return sessionFailure(
-                activated.status === 'blocked_url' ? 'blocked_url' : 'user_stopped',
-              );
+            if (!observation) {
+              const valid = state.beforeAction();
+              return sessionFailure(valid.ok ? 'reobserve_required' : valid.reason, 'observe');
             }
             const screenshot = observation.screenshot;
             return screenshot
@@ -2546,7 +2554,7 @@ export function buildComputerUseTools(deps: {
             // `REOBSERVABLE_FAILURES` — `target_missing`, `target_changed`,
             // `ambiguous_target`, `duplicate_action`, `stale_frame`,
             // `invalid_coordinate` — takes the fresh observation above, and
-            // `registerObservation` makes that the current frame. The sentence
+            // `acceptObservation` makes that the current frame. The sentence
             // then named a frame the same reply had just superseded: the model
             // read "observation X is still current, use it rather than
             // observing again", did exactly that, and collected `stale_frame`
