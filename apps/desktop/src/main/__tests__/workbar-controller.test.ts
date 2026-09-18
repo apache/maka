@@ -1096,6 +1096,7 @@ describe('useWorkbarController', () => {
 
     await act(async () => renderController(root, services, {
       ...input(undefined, createFakeToastApi(), [parent]),
+      available: false,
       layoutSessionId: child.id,
     }));
     assert.equal(
