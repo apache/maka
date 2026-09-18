@@ -30,6 +30,7 @@ import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { confirmBypassPermission, getShellCopy } from '../../../locales/shell-copy';
 import { getArtifactCopy } from '../../../locales/artifact-copy';
+import { getBrowserCopy } from '../../../locales/browser-copy';
 import { useFocusedPreview } from '../controller/use-focused-preview.js';
 import { RecentTurnOverlay } from './recent-turn-overlay.js';
 import type {
@@ -186,6 +187,10 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
         />
       )}
         <div className="maka-workbar-layout-vars" style={style} ref={previewFocus.surfaceRef}>
+          <div className="maka-preview-collapse-hint" role="status">
+            {previewFocus.activeRightTab?.kind === 'browser'
+              ? getBrowserCopy(locale).releaseToFocus : getArtifactCopy(locale).pane.releaseToFocus}
+          </div>
           <Suspense
             fallback={
               <SessionWorkbarFallback

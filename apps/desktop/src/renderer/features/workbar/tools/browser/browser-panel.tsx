@@ -202,6 +202,12 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
       data-maka-assistant-exclude="browser"
       role="region"
       aria-label={state.title ? copy.panelAriaWithTitle(state.title) : copy.panelAria}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || event.defaultPrevented || !props.focused) return;
+        event.preventDefault();
+        event.stopPropagation();
+        props.onPreviewExit?.();
+      }}
     >
       <Toolbar
         className="maka-browser-toolbar"
@@ -260,6 +266,12 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
                   setAddress(state.url);
                 }}
                 onKeyDown={(e) => {
+                  if (e.key === 'Escape' && address !== state.url) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setAddress(state.url);
+                    e.currentTarget.blur();
+                  }
                   if (e.key === 'Enter') {
                     e.currentTarget.blur();
                     go();

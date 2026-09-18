@@ -134,6 +134,7 @@ export function useFocusedPreview(input: {
       if (drag && focus) {
         setMinimized(false);
         setRequest({ sessionId: drag.sessionId, kind: drag.kind });
+        requestAnimationFrame(() => composerTarget?.querySelector<HTMLElement>('[contenteditable="true"], textarea')?.focus());
       } else if (drag) input.host.rightResizable._onResizeMove(drag.width - drag.startWidth);
       input.host.rightResizable._onResizeEnd();
     },

@@ -52,6 +52,25 @@
 .maka-detail-with-artifacts[data-preview-collapse-ready] > .maka-workbar-resize-handle-right {
   background: var(--maka-brand);
 }
+.maka-preview-collapse-hint { display: none; }
+.maka-detail-with-artifacts[data-preview-collapse-ready] .maka-preview-collapse-hint {
+  display: block;
+  position: absolute;
+  z-index: 6;
+  top: 50%;
+  right: calc(var(--maka-session-workbar-width) + var(--space-2));
+  max-width: calc(100% - var(--maka-session-workbar-width) - var(--space-4));
+  box-sizing: border-box;
+  padding: var(--space-2);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--background-elevated);
+  color: var(--foreground);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
+  font: var(--maka-text-supporting);
+  text-align: center;
+  pointer-events: none;
+}
 
 .maka-detail-with-artifacts > .mainColumn .maka-chat-layout > :last-child > :last-child {
   position: relative;

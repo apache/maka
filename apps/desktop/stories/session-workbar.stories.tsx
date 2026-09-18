@@ -1710,6 +1710,7 @@ export const BrowserDividerFocus: Story = {
       { target, coords: end },
     ]);
     expect(frame).toHaveAttribute('data-preview-collapse-ready', 'true');
+    expect(canvas.getByText('松开以聚焦网页')).toBeVisible();
     expect(frame).not.toHaveAttribute('data-preview-focused');
     // Reversing direction before release must cancel the collapse intent.
     await pointer.pointer([
@@ -1724,6 +1725,8 @@ export const BrowserDividerFocus: Story = {
       { keys: '[/MouseLeft]', target, coords: end },
     ]);
     await waitFor(() => expect(frame).toHaveAttribute('data-preview-focused', 'browser'));
+    await waitFor(() => expect(draft).toHaveFocus());
+    expect(canvas.queryByText('松开以聚焦网页')).not.toBeVisible();
     expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
     expect(draft).toHaveValue('Keep my divider draft');
     await canvas.findByRole('button', { name: '收起输入区' });
@@ -1789,6 +1792,17 @@ export const BrowserFocusFlow: Story = {
     await userEvent.click(canvas.getByRole('button', { name: '还原分栏' }));
     expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
     expect(canvas.getByRole('textbox', { name: 'Session draft' })).toBe(draft);
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦网页' }));
+    const address = canvas.getByRole('textbox', { name: '浏览器地址' });
+    await userEvent.clear(address);
+    await userEvent.type(address, 'https://unsent.example.test');
+    await userEvent.keyboard('{Escape}');
+    expect(address).toHaveValue(LOADED_BROWSER_STATE.url);
+    expect(canvasElement.querySelector('[data-preview-focused="browser"]')).toBeTruthy();
+    canvas.getByRole('button', { name: '还原分栏' }).focus();
+    await userEvent.keyboard('{Escape}');
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
+    expect(draft).toHaveValue('Ask about this page');
     await userEvent.click(canvas.getByRole('button', { name: '聚焦网页' }));
   },
 };
