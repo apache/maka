@@ -44,11 +44,13 @@ import {
   Pin,
   PinOff,
   Plug,
+  Plus,
   SquarePen,
 } from './icons.js';
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { Badge } from '@astryxdesign/core/Badge';
+import { Button } from '@astryxdesign/core';
 import { useHoverCard, type HoverCardReturn } from '@astryxdesign/core/HoverCard';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {
@@ -72,7 +74,27 @@ import { getConversationCopy } from './conversation-copy.js';
 import { getSessionHoverCardCopy } from './session-hover-card-copy.js';
 import { deriveTitlebarProjectName } from './titlebar-session-identity.js';
 
-type SessionRowActionId = 'flag' | 'archive' | 'rename';
+type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'move';
+
+/**
+ * The drag payload for "move this task to that project".
+ *
+ * A private MIME type rather than `text/plain`: only our own rows advertise it,
+ * so a project row can tell a task drag from a file or text the OS drags in,
+ * and a drop anywhere else in the window is not hijacked. The value is the
+ * Session id — the only thing the move needs.
+ */
+const SESSION_DRAG_MIME = 'application/x-maka-session';
+
+/**
+ * The task currently in the air, or null.
+ *
+ * Module state rather than React state on purpose: setting state in `dragstart`
+ * re-renders the rail mid-gesture, and a re-render during a drag is how a
+ * Chromium drag gets dropped on the floor. At most one HTML5 drag exists per
+ * window, so one variable is the whole of it.
+ */
+let draggingSessionId: string | null = null;
 type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
 
@@ -121,6 +143,12 @@ export interface SessionRowActions {
   onArchive(sessionId: string): void | Promise<void>;
   onUnarchive(sessionId: string): void | Promise<void>;
   onRename(sessionId: string, name: string): void | Promise<void>;
+  /**
+   * Re-file ONE task under another project (`projectId`), or out of every
+   * project (`null`). Optional: a shell without project authority omits it and
+   * the row menu then hides the whole "Move to project" submenu.
+   */
+  onMoveToProject?(sessionId: string, projectId: string | null): void | Promise<void>;
 }
 
 export interface ProjectRowActions {
@@ -399,6 +427,7 @@ function SessionListGroups(props: {
   const rail = useSessionRailData();
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
+  const workspaceCopy = getConversationCopy(locale).workspace;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
    * The control the rename was started from, so focus can go back to it.
@@ -489,6 +518,7 @@ function SessionListGroups(props: {
           }
           meta={rail.sessionMeta?.(session)}
           sessionBadge={rail.sessionBadge}
+          projects={rail.projects}
           onSelectSession={rail.onSelectSession}
           actions={(session as SessionSummary & { readonly shared?: true }).shared
             ? undefined
@@ -538,6 +568,13 @@ function SessionListGroups(props: {
           sessions={sessions}
           streamingSessionIds={rail.streamingSessionIds}
           projectActions={rail.projectActions}
+          onDropSession={
+            rail.rowActions?.onMoveToProject
+              ? (sessionId, projectId) => {
+                  void rail.rowActions?.onMoveToProject?.(sessionId, projectId);
+                }
+              : undefined
+          }
           onStartRename={(opener) => {
             if (project) {
               startRename({ kind: 'project', id: project.id, name: project.name }, opener);
@@ -561,8 +598,27 @@ function SessionListGroups(props: {
             {pinnedGroup.sessions.map((session) => renderSessionRow(session))}
           </SideNavSection>
         )}
-        {(activeGroups.length > 0 || archivedGroups.length > 0) && (
-          <SideNavSection title={copy.projects} className="maka-session-group">
+        {(activeGroups.length > 0 || archivedGroups.length > 0 || rail.onNewProject !== undefined) && (
+          <SideNavSection
+            title={copy.projects}
+            className="maka-session-group"
+            endContent={
+              rail.onNewProject ? (
+                // The ＋ ChatGPT's sidebar puts on 项目. Always visible in the
+                // project view — including when the list is empty, which is
+                // exactly when someone needs it.
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  isIconOnly
+                  label={workspaceCopy.newProject}
+                  tooltip={workspaceCopy.newProject}
+                  icon={<Plus size={ICON_SIZE.control} aria-hidden="true" />}
+                  onClick={() => rail.onNewProject?.()}
+                />
+              ) : undefined
+            }
+          >
             {activeGroups.map((group) => renderProjectGroup(group))}
             {archivedGroups.length > 0 && (
               <SideNavItem
@@ -616,6 +672,12 @@ function ProjectNavRow(props: {
   streamingSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
   onStartRename(opener: HTMLElement | null): void;
+  /**
+   * Re-file a task dragged from the rail under this project. `null` for the
+   * ungrouped bucket, the one drop that means "leave every project". Absent
+   * when the shell cannot move tasks, and the row is then not a drop target.
+   */
+  onDropSession?(sessionId: string, projectId: string | null): void;
   renderSession(session: SessionSummary): ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -638,8 +700,39 @@ function ProjectNavRow(props: {
   const hasSessions = props.sessions.length > 0;
   const hasActions = props.project !== undefined && props.projectActions !== undefined;
   const hasMeta = (props.project !== undefined && !props.project.available) || hasActions;
+  const [isDropTarget, setIsDropTarget] = useState(false);
   return (
-    <div ref={containerRef} data-project-id={props.groupKey} className="maka-project-row">
+    <div
+      ref={containerRef}
+      data-project-id={props.groupKey}
+      data-maka-session-drop-target={props.onDropSession ? 'true' : undefined}
+      className="maka-project-row"
+      data-drop-target={isDropTarget ? 'true' : undefined}
+      onDragOver={(event) => {
+        // Only a task drag from this rail may land here. A file or text drag the
+        // OS hands the window must not turn a project row into a target just
+        // because a pointer happens to be over it. The module-level id is the
+        // primary witness — it cannot be missing while one of our own drags is
+        // in the air — and the MIME type is the fallback for a drag that began
+        // before this module knew about it.
+        if (!props.onDropSession) return;
+        if (draggingSessionId === null && !event.dataTransfer.types.includes(SESSION_DRAG_MIME)) {
+          return;
+        }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        setIsDropTarget(true);
+      }}
+      onDragLeave={() => setIsDropTarget(false)}
+      onDrop={(event) => {
+        setIsDropTarget(false);
+        if (!props.onDropSession) return;
+        const sessionId = event.dataTransfer.getData(SESSION_DRAG_MIME);
+        if (!sessionId) return;
+        event.preventDefault();
+        props.onDropSession(sessionId, props.project?.id ?? null);
+      }}
+    >
       <SideNavItem
         key="navigation"
         label={props.label}
@@ -673,8 +766,7 @@ function ProjectNavRow(props: {
       <ProjectHoverCardDescription
         id={hoverDescriptionId}
         summary={hoverSummary}
-      />
-      <ProjectHoverCardLayer
+      />      <ProjectHoverCardLayer
         containerRef={containerRef}
         label={props.label}
         project={props.project}
@@ -728,6 +820,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   projectName?: string;
   meta?: string;
   sessionBadge?: SessionRailData['sessionBadge'];
+  projects?: readonly ProjectRecord[];
   onSelectSession(sessionId: string): void;
   actions?: SessionRowActions;
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
@@ -776,12 +869,43 @@ const SessionNavRow = memo(function SessionNavRow(props: {
     .filter((entry): entry is string => Boolean(entry))
     .join(' · ');
 
+  // A row can be dragged onto a project to re-file it, but only when the shell
+  // offers that move and the row stands alone: with several rows picked, which
+  // one the pointer grabbed is not something the drag itself says, and moving
+  // the whole set is not what a drop on one project would mean.
+  const canDrag =
+    props.actions?.onMoveToProject !== undefined && !(props.picked && props.bulkCount > 1);
+
+  // Chromium does not start an HTML5 drag from a `<button>`, and every row here
+  // IS one — the pointer is on the button, so the wrapper's own `draggable` is
+  // never reached and the gesture degrades to dragging the button's selected
+  // text. Mark the button itself: the drag then begins on the element under the
+  // pointer, and `dragstart` bubbles to this row's handler from there.
+  useEffect(() => {
+    const button = containerRef.current?.querySelector('button.astryx-side-nav-item');
+    if (!button) return undefined;
+    if (!canDrag) return undefined;
+    button.setAttribute('draggable', 'true');
+    return () => button.removeAttribute('draggable');
+  }, [canDrag]);
+
   return (
     <div
       ref={containerRef}
       className="maka-session-row"
       data-maka-contract="session-row"
       data-session-id={props.session.id}
+      draggable={canDrag ? true : undefined}
+      onDragStart={
+        canDrag
+          ? (event) => {
+              draggingSessionId = props.session.id;
+              event.dataTransfer.setData(SESSION_DRAG_MIME, props.session.id);
+              event.dataTransfer.effectAllowed = 'move';
+            }
+          : undefined
+      }
+      onDragEnd={canDrag ? () => { draggingSessionId = null; } : undefined}
       data-stale={props.stale ? 'true' : undefined}
       data-worktree={props.worktree ? 'true' : undefined}
       data-picked={props.picked ? 'true' : undefined}
@@ -884,6 +1008,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         <SessionItemActions
           session={props.session}
           actions={props.actions}
+          projects={props.projects}
           bulkCount={props.bulkCount}
           bulkAllPinned={props.bulkAllPinned}
           selectionCommands={props.selectionCommands}
@@ -1243,6 +1368,7 @@ function ProjectItemActions(props: {
 function SessionItemActions(props: {
   session: SessionSummary;
   actions: SessionRowActions;
+  projects?: readonly ProjectRecord[];
   bulkCount: number;
   bulkAllPinned: boolean;
   selectionCommands?: SessionRailSelectionCommands;
@@ -1264,6 +1390,9 @@ function SessionItemActions(props: {
   const mountedRef = useMountedRef();
   const pendingActionRef = useRef<SessionRowActionId | null>(null);
   const actions = props.actions;
+  // A menu needs the project catalog, not activeId or the rest of the rail.
+  // Subscribing here to rail context bypasses the memoized row on every
+  // session switch and rewrites all of the menu triggers' anchor styles.
 
   useEffect(
     () => () => {
@@ -1271,6 +1400,39 @@ function SessionItemActions(props: {
     },
     [],
   );
+
+  // The row menu's "Move to project" flyout. Only projects that can actually
+  // receive a session are offered: the Host resolves a project target to its
+  // preferred directory and rejects an archived or directory-less one
+  // (`HostWorkspaceResolver`), so listing one would be a choice the user cannot
+  // take. The current project is left out — moving a task to where it already is
+  // is not a move — and when the task has no project there is nothing to remove
+  // it from, so only the projects remain.
+  const moveTargets = useMemo(() => {
+    const currentProjectId = props.session.projectId ?? null;
+    const projects = (props.projects ?? [])
+      .filter(
+        (project) =>
+          project.available &&
+          project.archivedAt === undefined &&
+          project.id !== currentProjectId,
+      )
+      .map((project) => ({
+        label: project.name,
+        onClick: () =>
+          runRowAction('move', () => actions.onMoveToProject?.(props.session.id, project.id)),
+      }));
+    return currentProjectId === null
+      ? projects
+      : [
+          {
+            label: copy.moveToNoProject,
+            onClick: () =>
+              runRowAction('move', () => actions.onMoveToProject?.(props.session.id, null)),
+          },
+          ...projects,
+        ];
+  }, [actions, copy.moveToNoProject, props.session.id, props.session.projectId, props.projects]);
 
   function runRowAction(actionId: SessionRowActionId, action: () => void | Promise<void>) {
     if (pendingActionRef.current) return;
@@ -1362,6 +1524,18 @@ function SessionItemActions(props: {
                         : actions.onArchive(props.session.id),
                     ),
                 },
+                // No submenu to build when the shell has no project authority or
+                // there is nowhere to move the task to. `moveTargets` already
+                // holds the projects plus, when the task has one, the exit.
+                ...(actions.onMoveToProject && moveTargets.length > 0
+                  ? [
+                      {
+                        label: copy.moveToProject,
+                        icon: FolderOpen,
+                        items: moveTargets,
+                      },
+                    ]
+                  : []),
               ]
         }
       />

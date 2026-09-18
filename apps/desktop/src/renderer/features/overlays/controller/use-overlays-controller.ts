@@ -91,7 +91,8 @@ export function useOverlaysController(): OverlaysController {
       cancelSearchThread: (requestId) => services.search.cancelThread(requestId),
       setSearchScrollTarget,
       openSettings: () => openSettingsWith({ kind: 'settings' }),
-      openSettingsSection: (section) => openSettingsWith({ kind: 'section', section }),
+      openSettingsSection: (section) =>
+        openSettingsWith(section ? { kind: 'section', section } : { kind: 'settings' }),
       openProjectSettings: (profileId) => openSettingsWith({ kind: 'project', profileId }),
       openProviderCatalog: () => openSettingsWith({ kind: 'provider-catalog' }),
       openConnectionDetail: (slug) => openSettingsWith({ kind: 'connection-detail', slug }),

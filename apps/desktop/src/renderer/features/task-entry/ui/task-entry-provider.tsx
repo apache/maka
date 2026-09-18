@@ -68,6 +68,7 @@ const EMPTY_CONTROLLER: TaskEntryController = {
     async refresh() {},
     selectLocalProject: () => false,
     addProject() {},
+    openNewProject() {},
     async chooseProjectForProfile() {},
     resolveWorkBoardTarget: (
       _item: Parameters<TaskEntryControllerCommands['resolveWorkBoardTarget']>[0],
@@ -109,7 +110,8 @@ function createTaskEntryOwner(): TaskEntryOwner & {
       refresh: () => current.commands.refresh(),
       selectLocalProject: (projectId: string) =>
         current.commands.selectLocalProject(projectId),
-      addProject: () => current.commands.addProject(),
+      addProject: (name?: string) => current.commands.addProject(name),
+      openNewProject: () => current.commands.openNewProject(),
       chooseProjectForProfile: (profileId: string) =>
         current.commands.chooseProjectForProfile(profileId),
       resolveWorkBoardTarget: (
@@ -210,6 +212,7 @@ const selectHost = (controller: TaskEntryController): TaskEntryHostModel => cont
 
 function sameHost(previous: TaskEntryHostModel, next: TaskEntryHostModel): boolean {
   return (
+    previous.newProjectDialog === next.newProjectDialog &&
     previous.directoryHost?.profileId === next.directoryHost?.profileId &&
     previous.directoryHost?.hostId === next.directoryHost?.hostId &&
     previous.directoryHost?.name === next.directoryHost?.name &&

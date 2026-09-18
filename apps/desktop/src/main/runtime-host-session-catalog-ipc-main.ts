@@ -55,8 +55,10 @@ import {
 type RuntimeHostSessionCatalogClient = Pick<
   DesktopRuntimeHostClient,
   | 'createSession'
+  | 'getSession'
   | 'listSessions'
   | 'previewSessionRemoval'
+  | 'relocateSessionWorkspace'
   | 'removeSession'
   | 'setSessionLifecycle'
   | 'updateSessionConfiguration'
@@ -221,6 +223,64 @@ export function registerRuntimeHostSessionCatalogIpc(
     // Read-only: how many subtasks the delete would archive, for the confirm.
     return deps.client.previewSessionRemoval(sessionId);
   });
+  ipcMain.handle(
+    'sessions:moveToProject',
+    async (_event, sessionId: string, projectId: unknown) => {
+      if (projectId !== null && (typeof projectId !== 'string' || projectId.length === 0)) {
+        throw new Error('Invalid project id');
+      }
+      return moveSessionToProject(deps, sessionId, projectId);
+    },
+  );
+}
+
+/**
+ * Re-files an existing Session into another Project, or out of every Project.
+ *
+ * Unlike the configuration updates, this is not a revision-family action: a
+ * move re-points one working directory, and moving an archived or branched
+ * sibling's cwd as a side effect is not what the user asked for. The Host
+ * rejects the move while a Turn is active (`session_busy`), which surfaces as
+ * an `operation_conflict` the row action reports instead of guessing.
+ */
+async function moveSessionToProject(
+  deps: RuntimeHostSessionCatalogIpcDeps,
+  sessionId: string,
+  projectId: string | null,
+): Promise<DesktopSessionUpdateResult<DesktopHostSessionSummary>> {
+  let session: SessionCatalogProjection;
+  try {
+    const workspace: WorkspaceTarget =
+      projectId === null
+        ? { kind: 'host_path', path: await currentWorkspacePath(deps, sessionId) }
+        : { kind: 'project', projectId };
+    session = await deps.client.relocateSessionWorkspace(sessionId, workspace);
+  } catch (error) {
+    const code = updateFailureCode(error);
+    if (code) return { ok: false, code };
+    throw error;
+  }
+  deps.emitSessionsChanged('updated', sessionId);
+  return { ok: true, session: toDesktopHostSessionSummary(session) };
+}
+
+/**
+ * The directory a Session runs in right now.
+ *
+ * Moving a task out of every project leaves it where it is: the Host's
+ * `host_path` target sets the cwd it is handed and drops the project
+ * association, so the honest target is the Session's own current cwd rather
+ * than anything the renderer could send.
+ */
+async function currentWorkspacePath(
+  deps: RuntimeHostSessionCatalogIpcDeps,
+  sessionId: string,
+): Promise<string> {
+  const session = await deps.client.getSession(sessionId);
+  if (!session) {
+    throw new DesktopRuntimeHostClientError('session_not_found', `No such Session: ${sessionId}`);
+  }
+  return session.workspace.hostCwd;
 }
 
 /**

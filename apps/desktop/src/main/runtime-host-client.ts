@@ -154,6 +154,7 @@ import {
   type TurnMessageSubmitInput,
   type TurnMessageSubmitResult,
   type WorkspaceProjection,
+  type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 
 const decodeStoredMessage = (value: unknown): StoredMessage =>
@@ -1079,6 +1080,28 @@ export class DesktopRuntimeHostClient {
         sessionId,
         expectedRevision: current.revision,
         patch: definedPatch,
+      }),
+    );
+  }
+
+  /**
+   * Re-point an existing Session at another workspace.
+   *
+   * The Host resolves a project target to that project's preferred directory
+   * (`HostWorkspaceResolver`), so a `project` target both re-files the Session
+   * and moves its cwd; a `host_path` target keeps or sets a directory while
+   * detaching the Session from every project. It is the desktop counterpart of
+   * the CLI `/move` (#1101).
+   */
+  relocateSessionWorkspace(
+    sessionId: string,
+    workspace: WorkspaceTarget,
+  ): Promise<SessionCatalogProjection> {
+    return this.#updateSession(sessionId, (current) =>
+      this.request("session.workspace.relocate", {
+        sessionId,
+        expectedRevision: current.revision,
+        workspace,
       }),
     );
   }

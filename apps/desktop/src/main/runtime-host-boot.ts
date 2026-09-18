@@ -1595,7 +1595,11 @@ function registerHostClientIpc(
     chooseDirectory: async () => {
       const result = await mainWindowController.showOpenDialog({
         title: projectPickerTitle(await desktopLocale.resolve()),
-        properties: ["openDirectory"],
+        // `createDirectory` is what puts the New Folder button in the macOS
+        // sheet. Without it, a project can only point at a folder that already
+        // exists — and "create a project" then means "find somewhere to put it
+        // yourself first", which is not a creation flow.
+        properties: ["openDirectory", "createDirectory"],
       });
       return result.canceled ? undefined : result.filePaths[0];
     },

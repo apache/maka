@@ -59,6 +59,11 @@ export interface SessionNavigationChromeInput {
   onNew(): void;
   onExitWorkHub(): void;
   onSelectSession(sessionId: string): void;
+  /**
+   * Create a project from the rail's ＋. Absent when no host can make one, and
+   * the heading then carries no ＋ at all.
+   */
+  onNewProject?: () => void;
 }
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
@@ -112,6 +117,9 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       },
       onRename: (sessionId, name) => {
         void controller.commands.renameSession(sessionId, name);
+      },
+      onMoveToProject: (sessionId, projectId) => {
+        void controller.commands.moveSessionToProject(sessionId, projectId);
       },
       // No `onDelete`: the rail cannot delete. `deleteSession` is still a
       // command, reached from Settings › 已归档任务, where the task has already
@@ -174,6 +182,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       onSelectSession: props.onSelectSession,
       rowActions,
       projectActions,
+      projects: props.projects,
+      onNewProject: props.onNewProject,
     }),
     [
       controller.layout.viewMode,
@@ -182,6 +192,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       controller.selectors.sessionProjectName,
       controller.selectors.worktreeSessionIds,
       props.onSelectSession,
+      props.onNewProject,
+      props.projects,
       projectActions,
       props.rail,
       props.staleSessionIds,

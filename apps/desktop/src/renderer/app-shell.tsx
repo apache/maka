@@ -2370,6 +2370,11 @@ function AppShellContent({
                   onSelect: openWorkHub,
                 } : undefined}
                 projectActions={projectRowActions}
+                onNewProject={
+                  taskEntry.selectors.canAddProject
+                    ? taskEntry.commands.openNewProject
+                    : undefined
+                }
               >
                 {SESSION_RAIL}
               </SessionNavigationProvider>
@@ -2690,10 +2695,7 @@ function AppShellContent({
                 showOnboardingHero={showOnboardingHero}
                 onboardingState={onboardingState}
                 isOnboardingLoading={isOnboardingLoading}
-                onOpenSettings={(section) => {
-                  if (section) openSettingsSection(section);
-                  else openSettings();
-                }}
+                onOpenSettings={openSettingsSection}
                 onOpenConnectionDetail={openConnectionDetail}
                 onAddProvider={openProviderCreate}
                 onBrowseProviders={openProviderCatalog}

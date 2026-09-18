@@ -35,7 +35,7 @@ export interface OverlaysCommands {
   cancelSearchThread(requestId: string): Promise<void>;
   setSearchScrollTarget(target: SearchScrollTarget | null): void;
   openSettings(): void;
-  openSettingsSection(section: SettingsSection): void;
+  openSettingsSection(section?: SettingsSection): void;
   openProjectSettings(profileId: string): void;
   openProviderCatalog(): void;
   openConnectionDetail(slug: string): void;
