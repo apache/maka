@@ -296,3 +296,83 @@ test('command port keeps the newest controller through stale cleanup', async () 
   await port.copyTodayDailyReview();
   assert.deepEqual(calls, ['second:refresh', 'second:create']);
 });
+
+for (const capabilityTiming of ['before', 'after'] as const) {
+  test(`Skills locations load when local path capability arrives ${capabilityTiming} deferred startup`, async () => {
+    const { root } = installReactRenderer();
+    const frames: FrameRequestCallback[] = [];
+    globalThis.requestAnimationFrame = (callback) => frames.push(callback);
+    let current: ReturnType<typeof useModuleHubController> | undefined;
+    let locationReads = 0;
+    let skillReads = 0;
+    function skills() {
+      assert.ok(current);
+      return current.host.skills;
+    }
+    const defaults = createFakeModuleHubServices();
+    const services = createFakeModuleHubServices({
+      skills: {
+        ...defaults.skills,
+        list: async () => { skillReads += 1; return []; },
+        listLocations: async () => {
+          locationReads += 1;
+          return {
+            contextIds: { workspace: `workspace-${locationReads}` },
+            locations: [{
+              ref: 'workspace:legacy', scope: 'workspace', source: 'legacy',
+              path: `/workspace-${locationReads}/skills`, status: 'available', skillCount: 0,
+            }],
+          };
+        },
+      },
+    });
+    function Probe({ clientPathsAccessible }: { clientPathsAccessible: boolean }) {
+      current = useModuleHubController({
+        selection: { section: 'extensions', module: 'skills' },
+        selectModule: () => undefined,
+        clientPathsAccessible,
+        useSkillInChat: () => undefined,
+        openSession: () => undefined,
+        appendComposerText: () => undefined,
+        captureActiveComposerClaim: () => undefined,
+      });
+      return null;
+    }
+    async function render(clientPathsAccessible: boolean): Promise<void> {
+      await act(async () => root.render(createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(ToastProvider, {
+          children: createElement(ModuleHubServicesProvider, { services },
+            createElement(Probe, { clientPathsAccessible })),
+        }),
+      })));
+    }
+
+    await render(false);
+    assert.equal(skillReads, 0);
+    assert.equal(locationReads, 0);
+    if (capabilityTiming === 'before') {
+      await render(true);
+      assert.equal(skillReads, 0);
+      assert.equal(locationReads, 0);
+    }
+    await act(async () => { for (const frame of frames.splice(0)) frame(0); });
+    assert.equal(skillReads, 1);
+    if (capabilityTiming === 'after') {
+      assert.equal(locationReads, 0);
+      assert.deepEqual(skills().skillLocations, []);
+      await render(true);
+    }
+    assert.equal(locationReads, 1);
+    assert.equal(skills().skillLocations[0]?.path, '/workspace-1/skills');
+    assert.equal(typeof skills().onOpenSkillLocation, 'function');
+    await render(false);
+    assert.equal(locationReads, 1);
+    assert.deepEqual(skills().skillLocations, []);
+    assert.equal(skills().onOpenSkillLocation, undefined);
+    await render(true);
+    assert.equal(locationReads, 2);
+    assert.equal(skills().skillLocations[0]?.path, '/workspace-2/skills');
+    assert.equal(skillReads, 1);
+  });
+}

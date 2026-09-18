@@ -725,7 +725,6 @@ test('remote Skills refreshes skip location IPC and clear local directory action
   assert.equal(controller().host.onOpenSkillLocation, undefined);
 
   await act(async () => renderController(root, services, input(records, { clientPathsAccessible: true })));
-  await act(async () => controller().refreshProjectSkills());
   assert.equal(locationReads, 1);
   assert.equal(controller().host.skillLocations[0]?.path, '/local-project/.agents/skills');
   await act(async () => renderController(root, services, input(records)));
