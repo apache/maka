@@ -1107,10 +1107,7 @@ function createTargetFailure(error: unknown): OperationOutcome<'workhub.coordina
   if (error instanceof SessionOperationFailure && error.code === 'persistence_failed') {
     return failure('persistence_failed', error.message);
   }
-  return failure(
-    'operation_conflict',
-    WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE,
-  );
+  return failure('operation_conflict', WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE);
 }
 
 function validCoordinationIdentityHeader(header: SessionHeader): boolean {
