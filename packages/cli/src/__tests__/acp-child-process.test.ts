@@ -168,7 +168,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (first.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
-              ['permission_mode', 'ask'],
+              ['permission_mode', 'bypass'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
             ],
@@ -181,7 +181,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (configured.configOptions ?? []).map((option) => [option.id, option.currentValue]),
             [
-              ['permission_mode', 'ask'],
+              ['permission_mode', 'bypass'],
               ['collaboration_mode', 'plan'],
               ['orchestration_mode', 'default'],
             ],
@@ -249,7 +249,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (created.configOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
             [
-              ['permission_mode', 'ask'],
+              ['permission_mode', 'bypass'],
               ['thinking_level', 'default'],
               ['collaboration_mode', 'agent'],
               ['orchestration_mode', 'default'],
@@ -270,7 +270,7 @@ describe('Maka ACP child process', () => {
 
           let configuredOptions = created.configOptions;
           for (const [configId, value] of [
-            ['permission_mode', 'bypass'],
+            ['permission_mode', 'ask'],
             ['thinking_level', 'high'],
             ['collaboration_mode', 'plan'],
             ['orchestration_mode', 'swarm'],
@@ -286,7 +286,7 @@ describe('Maka ACP child process', () => {
           assert.deepEqual(
             (configuredOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
             [
-              ['permission_mode', 'bypass'],
+              ['permission_mode', 'ask'],
               ['thinking_level', 'high'],
               ['collaboration_mode', 'plan'],
               ['orchestration_mode', 'swarm'],

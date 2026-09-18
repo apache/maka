@@ -37,10 +37,7 @@ import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
 import { discoverModels } from './model-discovery-fixture.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
-import {
-  COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE,
-  COMMANDCODE_CLI_VERSION,
-} from '../commandcode-cli-language-model.js';
+import { COMMANDCODE_CLI_VERSION } from '../commandcode-cli-language-model.js';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
 import {
   readBody,
@@ -189,7 +186,7 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
       'moonshot-global:tool-loop',
       'moonshot-global:reasoning-replay',
     ],
-    title: 'Moonshot Global preserves Kimi model ids and reasoning across a Responses tool loop',
+    title: 'Moonshot Global replays Kimi summary-only reasoning items across a Responses tool loop',
     run: () =>
       runOpenAIResponsesWire({
         providerType: 'moonshot-global',
@@ -198,7 +195,7 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
         basePath: '/v1',
         modelId: 'kimi-k3',
         apiKey: 'moonshot-global-test-key',
-        statelessReasoning: true,
+        summaryReasoning: true,
       }),
   },
   {
@@ -1090,6 +1087,8 @@ async function runOpenAIResponsesWire(input: {
   apiKey: string;
   statelessReasoning?: boolean;
   plaintextReasoning?: boolean;
+  /** The provider's real carrier: a reasoning item with summary and no encrypted_content. */
+  summaryReasoning?: boolean;
 }): Promise<void> {
   const {
     providerType,
@@ -1100,8 +1099,9 @@ async function runOpenAIResponsesWire(input: {
     apiKey,
     statelessReasoning,
     plaintextReasoning,
+    summaryReasoning,
   } = input;
-  const hasReasoning = statelessReasoning || plaintextReasoning;
+  const hasReasoning = statelessReasoning || plaintextReasoning || summaryReasoning;
   const requestBodies: Array<Record<string, unknown>> = [];
   const server = await startJsonServer(async (request, response) => {
     assert.equal(request.method, 'POST');
@@ -1134,7 +1134,15 @@ async function runOpenAIResponsesWire(input: {
                     content: [{ type: 'reasoning_text', text: 'Use echo.' }],
                   },
                 ]
-              : []),
+              : summaryReasoning
+                ? [
+                    {
+                      type: 'reasoning',
+                      id: 'rs_relay_tool',
+                      summary: [{ type: 'summary_text', text: 'Use echo.' }],
+                    },
+                  ]
+                : []),
           {
             type: 'function_call',
             id: 'fc_relay_echo',
@@ -1220,6 +1228,22 @@ async function runOpenAIResponsesWire(input: {
         id: 'rs_relay_tool',
         summary: [],
         content: [{ type: 'reasoning_text', text: 'Use echo.' }],
+      },
+    );
+  }
+  if (summaryReasoning) {
+    // Replay does not depend on server-side retention, so the dialect sends
+    // no `store` field unless a compatibility profile forces one.
+    assert.equal(requestBodies[0]?.store, undefined);
+    assert.equal(requestBodies[1]?.store, undefined);
+    assert.deepEqual(
+      (requestBodies[1].input as Array<Record<string, unknown>>).find(
+        ({ type }) => type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'rs_relay_tool',
+        summary: [{ type: 'summary_text', text: 'Use echo.' }],
       },
     );
   }
@@ -1408,30 +1432,22 @@ async function runCommandCodeCliWire(): Promise<void> {
   };
   connection.models = await discoverModels(connection, 'cc-go-key');
 
-  const previousFlag = process.env[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE];
-  process.env[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE] = '1';
-  try {
-    const result = await generateText({
-      model: getAIModel({ connection, apiKey: 'cc-go-key', modelId, fetch }),
-      // A model models.dev does not describe resolves no thinking level, so
-      // the effort rides the adapter's own provider-options key directly.
-      providerOptions: { 'commandcode-cli': { reasoningEffort: 'medium' } },
-      tools: {
-        echo: tool({
-          description: 'Echo text',
-          inputSchema: z.object({ text: z.string() }),
-          execute: async ({ text }) => ({ echoed: text }),
-        }),
-      },
-      stopWhen: isStepCount(3),
-      prompt: 'Echo hello',
-    });
-    assert.equal(result.text, 'Echoed hello.');
-  } finally {
-    if (previousFlag === undefined)
-      delete process.env[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE];
-    else process.env[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE] = previousFlag;
-  }
+  const result = await generateText({
+    model: getAIModel({ connection, apiKey: 'cc-go-key', modelId, fetch }),
+    // A model models.dev does not describe resolves no thinking level, so
+    // the effort rides the adapter's own provider-options key directly.
+    providerOptions: { 'commandcode-cli': { reasoningEffort: 'medium' } },
+    tools: {
+      echo: tool({
+        description: 'Echo text',
+        inputSchema: z.object({ text: z.string() }),
+        execute: async ({ text }) => ({ echoed: text }),
+      }),
+    },
+    stopWhen: isStepCount(3),
+    prompt: 'Echo hello',
+  });
+  assert.equal(result.text, 'Echoed hello.');
 
   assert.equal(requestBodies.length, 2);
   const [first, second] = requestBodies as [

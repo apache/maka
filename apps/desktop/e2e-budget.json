@@ -71,7 +71,7 @@
     },
     "workhub-layout.spec.ts": {
       "tests": 3,
-      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the native Workbar menu must coexist with the live sibling WebContentsView without hiding its compositor; the compact native window grows only with the inline composer wheel and keeps its bottom anchor; opening context details routes to Main’s Workbar without resizing or docking the floating conversation, while the thinking menu stays within the compact bounds, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the native Workbar menu must coexist with the live sibling WebContentsView without hiding its compositor; the compact native window grows only with the inline composer wheel and keeps its bottom anchor; opening context details routes to Main’s Workbar without resizing or docking the floating conversation, while the thinking sheet stays within the compact bounds, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,

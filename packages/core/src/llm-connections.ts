@@ -44,11 +44,11 @@ import {
   providerFallbackModelIds,
   providerMenuLabel,
   type ApplyPatchProtocol,
+  type OpenResponsesCompatibilityProfile,
   type ProviderCatalogGroup,
   type ProviderCategory,
   type ProviderDefaults,
   type ProviderRuntimeAdapter,
-  type ProviderRuntimeProfileId,
   type ProviderResponsesContract,
   type ProviderType,
 } from './provider-registry.js';
@@ -65,11 +65,11 @@ export {
 };
 export type {
   ApplyPatchProtocol,
+  OpenResponsesCompatibilityProfile,
   ProviderCatalogGroup,
   ProviderCategory,
   ProviderDefaults,
   ProviderRuntimeAdapter,
-  ProviderRuntimeProfileId,
   ProviderResponsesContract,
   ProviderType,
 };

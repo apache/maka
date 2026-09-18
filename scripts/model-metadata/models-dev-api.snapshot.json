@@ -7,7 +7,7 @@
     "etag": "W/\"153362e16f62e2c0b4bbb4d66949e9c5\"",
     "responseSha256": "153362e16f62e2c0b4bbb4d66949e9c5ccc050e0dd7dbd325bbf434f2a8fcbf1"
   },
-  "projectionSha256": "b53ff13413fc4547fa0baa488edc03339e7b78ebe5fb6898d8c9dd4d00d059c3",
+  "projectionSha256": "be5b78501eb764e135c9a7c66b609ccb366fb383d5b4f7f532e78974c2ff0e51",
   "projection": {
     "metadata": {
       "anthropic": {
@@ -3743,8 +3743,6 @@
           "displayName": "HappyHorse 1.1 Image-to-Video",
           "description": "Video model for image-to-video generation",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-17",
           "isFree": true,
           "capabilities": {
@@ -3761,8 +3759,6 @@
           "displayName": "HappyHorse 1.1 Reference-to-Video",
           "description": "Video model for reference-guided video generation",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-17",
           "isFree": true,
           "capabilities": {
@@ -3779,8 +3775,6 @@
           "displayName": "HappyHorse 1.1 Text-to-Video",
           "description": "Video model for prompt-driven text-to-video generation",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-17",
           "isFree": true,
           "capabilities": {
@@ -3886,7 +3880,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 8192,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-03",
           "isFree": true,
           "capabilities": {
@@ -3904,7 +3897,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 8192,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-03",
           "isFree": true,
           "capabilities": {
@@ -4080,7 +4072,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 8192,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-29",
           "isFree": true,
           "capabilities": {
@@ -4098,7 +4089,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 8192,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-29",
           "isFree": true,
           "capabilities": {
@@ -4301,8 +4291,6 @@
           "displayName": "HappyHorse 1.1 Image-to-Video",
           "description": "Video model for image-to-video generation",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-17",
           "isFree": true,
           "capabilities": {
@@ -4319,8 +4307,6 @@
           "displayName": "HappyHorse 1.1 Reference-to-Video",
           "description": "Video model for reference-guided video generation",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-17",
           "isFree": true,
           "capabilities": {
@@ -4337,8 +4323,6 @@
           "displayName": "HappyHorse 1.1 Text-to-Video",
           "description": "Video model for prompt-driven text-to-video generation",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-17",
           "isFree": true,
           "capabilities": {
@@ -4444,7 +4428,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 8192,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-03",
           "isFree": true,
           "capabilities": {
@@ -4462,7 +4445,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 8192,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-03",
           "isFree": true,
           "capabilities": {
@@ -4638,7 +4620,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 8192,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-29",
           "isFree": true,
           "capabilities": {
@@ -4656,7 +4637,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 8192,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-29",
           "isFree": true,
           "capabilities": {
@@ -9107,8 +9087,6 @@
           "displayName": "Whisper",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-09-05",
           "capabilities": {
             "vision": false,
@@ -9124,8 +9102,6 @@
           "displayName": "Whisper Large V3 Turbo",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2024-10-01",
           "capabilities": {
             "vision": false,
@@ -11627,8 +11603,6 @@
           "displayName": "Voxtral Mini (latest)",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-02-01",
           "capabilities": {
             "vision": false,
@@ -11644,8 +11618,6 @@
           "displayName": "Voxtral Mini TTS (latest)",
           "description": "Multilingual text-to-speech model with zero-shot voice cloning",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-01",
           "capabilities": {
             "vision": false,
@@ -11925,7 +11897,6 @@
           "lifecycle": "active",
           "contextWindow": 77,
           "inputLimit": 77,
-          "maxOutputTokens": 0,
           "knowledgeCutoff": "2024-07",
           "structuredOutput": false,
           "lastUpdated": "2026-02-04",
@@ -11964,7 +11935,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 4096,
-          "maxOutputTokens": 0,
           "knowledgeCutoff": "2024-08",
           "lastUpdated": "2025-09-05",
           "isFree": true,
@@ -12795,7 +12765,6 @@
           "displayName": "Active Speaker Detection",
           "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
           "maxOutputTokens": 4096,
           "lastUpdated": "2026-04-16",
           "isFree": true,
@@ -12831,7 +12800,6 @@
           "displayName": "cosmos-predict1-5b",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
           "maxOutputTokens": 4096,
           "lastUpdated": "2025-03-18",
           "isFree": true,
@@ -12867,7 +12835,6 @@
           "displayName": "cosmos-transfer1-7b",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
           "maxOutputTokens": 4096,
           "lastUpdated": "2025-06-30",
           "isFree": true,
@@ -12885,7 +12852,6 @@
           "displayName": "cosmos-transfer2.5-2b",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
           "maxOutputTokens": 4096,
           "lastUpdated": "2026-02-26",
           "isFree": true,
@@ -13113,7 +13079,6 @@
           "displayName": "magpie-tts-zeroshot",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
           "maxOutputTokens": 4096,
           "lastUpdated": "2025-06-12",
           "isFree": true,
@@ -13477,7 +13442,6 @@
           "displayName": "synthetic-video-detector",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
           "maxOutputTokens": 4096,
           "lastUpdated": "2026-04-16",
           "isFree": true,
@@ -13513,7 +13477,6 @@
           "displayName": "usdvalidate",
           "description": "Nemotron model for efficient reasoning, coding, and specialized AI agents",
           "lifecycle": "active",
-          "contextWindow": 0,
           "maxOutputTokens": 4096,
           "lastUpdated": "2025-01-08",
           "isFree": true,
@@ -13576,7 +13539,6 @@
           "displayName": "Whisper Large v3",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
           "maxOutputTokens": 4096,
           "knowledgeCutoff": "2023-09",
           "lastUpdated": "2025-09-05",
@@ -13614,8 +13576,6 @@
           "displayName": "Qwen Image",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "structuredOutput": false,
           "lastUpdated": "2025-08-07",
           "isFree": true,
@@ -13633,8 +13593,6 @@
           "displayName": "Qwen Image Edit",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "structuredOutput": false,
           "lastUpdated": "2025-08-19",
           "isFree": true,
@@ -14393,9 +14351,6 @@
           "displayName": "chatgpt-image-latest",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "inputLimit": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-16",
           "capabilities": {
             "vision": true,
@@ -15121,9 +15076,6 @@
           "displayName": "gpt-image-1",
           "description": "OpenAI image model for production generation, edits, and brand-safe visual workflows",
           "lifecycle": "deprecated",
-          "contextWindow": 0,
-          "inputLimit": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-04-24",
           "capabilities": {
             "vision": true,
@@ -15139,9 +15091,6 @@
           "displayName": "gpt-image-1-mini",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "inputLimit": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-09-26",
           "capabilities": {
             "vision": true,
@@ -15157,9 +15106,6 @@
           "displayName": "gpt-image-1.5",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "inputLimit": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-11-25",
           "capabilities": {
             "vision": true,
@@ -15175,9 +15121,6 @@
           "displayName": "gpt-image-2",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "inputLimit": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-04-21",
           "capabilities": {
             "vision": true,
@@ -26849,8 +26792,6 @@
           "displayName": "Step TTS 2",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-02",
           "capabilities": {
             "vision": false,
@@ -26866,8 +26807,6 @@
           "displayName": "StepAudio 2.5 ASR",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-02",
           "capabilities": {
             "vision": false,
@@ -26883,8 +26822,6 @@
           "displayName": "StepAudio 2.5 TTS",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-02",
           "capabilities": {
             "vision": false,
@@ -27006,8 +26943,6 @@
           "displayName": "Step TTS 2",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-02",
           "capabilities": {
             "vision": false,
@@ -27023,8 +26958,6 @@
           "displayName": "StepAudio 2.5 ASR",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-02",
           "capabilities": {
             "vision": false,
@@ -27040,8 +26973,6 @@
           "displayName": "StepAudio 2.5 TTS",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-02",
           "capabilities": {
             "vision": false,
@@ -28884,8 +28815,6 @@
           "displayName": "Wan v2.5 Text-to-Video Preview",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-09-24",
           "capabilities": {
             "vision": false,
@@ -28901,8 +28830,6 @@
           "displayName": "Wan v2.6 Image-to-Video",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-16",
           "capabilities": {
             "vision": false,
@@ -28918,8 +28845,6 @@
           "displayName": "Wan v2.6 Image-to-Video Flash",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-16",
           "capabilities": {
             "vision": false,
@@ -28935,8 +28860,6 @@
           "displayName": "Wan v2.6 Reference-to-Video",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-16",
           "capabilities": {
             "vision": false,
@@ -28952,8 +28875,6 @@
           "displayName": "Wan v2.6 Reference-to-Video Flash",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-16",
           "capabilities": {
             "vision": false,
@@ -28969,8 +28890,6 @@
           "displayName": "Wan v2.6 Text-to-Video",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-16",
           "capabilities": {
             "vision": false,
@@ -28986,8 +28905,6 @@
           "displayName": "Wan v2.7 Reference-to-Video",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-04-07",
           "capabilities": {
             "vision": false,
@@ -29003,8 +28920,6 @@
           "displayName": "Wan v2.7 Text-to-Video",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-04-07",
           "capabilities": {
             "vision": false,
@@ -29020,8 +28935,6 @@
           "displayName": "Wan v3.0 Video",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-23",
           "capabilities": {
             "vision": true,
@@ -29037,8 +28950,6 @@
           "displayName": "Wan v3.0 Video Prime",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-28",
           "capabilities": {
             "vision": true,
@@ -29496,8 +29407,6 @@
           "displayName": "FLUX.2 [flex]",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-06-08",
           "capabilities": {
             "vision": false,
@@ -29513,8 +29422,6 @@
           "displayName": "FLUX.2 [klein] 4B",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-06-08",
           "capabilities": {
             "vision": false,
@@ -29530,8 +29437,6 @@
           "displayName": "FLUX.2 [klein] 9B",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-06-08",
           "capabilities": {
             "vision": false,
@@ -29581,8 +29486,6 @@
           "displayName": "Flux 3",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-04",
           "capabilities": {
             "vision": false,
@@ -29599,7 +29502,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 512,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-06",
           "capabilities": {
             "vision": false,
@@ -29616,7 +29518,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 512,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-06",
           "capabilities": {
             "vision": false,
@@ -29633,7 +29534,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 512,
-          "maxOutputTokens": 0,
           "lastUpdated": "2024-10",
           "capabilities": {
             "vision": false,
@@ -29650,7 +29550,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 512,
-          "maxOutputTokens": 0,
           "lastUpdated": "2024-10",
           "capabilities": {
             "vision": false,
@@ -29667,7 +29566,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 512,
-          "maxOutputTokens": 0,
           "lastUpdated": "2024-11",
           "capabilities": {
             "vision": false,
@@ -29746,8 +29644,6 @@
           "displayName": "Seedance 2.0",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-04-14",
           "capabilities": {
             "vision": true,
@@ -29763,8 +29659,6 @@
           "displayName": "Seedance 2.0 Fast",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-04-14",
           "capabilities": {
             "vision": true,
@@ -29780,8 +29674,6 @@
           "displayName": "Seedance 2.0 Mini",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-06-22",
           "capabilities": {
             "vision": true,
@@ -29797,8 +29689,6 @@
           "displayName": "Seedance 2.5",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-07",
           "capabilities": {
             "vision": false,
@@ -29814,8 +29704,6 @@
           "displayName": "Seedance v1.0 Pro",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-06-11",
           "capabilities": {
             "vision": false,
@@ -29831,8 +29719,6 @@
           "displayName": "Seedance v1.0 Pro Fast",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-10-31",
           "capabilities": {
             "vision": false,
@@ -29848,8 +29734,6 @@
           "displayName": "Seedance v1.5 Pro",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-16",
           "capabilities": {
             "vision": false,
@@ -29865,8 +29749,6 @@
           "displayName": "Seedream 4.0",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-08-28",
           "capabilities": {
             "vision": false,
@@ -29882,8 +29764,6 @@
           "displayName": "Seedream 4.5",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-11-28",
           "capabilities": {
             "vision": false,
@@ -29899,8 +29779,6 @@
           "displayName": "Seedream 5.0 Lite",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-01-28",
           "capabilities": {
             "vision": false,
@@ -29916,8 +29794,6 @@
           "displayName": "Seedream 5.0 Pro",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-11",
           "capabilities": {
             "vision": false,
@@ -30247,8 +30123,6 @@
           "displayName": "S1",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-10-20",
           "capabilities": {
             "vision": false,
@@ -30264,8 +30138,6 @@
           "displayName": "S1 (Free)",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-10-20",
           "capabilities": {
             "vision": false,
@@ -30281,8 +30153,6 @@
           "displayName": "S2 Pro",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-09",
           "capabilities": {
             "vision": false,
@@ -30298,8 +30168,6 @@
           "displayName": "S2 Pro (Free)",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-09",
           "capabilities": {
             "vision": false,
@@ -30315,8 +30183,6 @@
           "displayName": "S2.1 Pro",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-28",
           "capabilities": {
             "vision": false,
@@ -30332,8 +30198,6 @@
           "displayName": "S2.1 Pro (Free)",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-28",
           "capabilities": {
             "vision": false,
@@ -30349,8 +30213,6 @@
           "displayName": "Transcribe-1",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-01",
           "capabilities": {
             "vision": false,
@@ -30366,8 +30228,6 @@
           "displayName": "Transcribe-1 (Free)",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-01",
           "capabilities": {
             "vision": false,
@@ -30652,8 +30512,6 @@
           "displayName": "Gemini 3.5 Transcribe",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-26",
           "capabilities": {
             "vision": false,
@@ -30669,8 +30527,6 @@
           "displayName": "Gemini 3.5 Transcribe Live",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-26",
           "capabilities": {
             "vision": false,
@@ -30766,8 +30622,6 @@
           "displayName": "Gemini Embedding 2",
           "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "knowledgeCutoff": "2025-11",
           "lastUpdated": "2026-04-22",
           "capabilities": {
@@ -30871,8 +30725,6 @@
           "displayName": "Veo 3.0 Fast Generate",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-06-08",
           "capabilities": {
             "vision": false,
@@ -30888,8 +30740,6 @@
           "displayName": "Veo 3.0",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-06-08",
           "capabilities": {
             "vision": false,
@@ -30905,8 +30755,6 @@
           "displayName": "Veo 3.1 Fast Generate",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-06-08",
           "capabilities": {
             "vision": false,
@@ -30922,8 +30770,6 @@
           "displayName": "Veo 3.1",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-06-08",
           "capabilities": {
             "vision": false,
@@ -30939,8 +30785,6 @@
           "displayName": "Veo 3.1 Lite Generate",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-04-02",
           "capabilities": {
             "vision": false,
@@ -31170,8 +31014,6 @@
           "displayName": "Kling v2.5 Turbo Image-to-Video",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-09-23",
           "capabilities": {
             "vision": false,
@@ -31187,8 +31029,6 @@
           "displayName": "Kling v2.5 Turbo Text-to-Video",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-09-23",
           "capabilities": {
             "vision": false,
@@ -31204,8 +31044,6 @@
           "displayName": "Kling v2.6 Image-to-Video",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-21",
           "capabilities": {
             "vision": false,
@@ -31221,8 +31059,6 @@
           "displayName": "Kling v2.6 Motion Control",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-21",
           "capabilities": {
             "vision": false,
@@ -31238,8 +31074,6 @@
           "displayName": "Kling v2.6 Text-to-Video",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-12-21",
           "capabilities": {
             "vision": false,
@@ -31255,8 +31089,6 @@
           "displayName": "Kling v3.0 Image-to-Video",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-02-05",
           "capabilities": {
             "vision": false,
@@ -31272,8 +31104,6 @@
           "displayName": "Kling v3.0 Motion Control",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-04",
           "capabilities": {
             "vision": false,
@@ -31289,8 +31119,6 @@
           "displayName": "Kling v3.0 Text-to-Video",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-02-05",
           "capabilities": {
             "vision": false,
@@ -31490,8 +31318,6 @@
           "displayName": "Muse Image 1.0",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-26",
           "capabilities": {
             "vision": true,
@@ -31607,8 +31433,6 @@
           "displayName": "MiniMax H3",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-30",
           "capabilities": {
             "vision": true,
@@ -31624,8 +31448,6 @@
           "displayName": "MiniMax H3 Max",
           "description": "Video model for prompt-guided generation, editing, and motion workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-27",
           "capabilities": {
             "vision": true,
@@ -32579,8 +32401,6 @@
           "displayName": "GPT-4o mini Transcribe",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2024-03-13",
           "capabilities": {
             "vision": false,
@@ -32596,8 +32416,6 @@
           "displayName": "GPT-4o Transcribe",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2024-03-13",
           "capabilities": {
             "vision": false,
@@ -33411,8 +33229,6 @@
           "displayName": "GPT Image 1",
           "description": "OpenAI image model for production generation, edits, and brand-safe visual workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-04-24",
           "capabilities": {
             "vision": false,
@@ -33428,8 +33244,6 @@
           "displayName": "GPT Image 1 Mini",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-10-06",
           "capabilities": {
             "vision": false,
@@ -33445,8 +33259,6 @@
           "displayName": "GPT Image 1.5",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-11-25",
           "capabilities": {
             "vision": false,
@@ -33462,8 +33274,6 @@
           "displayName": "GPT Image 2",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-04-21",
           "capabilities": {
             "vision": false,
@@ -33479,8 +33289,6 @@
           "displayName": "GPT Image 2.5 Flare",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-09-08",
           "capabilities": {
             "vision": false,
@@ -33496,8 +33304,6 @@
           "displayName": "GPT Image 2.5 Sunburst",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-09-08",
           "capabilities": {
             "vision": false,
@@ -33602,8 +33408,6 @@
           "displayName": "GPT-Realtime-1.5",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-02-23",
           "capabilities": {
             "vision": false,
@@ -33619,8 +33423,6 @@
           "displayName": "gpt-realtime-2",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-07",
           "capabilities": {
             "vision": false,
@@ -33659,8 +33461,6 @@
           "displayName": "GPT-Realtime mini",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2025-10-10",
           "capabilities": {
             "vision": false,
@@ -33676,8 +33476,6 @@
           "displayName": "gpt-realtime-whisper",
           "description": "Streaming speech-to-text model for low-latency transcript deltas from live audio",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-07",
           "capabilities": {
             "vision": false,
@@ -33904,8 +33702,6 @@
           "displayName": "TTS-1",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2023-11-06",
           "capabilities": {
             "vision": false,
@@ -33921,8 +33717,6 @@
           "displayName": "TTS-1 HD",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2023-11-06",
           "capabilities": {
             "vision": false,
@@ -33938,8 +33732,6 @@
           "displayName": "Whisper",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2022-09-21",
           "capabilities": {
             "vision": false,
@@ -33956,7 +33748,6 @@
           "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
           "lifecycle": "active",
           "contextWindow": 32000,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-02-26",
           "capabilities": {
             "vision": false,
@@ -33973,7 +33764,6 @@
           "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
           "lifecycle": "active",
           "contextWindow": 32000,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-02-26",
           "capabilities": {
             "vision": false,
@@ -34090,7 +33880,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 512,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-06-08",
           "capabilities": {
             "vision": false,
@@ -34124,7 +33913,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 512,
-          "maxOutputTokens": 0,
           "lastUpdated": "2024-03",
           "capabilities": {
             "vision": false,
@@ -34141,7 +33929,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 512,
-          "maxOutputTokens": 0,
           "lastUpdated": "2024-10",
           "capabilities": {
             "vision": false,
@@ -34157,8 +33944,6 @@
           "displayName": "Recraft V4",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-02-17",
           "capabilities": {
             "vision": false,
@@ -34174,8 +33959,6 @@
           "displayName": "Recraft V4 Pro",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-02-17",
           "capabilities": {
             "vision": false,
@@ -34191,8 +33974,6 @@
           "displayName": "Recraft V4.1",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-14",
           "capabilities": {
             "vision": false,
@@ -34208,8 +33989,6 @@
           "displayName": "Recraft V4.1 Pro",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-14",
           "capabilities": {
             "vision": false,
@@ -34225,8 +34004,6 @@
           "displayName": "Recraft V4.1 Utility",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-14",
           "capabilities": {
             "vision": false,
@@ -34242,8 +34019,6 @@
           "displayName": "Recraft V4.1 Utility Pro",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-14",
           "capabilities": {
             "vision": false,
@@ -34553,8 +34328,6 @@
           "displayName": "Grok Imagine Image",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-01-28",
           "capabilities": {
             "vision": false,
@@ -34570,8 +34343,6 @@
           "displayName": "Grok Imagine Image 2.0",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-07",
           "capabilities": {
             "vision": false,
@@ -34587,8 +34358,6 @@
           "displayName": "Grok Imagine",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-01-28",
           "capabilities": {
             "vision": false,
@@ -34604,8 +34373,6 @@
           "displayName": "Grok Imagine Video 1.5",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-30",
           "capabilities": {
             "vision": false,
@@ -34621,8 +34388,6 @@
           "displayName": "Grok STT",
           "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-16",
           "capabilities": {
             "vision": false,
@@ -34638,8 +34403,6 @@
           "displayName": "Grok TTS",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-16",
           "capabilities": {
             "vision": false,
@@ -34655,8 +34418,6 @@
           "displayName": "Grok Voice Think Fast 1.0",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-04-23",
           "capabilities": {
             "vision": false,
@@ -34672,8 +34433,6 @@
           "displayName": "Grok Voice Think Fast 2.0",
           "description": "Speech generation model for controllable voice, narration, and audio delivery",
           "lifecycle": "active",
-          "contextWindow": 0,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-07-29",
           "capabilities": {
             "vision": false,
@@ -34949,7 +34708,6 @@
           "description": "General-purpose chat model for instruction following, writing, and analysis",
           "lifecycle": "active",
           "contextWindow": 32000,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-06",
           "capabilities": {
             "vision": false,
@@ -34966,7 +34724,6 @@
           "description": "Flagship model for demanding analysis, coding, and production agent workflows",
           "lifecycle": "active",
           "contextWindow": 32000,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-06",
           "capabilities": {
             "vision": false,
@@ -34983,7 +34740,6 @@
           "description": "Efficient model for low-latency assistance, extraction, and routine automation",
           "lifecycle": "active",
           "contextWindow": 32000,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-03-06",
           "capabilities": {
             "vision": false,
@@ -35587,7 +35343,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 16000,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-01-28",
           "capabilities": {
             "vision": true,
@@ -35604,7 +35359,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 64000,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-08-07",
           "capabilities": {
             "vision": true,
@@ -35621,7 +35375,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 16000,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-04-03",
           "capabilities": {
             "vision": true,
@@ -35638,7 +35391,6 @@
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
           "contextWindow": 1024,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-01-28",
           "capabilities": {
             "vision": true,
@@ -35655,7 +35407,6 @@
           "description": "Video model for image-to-video generation, editing, and extension workflows",
           "lifecycle": "active",
           "contextWindow": 1024,
-          "maxOutputTokens": 0,
           "lastUpdated": "2026-05-30",
           "capabilities": {
             "vision": true,

@@ -10897,18 +10897,31 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
-  for (const { label, providerMetadata } of [
+  for (const { label, providerMetadata, connectionOverride, modelId } of [
     {
       label: 'encrypted Responses',
       providerMetadata: {
         openai: { itemId: 'reasoning-item-1', reasoningEncryptedContent: 'encrypted-reasoning' },
       },
+      connectionOverride: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      } as const,
+      modelId: 'gpt-5.4',
     },
     {
       label: 'redacted Anthropic',
       providerMetadata: { anthropic: { redactedData: 'redacted-reasoning' } },
+      connectionOverride: undefined,
+      modelId: 'mock-model-id',
     },
-  ] as { label: string; providerMetadata: Record<string, Record<string, string>> }[]) {
+  ] as {
+    label: string;
+    providerMetadata: Record<string, Record<string, string>>;
+    connectionOverride: { slug: string; providerType: 'openai'; defaultModel: string } | undefined;
+    modelId: string;
+  }[]) {
     test(`preserves finalized ${label} thinking when the next part fails without retrying`, async () => {
       // Continuation identity (Responses reasoning item ids, encrypted
       // content) cannot be replayed into a fresh request, so thinking that
@@ -10946,8 +10959,8 @@ describe('AiSdkBackend RunTrace', () => {
         },
       });
       const backend = createBackend({
-        connection: connection(),
-        modelId: 'mock-model-id',
+        connection: connectionOverride ?? connection(),
+        modelId,
         modelFactory: () => model,
         tools: [],
         loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
@@ -11481,8 +11494,12 @@ describe('AiSdkBackend RunTrace', () => {
       },
     });
     const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      },
+      modelId: 'gpt-5.4',
       modelFactory: () => model,
       tools: [],
       streamWatchdogTimer: timers.clock,
@@ -13435,6 +13452,205 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
+  // Kimi's real Responses replies carry a reasoning item with a plaintext
+  // summary and no encrypted_content. The mid-turn continuation rebuilds the
+  // request from the durable ledger, so the regression lives on the wire: the
+  // second request must carry the item, not just the persisted event.
+  test('Moonshot Global replays a summary-only reasoning item across the tool loop', async () => {
+    const durable = durableTurnHarness('turn-kimi-tool', 'Call echo with hello.', {
+      runId: 'run-kimi-tool',
+    });
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const events =
+        requestBodies.length === 1
+          ? [
+              { type: 'response.created', response: { id: 'resp_kimi_1' } },
+              {
+                type: 'response.output_item.added',
+                output_index: 0,
+                item: {
+                  type: 'reasoning',
+                  id: 'rs_kimi_1',
+                  status: 'in_progress',
+                  summary: [],
+                },
+              },
+              {
+                type: 'response.reasoning_summary_text.delta',
+                item_id: 'rs_kimi_1',
+                output_index: 0,
+                summary_index: 0,
+                delta: 'Use echo.',
+              },
+              {
+                type: 'response.reasoning_summary_text.done',
+                item_id: 'rs_kimi_1',
+                output_index: 0,
+                summary_index: 0,
+                text: 'Use echo.',
+              },
+              {
+                type: 'response.output_item.done',
+                output_index: 0,
+                item: {
+                  type: 'reasoning',
+                  id: 'rs_kimi_1',
+                  status: 'completed',
+                  summary: [{ type: 'summary_text', text: 'Use echo.' }],
+                },
+              },
+              {
+                type: 'response.output_item.added',
+                output_index: 1,
+                item: {
+                  type: 'function_call',
+                  id: 'fc_kimi_echo',
+                  call_id: 'call_kimi_echo',
+                  name: 'echo',
+                  arguments: '',
+                  status: 'in_progress',
+                },
+              },
+              {
+                type: 'response.function_call_arguments.done',
+                output_index: 1,
+                item_id: 'fc_kimi_echo',
+                call_id: 'call_kimi_echo',
+                arguments: '{"text":"hello"}',
+              },
+              {
+                type: 'response.output_item.done',
+                output_index: 1,
+                item: {
+                  type: 'function_call',
+                  id: 'fc_kimi_echo',
+                  call_id: 'call_kimi_echo',
+                  name: 'echo',
+                  arguments: '{"text":"hello"}',
+                  status: 'completed',
+                },
+              },
+              {
+                type: 'response.completed',
+                response: {
+                  id: 'resp_kimi_1',
+                  object: 'response',
+                  created_at: 0,
+                  model: 'kimi-k3',
+                  status: 'completed',
+                  output: [],
+                  usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
+                },
+              },
+            ]
+          : [
+              { type: 'response.created', response: { id: 'resp_kimi_2' } },
+              {
+                type: 'response.output_item.added',
+                output_index: 0,
+                item: {
+                  type: 'message',
+                  id: 'msg_kimi_final',
+                  status: 'in_progress',
+                  role: 'assistant',
+                  content: [],
+                },
+              },
+              {
+                type: 'response.output_text.delta',
+                item_id: 'msg_kimi_final',
+                output_index: 0,
+                content_index: 0,
+                delta: 'Echoed hello.',
+              },
+              {
+                type: 'response.output_item.done',
+                output_index: 0,
+                item: {
+                  type: 'message',
+                  id: 'msg_kimi_final',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'Echoed hello.', annotations: [] }],
+                },
+              },
+              {
+                type: 'response.completed',
+                response: {
+                  id: 'resp_kimi_2',
+                  object: 'response',
+                  created_at: 1,
+                  model: 'kimi-k3',
+                  status: 'completed',
+                  output: [],
+                  usage: { input_tokens: 14, output_tokens: 3, total_tokens: 17 },
+                },
+              },
+            ];
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const backend = createBackend({
+      connection: {
+        slug: 'moonshot-global',
+        providerType: 'moonshot-global',
+        baseUrl: 'https://kimi.example/v1',
+        defaultModel: 'kimi-k3',
+      },
+      apiKey: 'moonshot-global-test-key',
+      modelId: 'kimi-k3',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [
+        {
+          ...testTool('echo', z.object({ text: z.string() })),
+          impl: async (args) => ({ echoed: (args as { text: string }).text }),
+        },
+      ],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+
+    const events = await drainDurably(
+      backend.send(durable.input({ runId: 'run-kimi-tool' })),
+      durable,
+    );
+
+    assert.equal(
+      events.find((event) => event.type === 'error'),
+      undefined,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    const thinking = events.find(
+      (event): event is Extract<SessionEvent, { type: 'thinking_complete' }> =>
+        event.type === 'thinking_complete',
+    );
+    assert.deepEqual(thinking?.providerOptions?.makaResponses, {
+      version: 1,
+      profile: 'moonshot-global',
+      itemId: 'rs_kimi_1',
+      summaryPartLengths: [9],
+    });
+    assert.equal(requestBodies.length, 2);
+    const secondInput = requestBodies[1].input as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      secondInput.find((item) => item.type === 'reasoning'),
+      {
+        type: 'reasoning',
+        id: 'rs_kimi_1',
+        summary: [{ type: 'summary_text', text: 'Use echo.' }],
+      },
+    );
+    assert.equal(
+      secondInput.some(
+        (item) => item.type === 'function_call_output' && item.call_id === 'call_kimi_echo',
+      ),
+      true,
+    );
+  });
+
   test('Alibaba Responses keeps multiple streamed reasoning items distinct through replay', async () => {
     const tokenPlanConnection = {
       slug: 'alibaba-token-plan-cn',
@@ -13646,20 +13862,7 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
-  test('Alibaba Responses fails when streamed reasoning differs from the final summary', async (t) => {
-    // The early stop tears down the SDK stream while its settlement promises
-    // are still in flight; when those rejections land is scheduler-owned (on
-    // Windows they were observed after the test boundary). Trap unhandled
-    // rejections for the lifetime of this turn and assert the mismatch path
-    // leaves none behind, on every event loop, not just the one that raced.
-    const leakedRejections: unknown[] = [];
-    const trapUnhandledRejection = (reason: unknown): void => {
-      leakedRejections.push(reason);
-    };
-    process.on('unhandledRejection', trapUnhandledRejection);
-    t.after(() => {
-      process.off('unhandledRejection', trapUnhandledRejection);
-    });
+  test('Alibaba Responses adopts the final summary when streamed reasoning differs', async () => {
     const appended: AssistantMessage[] = [];
     const mismatchEvents = [
       { type: 'response.created', response: { id: 'r' } },
@@ -13685,6 +13888,18 @@ describe('AiSdkBackend thinking persistence', () => {
           type: 'reasoning',
           id: 'reasoning-item',
           summary: [{ type: 'summary_text', text: 'different final summary' }],
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'r',
+          object: 'response',
+          created_at: 1,
+          model: 'qwen3.8-max',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
         },
       },
     ];
@@ -13718,15 +13933,19 @@ describe('AiSdkBackend thinking persistence', () => {
 
     assert.equal(
       events.some((event) => event.type === 'error'),
-      true,
+      false,
+      JSON.stringify(events.filter((event) => event.type === 'error')),
     );
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-    assert.equal(JSON.stringify(appended).includes('makaResponses'), false);
+    // The provider's final summary wins over the streamed deltas, and the
+    // stored boundaries describe that adopted text — so the durable state
+    // stays self-consistent and replays instead of bricking the session.
+    assert.equal(JSON.stringify(appended).includes('different final summary'), true);
+    assert.equal(JSON.stringify(appended).includes('makaResponses'), true);
 
     const ctx = {
       sessionId: 'session-1',
       invocationId: 'inv-1',
-      runId: 'run-1',
+      runId: 'run-prev',
       turnId: 'turn-1',
       now: () => 7,
       newId: idGenerator(),
@@ -13756,14 +13975,7 @@ describe('AiSdkBackend thinking persistence', () => {
       }),
     );
     assert.ok(compactPrompt(recoveryModel));
-    // Let SDK teardown settle across macrotask cycles so a leaked rejection
-    // is caught before the trap comes off.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.deepEqual(
-      leakedRejections,
-      [],
-      'reasoning-mismatch teardown must not leak unhandled rejections',
-    );
+    assert.match(JSON.stringify(recoveryModel.doStreamCalls[0]?.prompt), /different final summary/);
   });
 
   test('Alibaba Responses preserves live compatibility reasoning across abrupt transport failure', async () => {
@@ -14209,7 +14421,8 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
-  test('Alibaba Responses rejects malformed state owned by its profile', async () => {
+  test('Alibaba Responses drops malformed state owned by its profile', async () => {
+    const model = completionModel();
     const backend = createBackend({
       connection: {
         slug: 'alibaba-token-plan-cn',
@@ -14218,7 +14431,7 @@ describe('AiSdkBackend thinking persistence', () => {
       },
       apiKey: 'alibaba-token',
       modelId: 'qwen3.8-max',
-      modelFactory: () => completionModel(),
+      modelFactory: () => model,
       tools: [],
     });
     const runtimeContext: RuntimeEvent[] = [
@@ -14243,18 +14456,18 @@ describe('AiSdkBackend thinking persistence', () => {
       }),
     ];
 
-    await assert.rejects(
-      drain(
-        backend.send({
-          turnId: 'turn-current',
-          text: 'follow up',
-          context: [],
-          ...sameRouteReplayProvenance('qwen3.8-max'),
-          runtimeContext,
-        }),
-      ),
-      /Malformed durable plaintext Responses reasoning state/,
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        ...sameRouteReplayProvenance('qwen3.8-max'),
+        runtimeContext,
+      }),
     );
+
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.doesNotMatch(JSON.stringify(model.doStreamCalls[0]?.prompt), /"type":"reasoning"/);
   });
 
   test('passes DeepSeek max reasoning through as the provider-native effort', async () => {
@@ -15890,8 +16103,12 @@ describe('AiSdkBackend steering durability and identity', () => {
       }),
     });
     const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      },
+      modelId: 'gpt-5.4',
       modelFactory: () => model,
       tools: [],
       loadTurnRuntimeEvents: async () => ledger,

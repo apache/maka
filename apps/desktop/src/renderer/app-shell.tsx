@@ -25,7 +25,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type Dispatch,
   type SetStateAction,
 } from 'react';
@@ -140,6 +139,7 @@ import {
 } from './app-shell-context-compaction';
 import { AppShellTopbarActions } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
+import { appShellFrameStyle } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
@@ -568,7 +568,7 @@ function AppShellContent({
   const newTaskPermissionMode =
     newTaskPermissionChoice ??
     taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
-    'ask';
+    'bypass';
   const setNewTaskPermissionMode = setNewTaskPermissionChoice;
   useEffect(() => {
     if (!appearanceHydrated) return;
@@ -2234,12 +2234,11 @@ function AppShellContent({
       /* The frame is the shared owner for dimensions consumed by both shell
          columns and titlebar chrome. CSS clears the titlebar reserve when the
          responsive layout moves the workbar below the conversation. */
-      style={
-        ({
-          '--maka-session-workbar-width': `${workbar.host.rightWidth}px`,
-          '--maka-sidenav-width': sessionListCollapsed ? 0 : `${sessionListWidth}px`,
-        } as CSSProperties)
-      }
+      style={appShellFrameStyle({
+        sessionListCollapsed,
+        sessionListWidth,
+        workbarRightWidth: workbar.host.rightWidth,
+      })}
     >
       <Conversation.TranscriptReadingPositionController
         commands={transcriptReadingCommands}

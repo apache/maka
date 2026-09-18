@@ -19,6 +19,7 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { UserQuestionRequestEvent } from '@maka/core/events';
+import type { UserQuestionResponse } from '@maka/core/user-question';
 import { expect, userEvent, within, waitFor } from 'storybook/test';
 import { UserQuestionPrompt } from '@maka/ui';
 
@@ -106,14 +107,58 @@ export const KeyboardChoices: Story = {
     // a product one, so wait for the panel to actually hold focus first.
     await waitFor(() =>
       expect(document.activeElement).toBe(canvasElement.querySelector('.maka-choice-panel')));
+    // A question may be left unanswered: Next stays enabled with nothing
+    // selected and the response carries a null answer.
+    expect(canvas.getByRole('button', { name: '下一题' })).toBeEnabled();
     await userEvent.keyboard('2');
-    await waitFor(() => expect(canvas.getByRole('radio', { name: '公开测试' })).toBeChecked());
+    await waitFor(() => expect(canvas.getByRole('option', { name: /公开测试/ })).toHaveAttribute('aria-selected', 'true'));
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvas.getByRole('heading', { name: '上线时间怎么安排？' })).toBeInTheDocument());
+    // Escape moves focus to the answer input — the free-form answer is typed
+    // straight into the composer.
     await userEvent.keyboard('{Escape}');
     const input = canvas.getByRole('textbox');
+    await waitFor(() => expect(document.activeElement).toBe(input));
     await userEvent.type(input, '123');
-    expect(input).toHaveValue('123');
-    await waitFor(() => expect(canvas.getByRole('radio', { name: '其他' })).toBeChecked());
+    expect(input).toHaveTextContent('123');
+    // Enter inside the input commits the typed answer and advances.
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvas.getByRole('heading', { name: '是否同步发布公告？' })).toBeInTheDocument());
+  },
+};
+
+const responses: UserQuestionResponse[] = [];
+
+// Real path: WorkHub → AskUserQuestion → a typed answer on the last question →
+// the Host rejects the response. WorkHub rethrows into the prompt (chat toasts
+// instead), so the alert shows in place and the answer stays editable for
+// retry rather than being wiped by the submit.
+export const SubmitFailure: Story = {
+  args: {
+    request: REQUEST,
+    onRespond: (response) => {
+      responses.push(response);
+      return Promise.reject(new Error('Temporary Host failure'));
+    },
+    onStop: () => {},
+  },
+  play: async ({ canvasElement }) => {
+    responses.length = 0;
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(canvasElement.querySelector('.maka-choice-panel')));
+    await userEvent.keyboard('1{Enter}');
+    await waitFor(() => expect(canvas.getByRole('heading', { name: '上线时间怎么安排？' })).toBeInTheDocument());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(canvasElement.querySelector('.maka-choice-panel')));
+    await userEvent.keyboard('1{Enter}');
+    await waitFor(() => expect(canvas.getByRole('heading', { name: '是否同步发布公告？' })).toBeInTheDocument());
+    const input = canvas.getByRole('textbox');
+    await userEvent.click(input);
+    await userEvent.type(input, '下周再说');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Temporary Host failure'));
+    expect(input).toHaveTextContent('下周再说');
+    expect(responses.at(-1)).toMatchObject({ requestId: 'prototype-request', answers: ['仅邀请用户', '本周', '下周再说'] });
   },
 };

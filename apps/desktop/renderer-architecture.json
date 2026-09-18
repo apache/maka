@@ -337,7 +337,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3612
+        "nonTriviaTokens": 3603
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -832,6 +832,7 @@
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
+          "./shell/frame-style": 1,
           "./stale-sessions": 1,
           "./use-active-execution-boundary": 1,
           "./use-app-shell-composer-quotes": 1,
@@ -861,7 +862,7 @@
           "react": 1
         },
         "importSpecifiers": 100,
-        "nonTriviaTokens": 13152
+        "nonTriviaTokens": 13139
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
