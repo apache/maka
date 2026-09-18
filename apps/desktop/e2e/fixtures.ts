@@ -122,7 +122,7 @@ export async function waitForInvocableSkills(
  * backend (BackendRegistry override in main); this only satisfies the UI
  * readiness gates. Kept in the fixture so test data stays out of production main.
  */
-async function seedE2eConnection(userDataDir: string): Promise<void> {
+async function seedE2eConnection(userDataDir: string): Promise<string> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
   const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -179,6 +179,7 @@ async function seedE2eConnection(userDataDir: string): Promise<void> {
     if (defaultTarget.kind !== 'committed') {
       throw new Error(`E2E default target seed was not committed: ${defaultTarget.kind}`);
     }
+    return connection.connectionId;
   } finally {
     await owner.close();
   }
@@ -213,12 +214,14 @@ async function seedRailRenderSessions(userDataDir: string): Promise<void> {
   }
 }
 
-async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
+async function seedParentRemovalSessions(userDataDir: string, llmConnectionId: string): Promise<void> {
+  await mkdir(path.join(userDataDir, 'project'), { recursive: true });
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
   const store = createSessionStore(workspaceRoot);
   try {
     const parent = await store.create({
       cwd: path.join(userDataDir, 'project'),
+      llmConnectionId,
       llmConnectionSlug: 'e2e',
       model: 'claude-sonnet-4-5-20250929',
       permissionMode: 'ask',
@@ -227,6 +230,7 @@ async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
     });
     await store.createSubagent({
       cwd: path.join(userDataDir, 'project'),
+      llmConnectionId,
       llmConnectionSlug: 'e2e',
       model: 'claude-sonnet-4-5-20250929',
       permissionMode: 'ask',
@@ -435,8 +439,11 @@ export async function withE2eWindow(
   const mainLogs: string[] = [];
   const rendererLogs: string[] = [];
   try {
-    if (seed) await seedE2eConnection(userDataDir);
-    if (parentRemovalSessions) await seedParentRemovalSessions(userDataDir);
+    const llmConnectionId = seed ? await seedE2eConnection(userDataDir) : undefined;
+    if (parentRemovalSessions) {
+      if (!llmConnectionId) throw new Error('Parent removal fixture requires a seeded connection');
+      await seedParentRemovalSessions(userDataDir, llmConnectionId);
+    }
     if (railRenderSessions) await seedRailRenderSessions(userDataDir);
     if (invocableSkills) await seedE2eInvocableSkills(userDataDir);
     if (gitReviewExtraFiles !== undefined) {

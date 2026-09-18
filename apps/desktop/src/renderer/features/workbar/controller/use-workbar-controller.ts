@@ -63,6 +63,9 @@ import {
 } from '../tools/side-chat/quote-companion-visibility.js';
 import { recoverOrphanedCompanionCopies } from '../tools/side-chat/quote-companion-core.js';
 import { useSideConversationWorkspace } from '../tools/side-chat/use-side-conversation-workspace.js';
+import {
+  isLinkedSideConversationSessionFamily,
+} from '../tools/side-chat/side-conversation-session-family.js';
 import { useWorkbarLayoutState } from './use-workbar-layout-state.js';
 import { LiveContextUsageProbe } from '../tools/inspector/live-context-usage-probe.js';
 
@@ -106,6 +109,7 @@ export interface UseWorkbarControllerInput {
   layoutSessionId: string | undefined;
   /** Independent persistent renderers must not overwrite each other’s panel topology. */
   activeSession: SessionSummary | undefined;
+  sessions: readonly SessionSummary[];
   projectId: string | null | undefined;
   projectAliases: readonly string[];
   authoritativeSessionIds: ReadonlySet<string> | undefined;
@@ -200,6 +204,24 @@ export function useWorkbarController(
   >(() => new Set());
 
   const activeSessionIdRef = useRef<string | undefined>(undefined);
+  const lastKnownFamilySessionIdRef = useRef<string | undefined>(undefined);
+  const activeFamilySession = input.activeSession;
+  if (
+    activeFamilySession &&
+    input.sessions.some((session) => session.id === activeFamilySession.id)
+  ) {
+    lastKnownFamilySessionIdRef.current = activeFamilySession.id;
+  }
+  // A navigation target may precede its catalog row. Retain only a still-live
+  // previous owner until the new target's membership can be resolved.
+  const previousFamilySession = input.sessions.find(
+    (session) => session.id === lastKnownFamilySessionIdRef.current,
+  );
+  const familySessionForSideChat =
+    workspace === 'session' && !input.activeSession && input.layoutSessionId &&
+    input.layoutSessionId !== previousFamilySession?.id
+      ? previousFamilySession
+      : input.activeSession;
   /**
    * The in-flight Work Board start claim. The surface token and target-scoped
    * draft key jointly own it; `sessionId` is filled once the first send from
@@ -626,7 +648,8 @@ export function useWorkbarController(
           id: `side-chat:${panel.id}`,
           kind: 'side-chat',
           ordinal:
-            activeTab?.ordinal ?? reserveOrdinal('side-chat'),
+            (activePanel ? activeTab?.ordinal : undefined) ??
+            reserveOrdinal('side-chat'),
         },
         placement,
       );
@@ -738,7 +761,12 @@ export function useWorkbarController(
 
   useLayoutEffect(() => {
     const stalePanels = sideConversations.panels.filter(
-      (panel) => panel.sourceSessionId !== activeSessionId,
+      (panel) =>
+        !isLinkedSideConversationSessionFamily(
+          panel.sourceSessionId,
+          familySessionForSideChat,
+          input.sessions,
+        ),
     );
     if (stalePanels.length === 0) return;
     const staleIds = new Set(stalePanels.map((panel) => panel.id));
@@ -757,6 +785,8 @@ export function useWorkbarController(
   }, [
     activeSessionId,
     layout.closeWorkbarTabs,
+    familySessionForSideChat,
+    input.sessions,
     layout.workbarPanelsState,
     sideConversations.panels,
     sideConversations.removePanels,
@@ -895,6 +925,21 @@ export function useWorkbarController(
     ],
   );
 
+  const activeSideConversationPanels = useMemo(
+    () =>
+      sideConversations.panels.filter((panel) =>
+        isLinkedSideConversationSessionFamily(
+          panel.sourceSessionId,
+          familySessionForSideChat,
+          input.sessions,
+        ),
+      ),
+    [familySessionForSideChat, input.sessions, sideConversations.panels],
+  );
+  const retainedFamilySessionId =
+    !activeSessionId && input.layoutSessionId && activeSideConversationPanels.length > 0
+      ? familySessionForSideChat?.id
+      : undefined;
   return {
     commands,
     LiveContextUsageProbe,
@@ -904,7 +949,7 @@ export function useWorkbarController(
     },
     host: {
       workspace: workspace,
-      activeId: input.available ? activeSessionId : undefined,
+      activeId: input.available ? activeSessionId ?? retainedFamilySessionId : undefined,
       projectId: input.projectId,
       projectAliases: input.projectAliases,
       rightCollapsed: layout.workbarCollapsed,
@@ -927,9 +972,8 @@ export function useWorkbarController(
       },
       rightResizable: layout.workbarResizable,
       bottomResizable: layout.bottomPanelResizable,
-      quotes: sideConversations.panels.filter(
-        (panel) => panel.sourceSessionId === activeSessionId,
-      ),
+      quotes: activeSideConversationPanels,
+      sessions: input.sessions,
       onQuotesConsumed: (snapshot) =>
         sideConversations.updatePanel(snapshot.panelId, (panel) =>
           consumeCompanionQuoteSnapshot(panel, snapshot) ?? panel,

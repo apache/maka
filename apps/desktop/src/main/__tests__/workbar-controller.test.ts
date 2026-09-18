@@ -26,6 +26,7 @@ import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardActiveItem, WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { LocaleProvider, type ToastApi } from '@maka/ui';
+import { pendingSessionView } from '../../renderer/pending-session-view.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { TerminalCloseIntents } from '../terminal-close-intents.js';
 import { desktopSessionKey, type TerminalCloseChange } from '../../shared/runtime-host-identity.js';
@@ -73,6 +74,15 @@ function shellUpdate(sessionId: string, ref: string): ShellRunUpdate {
     result: { ref },
   } as ShellRunUpdate;
 }
+
+function pendingSession(sessionId: string): SessionSummary {
+  return pendingSessionView({
+    sessionId,
+    name: sessionId,
+    permissionMode: 'ask',
+  });
+}
+
 let latestController: WorkbarController | undefined;
 let latestTaskEntryController: TaskEntryController | undefined;
 let controllerRenderSnapshots: Array<{
@@ -170,14 +180,17 @@ function createFakeToastApi(errors: string[] = []): ToastApi {
 function input(
   activeSession: SessionSummary | undefined,
   toastApi: ToastApi = createFakeToastApi(),
+  sessionCatalog?: readonly SessionSummary[],
 ): UseWorkbarControllerInput {
+  const sessions = sessionCatalog ?? (activeSession ? [activeSession] : []);
   return {
     available: true,
     layoutSessionId: activeSession?.id,
     activeSession,
+    sessions,
     projectId: activeSession?.projectId,
     projectAliases: [],
-    authoritativeSessionIds: new Set(['a', 'b', ...(activeSession ? [activeSession.id] : [])]),
+    authoritativeSessionIds: new Set(['a', 'b', ...sessions.map((session) => session.id)]),
     shellObscured: false,
     modelChoices: [],
     toastApi,
@@ -529,9 +542,17 @@ describe('useWorkbarController', () => {
     assert.equal(controller().host.activeId, 'ordinary');
     await act(async () => controller().commands.openTool('review'));
     assert.ok(controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'review'));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const sideChatId = controller().host.quotes?.[0]?.id;
+    assert.ok(sideChatId);
     await act(async () => render(true));
     assert.equal(controller().host.activeId, coordinationId);
     assert.ok(controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'browser'));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === sideChatId), false);
+    assert.equal(controller().host.panelsState.right.tabs.some((tab) => tab.id === `side-chat:${sideChatId}`), false);
+    await act(async () => render(false));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === sideChatId), false);
+    assert.equal(controller().host.panelsState.right.tabs.some((tab) => tab.id === `side-chat:${sideChatId}`), false);
   });
 
   it('opens registry singletons once and dynamic tools as separate instances', async () => {
@@ -997,6 +1018,261 @@ describe('useWorkbarController', () => {
     assert.equal(
       controller().host.panelsState.right.tabs.some(
         (candidate) => candidate.kind === 'side-chat',
+      ),
+      false,
+    );
+  });
+
+  it('preserves Side Chat across linked child navigation and restores its tabs', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const services = createFakeWorkbarServices();
+    const sessions = [parent, child];
+
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), sessions)));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panel = controller().host.quotes?.[0];
+    assert.ok(panel);
+    const tab = controller().host.panelsState.right.tabs.find(
+      (candidate) => candidate.id === `side-chat:${panel.id}`,
+    );
+    assert.ok(tab);
+    await act(async () => controller().host.onActivityStateChange?.(panel.id, true));
+
+    await act(async () => renderController(root, services, input(child, createFakeToastApi(), sessions)));
+
+    assert.equal(controller().host.quotes?.[0], panel);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === tab.id,
+      ),
+      true,
+    );
+    assert.equal(controller().host.activeSideChatPanelIds?.has(panel.id), true);
+
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), sessions)));
+    assert.equal(controller().host.quotes?.[0], panel);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === tab.id,
+      ),
+      true,
+    );
+  });
+
+  it('retains Side Chat across source revision updates', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const source = session('source-a');
+    source.revisionRootSessionId = 'source-root';
+    const sourceRevision = session('source-a-revision');
+    sourceRevision.revisionRootSessionId = 'source-root';
+    const child = session('child-a');
+    child.subagent = { parentSessionId: sourceRevision.id };
+
+    await act(async () =>
+      renderController(root, services, input(source, createFakeToastApi(), [source])),
+    );
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () =>
+      renderController(root, services, input(sourceRevision, createFakeToastApi(), [source, sourceRevision, child])),
+    );
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+
+    await act(async () =>
+      renderController(root, services, input(child, createFakeToastApi(), [source, sourceRevision, child])),
+    );
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+  });
+
+  it('retains the source and Side Chat through a pending child catalog gap', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), [parent])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, {
+      ...input(undefined, createFakeToastApi(), [parent]),
+      available: true,
+      layoutSessionId: child.id,
+    }));
+    assert.equal(
+      controller().host.activeId,
+      parent.id,
+      'the retained Side Chat must keep its Workbar surface mounted during the catalog gap',
+    );
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
+      ),
+      true,
+    );
+
+    await act(async () => renderController(root, services, input(child, createFakeToastApi(), [parent, child])));
+    assert.equal(controller().host.activeId, child.id);
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+  });
+
+  it('does not mount the retained Side Chat outside the Session workspace', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const services = createFakeWorkbarServices();
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), [parent])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    await act(async () => renderController(root, services, {
+      ...input(undefined, createFakeToastApi(), [parent]),
+      available: false,
+      layoutSessionId: 'pending-child',
+    }));
+    assert.equal(controller().host.activeId, undefined);
+  });
+
+  it('cleans Side Chat when its source is deleted during a pending navigation', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const services = createFakeWorkbarServices();
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), [parent])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+    await act(async () => renderController(root, services, {
+      ...input(undefined, createFakeToastApi(), []), layoutSessionId: 'child',
+    }));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), false);
+    assert.equal(controller().host.panelsState.right.tabs.some(
+      (tab) => tab.id === `side-chat:${panelId}`,
+    ), false);
+  });
+
+  it('cleans Side Chat when a new task clears the active Session', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), [parent])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(undefined, createFakeToastApi(), [parent])));
+
+    assert.equal(controller().host.activeId, undefined);
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), false);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
+      ),
+      false,
+    );
+  });
+
+  it('cleans Side Chat for an uncataloged unrelated Session', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const unrelated = session('unrelated');
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), [parent])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(unrelated, createFakeToastApi(), [parent])));
+
+    assert.equal(controller().host.activeId, unrelated.id);
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), false);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
+      ),
+      false,
+    );
+  });
+
+  it('keeps the remaining Side Chat when one of multiple source panels closes', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const sessions = [parent, child];
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), sessions)));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const parentPanelId = controller().host.quotes?.[0]?.id;
+    assert.ok(parentPanelId);
+
+    await act(async () => renderController(root, services, input(child, createFakeToastApi(), sessions)));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const childPanel = controller().host.quotes?.find(
+      (panel) => panel.sourceSessionId === child.id,
+    );
+    assert.ok(childPanel);
+
+    const parentTab = controller().host.panelsState.right.tabs.find(
+      (tab) => tab.id === `side-chat:${parentPanelId}`,
+    );
+    assert.ok(parentTab);
+    await act(async () => controller().host.onCloseTab('right', parentTab));
+
+    assert.equal(
+      controller().host.quotes?.some((panel) => panel.id === childPanel.id),
+      true,
+    );
+  });
+
+  it('cleans Side Chat when its source Session is removed', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), [parent, child])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(child, createFakeToastApi(), [child])));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), false);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
+      ),
+      false,
+    );
+  });
+
+  it('cleans a child-owned Side Chat when navigating back to its parent', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const sessions = [parent, child];
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(child, createFakeToastApi(), sessions)));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), sessions)));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), false);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
       ),
       false,
     );

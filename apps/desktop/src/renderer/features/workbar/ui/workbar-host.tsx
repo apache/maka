@@ -102,6 +102,7 @@ export interface WorkbarHostModel {
   rightResizable: ResizableProps;
   bottomResizable: ResizableProps;
   quotes?: readonly QuoteCompanionPanelState[];
+  sessions?: readonly SessionSummary[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
@@ -183,6 +184,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onOpenLauncher={props.onOpenLauncher}
               onRequestOpenTab={props.onRequestOpenTab}
               quotes={props.quotes}
+              sessions={props.sessions}
               onQuotesConsumed={props.onQuotesConsumed}
               onRemoveQuote={props.onRemoveQuote}
               onForkVisibilityChange={props.onForkVisibilityChange}
