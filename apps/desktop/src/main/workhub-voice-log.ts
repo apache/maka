@@ -24,15 +24,11 @@ export function compactVoiceLogEvent(kind: string, data: Record<string, unknown>
     const type = String(data.type);
     if (type === 'maka.audio_activity')
       return { kind: 'playback_activity', data: { active: data.active, source: 'renderer_audio' } };
-    if (!['output_audio_buffer.started', 'output_audio_buffer.stopped', 'output_audio_buffer.cleared',
-      'input_audio_buffer.speech_started', 'input_audio_buffer.speech_stopped',
-      'turn.created', 'turn.done', 'response.created', 'response.done'].includes(type)) return;
+    if (!['turn.created', 'turn.done'].includes(type)) return;
     const turn = data.turn as Record<string, unknown> | undefined;
-    const response = data.response as Record<string, unknown> | undefined;
     return { kind: 'media_event', data: { type, eventId: data.event_id,
       turnId: turn?.id ?? data.turn_id, role: turn?.role,
-      responseId: data.response_id ?? response?.id,
-      audioStartMs: data.audio_start_ms, audioEndMs: data.audio_end_ms } };
+      startMs: turn?.start_ms, endMs: turn?.end_ms } };
   }
   if (kind === 'reply_submitted') return { kind, data: { requestId: data.requestId, itemId: data.itemId, deliveryId: data.deliveryId } };
   if (kind === 'speech_submitted') return { kind, data: { deliveryId: data.deliveryId } };

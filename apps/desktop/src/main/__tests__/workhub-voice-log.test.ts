@@ -29,6 +29,6 @@ test('voice archive excludes diagnostic streams while keeping compact media evid
   assert.equal(fact?.data.turnId, 't');
   assert.doesNotMatch(JSON.stringify(fact), /already stored/);
   assert.deepEqual(compactVoiceLogEvent('speech_submitted', { deliveryId: 'd', text: 'body' }), { kind: 'speech_submitted', data: { deliveryId: 'd' } });
-  assert.equal(compactVoiceLogEvent('transport', { type: 'output_audio_buffer.cleared', response_id: 'r' })?.data.responseId, 'r');
+  assert.equal(compactVoiceLogEvent('transport', { type: 'response.done', response_id: 'r' }), undefined);
   assert.equal(compactVoiceLogEvent('delegation', { requestId: 'h', userTurnId: 'i', text: 'do task' })?.data.text, 'do task');
 });

@@ -155,7 +155,7 @@ export interface MessageContent {
   /** Human-facing text when it differs from `text`; omit when equal. */
   displayText?: string;
   /** Host-authored WorkHub routing metadata; never inferred from model text. */
-  workhubSource?: 'text_request' | 'voice_request' | 'voice_maintenance' | 'task_result';
+  workhubSource?: 'text_request' | 'voice_request' | 'voice_maintenance';
   /** Ordered attachment references; omit when empty. Attachment bytes never travel here. */
   attachments?: AttachmentRef[];
   directoryReferences?: DirectoryReference[];
@@ -312,8 +312,7 @@ export function isMessageContent(value: unknown): value is MessageContent {
     (value.workhubSource === undefined ||
       value.workhubSource === 'text_request' ||
       value.workhubSource === 'voice_request' ||
-      value.workhubSource === 'voice_maintenance' ||
-      value.workhubSource === 'task_result') &&
+      value.workhubSource === 'voice_maintenance') &&
     (value.attachments === undefined ||
       (Array.isArray(value.attachments) && value.attachments.every(isAttachmentRef))) &&
     (value.quotes === undefined ||

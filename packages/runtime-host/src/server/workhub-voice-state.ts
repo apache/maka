@@ -22,7 +22,7 @@ import type { WorkHubVoiceObservation } from '../protocol/workhub-voice-state.js
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { lstat, mkdir, readFile, chmod } from 'node:fs/promises';
+import { lstat, mkdir, chmod } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   decodeVoiceQueueItem,
@@ -38,10 +38,9 @@ import {
 } from '../protocol/workhub-voice-state.js';
 
 import { recordWorkHubVoiceCall } from './workhub-voice-call-state.js';
-import { migrateVoiceState } from './workhub-voice-state-migration.js';
 
 const writes = new Map<string, Promise<unknown>>();
-export const VOICE_QUEUE_FILENAME = 'voice-queue.json';
+export const VOICE_QUEUE_FILENAME = 'voice-queue.sqlite';
 interface StoredVoiceState extends WorkHubVoiceState {
   version: 3;
   discardOnRelease: string[];
@@ -61,7 +60,7 @@ export class WorkHubVoiceStateStore {
   private database?: DatabaseSync;
   readonly logPath: string;
   constructor(readonly path: string) {
-    this.logPath = path.replace(/\.json$/, '') + '.sqlite';
+    this.logPath = path;
   }
 
   #append(kind: string, data: unknown, callId?: string, id: string = randomUUID()): void {
@@ -193,11 +192,6 @@ export class WorkHubVoiceStateStore {
         };
       }
       const conditions = ['seq > ?', 'seq <= ?'];
-      // Old diagnostics stay append-only, but do not crowd normal history queries.
-      if (!input.kind)
-        conditions.push(
-          "kind NOT IN ('workhub_event', 'workhub_event_part', 'transport', 'transport_part', 'native_notification', 'native_notification_part', 'legacy_archive', 'legacy_import')",
-        );
       const args: Array<string | number> = [input.after ?? 0, snapshot];
       for (const [column, value] of [
         ['call_id', input.callId],
@@ -237,56 +231,48 @@ export class WorkHubVoiceStateStore {
   }
 
   async #load(): Promise<StoredVoiceState> {
-    try {
-      const saved = this.database!.prepare(
-        'SELECT data FROM voice_state WHERE singleton = 1',
-      ).get();
-      if (!saved && (await lstat(this.path)).isSymbolicLink())
-        throw new Error('Voice state cannot be a symbolic link');
-      const raw = JSON.parse(saved ? String(saved.data) : await readFile(this.path, 'utf8'));
-      if (!saved) this.#append('legacy_archive', raw, undefined, 'legacy-archive');
-      if (
-        saved &&
-        ['observations', 'requestContexts', 'batchThrough', 'blockedCalls'].some((key) =>
-          Object.hasOwn(raw, key),
-        )
+    const saved = this.database!.prepare('SELECT data FROM voice_state WHERE singleton = 1').get();
+    if (!saved) return { version: 3, queue: [], deliveries: [], discardOnRelease: [] };
+    const value = JSON.parse(String(saved.data)) as StoredVoiceState;
+    const fields = new Set([
+      'version',
+      'queue',
+      'deliveries',
+      'responses',
+      'review',
+      'discardOnRelease',
+      'requests',
+      'transcripts',
+      'checkedThrough',
+    ]);
+    if (
+      !value ||
+      value.version !== 3 ||
+      Object.keys(value).some((key) => !fields.has(key)) ||
+      !Array.isArray(value.discardOnRelease) ||
+      value.discardOnRelease.some((id) => typeof id !== 'string')
+    )
+      throw new Error('Unsupported voice state format');
+    if (
+      value.checkedThrough &&
+      Object.values(value.checkedThrough).some(
+        (sequence) => !Number.isSafeInteger(sequence) || sequence < 0,
       )
-        this.#append('legacy_archive', raw, undefined, 'pre-idle-review-state');
-      const value = migrateVoiceState(raw) as StoredVoiceState;
-      if (
-        value.version !== 3 ||
-        !Array.isArray(value.discardOnRelease) ||
-        value.discardOnRelease.some((id) => typeof id !== 'string')
-      )
-        throw new Error('Invalid voice state');
-      if (
-        value.checkedThrough &&
-        Object.values(value.checkedThrough).some(
-          (sequence) => !Number.isSafeInteger(sequence) || sequence < 0,
-        )
-      )
-        throw new Error('Invalid voice review cursor');
-      // Retired maintenance fields remain only in the append-only migration archive.
-      const loaded: StoredVoiceState = {
-        version: 3,
-        ...decodeVoiceState({
-          queue: value.queue,
-          deliveries: value.deliveries,
-          ...(value.responses?.length ? { responses: value.responses } : {}),
-          ...(value.review ? { review: value.review } : {}),
-        }),
-        discardOnRelease: value.discardOnRelease,
-        requests: (value.requests ?? []).map(decodeVoiceRequest),
-        transcripts: value.transcripts ?? [],
-        checkedThrough: value.checkedThrough ?? {},
-      };
-      if (!saved) await this.#save(loaded);
-      return loaded;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT')
-        return { version: 3, queue: [], deliveries: [], discardOnRelease: [] };
-      throw error;
-    }
+    )
+      throw new Error('Invalid voice review cursor');
+    return {
+      version: 3,
+      ...decodeVoiceState({
+        queue: value.queue,
+        deliveries: value.deliveries,
+        ...(value.responses?.length ? { responses: value.responses } : {}),
+        ...(value.review ? { review: value.review } : {}),
+      }),
+      discardOnRelease: value.discardOnRelease,
+      requests: (value.requests ?? []).map(decodeVoiceRequest),
+      transcripts: value.transcripts ?? [],
+      checkedThrough: value.checkedThrough ?? {},
+    };
   }
 
   #snapshot(state: StoredVoiceState): WorkHubVoiceState {
@@ -335,7 +321,6 @@ export class WorkHubVoiceStateStore {
       throw new Error('Voice queue is too large');
     const saved = this.database!.prepare('SELECT data FROM voice_state WHERE singleton = 1').get();
     const before = saved ? (JSON.parse(String(saved.data)) as StoredVoiceState) : undefined;
-    if (!before) this.#append('legacy_import', state);
     if (!isDeepStrictEqual(before?.queue ?? [], state.queue))
       this.#append('queue_changed', {
         upsert: state.queue.filter(
@@ -415,35 +400,20 @@ export class WorkHubVoiceStateStore {
           CREATE INDEX IF NOT EXISTS voice_log_call ON voice_log(call_id, seq);
           CREATE TRIGGER IF NOT EXISTS voice_log_no_update BEFORE UPDATE ON voice_log BEGIN SELECT RAISE(ABORT, 'Voice log is append-only'); END;
           BEGIN IMMEDIATE;`);
-          if (
-            !db
-              .prepare(
-                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='voice_log_finalize_transcript'",
-              )
-              .get()
-          ) {
-            // Upgrade existing logs too. Only superseded transcript fragments
-            // may be removed; final transcripts and all other facts stay immutable.
-            db.exec(`DROP TRIGGER IF EXISTS voice_log_no_delete;
-              CREATE INDEX IF NOT EXISTS voice_log_native_turn
+          db.exec(`CREATE INDEX IF NOT EXISTS voice_log_native_turn
                 ON voice_log(call_id, json_extract(data, '$.nativeTurnId'), kind);
-              CREATE TRIGGER voice_log_no_delete BEFORE DELETE ON voice_log
+              CREATE TRIGGER IF NOT EXISTS voice_log_no_delete BEFORE DELETE ON voice_log
                 WHEN OLD.kind != 'transcript_delta' OR NOT EXISTS (
                   SELECT 1 FROM voice_log final WHERE final.kind = 'transcript'
                     AND final.call_id IS OLD.call_id
                     AND json_extract(final.data, '$.nativeTurnId') = json_extract(OLD.data, '$.nativeTurnId')
                 ) BEGIN SELECT RAISE(ABORT, 'Voice log is append-only except finalized transcript fragments'); END;
-              CREATE TRIGGER voice_log_finalize_transcript AFTER INSERT ON voice_log
+              CREATE TRIGGER IF NOT EXISTS voice_log_finalize_transcript AFTER INSERT ON voice_log
                 WHEN NEW.kind = 'transcript' BEGIN
                   DELETE FROM voice_log WHERE kind = 'transcript_delta' AND call_id IS NEW.call_id
                     AND json_extract(data, '$.nativeTurnId') = json_extract(NEW.data, '$.nativeTurnId');
                 END;
-              DELETE FROM voice_log WHERE kind = 'transcript_delta' AND EXISTS (
-                SELECT 1 FROM voice_log final WHERE final.kind = 'transcript'
-                  AND final.call_id IS voice_log.call_id
-                  AND json_extract(final.data, '$.nativeTurnId') = json_extract(voice_log.data, '$.nativeTurnId')
-              );`);
-          }
+`);
           const result = await operation();
           db.exec('COMMIT');
           return result;
@@ -557,7 +527,7 @@ export class WorkHubVoiceStateStore {
       );
       for (const item of upsert) {
         if (owned.has(item.id)) continue;
-        if (item.reply) throw new Error('List edits cannot rewrite legacy request attribution');
+        if (item.reply) throw new Error('List edits cannot rewrite reply attribution');
         items.set(item.id, item);
       }
       const order = (input.order ?? []).filter((id) => !owned.has(id) && !removed.has(id));

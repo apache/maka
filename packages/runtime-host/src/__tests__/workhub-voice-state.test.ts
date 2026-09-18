@@ -308,49 +308,35 @@ test('prepared text survives release and old live shapes are rejected', async ()
   }
 });
 
-test('version one disk migration preserves delivery status and evidence without exposing old fields', async () => {
+test('old JSON state is not imported and unsupported SQLite state is rejected without rewriting', async () => {
   const f = await fixture();
-  await rm(f.store.logPath, { force: true });
   try {
-    const old = {
-      id: 'old',
-      text: '',
-      context: 'private',
-      continuation: { topic: 'Three Body', intent: 'Explain the next chapter' },
-    };
-    const transcript = {
-      id: 't',
-      callId: 'previous-call',
-      role: 'user',
-      text: 'Original user record',
-    };
-    await writeFile(
-      f.store.path,
-      JSON.stringify({
-        version: 1,
-        queue: [old],
-        deliveries: [
-          { ...old, id: 'sent-old', callId: 'previous-call', deliveryId: 'd', status: 'sent' },
-        ],
-        discardOnRelease: [],
-        deferred: true,
-        transcripts: [transcript],
-      }),
-    );
-    const migrated = await f.store.read();
-    assert.equal(migrated.queue[0]!.text, 'Three Body\nExplain the next chapter');
-    assert.equal(migrated.deliveries[0]!.status, 'sent');
-    assert.doesNotMatch(JSON.stringify(migrated), /continuation|deferred/);
-    await f.store.update({ upsert: [item('new')] });
+    const oldPath = join(f.root, 'voice-queue.json');
+    const old = JSON.stringify({
+      version: 1,
+      queue: [{ id: 'old', continuation: { topic: 'x', intent: 'y' } }],
+    });
+    await writeFile(oldPath, old);
+    assert.deepEqual((await f.store.read()).queue, []);
+    assert.equal(await readFile(oldPath, 'utf8'), old);
+    await f.store.update({ upsert: [item('current')] });
     const db = new DatabaseSync(f.store.logPath);
-    const persisted = JSON.parse(String(db.prepare('SELECT data FROM voice_state').get()!.data));
-    db.close();
-    assert.equal(persisted.version, 3);
-    assert.deepEqual(persisted.transcripts, [transcript]);
-    assert.deepEqual(
-      (await new WorkHubVoiceStateStore(f.store.path).read()).deliveries,
-      migrated.deliveries,
-    );
+    const current = JSON.parse(String(db.prepare('SELECT data FROM voice_state').get()!.data));
+    try {
+      for (const unsupported of [
+        { ...current, version: 1 },
+        { ...current, version: 2 },
+        { ...current, currentState: 'obsolete' },
+        { ...current, observations: [] },
+      ]) {
+        const raw = JSON.stringify(unsupported);
+        db.prepare('UPDATE voice_state SET data=?').run(raw);
+        await assert.rejects(f.store.read(), /Unsupported voice state format/);
+        assert.equal(db.prepare('SELECT data FROM voice_state').get()!.data, raw);
+      }
+    } finally {
+      db.close();
+    }
   } finally {
     await f.close();
   }
@@ -451,7 +437,7 @@ test('log is append-only, retries are idempotent, and failed mutations roll back
   }
 });
 
-test('archive stores changed bodies once and compact lifecycle receipts; default reads exclude old diagnostics', async () => {
+test('archive stores changed bodies once and compact lifecycle receipts', async () => {
   const f = await fixture();
   try {
     await f.store.update({
@@ -478,14 +464,6 @@ test('archive stores changed bodies once and compact lifecycle receipts; default
       JSON.stringify((await f.store.log({ kind: 'delivery_sent' })).entries),
       /unique first body/,
     );
-    await f.store.receiveObservation({
-      id: 'diag',
-      callId: 'c',
-
-      entries: [{ id: 'debug', kind: 'workhub_event', data: { text: 'old diagnostic' } }],
-    });
-    assert.doesNotMatch(JSON.stringify(await f.store.log()), /old diagnostic/);
-    assert.equal((await f.store.log({ kind: 'workhub_event' })).entries.length, 1);
   } finally {
     await f.close();
   }
@@ -754,29 +732,6 @@ test('queued speech permits review; busy admission release retries, failed execu
   }
 });
 
-test('existing maintenance windows are archived once and never replayed as new checks', async () => {
-  const f = await fixture();
-  try {
-    await f.store.update({ upsert: [item('preserved')] });
-    const db = new DatabaseSync(f.store.logPath);
-    const state = JSON.parse(String(db.prepare('SELECT data FROM voice_state').get()!.data));
-    state.observations = [{ input: { id: 'old-window', context: 'retired' }, status: 'pending' }];
-    db.prepare('UPDATE voice_state SET data = ?').run(JSON.stringify(state));
-    db.close();
-    await f.store.receiveObservation({ id: 'new-call', callId: 'call', entries: [] });
-    await f.store.read();
-    assert.deepEqual((await f.store.read()).queue, [item('preserved')]);
-    assert.equal((await f.store.log({ kind: 'legacy_archive' })).entries.length, 1);
-    const reopened = new DatabaseSync(f.store.logPath);
-    assert.ok(
-      !String(reopened.prepare('SELECT data FROM voice_state').get()!.data).includes('old-window'),
-    );
-    reopened.close();
-  } finally {
-    await f.close();
-  }
-});
-
 test('correlated replies are durable, isolated from list edits, and never reserved by another call', async () => {
   const f = await fixture();
   try {
@@ -905,49 +860,6 @@ test('final transcripts atomically remove only their own fragments and reject la
     } finally {
       db.close();
     }
-  } finally {
-    await f.close();
-  }
-});
-
-test('existing append-only databases compact completed fragments on upgrade without touching unfinished turns', async () => {
-  const f = await fixture();
-  try {
-    await f.store.receiveObservation({
-      id: 'obs',
-      callId: 'call',
-      entries: [
-        {
-          id: 'old-fragment',
-          kind: 'transcript_delta',
-          data: { nativeTurnId: 'done', delta: '旧碎片' },
-        },
-        {
-          id: 'incomplete',
-          kind: 'transcript_delta',
-          data: { nativeTurnId: 'open', delta: '还没说完' },
-        },
-      ],
-    });
-    const db = new DatabaseSync(f.store.logPath);
-    try {
-      db.exec(`DROP TRIGGER voice_log_finalize_transcript; DROP TRIGGER voice_log_no_delete;
-        CREATE TRIGGER voice_log_no_delete BEFORE DELETE ON voice_log BEGIN SELECT RAISE(ABORT, 'Voice log is append-only'); END;`);
-      db.prepare('INSERT INTO voice_log (id,at,kind,call_id,data) VALUES (?,?,?,?,?)').run(
-        'old-final',
-        Date.now(),
-        'transcript',
-        'call',
-        JSON.stringify({ nativeTurnId: 'done', text: '旧完整转写', role: 'user' }),
-      );
-    } finally {
-      db.close();
-    }
-    const entries = (await new WorkHubVoiceStateStore(f.store.path).log({ callId: 'call' }))
-      .entries;
-    assert.ok(!entries.some((e) => e.id === 'old-fragment'));
-    assert.ok(entries.some((e) => e.id === 'incomplete'));
-    assert.ok(entries.some((e) => e.id === 'old-final'));
   } finally {
     await f.close();
   }

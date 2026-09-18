@@ -140,7 +140,7 @@ export function registerWorkHubVoice(client: DesktopRuntimeHostClient, ipc: Pick
         callController?.add(entry);
         const wire = entry.kind === 'transport' ? entry.event as Record<string, unknown> : undefined;
         if (wire) send({ type: 'maka.observation', event: wire });
-        if (wire?.type === 'turn.created' || wire?.type === 'input_audio_buffer.speech_started') jev?.invalidate();
+        if (wire?.type === 'turn.created') jev?.invalidate();
         if (wire?.type === 'turn.done') void jev?.tick();
       }
     };

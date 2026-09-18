@@ -22,13 +22,11 @@ import type { VoiceInterruption, VoiceLogInput, WorkHubVoiceState, WorkHubVoiceT
 
 /** Single owner of local media availability and outbound serialization. No semantic maintenance. */
 export class WorkHubVoiceCallController {
-  private readonly generating = new Set<string>(); // Standard response protocol only.
   private nativeTurn?: { id: string; role: 'user' | 'assistant'; status: 'created' | 'done' };
   private readonly playing = new Set<string>();
   private readonly backendUserIds = new Set<string>();
   private readonly injectionListeners = new Set<() => void>();
   private stopped = false;
-  private speaking = false;
   private awaitingReply = false;
   private pendingSpeech = false;
   private uncertainDeliveryId?: string;
@@ -63,7 +61,7 @@ export class WorkHubVoiceCallController {
     this.notify();
   }
   private get mediaAvailable(): boolean {
-    return !this.stopped && !this.speaking && this.nativeTurn?.status !== 'created' && !this.outputActive &&
+    return !this.stopped && this.nativeTurn?.status !== 'created' && !this.outputActive &&
       (!this.awaitingReply || Boolean(this.nativeUserId && this.backendUserIds.has(this.nativeUserId)));
   }
   get idle(): boolean { return this.mediaAvailable && !this.pendingSpeech; }
@@ -73,7 +71,7 @@ export class WorkHubVoiceCallController {
     return this.nativeTurn ? { ...this.nativeTurn } : undefined;
   }
   get outputActive(): boolean {
-    return (this.nativeTurn?.role === 'assistant' && this.nativeTurn.status === 'created') || Boolean(this.generating.size || this.playing.size);
+    return (this.nativeTurn?.role === 'assistant' && this.nativeTurn.status === 'created') || Boolean(this.playing.size);
   }
   private notify(): void { for (const listener of this.injectionListeners) listener(); }
 
@@ -82,8 +80,7 @@ export class WorkHubVoiceCallController {
     const wire = event.kind === 'transport'
       ? event.event as Record<string, unknown> : undefined;
     const nativeTurn = wire?.turn as { id?: string; role?: string } | undefined;
-    const endId = wire?.type === 'turn.done' && nativeTurn?.role === 'assistant' ? nativeTurn.id
-      : wire?.type === 'response.done' ? String(wire.response_id ?? (wire.response as { id?: string })?.id ?? '') : undefined;
+    const endId = wire?.type === 'turn.done' && nativeTurn?.role === 'assistant' ? nativeTurn.id : undefined;
     const userId = nativeTurn?.role === 'user' ? nativeTurn.id : undefined;
     const userEndKey = userId ? `user:${userId}` : undefined;
     const userEnded = wire?.type === 'turn.done' && userEndKey && !this.endedTurns.has(userEndKey);
@@ -91,8 +88,6 @@ export class WorkHubVoiceCallController {
     if (wire) this.facts.accept(wire, this.outputActive);
     const type = String(wire?.type ?? event.kind);
     const turn = wire?.turn as { id?: string; role?: string; transcript?: string; start_ms?: number; end_ms?: number } | undefined;
-    const response = wire?.response as { id?: string } | undefined;
-    const responseId = String(wire?.response_id ?? response?.id ?? 'unknown');
     switch (type) {
       case 'maka.audio_activity':
         if (wire?.active) {
@@ -125,39 +120,10 @@ export class WorkHubVoiceCallController {
           }
         }
         break;
-      case 'input_audio_buffer.speech_started':
-        this.nativeUserId = undefined;
-        this.speaking = true;
-        this.awaitingReply = true;
-        this.intent++;
-        break;
-      case 'input_audio_buffer.speech_stopped':
-        this.speaking = false;
-        if (this.nativeTurn?.role === 'user' && this.nativeTurn.status === 'created') {
-          const id = this.nativeTurn.id;
-          this.nativeTurn = { id, role: 'user', status: 'done' };
-          this.endedTurns.add(`user:${id}`);
-        }
-        break;
-      case 'response.created':
-        this.generating.add(responseId);
-        this.awaitingReply = false;
-        this.outputs++;
-        clearTimeout(this.firstOutputDeadline);
-        break;
-      case 'response.done': this.generating.delete(responseId); break;
-      case 'output_audio_buffer.started':
-        if (!this.playing.has(responseId)) this.outputs++;
-        this.playing.add(responseId);
-        this.awaitingReply = false;
-        clearTimeout(this.firstOutputDeadline);
-        break;
-      case 'output_audio_buffer.stopped':
-      case 'output_audio_buffer.cleared': this.playing.delete(responseId); break;
       case 'delegation_pending':
         if (typeof event.userTurnId === 'string') {
           // Delegation only records backend ownership. User completion is owned
-          // by native turn.done / speech_stopped, never inferred from a handoff.
+          // by turn.done, never inferred from a handoff.
           this.backendUserIds.add(event.userTurnId);
         }
         break;

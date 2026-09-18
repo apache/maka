@@ -20,85 +20,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import {
-  WORKHUB_COORDINATION_SESSION_ID as sessionId,
-  type StoredMessage,
-  decodeCanonicalMessage,
-} from '@maka/core/session';
+import { WORKHUB_COORDINATION_SESSION_ID as sessionId } from '@maka/core/session';
 import { projectRuntimeEventsToStoredMessages } from '@maka/runtime/runtime-event-read-model';
-import { annotateVoicePresentation } from '../server/workhub-voice-presentation.js';
 import { decodeVoiceObservation } from '../protocol/workhub-voice-state.js';
 const turnId = 'opaque-id';
-test('maintenance remains internal after a real voice request steers into it', () => {
-  const events = [
-    {
-      id: 'a',
-      turnId,
-      role: 'user',
-      content: { kind: 'text', text: 'maintain', workhubSource: 'voice_maintenance' },
-    },
-    { id: 'b', turnId, role: 'model' },
-    {
-      id: 'c',
-      turnId,
-      role: 'user',
-      content: { kind: 'text', text: 'Top5', workhubSource: 'voice_request', steering: true },
-    },
-    { id: 'd', turnId, role: 'model' },
-    { id: 'e', turnId, role: 'tool' },
-  ] as RuntimeEvent[];
-  const messages: StoredMessage[] = [
-    { type: 'user', id: 'a', turnId, ts: 1, text: 'maintain', workhubSource: 'voice_maintenance' },
-    { type: 'assistant', id: 'b', turnId, ts: 2, text: '队列为空', modelId: 'model' },
-    { type: 'user', id: 'c', turnId, ts: 3, text: 'Top5', workhubSource: 'voice_request' },
-    { type: 'assistant', id: 'd', turnId, ts: 4, text: '仍在维护', modelId: 'model' },
-    {
-      type: 'assistant',
-      id: 'public',
-      turnId,
-      ts: 5,
-      text: 'Top5 已修改',
-      modelId: '',
-      presentation: 'public',
-    },
-  ];
-  const result = annotateVoicePresentation(
-    sessionId,
-    messages,
-    events,
-    events.map((e) => e.id),
-  );
-  assert.deepEqual(
-    result.map((m) => m.presentation),
-    ['internal', 'internal', undefined, 'internal', 'public'],
-  );
-  for (const message of result)
-    assert.deepEqual(decodeCanonicalMessage(JSON.parse(JSON.stringify(message))), message);
-  const oldEvents = structuredClone(events);
-  if (oldEvents[0]!.content?.kind === 'text') delete oldEvents[0]!.content.workhubSource;
-  const oldMessages = structuredClone(messages);
-  if (oldMessages[0]!.type === 'user') delete oldMessages[0]!.workhubSource;
-  assert.deepEqual(
-    annotateVoicePresentation(
-      sessionId,
-      oldMessages,
-      oldEvents,
-      events.map((e) => e.id),
-      new Map([[turnId, 'voice_maintenance']]),
-    ),
-    result,
-  );
-  assert.equal(oldMessages[0]!.type === 'user' && oldMessages[0]!.workhubSource, undefined);
-  assert.deepEqual(
-    annotateVoicePresentation(
-      'ordinary',
-      messages,
-      events,
-      events.map((e) => e.id),
-    ),
-    messages,
-  );
-});
 test('Host registered publisher creates the same public receipt in live and stored projections', () => {
   const base = { invocationId: 'run', runId: 'run', sessionId, turnId, ts: 1, partial: false };
   const events: RuntimeEvent[] = [
@@ -188,48 +113,6 @@ test('same-id publication revisions replace text in both live and serialized eve
     projectRuntimeEventsToStoredMessages(JSON.parse(JSON.stringify(events)), { invocations: [] }),
     projected,
   );
-});
-
-test('task-result input keeps its source through storage without hiding ordinary WorkHub result output', () => {
-  const messages: StoredMessage[] = [
-    {
-      type: 'user',
-      id: 'result-in',
-      turnId,
-      ts: 1,
-      text: 'Native result',
-      workhubSource: 'task_result',
-    },
-    {
-      type: 'assistant',
-      id: 'result-out',
-      turnId,
-      ts: 2,
-      text: 'The task is complete',
-      modelId: 'model',
-    },
-  ];
-  const events = [
-    {
-      id: 'result-in',
-      turnId,
-      role: 'user',
-      content: { kind: 'text', text: 'Native result', workhubSource: 'task_result' },
-    },
-    {
-      id: 'result-out',
-      turnId,
-      role: 'model',
-      content: { kind: 'text', text: 'The task is complete' },
-    },
-  ] as RuntimeEvent[];
-  const projected = annotateVoicePresentation(sessionId, messages, events, [
-    'result-in',
-    'result-out',
-  ]);
-  assert.equal(projected[0]!.presentation, 'internal');
-  assert.equal(projected[1]!.presentation, undefined);
-  assert.equal(decodeCanonicalMessage(projected[0]!)?.type, 'user');
 });
 
 test('voice log writes carry facts and an optional idle review, without legacy windows', () => {

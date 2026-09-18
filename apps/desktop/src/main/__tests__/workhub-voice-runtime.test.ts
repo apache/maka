@@ -80,13 +80,6 @@ test('no-output delivery is reported once and is never guessed completed; closin
   let sent=false;const queued=c.send('next',()=>true,async()=>true,async()=>{sent=true});c.close();await queued;assert.equal(sent,false);
 });
 
-test('user final transcription is not an acoustic speech-stop signal',()=>{
-  const c=new WorkHubVoiceCallController({callId:'call',recordTranscript:()=>{},interruption:()=>{}});
-  c.add({kind:'transport',event:{type:'input_audio_buffer.speech_started'}});
-  wire(c,'turn.done',{id:'u',role:'user',transcript:'查文件'});c.add({kind:'delegation_pending',userTurnId:'u'});assert.equal(c.canInject,false);
-  c.add({kind:'transport',event:{type:'input_audio_buffer.speech_stopped'}});assert.equal(c.canInject,true);c.close();
-});
-
 test('assistant transcript final does not release audible playback', async () => {
   const c = new WorkHubVoiceCallController({ callId: 'call', recordTranscript: () => {}, interruption: () => {} });
   await c.send('prepared', () => true, async () => true, async () => {});
@@ -113,8 +106,6 @@ test('a delayed old assistant final cannot replace the latest interruption candi
 
 for (const start of [
   { type: 'turn.created', turn: { id: 'a', role: 'assistant' } },
-  { type: 'response.created', response: { id: 'a' } },
-  { type: 'output_audio_buffer.started', response_id: 'a' },
   { type: 'maka.audio_activity', active: true },
 ]) test(`${start.type} cancels first-output timeout without releasing playback; next send rearms it`, async () => {
   const errors: string[] = [];
@@ -129,8 +120,6 @@ for (const start of [
     assert.equal(c.canInject, false);
     c.add({ kind: 'transport', event: { type: 'maka.audio_activity', active: true } });
     wire(c, 'turn.done', { id: 'a', role: 'assistant', transcript: 'finished generating' });
-    c.add({ kind: 'transport', event: { type: 'response.done', response: { id: 'a' } } });
-    c.add({ kind: 'transport', event: { type: 'output_audio_buffer.stopped', response_id: 'a' } });
     await tick();
     assert.deepEqual(errors, []);
     assert.equal(c.canInject, false);
@@ -143,7 +132,7 @@ for (const start of [
   } finally { c.close(); }
 });
 
-for (const completion of ['turn.done', 'input_audio_buffer.speech_stopped']) {
+for (const completion of ['turn.done']) {
   test(`native ${completion} releases the user-input fence; handoff and local audio cannot`,()=>{
     const c=new WorkHubVoiceCallController({callId:'call',recordTranscript:()=>{},interruption:()=>{}});
     try {
@@ -151,8 +140,7 @@ for (const completion of ['turn.done', 'input_audio_buffer.speech_stopped']) {
       c.add({kind:'delegation_pending',userTurnId:'user'});
       c.add({kind:'transport',event:{type:'maka.input_audio_activity',active:false}});
       assert.equal(c.canInject,false);
-      if(completion==='turn.done') wire(c,'turn.done',{id:'user',role:'user'});
-      else c.add({kind:'transport',event:{type:completion}});
+      wire(c,'turn.done',{id:'user',role:'user'});
       assert.equal(c.canInject,true);
       wire(c,'turn.created',{id:'next',role:'user'});
       wire(c,'turn.done',{id:'user',role:'user'});
@@ -268,4 +256,20 @@ test('native replies bypass busy voice and list fences; uncertain replies never 
     assert.deepEqual(supplements, ['遗漏回答']); assert.equal(native.length, 1);
     assert.equal(state.responses?.[0]?.id, 'old'); assert.equal(errors.length, 1);
   } finally { outlet.close(); }
+});
+
+test('provider-specific lifecycle events cannot start or finish normalized turns', () => {
+  const c = new WorkHubVoiceCallController({ callId: 'call', recordTranscript() {}, interruption() {} });
+  try {
+    c.add({kind:'transport',event:{type:'response.created',response:{id:'old'}}});
+    assert.equal(c.currentTurn, undefined);
+    assert.equal(c.canInject, true);
+    wire(c, 'turn.created', {id:'u',role:'user'});
+    c.add({kind:'delegation_pending',userTurnId:'u'});
+    c.add({kind:'transport',event:{type:'input_audio_buffer.speech_stopped'}});
+    c.add({kind:'transport',event:{type:'response.done',response:{id:'old'}}});
+    assert.equal(c.canInject, false);
+    wire(c, 'turn.done', {id:'u',role:'user'});
+    assert.equal(c.canInject, true);
+  } finally {c.close();}
 });

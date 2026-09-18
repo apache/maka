@@ -21,22 +21,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { VoiceTranscriptCollector } from '../../renderer/features/workhub/testing.js';
 
-test('legacy fragments display once without clearing the other speaker', () => {
+test('provider-specific transcript events are not accepted by the normalized display', () => {
   const collector = new VoiceTranscriptCollector();
-  const fragment = (role: string, id: string, text: string) => ({ type: `${role}_transcript.added`, item: { id, text } });
-  assert.deepEqual(collector.accept(fragment('input', '1', '检查')), { input: '检查', output: '' });
-  assert.equal(collector.accept(fragment('input', '1', '检查')), undefined);
-  assert.deepEqual(collector.accept(fragment('input', '2', '连接')), { input: '检查连接', output: '' });
-  assert.deepEqual(collector.accept(fragment('output', '3', '好的')), { input: '检查连接', output: '好的' });
-  assert.deepEqual(collector.accept(fragment('input', '4', '先暂停')), { input: '检查连接先暂停', output: '好的' });
-  assert.equal(collector.accept({ type: 'input_transcript.added', item: { text: 123 } }), undefined);
-});
-
-test('Realtime API completed input and streamed output use the same live display', () => {
-  const collector = new VoiceTranscriptCollector();
-  assert.deepEqual(collector.accept({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'one', transcript: '你好' }), { input: '你好', output: '' });
-  assert.deepEqual(collector.accept({ type: 'response.output_audio_transcript.delta', event_id: 'a', delta: '你好呀' }), { input: '你好', output: '你好呀' });
-  assert.deepEqual(collector.accept({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'two', transcript: '检查任务' }), { input: '检查任务', output: '你好呀' });
+  for (const type of ['input_transcript.added','output_transcript.added','conversation.item.input_audio_transcription.completed','response.audio_transcript.delta'])
+    assert.equal(collector.accept({type,item:{id:'x',text:'old'},item_id:'x',transcript:'old',delta:'old'}),undefined);
 });
 
 test('overlapping native turns accumulate separately and keep final captions until the next turn', () => {

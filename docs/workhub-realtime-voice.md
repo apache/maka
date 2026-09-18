@@ -43,7 +43,7 @@ Adapter callbacks:
 - `observe`: emit `{ kind: 'transport', event }` with normalized `turn.created`,
   `turn.delta` and `turn.done` events. A turn has `id`, `role` (`user`/`assistant`),
   `transcript` and optional `start_ms`/`end_ms`; deltas have `turn_id` and `delta`.
-  Report every turn completion, including interrupted output. Lifecycle observations
+  Provider-specific response, speech-buffer and transcript-fragment events must be translated by the adapter; the core does not interpret them. Report every turn completion, including interrupted output. Lifecycle observations
   must be synchronous and ordered; never infer completion from silence.
 - `record`: persist bounded collaboration facts, not private provider payloads.
 - `onClose` and `onError`: release the active call and report failures.
@@ -60,7 +60,7 @@ inbox, use the existing start/steer path and return through the original request
 Task delegation, child supervision and result handling remain owned by the main WorkHub runtime. The voice layer does not scan child transcripts, poll child completion or inject synthetic task-result messages into WorkHub. It transports replies WorkHub explicitly publishes through `voice_reply`.
 
 Voice transcript fragments are persisted while streaming and consolidated at turn end.
-SQLite owns the voice history, pending list, delivery receipts and review cursor.
+The current `voice-queue.sqlite` database owns the voice history, pending list, delivery receipts and review cursor. Old JSON files are not imported; older or unknown persisted state shapes are rejected without rewriting them. There is no experimental-format migration.
 
 The ordered list contains prepared speech, not all outstanding tasks. The consumer sends
 one approved item at a time while voice is idle. Delivery reservations and exact-snapshot
