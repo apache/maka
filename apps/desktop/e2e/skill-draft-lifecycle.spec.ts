@@ -49,14 +49,15 @@ async function seedEditableTurn(page: Page): Promise<void> {
 }
 
 /** Type the draft, then append the Skill chip — the order a user works in. */
-async function composeWithSkill(page: Page, text: string, name: RegExp): Promise<void> {
+async function composeWithSkill(page: Page, text: string, name: string, skillId: string): Promise<void> {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(text);
   await composer.click();
-  await composer.pressSequentially(' /');
+  await composer.pressSequentially(` /${skillId}`);
   const option = page.getByRole('listbox', { name: /技能/ }).getByRole('option', { name });
   await expect(option).toBeVisible();
-  await option.click();
+  await composer.press('Enter');
+  await expect(page.locator(`[data-astryx-token-value="/skill:${skillId}"]`)).toBeVisible();
 }
 
 async function beginRevision(page: Page): Promise<void> {
@@ -89,7 +90,7 @@ test('a successful revision retry clears both child and source drafts', async ({
   await openInstalledWorkspaceSkill(page);
   await seedEditableTurn(page);
   await beginRevision(page);
-  await composeWithSkill(page, 'edited with skill', /Workspace Only/);
+  await composeWithSkill(page, 'edited with skill', 'Workspace Only', 'workspace-only');
   await failWorkspaceSkillRevision(page);
 
   const enabled = await page.evaluate(() =>
@@ -114,9 +115,9 @@ test('cancelling a failed revision restores the complete pre-edit draft', async 
   await seedEditableTurn(page);
 
   const composer = page.locator(COMPOSER_INPUT);
-  await composeWithSkill(page, 'previous unsent draft', /Project Only/);
+  await composeWithSkill(page, 'previous unsent draft', 'Project Only', 'project-only');
   await beginRevision(page);
-  await composeWithSkill(page, 'edited with skill', /Workspace Only/);
+  await composeWithSkill(page, 'edited with skill', 'Workspace Only', 'workspace-only');
   await failWorkspaceSkillRevision(page);
 
   await page.getByRole('button', { name: '取消' }).click();
