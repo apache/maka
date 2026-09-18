@@ -208,6 +208,16 @@ function installDom() {
   const storage = new Map<string, string>();
   const globals = {
     document, window,
+    matchMedia: (media: string) => ({
+      matches: false,
+      media,
+      onchange: null,
+      addListener() {},
+      removeListener() {},
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent: () => true,
+    }),
     HTMLElement: window.HTMLElement,
     HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
     requestAnimationFrame: () => 1,
