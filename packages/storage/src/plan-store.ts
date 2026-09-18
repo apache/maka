@@ -49,6 +49,7 @@ import {
   isPlanProposalLifecycleAdmissible,
   isPlanTextWithinLimit,
   planEncodedByteLength,
+  planTextHasLineBreak,
   worstCasePlanExecution,
 } from '@maka/core/plan';
 import { chainWrite } from './write-queue.js';
@@ -690,7 +691,9 @@ function normalizeDefinitions(steps: PlanStepDefinition[]): PlanStepDefinition[]
     }
     return {
       id: requiredId(optionalText(step.id, 'Plan step id') ?? `step-${index + 1}`, 'Plan step id'),
-      title: requiredPlainText(step.title, 'Plan step title', PLAN_STEP_TITLE_MAX_CHARS),
+      // A step title is rendered on one line wherever a Plan is shown, so a
+      // break inside it would split one step into two lines.
+      title: requiredSingleLinePlainText(step.title, 'Plan step title', PLAN_STEP_TITLE_MAX_CHARS),
       description: requiredPlainText(step.description, 'Plan step description'),
       ...(step.files && step.files.length > 0
         ? { files: step.files.map((file) => requiredText(file, 'Plan step file')) }
@@ -736,6 +739,14 @@ function requireCancellableExecution(state: PlanSessionState, executionId: strin
     throw new PlanConflictError('The plan tool is bound to a stale execution');
   }
   return execution;
+}
+
+function requiredSingleLinePlainText(value: string, label: string, maxLength?: number): string {
+  const normalized = requiredPlainText(value, label, maxLength);
+  if (planTextHasLineBreak(normalized)) {
+    throw new PlanConflictError(`${label} must be a single line`);
+  }
+  return normalized;
 }
 
 function requiredText(value: string, label: string, maxBytes?: number): string {
