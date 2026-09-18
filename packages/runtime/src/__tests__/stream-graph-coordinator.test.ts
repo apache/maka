@@ -1001,6 +1001,62 @@ describe('host-managed agent graph coordinator', () => {
     }
   });
 
+  test('terminal projection failures cannot keep completed child work running', async () => {
+    const started = deferred();
+    const released = deferred();
+    await withActivityGraph(
+      async ({
+        coordinator,
+        rootSessionId,
+        update,
+        runtimeEventStore,
+        delayedStore,
+        errors,
+        activityChanges,
+      }) => {
+        try {
+          await update({
+            add_work: [
+              { agent_id: 'local-read', instruction: 'held-terminal-child', input_ids: [] },
+            ],
+          });
+          await withTimeout(started.promise, 5_000, 'The child did not reach its terminal gate');
+          const running = await coordinator.getSnapshot(rootSessionId);
+          const child = running.operators.find((operator) => operator.status === 'running');
+          assert.ok(child);
+          assert.equal(coordinator.readSessionActivity(rootSessionId), 'running');
+
+          const failure = new Error('terminal activity projection unavailable');
+          delayedStore.failProjectionCommits(failure);
+          released.resolve();
+          await coordinator.waitForIdle(rootSessionId);
+          const runs = await runtimeEventStore.listSessionInvocations(child.childSessionId);
+          assert.ok(runs.length > 0);
+          assert.ok(runs.every((run) => runtimeInvocationOutcome(run) === 'completed'));
+          assert.ok(errors.includes(failure));
+          assert.equal(coordinator.readSessionActivity(rootSessionId), 'blocked');
+          assert.equal(activityChanges.at(-1), 'blocked');
+
+          delayedStore.clearProjectionFailure();
+          const repaired = await coordinator.getSnapshot(rootSessionId);
+          assert.ok(repaired.operators.every((operator) => operator.status === 'completed'));
+          assert.equal(coordinator.readSessionActivity(rootSessionId), 'idle');
+          assert.equal(activityChanges.at(-1), 'idle');
+        } finally {
+          released.resolve();
+          delayedStore.clearProjectionFailure();
+        }
+      },
+      undefined,
+      undefined,
+      async (input) => {
+        if (!input.text.includes('held-terminal-child')) return;
+        started.resolve();
+        await released.promise;
+      },
+    );
+  });
+
   test('repairing a failed graph projection publishes idle without a selected Session subscription', async () => {
     await withActivityGraph(
       async ({ coordinator, rootSessionId, activityChanges, delayedStore, errors }) => {
@@ -2502,6 +2558,7 @@ async function withActivityGraph(
   }) => Promise<void>,
   beforeReply?: (input: BackendSendInput, sessionId: string) => Promise<void>,
   readTurnPendingInteractionCount?: AgentGraphCoordinatorInput['readTurnPendingInteractionCount'],
+  beforeComplete?: (input: BackendSendInput) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-graph-activity-'));
   const sessionStore = createSessionStore(root);
@@ -2526,6 +2583,7 @@ async function withActivityGraph(
             messageId: randomUUID(),
             text: 'A completed graph result.',
           };
+          await beforeComplete?.(input);
           yield {
             type: 'complete',
             id: randomUUID(),
