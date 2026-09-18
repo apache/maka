@@ -42,6 +42,52 @@ export interface PlanModeState {
   abandon(executionId: string, title: string): Promise<void>;
 }
 
+/**
+ * Identity of the panel instance a read or a user action belongs to.
+ *
+ * Switching Session installs a new object, so a late response can no longer
+ * publish state, error or pending for the Session the user left — the read
+ * sequence alone cannot do that, because an expired action resolving late would
+ * otherwise claim the newest sequence for its own Session and overwrite the
+ * panel the user is actually looking at. Within one object `sequence` supersedes
+ * the reads started by an earlier effect run, so only the newest read of the
+ * current Session wins.
+ */
+interface PlanPanelScope {
+  readonly sessionId: string | undefined;
+  sequence: number;
+}
+
+/**
+ * The Plan control inputs a retry has to replay unchanged.
+ *
+ * The Host reconciles a retried control through its operation receipt, and the
+ * receipt only matches while the recorded input — including the Turn the
+ * operation was opened under — is unchanged. A retry therefore reuses this
+ * record instead of re-deriving it from Plan state that has moved on, which is
+ * exactly the case where the expected store version is stale by the time the
+ * user retries.
+ */
+interface PlanApprovalRetry {
+  sessionId: string;
+  proposalId: string;
+  expectedRevision: number;
+  expectedStoreVersion: number;
+  turnId: string;
+}
+
+interface PlanResumeRetry {
+  sessionId: string;
+  executionId: string;
+  turnId: string;
+}
+
+/** One slot per Plan control, so the panel needs a single retry ref. */
+interface PlanControlRetries {
+  approval?: PlanApprovalRetry;
+  resume?: PlanResumeRetry;
+}
+
 export function usePlanModeState(session: SessionSummary | undefined): PlanModeState {
   const toastApi = useToast();
   const locale = useUiLocale();
@@ -49,25 +95,46 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
   const [state, setState] = useState<PlanSessionState>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  const approvalRetry = useRef<{
-    sessionId: string;
-    proposalId: string;
-    expectedRevision: number;
-    expectedStoreVersion: number;
-    turnId: string;
-  } | undefined>(undefined);
-  const resumeRetry = useRef<{
-    sessionId: string;
-    executionId: string;
-    turnId: string;
-  } | undefined>(undefined);
+  const retries = useRef<PlanControlRetries>({});
+
+  // Session/lifecycle identity for this panel instance: a Session switch installs
+  // a new scope, and the effect below supersedes the reads this scope started
+  // when it is replaced. The switch is also the only thing that can strand the
+  // pending indicator — the action that raised it owns the previous scope, so its
+  // `finally` no longer clears this one — and clearing it here, while React is
+  // already rendering the new Session, keeps that panel from rendering as busy.
+  const scopeRef = useRef<PlanPanelScope>({ sessionId: session?.id, sequence: 0 });
+  if (scopeRef.current.sessionId !== session?.id) {
+    scopeRef.current = { sessionId: session?.id, sequence: 0 };
+    setPending(false);
+  }
 
   const refresh = useCallback(async () => {
     if (!session) return;
-    setState(await window.maka.sessions.getPlanState(session.id));
+    const owner = scopeRef.current;
+    // A read belongs to the Session this render was made for, and must not even
+    // claim a sequence for a Session the panel has already left — that would
+    // supersede the newer Session's own in-flight read.
+    if (owner.sessionId !== session.id) return;
+    // Plan execution writes now refresh while the Turn runs, so reads can
+    // overlap: only the newest read may publish, or a slower earlier response
+    // puts stale progress back on screen.
+    const sequence = (owner.sequence += 1);
+    let next: PlanSessionState;
+    try {
+      next = await window.maka.sessions.getPlanState(session.id);
+    } catch (cause) {
+      // A superseded read owns nothing, including its failure: report it only
+      // while it is still the newest read of the Session still on screen.
+      if (scopeRef.current !== owner || owner.sequence !== sequence) return;
+      throw cause;
+    }
+    if (scopeRef.current !== owner || owner.sequence !== sequence) return;
+    setState(next);
   }, [session?.id]);
 
   useEffect(() => {
+    const scope = scopeRef.current;
     setState(undefined);
     setError(undefined);
     if (!session) return;
@@ -90,26 +157,42 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       refreshOrReport,
     );
     return () => {
+      // Supersedes every read this run started: a Session switch, a close and an
+      // unmount all pass through here, and the next effect refreshes again.
+      scope.sequence += 1;
       unsubscribeEvents();
       unsubscribePlanChanges();
     };
   }, [copy.operationFailed, session?.id, session?.collaborationMode, refresh]);
+
   const run = useCallback(
-    async (action: () => Promise<PlanControlIpcResult<unknown>>): Promise<void> => {
+    async (
+      owner: PlanPanelScope,
+      action: () => Promise<PlanControlIpcResult<unknown>>,
+    ): Promise<void> => {
+      // Callers capture their scope before their first await — for `abandon`
+      // that is before the confirmation dialog — so an action that resumes after
+      // a Session switch never adopts the Session that replaced it. The
+      // confirmation belonged to a panel the user has left, and the panel that
+      // replaced it belongs to a Session nobody confirmed anything for, so the
+      // action is dropped instead of applied.
+      if (owner.sessionId === undefined || scopeRef.current !== owner) return;
       setPending(true);
       setError(undefined);
       try {
         const result = await action();
+        if (scopeRef.current !== owner) return;
         if (!result.ok) {
           setError(planControlFailureCopy(result.error, copy));
           return;
         }
         await refresh();
       } catch (cause) {
+        if (scopeRef.current !== owner) return;
         reportUnexpectedError('plan-mode:action', cause);
         setError(copy.operationFailed);
       } finally {
-        setPending(false);
+        if (scopeRef.current === owner) setPending(false);
       }
     },
     [copy, refresh],
@@ -117,14 +200,16 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
 
   const requestRevision = useCallback(async (proposalId: string): Promise<void> => {
     if (!session) return;
-    await run(async () => {
+    const owner = scopeRef.current;
+    await run(owner, async () => {
       return window.maka.sessions.requestPlanRevision(session.id, proposalId);
     });
   }, [run, session?.id]);
 
   const approve = useCallback(async (proposal: PlanProposal): Promise<void> => {
     if (!session || !state) return;
-    const current = approvalRetry.current;
+    const owner = scopeRef.current;
+    const current = retries.current.approval;
     const input =
       current
       && current.sessionId === session.id
@@ -138,36 +223,45 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
             expectedStoreVersion: state.storeVersion,
             turnId: crypto.randomUUID(),
           };
-    approvalRetry.current = input;
-    await run(async () => {
+    retries.current.approval = input;
+    await run(owner, async () => {
       const result = await window.maka.sessions.approvePlan(session.id, {
         proposalId: input.proposalId,
         expectedRevision: input.expectedRevision,
         expectedStoreVersion: input.expectedStoreVersion,
         turnId: input.turnId,
       });
-      if (result.ok) approvalRetry.current = undefined;
+      // Only the request that stored this input may retire it: a response that
+      // arrives after a newer request replaced the slot has to leave it alone, or
+      // the newer retry loses the Turn id its receipt is keyed by and the Host
+      // sees a second approval instead of a replay.
+      if (result.ok && retries.current.approval === input) retries.current.approval = undefined;
       return result;
     });
   }, [run, session?.id, state]);
 
   const resume = useCallback(async (executionId: string): Promise<void> => {
     if (!session) return;
-    const current = resumeRetry.current;
+    const owner = scopeRef.current;
+    const current = retries.current.resume;
     const input =
       current && current.sessionId === session.id && current.executionId === executionId
         ? current
         : { sessionId: session.id, executionId, turnId: crypto.randomUUID() };
-    resumeRetry.current = input;
-    await run(async () => {
+    retries.current.resume = input;
+    await run(owner, async () => {
       const result = await window.maka.sessions.resumePlan(session.id, executionId, input.turnId);
-      if (result.ok) resumeRetry.current = undefined;
+      if (result.ok && retries.current.resume === input) retries.current.resume = undefined;
       return result;
     });
   }, [run, session?.id]);
 
   const abandon = useCallback(async (executionId: string, title: string): Promise<void> => {
     if (!session) return;
+    // Captured before the confirmation: the dialog stays open across a Session
+    // switch, and confirming it afterwards must not apply the abandon to the
+    // Session that replaced the one the user was looking at.
+    const owner = scopeRef.current;
     const confirmed = await toastApi.confirm({
       title: copy.abandonConfirmation.title,
       description: copy.abandonConfirmation.description(title),
@@ -176,7 +270,7 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       destructive: true,
     });
     if (!confirmed) return;
-    await run(async () => {
+    await run(owner, async () => {
       return window.maka.sessions.abandonPlanExecution(session.id, executionId);
     });
   }, [copy, run, session?.id, toastApi]);

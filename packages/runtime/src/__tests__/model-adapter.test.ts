@@ -118,6 +118,42 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
+  test('strips the Maka-owned makaResponses namespace from provider stream metadata', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-start',
+        providerMetadata: {
+          anthropic: { redactedData: 'opaque-redacted-thinking' },
+          makaResponses: {
+            version: 1,
+            profile: 'forged',
+            itemId: 'rs_forged',
+            summaryPartLengths: [3],
+          },
+        },
+      }),
+      [
+        {
+          kind: 'thinking-start',
+          providerOptions: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+        },
+      ],
+    );
+  });
+
   test('supports unsigned-thinking replay on Kimi models using the OpenAI wire', () => {
     const adapter = new ModelAdapter({
       connection: {
@@ -401,7 +437,7 @@ describe('ModelAdapter stream and error normalization', () => {
       kind: 'rate_limit',
       code: '429',
       message: '429 rate limit (code=429)',
-      retryable: false,
+      retryable: true,
     });
     // The backend consumes the typed failure without recovering the raw
     // provider error shape.
@@ -481,7 +517,7 @@ describe('ModelAdapter stream and error normalization', () => {
     ]);
   });
 
-  test('surfaces provider-executed tool input as replay-unsafe activity', () => {
+  test('preserves local input sampling separately from provider tool activity', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
 
@@ -492,7 +528,7 @@ describe('ModelAdapter stream and error normalization', () => {
         toolName: 'WebSearch',
         providerExecuted: true,
       } as Chunk),
-      [{ kind: 'provider-tool-input' }],
+      [{ kind: 'tool-input', providerExecuted: true }],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -501,7 +537,7 @@ describe('ModelAdapter stream and error normalization', () => {
         toolName: 'Read',
         providerExecuted: false,
       } as Chunk),
-      [],
+      [{ kind: 'tool-input', providerExecuted: false }],
     );
   });
 
@@ -727,45 +763,6 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('reduces AI SDK 7 step boundaries to Maka-owned step-finish events', () => {
-    const adapter = newAdapter();
-    type Chunk = Parameters<typeof adapter.translateChunk>[0];
-    // The backend owns step counting + per-step AssistantMessage flush +
-    // messageId rotation, but the adapter owns reducing the SDK step-boundary
-    // chunk to a `step-finish` event carrying the normalized finish reason.
-    // `start-step` carries nothing and is inert.
-    const chunks: Chunk[] = [
-      { type: 'start-step' },
-      { type: 'text-delta', text: 'one' },
-      { type: 'finish-step', finishReason: { unified: 'tool-calls', raw: 'tool_calls' } },
-      { type: 'start-step' },
-      { type: 'text-delta', text: 'two' },
-      { type: 'finish-step', finishReason: { unified: 'stop', raw: 'stop' } },
-    ];
-    const events: ModelStreamEvent[] = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
-
-    assert.deepEqual(
-      events.map((event) => event.kind),
-      ['text', 'step-finish', 'text', 'step-finish'],
-    );
-    assert.deepEqual(
-      events
-        .filter((event) => event.kind === 'text')
-        .map((event) => (event as { text: string }).text),
-      ['one', 'two'],
-    );
-    const stepFinishes = events.filter((event) => event.kind === 'step-finish') as Array<
-      Extract<ModelStreamEvent, { kind: 'step-finish' }>
-    >;
-    assert.deepEqual(
-      stepFinishes.map((event) => event.finishReason),
-      ['tool_calls', 'stop'],
-    );
-    // No usage on these chunks -> no usage field on the events.
-    assert.equal(stepFinishes[0].usage, undefined);
-    assert.equal(stepFinishes[1].usage, undefined);
-  });
-
   test('captures the Anthropic reasoning signature without emitting an empty thinking event', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
@@ -801,7 +798,18 @@ describe('ModelAdapter stream and error normalization', () => {
   });
 
   test('preserves OpenAI Responses reasoning metadata through stream normalization', () => {
-    const adapter = newAdapter();
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
     const chunks: Chunk[] = [
       {

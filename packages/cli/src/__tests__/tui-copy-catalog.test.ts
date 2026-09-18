@@ -51,6 +51,10 @@ const MESSAGE_VALUES = {
   format: 'email',
   notice: 'The original account was deleted.',
   recovery: 'Add or enable a connection first.',
+  source: 'OpenCode',
+  kind: 'records',
+  max: 250_000,
+  sessionId: 'session-imported',
 } as const;
 
 describe('TUI copy resources', () => {

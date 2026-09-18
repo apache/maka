@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { InspectorCopy } from '../application/contracts/session-inspector/copy.js';
+
 import type { ChatConfigurationReason } from '@maka/core/connection-readiness';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
 
@@ -100,6 +102,8 @@ export interface DesktopConversationCopy {
     sideChat: string;
     sideChatNumbered(index: number): string;
     openTab: string;
+    closeTab: (name: string) => string;
+    closeTabHint: string;
     openTools: string;
     launcher: {
       review: string;
@@ -133,6 +137,8 @@ export interface DesktopConversationCopy {
     unarchive: string;
     delete: string;
     archived: string;
+    startTask: string;
+    openSession: string;
   };
   reviewPanel: {
     ariaLabel: string;
@@ -174,130 +180,7 @@ export interface DesktopConversationCopy {
     writeFailed: string;
     stopFailed: string;
   };
-  inspector: {
-    ariaLabel: string;
-    /** Copy action and success copy for an unpriced model call's exact Pricing key. */
-    copyPricingKey: string;
-    pricingKeyCopied: string;
-    unpricedPricingKey: string;
-    /** Toast title when the clipboard write is denied or unavailable. */
-    copyFailed: string;
-    copyFailedDetail: string;
-    loadFailed: string;
-    retry: string;
-    empty: string;
-    /** The panel-empty (tier 2) sentence under `empty`. */
-    emptyHelp: string;
-    costUnavailable: string;
-    costEstimateHelp: string;
-    loadEarlier: string;
-    hideEarlier: string;
-    loadingEarlier: string;
-    loadingTrace: string;
-    loadingSummary: string;
-    summaryUnavailable: string;
-    /** Label for the complete Session cost estimate. */
-    totals: {
-      cost: string;
-    };
-    /**
-     * The session-wide metered-token split, read like a bill: what the
-     * provider's cache served, what was paid as uncached input, what was paid
-     * as output. Names the bands of the token track, in the track's order.
-     */
-    tokenUsage: {
-      title: string;
-      segment: { cacheRead: string; cacheMiss: string; output: string };
-    };
-    /**
-     * Where the session's recorded time went. Names the bands of the duration
-     * track; each row also states how many times its kind ran.
-     */
-    durationUsage: {
-      title: string;
-      /** Label under the ring's total figure. */
-      center: string;
-      segment: {
-        model: (count: number) => string;
-        tool: (count: number) => string;
-      };
-    };
-    /**
-     * The coverage notice, composed with its own breakdown: the separators
-     * belong to the language, not to the layout, so a Chinese sentence gets
-     * `：` and `、` where an English one gets `:` and `,`.
-     */
-    coveragePartial: (parts: readonly string[]) => string;
-    coverageAbsent: (parts: readonly string[]) => string;
-    /** Each states its own count, so English can say "1 turn" and not "1 turns". */
-    unreadable: (count: number) => string;
-    oversizedRuns: (count: number) => string;
-    turnsMissing: (count: number) => string;
-    turnsShort: (count: number) => string;
-    /**
-     * Names a step whose kind IS its identity — a compaction, an error, a
-     * permission prompt with no tool attached. Rows that carry a real
-     * identifier (a model id, a tool name) print that instead.
-     */
-    stepKind: { permission: string; compaction: string; error: string };
-    /** Why a model was called, when the reason was not the turn itself. */
-    callKind: (kind: string) => string;
-    /** How a permission request was answered. */
-    permissionDecision: (decision: string) => string;
-    /** What a tool that failed was recovered as. */
-    recoveredAs: (disposition: string) => string;
-    /** Attempts beyond the first, in words rather than as `×N`. */
-    retries: (count: number) => string;
-    /**
-     * What ended the turn badly, in words. The trace's codes are engineering
-     * vocabulary (`tool_failed`, `turn_aborted`); this is the sentence a
-     * reader gets, with a plain fallback for a code nobody has named yet.
-     */
-    turnFailure: (code: string) => string;
-    /** Stable display name of one turn, qualified by its recorded start time. */
-    turnLabel: (startedAt: string) => string;
-    /** Summary above the raw timeline. */
-    overview: {
-      context: string;
-      /** Names the bands of the context bar, in the bar's own order. */
-      segment: {
-        cacheRead: string;
-        fresh: string;
-        used: string;
-        free: string;
-      };
-      /** The three figures a reader opens this tab for, as headline stats. */
-      cacheHit: string;
-      /** Heading over the causal record. */
-      timelineTab: string;
-      /**
-       * What filled the context, under the bar that says how full it is.
-       *
-       * Kept verbally separate from the bar on purpose: these are estimates
-       * over serialized bytes and do not sum to the provider-reported prompt
-       * (#2323), so the heading says estimate and every figure carries a `≈`.
-       */
-      composition: {
-        title: string;
-        /** States the unit and its authority, once, under the heading. */
-        basis: string;
-        part: {
-          system_instructions: string;
-          tool_definitions: string;
-          messages: string;
-          other: string;
-        };
-        /** Heading over the per-tool rows. */
-        tools: string;
-        /** The tools below the visible rows, folded into one. */
-        remainingTools: (count: number) => string;
-        /** Tool schemas the payload never named. */
-        unlabelled: string;
-        /** The metered call carried no capture — a gap, not an empty prompt. */
-        unrecorded: string;
-      };
-    };
-  };
+  inspector: InspectorCopy;
   quoteCompanion: {
     /** Prefix for the companion fork's session name (followed by the excerpt). */
     namePrefix: string;
@@ -482,7 +365,9 @@ const COPY = {
       inspector: '追踪',
       sideChat: '侧边对话',
       sideChatNumbered: (index) => `侧边对话 ${index}`,
-      openTab: '打开或关闭工作栏的面',
+      openTab: '添加面板',
+      closeTab: (name) => `关闭 ${name}`,
+      closeTabHint: '按 Delete 关闭此标签页',
       openTools: '打开工具',
       launcher: {
         review: '查看当前 Git 工作区变化',
@@ -516,6 +401,8 @@ const COPY = {
       unarchive: '恢复',
       delete: '删除',
       archived: '已归档',
+      startTask: '开始任务',
+      openSession: '打开会话',
     },
     reviewPanel: {
       ariaLabel: 'Git 变更',
@@ -721,7 +608,9 @@ const COPY = {
       inspector: '追蹤',
       sideChat: '側邊對話',
       sideChatNumbered: (index) => `側邊對話 ${index}`,
-      openTab: '開啟或關閉工作欄的面',
+      openTab: '新增面板',
+      closeTab: (name) => `關閉 ${name}`,
+      closeTabHint: '按 Delete 關閉此分頁',
       openTools: '開啟工具',
       launcher: {
         review: '檢視目前 Git 工作區變化',
@@ -755,6 +644,8 @@ const COPY = {
       unarchive: '恢復',
       delete: '刪除',
       archived: '已歸檔',
+      startTask: '開始任務',
+      openSession: '開啟工作階段',
     },
     reviewPanel: {
       ariaLabel: 'Git 變更',
@@ -951,7 +842,9 @@ const COPY = {
       inspector: 'Trace',
       sideChat: 'Side chat',
       sideChatNumbered: (index) => `Side chat ${index}`,
-      openTab: 'Open or close a workbar face',
+      openTab: 'Add panel',
+      closeTab: (name) => `Close ${name}`,
+      closeTabHint: 'Press Delete to close this tab',
       openTools: 'Open tools',
       launcher: {
         review: 'View changes in the current Git workspace',
@@ -985,6 +878,8 @@ const COPY = {
       unarchive: 'Restore',
       delete: 'Delete',
       archived: 'Archived',
+      startTask: 'Start task',
+      openSession: 'Open session',
     },
     reviewPanel: {
       ariaLabel: 'Git changes',
@@ -1169,18 +1064,3 @@ export function getDesktopConversationCopy(locale: UiLocale): DesktopConversatio
   return COPY[locale];
 }
 
-export type InspectorCopy = DesktopConversationCopy['inspector'];
-
-/**
- * The name a step falls back to when it has no identifier of its own. A model
- * call and a tool call always carry one, so they never reach here.
- *
- * It lives beside the words rather than in the panel so fallback labels stay
- * part of the locale's vocabulary instead of being reconstructed by the view.
- */
-export function inspectorStepKindLabel(copy: InspectorCopy, kind: string): string {
-  if (kind === 'permission') return copy.stepKind.permission;
-  if (kind === 'compaction') return copy.stepKind.compaction;
-  if (kind === 'error') return copy.stepKind.error;
-  return kind;
-}

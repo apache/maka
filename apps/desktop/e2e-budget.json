@@ -19,7 +19,7 @@
     },
     "partial-history-notice.spec.ts": {
       "tests": 1,
-      "electron": "bounded paging crosses renderer, preload and Host transcript storage; the return-to-tail assertion also uses a real pointer hit-test"
+      "electron": "bounded paging crosses renderer, preload and Host transcript storage: each page comes from the Host only when the reader asks, and the Host Turn index lists the whole Session before it is loaded; the return-to-tail assertion also uses a real pointer hit-test. Where the arriving rows leave the reader is renderer-owned and lives in the PrependedHistoryKeepsMeasuredHeights story."
     },
     "proxy-password-editing.spec.ts": {
       "tests": 1,
@@ -69,25 +69,17 @@
       "tests": 4,
       "electron": "observation seeding, reconnect and settle are Host subscriptions surviving a renderer remount"
     },
-    "transcript-scroll-cost.spec.ts": {
-      "tests": 1,
-      "electron": "One traversal exercises real Host transcript paging through preload/IPC, bounded retained ranges, reader displacement when pages install, and a return-to-tail Host read. Fixture motion runs in the TranscriptRenderCost story."
-    },
-    "scroll-geometry.spec.ts": {
-      "tests": 1,
-      "electron": "a real Host history batch arrives during a held native scrollbar drag; release must publish that range while preserving the reading Turn and allow return to latest"
-    },
     "workhub-layout.spec.ts": {
-      "tests": 2,
-      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the compact native window grows to contain the model overlay without moving composer controls on screen, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
+      "tests": 3,
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the native Workbar menu must coexist with the live sibling WebContentsView without hiding its compositor; the compact native window grows only with the inline composer wheel and keeps its bottom anchor; opening context details routes to Main’s Workbar without resizing or docking the floating conversation, while the thinking sheet stays within the compact bounds, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,
       "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows, shared appearance changes and the explicit return-from-picture-in-picture button"
     },
     "workhub-return-rail.spec.ts": {
-      "tests": 3,
-      "electron": "WorkHub lives in a separate native WebContentsView: compare its scrollport with the main Session after Host-backed sends, then open that Session and return through the shell while retaining the same WorkHub draft; a Host-backed pending question survives renderer reload and native detach/dock with its selection and focus"
+      "tests": 2,
+      "electron": "WorkHub lives in a separate native WebContentsView: open a Session and return through the shell while retaining the same WorkHub draft; a Host-backed pending question survives renderer reload and native detach/dock with its selection and focus"
     },
     "zh-tw-locale.spec.ts": {
       "tests": 1,

@@ -21,6 +21,7 @@ import { test, expect, type Page, type Locator } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { withE2eWindow, COMPOSER_INPUT } from '../../apps/desktop/e2e/fixtures';
+import { PROMPT_RAIL_PROMPT_COUNT } from '../../apps/desktop/src/main/e2e-fixture/seed-helpers';
 import { outputDir, report, summarize } from './report.mjs';
 
 const rows: Array<Record<string, unknown>> = [];
@@ -118,8 +119,7 @@ test.afterEach(async ({}, info) => {
         status: info.status,
         longTaskControl,
         browserVersion,
-        fixture:
-          'existing chat-prompt-rail (120 turns), normal fake stream (9 characters/45ms), mid-stream stop',
+        fixture: `existing chat-prompt-rail (${PROMPT_RAIL_PROMPT_COUNT} turns), normal fake stream (9 characters/45ms), mid-stream stop`,
         repetitions,
         viewport: '1400x900',
         theme: 'light',
@@ -147,7 +147,7 @@ test('long session switch, older history and idle retention', {
     },
     async (page) => {
       const cdp = await setup(page);
-      const tail = '[data-turn-id="turn-prompt-rail-120"]';
+      const tail = `[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`;
       await expect(page.locator(tail)).toHaveCount(1);
       const expand = page.getByRole('button', { name: '展开侧边栏', exact: true });
       if (await expand.isVisible()) await activate(expand);
@@ -188,7 +188,7 @@ test('long session switch, older history and idle retention', {
         liveNodes.push(await page.locator('*').count());
       }
       row('session-roundtrip', 'warm-dom-ready-ms', samples);
-      row('120-turn-session', 'live-dom-elements', liveNodes);
+      row(`${PROMPT_RAIL_PROMPT_COUNT}-turn-session`, 'live-dom-elements', liveNodes);
       row('session-roundtrip', 'retained-dom-nodes-including-detached', nodes);
       row('session-roundtrip', 'heap-bytes-no-forced-gc', heaps);
       await switchTo(other!, false);

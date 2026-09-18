@@ -27,6 +27,7 @@ import { parseHTML } from 'linkedom';
 import { LocalizedChatMessage, TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnTimelineItem, TurnViewModel } from '../materialize.js';
+import { applyThinkingDelta } from '../thinking-stream.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -182,6 +183,23 @@ test('keeps the assistant answer element as a turn settles around it', async () 
   );
 });
 
+test('keeps reasoning expanded when its last neighboring tool is projected away', async () => {
+  const { container, root } = domRoot();
+  const thinking: TurnTimelineItem = {
+    kind: 'thinking', messageId: 'reason-1', text: 'First observation', live: false,
+  };
+  await renderTurn(root, turnWith([thinking, RUNNING_TOOL, ANSWER]));
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  assert.equal(header.getAttribute('aria-expanded'), 'true');
+  await renderTurn(root, turnWith([thinking, ANSWER]));
+  const after = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(after);
+  assert.ok(after.isSameNode(header));
+  assert.equal(after.getAttribute('aria-expanded'), 'true');
+});
+
 test('redacts secrets before rendering a settled collapsed reasoning preview', async () => {
   const { container, root } = domRoot();
   await renderTurn(root, turnWith([
@@ -213,6 +231,27 @@ test('preserves currency in a settled collapsed reasoning preview', async () => 
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /cost is \$5, not x \+ 1/);
+});
+
+test('expanded truncated reasoning shows the current tail without replaying its marker', async () => {
+  const { container, root } = domRoot();
+  let thinking = applyThinkingDelta('', 'Earlier observations. '.repeat(8) + 'Current observation.', { locale: 'en', maxTotalChars: 128 });
+  const renderThinking = () => renderTurn(root, turnWith([{
+    kind: 'thinking', messageId: 'thinking-1', live: true,
+    text: thinking.text, truncated: thinking.truncated,
+  }]));
+  await renderThinking();
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
+  const body = container.querySelector('.maka-chat-reasoning-content');
+  assert.ok(body);
+  assert.match(body.textContent ?? '', /Current observation\./);
+  thinking = applyThinkingDelta(thinking.text, '\nNewest observation.', { locale: 'en', maxTotalChars: 128, redactionState: thinking.redactionState });
+  await renderThinking();
+  assert.equal(container.querySelector('.maka-chat-reasoning-content'), body);
+  assert.match(body.textContent ?? '', /Newest observation\./);
+  assert.match(body.textContent ?? '', /Current observation\./);
 });
 
 test('preserves a model-authored single newline in plain reasoning', async () => {
@@ -453,6 +492,60 @@ test('keeps Astryx auto formatting live for user-message timestamps', async (con
   assert.match(timestamp.textContent ?? '', /3 hours ago/);
 });
 
+test('rotates working phrases on the elapsed clock without announcing each phrase', async (context) => {
+  const now = Date.UTC(2026, 8, 14, 12);
+  context.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
+  const { container, root } = domRoot();
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'running', tools: [], notes: [], startedAt: now, timeline: [],
+  };
+  const render = (next: TurnViewModel) => act(() => root.render(
+    <LocaleProvider locale="en"><TurnView turn={next} liveStreaming={{ runningStatus: true }} /></LocaleProvider>,
+  ));
+  await render(turn);
+  const status = container.querySelector('[role="status"]')!;
+  assert.match(status.textContent, /Pondering/);
+  assert.equal(status.getAttribute('aria-label'), 'Working…');
+  await act(() => context.mock.timers.tick(20_000));
+  assert.match(status.textContent, /Tinkering/);
+  assert.match(status.textContent, /20s/);
+  assert.equal(status.getAttribute('aria-label'), 'Working…');
+  // Concrete activity takes precedence over the playful phrase.
+  await render({ ...turn, tools: [{
+    toolUseId: 'cu-1', toolName: 'maka_computer', activityKind: 'computer', status: 'running', args: { app: 'Safari' },
+  }] });
+  assert.doesNotMatch(status.textContent ?? '', /Pondering|Tinkering/);
+  assert.notEqual(status.getAttribute('aria-label'), 'Working…');
+});
+
+test('keeps elapsed time while system motion preference changes the working phrase', async (context) => {
+  const now = Date.UTC(2026, 8, 14, 12);
+  context.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
+  const { container, root } = domRoot();
+  let reduced = true;
+  const listeners = new Set<() => void>();
+  Object.assign(globalThis, { matchMedia: () => ({
+    get matches() { return reduced; },
+    addEventListener(_type: string, listener: () => void) { listeners.add(listener); },
+    removeEventListener(_type: string, listener: () => void) { listeners.delete(listener); },
+  }) });
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'running', tools: [], notes: [], startedAt: now, timeline: [],
+  };
+  await act(() => root.render(
+    <LocaleProvider locale="en"><TurnView turn={turn} liveStreaming={{ runningStatus: true }} /></LocaleProvider>,
+  ));
+  await act(() => context.mock.timers.tick(20_000));
+  assert.equal(container.querySelector('.maka-turn-status-label')?.textContent, 'Pondering…');
+  assert.equal(container.querySelector('.maka-turn-elapsed')?.textContent, '20s');
+  await act(() => { reduced = false; listeners.forEach((listener) => listener()); });
+  assert.equal(container.querySelector('.maka-turn-status-label')?.textContent, 'Tinkering…');
+  await act(() => { reduced = true; listeners.forEach((listener) => listener()); });
+  await act(() => context.mock.timers.tick(20_000));
+  assert.equal(container.querySelector('.maka-turn-status-label')?.textContent, 'Pondering…');
+  assert.equal(container.querySelector('.maka-turn-elapsed')?.textContent, '40s');
+});
+
 /**
  * The live handoff announces itself exactly once, when the answer enters its
  * settled phase. A bubble replayed from history mounts already past the
@@ -597,4 +690,124 @@ test('footer copy does not schedule feedback after it unmounts with a write pend
   const setTimeout = t.mock.method(window, 'setTimeout');
   await act(async () => pending.resolve());
   assert.equal(setTimeout.mock.callCount(), 0, 'a late clipboard completion must not start a reset timer');
+});
+
+const PROCESS_TEXT: TurnTimelineItem = {
+  kind: 'text', messageId: 'progress-1', text: 'Checking the login state.',
+};
+const COMPLETED_TOOL: TurnTimelineItem = {
+  kind: 'tools',
+  items: [{ toolUseId: 'read-1', toolName: 'read', status: 'completed', args: { path: 'auth.ts' } }],
+};
+
+test('collapses the whole completed process and leaves the final answer outside', async () => {
+  const { container, root } = domRoot();
+  const turn = { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' as const, durationMs: 213_000 };
+  await renderTurn(root, turn);
+  const process = container.querySelector('details.maka-processing-sequence');
+  const summary = process?.querySelector('summary');
+  assert.ok(process && summary);
+  assert.equal(process.hasAttribute('open'), false);
+  assert.equal(summary.textContent, 'Worked for 3m 33s');
+  assert.match(process.textContent ?? '', /Checking the login state/);
+  assert.doesNotMatch(process.textContent ?? '', /the answer/);
+  const answer = container.querySelectorAll('.maka-chat-message-bubble-assistant')[1];
+  assert.ok(answer);
+  await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
+  assert.equal(process.hasAttribute('open'), true);
+  assert.equal(summary.getAttribute('aria-expanded'), 'true');
+  await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
+  assert.equal(process.hasAttribute('open'), false);
+  assert.equal(container.querySelectorAll('.maka-chat-message-bubble-assistant')[1]?.isSameNode(answer), true);
+});
+
+test('automatically folds a running process on completion without remounting the answer', async () => {
+  const { container, root } = domRoot();
+  const timeline = [PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }];
+  await renderTurn(root, turnWith(timeline));
+  const process = container.querySelector('details.maka-processing-sequence');
+  assert.ok(process);
+  assert.equal(process.hasAttribute('open'), true);
+  const answer = container.querySelectorAll('.maka-chat-message-bubble-assistant')[1];
+  await renderTurn(root, { ...turnWith(timeline), status: 'completed', durationMs: 2_000 });
+  assert.equal(process.hasAttribute('open'), false);
+  assert.equal(container.querySelectorAll('.maka-chat-message-bubble-assistant')[1]?.isSameNode(answer!), true);
+});
+
+test('copy uses the visible final reply after completion and disclosure toggles', async () => {
+  const { container, root } = domRoot();
+  const copied: string[] = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    writeText: async (text: string) => { copied.push(text); },
+  } });
+  const timeline = [PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }];
+  await renderTurn(root, turnWith(timeline));
+  await act(() => root.render(<LocaleProvider locale="en"><TurnView
+    turn={{ ...turnWith(timeline), status: 'completed' }}
+    footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]}
+  /></LocaleProvider>));
+  const process = container.querySelector('details.maka-processing-sequence');
+  const summary = process?.querySelector('summary');
+  const copy = container.querySelector('[data-action="copy"]');
+  assert.ok(process && summary && copy);
+  assert.equal(process.hasAttribute('open'), false);
+  assert.doesNotMatch(process.textContent ?? '', /the answer/);
+  for (let index = 0; index < 3; index += 1) {
+    await act(async () => { copy.dispatchEvent(new window.Event('click', { bubbles: true })); });
+    await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
+  }
+  assert.deepEqual(copied, [ANSWER.text, ANSWER.text, ANSWER.text]);
+});
+
+test('keeps running work expanded and allows manual disclosure after settlement', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, turnWith([PROCESS_TEXT, COMPLETED_TOOL]));
+  const process = container.querySelector('details.maka-processing-sequence');
+  const summary = process?.querySelector('summary');
+  assert.ok(process && summary);
+  const click = () => act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
+  assert.equal(summary.getAttribute('aria-disabled'), 'true');
+  assert.equal(summary.getAttribute('tabindex'), '-1');
+  await click(); // pointer activation cannot hide live work
+  await renderTurn(root, turnWith([PROCESS_TEXT, COMPLETED_TOOL, ANSWER]));
+  assert.equal(process.hasAttribute('open'), true);
+  await renderTurn(root, { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' });
+  assert.equal(process.hasAttribute('open'), false);
+  assert.equal(summary.hasAttribute('aria-disabled'), false);
+  assert.equal(summary.getAttribute('tabindex'), '0');
+  await click();
+  await renderTurn(root, { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed', durationMs: 2000 });
+  assert.equal(process.hasAttribute('open'), true);
+});
+
+test('a newly failed tool reveals the process while turn recovery stays outside', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, turnWith([PROCESS_TEXT, RUNNING_TOOL]));
+  const process = container.querySelector('details.maka-processing-sequence');
+  const summary = process?.querySelector('summary');
+  assert.ok(process && summary);
+  assert.equal(process.hasAttribute('open'), true);
+  await act(() => root.render(<LocaleProvider locale="en"><TurnView
+    turn={{ ...turnWith([PROCESS_TEXT, { kind: 'tools', items: [{ toolUseId: 'tool-1', toolName: 'read', args: {}, status: 'errored' }] }]), status: 'failed' }}
+    failedReasonLabel="Read failed"
+    safeResumeAction={{ pending: false, onResume() {} }}
+  /></LocaleProvider>));
+  // A failed tool is an ordinary row: no label, no reveal.
+  assert.doesNotMatch(summary.textContent ?? '', /Needs attention/);
+  assert.equal(summary.textContent, 'Execution process');
+  assert.equal(process.hasAttribute('open'), false);
+  assert.doesNotMatch(process.textContent ?? '', /Continue this turn/);
+  assert.match(container.textContent ?? '', /Continue this turn/);
+  await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
+  assert.equal(process.hasAttribute('open'), true);
+  assert.equal(container.querySelectorAll('.maka-processing-summary').length, 1);
+});
+
+test('uses a generic process label when no duration is recorded, and localizes known duration', async () => {
+  const { container, root } = domRoot();
+  const turn = { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' as const };
+  await renderTurn(root, turn);
+  assert.equal(container.querySelector('.maka-processing-summary')?.textContent, 'Execution process');
+  await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={{ ...turn, durationMs: 213_000 }} /></LocaleProvider>));
+  assert.equal(container.querySelector('.maka-processing-summary')?.textContent, '用时 3 分 33 秒');
 });

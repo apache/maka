@@ -44,6 +44,9 @@ import type {
   UpdateAppSettingsResult,
   UsageRange,
   UsageStats,
+  UsageScreenQuery,
+  UsageScreenRequest,
+  UsageScreenResult,
   ThemePreference,
 } from '@maka/core/settings';
 import type { BotProvider } from '@maka/core/bot-chat-settings';
@@ -73,7 +76,7 @@ import type {
 } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
+import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
@@ -113,9 +116,15 @@ import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka
 import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
+  DesktopTranscriptOpenMode,
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
-import type { WorkBoardItem, WorkBoardListQuery, WorkBoardPage } from '@maka/core/work-board';
+import type {
+  WorkBoardItem,
+  WorkBoardLinkedSession,
+  WorkBoardListQuery,
+  WorkBoardPage,
+} from '@maka/core/work-board';
 import type { WorkBoardMutationOptions } from '@maka/storage/work-board-store';
 import type {
   OperationInput,
@@ -404,6 +413,35 @@ export type DesktopOAuthAuthorizationStartResult =
 export type DesktopOAuthAuthorizationResult =
   | { readonly ok: true; readonly connection: DesktopOAuthConnectionIdentity }
   | Exclude<SubscriptionActionResult, { readonly ok: true }>;
+
+/**
+ * Browser-assisted Command Code sign-in. Desktop-local, not Host-scoped: the
+ * Studio page posts the minted key to a loopback port beside the browser, and
+ * the key then travels through the ordinary `connections` path like a pasted
+ * one. Mirrored by `features/connection-settings/ports.ts` on the renderer side.
+ */
+export type DesktopCommandCodeLoginFailureReason =
+  | 'denied'
+  | 'timeout'
+  | 'cancelled'
+  | 'superseded'
+  | 'port_unavailable'
+  | 'browser_unavailable';
+export interface DesktopCommandCodeLoginStartInput {
+  readonly baseUrl?: string;
+}
+export type DesktopCommandCodeLoginStartResult =
+  | { readonly ok: true; readonly attemptId: string; readonly authUrl: string }
+  | {
+      readonly ok: false;
+      readonly reason: 'port_unavailable' | 'browser_unavailable' | 'superseded';
+    };
+export type DesktopCommandCodeLoginResult =
+  | {
+      readonly ok: true;
+      readonly credentials: { readonly apiKey: string; readonly userName: string; readonly keyName: string };
+    }
+  | { readonly ok: false; readonly reason: DesktopCommandCodeLoginFailureReason };
 
 export type DesktopNewTaskHostRef = DesktopRuntimeHostRef;
 
@@ -1027,6 +1065,11 @@ export interface MakaBridge {
       options?: WorkBoardMutationOptions,
     ): Promise<WorkBoardIpcResult<WorkBoardItem>>;
     remove(id: string, options?: WorkBoardMutationOptions): Promise<WorkBoardIpcResult<null>>;
+    linkSession(
+      id: string,
+      link: WorkBoardLinkedSession,
+      options?: WorkBoardMutationOptions,
+    ): Promise<WorkBoardIpcResult<WorkBoardItem>>;
     subscribeChanges(handler: (event: WorkBoardChangedEvent) => void): () => void;
   };
 
@@ -1214,7 +1257,11 @@ export interface MakaBridge {
       }) => void,
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
-    listTurnLandmarks(sessionId: string): Promise<OperationOutput<'session.turn_landmarks.query'>>;
+    /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
+    listTurnLandmarks(
+      sessionId: string,
+      turnId?: string | null,
+    ): Promise<OperationOutput<'session.turn_landmarks.query'>>;
     compact(sessionId: string): Promise<OperationOutput<'context.compact'>>;
     resumeLatest(sessionId: string): Promise<
       | { disposition: 'started'; runId: string; turnId: string }
@@ -1309,16 +1356,22 @@ export interface MakaBridge {
     abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   };
   transcripts: {
+    /** Every message of one Turn, read from the Host rather than from any open transcript. */
+    readTurn(sessionId: string, turnId: string): Promise<StoredMessage[]>;
+    /** Opens the whole transcript unless a consumer asks for the tail alone. */
     open(
       sessionId: string,
       handler: (batch: DesktopTranscriptBatch) => void,
       registerCancellation?: (cancel: () => void) => void,
+      mode?: DesktopTranscriptOpenMode,
+      /** The oldest sequence the reader already holds; the first answer reads back down to it. */
+      resumeFrom?: number,
     ): Promise<DesktopTranscriptHandle>;
   };
   externalSessions: {
     listSources(host?: DesktopRuntimeHostRef): Promise<{ adapterIds: string[] }>;
     list(
-      input: { adapterId: string; includeArchived?: boolean; cursor?: string },
+      input: { adapterId: string; includeArchived?: boolean; cursor?: string; text?: string },
       host?: DesktopRuntimeHostRef,
     ): Promise<{
       sessions: DesktopExternalSessionCatalogItem[];
@@ -1494,7 +1547,7 @@ export interface MakaBridge {
     subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void;
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult>;
-    usageStats(range?: UsageRange, host?: DesktopRuntimeHostRef): Promise<UsageStats>;
+    usageStats(range?: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, host?: DesktopRuntimeHostRef, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult>;
     bots: {
       listStatuses(): Promise<Record<BotProvider, BotStatus>>;
       restart(provider: BotProvider): Promise<BotStatus>;
@@ -1587,10 +1640,12 @@ export interface MakaBridge {
   search: {
     thread(
       request: SearchRequest,
+      requestId?: string,
     ): Promise<
       | SearchResult[]
       | { ok: false; reason: SearchErrorReason; message: string }
     >;
+    cancelThread(requestId: string): Promise<void>;
   };
   openAiCodex: {
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;
@@ -1640,6 +1695,12 @@ export interface MakaBridge {
     getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
     logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
+  };
+  /** Desktop-local browser sign-in for Command Code; see `DesktopCommandCodeLoginResult`. */
+  commandCodeLogin: {
+    start(input: DesktopCommandCodeLoginStartInput): Promise<DesktopCommandCodeLoginStartResult>;
+    complete(attemptId: string): Promise<DesktopCommandCodeLoginResult>;
+    cancel(attemptId: string): Promise<void>;
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
@@ -1735,6 +1796,7 @@ export interface MakaBridge {
      */
   };
   appWindow: {
+    popupMenu(input: import('../shared/native-menu.js').NativeMenuRequest): Promise<string | null>;
     setTitlebarControlsVisible(visible: boolean): Promise<void>;
     setThemeSource(themePref: ThemePreference): Promise<void>;
     // PR-WINDOW-TITLEBAR-0: re-sync the native Windows titleBarOverlay
@@ -1934,6 +1996,7 @@ export interface MakaBridge {
   browser: {
     setActiveSession(sessionId: string | null): void;
     setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void;
+  capturePage(sessionId: string): Promise<string | undefined>;
     navigate(sessionId: string, url: string): Promise<void>;
     back(sessionId: string): Promise<void>;
     forward(sessionId: string): Promise<void>;

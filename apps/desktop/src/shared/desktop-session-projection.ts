@@ -273,17 +273,18 @@ export function projectDesktopDailyReviewSummary(
   };
 }
 
-export function projectDesktopUsageStats(
+export function projectDesktopUsageActivity(
   host: DesktopHostRef,
-  stats: UsageStats,
-): UsageStats {
-  return {
-    ...stats,
-    logs: stats.logs.map((log) => ({
-      ...log,
-      ...(log.sessionId === undefined
-        ? {}
-        : { sessionId: projectSessionId(host, log.sessionId) }),
-    })),
-  };
+  logs: UsageStats['logs'],
+): UsageStats['logs'] {
+  return logs.map((log) => ({
+    ...log,
+    ...(log.sessionId === undefined
+      ? {}
+      : { sessionId: projectSessionId(host, log.sessionId) }),
+  }));
+}
+
+export function projectDesktopUsageStats(host: DesktopHostRef, stats: UsageStats): UsageStats {
+  return { ...stats, logs: projectDesktopUsageActivity(host, stats.logs) };
 }

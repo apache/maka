@@ -617,6 +617,7 @@ export interface TextDeltaEvent extends BaseEvent {
 
 export interface TextCompleteEvent extends BaseEvent {
   type: 'text_complete';
+  interrupted?: true;
   messageId: string;
   text: string;
   /** Provider-owned text metadata such as Responses URL citations. */
@@ -633,6 +634,7 @@ export interface ThinkingDeltaEvent extends BaseEvent {
 
 export interface ThinkingCompleteEvent extends BaseEvent {
   type: 'thinking_complete';
+  interrupted?: true;
   messageId: string;
   text: string;
   /** Anthropic signed thinking — MUST be re-sent on replay. */
@@ -782,6 +784,7 @@ type ShellRunResultMetadata = {
   kind: 'shell_run';
   ref: string;
   status: ShellRunStatus;
+  pid?: number;
   cwd: string;
   cmd: string;
   startedAt: number;

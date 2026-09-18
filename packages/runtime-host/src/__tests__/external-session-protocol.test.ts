@@ -24,6 +24,7 @@ import {
   decodeClientFrame,
   decodeExternalSessionCatalogQueryInput,
   decodeExternalSessionCatalogQueryResult,
+  decodeExternalSessionImportResult,
   decodeExternalSessionSourceQueryResult,
   EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
   EXTERNAL_SESSION_PAGE_MAX_ITEMS,
@@ -31,6 +32,44 @@ import {
 } from '../protocol/index.js';
 
 describe('external Session protocol', () => {
+  test('round-trips closed import limit results and rejects unsafe or malformed details', () => {
+    for (const kind of [
+      'transcript_bytes',
+      'record_bytes',
+      'records',
+      'converted_bytes',
+      'messages',
+    ]) {
+      const result = { kind: 'source_limit_exceeded', limit: { kind, max: 100 } };
+      assert.deepEqual(decodeExternalSessionImportResult(result), result);
+    }
+    for (const limit of [
+      { kind: 'record_bytes', max: 100, path: '/private/transcript.jsonl' },
+      { kind: '/private/transcript.jsonl', max: 100 },
+      { kind: 'record_bytes', max: '100' },
+      { kind: 'record_bytes', max: 0 },
+      { kind: 'record_bytes', max: -1 },
+      { kind: 'record_bytes', max: 1.5 },
+      { kind: 'record_bytes', max: Number.MAX_SAFE_INTEGER + 1 },
+      { kind: 'record_bytes', max: Number.NaN },
+      { kind: 'record_bytes', max: Number.POSITIVE_INFINITY },
+    ]) {
+      assert.throws(
+        () => decodeExternalSessionImportResult({ kind: 'source_limit_exceeded', limit }),
+        RuntimeHostProtocolError,
+      );
+    }
+    assert.throws(
+      () =>
+        decodeExternalSessionImportResult({
+          kind: 'source_limit_exceeded',
+          limit: { kind: 'record_bytes', max: 100 },
+          message: 'private source content',
+        }),
+      RuntimeHostProtocolError,
+    );
+  });
+
   test('identifies external Session queries that expose Host paths', () => {
     assert.equal(
       HOST_OPERATION_SPECS['external-session.catalog.query'].usesHostPaths?.({
@@ -69,7 +108,7 @@ describe('external Session protocol', () => {
           adapterId: 'codex',
           includeArchived: true,
           workspace: { kind: 'project', projectId: 'project-1' },
-          cursor: '16',
+          cursor: 'f:abcdefghijklmnop:16',
         },
       }),
       {
@@ -79,7 +118,7 @@ describe('external Session protocol', () => {
           adapterId: 'codex',
           includeArchived: true,
           workspace: { kind: 'project', projectId: 'project-1' },
-          cursor: '16',
+          cursor: 'f:abcdefghijklmnop:16',
         },
       },
     );

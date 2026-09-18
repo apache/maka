@@ -7,6 +7,7 @@
   "sideEffects": false,
   "private": true,
   "exports": {
+    "./executor-id": "./dist/executor-id.js",
     "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
@@ -78,7 +79,6 @@
     "./agent-graph-client-projection": "./dist/agent-graph-client-projection.js",
     "./agent-graph-supervisor-wake": "./dist/agent-graph-supervisor-wake.js",
     "./session-todo": "./dist/session-todo.js",
-    "./foreign-session": "./dist/foreign-session.js",
     "./external-session": "./dist/external-session.js",
     "./deep-research-run": "./dist/deep-research-run.js",
     "./deep-research-client-progress": "./dist/deep-research-client-progress.js",
@@ -125,6 +125,7 @@
     "./usage-record-schema": "./dist/usage-record-schema.js",
     "./session-send-projection": "./dist/session-send-projection.js",
     "./session-name": "./dist/session-name.js",
+    "./recall": "./dist/recall.js",
     "./thread-search": "./dist/thread-search.js",
     "./agent-graph-timeline": "./dist/agent-graph-timeline.js",
     "./agent-swarm": "./dist/agent-swarm.js",
@@ -169,6 +170,6 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "intl-messageformat": "11.2.14"
+    "intl-messageformat": "11.2.15"
   }
 }

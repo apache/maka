@@ -20,7 +20,7 @@
 import { useId, useRef, useState } from 'react';
 import type { FormRequestEvent } from '@maka/core/events';
 import type { InteractionFormField, InteractionFormResponse } from '@maka/core/interaction';
-import { Button, CheckboxInput, RadioList, RadioListItem, TextInput } from '@astryxdesign/core';
+import { Button, CheckboxInput, RadioList, RadioListItem, Text, TextInput } from '@astryxdesign/core';
 import { getConversationCopy } from './conversation-copy.js';
 import {
   buildInteractionFormResponse,
@@ -139,12 +139,15 @@ function ActiveFormInteractionPrompt(props: {
                   />
                 ) : null}
                 {props.request.fields.length === 1 && field.kind === 'single_select' && field.required ? (
-                  <ChoicePanel label={field.label} options={field.options} keyboardHint={copy.keyboardHint}
-                    value={typeof draft.value === 'string' ? draft.value : ''}
-                    disabled={responsePending || props.stopPending}
-                    onChange={(value) => updateDraft(index, { ...draft, value })}
-                    onConfirm={accept}
-                    onEscape={() => void respond({ requestId: props.request.requestId, action: 'cancel' })} />
+                  <>
+                    <ChoicePanel label={field.label} options={field.options}
+                      value={typeof draft.value === 'string' ? draft.value : ''}
+                      disabled={responsePending || props.stopPending}
+                      onChange={(value) => updateDraft(index, { ...draft, value })}
+                      onConfirm={accept}
+                      onEscape={() => void respond({ requestId: props.request.requestId, action: 'cancel' })} />
+                    <Text as="p" type="supporting" color="secondary" className="maka-choice-hint">{copy.keyboardHint}</Text>
+                  </>
                 ) : draft.included ? renderFormControl({
                   field,
                   draft,

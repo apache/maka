@@ -25,7 +25,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
 import type { DesktopExternalSessionCatalogItem } from '../../preload/external-session-catalog.js';
-import type { ExternalSessionImportFailureReason } from '../../preload/external-session-import-result.js';
+import type { ExternalSessionImportIpcResult } from '../../preload/external-session-import-result.js';
 import {
   SessionBundleServicesProvider,
   SessionBundleTasks,
@@ -88,7 +88,7 @@ describe('ImportTasksSettingsPage durable import state', () => {
     await act(async () => harness.root.unmount());
   });
 
-  it('scopes catalog reads, recovery, and import to the selected Runtime Host', async () => {
+  it('scopes catalog reads and import to the selected Runtime Host', async () => {
     const source = externalSession();
     const harness = await renderPage({
       catalogs: [catalog(source), catalog(source)],
@@ -128,7 +128,7 @@ describe('ImportTasksSettingsPage durable import state', () => {
     });
 
     assert.match(harness.container.textContent, /No usable model connection/);
-    // A clean model failure is not a maybe-landed task: no recovery re-read, and
+    // A clean model failure is not a maybe-landed task: no extra catalog read, and
     // none of the unknown-outcome copy.
     assert.doesNotMatch(harness.container.textContent, /Check the import result/);
     assert.deepEqual(harness.hostCalls(), [
@@ -158,6 +158,31 @@ describe('ImportTasksSettingsPage durable import state', () => {
 
     await act(async () => harness.root.unmount());
   });
+
+  for (const [locale, label, expected] of [
+    ['en', 'Import', /single record size allows at most 67,108,864 bytes/],
+    ['zh-CN', '导入', /单条记录大小最多 67,108,864 字节/],
+    ['zh-TW', '匯入', /單筆記錄大小最多 67,108,864 位元組/],
+  ] as const) {
+    it(`shows the exact source limit without generic retry advice in ${locale}`, async () => {
+      const harness = await renderPage({
+        locale,
+        catalog: catalog(externalSession()),
+        importResult: {
+          ok: false,
+          reason: 'source_limit_exceeded',
+          limit: { kind: 'record_bytes', max: 67_108_864 },
+        },
+      });
+      const button = buttonWithText(harness.container, label);
+      assert.ok(button);
+      await act(async () => button.click());
+      assert.match(harness.container.textContent, expected);
+      assert.doesNotMatch(harness.container.textContent, /Check the source and try again|请检查来源后重试|請檢查來源後重試|Check the import result/);
+      assert.equal(harness.listCalls(), 1);
+      await act(async () => harness.root.unmount());
+    });
+  }
 
   it('uses catalog in-flight state after remount to disable the source row', async () => {
     const harness = await renderPage({
@@ -283,7 +308,7 @@ describe('ImportTasksSettingsPage durable import state', () => {
     await act(async () => harness.root.unmount());
   });
 
-  it('re-reads the catalog after an unknown outcome and exposes the task that landed', async () => {
+  it('does not claim another client task after an unknown import outcome', async () => {
     const initial = externalSession();
     const recovered = externalSession({
       importState: {
@@ -308,357 +333,15 @@ describe('ImportTasksSettingsPage durable import state', () => {
     });
 
     assert.equal(harness.listCalls(), 2);
-    assert.match(harness.container.textContent, /The imported task is available now/);
-    const openButton = buttonWithText(harness.container, 'Open latest imported task');
-    assert.ok(openButton);
-    await act(async () => openButton.click());
-    assert.deepEqual(opened, ['session-recovered']);
-
-    await act(async () => harness.root.unmount());
-  });
-
-  it('clears a recovered import banner when the catalog selection changes', async () => {
-    const initial = externalSession({ name: 'Current source conversation' });
-    const recovered = externalSession({
-      name: 'Current source conversation',
-      importState: {
-        importedCount: 1,
-        importedSessionIds: ['session-recovered-before-filter'],
-        isImporting: false,
-      },
-    });
-    const filtered = externalSession({
-      id: 'archived-source',
-      name: 'Archived catalog conversation',
-      archived: true,
-    });
-    const harness = await renderPage({
-      catalogs: [catalog(initial), catalog(recovered), catalog(filtered)],
-      importResult: { ok: false, reason: 'commit_outcome_unknown' },
-    });
-
-    const importButton = buttonWithText(harness.container, 'Import');
-    assert.ok(importButton);
-    await act(async () => {
-      importButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /The imported task is available now/);
-
-    const archivedFilter = harness.container.querySelector<HTMLInputElement>(
-      'input[type="checkbox"]',
-    );
-    assert.ok(archivedFilter);
-    await act(async () => {
-      archivedFilter.checked = true;
-      archivedFilter.dispatchEvent(new window.Event('click', { bubbles: true }));
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    assert.match(harness.container.textContent, /Archived catalog conversation/);
+    assert.match(harness.container.textContent, /Check the import result/);
     assert.doesNotMatch(harness.container.textContent, /The imported task is available now/);
+    // Catalog history may include a task from this or another client, but the
+    // page never attributes it to this unanswered request or navigates to it.
+    assert.deepEqual(opened, []);
 
     await act(async () => harness.root.unmount());
   });
 
-  it('preserves the loaded page window when unknown-outcome recovery finds its source early', async () => {
-    const firstPage = externalSession({ id: 'source-first', name: 'First page source' });
-    const secondPage = externalSession({ id: 'source-second', name: 'Second page source' });
-    const recoveredFirstPage = externalSession({
-      id: 'source-first',
-      name: 'First page source',
-      importState: {
-        importedCount: 1,
-        importedSessionIds: ['first-page-task'],
-        isImporting: false,
-      },
-    });
-    const harness = await renderPage({
-      catalogs: [
-        { sessions: [firstPage], nextCursor: '1' },
-        { sessions: [secondPage], nextCursor: null },
-        { sessions: [recoveredFirstPage], nextCursor: '1' },
-        { sessions: [secondPage], nextCursor: null },
-      ],
-      importResult: { ok: false, reason: 'commit_outcome_unknown' },
-    });
-
-    const loadMore = buttonWithText(harness.container, 'Load more');
-    assert.ok(loadMore);
-    await act(async () => {
-      loadMore.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /Second page source/);
-
-    const importButton = Array.from(harness.container.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.getAttribute('aria-label') === 'Import First page source',
-    );
-    assert.ok(importButton);
-    await act(async () => {
-      importButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    assert.equal(harness.listCalls(), 4);
-    assert.match(harness.container.textContent, /First page source/);
-    assert.match(harness.container.textContent, /Second page source/);
-    assert.match(harness.container.textContent, /The imported task is available now/);
-
-    await act(async () => harness.root.unmount());
-  });
-
-  it('allows a safe retry when recovery finds no new imported task', async () => {
-    const source = externalSession({
-      importState: {
-        importedCount: 1,
-        importedSessionIds: ['session-existing'],
-        isImporting: false,
-      },
-    });
-    const harness = await renderPage({
-      catalogs: [catalog(source), catalog(source)],
-      importResult: { ok: false, reason: 'commit_outcome_unknown' },
-    });
-
-    const firstImport = buttonWithText(harness.container, 'Import again');
-    assert.ok(firstImport);
-    await act(async () => {
-      firstImport.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    assert.equal(harness.listCalls(), 2);
-    assert.match(harness.container.textContent, /No new task was recorded, so it is safe to retry/);
-    const retry = buttonWithText(harness.container, 'Import again');
-    assert.ok(retry);
-    assert.equal(retry.hasAttribute('disabled'), false);
-
-    await act(async () => harness.root.unmount());
-  });
-
-  it('keeps the import uncertain when recovery can no longer find the source row', async () => {
-    const harness = await renderPage({
-      catalogs: [catalog(externalSession()), { sessions: [], nextCursor: null }],
-      importResult: { ok: false, reason: 'commit_outcome_unknown' },
-    });
-
-    const importButton = buttonWithText(harness.container, 'Import');
-    assert.ok(importButton);
-    await act(async () => {
-      importButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    assert.match(harness.container.textContent, /Check the import result/);
-    assert.doesNotMatch(harness.container.textContent, /safe to retry/);
-
-    await act(async () => harness.root.unmount());
-  });
-
-  it('does not let an older catalog poll overwrite unknown-outcome recovery', async (context) => {
-    context.mock.timers.enable({ apis: ['setTimeout'] });
-    let settlePoll: ((result: CatalogResult) => void) | undefined;
-    const pendingPoll = new Promise<CatalogResult>((resolve) => {
-      settlePoll = resolve;
-    });
-    const target = externalSession({ id: 'target-source', name: 'Target source' });
-    const otherImporting = externalSession({
-      id: 'other-source',
-      name: 'Other source',
-      importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
-    });
-    const recoveredTarget = externalSession({
-      id: 'target-source',
-      name: 'Target source',
-      importState: {
-        importedCount: 1,
-        importedSessionIds: ['target-task'],
-        isImporting: false,
-      },
-    });
-    const harness = await renderPage({
-      catalogs: [
-        { sessions: [target, otherImporting], nextCursor: null },
-        pendingPoll,
-        { sessions: [recoveredTarget, otherImporting], nextCursor: null },
-      ],
-      importResult: { ok: false, reason: 'commit_outcome_unknown' },
-    });
-
-    await act(async () => {
-      context.mock.timers.runAll();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.equal(harness.listCalls(), 2);
-
-    const importButton = harness.container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Import Target source"]',
-    );
-    assert.ok(importButton);
-    await act(async () => {
-      importButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /The imported task is available now/);
-
-    await act(async () => {
-      settlePoll?.({ sessions: [target, otherImporting], nextCursor: null });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /Imported once/);
-
-    await act(async () => harness.root.unmount());
-  });
-
-  it('clears loading-more state when recovery retires the pending page request', async () => {
-    let settleLoadMore: ((result: CatalogResult) => void) | undefined;
-    const pendingLoadMore = new Promise<CatalogResult>((resolve) => {
-      settleLoadMore = resolve;
-    });
-    const source = externalSession({ name: 'Visible source' });
-    const recovered = externalSession({
-      name: 'Visible source',
-      importState: {
-        importedCount: 1,
-        importedSessionIds: ['visible-task'],
-        isImporting: false,
-      },
-    });
-    const harness = await renderPage({
-      catalogs: [
-        { sessions: [source], nextCursor: '1' },
-        pendingLoadMore,
-        { sessions: [recovered], nextCursor: '1' },
-      ],
-      importResult: { ok: false, reason: 'commit_outcome_unknown' },
-    });
-
-    const loadMore = buttonWithText(harness.container, 'Load more');
-    assert.ok(loadMore);
-    await act(async () => loadMore.click());
-
-    const importButton = harness.container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Import Visible source"]',
-    );
-    assert.ok(importButton);
-    await act(async () => {
-      importButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /The imported task is available now/);
-
-    await act(async () => {
-      settleLoadMore?.({ sessions: [], nextCursor: null });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    const recoveredLoadMore = Array.from(
-      harness.container.querySelectorAll<HTMLButtonElement>('button'),
-    ).find((button) => button.textContent?.includes('Load more'));
-    assert.ok(recoveredLoadMore);
-    assert.equal(recoveredLoadMore.getAttribute('aria-busy'), null);
-    assert.equal(recoveredLoadMore.hasAttribute('disabled'), false);
-
-    await act(async () => harness.root.unmount());
-  });
-
-  it('retries a failed unknown-outcome catalog recovery instead of leaving a local lock', async () => {
-    const initial = externalSession();
-    const recovered = externalSession({
-      importState: {
-        importedCount: 1,
-        importedSessionIds: ['session-after-read-retry'],
-        isImporting: false,
-      },
-    });
-    const harness = await renderPage({
-      catalogs: [catalog(initial), new Error('catalog temporarily unavailable'), catalog(recovered)],
-      importResult: { ok: false, reason: 'commit_outcome_unknown' },
-    });
-
-    const importButton = buttonWithText(harness.container, 'Import');
-    assert.ok(importButton);
-    await act(async () => {
-      importButton.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.equal(harness.listCalls(), 2);
-    assert.match(harness.container.textContent, /Check the import result/);
-
-    const retryRead = buttonWithText(harness.container, 'Retry');
-    assert.ok(retryRead);
-    await act(async () => {
-      retryRead.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    assert.equal(harness.listCalls(), 3);
-    assert.doesNotMatch(harness.container.textContent, /Check the import result/);
-    assert.match(harness.container.textContent, /The imported task is available now/);
-
-    await act(async () => harness.root.unmount());
-  });
-
-  it('does not replace a newer filter catalog while recovering an older import attempt', async () => {
-    let settleImport: ((result: { ok: false; reason: 'commit_outcome_unknown' }) => void) | undefined;
-    const importResult = new Promise<{ ok: false; reason: 'commit_outcome_unknown' }>((resolve) => {
-      settleImport = resolve;
-    });
-    const initial = externalSession({ name: 'Original source conversation' });
-    const filtered = externalSession({ id: 'archived-source', name: 'Current filtered catalog' });
-    const recovered = externalSession({
-      name: 'Original source conversation',
-      importState: {
-        importedCount: 1,
-        importedSessionIds: ['session-from-original-filter'],
-        isImporting: false,
-      },
-    });
-    const harness = await renderPage({
-      catalogs: [catalog(initial), catalog(filtered), catalog(recovered)],
-      importResult,
-    });
-
-    const importButton = buttonWithText(harness.container, 'Import');
-    assert.ok(importButton);
-    await act(async () => importButton.click());
-
-    const archivedFilter = harness.container.querySelector<HTMLInputElement>('input[type="checkbox"]');
-    assert.ok(archivedFilter);
-    await act(async () => {
-      archivedFilter.checked = true;
-      archivedFilter.dispatchEvent(new window.Event('click', { bubbles: true }));
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.equal(harness.listCalls(), 2);
-    assert.match(harness.container.textContent, /Current filtered catalog/);
-
-    await act(async () => {
-      settleImport?.({ ok: false, reason: 'commit_outcome_unknown' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    assert.deepEqual(harness.listInputs().map((input) => input.includeArchived), [false, true, false]);
-    assert.match(harness.container.textContent, /Current filtered catalog/);
-    assert.match(harness.container.textContent, /The imported task is available now/);
-
-    await act(async () => harness.root.unmount());
-  });
 });
 
 describe('ImportTasksSettingsPage source switching', () => {
@@ -1090,146 +773,6 @@ describe('ImportTasksSettingsPage source switching', () => {
     await act(async () => harness.root.unmount());
   });
 
-  it('updates the cache for a recovered import even after switching away', async () => {
-    let settleImport: ((r: { ok: false; reason: 'commit_outcome_unknown' }) => void) | undefined;
-    const importResult = new Promise<{ ok: false; reason: 'commit_outcome_unknown' }>((resolve) => {
-      settleImport = resolve;
-    });
-    const codexRecovered = externalSession({
-      id: 's-codex',
-      name: 'Codex conv',
-      importState: { importedCount: 1, importedSessionIds: ['codex-task'], isImporting: false },
-    });
-    // The revisit's background refresh never resolves, so the returned view is the
-    // cache alone — proving the cache itself holds the recovered state.
-    const codexRevisitPending = new Promise<CatalogResult>(() => {});
-    const harness = await renderPage({
-      adapterIds: ['codex', 'claude-code'],
-      bySource: {
-        // [mount, recovery readCatalogWindow, revisit background refresh]
-        codex: [
-          { sessions: [externalSession({ id: 's-codex', name: 'Codex conv' })], nextCursor: null },
-          { sessions: [codexRecovered], nextCursor: null },
-          codexRevisitPending,
-        ],
-        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
-      },
-      importResult,
-    });
-
-    // Start an import on codex, then switch to claude-code before the (unknown)
-    // outcome resolves.
-    const importButton = harness.container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Import Codex conv"]',
-    );
-    assert.ok(importButton);
-    await act(async () => importButton.click());
-
-    await act(async () => {
-      segment(harness.container, 'claude-code')!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /CC conv/);
-
-    // The import comes back unknown; recovery confirms it landed while codex is not
-    // the current selection.
-    await act(async () => {
-      settleImport?.({ ok: false, reason: 'commit_outcome_unknown' });
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /The imported task is available now/);
-    assert.match(harness.container.textContent, /CC conv/, 'the current view is untouched by recovery');
-
-    // Returning to codex must show the recovered "imported" state straight from
-    // the cache — not the stale pre-import row that would invite a duplicate
-    // import — even though the background refresh has not landed.
-    await act(async () => {
-      segment(harness.container, 'codex')!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /Codex conv/);
-    assert.match(
-      harness.container.textContent,
-      /Imported once/,
-      'the cache reflects the recovered import on return',
-    );
-
-    await act(async () => harness.root.unmount());
-  });
-
-  it('publishes a recovered import to the current view after leaving and returning to its source', async () => {
-    let settleImport: ((r: { ok: false; reason: 'commit_outcome_unknown' }) => void) | undefined;
-    const importResult = new Promise<{ ok: false; reason: 'commit_outcome_unknown' }>((resolve) => {
-      settleImport = resolve;
-    });
-    const codexRecovered = externalSession({
-      id: 's-codex',
-      name: 'Codex conv',
-      importState: { importedCount: 1, importedSessionIds: ['codex-task'], isImporting: false },
-    });
-    // The revisit's own background refresh never resolves, so recovery is the only
-    // thing that can update the screen — proving recovery publishes rather than
-    // leaving the view to wait on a slow refresh.
-    const codexRevisitPending = new Promise<CatalogResult>(() => {});
-    const harness = await renderPage({
-      adapterIds: ['codex', 'claude-code'],
-      bySource: {
-        // [mount, revisit background refresh (pending), recovery readCatalogWindow]
-        codex: [
-          { sessions: [externalSession({ id: 's-codex', name: 'Codex conv' })], nextCursor: null },
-          codexRevisitPending,
-          { sessions: [codexRecovered], nextCursor: null },
-        ],
-        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
-      },
-      importResult,
-    });
-
-    const importButton = harness.container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Import Codex conv"]',
-    );
-    assert.ok(importButton);
-    await act(async () => importButton.click());
-
-    // Switch to claude-code, then back to codex — all before the import resolves.
-    await act(async () => {
-      segment(harness.container, 'claude-code')!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await act(async () => {
-      segment(harness.container, 'codex')!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /Codex conv/, 'back on codex, pre-import rows shown');
-    assert.doesNotMatch(harness.container.textContent, /Imported once/, 'not recovered yet');
-
-    // Recovery lands. codex is the current selection again, but at a *newer*
-    // generation than when the import started, so a generation check would refuse
-    // to publish. Matching the selection tuple, recovery must still reach the
-    // screen — not just the cache — even though the revisit refresh is pending.
-    await act(async () => {
-      settleImport?.({ ok: false, reason: 'commit_outcome_unknown' });
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    assert.match(harness.container.textContent, /The imported task is available now/);
-    assert.match(
-      harness.container.textContent,
-      /Imported once/,
-      'recovery publishes to the returned-to view, not only the cache',
-    );
-
-    await act(async () => harness.root.unmount());
-  });
 });
 
 function externalSession(
@@ -1253,8 +796,8 @@ async function renderPage(options: {
   adapterIds?: string[];
   bySource?: Record<string, Array<CatalogResult | Error | Promise<CatalogResult>>>;
   importResult?:
-    | { ok: false; reason: ExternalSessionImportFailureReason }
-    | Promise<{ ok: false; reason: ExternalSessionImportFailureReason }>;
+    | Extract<ExternalSessionImportIpcResult, { ok: false }>
+    | Promise<Extract<ExternalSessionImportIpcResult, { ok: false }>>;
   /**
    * Per-source answers for a batch: `ok` lands, `unknown` is the Host not
    * answering, `throw` is a rejection. Keyed by source session id, because a
@@ -1263,7 +806,7 @@ async function renderPage(options: {
   importBySource?: Record<string, 'ok' | 'unknown' | 'throw' | 'no_model' | 'source_unreadable'>;
   onOpenImported?: (sessionId: string) => void;
   offersBundleSource?: boolean;
-  locale?: 'en' | 'zh-CN';
+  locale?: 'en' | 'zh-CN' | 'zh-TW';
 }): Promise<{
   container: HTMLElement;
   root: Root;
@@ -1510,10 +1053,100 @@ describe('ImportTasksSettingsPage batch import', () => {
     assert.equal(masterBox(container).checked, true);
   });
 
+  it('select all and batch submission exclude a source the Host is already importing', async () => {
+    const harness = await renderPage({
+      catalog: {
+        sessions: [
+          externalSession({
+            id: 'running',
+            importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
+          }),
+          externalSession({ id: 'available' }),
+        ],
+        nextCursor: null,
+      },
+      importBySource: { available: 'ok' },
+    });
+    const { container, importedIds } = harness;
+
+    await tick(masterBox(container), true);
+    assert.deepEqual(rows(container).map((box) => box.checked), [false, true]);
+    assert.match(container.textContent ?? '', /1 \/ 1 selected/);
+
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => run.click());
+    assert.deepEqual(importedIds(), ['available']);
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('does not carry a selected source id into another adapter', async () => {
+    const { container } = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [catalog(externalSession({ id: 'shared', name: 'Codex shared' }))],
+        'claude-code': [catalog(externalSession({ id: 'shared', name: 'Claude shared' }))],
+      },
+    });
+
+    await tick(rows(container)[0]!, true);
+    assert.equal(buttonWithText(container, 'Import selected')?.disabled, false);
+    await act(async () => {
+      segment(container, 'claude-code')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(container.textContent ?? '', /Claude shared/);
+    assert.equal(rows(container)[0]?.checked, false);
+    assert.equal(buttonWithText(container, 'Import selected')?.disabled, true);
+  });
+
+  it('does not let a completed batch refresh overwrite a newer source selection', async () => {
+    let finishImport:
+      | ((result: { ok: false; reason: 'commit_outcome_unknown' }) => void)
+      | undefined;
+    const pendingImport = new Promise<{ ok: false; reason: 'commit_outcome_unknown' }>((resolve) => {
+      finishImport = resolve;
+    });
+    const { container } = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [
+          catalog(externalSession({ id: 'codex', name: 'Codex conversation' })),
+          catalog(externalSession({ id: 'codex', name: 'Stale Codex refresh' })),
+        ],
+        'claude-code': [catalog(externalSession({ id: 'claude', name: 'Claude conversation' }))],
+      },
+      importResult: pendingImport,
+    });
+
+    await tick(rows(container)[0]!, true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      segment(container, 'claude-code')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(container.textContent ?? '', /Claude conversation/);
+
+    await act(async () => {
+      finishImport?.({ ok: false, reason: 'commit_outcome_unknown' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(container.textContent ?? '', /Claude conversation/);
+    assert.doesNotMatch(container.textContent ?? '', /Stale Codex refresh/);
+  });
+
   it('imports the marked rows one at a time and counts each outcome once', async () => {
-    // Sequential on purpose: recovery re-reads the catalog window an attempt
-    // came from, so overlapping attempts would race that read, and a progress
-    // count is only true when one thing is happening.
+    // Sequential on purpose: a progress count is only true when one thing is
+    // happening, and the summary must preserve the catalog order the user chose.
     const { container, importedIds } = await renderPage({
       catalog: {
         sessions: [
@@ -1553,10 +1186,11 @@ describe('ImportTasksSettingsPage batch import', () => {
   });
 
   it('a Host that does not answer is not counted as a failure', async () => {
-    // Only a catalog read settles whether an unanswered conversion landed.
-    // Calling it a failure is what invites the retry that makes a second copy.
+    // A catalog read cannot attribute a later task to this unanswered request.
+    // Unknown is not a definite failure even though the user may choose a new import.
+    const quiet = externalSession({ id: 'quiet' });
     const { container } = await renderPage({
-      catalog: { sessions: [externalSession({ id: 'quiet' })], nextCursor: null },
+      catalogs: [{ sessions: [quiet], nextCursor: null }],
       importBySource: { quiet: 'unknown' },
     });
 
@@ -1573,16 +1207,68 @@ describe('ImportTasksSettingsPage batch import', () => {
     const text = container.textContent ?? '';
     assert.match(text, /No conversation was imported/);
     assert.doesNotMatch(text, /could not be imported/);
-    // It surfaces through the unconfirmed banner, which owns the retry.
+    // It surfaces through a per-request warning without changing eligibility.
     assert.match(text, /unconfirmed|Unconfirmed|outcome/i);
+    assert.equal(rows(container)[0]?.disabled, false);
+  });
+
+  it('allows a source to be submitted again after an unknown outcome', async () => {
+    const uncertain = externalSession({ id: 'uncertain', name: 'Uncertain' });
+    const { container, importedIds } = await renderPage({
+      catalogs: [{ sessions: [uncertain], nextCursor: null }],
+      importBySource: { uncertain: 'unknown' },
+    });
+
+    const firstRun = buttonWithText(container, 'Import');
+    assert.ok(firstRun);
+    await act(async () => {
+      firstRun.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(importedIds(), ['uncertain']);
+    const retry = buttonWithText(container, 'Import');
+    assert.ok(retry);
+    assert.equal(retry.disabled, false);
+
+    await act(async () => {
+      retry.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.deepEqual(importedIds(), ['uncertain', 'uncertain']);
+  });
+
+  it('keeps source limit details in the batch summary after the catalog refresh', async () => {
+    const harness = await renderPage({
+      catalog: catalog(externalSession({ name: 'Oversized conversation' })),
+      importResult: {
+        ok: false,
+        reason: 'source_limit_exceeded',
+        limit: { kind: 'records', max: 1_000_000 },
+      },
+    });
+    await tick(masterBox(harness.container), true);
+    const run = buttonWithText(harness.container, 'Import selected');
+    assert.ok(run);
+    await act(async () => run.click());
+    assert.equal(harness.listCalls(), 2);
+    const text = harness.container.textContent ?? '';
+    assert.match(text, /No conversation was imported/);
+    assert.match(text, /1 more could not be imported/);
+    assert.match(text, /Oversized conversation: .*record count allows at most 1,000,000/);
+    assert.doesNotMatch(text, /Check the import result|Check the source and try again/);
+    await act(async () => harness.root.unmount());
   });
 
   it('counts code-classified batch failures as failed, not unconfirmed, and raises the model banner', async () => {
     // Before the fix, no_model / source_unreadable were swept into the
     // maybe-landed "unconfirmed" bucket alongside commit_outcome_unknown: no
-    // actionable banner, the recovery/retry path offered, and the summary could
-    // read as success. They are definite failures — counted as failed, never
-    // offered recovery. no_model additionally raises its actionable banner.
+    // actionable banner, and the summary could read as success. They are
+    // definite failures; no_model additionally raises its actionable banner.
     const { container } = await renderPage({
       catalog: {
         sessions: [
@@ -1609,7 +1295,7 @@ describe('ImportTasksSettingsPage batch import', () => {
     // Both are definite failures: the summary counts them, none imported.
     assert.match(text, /No conversation was imported/);
     assert.match(text, /2 more could not be imported/);
-    // Not the maybe-landed path: no unconfirmed/recovery banner is offered.
+    // Not the maybe-landed path: no unconfirmed banner is offered.
     assert.doesNotMatch(text, /Check the import result/);
     // The one globally-actionable reason surfaces its banner.
     assert.match(text, /No usable model connection/);

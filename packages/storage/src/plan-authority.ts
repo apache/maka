@@ -21,6 +21,7 @@ import type {
   AbandonPlanProposalInput,
   ApprovePlanProposalInput,
   CancelPlanExecutionInput,
+  PlanMutationResult,
   PlanStore,
   RequestPlanRevisionInput,
   SubmitPlanProposalInput,
@@ -57,6 +58,64 @@ export function authenticateInteractivePlanStoreWriter(
     );
   }
   return writer;
+}
+
+/**
+ * Decorates the one authoritative interactive Plan writer. Every committed
+ * mutation crosses this seam, so callers publish a projection invalidation once
+ * instead of remembering individual tool or control paths.
+ */
+export function observeInteractivePlanStoreWriter(
+  source: InteractivePlanStoreWriter,
+  onChanged: (sessionId: string) => void,
+  onPublicationFailure: () => void,
+): InteractivePlanStoreWriter {
+  const writer = authenticateInteractivePlanStoreWriter(source);
+  const publish = <T extends PlanMutationResult | null>(
+    sessionId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> =>
+    operation().then((result) => {
+      if (result === null) return result;
+      try {
+        onChanged(sessionId);
+      } catch {
+        // The mutation is durable. Draining is safer than reporting an ambiguous
+        // retry that could overwrite a later Plan writer.
+        onPublicationFailure();
+      }
+      return result;
+    });
+  const observed: InteractivePlanStoreWriter = {
+    kind: writer.kind,
+    access: writer.access,
+    [writerBrand]: true,
+    readState: (sessionId) => writer.readState(sessionId),
+    readOperationReceipt: (sessionId, operationId, operationInput) =>
+      writer.readOperationReceipt(sessionId, operationId, operationInput),
+    submitProposal: (input) => publish(input.sessionId, () => writer.submitProposal(input)),
+    requestRevision: (input) => publish(input.sessionId, () => writer.requestRevision(input)),
+    abandonProposal: (input) => publish(input.sessionId, () => writer.abandonProposal(input)),
+    approveProposal: (input) => publish(input.sessionId, () => writer.approveProposal(input)),
+    updateExecution: (input) => publish(input.sessionId, () => writer.updateExecution(input)),
+    cancelExecution: (input) => publish(input.sessionId, () => writer.cancelExecution(input)),
+    interruptActiveExecution: (sessionId, reason, operationId) =>
+      publish(sessionId, () => writer.interruptActiveExecution(sessionId, reason, operationId)),
+    resumeExecution: (sessionId, executionId, operationId) =>
+      publish(sessionId, () => writer.resumeExecution(sessionId, executionId, operationId)),
+    // Session retirement cleanup is not a running Plan business mutation. The
+    // caller is deleting the Session projection, so publishing a per-Session
+    // `plan` invalidation here would target state that is being removed.
+    purgeSessionState: (sessionId) => writer.purgeSessionState(sessionId),
+    close: () => {
+      // The decorator authenticates like any other writer, so it has to retire
+      // itself: the underlying writer only removes itself from the registry.
+      writers.delete(observed);
+      writer.close();
+    },
+  };
+  writers.add(observed);
+  return Object.freeze(observed);
 }
 
 export async function openInteractivePlanStoreForWrite(

@@ -105,7 +105,7 @@ type SendOptions = MessageContextOptions & {
   waitForHostAdmission?: boolean;
   turnOrchestration?: TurnOrchestration;
   displayText?: string;
-  onSessionResolved?: (sessionId: string) => void;
+  onSessionResolved?: (sessionId: string, newTaskDraftKey?: string) => void;
 };
 
 function copiedArray<K extends string, T>(
@@ -145,6 +145,7 @@ export function createAppShellChatActions(deps: {
   getRunningTurnId?: (sessionId: string) => string | undefined;
   activeIdRef: RefBox<string | undefined>;
   captureComposerImportOwner: () => ComposerImportOwner;
+  captureSelection: () => () => boolean;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
   isNewChatSendSurfaceActive: (owner: ComposerImportOwner) => boolean;
   /** The shell's one answer to "is this owner still the surface the user is
@@ -167,7 +168,7 @@ export function createAppShellChatActions(deps: {
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   transcriptRangeRef: RefBox<DesktopTranscriptRangeController | undefined>;
   isMessagePublished: (message: StoredMessage) => boolean;
-  onFollowLatest: (sessionId: string) => Promise<boolean>;
+  onFollowLatest: (sessionId: string) => boolean;
   /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
    * window opens before any SessionEvent arrives (turn_started is not one). */
   setInteractionBySession: InteractionQueueUpdater;
@@ -203,6 +204,7 @@ export function createAppShellChatActions(deps: {
     uiLocale,
     activeIdRef,
     captureComposerImportOwner,
+    captureSelection,
     checkTaskSubmissionReadiness,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
@@ -229,10 +231,6 @@ export function createAppShellChatActions(deps: {
     newTaskTarget,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
-
-  function removeOptimisticUserMessage(sessionId: string, turnId: string): void {
-    removeTransientMessage(sessionId, turnId);
-  }
 
   /** Only an unreconciled submission keeps its row because Host admission may have succeeded. */
   type SubmittedMessage =
@@ -274,7 +272,7 @@ export function createAppShellChatActions(deps: {
         // canonical transcript to settle.
         return { kind: 'unreconciled' };
       }
-      removeOptimisticUserMessage(sessionId, messageId);
+      removeTransientMessage(sessionId, messageId);
       if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId);
       return { kind: 'refused' };
     }
@@ -308,23 +306,20 @@ export function createAppShellChatActions(deps: {
     pending?: readonly PendingAttachment[],
     options: SendOptions = {},
   ): Promise<boolean> {
-    const directoryReferences = options.directoryReferences;
-    const quotes = options.quotes;
-    const exactTurn = options.turnOrchestration !== undefined;
+    const { directoryReferences, quotes } = options;
     const initialSessionId = activeIdRef.current;
-    const initialNewTaskTarget = initialSessionId ? undefined : newTaskTarget;
     const sendOwner = captureComposerImportOwner();
-    const newChatOwner = initialSessionId ? null : sendOwner;
-    if (!initialSessionId && !initialNewTaskTarget) return false;
-    if (!(await checkTaskSubmissionReadiness())) return false;
+    const selectionIsCurrent = captureSelection();
+    if (!initialSessionId && !newTaskTarget) return false;
     if (
+      !(await checkTaskSubmissionReadiness()) || !selectionIsCurrent() ||
       (initialSessionId && !isShellSurfaceOwnerActive(sendOwner)) ||
-      (newChatOwner && !isNewChatSendSurfaceActive(newChatOwner))
+      (!initialSessionId && !isNewChatSendSurfaceActive(sendOwner))
     ) {
       return false;
     }
     let optimisticSessionId: string | undefined;
-    let optimisticMessageId: string | undefined;
+    const messageId = crypto.randomUUID();
     // #1433: the composer creates the session BEFORE it sends, so a first
     // send that never lands has to take the session with it. Set the moment
     // creation succeeds, cleared the moment the send does — while it holds a
@@ -347,7 +342,6 @@ export function createAppShellChatActions(deps: {
       }
     };
     try {
-      const messageId = crypto.randomUUID();
       async function submitIntoSession(sessionId: string, messageId: string) {
         const attachmentItems =
           pending?.length
@@ -369,7 +363,7 @@ export function createAppShellChatActions(deps: {
         return submitAndProject({
           sessionId,
           messageId,
-          placement: exactTurn ? 'current_turn' : 'next_turn',
+          placement: options.turnOrchestration !== undefined ? 'current_turn' : 'next_turn',
           command: {
             ...sendCommand,
             ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
@@ -382,9 +376,9 @@ export function createAppShellChatActions(deps: {
         });
       }
       if (!initialSessionId) {
-        if (!initialNewTaskTarget) return false;
+        if (!newTaskTarget) return false;
         if (pending?.length) preflightAttachmentItems(pending);
-        const session = await window.maka.newTasks.create(initialNewTaskTarget, {
+        const session = await window.maka.newTasks.create(newTaskTarget, {
           name: DEFAULT_SESSION_NAME,
           ...(newChatModel
             ? {
@@ -399,8 +393,13 @@ export function createAppShellChatActions(deps: {
           orchestrationMode: newChatOrchestrationMode,
         });
         unsentSessionId = session.id;
+        // Creation can also yield while a same-target New Task is reopened.
+        // Retire this unsent Session without activating the abandoned surface.
+        if (!selectionIsCurrent() || !isNewChatSendSurfaceActive(sendOwner)) {
+          await discardUnsentSession();
+          return false;
+        }
         optimisticSessionId = session.id;
-        optimisticMessageId = messageId;
         // Stage the first row before activation. `setActiveId` projects this
         // session-owned transient in the same state transition that replaces
         // the new-chat surface, so the empty-session Maka hero cannot paint
@@ -411,14 +410,11 @@ export function createAppShellChatActions(deps: {
           ...copiedArray('quotes', quotes),
           inlineReferences: [],
         });
-        // Consumed: the choice is now the created Session's, not the next
-        // draft's. A failed create leaves it in place so a retry keeps it.
-        if (newChatPermissionChoice) clearNewChatPermissionChoice();
         // Main owns observation-before-dispatch. This only selects the local
         // surface; saving a draft never waits for the Host's event stream.
         await activateSessionForFirstSend(session.id);
         if (activeIdRef.current !== session.id) {
-          removeOptimisticUserMessage(session.id, messageId);
+          removeTransientMessage(session.id, messageId);
           await discardUnsentSession();
           return false;
         }
@@ -428,23 +424,26 @@ export function createAppShellChatActions(deps: {
           return false;
         }
         unsentSessionId = undefined;
+        // A refused first send deletes the Session, so its draft choice must
+        // survive for retry. Clear only while this Session still owns the UI.
+        if (newChatPermissionChoice && activeIdRef.current === session.id)
+          clearNewChatPermissionChoice();
         // The callback fires only when this send's first message projected;
         // an unreconciled first message stays unreported.
-        if (submitted.kind === 'projected') options.onSessionResolved?.(session.id);
+        if (submitted.kind === 'projected')
+          options.onSessionResolved?.(session.id, sendOwner.newTaskDraftKey);
         void refreshSessions().catch(() => undefined);
         return true;
       }
-      const sessionId = initialSessionId;
-      if (!await onFollowLatest(sessionId)) return false;
-      optimisticSessionId = sessionId;
-      optimisticMessageId = messageId;
-      publishTransientUserMessage(sessionId, {
+      if (!onFollowLatest(initialSessionId)) return false;
+      optimisticSessionId = initialSessionId;
+      publishTransientUserMessage(initialSessionId, {
         id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
         inlineReferences: [],
       });
-      const submitted = await submitIntoSession(sessionId, messageId);
+      const submitted = await submitIntoSession(initialSessionId, messageId);
       // An existing-Session send never reports a resolved Session.
       return submitted.kind !== 'refused';
     } catch (error) {
@@ -454,8 +453,8 @@ export function createAppShellChatActions(deps: {
       const feedbackSessionId = optimisticSessionId ?? initialSessionId;
       const diagnosticTarget = feedbackSessionId
         ? { sessionId: feedbackSessionId }
-        : initialNewTaskTarget
-          ? { profileId: initialNewTaskTarget.profileId }
+        : newTaskTarget
+          ? { profileId: newTaskTarget.profileId }
           : undefined;
       const sendStillOwnsCurrentSurface =
         (feedbackSessionId !== undefined &&
@@ -463,10 +462,10 @@ export function createAppShellChatActions(deps: {
             ...sendOwner,
             sessionId: feedbackSessionId,
           })) ||
-        (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
+        (!initialSessionId && isNewChatSendSurfaceActive(sendOwner));
       await discardUnsentSession();
-      if (optimisticSessionId && optimisticMessageId) {
-        removeOptimisticUserMessage(optimisticSessionId, optimisticMessageId);
+      if (optimisticSessionId) {
+        removeTransientMessage(optimisticSessionId, messageId);
       }
       // Which surface is allowed to hear about this failure. The id alone is
       // not it: `selectNavigation` never clears `activeId` (nav-selection.ts),
@@ -545,7 +544,7 @@ export function createAppShellChatActions(deps: {
       // would clear the composer draft the user has to retry from.
       return submitted.kind !== 'refused';
     } catch (error) {
-      removeOptimisticUserMessage(sessionId, messageId);
+      removeTransientMessage(sessionId, messageId);
       throw error;
     }
   }

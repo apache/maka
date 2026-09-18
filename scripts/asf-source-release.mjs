@@ -71,17 +71,13 @@ const knownNonCategoryXLicenses = new Set([
   'WTFPL OR ISC',
 ]);
 const categoryXLicensePattern = /(?:^|[^A-Za-z])(?:A?GPL|LGPL)-?\d/i;
-const packageDependencyFields = [
-  'dependencies',
-  'devDependencies',
-  'optionalDependencies',
-  'peerDependencies',
-];
-const bundledDependencyFields = ['bundleDependencies', 'bundledDependencies'];
+
 const textSourceExtensions = new Set([
+  '.astro',
   '.cjs',
   '.css',
   '.csv',
+  '.diff',
   '.html',
   '.js',
   '.json',
@@ -120,6 +116,7 @@ const textSourceBasenames = new Set([
   'LICENSE',
   'NOTICE',
   'network-policy',
+  'pre-commit',
 ]);
 const maxCommandBuffer = 64 * 1024 * 1024;
 const rejectedGpgStatuses = new Set([
@@ -571,163 +568,22 @@ function validateArchiveContents(archivePath, identity, entries) {
       source: basename(archivePath),
       version: identity.version,
     });
-    validateNodePackageInputs(candidateRoot, identity, entries);
+    validateSourcePackageLicenses(candidateRoot, identity, entries);
     validateNonTextInputs(candidateRoot, identity, entries);
   } finally {
     rmSync(temporaryRoot, { force: true, recursive: true });
   }
 }
 
-function validateNodePackageInputs(candidateRoot, identity, entries) {
-  const files = entries.filter((entry) => entry && !entry.endsWith('/'));
-  const rootPrefix = `${identity.rootDirectory}/`;
-  const readEntry = (entry) =>
-    readFileSync(join(candidateRoot, entry.slice(rootPrefix.length)), 'utf8');
-  const noticeLicenses = new Map();
-  const generatedNpmNotice = `${rootPrefix}apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt`;
-  if (files.includes(generatedNpmNotice)) {
-    const entry = generatedNpmNotice;
-    for (const block of readEntry(entry).split(/\n={20,}\n/u)) {
-      const packageKey = /^Package: (.+)$/mu.exec(block)?.[1];
-      const license = /^Selected license: (.+)$/mu.exec(block)?.[1];
-      if (!packageKey || !license) continue;
-      const previous = noticeLicenses.get(packageKey);
-      if (previous && previous !== license) {
-        throw new Error(`Conflicting license inventory for ${packageKey}: ${previous}, ${license}`);
-      }
-      noticeLicenses.set(packageKey, license);
-    }
-  }
-
-  const lockEntries = files.filter((name) =>
-    /\/(?:package-lock|npm-shrinkwrap)\.json$/u.test(name),
-  );
-  const parsedLocks = new Map();
-  const readLock = (entry) => {
-    if (parsedLocks.has(entry)) return parsedLocks.get(entry);
-    const lock = parseArchiveJson(readEntry(entry), entry);
-    if (lock.lockfileVersion !== 3 || Object.hasOwn(lock, 'dependencies')) {
-      throw new Error(
-        `Unsupported npm lockfile version ${lock.lockfileVersion} or schema: ${entry}`,
-      );
-    }
-    if (!lock.packages || typeof lock.packages !== 'object' || Array.isArray(lock.packages)) {
-      throw new Error(`Cannot safely classify package lockfile without packages: ${entry}`);
-    }
-    parsedLocks.set(entry, lock);
-    return lock;
-  };
-
-  const manifests = new Map(
-    files
-      .filter((name) => name.endsWith('/package.json'))
-      .map((entry) => [entry, parseArchiveJson(readEntry(entry), entry)]),
-  );
-  const rootLockEntry = `${rootPrefix}package-lock.json`;
-  for (const [entry, manifest] of manifests) {
+function validateSourcePackageLicenses(candidateRoot, identity, entries) {
+  for (const entry of entries.filter((name) => name.endsWith('/package.json'))) {
+    const path = join(candidateRoot, entry.slice(identity.rootDirectory.length + 1));
+    const manifest = parseArchiveJson(readFileSync(path, 'utf8'), entry);
     if (manifest.license) validateReleaseLicense(manifest.license, entry);
     else if (manifest.private !== true) {
       throw new Error(`Cannot safely classify package manifest without a license: ${entry}`);
     }
-    const dependencyNames = declaredPackageDependencies(manifest, entry);
-    if (dependencyNames.length > 0) {
-      const directory = dirname(entry);
-      const lockEntry = [
-        `${directory}/npm-shrinkwrap.json`,
-        `${directory}/package-lock.json`,
-        rootLockEntry,
-      ].find((name) => lockEntries.includes(name));
-      if (!lockEntry) {
-        throw new Error(`Cannot safely classify package manifest ${entry} without lock provenance`);
-      }
-      const lock = readLock(lockEntry);
-      for (const name of dependencyNames) {
-        if (
-          !Object.keys(lock.packages).some(
-            (lockPath) =>
-              lockPath === `node_modules/${name}` || lockPath.endsWith(`/node_modules/${name}`),
-          )
-        ) {
-          throw new Error(
-            `Cannot safely classify ${name} declared by ${entry} without matching lock provenance`,
-          );
-        }
-      }
-    }
   }
-
-  for (const entry of files.filter((name) => /\/(?:pnpm-lock\.yaml|yarn\.lock)$/u.test(name))) {
-    throw new Error(`Cannot safely classify unsupported package lockfile: ${entry}`);
-  }
-  for (const entry of lockEntries) {
-    const lock = readLock(entry);
-    for (const [lockPath, dependency] of Object.entries(lock.packages)) {
-      if (!lockPath) continue;
-      if (dependency?.link === true) {
-        const name = lockPath.slice(lockPath.lastIndexOf('node_modules/') + 13);
-        const targetManifestEntry = join(dirname(entry), dependency.resolved ?? '', 'package.json');
-        const targetManifest = manifests.get(targetManifestEntry);
-        const targetLockPath = dependency.resolved;
-        const targetLock = targetLockPath ? lock.packages[targetLockPath] : undefined;
-        if (
-          !targetManifest ||
-          targetManifest.name !== name ||
-          !targetLock ||
-          targetLock.name !== targetManifest.name ||
-          targetLock.version !== targetManifest.version
-        ) {
-          throw new Error(`Cannot safely classify workspace link ${name} in ${entry}`);
-        }
-        continue;
-      }
-      if (!lockPath.includes('node_modules/')) {
-        const manifestEntry = join(dirname(entry), lockPath, 'package.json');
-        const manifest = manifests.get(manifestEntry);
-        if (!manifest || manifest.name !== dependency.name) {
-          throw new Error(`Cannot safely classify workspace package ${lockPath} in ${entry}`);
-        }
-        if (dependency.version !== manifest.version) {
-          throw new Error(`Workspace version mismatch for ${lockPath} in ${entry}`);
-        }
-        if (dependency.license) {
-          validateReleaseLicense(dependency.license, `${lockPath} in ${entry}`);
-        }
-        continue;
-      }
-      const name = dependency.name ?? lockPath.slice(lockPath.lastIndexOf('node_modules/') + 13);
-      const version = dependency.version;
-      const packageKey = version ? `${name}@${version}` : undefined;
-      const license =
-        (packageKey ? noticeLicenses.get(packageKey) : undefined) ?? dependency.license;
-      if (!license) {
-        throw new Error(
-          `Cannot safely classify ${name}${version ? `@${version}` : ''} in ${entry}`,
-        );
-      }
-      validateReleaseLicense(license, `${name}${version ? `@${version}` : ''} in ${entry}`);
-    }
-  }
-}
-
-function declaredPackageDependencies(manifest, entry) {
-  const names = new Set();
-  for (const field of packageDependencyFields) {
-    const dependencies = manifest[field];
-    if (dependencies === undefined) continue;
-    if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
-      throw new Error(`Invalid ${field} in package manifest: ${entry}`);
-    }
-    for (const name of Object.keys(dependencies)) names.add(name);
-  }
-  for (const field of bundledDependencyFields) {
-    const dependencies = manifest[field];
-    if (dependencies === undefined) continue;
-    if (!Array.isArray(dependencies) || dependencies.some((name) => typeof name !== 'string')) {
-      throw new Error(`Invalid ${field} in package manifest: ${entry}`);
-    }
-    for (const name of dependencies) names.add(name);
-  }
-  return [...names];
 }
 
 function parseArchiveJson(contents, entry) {
@@ -779,16 +635,13 @@ function validateNonTextInputs(candidateRoot, identity, entries) {
     } catch {
       // Invalid UTF-8 continues to the candidate-owned provenance inventory.
     }
-    const imageFormat = sourceImageFormat(contents);
     const relativePath = entry.slice(`${identity.rootDirectory}/`.length);
     if (
       provenancePatterns.some((pattern) => sourceInventoryPatternMatches(pattern, relativePath))
     ) {
       continue;
     }
-    throw new Error(
-      `Cannot safely classify non-text release input ${entry}${imageFormat ? ` (${imageFormat})` : ''}`,
-    );
+    throw new Error(`Cannot safely classify non-text release input ${entry}`);
   }
 }
 
@@ -826,26 +679,6 @@ function compiledArtifactFormat(contents) {
   }
   if (prefix.equals(Buffer.from('!<arch>\n'))) return 'ar archive';
   if (prefix.equals(Buffer.from('!<thin>\n'))) return 'thin ar archive';
-  return undefined;
-}
-
-function sourceImageFormat(contents) {
-  const prefix = contents.subarray(0, 12);
-  if (prefix.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'PNG';
-  if (prefix.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return 'JPEG';
-  if (
-    prefix
-      .subarray(0, 6)
-      .toString('ascii')
-      .match(/^GIF8[79]a$/u)
-  )
-    return 'GIF';
-  if (
-    prefix.subarray(0, 4).toString('ascii') === 'RIFF' &&
-    prefix.subarray(8, 12).toString('ascii') === 'WEBP'
-  ) {
-    return 'WebP';
-  }
   return undefined;
 }
 

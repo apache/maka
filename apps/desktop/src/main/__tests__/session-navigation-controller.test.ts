@@ -236,6 +236,20 @@ describe('useSessionNavigationReads', () => {
 });
 
 describe('createSessionOpenCommand', () => {
+  it('distinguishes successive jumps even when the clock does not advance', (t) => {
+    t.mock.method(Date, 'now', () => 1);
+    const targets: Array<{ nonce: number } | null> = [];
+    const deps = {
+      activateSession() {}, exitWorkHub() {}, selectSessionSurface() {},
+      setSearchTarget: (target: { nonce: number } | null) => targets.push(target),
+    };
+    const open = createSessionOpenCommand(deps);
+    open('a', 'turn-1', 1);
+    open('a', 'turn-1', 1);
+    createSessionOpenCommand(deps)('a', 'turn-1', 1);
+    assert.equal(new Set(targets.map((target) => target!.nonce)).size, 3);
+  });
+
   it('orders the jump and preserves turn-target clearing semantics', () => {
     const calls: string[] = [];
     const targets: unknown[] = [];

@@ -30,7 +30,7 @@ import {
 } from '../model/anchor-rail.js';
 
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
-import { WorkHubHighlightContext, workHubIdentityHue } from './workhub-work-identity.js';
+import { WorkHubHighlightContext, useWorkHubIdentityHue } from './workhub-work-identity.js';
 
 export function WorkHubNavigationRail(props: {
   readonly locale: UiLocale;
@@ -40,6 +40,7 @@ export function WorkHubNavigationRail(props: {
   readonly copy: WorkHubRailCopy;
 }) {
   const highlight = useContext(WorkHubHighlightContext);
+  const workHubIdentityHue = useWorkHubIdentityHue(props.sessions.map((work) => work.target.sessionId));
   const drag = useRef<{ pointerId: number; startX: number; scrollLeft: number; list: HTMLElement; moved: boolean } | undefined>(undefined);
   const [filter, setFilter] = useState<WorkHubWorkFilter>('all');
   const anchors = deriveWorkHubAnchors({

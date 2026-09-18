@@ -20,6 +20,7 @@
 import type { RootTurnAdmissionAuthorization } from '@maka/storage/execution-stores';
 import {
   HOST_OPERATION_SPECS,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   decodeOperationOutcome,
   type HostOperationErrorCode,
   type OperationInput,
@@ -30,6 +31,7 @@ import {
   type ResponseFrame,
   type ResponseFrameFor,
 } from '../protocol/index.js';
+import { usageScreenMessageBytes } from '../protocol/usage-screen.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { HOST_RESOURCE_OPERATION_SPECS } from '../protocol/host-resources.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.js';
@@ -379,7 +381,7 @@ async function dispatchTypedOperation<K extends OperationKey>(
       'Runtime Host operation failed',
     ) as ResponseFrameFor<K>;
   }
-  return outcome.ok
+  const response: ResponseFrameFor<K> = outcome.ok
     ? {
         requestId: request.requestId,
         operation: request.operation,
@@ -392,4 +394,18 @@ async function dispatchTypedOperation<K extends OperationKey>(
         ok: false,
         error: outcome.error,
       };
+  const frame = response as ResponseFrame;
+  if (
+    frame.operation === 'usage.query' &&
+    frame.ok &&
+    (frame.result.kind === 'screen' || frame.result.kind === 'activity') &&
+    usageScreenMessageBytes(frame.requestId, frame.result) > RUNTIME_HOST_MAX_MESSAGE_BYTES
+  ) {
+    return {
+      ...response,
+      ok: true,
+      result: { kind: 'screen_response_too_large', section: 'message' },
+    } as ResponseFrameFor<K>;
+  }
+  return response;
 }

@@ -31,6 +31,44 @@ import {
 } from '../protocol/index.js';
 
 describe('Client Capability protocol', () => {
+  test('preserves opaque tool-call IDs while retaining identity bounds', () => {
+    const frame = {
+      kind: 'client.capability.call',
+      invocationId: 'invocation',
+      registrationId: 'registration',
+      offerId: 'offer',
+      serverId: 'server',
+      toolName: 'tool',
+      arguments: {},
+      sessionId: 'session',
+      turnId: 'turn',
+    };
+    for (const toolCallId of ['call:outer:nested:inner', 'provider/call.1+part', 'x'.repeat(256)]) {
+      assert.deepEqual(decodeHostFrame({ ...frame, toolCallId }), { ...frame, toolCallId });
+    }
+    for (const toolCallId of [
+      undefined,
+      null,
+      1,
+      '',
+      'x'.repeat(257),
+      ' leading',
+      'trailing ',
+      'a\nb',
+      'a\u0000b',
+      'a\u007fb',
+    ]) {
+      assert.throws(() => decodeHostFrame({ ...frame, toolCallId }), RuntimeHostProtocolError);
+    }
+    for (const field of ['invocationId', 'registrationId', 'offerId', 'sessionId', 'turnId']) {
+      assert.throws(
+        () =>
+          decodeHostFrame({ ...frame, toolCallId: 'call:nested:inner', [field]: 'entity:invalid' }),
+        RuntimeHostProtocolError,
+      );
+    }
+  });
+
   test('decodes open-world registration and reverse-call lifecycle frames', () => {
     assert.deepEqual(
       decodeClientFrame({

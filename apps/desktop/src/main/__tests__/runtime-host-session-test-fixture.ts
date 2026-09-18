@@ -33,48 +33,60 @@ export function runtimeHostSessionFixture(input: {
   readonly transcript: Promise<StoredMessage[]>;
   readonly events: AsyncIterable<SubscriptionFrame>;
   readonly transcriptBootstrap?: DesktopRuntimeHostSession['transcriptBootstrap'];
-  loadTranscriptOverlay?: DesktopRuntimeHostSession['loadTranscriptOverlay'];
   decodeTranscriptPage?: DesktopRuntimeHostSession['decodeTranscriptPage'];
   loadTranscriptPage?: DesktopRuntimeHostSession['loadTranscriptPage'];
+  ready?: DesktopRuntimeHostSession['ready'];
   close(): Promise<void>;
 }): DesktopRuntimeHostSession {
   const sessionId = input.snapshot.session.sessionId;
+  const transcriptBootstrap = input.transcriptBootstrap ?? {
+    throughSequence: null,
+    durable: emptyPage(sessionId),
+  };
+  // The Host holds a subscription's frames until the subscriber declares
+  // readiness, so a fixture that hands them over earlier would let an ordering
+  // bug pass.
+  let releaseFrames = (): void => undefined;
+  const readyGate = new Promise<void>((resolve) => {
+    releaseFrames = resolve;
+  });
   return {
     hostEpoch: 'host-1',
     subscriptionId: `subscription-${sessionId}`,
     snapshot: input.snapshot,
     activeAssistantStreams: input.activeAssistantStreams ?? [],
-    transcriptBootstrap: input.transcriptBootstrap ?? {
-      throughSequence: null,
-      overlayMessageCount: 0,
-      durable: emptyPage(sessionId, 'durable'),
-      overlay: emptyPage(sessionId, 'overlay'),
-    },
-    events: input.events,
+    transcriptBootstrap,
+    events: (async function* () {
+      await readyGate;
+      yield* input.events;
+    })(),
     loadTranscript: () => input.transcript,
-    loadTranscriptOverlay: input.loadTranscriptOverlay ?? (() => input.transcript),
     decodeTranscriptPage: input.decodeTranscriptPage ??
-      (async (): Promise<DecodedSessionTranscriptPage<StoredMessage>> => ({
-        messages: [],
+      (async (page): Promise<DecodedSessionTranscriptPage<StoredMessage>> => ({
+        messages: page === transcriptBootstrap.durable
+          ? (await input.transcript).map((message, identity) => ({ identity, message }))
+          : [],
         nextCursor: null,
       })),
     loadTranscriptPage: input.loadTranscriptPage ??
-      (async () => emptyPage(sessionId, 'durable')),
+      (async () => emptyPage(sessionId)),
+    ready: async () => {
+      releaseFrames();
+      await input.ready?.();
+    },
     close: input.close,
   };
 }
 
-function emptyPage(sessionId: string, source: 'durable' | 'overlay'): SessionTranscriptPage {
+function emptyPage(sessionId: string): SessionTranscriptPage {
   return {
     kind: 'page',
     sessionId,
-    source,
     direction: 'older',
     throughSequence: null,
     rawBytes: 0,
     fragments: [],
-    rangeBoundarySequence: null,
-    protectedTurnSequence: null,
     nextCursor: null,
+    endsAtTurnBoundary: true,
   };
 }
