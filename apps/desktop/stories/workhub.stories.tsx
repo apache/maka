@@ -480,9 +480,18 @@ export const QuestionStopped: Story = {
   },
 };
 
+// Real path: WorkHub history → filter a Work's messages → show all → navigate to a Work.
 export const FilterWorkConversations: Story = {
   render: () => <Surface history colors />,
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, abortSignal }) => {
+    const expectLocatedPrompt = async () => {
+      // Navigation settles over animation frames; use the existing story deadline.
+      while (!canvasElement.querySelector('[data-search-highlight="true"]')) {
+        abortSignal.throwIfAborted();
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。');
+    };
     await expectPromptRailClearance(canvasElement);
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
@@ -497,7 +506,7 @@ export const FilterWorkConversations: Story = {
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     const rail = canvasElement.querySelectorAll('.workhub-navigation-item')[1] as HTMLElement;
     await userEvent.click(rail);
-    await waitFor(() => expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。'));
+    await expectLocatedPrompt();
     expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4);
     expect(writes.open).not.toHaveBeenCalled();
     await userEvent.click(rail);
@@ -513,7 +522,7 @@ export const FilterWorkConversations: Story = {
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
     await userEvent.click(rail);
-    await waitFor(() => expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。'));
+    await expectLocatedPrompt();
     expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4);
     (rail.querySelector('button') as HTMLButtonElement).focus();
     await userEvent.keyboard('{Enter}');

@@ -89,10 +89,10 @@ import {
  * left to push the reader. virtua's default is 200px and a wheel notch travels
  * 600, so a row went from unmounted to straddling within one notch and was
  * always measured too late: reading upwards through the 24-Turn geometry scene
- * jumped 13 times, by 5 to 194px. Mounting 2000px ahead leaves the measurement
- * room to land before the row reaches the reader.
+ * jumped 13 times, by 5 to 194px. Mixed Markdown/code Turns still measured too
+ * late with 2000px; 4000px lets them settle before reaching the reader.
  */
-const MEASURE_AHEAD_MARGIN = 2000;
+const MEASURE_AHEAD_MARGIN = 4000;
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
