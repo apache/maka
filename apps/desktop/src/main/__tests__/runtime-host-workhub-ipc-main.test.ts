@@ -20,7 +20,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
-import { WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE } from '@maka/runtime-host/protocol';
 import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import { registerRuntimeHostWorkHubIpc } from '../runtime-host-workhub-ipc-main.js';
 
@@ -77,8 +76,8 @@ test('returns a structured model setup state across IPC', async () => {
       resolveWorkHubCoordinationSession: async () => {
         throw new RuntimeHostOperationError(
           'workhub.coordination.resolve',
-          'operation_conflict',
-          WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE,
+          'model_required',
+          'A default model must be selected',
         );
       },
     } as unknown as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
@@ -94,4 +93,33 @@ test('returns a structured model setup state across IPC', async () => {
   assert.ok(resolve);
   const result = await resolve({ sender: { id: 7 } } as Parameters<IpcHandler>[0]);
   assert.deepEqual(result, { kind: 'model_required' });
+});
+
+test('does not diagnose an ordinary WorkHub conflict as missing model setup', async () => {
+  const handlers = new Map<string, IpcHandler>();
+  registerRuntimeHostWorkHubIpc(
+    {
+      resolveWorkHubCoordinationSession: async () => {
+        throw new RuntimeHostOperationError(
+          'workhub.coordination.resolve',
+          'operation_conflict',
+          'WorkHub Coordination Session requires an available default model',
+        );
+      },
+    } as unknown as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
+    {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    {},
+  );
+
+  const resolve = handlers.get('workhub:resolveCoordinationSession');
+  assert.ok(resolve);
+  await assert.rejects(
+    resolve({ sender: { id: 7 } } as Parameters<IpcHandler>[0]),
+    (error) =>
+      error instanceof RuntimeHostOperationError && error.code === 'operation_conflict',
+  );
 });

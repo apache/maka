@@ -43,7 +43,10 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import type { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import type { HostWorkHubRoutingModel } from '../server/execution-model-authority.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { SessionOperationFailure } from '../server/session-catalog-coordinator.js';
+import {
+  SessionOperationFailure,
+  WorkHubDefaultModelRequiredError,
+} from '../server/session-catalog-coordinator.js';
 import {
   WorkHubActionEffectFailure,
   type WorkHubActionGateEffects,
@@ -676,17 +679,31 @@ describe('Host WorkHub Coordination coordinator', () => {
           store,
           () => undefined,
           async () => {
-            throw new SessionOperationFailure(
-              'operation_unavailable',
-              'No default Session model is configured',
-            );
+            throw new WorkHubDefaultModelRequiredError('No default Session model is configured');
+          },
+        ).handlers['workhub.coordination.resolve']({}, CONTEXT),
+        {
+          ok: false,
+          error: {
+            code: 'model_required',
+            message: 'WorkHub Coordination Session requires an available default model',
+          },
+        },
+      );
+      assert.deepEqual(
+        await coordinator(
+          root,
+          store,
+          () => undefined,
+          async () => {
+            throw new SessionOperationFailure('operation_conflict', 'Concurrent target change');
           },
         ).handlers['workhub.coordination.resolve']({}, CONTEXT),
         {
           ok: false,
           error: {
             code: 'operation_conflict',
-            message: 'WorkHub Coordination Session requires an available default model',
+            message: 'WorkHub Coordination Session target is unavailable',
           },
         },
       );

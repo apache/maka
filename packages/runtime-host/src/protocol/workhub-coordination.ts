@@ -93,6 +93,7 @@ const RESOLVE_ERRORS = [
   'host_draining',
   'operation_unavailable',
   'operation_conflict',
+  'model_required',
   'persistence_failed',
   'commit_outcome_unknown',
   'internal_failure',

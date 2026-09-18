@@ -20,7 +20,6 @@
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { RuntimeHostOperationError, RuntimeHostRequestInterruptedError } from '@maka/runtime-host/client';
-import { WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE } from '@maka/runtime-host/protocol';
 import { prepareIngestItems, resolveAttachmentRefs } from './attachment-ingest.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { handleReconnectableRead, handleReconciledControl, rethrowReconnectableReadFailure, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
@@ -63,8 +62,7 @@ export function registerRuntimeHostWorkHubIpc(
       if (
         error instanceof RuntimeHostOperationError &&
         error.operation === 'workhub.coordination.resolve' &&
-        error.code === 'operation_conflict' &&
-        error.message === WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE
+        error.code === 'model_required'
       ) {
         return { kind: 'model_required' };
       }
