@@ -155,6 +155,33 @@
   padding: var(--space-1) var(--space-3) var(--space-2);
 }
 
+/* Session references share the input's surface and stay visible while typing. */
+.maka-composer-session-references {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  min-width: 0;
+  padding: var(--space-1) var(--space-1) 0;
+}
+
+.maka-composer-session-references .maka-composer-session-token {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(420px, 100%);
+  height: 28px;
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-full);
+  font-weight: 400;
+  background: var(--muted);
+}
+
+.maka-composer-session-token-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Astryx ChatComposerDrawer wraps its content in a display:grid whose single
    implicit column sizes to the content's max-content contribution — with a
    long chip row that resolves WIDER than the grid (measured: 896px column in
