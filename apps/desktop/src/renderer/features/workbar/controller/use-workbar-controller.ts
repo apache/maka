@@ -218,7 +218,7 @@ export function useWorkbarController(
     (session) => session.id === lastKnownFamilySessionIdRef.current,
   );
   const familySessionForSideChat =
-    !input.activeSession && input.layoutSessionId &&
+    workspace === 'session' && !input.activeSession && input.layoutSessionId &&
     input.layoutSessionId !== previousFamilySession?.id
       ? previousFamilySession
       : input.activeSession;

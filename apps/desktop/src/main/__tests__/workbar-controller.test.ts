@@ -542,9 +542,17 @@ describe('useWorkbarController', () => {
     assert.equal(controller().host.activeId, 'ordinary');
     await act(async () => controller().commands.openTool('review'));
     assert.ok(controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'review'));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const sideChatId = controller().host.quotes?.[0]?.id;
+    assert.ok(sideChatId);
     await act(async () => render(true));
     assert.equal(controller().host.activeId, coordinationId);
     assert.ok(controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'browser'));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === sideChatId), false);
+    assert.equal(controller().host.panelsState.right.tabs.some((tab) => tab.id === `side-chat:${sideChatId}`), false);
+    await act(async () => render(false));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === sideChatId), false);
+    assert.equal(controller().host.panelsState.right.tabs.some((tab) => tab.id === `side-chat:${sideChatId}`), false);
   });
 
   it('opens registry singletons once and dynamic tools as separate instances', async () => {
