@@ -22,9 +22,12 @@ import { redactSecrets } from './redaction.js';
 import type { StoredMessage } from './session.js';
 import { userFacingText } from './session.js';
 
+const utf8Encoder = new TextEncoder();
+
 /** Default per-reference budget. It is deliberately small enough to leave room for the active task. */
 export const SESSION_SNAPSHOT_DEFAULT_MAX_CHARS = 12_000;
 export const SESSION_SNAPSHOT_MAX_CHARS = 32_000;
+export const SESSION_SNAPSHOT_MAX_BYTES = 32_000;
 export const SESSION_SNAPSHOT_MAX_ITEMS = 24;
 
 export interface SessionSnapshotReference {
@@ -96,26 +99,34 @@ export function createSessionSnapshot(
 
   const selected: SessionSnapshotItem[] = [];
   let usedChars = 0;
+  let usedBytes = 0;
   let truncated = false;
   for (let index = candidates.length - 1; index >= 0 && selected.length < maxItems; index -= 1) {
     const candidate = candidates[index]!;
     const line = formatSnapshotItem(candidate);
     const separator = selected.length > 0 ? 2 : 0;
     const available = maxChars - usedChars - separator;
-    if (available <= 0) {
+    const availableBytes = SESSION_SNAPSHOT_MAX_BYTES - usedBytes - separator;
+    if (available <= 0 || availableBytes <= 0) {
       truncated = true;
       break;
     }
-    if (line.length <= available) {
+    const lineBytes = utf8Encoder.encode(line).byteLength;
+    if (line.length <= available && lineBytes <= availableBytes) {
       selected.push(candidate);
       usedChars += separator + line.length;
+      usedBytes += separator + lineBytes;
       continue;
     }
     if (selected.length === 0) {
-      const prefixLength = formatSnapshotItem({ ...candidate, text: '' }).length;
-      const contentBudget = Math.max(0, available - prefixLength);
-      if (contentBudget > 0) {
-        const text = sliceAtCodePointBoundary(candidate.text, contentBudget).trimEnd();
+      const prefix = formatSnapshotItem({ ...candidate, text: '' });
+      const contentBudget = Math.max(0, available - prefix.length);
+      const byteBudget = Math.max(0, availableBytes - utf8Encoder.encode(prefix).byteLength);
+      if (contentBudget > 0 && byteBudget > 0) {
+        const text = sliceAtUtf8Boundary(
+          sliceAtCodePointBoundary(candidate.text, contentBudget),
+          byteBudget,
+        ).trimEnd();
         if (!text) {
           truncated = true;
           break;
@@ -155,7 +166,7 @@ export function sessionSnapshotToQuote(snapshot: SessionSnapshot): QuoteRef {
     text: snapshot.text,
     label: sliceAtCodePointBoundary(`Session: ${sessionName}`, 200),
     sourceSessionId: snapshot.reference.sessionId,
-    sourceSessionName: sessionName,
+    sourceSessionName: sliceAtCodePointBoundary(sessionName, 200),
     sourceCapturedAt: snapshot.reference.capturedAt,
     sourceTruncated: snapshot.truncated,
   };
@@ -170,6 +181,18 @@ function sliceAtCodePointBoundary(value: string, maxCodeUnits: number): string {
   const sliced = value.slice(0, maxCodeUnits);
   const last = sliced.charCodeAt(sliced.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced;
+}
+
+function sliceAtUtf8Boundary(value: string, maxBytes: number): string {
+  let bytes = 0;
+  let end = 0;
+  for (const codePoint of value) {
+    const nextBytes = utf8Encoder.encode(codePoint).byteLength;
+    if (bytes + nextBytes > maxBytes) break;
+    bytes += nextBytes;
+    end += codePoint.length;
+  }
+  return value.slice(0, end);
 }
 
 function clampPositiveInteger(value: number, min: number, max: number): number {

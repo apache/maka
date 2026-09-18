@@ -20,7 +20,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '../session.js';
-import { createSessionSnapshot, sessionSnapshotToQuote } from '../session-reference.js';
+import {
+  createSessionSnapshot,
+  sessionSnapshotToQuote,
+  SESSION_SNAPSHOT_MAX_BYTES,
+} from '../session-reference.js';
 
 test('bounds long Session labels without splitting a Unicode character', () => {
   const name = `${'会'.repeat(190)}😀suffix`;
@@ -33,6 +37,31 @@ test('bounds long Session labels without splitting a Unicode character', () => {
   assert.ok(quote.label!.length <= 200);
   assert.equal(quote.label, `Session: ${'会'.repeat(190)}`);
   assert.equal(quote.sourceSessionName, name);
+});
+
+test('bounds the provenance name to the QuoteRef UTF-16 limit', () => {
+  const name = '😀'.repeat(120);
+  const quote = sessionSnapshotToQuote(
+    createSessionSnapshot([user('message', 'hello')], { sessionId: 'source', sessionName: name }),
+  );
+  assert.equal(quote.sourceSessionName, '😀'.repeat(100));
+  assert.ok(quote.sourceSessionName.length <= 200);
+});
+
+test('bounds a CJK snapshot by UTF-8 bytes before it reaches send admission', () => {
+  const snapshot = createSessionSnapshot([user('long', '会'.repeat(20_000))], {
+    sessionId: 'source',
+    sessionName: 'Reference',
+    maxChars: 32_000,
+  });
+  const quote = sessionSnapshotToQuote(snapshot);
+  assert.equal(snapshot.truncated, true);
+  assert.ok(snapshot.text.length <= 32_000);
+  assert.ok(new TextEncoder().encode(snapshot.text).byteLength <= SESSION_SNAPSHOT_MAX_BYTES);
+  assert.ok(
+    new TextEncoder().encode(JSON.stringify({ text: 'question', quotes: [quote] })).byteLength <
+      52 * 1024,
+  );
 });
 
 function user(id: string, text: string, ts = 1): StoredMessage {
