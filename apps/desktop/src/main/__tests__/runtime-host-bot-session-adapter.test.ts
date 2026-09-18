@@ -173,7 +173,6 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
   let closeCount = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
-    activeAssistantStreams: [],
     events,
     async close() {
       closeCount += 1;
@@ -232,7 +231,6 @@ test('accepts an empty reset delta as the authoritative Bot reply', async () => 
     client: botClient({
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
         events,
         async close() {
           events.end();
@@ -273,7 +271,6 @@ test('reply snapshot observers cannot interrupt the authoritative Host Turn', as
     client: botClient({
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
         events,
         async close() {
           events.end();
@@ -315,7 +312,6 @@ test('returns blocked Skill feedback without waiting for a Turn that was not cre
     client: botClient({
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
         events,
         async close() {
           closeCount += 1;
@@ -368,7 +364,6 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
     client: botClient({
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
         events,
         async close() {
           events.end();

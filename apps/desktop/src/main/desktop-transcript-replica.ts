@@ -204,7 +204,10 @@ export class DesktopTranscriptReplica {
   }
 
   get resident(): boolean {
-    return this.#resident;
+    // A latched failure makes this a dead read model even while it still holds
+    // durable bytes, so callers see what they see for an evicted replica and
+    // take the same reseed/recovery path instead of touching it.
+    return this.#resident && this.#failure === undefined;
   }
 
   adoptResidentAccounting(): void {
@@ -340,16 +343,8 @@ export class DesktopTranscriptReplica {
   advance(): Promise<void> {
     if (this.#failure) return Promise.reject(this.#failure);
     this.#assertOpen();
+    if (!this.#resident) return Promise.resolve();
     const target = this.#handle.transcriptWatermark;
-    if (!this.#resident) {
-      if (
-        target !== null &&
-        (this.#durableThrough === null || target > this.#durableThrough)
-      ) {
-        this.#durableThrough = target;
-      }
-      return Promise.resolve();
-    }
     if (
       target === null ||
       (this.#durableThrough !== null && target <= this.#durableThrough)

@@ -167,6 +167,18 @@ export class RuntimeHostSessionSubscriptionOwner {
         error instanceof RuntimeHostSubscriptionError ||
         error instanceof RuntimeHostOperationError
       ) {
+        // 'connection_closed' is the subscription's dead-state mask, not the
+        // reason it died — the pump's report of the real error is already
+        // queued on the same event, so let it land instead of racing it with
+        // a mask that could invert a recoverable failure into terminal.
+        if (
+          error instanceof RuntimeHostSubscriptionError &&
+          error.reason === 'connection_closed'
+        ) {
+          await new Promise((resolve) => setImmediate(resolve));
+          await this.waitUntilReady();
+          if (this.#attempt !== attempt) return undefined;
+        }
         this.#failAttempt(attempt, error);
         await this.waitUntilReady();
         return undefined;
@@ -175,6 +187,10 @@ export class RuntimeHostSessionSubscriptionOwner {
     }
     if (this.#closed || this.#attempt !== attempt || attempt.replica !== evicted) {
       replica.close();
+      // The swap lost to an in-flight recovery or a concurrent reseed; wait
+      // for it to settle so the caller picks up the installed replica rather
+      // than erroring on the corpse it replaced.
+      await this.waitUntilReady();
       return undefined;
     }
     try {

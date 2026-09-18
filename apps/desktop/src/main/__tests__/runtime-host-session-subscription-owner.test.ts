@@ -25,7 +25,10 @@ import {
   deferred,
   waitFor as pollFor,
 } from '@maka/core/test-only/async-primitives';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+} from '@maka/runtime-host/client';
 import type { SubscriptionFrame } from '@maka/runtime-host/protocol';
 import type { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
@@ -437,11 +440,94 @@ test('a reseed committing inside recovery teardown loses the swap', async () => 
   await pollFor(() => closeStarted);
   reseedFetch.resolve(undefined);
 
+  // The losing reseed rides out the in-flight recovery instead of returning
+  // while state still points at the closed replica — it stays pending until
+  // the failed handle's close completes and the replacement is installed.
+  let loserSettled = false;
+  void reseeding.finally(() => {
+    loserSettled = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(loserSettled, false);
+  handleClose.resolve(undefined);
   assert.equal(await reseeding, undefined);
   assert.equal(installs.length, 0);
-  handleClose.resolve(undefined);
   await pollFor(() => opens === 2);
   await owner.waitUntilReady();
+  assert.equal(replicas.length, 2);
+  await owner.close();
+});
+
+test('a reseed fetch masked by the subscription close does not out-race the pump report', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const fetchGate = deferred<void>();
+  let fetchStarted = false;
+  let opens = 0;
+  let terminal: Error | undefined;
+  const replicas: DesktopTranscriptReplica[] = [];
+  const owner = new RuntimeHostSessionSubscriptionOwner({
+    client: {
+      openSession: async () => {
+        opens += 1;
+        const first = opens === 1;
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events: first ? firstEvents : new AsyncFrameQueue(),
+          transcriptBootstrap: { durable: transcriptPage('older', 2) },
+          transcriptWatermark: () => 2,
+          decodeTranscriptPage: async (page) => ({
+            messages: rowsThrough(page.throughSequence),
+            nextCursor: page.nextCursor,
+          }),
+          loadTranscriptPage: async () => {
+            fetchStarted = true;
+            await fetchGate.promise;
+            throw new RuntimeHostSubscriptionError(
+              'connection_closed',
+              'Session subscription closed during transcript loading',
+            );
+          },
+          async close() {},
+        });
+      },
+    },
+    sessionId: 'session-1',
+    now: () => 0,
+    prepareActivation: async (subscription) => {
+      replicas.push(subscription.replica);
+      return () => {};
+    },
+    installReseededReplica: () => {},
+    acceptFrame: () => {},
+    recoveryStarted: () => {},
+    recoveryCompleted: () => {},
+    recoveryFailed: () => {},
+    terminalFailure: (error) => {
+      terminal = error;
+    },
+  });
+  owner.start();
+  await owner.waitUntilReady();
+
+  replicas[0]!.discard();
+  const reseeding = owner.reseedTranscriptReplica();
+  await pollFor(() => fetchStarted);
+  // The fetch rejection is queued before the closed frame reaches the pump,
+  // so the masked error would reach #failAttempt first if it did not yield —
+  // but the subscription's real reason is recoverable and must win.
+  fetchGate.resolve(undefined);
+  firstEvents.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+
+  assert.equal(await reseeding, undefined);
+  await pollFor(() => opens === 2);
+  await owner.waitUntilReady();
+  assert.equal(terminal, undefined);
   assert.equal(replicas.length, 2);
   await owner.close();
 });

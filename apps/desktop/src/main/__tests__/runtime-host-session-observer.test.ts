@@ -59,7 +59,7 @@ test('projects root lifecycle without fabricating content events', async (t) => 
   const events = new AsyncFrameQueue();
   const observer = new RuntimeHostSessionObserver({
     client: { openSession: async () => runtimeHostSessionFixture({
-      snapshot: continuitySnapshot({ rootTurn: null }), activeAssistantStreams: [],
+      snapshot: continuitySnapshot({ rootTurn: null }),
       events, async close() { events.end(); },
     }) },
     emitSessionsChanged() {},
@@ -193,7 +193,6 @@ test("restores renderer observation after the Host connection is replaced", asyn
     client: {
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
-        activeAssistantStreams: [],
         events: firstEvents,
         async close() {
           firstEvents.end();
@@ -1921,7 +1920,6 @@ test("does not publish a terminal error while an owner-managed connection is rep
     client: {
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
-        activeAssistantStreams: [],
         events,
         async close() {
           closeCount += 1;
@@ -1948,7 +1946,6 @@ test("keeps a native Turn watched without a renderer and releases it at terminal
     client: {
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
-        activeAssistantStreams: [],
         events,
         async close() {
           closeCount += 1;
@@ -1992,7 +1989,6 @@ test("does not let an older terminal projection finish a newer watched Turn", as
     client: {
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
-        activeAssistantStreams: [],
         transcript: transcript.promise,
         events,
         async close() {
@@ -2081,7 +2077,6 @@ test("invalidates the transcript when another client starts a Turn", async () =>
             terminalEventId: "terminal-1",
           },
         }),
-        activeAssistantStreams: [],
         events,
         async close() {
           events.end();
@@ -2148,7 +2143,6 @@ test("abandons a watched Turn and removes it from the catalog when Guest access 
     client: {
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
-        activeAssistantStreams: [],
         events,
         async close() {
           closeCount += 1;
@@ -2337,7 +2331,6 @@ test("retries an initial subscription evicted before readiness and resyncs once"
         const first = openCount === 1;
         return runtimeHostSessionFixture({
           snapshot: continuitySnapshot(),
-          activeAssistantStreams: [],
           transcript: first ? Promise.resolve([]) : secondTranscript.promise,
           events: first ? firstEvents : secondEvents,
           async close() {
@@ -2386,7 +2379,6 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
         if (openCount === 1) {
           return runtimeHostSessionFixture({
             snapshot: continuitySnapshot(),
-            activeAssistantStreams: [],
             transcript: firstTranscript.promise,
             events: firstEvents,
             async close() {
@@ -2404,7 +2396,6 @@ test("finishes a watched predecessor after initial catch-up recovery", async () 
               status: "running",
             },
           }),
-          activeAssistantStreams: [],
           transcript: Promise.resolve([
             {
               type: "turn_state" as const,
@@ -2459,7 +2450,6 @@ test("seeds a joining observer from the attempt that survives repeated catch-up 
         if (openCount === 1) {
           return runtimeHostSessionFixture({
             snapshot: continuitySnapshot(),
-            activeAssistantStreams: [],
             events: firstEvents,
             async close() {
               firstEvents.end();
@@ -2469,7 +2459,6 @@ test("seeds a joining observer from the attempt that survives repeated catch-up 
         if (openCount === 2) {
           return runtimeHostSessionFixture({
             snapshot: continuitySnapshot(),
-            activeAssistantStreams: [],
             transcript: replacementTranscript.promise,
             events: replacementEvents,
             async close() {
@@ -2572,7 +2561,6 @@ test("reconciles terminal, Goal, interaction, and sidecar state after subscripti
             snapshot: continuitySnapshot({
               interactions: { pending: [firstInteraction] },
             }),
-            activeAssistantStreams: [],
             events: firstEvents,
             async close() {
               firstEvents.end();
@@ -2787,7 +2775,6 @@ test("shares one Host subscription and one delivery per renderer target", async 
           // Settled: releasing an idle subscription is only correct once the
           // Host has nothing left to send.
           snapshot: settledSnapshot(),
-          activeAssistantStreams: [],
           events,
           async close() {
             closeCount += 1;
@@ -2822,7 +2809,6 @@ test("releases the renderer destroyed listener when its last observer leaves", a
     client: {
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
-        activeAssistantStreams: [],
         events,
         async close() {
           events.end();
@@ -2856,7 +2842,6 @@ test("closes a Host handle that arrives after the observer is closed", async () 
   await observer.close();
   opened.resolve(runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
-    activeAssistantStreams: [],
     events: new AsyncFrameQueue(),
     async close() {
       closeCount += 1;
@@ -2895,7 +2880,6 @@ test("rehydrates pending interactions and publishes answer acknowledgements", as
           snapshot: continuitySnapshot({
             interactions: { pending: [pending] },
           }),
-        activeAssistantStreams: [],
         events,
         async close() {
           events.end();
@@ -2948,7 +2932,6 @@ test("publishes form answer acknowledgements for renderer queue retirement", asy
     client: {
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot({ interactions: { pending: [pending] } }),
-        activeAssistantStreams: [],
         events: new AsyncFrameQueue(),
         async close() {},
       }),
@@ -2982,7 +2965,6 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
     client: {
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
-        activeAssistantStreams: [],
         events,
         async close() {
           events.end();
@@ -3071,7 +3053,6 @@ test("publishes Host sidecar and graph invalidations without inventing Session s
     client: {
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(),
-        activeAssistantStreams: [],
         events,
         async close() {
           events.end();
@@ -3290,6 +3271,104 @@ test('trims around a replica that recovery already closed', async () => {
   );
 
   reopen.resolve(undefined);
+  await observer.close();
+});
+
+test('feeds the surviving projector rows that went durable while the replica was evicted', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const target = eventTarget(1);
+  let watermark = 2;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async (sessionId: string) =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events:
+            sessionId === 'session-1' ? firstEvents : new AsyncFrameQueue(),
+          transcriptBootstrap: {
+            durable: transcriptPage('older', sessionId === 'session-1' ? 2 : 0),
+          },
+          transcriptWatermark: () =>
+            sessionId === 'session-1' ? watermark : 0,
+          loadTranscriptPage: async (input) =>
+            transcriptPage(input.direction, input.throughSequence ?? 3),
+          decodeTranscriptPage: async (page) => {
+            const rows = rowsThrough(
+              page.throughSequence,
+              sessionId === 'session-1' ? 20 : 2000,
+            );
+            if (sessionId === 'session-1' && (page.throughSequence ?? 0) >= 3) {
+              rows[3] = {
+                identity: 3,
+                message: {
+                  type: 'user',
+                  id: 'gap-user',
+                  turnId: 'turn-1',
+                  ts: 3,
+                  text: 'steer while evicted',
+                },
+              };
+            }
+            return { messages: rows, nextCursor: page.nextCursor };
+          },
+          async close() {},
+        }),
+    },
+    emitSessionsChanged() {},
+    transcriptGlobalCacheMaxBytes: 1800,
+  });
+  await observer.observe('session-1', 'observer-1', target, true);
+  await assert.rejects(
+    observer.observe('session-2', 'observer-2', eventTarget(2)),
+    /global cache limit/,
+  );
+
+  // session-1's replica is evicted. A user message goes durable on the Host
+  // while it is gone — the frame resolves quietly on the husk, so the row can
+  // only reach the surviving projector's durable map through the reseed
+  // install.
+  watermark = 3;
+  firstEvents.push({
+    kind: 'subscription.transcript_advanced',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sessionId: 'session-1',
+    sequence: 1,
+    throughSequence: 3,
+  });
+
+  const batches: DesktopTranscriptBatch[] = [];
+  await observer.openTranscript('session-1', 'consumer-1', {
+    id: 7,
+    send(_channel, batch) {
+      batches.push(batch);
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript(
+          'consumer-1',
+          batch.generation,
+          batch.deliverySequence!,
+          7,
+        ),
+      );
+    },
+    once() {},
+    off() {},
+  });
+
+  await waitFor(() =>
+    target.events.some(
+      (event) =>
+        event.type === 'message_admission' && event.messageId === 'gap-user',
+    ),
+  );
+  const admission = target.events.find(
+    (
+      event,
+    ): event is Extract<SessionEvent, { type: 'message_admission' }> =>
+      event.type === 'message_admission' && event.messageId === 'gap-user',
+  )!;
+  assert.equal(admission.outcome, 'admitted');
+  assert.equal(admission.turnId, 'turn-1');
   await observer.close();
 });
 

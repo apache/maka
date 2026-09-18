@@ -698,8 +698,18 @@ export class RuntimeHostSessionObserver {
         this.#cacheTranscript(replica.snapshot());
         replica.adoptResidentAccounting();
         state.replica = replica;
+        // The projector outlives an evicted replica, so rows that went
+        // durable while it was gone never reached its durable-message map —
+        // feed the reseeded tail the way a publish would, or steering
+        // suppression and admissions stay stale until the next recovery
+        // rebuilds the projector.
+        for (const event of
+          state.projector?.noteDurableTranscriptMessages(replica.messages()) ??
+          []) {
+          this.#broadcast(state.sessionId, event);
+        }
         this.#resetTranscriptConsumers(state);
-        this.#touchReplica(state);
+        this.#touchReplica(state, state);
       },
       prepareActivation: (subscription, recovered) =>
         this.#prepareSubscriptionActivation(state, subscription, recovered),

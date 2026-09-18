@@ -52,6 +52,7 @@ test('latches a dead transcript page read like a dead subscription', async () =>
   await assert.rejects(replica.advance(), (error) => error === failure);
   await assert.rejects(replica.advance(), (error) => error === failure);
   assert.equal(pageReads, 1);
+  assert.equal(replica.resident, false);
   await handle.close();
 });
 
@@ -79,6 +80,7 @@ test('latches a dead subscription instead of re-arming the catch-up read', async
   await assert.rejects(replica.advance(), (error) => error === failure);
   assert.equal(pageReads, 1);
   assert.throws(() => replica.messages(), (error: unknown) => error === failure);
+  assert.equal(replica.resident, false);
   await handle.close();
 });
 
@@ -198,7 +200,7 @@ test('re-reads the watermark when it moves during a blocked fetch', async () => 
   await handle.close();
 });
 
-test('tracks the watermark without reading once evicted', async () => {
+test('advance resolves quietly without reading once evicted', async () => {
   let pageReads = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(),
@@ -216,7 +218,6 @@ test('tracks the watermark without reading once evicted', async () => {
   // a throw here would reach the pump and terminate the whole subscription.
   await replica.advance();
   assert.equal(pageReads, 0);
-  assert.equal(replica.durableThrough, 8);
   assert.throws(() => replica.messages(), /evicted/);
   await handle.close();
 });
