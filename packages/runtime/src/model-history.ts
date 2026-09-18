@@ -1211,6 +1211,7 @@ function formatQuoteRefs(quotes: readonly QuoteRef[]): string {
     .map((q) => {
       const attributes = [
         q.label === undefined ? undefined : `label="${quoteAttribute(q.label)}"`,
+        q.comment === undefined ? undefined : `comment="${quoteAttribute(q.comment)}"`,
         q.sourceSessionId === undefined
           ? undefined
           : `source_session="${quoteAttribute(q.sourceSessionId)}"`,
@@ -1224,8 +1225,15 @@ function formatQuoteRefs(quotes: readonly QuoteRef[]): string {
     .join('\n');
 }
 
+/**
+ * One escaping rule for every attribute on a projected tag. A quote inside a
+ * double-quoted attribute would end the value early, and a newline would put
+ * the opening tag's boundary where a reader expects prose, so both are folded.
+ */
 function quoteAttribute(value: string): string {
-  return value.replace(/["<&>]/g, (character) =>
-    character === '"' ? "'" : `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
-  );
+  return value
+    .replace(/["<&>]/g, (character) =>
+      character === '"' ? "'" : `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    )
+    .replace(/\s+/g, ' ');
 }
