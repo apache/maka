@@ -40,14 +40,14 @@ export async function proxiedFetch(
   const url =
     typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
   const proxy = resolveActiveProxy();
-  let dispatcher: Dispatcher | undefined;
-  if (proxy && !matchesBypassList(new URL(url).hostname, proxy.bypassList)) {
-    dispatcher = buildProxyDispatcher(proxy) as Dispatcher;
-  }
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal, ...fetchInit } = init;
-  const timeoutEnabled = timeoutMs > 0;
   const controller = new AbortController();
   const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  let dispatcher: Dispatcher | undefined;
+  if (proxy && !matchesBypassList(new URL(url).hostname, proxy.bypassList)) {
+    dispatcher = buildProxyDispatcher(proxy, requestSignal) as Dispatcher;
+  }
+  const timeoutEnabled = timeoutMs > 0;
   let timedOut = false;
 
   const disposeDispatcher = async (force = false) => {
@@ -95,6 +95,7 @@ export async function proxiedFetch(
       : ((await request) as unknown as Response);
   } catch (error) {
     if (timer) clearTimeout(timer);
+    controller.abort(error);
     await disposeDispatcher(timedOut);
     throw error;
   }
