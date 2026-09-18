@@ -230,8 +230,12 @@ function Frame({ children, width = 960 }: { children: React.ReactNode; width?: n
 }
 
 /** The composer's staged quotes are host state, so the story holds them the
- *  way AppShell does: editing a note writes back to the staged quote. */
+ *  way AppShell does: editing a note writes back to the staged quote. No
+ *  ChatView is mounted here, so the handle stays null and the token falls
+ *  back to the popover — the same path the app takes when the excerpt can
+ *  no longer be located in the transcript. */
 function AnnotatingComposer(props: { draftKey: string }) {
+  const chatViewRef = useRef<ChatViewHandle>(null);
   const [quotes, setQuotes] = useState<QuoteRef[]>([ANNOTATED_QUOTE, BARE_QUOTE]);
   return (
     <Composer
@@ -244,6 +248,18 @@ function AnnotatingComposer(props: { draftKey: string }) {
           current.map((quote, i) => (i === index ? { ...quote, comment } : quote)),
         )
       }
+      onAnnotateQuote={(index) => {
+        const quote = quotes[index];
+        return (
+          quote !== undefined &&
+          (chatViewRef.current?.openQuoteAnnotation({
+            index,
+            text: quote.text,
+            turnId: quote.sourceTurnId,
+            comment: quote.comment,
+          }) ?? false)
+        );
+      }}
     />
   );
 }
@@ -261,8 +277,9 @@ export const ComposerStagedQuoteWithNote: Story = {
   ),
 };
 
-// Real path: the same gesture one step earlier — the annotation panel is open over the
-// selection, waiting for the note. Clicking the staged chip reopens it over the drawer.
+// Real path, the fallback: when the excerpt cannot be anchored in the
+// transcript (the turn is gone or no transcript is mounted), clicking the
+// staged chip opens the editor in a popover beside the token instead.
 export const AnnotationPanelOpen: Story = {
   render: () => (
     <Frame>
