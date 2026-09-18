@@ -1121,6 +1121,101 @@ describe('models.dev provider conformance', () => {
     );
   });
 
+  test('connection probe prefers a free fetched model over a hard-coded fallback', async () => {
+    // OpenRouter's shipped fallback starts with a premium Sonnet id. A fresh
+    // connection that has fetched the account list but enabled nothing must
+    // not probe that fallback: the user never chose it, and the key may not
+    // even be allowed to call it (#5493).
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    const fallbackModel = PROVIDER_REGISTRY.openrouter.fallbackModels[0]!;
+    const freeModel = 'meta-llama/llama-3.3-70b-instruct:free';
+    const result = await testConnection(
+      {
+        slug: 'openrouter-unenabled',
+        name: 'OpenRouter',
+        providerType: 'openrouter',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: '',
+        enabledModelIds: [],
+        models: [{ id: fallbackModel }, { id: freeModel }, { id: 'openrouter/horizon-beta' }],
+        modelSource: 'fetched',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'openrouter-key',
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelTested, freeModel);
+    assert.deepEqual(requestedModels, [freeModel]);
+  });
+
+  test('connection probe uses fetched inventory before the hard-coded fallback', async () => {
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    const fallbackModel = PROVIDER_REGISTRY.openrouter.fallbackModels[0]!;
+    const inventoryModel = 'openrouter/horizon-beta';
+    const result = await testConnection(
+      {
+        slug: 'openrouter-inventory-only',
+        name: 'OpenRouter',
+        providerType: 'openrouter',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: '',
+        enabledModelIds: [],
+        models: [{ id: inventoryModel }, { id: fallbackModel }],
+        modelSource: 'fetched',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'openrouter-key',
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelTested, inventoryModel);
+    assert.deepEqual(requestedModels, [inventoryModel]);
+  });
+
+  test('connection probe still tests an enabled model when a free inventory id exists', async () => {
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    const enabledModel = 'anthropic/claude-sonnet-5';
+    const result = await testConnection(
+      {
+        slug: 'openrouter-enabled',
+        name: 'OpenRouter',
+        providerType: 'openrouter',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: enabledModel,
+        enabledModelIds: [enabledModel],
+        models: [{ id: enabledModel }, { id: 'meta-llama/llama-3.3-70b-instruct:free' }],
+        modelSource: 'fetched',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'openrouter-key',
+    );
+
+    assert.equal(result.modelTested, enabledModel);
+    assert.deepEqual(requestedModels, [enabledModel]);
+  });
+
   test('connection probe tests the model the user chose, not the snapshot beside it', async () => {
     const requestedModels: string[] = [];
     const server = await startJsonServer(async (request, response) => {

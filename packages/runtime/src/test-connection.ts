@@ -65,9 +65,11 @@ export interface ConnectionTestOptions extends ConnectionEffectFetchOptions {
 }
 
 /**
- * Prefer an explicit model, then a still-live configured model. Legacy
- * connections without a discovered inventory keep the historical
- * default/fallback order.
+ * Prefer an explicit model, then a still-live configured model. When nothing
+ * is enabled but the account inventory has been fetched, probe that inventory
+ * instead of a hard-coded fallback — a `:free` id first so the test does not
+ * bill a premium model the user never chose (#5493). Legacy connections
+ * without a discovered inventory keep the historical default/fallback order.
  *
  * A `'live'` catalog ORDERS the user's own candidates, it does not filter
  * them: a model the provider just listed is likelier to answer, so probe that
@@ -76,6 +78,16 @@ export interface ConnectionTestOptions extends ConnectionEffectFetchOptions {
  * live list can lag the account — when it does, the provider's own error is a
  * better answer than a model Maka substituted silently.
  */
+function preferInexpensiveProbeModels(ids: readonly string[]): string[] {
+  const free: string[] = [];
+  const rest: string[] = [];
+  for (const id of ids) {
+    if (id.endsWith(':free')) free.push(id);
+    else rest.push(id);
+  }
+  return [...free, ...rest];
+}
+
 function resolveConnectionTestModel(
   connection: ConnectionEffectConnection,
   model: string | undefined,
@@ -91,7 +103,10 @@ function resolveConnectionTestModel(
   const preferred = listed
     ? [...enabled.filter((id) => listed.has(id)), ...enabled.filter((id) => !listed.has(id))]
     : enabled;
-  const candidates = [...preferred, ...fallbackModels, ...discoveredIds];
+  const inventory = listed ? preferInexpensiveProbeModels(discoveredIds) : [];
+  const candidates = listed
+    ? [...preferred, ...inventory, ...fallbackModels]
+    : [...preferred, ...fallbackModels, ...discoveredIds];
   for (const candidate of candidates) {
     const id = candidate.trim();
     if (id) return id;
