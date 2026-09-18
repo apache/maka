@@ -20,7 +20,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { IconButton } from '@astryxdesign/core/IconButton';
-import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { HoverCard } from '@astryxdesign/core/HoverCard';
+import { Blockquote, Text, VStack } from '@astryxdesign/core';
 import { MessageSquare, MessagesSquare, TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -45,31 +46,33 @@ export function quoteProvenanceSummary(quote: QuoteRef, locale: UiLocale): strin
  * The structured read of a quote: what was selected, then what the user said
  * about it. Shared by the staged token in the composer and the chip on a sent
  * message so neither surface can drift from the other.
+ *
+ * Rendered on a HoverCard — a normal reading surface where the two prose
+ * tiers are legal. The excerpt clamps to a preview; the note never does,
+ * because a sent message offers no other place to read it in full.
  */
-export function QuoteTooltipContent(props: { quote: QuoteRef }) {
+export function QuoteHoverCardContent(props: { quote: QuoteRef }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
   const provenance = quoteProvenanceSummary(props.quote, locale);
   return (
-    <div className="maka-quote-tooltip">
-      <div className="maka-quote-tooltip-row">
-        <span className="maka-quote-tooltip-label">{copy.quoteSelectedTextLabel}</span>
-        <span className="maka-quote-tooltip-value">
-          {stripQuoteHeadingMarkers(props.quote.text)}
-        </span>
-      </div>
+    <VStack gap={2} className="maka-quote-hover-card">
+      <VStack gap={0.5}>
+        <Text type="supporting">{copy.quoteSelectedTextLabel}</Text>
+        <Blockquote cite={props.quote.label}>
+          <Text type="inherit" maxLines={4} textWrap="wrap">
+            {stripQuoteHeadingMarkers(props.quote.text)}
+          </Text>
+        </Blockquote>
+      </VStack>
       {props.quote.comment ? (
-        <div className="maka-quote-tooltip-row">
-          <span className="maka-quote-tooltip-label">{copy.quoteCommentLabel}</span>
-          <span className="maka-quote-tooltip-value">{props.quote.comment}</span>
-        </div>
+        <VStack gap={0.5}>
+          <Text type="supporting">{copy.quoteCommentLabel}</Text>
+          <Text>{props.quote.comment}</Text>
+        </VStack>
       ) : null}
-      {provenance ? (
-        <div className="maka-quote-tooltip-row">
-          <span className="maka-quote-tooltip-value">{provenance}</span>
-        </div>
-      ) : null}
-    </div>
+      {provenance ? <Text type="supporting">{provenance}</Text> : null}
+    </VStack>
   );
 }
 
@@ -122,7 +125,7 @@ export function QuoteRefChip(props: {
         aria-hidden="true"
       />
       {/* Marks that the excerpt carries a note. The note itself lives in the
-          tooltip and the model-facing content, not in the chip's own line. */}
+          hover card and the model-facing content, not in the chip's own line. */}
       {props.quote.comment ? (
         <MessageSquare className="maka-quote-chip-comment-icon" aria-hidden="true" />
       ) : null}
@@ -165,12 +168,15 @@ export function QuoteRefChip(props: {
     </span>
   );
 
-  // An expanded chip already shows the excerpt in full; a tooltip over it
+  // An expanded chip already shows the excerpt in full; a hover card over it
   // would only repeat what is on screen.
   if (expanded) return chip;
   return (
-    <Tooltip content={<QuoteTooltipContent quote={props.quote} />} focusTrigger="always">
+    <HoverCard
+      content={<QuoteHoverCardContent quote={props.quote} />}
+      focusTrigger="always"
+    >
       {chip}
-    </Tooltip>
+    </HoverCard>
   );
 }

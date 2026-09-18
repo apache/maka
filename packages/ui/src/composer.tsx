@@ -68,7 +68,7 @@ import {
   type ComposerModelSwitchAvailability,
 } from './composer-helpers.js';
 import {
-  QuoteTooltipContent,
+  QuoteHoverCardContent,
   stripQuoteHeadingMarkers,
 } from './quote-ref-chip.js';
 import { QuoteCommentPanel } from './quote-comment-panel.js';
@@ -107,6 +107,7 @@ import {
   ChatComposer as AstryxChatComposer,
   ChatComposerDrawer,
   ChatComposerInput,
+  HoverCard,
   IconButton,
   Lightbox,
   placeCaretAtEnd,
@@ -1987,10 +1988,16 @@ export const Composer = forwardRef<
                       }
                     >
                       {(trigger) => (
-                        <Tooltip
-                          content={<QuoteTooltipContent quote={quote} />}
+                        <HoverCard
+                          content={<QuoteHoverCardContent quote={quote} />}
                           focusTrigger="always"
+                          // isEnabled only gates new triggers: a click that
+                          // opens the panel would still let a pending hover
+                          // delay fire the card over it. The controlled
+                          // isOpen=false cancels that show and any card
+                          // already up, then hands control back on close.
                           isEnabled={!editing}
+                          isOpen={editing ? false : undefined}
                         >
                           <Token
                             ref={trigger.ref}
@@ -2022,7 +2029,7 @@ export const Composer = forwardRef<
                             aria-expanded={trigger['aria-expanded']}
                             aria-controls={trigger['aria-controls']}
                           />
-                        </Tooltip>
+                        </HoverCard>
                       )}
                     </Popover>
                   );
