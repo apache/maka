@@ -3969,11 +3969,12 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('/mcp ignores a late action result after the user cancels its busy view', async () => {
+  test('/mcp surfaces failed cancellation cleanup after returning from its busy view', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
     const result = deferred<Awaited<ReturnType<TuiMcpManagement['execute']>>>();
     const actions: TuiMcpAction[] = [];
+    let actionSignal: AbortSignal | undefined;
     const mcp: TuiMcpManagement = {
       snapshot: () => ({
         initialization: 'ready',
@@ -3997,8 +3998,9 @@ Slug openai-work<cursor>
       configForEdit: () => undefined,
       previewImport: () => ({ status: 'invalid', reason: 'invalid-config' }),
       discardImportPreview: () => undefined,
-      execute: async (action) => {
+      execute: async (action, options) => {
         actions.push(action);
+        actionSignal = options?.signal;
         return result.promise;
       },
     };
@@ -4021,9 +4023,9 @@ Slug openai-work<cursor>
     assert.deepEqual(actions[0], { kind: 'set_enabled', serverId: 'docs', enabled: true });
     terminal.input('\x1b');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('docs'));
-    result.resolve({ status: 'failed', reason: 'manager-failed' });
-    await delay(0);
-    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /connection action failed/u);
+    assert.equal(actionSignal?.aborted, true);
+    result.resolve({ status: 'failed', reason: 'rollback-failed' });
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('cleanup failed'));
     terminal.input('q');
     exitMaka(terminal);
     await run;

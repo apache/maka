@@ -221,6 +221,11 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<void> {
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    if (options.signal && !this.#supportsCredentialRollback()) {
+      return Promise.reject(
+        new Error('Credential store does not support safe credential rollback'),
+      );
+    }
     const interruptedConnect = this.#connectAbort !== undefined;
     this.#cancelConnect();
     return this.#serialize(async () => {
@@ -273,7 +278,15 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
             await this.#connect(restoration.current.credential);
           }
         }
-        if (options.signal?.aborted && interruptedConnect) await this.#restoreConnectionIntent();
+        if (previous && (!options.signal?.aborted || !written)) {
+          // A rejected CAS or acknowledgement may leave a newer credential
+          // authoritative. Reconnect that record, even when this write failed.
+          await this.#disconnect();
+          await this.#restoreConnectionIntent();
+        } else if (interruptedConnect) {
+          await this.#restoreConnectionIntent();
+        }
+        throwIfAborted(options.signal);
         throw error;
       }
     });
@@ -281,6 +294,11 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
 
   removeCredential(options: { readonly signal?: AbortSignal } = {}): Promise<void> {
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    if (options.signal && !this.#supportsCredentialRollback()) {
+      return Promise.reject(
+        new Error('Credential store does not support safe credential rollback'),
+      );
+    }
     const interruptedConnect = this.#connectAbort !== undefined;
     this.#cancelConnect();
     return this.#serialize(async () => {
@@ -318,17 +336,18 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
         throwIfAborted(options.signal);
         this.#setUnavailable('credential_required');
       } catch (error) {
-        if (!this.#closed && disconnected && (options.signal?.aborted || deleted === undefined)) {
+        if (!this.#closed && disconnected) {
           const rollbackTarget = target ?? this.#profileTarget();
           const restoration =
-            deleted !== undefined && previous !== undefined
+            options.signal?.aborted && deleted !== undefined && previous !== undefined
               ? await this.#restoreCredential(rollbackTarget, previous, deleted)
               : { restored: false, current: await this.#readCredential(rollbackTarget) };
           if (restoration.current.credential !== null) {
             await this.#connect(restoration.current.credential);
           } else this.#setUnavailable('credential_required');
         }
-        if (options.signal?.aborted && interruptedConnect) await this.#restoreConnectionIntent();
+        if (interruptedConnect) await this.#restoreConnectionIntent();
+        throwIfAborted(options.signal);
         throw error;
       }
     });
@@ -493,50 +512,28 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     readonly restored: boolean;
     readonly current: RuntimeHostCapabilityProviderCredentialSnapshot;
   }> {
-    if (
-      this.#deps.credentials.compareAndSet &&
-      this.#deps.credentials.read &&
-      written.revision !== null
-    ) {
-      const result: RuntimeHostCapabilityProviderCredentialMutationResult = this.#deps.credentials
-        .restore
-        ? await this.#deps.credentials.restore(
-            target,
-            this.#input.ownerClientInstanceId,
-            written.revision,
-            previous,
-          )
-        : await this.#deps.credentials.compareAndSet(
-            target,
-            this.#input.ownerClientInstanceId,
-            written.revision,
-            previous.credential,
-          );
-      if (result.committed) {
-        return {
-          restored: true,
-          current: { credential: previous.credential, revision: result.revision },
-        };
-      }
-      return { restored: false, current: result.current };
+    if (!this.#deps.credentials.restore || written.revision === null) {
+      throw new Error('Credential store does not support safe credential rollback');
     }
-    const current = await this.#deps.credentials.get(target, this.#input.ownerClientInstanceId);
-    if (current !== written.credential) {
-      return {
-        restored: false,
-        current: { credential: current, revision: null },
-      };
-    }
-    if (previous.credential === null) {
-      await this.#deps.credentials.delete(target, this.#input.ownerClientInstanceId);
-    } else {
-      await this.#deps.credentials.set(
+    const result: RuntimeHostCapabilityProviderCredentialMutationResult =
+      await this.#deps.credentials.restore(
         target,
         this.#input.ownerClientInstanceId,
-        previous.credential,
+        written.revision,
+        previous,
       );
+    if (result.committed) {
+      return {
+        restored: true,
+        current: { credential: previous.credential, revision: result.revision },
+      };
     }
-    return { restored: true, current: previous };
+    return { restored: false, current: result.current };
+  }
+
+  #supportsCredentialRollback(): boolean {
+    const { read, compareAndSet, restore } = this.#deps.credentials;
+    return !!(read && compareAndSet && restore);
   }
 
   async #disconnect(): Promise<void> {

@@ -514,6 +514,159 @@ for (const operation of ['set', 'remove'] as const) {
   });
 }
 
+for (const cancelled of [false, true]) {
+  test(`remote TUI failed credential update reconnects the winner after interrupting initialization (cancelled=${cancelled})`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-provider-initial-conflict-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const raw = createFileCredentialStore(root);
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(raw);
+    const profiles = createClientRuntimeHostProfileCatalog(root, raw);
+    await profiles.save(PROFILE, 'terminal-token');
+    const resolved = await profiles.resolve(PROFILE.id);
+    assert.ok(resolved?.profile.kind === 'remote' && resolved.profileIncarnationId);
+    const profileTarget = {
+      profile: resolved.profile,
+      profileIncarnationId: resolved.profileIncarnationId,
+    };
+    await credentials.set(profileTarget, 'terminal-client', 'provider-old');
+    const connecting = deferred();
+    const abort = new AbortController();
+    const connected: string[] = [];
+    const target = createRemoteTuiMcpPublicationTarget(
+      { clientDataRoot: root, ...profileTarget, ownerClientInstanceId: 'terminal-client' },
+      {
+        profiles,
+        subscribeProfileChanges: () => () => undefined,
+        credentials: {
+          ...credentials,
+          compareAndSet: async (...args) => {
+            await credentials.set(profileTarget, 'terminal-client', 'provider-winner');
+            assert.ok(credentials.compareAndSet);
+            const result = await credentials.compareAndSet(...args);
+            if (cancelled) abort.abort(new Error('cancel conflicting write'));
+            return result;
+          },
+        },
+        loadClientInstanceId: async () => 'provider-client',
+        connectProfile: async (input) => {
+          connected.push(input.credential!);
+          if (connected.length === 1) {
+            connecting.resolve();
+            await new Promise<never>((_resolve, reject) => {
+              input.signal!.addEventListener('abort', () => reject(input.signal!.reason), {
+                once: true,
+              });
+            });
+          }
+          return connectionHarness(`connection-${connected.length}`).connection;
+        },
+      },
+    );
+    t.after(() => target.closePublication?.());
+    const latest = await availability(target);
+    await connecting.promise;
+    await assert.rejects(
+      target.setCredential!('provider-attempt', { signal: abort.signal }),
+      cancelled ? (error) => error === abort.signal.reason : /changed during update/u,
+    );
+    assert.equal(await credentials.get(profileTarget, 'terminal-client'), 'provider-winner');
+    assert.deepEqual(connected, ['provider-old', 'provider-winner']);
+    assert.equal(latest().kind, 'connected');
+  });
+}
+
+test('remote TUI failed deletion acknowledgement reflects the committed credential removal', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-provider-delete-ack-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const raw = createFileCredentialStore(root);
+  const credentials = createRuntimeHostCapabilityProviderCredentialStore(raw);
+  const profiles = createClientRuntimeHostProfileCatalog(root, raw);
+  await profiles.save(PROFILE, 'terminal-token');
+  const resolved = await profiles.resolve(PROFILE.id);
+  assert.ok(resolved?.profile.kind === 'remote' && resolved.profileIncarnationId);
+  const profileTarget = {
+    profile: resolved.profile,
+    profileIncarnationId: resolved.profileIncarnationId,
+  };
+  await credentials.set(profileTarget, 'terminal-client', 'provider-old');
+  const initial = connectionHarness('initial');
+  const target = createRemoteTuiMcpPublicationTarget(
+    { clientDataRoot: root, ...profileTarget, ownerClientInstanceId: 'terminal-client' },
+    {
+      profiles: {
+        readRemoteProfileIfCurrent: profiles.readRemoteProfileIfCurrent.bind(profiles),
+        mutateRemoteProfileIfCurrent: async (...args) => {
+          await profiles.mutateRemoteProfileIfCurrent(...args);
+          throw new Error('catalog acknowledgement failed');
+        },
+      },
+      subscribeProfileChanges: () => () => undefined,
+      credentials,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async () => initial.connection,
+    },
+  );
+  t.after(() => target.closePublication?.());
+  const latest = await availability(target);
+  await waitFor(() => latest().kind === 'connected', 'initial connection');
+  await assert.rejects(target.removeCredential!(), /catalog acknowledgement failed/u);
+  assert.equal(await credentials.get(profileTarget, 'terminal-client'), null);
+  assert.equal(initial.closes, 1);
+  assert.deepEqual(latest(), { kind: 'unavailable', reason: 'credential_required' });
+});
+
+for (const storeKind of ['projection-only', 'unversioned'] as const) {
+  test(`remote TUI refuses cancellable writes without full-record restoration: ${storeKind}`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-provider-restore-contract-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(
+      createFileCredentialStore(root),
+    );
+    const profileTarget = { profile: PROFILE, profileIncarnationId: PROFILE_INCARNATION_ID };
+    await credentials.set(profileTarget, 'owner-a', 'provider-a');
+    let writes = 0;
+    const abort = new AbortController();
+    const target = createRemoteTuiMcpPublicationTarget(
+      { clientDataRoot: root, ...profileTarget, ownerClientInstanceId: 'owner-b' },
+      {
+        ...profileDeps(),
+        credentials: {
+          get: credentials.get,
+          delete: credentials.delete,
+          set: async (...args) => {
+            writes += 1;
+            await credentials.set(...args);
+            abort.abort(new Error('cancel unsupported write'));
+          },
+          ...(storeKind === 'projection-only'
+            ? {
+                read: credentials.read,
+                compareAndSet: async (
+                  ...args: Parameters<NonNullable<typeof credentials.compareAndSet>>
+                ) => {
+                  writes += 1;
+                  const result = await credentials.compareAndSet!(...args);
+                  abort.abort(new Error('cancel unsupported write'));
+                  return result;
+                },
+              }
+            : {}),
+        },
+        loadClientInstanceId: async () => 'provider-client',
+        connectProfile: async () => connectionHarness('unexpected').connection,
+      },
+    );
+    t.after(() => target.closePublication?.());
+    await availability(target);
+    await assert.rejects(
+      target.setCredential!('provider-b', { signal: abort.signal }),
+      /does not support safe credential rollback/u,
+    );
+    assert.equal(writes, 0);
+    assert.equal(await credentials.get(profileTarget, 'owner-a'), 'provider-a');
+  });
+}
+
 for (const phase of ['filtered-absence', 'cas-conflict'] as const) {
   test(`remote TUI uncommitted deletion reconnects with the current credential: ${phase}`, async (t) => {
     const root = await mkdtemp(join(tmpdir(), 'maka-provider-current-'));
@@ -1232,6 +1385,16 @@ function credentialHarness(initial?: string) {
         };
       }
       return { committed: true, revision: mutate(entryKey, credential) };
+    },
+    restore: async (target, ownerClientInstanceId, expectedRevision, previous) => {
+      // This harness owns an isolated slot per owner. Real shared-slot
+      // restoration is exercised separately with FileCredentialStore.
+      return store.compareAndSet!(
+        target,
+        ownerClientInstanceId,
+        expectedRevision,
+        previous.credential,
+      );
     },
   };
   return {

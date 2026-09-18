@@ -52,6 +52,7 @@ interface TuiMcpStatusCopy {
   readonly title: string;
   readonly footer: {
     readonly back: string;
+    readonly cancel: string;
     readonly readOnly: string;
     readonly manage: string;
     readonly managePublication: string;
@@ -80,6 +81,8 @@ interface TuiMcpStatusCopy {
     readonly confirmRemoveCredentialDetail: string;
     readonly confirmHint: string;
     readonly synchronizing: string;
+    readonly committing: string;
+    readonly cancelling: string;
     readonly outOfSync: string;
     readonly action: Readonly<Record<'test' | 'reconnect' | 'apply', string>>;
     readonly inputLabels: Readonly<Record<InputKind, string>>;
@@ -90,6 +93,7 @@ interface TuiMcpStatusCopy {
 
 type TuiMcpResultCode =
   | Extract<TuiMcpActionResult, { status: 'conflict' | 'failed' }>['reason']
+  | Extract<TuiMcpActionResult, { status: 'pending' }>['reason']
   | Extract<TuiMcpActionResult, { status: 'applied' }>['effect']
   | 'turn_active'
   | 'invalid'
@@ -197,9 +201,11 @@ export class McpManagementOverlay implements Component {
       return;
     }
     if (this.phase.kind === 'busy') {
-      if (matchesKey(data, Key.escape)) {
+      if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl('c'))) {
         this.cancelActiveAction();
         this.backToList();
+        this.notice = { level: 'info', text: MCP_STATUS_COPY[this.input.locale].editor.cancelling };
+        this.input.onChange();
       } else if (matchesKey(data, 'q')) {
         this.close();
       }
@@ -311,6 +317,9 @@ export class McpManagementOverlay implements Component {
         this.phase = { kind: 'confirm_remove', serverId: server.serverId };
       }
     }
+    // Opening another view transfers presentation ownership away from an
+    // action whose cancellation is still settling.
+    if (this.phase.kind !== 'list' && this.phase.kind !== 'busy') this.actionAttempt += 1;
     this.input.onChange();
   }
 
@@ -468,10 +477,24 @@ export class McpManagementOverlay implements Component {
       result = { status: 'failed', reason: 'manager-failed' };
     }
     if (this.actionAbort === abort) this.actionAbort = undefined;
+    this.showActionResult(result, attempt, abort.signal.aborted);
+  }
+
+  private showActionResult(result: TuiMcpActionResult, attempt: number, cancelled: boolean): void {
     if (this.closed || attempt !== this.actionAttempt) return;
+    if (this.phase.kind !== 'busy' && this.phase.kind !== 'list') return;
+    // Late connection-test success says nothing about cancellation cleanup.
+    // Mutations can already be committed, so keep their authoritative outcome.
+    const ignoreTest = cancelled && this.phase.kind === 'list' && result.status === 'tested';
     this.phase = { kind: 'list' };
-    this.notice = actionNotice(result, this.input.locale);
+    this.notice = ignoreTest ? undefined : actionNotice(result, this.input.locale);
     this.input.onChange();
+    if (result.status === 'pending') {
+      void result.completion.then(
+        (outcome) => this.showActionResult(outcome, attempt, false),
+        () => this.showActionResult({ status: 'failed', reason: 'persist-failed' }, attempt, false),
+      );
+    }
   }
 
   private document(width: number): string[] {
@@ -560,6 +583,7 @@ export class McpManagementOverlay implements Component {
 
   private footer(): string {
     const copy = MCP_STATUS_COPY[this.input.locale].footer;
+    if (this.phase.kind === 'busy') return copy.cancel;
     if (this.phase.kind !== 'list') return copy.back;
     if (!this.management()) return copy.readOnly;
     return this.input.surface?.snapshot().canManagePublicationCredential
@@ -598,7 +622,6 @@ export class McpManagementOverlay implements Component {
   }
 
   private cancelActiveAction(): void {
-    this.actionAttempt += 1;
     const abort = this.actionAbort;
     this.actionAbort = undefined;
     abort?.abort(new Error('MCP action cancelled'));
@@ -763,6 +786,9 @@ function actionNotice(
   result: TuiMcpActionResult,
   locale: UiLocale,
 ): { level: 'info' | 'error'; text: string } {
+  if (result.status === 'pending') {
+    return { level: 'info', text: resultCopy(locale, result.reason) };
+  }
   if (result.status === 'conflict' || result.status === 'failed') {
     return { level: 'error', text: resultCopy(locale, result.reason) };
   }
@@ -835,9 +861,13 @@ function inputHint(kind: InputKind, locale: UiLocale): string {
   return hints.submit;
 }
 
-function configurationLine(state: 'synchronizing' | 'out_of_sync', locale: UiLocale): string {
+function configurationLine(
+  state: 'synchronizing' | 'committing' | 'out_of_sync',
+  locale: UiLocale,
+): string {
   const editor = MCP_STATUS_COPY[locale].editor;
   if (state === 'synchronizing') return editor.synchronizing;
+  if (state === 'committing') return editor.committing;
   return ansi.red(editor.outOfSync);
 }
 

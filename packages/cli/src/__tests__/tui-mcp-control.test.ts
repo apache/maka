@@ -233,6 +233,38 @@ test('TUI MCP does not claim a credential cancellation before its target settles
   await controller.close();
 });
 
+for (const kind of ['set_publication_credential', 'remove_publication_credential'] as const) {
+  test(`TUI MCP reports a committed ${kind} when cancellation races its acknowledgement`, async (t) => {
+    const abort = new AbortController();
+    const committed = async () => {
+      abort.abort(new Error('cancel after credential commit'));
+    };
+    const connection = {
+      ...connectionHarness().connection,
+      setCredential: committed,
+      removeCredential: committed,
+    };
+    const controller = createTuiMcpController(
+      { workspaceRoot: '/unused', connection },
+      {
+        configStore: configStoreHarness(async () => emptyConfig()),
+        manager: managerHarness(0, []).manager,
+        createProvider: () => undefined,
+      },
+    );
+    t.after(() => controller.close());
+    await waitFor(() => controller.snapshot().initialization === 'ready', 'initialization');
+    const result = await controller.execute(
+      kind === 'set_publication_credential' ? { kind, credential: 'provider-secret' } : { kind },
+      { signal: abort.signal },
+    );
+    assert.deepEqual(result, {
+      status: 'applied',
+      effect: kind === 'set_publication_credential' ? 'published' : 'pending_host',
+    });
+  });
+}
+
 test('TUI MCP publication coalesces a discovery change behind the in-flight revision', async () => {
   const manager = managerHarness(1, [connectedStatus('local', 1)]);
   const connection = connectionHarness();
@@ -983,7 +1015,10 @@ for (const scenario of ['during-cleanup', 'after-cleanup', 'late-without-retirem
         actionTimeoutMs: 1_000,
       },
     );
-    t.after(() => controller.close());
+    t.after(async () => {
+      writeRelease.resolve();
+      await controller.close();
+    });
     await waitFor(() => controller.snapshot().initialization === 'ready', 'MCP initialization');
     const edit = controller.configForEdit('docs');
     assert.ok(edit);
@@ -999,18 +1034,23 @@ for (const scenario of ['during-cleanup', 'after-cleanup', 'late-without-retirem
     );
     await writeReady.promise;
     abort.abort(cancellationError);
+    let completion = editing;
     if (scenario === 'after-cleanup') {
-      assert.equal(await settlesWithin(editing, 150), false);
+      assert.equal(await settlesWithin(editing, 150), true);
+      const pending = await editing;
+      assert.equal(pending.status, 'pending');
+      if (pending.status !== 'pending') assert.fail('commit must remain owned until settlement');
+      completion = pending.completion;
     } else if (scenario === 'late-without-retirement') {
       assert.deepEqual(await editing, { status: 'failed', reason: 'rollback-failed' });
     }
     writeRelease.resolve();
     if (scenario !== 'late-without-retirement') {
-      assert.deepEqual(await editing, {
+      assert.deepEqual(await completion, {
         status: 'failed',
         reason: 'commit-unknown',
         cause: writeError,
-        reconciliationError: cancellationError,
+        ...(scenario === 'during-cleanup' ? { reconciliationError: cancellationError } : {}),
       });
     }
     await waitFor(() => {
@@ -1019,7 +1059,8 @@ for (const scenario of ['during-cleanup', 'after-cleanup', 'late-without-retirem
         config !== undefined &&
         'url' in config &&
         config.url === 'https://new.example/mcp' &&
-        controller.snapshot().configuration === 'out_of_sync'
+        controller.snapshot().configuration ===
+          (scenario === 'after-cleanup' ? 'ready' : 'out_of_sync')
       );
     }, 'published configuration reconciliation after cancellation');
     assert.deepEqual(controller.configForEdit('docs')?.config, current.mcpServers.docs);
@@ -1785,7 +1826,7 @@ test('TUI MCP commits an endpoint edit once credential retirement has started', 
   await controller.close();
 });
 
-test('TUI MCP never late-rolls back an endpoint after credential retirement starts', async () => {
+test('TUI MCP bounds a pending irreversible commit and blocks retries until reconciliation', async (t) => {
   const initial = {
     version: 3,
     mcpServers: {
@@ -1814,6 +1855,10 @@ test('TUI MCP never late-rolls back an endpoint after credential retirement star
       actionTimeoutMs: 50,
     },
   );
+  t.after(async () => {
+    retirement.resolve();
+    await controller.close();
+  });
   await waitFor(
     () => controller.snapshot().initialization === 'ready',
     'TUI MCP initialization before late credential retirement',
@@ -1829,18 +1874,34 @@ test('TUI MCP never late-rolls back an endpoint after credential retirement star
   });
 
   await waitFor(() => commitStarted, 'credential retirement commit to start');
-  assert.equal(await settlesWithin(editing, 100), false);
+  assert.equal(await settlesWithin(editing, 100), true);
+  const pending = await editing;
+  assert.equal(pending.status, 'pending');
+  if (pending.status !== 'pending') assert.fail('irreversible commit must remain pending');
+  assert.equal(pending.reason, 'commit-pending');
+  assert.equal(controller.snapshot().configuration, 'committing');
+  assert.deepEqual(
+    await controller.execute({ kind: 'add', serverId: 'other', config: { command: 'server' } }),
+    { status: 'failed', reason: 'commit-in-progress' },
+  );
+  assert.deepEqual(await controller.execute({ kind: 'reconnect', serverId: 'docs' }), {
+    status: 'failed',
+    reason: 'commit-in-progress',
+  });
   const beforeSettlement = await store.store.get();
   const oldDocs = beforeSettlement.mcpServers.docs;
   assert.ok(oldDocs && 'url' in oldDocs);
   assert.equal(oldDocs.url, 'https://old.example/mcp');
 
   retirement.resolve();
-  assert.deepEqual(await editing, { status: 'applied', effect: 'sync_failed' });
+  assert.deepEqual(await pending.completion, { status: 'applied', effect: 'published' });
+  await waitFor(() => controller.snapshot().configuration === 'ready', 'late commit reconciled');
   const current = await store.store.get();
   const docs = current.mcpServers.docs;
   assert.ok(docs && 'url' in docs);
   assert.equal(docs.url, 'https://new.example/mcp');
+  assert.equal(current.mcpServers.other, undefined);
+  assert.equal((await controller.execute({ kind: 'test', serverId: 'docs' })).status, 'tested');
   await controller.close();
 });
 
@@ -2043,8 +2104,7 @@ test('TUI MCP bounds a real post-retirement stdio connection and keeps the commi
   assert.equal(controller.snapshot().servers[0]?.synchronized, false);
   assert.ok(childPid);
   const cancelledPid = childPid;
-  assert.equal(processExists(cancelledPid), true);
-  await pollFor(() => !processExists(cancelledPid), { timeoutMs: 3_000, pollMs: 5 });
+  assert.equal(processExists(cancelledPid), false);
 });
 
 test('TUI MCP marks configuration out of sync when persistence fails after credential retirement', async () => {

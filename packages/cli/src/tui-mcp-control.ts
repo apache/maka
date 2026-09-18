@@ -80,7 +80,7 @@ export interface TuiMcpServerSnapshot {
 
 export interface TuiMcpSnapshot {
   readonly initialization: 'loading' | 'ready' | 'error';
-  readonly configuration: 'ready' | 'synchronizing' | 'out_of_sync';
+  readonly configuration: 'ready' | 'synchronizing' | 'committing' | 'out_of_sync';
   readonly publication: TuiMcpPublicationState;
   readonly canManagePublicationCredential?: boolean;
   readonly toolCount: number;
@@ -149,6 +149,11 @@ export type TuiMcpActionEffect =
 export type TuiMcpActionResult =
   | { readonly status: 'applied'; readonly effect: TuiMcpActionEffect }
   | {
+      readonly status: 'pending';
+      readonly reason: 'commit-pending';
+      readonly completion: Promise<TuiMcpActionResult>;
+    }
+  | {
       readonly status: 'tested';
       readonly test: McpTestResult;
       readonly effect: TuiMcpActionEffect;
@@ -171,6 +176,7 @@ export type TuiMcpActionResult =
         | 'invalid-config'
         | 'credential-cleanup-failed'
         | 'publication-credential-failed'
+        | 'commit-in-progress'
         | 'persist-failed'
         | 'rollback-failed'
         | 'manager-failed';
@@ -276,6 +282,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       }
     | undefined;
   #actionLane: Promise<void> = Promise.resolve();
+  #pendingCommit: Promise<TuiMcpActionResult> | undefined;
   readonly #mutationVersions = new Map<string, symbol>();
   readonly #lifetimeAbort = new AbortController();
   #publicationSuppressed = false;
@@ -397,7 +404,17 @@ class TuiMcpControllerImpl implements TuiMcpController {
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<TuiMcpActionResult> {
     if (this.#closed) return Promise.resolve({ status: 'failed', reason: 'closed' });
+    if (this.#pendingCommit)
+      return Promise.resolve({
+        status: 'failed',
+        reason: 'commit-in-progress',
+      });
     return this.#serializeAction(async () => {
+      if (this.#pendingCommit)
+        return {
+          status: 'failed',
+          reason: 'commit-in-progress',
+        };
       const cleanupReserveMs = Math.min(
         MCP_ACTION_CLEANUP_RESERVE_MS,
         Math.max(1, Math.floor(this.#deps.actionTimeoutMs / 10)),
@@ -423,6 +440,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#publicationRequested = false;
     const managerClosing = this.#deps.manager.close();
     await this.#actionLane.catch(() => undefined);
+    await this.#pendingCommit;
     this.#config = undefined;
     await this.#publicationTask?.catch(() => undefined);
     if (this.#availability.kind === 'connected') {
@@ -483,14 +501,12 @@ class TuiMcpControllerImpl implements TuiMcpController {
         return { status: 'applied', effect };
       } catch (error) {
         if (signal?.aborted) {
-          return {
-            status: 'failed',
-            reason: await this.#settleCancelledCredentialOperation(
-              operation,
-              signal,
-              cleanupTimeoutMs,
-            ),
-          };
+          return this.#settleCancelledCredentialOperation(
+            operation,
+            signal,
+            true,
+            cleanupTimeoutMs,
+          );
         }
         if (error === signal?.reason) return { status: 'failed', reason: 'cancelled' };
         return { status: 'failed', reason: 'publication-credential-failed' };
@@ -507,14 +523,12 @@ class TuiMcpControllerImpl implements TuiMcpController {
         return { status: 'applied', effect: 'pending_host' };
       } catch (error) {
         if (signal?.aborted) {
-          return {
-            status: 'failed',
-            reason: await this.#settleCancelledCredentialOperation(
-              operation,
-              signal,
-              cleanupTimeoutMs,
-            ),
-          };
+          return this.#settleCancelledCredentialOperation(
+            operation,
+            signal,
+            false,
+            cleanupTimeoutMs,
+          );
         }
         if (error === signal?.reason) return { status: 'failed', reason: 'cancelled' };
         return { status: 'failed', reason: 'publication-credential-failed' };
@@ -593,6 +607,15 @@ class TuiMcpControllerImpl implements TuiMcpController {
     let committed: McpConfigFile;
     let credentialRetirementStarted = false;
     const mutationVersion = Symbol('MCP mutation');
+    let touchedIds: string[] = [];
+    let lateSettlement: Promise<unknown> | undefined;
+    const releaseOwnership = () => {
+      for (const serverId of touchedIds) {
+        if (this.#mutationVersions.get(serverId) === mutationVersion) {
+          this.#mutationVersions.delete(serverId);
+        }
+      }
+    };
     const commitReceipt: { revision?: string } = {};
     const transaction = this.#deps.configStore.transform(async (current, transaction) => {
       commitReceipt.revision = transaction?.writeRevision;
@@ -612,7 +635,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       changedIds = changedServerIds(current, next);
       // Same-value retries still own their target. A content hash alone
       // cannot distinguish them from the write an older action compensates.
-      const touchedIds =
+      touchedIds =
         action.kind === 'commit_import'
           ? Object.keys(this.#preparedImport!.imported.mcpServers)
           : [action.serverId];
@@ -663,89 +686,146 @@ class TuiMcpControllerImpl implements TuiMcpController {
       return next;
     });
     try {
-      committed = await waitForAbort(transaction, signal);
-    } catch (error) {
-      if (error instanceof TuiMcpMutationError) return error.result;
-      if (error instanceof AtomicFileWriteCommitUnknownError) {
-        return this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
-      }
-      if (this.#closed || signal?.aborted) {
-        const cleanup = cleanupSignal(cleanupTimeoutMs);
-        try {
-          committed = await waitForAbort(transaction, cleanup);
-        } catch (settlementError) {
-          if (settlementError instanceof TuiMcpMutationError) return settlementError.result;
-          if (settlementError instanceof AtomicFileWriteCommitUnknownError) {
-            return this.#reconcilePublishedMutation(settlementError, signal, cleanupTimeoutMs);
-          }
-          if (credentialRetirementStarted) {
-            // The tombstone write is now irreversible. It may already be
-            // durable even though the credential operation has not settled,
-            // so a cleanup deadline cannot hand this transaction to the late
-            // rollback path. Wait for the matching config mutation instead.
-            try {
-              committed = await transaction;
-            } catch (transactionError) {
-              if (transactionError instanceof TuiMcpMutationError) {
-                return transactionError.result;
+      try {
+        committed = await waitForAbort(transaction, signal);
+      } catch (error) {
+        if (error instanceof TuiMcpMutationError) return error.result;
+        if (error instanceof AtomicFileWriteCommitUnknownError) {
+          return this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
+        }
+        if (this.#closed || signal?.aborted) {
+          const cleanup = cleanupSignal(cleanupTimeoutMs);
+          try {
+            committed = await waitForAbort(transaction, cleanup);
+          } catch (settlementError) {
+            if (settlementError instanceof TuiMcpMutationError) return settlementError.result;
+            if (settlementError instanceof AtomicFileWriteCommitUnknownError) {
+              return this.#reconcilePublishedMutation(settlementError, signal, cleanupTimeoutMs);
+            }
+            if (credentialRetirementStarted) {
+              if (settlementError !== cleanup?.reason) {
+                this.#publicationSuppressed = false;
+                this.#updateSnapshot({ configuration: 'out_of_sync' });
+                this.#refreshManagerSnapshot();
+                return { status: 'failed', reason: 'persist-failed' };
               }
-              if (transactionError instanceof AtomicFileWriteCommitUnknownError) {
-                return this.#reconcilePublishedMutation(transactionError, signal, cleanupTimeoutMs);
-              }
+              // Keep ownership of the irreversible write, but release the
+              // foreground wait with an honest pending result. New actions are
+              // refused until settlement and bounded reconciliation complete.
+              const completion = this.#settlePendingCommit(
+                transaction,
+                () => changedIds,
+                cleanupTimeoutMs,
+              );
+              lateSettlement = completion;
+              return { status: 'pending', reason: 'commit-pending', completion };
+            } else {
+              lateSettlement = this.#scheduleLateMutationRollback(
+                transaction,
+                () => previous,
+                () => changedIds,
+                mutationVersion,
+                commitReceipt,
+                signal,
+                cleanupTimeoutMs,
+              );
               this.#publicationSuppressed = false;
               this.#updateSnapshot({ configuration: 'out_of_sync' });
-              return { status: 'failed', reason: 'persist-failed' };
+              return { status: 'failed', reason: 'rollback-failed' };
             }
-          } else {
-            this.#scheduleLateMutationRollback(
-              transaction,
-              () => previous,
-              () => changedIds,
+          }
+          if (!credentialRetirementStarted) {
+            const rolledBack = await this.#rollbackCancelledMutation(
+              previous,
+              committed,
+              changedIds,
+              cleanup,
               mutationVersion,
-              commitReceipt,
-              signal,
-              cleanupTimeoutMs,
+              commitReceipt.revision,
             );
+            if (!rolledBack) return { status: 'failed', reason: 'rollback-failed' };
+            return {
+              status: 'failed',
+              reason: this.#closed ? 'closed' : 'cancelled',
+            };
+          }
+        } else {
+          if (credentialRetirementStarted) {
             this.#publicationSuppressed = false;
             this.#updateSnapshot({ configuration: 'out_of_sync' });
-            return { status: 'failed', reason: 'rollback-failed' };
+            this.#refreshManagerSnapshot();
           }
+          return { status: 'failed', reason: 'persist-failed' };
         }
-        if (!credentialRetirementStarted) {
-          const rolledBack = await this.#rollbackCancelledMutation(
-            previous,
-            committed,
-            changedIds,
-            cleanup,
-            mutationVersion,
-            commitReceipt.revision,
-          );
-          if (!rolledBack) return { status: 'failed', reason: 'rollback-failed' };
-          return {
-            status: 'failed',
-            reason: this.#closed ? 'closed' : 'cancelled',
-          };
+      }
+      return (
+        await this.#synchronizeCommittedConfig(committed, {
+          previous,
+          changedIds,
+          rollbackOnCancel: !credentialRetirementStarted,
+          signal,
+          cleanupTimeoutMs,
+          mutationVersion,
+          committedRevision: commitReceipt.revision,
+        })
+      ).result;
+    } finally {
+      // Absence never grants ownership to an older compensation. Retain only
+      // the current owner's marker while its late settlement still needs it.
+      if (lateSettlement) void lateSettlement.finally(releaseOwnership).catch(() => undefined);
+      else releaseOwnership();
+    }
+  }
+
+  #settlePendingCommit(
+    transaction: Promise<McpConfigFile>,
+    changedIds: () => readonly string[],
+    cleanupTimeoutMs?: number,
+  ): Promise<TuiMcpActionResult> {
+    this.#publicationSuppressed = true;
+    this.#updateSnapshot({ configuration: 'committing' });
+    this.#refreshManagerSnapshot();
+    const reconcile = (error?: unknown) =>
+      this.#serializeAction(async (): Promise<TuiMcpActionResult> => {
+        if (this.#closed) {
+          return error instanceof AtomicFileWriteCommitUnknownError
+            ? this.#reconcilePublishedMutation(error)
+            : { status: 'failed', reason: 'closed' };
         }
-      } else {
-        if (credentialRetirementStarted) {
+        const signal = AbortSignal.any([
+          this.#lifetimeAbort.signal,
+          AbortSignal.timeout(this.#deps.actionTimeoutMs),
+        ]);
+        if (error instanceof AtomicFileWriteCommitUnknownError) {
+          return this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
+        }
+        try {
+          if (error !== undefined) throw error;
+          // Another controller may have committed after our write. Reload the
+          // current authority instead of publishing this transaction's snapshot.
+          const current = await waitForAbort(this.#deps.configStore.get(), signal);
+          return (
+            await this.#synchronizeCommittedConfig(current, {
+              changedIds: changedIds(),
+              rollbackOnCancel: false,
+              signal,
+              cleanupTimeoutMs,
+            })
+          ).result;
+        } catch {
           this.#publicationSuppressed = false;
           this.#updateSnapshot({ configuration: 'out_of_sync' });
           this.#refreshManagerSnapshot();
+          return { status: 'failed', reason: 'persist-failed' };
         }
-        return { status: 'failed', reason: 'persist-failed' };
-      }
-    }
-    return (
-      await this.#synchronizeCommittedConfig(committed, {
-        previous,
-        changedIds,
-        rollbackOnCancel: !credentialRetirementStarted,
-        signal,
-        cleanupTimeoutMs,
-        mutationVersion,
-        committedRevision: commitReceipt.revision,
-      })
-    ).result;
+      });
+    const pending = transaction
+      .then(() => reconcile(), reconcile)
+      .finally(() => {
+        if (this.#pendingCommit === pending) this.#pendingCommit = undefined;
+      });
+    this.#pendingCommit = pending;
+    return pending;
   }
 
   async #reconcilePublishedMutation(
@@ -1084,8 +1164,8 @@ class TuiMcpControllerImpl implements TuiMcpController {
     commitReceipt: { readonly revision?: string },
     signal?: AbortSignal,
     cleanupTimeoutMs?: number,
-  ): void {
-    void transaction
+  ): Promise<void> {
+    return transaction
       .then(
         (committed) =>
           this.#serializeAction(() =>
@@ -1112,7 +1192,10 @@ class TuiMcpControllerImpl implements TuiMcpController {
           }
         },
       )
-      .catch(() => undefined);
+      .then(
+        () => undefined,
+        () => undefined,
+      );
   }
 
   async #settleCancelledConnection(serverId: string, signal?: AbortSignal): Promise<boolean> {
@@ -1155,14 +1238,24 @@ class TuiMcpControllerImpl implements TuiMcpController {
   async #settleCancelledCredentialOperation(
     operation: Promise<void>,
     signal: AbortSignal,
+    publish: boolean,
     cleanupTimeoutMs?: number,
-  ): Promise<'cancelled' | 'rollback-failed'> {
+  ): Promise<TuiMcpActionResult> {
+    const cleanup = cleanupSignal(cleanupTimeoutMs);
     try {
-      await waitForAbort(operation, cleanupSignal(cleanupTimeoutMs));
-      return 'rollback-failed';
+      await waitForAbort(operation, cleanup);
     } catch (error) {
-      return error === signal.reason ? 'cancelled' : 'rollback-failed';
+      return {
+        status: 'failed',
+        reason: error === signal.reason ? 'cancelled' : 'rollback-failed',
+      };
     }
+    // Resolving means the target committed. A cancellation racing the
+    // acknowledgement cannot retroactively turn that into a failed rollback.
+    const effect = publish
+      ? await this.#settlePublication(cleanup).catch(() => 'publication_failed' as const)
+      : 'pending_host';
+    return { status: 'applied', effect };
   }
 
   #requestPublication(): void {

@@ -276,6 +276,9 @@ export interface RuntimeHostProfileCredentialStore {
 }
 
 export interface RuntimeHostCapabilityProviderCredentialStore {
+  // Cancellation compensation requires read, compareAndSet, and restore as
+  // a group. The credential projection alone may hide another owner's record;
+  // it is never a complete rollback basis, even when it carries a revision.
   get(
     target: RuntimeHostRemoteProfileIncarnation,
     ownerClientInstanceId: string,

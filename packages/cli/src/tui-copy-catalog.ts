@@ -267,6 +267,7 @@ export const TUI_COPY_RESOURCES = {
       title: 'MCP SERVERS',
       footer: {
         back: 'Esc back',
+        cancel: 'Esc/Ctrl-C Cancel · q Close',
         readOnly: '↑/↓ scroll · q/Esc close',
         manage:
           'a Add · Enter Edit · Space Enable/disable · t Test · r Reconnect · d Remove · Esc Close',
@@ -316,6 +317,9 @@ export const TUI_COPY_RESOURCES = {
           'This stops publishing MCP tools to the selected Runtime Host.',
         confirmHint: 'y Confirm · Esc cancel',
         synchronizing: 'Configuration is synchronizing…',
+        committing:
+          'A credential change is still being saved. MCP actions will resume when it finishes.',
+        cancelling: 'Cancelling MCP action and waiting for cleanup…',
         outOfSync: 'Durable configuration and MCP Manager are out of sync.',
         action: {
           test: 'Testing MCP server…',
@@ -350,6 +354,10 @@ export const TUI_COPY_RESOURCES = {
           missing: 'That server no longer exists.',
           closed: 'The MCP controller is closed.',
           cancelled: 'The MCP action was cancelled.',
+          'commit-pending':
+            'The change is still being saved and cannot be cancelled. Check its status before retrying.',
+          'commit-in-progress':
+            'A previous MCP change is still being saved. Retry this action after it finishes.',
           'invalid-config': 'The server configuration is invalid.',
           'credential-cleanup-failed':
             'Stored credentials could not be removed; the configuration was not changed.',
@@ -378,6 +386,7 @@ export const TUI_COPY_RESOURCES = {
       title: 'MCP 服务器',
       footer: {
         back: 'Esc 返回',
+        cancel: 'Esc/Ctrl-C 取消 · q 关闭',
         readOnly: '↑/↓ 滚动 · q/Esc 关闭',
         manage: 'a 添加 · Enter 编辑 · Space 启用/停用 · t 测试 · r 重连 · d 删除 · Esc 关闭',
         managePublication:
@@ -423,6 +432,8 @@ export const TUI_COPY_RESOURCES = {
         confirmRemoveCredentialDetail: '这会停止向所选 Runtime Host 发布 MCP 工具。',
         confirmHint: 'y 确认 · Esc 取消',
         synchronizing: '配置同步中…',
+        committing: '凭据变更仍在保存，完成后才能继续操作 MCP。',
+        cancelling: '正在取消 MCP 操作并等待清理…',
         outOfSync: '持久化配置与 MCP Manager 尚未同步。',
         action: {
           test: '正在测试 MCP 服务器…',
@@ -456,6 +467,8 @@ export const TUI_COPY_RESOURCES = {
           missing: '该服务器已不存在。',
           closed: 'MCP 控制器已关闭。',
           cancelled: 'MCP 操作已取消。',
+          'commit-pending': '变更仍在保存，已无法取消。请等待状态更新后再重试。',
+          'commit-in-progress': '上一项 MCP 变更仍在保存，请完成后再重试本次操作。',
           'invalid-config': '服务器配置无效。',
           'credential-cleanup-failed': '无法删除旧凭据，配置未修改。',
           'publication-credential-failed': '无法保存或应用 Provider 凭据。',
@@ -480,6 +493,7 @@ export const TUI_COPY_RESOURCES = {
       title: 'MCP 伺服器',
       footer: {
         back: 'Esc 返回',
+        cancel: 'Esc/Ctrl-C 取消 · q 關閉',
         readOnly: '↑/↓ 捲動 · q/Esc 關閉',
         manage: 'a 新增 · Enter 編輯 · Space 啟用/停用 · t 測試 · r 重新連線 · d 刪除 · Esc 關閉',
         managePublication:
@@ -525,6 +539,8 @@ export const TUI_COPY_RESOURCES = {
         confirmRemoveCredentialDetail: '這將停止向所選 Runtime Host 發佈 MCP 工具。',
         confirmHint: 'y 確認 · Esc 取消',
         synchronizing: '設定同步中…',
+        committing: '認證資料變更仍在儲存，完成後才能繼續操作 MCP。',
+        cancelling: '正在取消 MCP 操作並等待清理…',
         outOfSync: '持久化設定與 MCP Manager 尚未同步。',
         action: {
           test: '正在測試 MCP 伺服器…',
@@ -559,6 +575,8 @@ export const TUI_COPY_RESOURCES = {
           missing: '該伺服器已不存在。',
           closed: 'MCP 控制器已關閉。',
           cancelled: 'MCP 操作已取消。',
+          'commit-pending': '變更仍在儲存，已無法取消。請等待狀態更新後再重試。',
+          'commit-in-progress': '上一項 MCP 變更仍在儲存，請完成後再重試本次操作。',
           'invalid-config': '伺服器設定無效。',
           'credential-cleanup-failed': '無法移除已儲存的認證資料；設定未變更。',
           'publication-credential-failed': '無法儲存或套用 Provider 認證資料。',
