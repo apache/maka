@@ -100,7 +100,7 @@ const MEASURE_AHEAD_MARGIN = 2000;
  * Height the annotation panel is laid out for, used only to keep it inside the
  * window when the excerpt it hangs from sits near the bottom edge.
  */
-const QUOTE_ANNOTATION_PANEL_HEIGHT = 260;
+const QUOTE_ANNOTATION_PANEL_HEIGHT = 280;
 
 export interface LiveContentActivationSnapshot {
   turnId: string;

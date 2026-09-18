@@ -221,8 +221,8 @@ export const SentQuoteWithNote: Story = {
     await userEvent.hover(chip as HTMLElement);
     await waitFor(() =>
       expect(
-        [...document.querySelectorAll('.maka-quote-tooltip')].filter((tip) =>
-          tip.checkVisibility(),
+        [...document.querySelectorAll('.maka-quote-hover-card')].filter((card) =>
+          card.checkVisibility(),
         ),
       ).toHaveLength(1),
     );

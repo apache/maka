@@ -18,7 +18,14 @@
  */
 
 import { useState, type KeyboardEvent } from 'react';
-import { Button as UiButton, HStack, Text, TextArea as UiTextarea } from '@astryxdesign/core';
+import {
+  Blockquote,
+  Button as UiButton,
+  HStack,
+  Text,
+  TextArea as UiTextarea,
+  VStack,
+} from '@astryxdesign/core';
 import { QUOTE_COMMENT_MAX_LENGTH, type QuoteRef } from '@maka/core/events';
 import { cn } from './utils.js';
 import { useUiLocale } from './locale-context.js';
@@ -47,8 +54,10 @@ export interface QuoteCommentPanelProps {
  * trimmed note, so a quote carries the same annotation whichever way it was
  * made.
  *
- * Both hosts open it as a surface that only its own buttons close, so this
- * component owns the submit shortcut and nothing else.
+ * The panel is content only — each host owns the surface it floats on (the
+ * composer's Popover, the transcript's annotation layer), so the same note
+ * reads the same wherever it is written. Its own buttons are the only way
+ * out; the submit shortcut lives here and nothing else does.
  */
 export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
   const copy = getConversationCopy(useUiLocale()).messages;
@@ -66,19 +75,15 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
   }
 
   return (
-    <div
+    <VStack
+      gap={2}
       className={cn('maka-quote-comment-panel', props.className)}
       role="group"
       aria-label={props.title}
     >
-      <Text type="label" size="sm" color="secondary">
-        {props.title}
-      </Text>
+      <Text type="label">{props.title}</Text>
       <div className="maka-quote-comment-panel-excerpt">
-        {props.quote.label ? (
-          <span className="maka-quote-comment-panel-excerpt-label">{props.quote.label}</span>
-        ) : null}
-        <span className="maka-quote-comment-panel-excerpt-text">{excerpt}</span>
+        <Blockquote cite={props.quote.label}>{excerpt}</Blockquote>
       </div>
       <UiTextarea
         label={copy.quoteCommentLabel}
@@ -88,15 +93,14 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
         onKeyDown={onKeyDown}
         placeholder={copy.quoteCommentPlaceholder}
         rows={3}
+        maxLength={QUOTE_COMMENT_MAX_LENGTH}
         hasAutoFocus
+        width="100%"
       />
-      <Text className="maka-quote-comment-panel-count" type="label" size="sm" color="secondary">
-        {draft.length} / {QUOTE_COMMENT_MAX_LENGTH}
-      </Text>
       <HStack gap={2} hAlign="end">
         <UiButton variant="ghost" size="sm" label={props.skipLabel} onClick={props.onSkip} />
         <UiButton size="sm" label={props.submitLabel} onClick={submit} />
       </HStack>
-    </div>
+    </VStack>
   );
 }

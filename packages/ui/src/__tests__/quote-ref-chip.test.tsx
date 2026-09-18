@@ -22,7 +22,7 @@ import { afterEach, test } from 'node:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { QuoteRefChip, QuoteTooltipContent } from '../quote-ref-chip.js';
+import { QuoteHoverCardContent, QuoteRefChip } from '../quote-ref-chip.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { QuoteRef } from '@maka/core/events';
 
@@ -66,21 +66,24 @@ const QUOTE: QuoteRef = {
 
 test('the structured read names what was selected and what was said about it', async () => {
   const container = await render(
-    <QuoteTooltipContent quote={{ ...QUOTE, comment: 'is this the retry path?' }} />,
+    <QuoteHoverCardContent quote={{ ...QUOTE, comment: 'is this the retry path?' }} />,
   );
-  const rows = Array.from(container.querySelectorAll('.maka-quote-tooltip-row'));
-  assert.equal(rows.length, 2);
-  assert.match(rows[0]?.textContent ?? '', /Selected text/);
-  assert.match(rows[0]?.textContent ?? '', /the deploy failed at step three/);
-  assert.match(rows[1]?.textContent ?? '', /Your comment/);
-  assert.match(rows[1]?.textContent ?? '', /is this the retry path\?/);
+  const card = container.querySelector('.maka-quote-hover-card');
+  assert.ok(card);
+  const blockquote = card.querySelector('blockquote');
+  assert.match(blockquote?.textContent ?? '', /the deploy failed at step three/);
+  assert.match(blockquote?.querySelector('cite')?.textContent ?? '', /Assistant/);
+  assert.match(card.textContent ?? '', /Selected text/);
+  assert.match(card.textContent ?? '', /Your comment/);
+  assert.match(card.textContent ?? '', /is this the retry path\?/);
 });
 
 test('a quote with no note reads as the excerpt alone', async () => {
-  const container = await render(<QuoteTooltipContent quote={QUOTE} />);
-  const rows = Array.from(container.querySelectorAll('.maka-quote-tooltip-row'));
-  assert.equal(rows.length, 1);
-  assert.doesNotMatch(container.textContent ?? '', /Your comment/);
+  const container = await render(<QuoteHoverCardContent quote={QUOTE} />);
+  const card = container.querySelector('.maka-quote-hover-card');
+  assert.ok(card);
+  assert.ok(card.querySelector('blockquote'));
+  assert.doesNotMatch(card.textContent ?? '', /Your comment/);
 });
 
 test('a note is marked on the chip that carries it', async () => {
@@ -97,7 +100,7 @@ test('a collapsed chip describes itself with the structured read', async () => {
   );
   const chip = container.querySelector('.maka-quote-chip');
   assert.ok(chip);
-  // The Astryx tooltip wires its content to the trigger through
+  // The Astryx hover card wires its content to the trigger through
   // aria-describedby; a native title attribute would not reach it.
   assert.ok(chip.getAttribute('aria-describedby'));
 });

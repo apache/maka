@@ -29,6 +29,8 @@ import { QUOTE_COMMENT_MAX_LENGTH, type QuoteRef } from '@maka/core/events';
 const originalGlobals = {
   document: globalThis.document,
   window: globalThis.window,
+  requestAnimationFrame: globalThis.requestAnimationFrame,
+  cancelAnimationFrame: globalThis.cancelAnimationFrame,
 };
 const originalActEnvironment = (globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -48,6 +50,8 @@ function domRoot() {
   Object.assign(globalThis, {
     document,
     window,
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   const container = document.querySelector('#root');

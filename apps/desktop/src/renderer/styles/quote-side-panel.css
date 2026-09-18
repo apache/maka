@@ -39,12 +39,19 @@
   animation: maka-quote-actions-in var(--duration-quick) var(--ease-out-strong);
 }
 
-/* The annotation panel that replaces the action bar once "引用" is chosen. It
-   carries its own surface (see .maka-quote-comment-panel), so this wrapper only
-   keeps the overlay out of the window's drag region. */
+/* The annotation panel that replaces the action bar once "引用" is chosen.
+   useLayer positions the overlay but paints nothing, so this wrapper supplies
+   the floating recipe (DESIGN.md §5): the composer's Popover owns the same
+   surface on its side. */
 .maka-quote-annotation-layer {
   display: block;
-  max-width: min(320px, calc(100vw - 16px));
+  max-width: min(344px, calc(100vw - 16px));
+  overflow: hidden;
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-modal);
+  background: var(--surface-overlay);
+  box-shadow: var(--elevation-overlay);
   -webkit-app-region: no-drag;
 }
 
