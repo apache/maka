@@ -130,6 +130,7 @@ export function useSkillsController(
     managedSkillSources: 0,
     bundledSkillCatalog: 0,
   });
+  const skillLocationsRequestedRef = useRef(false);
   const mountedRef = useRef(true);
   const inputRef = useRef(input);
   inputRef.current = input;
@@ -288,6 +289,7 @@ export function useSkillsController(
 
   const refreshSkillLocations = useCallback(
     async (options: RefreshOptions = {}): Promise<void> => {
+      skillLocationsRequestedRef.current = true;
       const generation = ++generationsRef.current.skillLocations;
       setSkillLocationSnapshot(null);
       const isCurrent = () =>
@@ -339,7 +341,7 @@ export function useSkillsController(
   useEffect(() => {
     // Keep startup deferred to the parent lifecycle, but catch capability changes
     // after its first refresh (Project capabilities can arrive after that frame).
-    if (generationsRef.current.skillLocations === 0) return;
+    if (!skillLocationsRequestedRef.current) return;
     void refreshSkillLocations({ shouldShowError: isSkillsSurfaceActive });
   }, [input.clientPathsAccessible, isSkillsSurfaceActive, refreshSkillLocations]);
 

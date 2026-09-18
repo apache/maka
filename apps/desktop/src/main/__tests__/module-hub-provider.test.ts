@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act, createElement, Fragment } from 'react';
+import { act, createElement, Fragment, StrictMode } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { LocaleProvider, ToastProvider } from '@maka/ui';
 import {
@@ -297,11 +297,16 @@ test('command port keeps the newest controller through stale cleanup', async () 
   assert.deepEqual(calls, ['second:refresh', 'second:create']);
 });
 
-for (const capabilityTiming of ['before', 'after'] as const) {
+for (const capabilityTiming of ['at mount', 'before', 'after'] as const) {
   test(`Skills locations load when local path capability arrives ${capabilityTiming} deferred startup`, async () => {
     const { root } = installReactRenderer();
-    const frames: FrameRequestCallback[] = [];
-    globalThis.requestAnimationFrame = (callback) => frames.push(callback);
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    globalThis.requestAnimationFrame = (callback) => {
+      frames.set(++frameId, callback);
+      return frameId;
+    };
+    globalThis.cancelAnimationFrame = (id) => { frames.delete(id); };
     let current: ReturnType<typeof useModuleHubController> | undefined;
     let locationReads = 0;
     let skillReads = 0;
@@ -339,16 +344,16 @@ for (const capabilityTiming of ['before', 'after'] as const) {
       return null;
     }
     async function render(clientPathsAccessible: boolean): Promise<void> {
-      await act(async () => root.render(createElement(LocaleProvider, {
+      await act(async () => root.render(createElement(StrictMode, null, createElement(LocaleProvider, {
         locale: 'en',
         children: createElement(ToastProvider, {
           children: createElement(ModuleHubServicesProvider, { services },
             createElement(Probe, { clientPathsAccessible })),
         }),
-      })));
+      }))));
     }
 
-    await render(false);
+    await render(capabilityTiming === 'at mount');
     assert.equal(skillReads, 0);
     assert.equal(locationReads, 0);
     if (capabilityTiming === 'before') {
@@ -356,7 +361,11 @@ for (const capabilityTiming of ['before', 'after'] as const) {
       assert.equal(skillReads, 0);
       assert.equal(locationReads, 0);
     }
-    await act(async () => { for (const frame of frames.splice(0)) frame(0); });
+    await act(async () => {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const frame of pending) frame(0);
+    });
     assert.equal(skillReads, 1);
     if (capabilityTiming === 'after') {
       assert.equal(locationReads, 0);
