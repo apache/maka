@@ -1,0 +1,54 @@
+diff --git a/node_modules/@maka/ui/node_modules/virtua/lib/index.cjs b/node_modules/@maka/ui/node_modules/virtua/lib/index.cjs
+index 74f1456..70af390 100644
+--- a/node_modules/@maka/ui/node_modules/virtua/lib/index.cjs
++++ b/node_modules/@maka/ui/node_modules/virtua/lib/index.cjs
+@@ -82,10 +82,10 @@
+                     if (l === m && 0 === I) break;
+                     const e = _;
+                     _ = 0;
+-                    const t = l - m, o = h(t);
+-                    e && o < h(e) + 1 || 0 !== I || (b = t < 0 ? 2 : 1), v && (v = !1), m = l, d = 4;
++                    const t = l - m, o = h(t), isJumpCompensation = e && o < h(e) + 1;
++                    isJumpCompensation || 0 !== I || (b = t < 0 ? 2 : 1), v && (v = !1), m = l, d = 4;
+                     const n = M();
+-                    n >= -p && n <= s() && (d += 1, a = o > p);
++                    n >= -p && n <= s() && (d += 1, a = !isJumpCompensation && o > p);
+                     break;
+                 }
+ 
+@@ -237,7 +237,7 @@
+         },
+         Y: () => {
+             const [t, o] = e.j();
+-            t && (r(t, o, a), a = !1, o && e.o() > e.t() && e.q(1, n()));
++            t && (r(t, o, a), a = !1, e.q(1, n()));
+         }
+     };
+ }, q = (e, t, o) => {
+diff --git a/node_modules/@maka/ui/node_modules/virtua/lib/index.js b/node_modules/@maka/ui/node_modules/virtua/lib/index.js
+index 48b62de..f215b96 100644
+--- a/node_modules/@maka/ui/node_modules/virtua/lib/index.js
++++ b/node_modules/@maka/ui/node_modules/virtua/lib/index.js
+@@ -64,10 +64,10 @@
+                     if (l === p && 0 === b) break;
+                     const e = _;
+                     _ = 0;
+-                    const t = l - p, o = d(t);
+-                    e && o < d(e) + 1 || 0 !== b || (I = t < 0 ? 2 : 1), v && (v = !1), p = l, h = 4;
++                    const t = l - p, o = d(t), isJumpCompensation = e && o < d(e) + 1;
++                    isJumpCompensation || 0 !== b || (I = t < 0 ? 2 : 1), v && (v = !1), p = l, h = 4;
+                     const n = M();
+-                    n >= -$ && n <= s() && (h += 1, a = o > $);
++                    n >= -$ && n <= s() && (h += 1, a = !isJumpCompensation && o > $);
+                     break;
+                 }
+ 
+@@ -219,7 +219,7 @@
+         },
+         A: () => {
+             const [t, o] = e.L();
+-            t && (r(t, o, a), a = !1, o && e.o() > e.t() && e.W(1, n()));
++            t && (r(t, o, a), a = !1, e.W(1, n()));
+         }
+     };
+ }, H = (e, t, o) => {

@@ -30,6 +30,43 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
+## `virtua@0.50.6`
+
+Two ResizeObserver deliveries can commit before the native scroll event from
+the first height correction. The second correction then uses the old store
+offset and discards the first jump, moving the transcript reader by hundreds
+of pixels. After each correction, the scroll observer now records the actual
+DOM offset immediately. The driver still calculates its absolute target from
+the store, preserving the browser-clamping fix for shrinking content near the
+bottom (upstream discussion #475). Compensation updates do not request a
+synchronous React render: the observer runs inside a layout effect, where
+`flushSync` is invalid. User scrolls retain their existing scheduling.
+
+Both React entry points are patched. These internals have no public hook; a
+call-site scroll listener would run after the racing measurements. The nested
+path follows the locked installation through `node_modules/@maka/ui`.
+Upstream source is `inokawa/virtua` commit
+`b7002d7c35b5fa4eb682193a59bc5bbee0a17049`. The readable changes are:
+
+- `src/core/observer.ts`, `_fixScrollJump`: always dispatch
+  `store.$update(ACTION_SCROLL, getScrollOffset())` after `updateScrollOffset`,
+  instead of limiting this to shifts leaving content shorter than the viewport.
+- `src/core/store.ts`, `ACTION_SCROLL`: use
+  `shouldSync = !isJustJumped && distance > viewportSize`.
+
+The ESM/CJS regression is
+`packages/ui/src/__tests__/virtua-scroll-compensation.test.tsx`; it delivers
+consecutive resizes without an intervening scroll event, checks browser
+clamping, and rejects nested `flushSync` warnings. The real Chromium contract
+is `node scripts/perf/geometry-ablation.mjs --assert-stable` after a Storybook
+build. Remove the patch when both pass with an upstream release.
+
+`patch-package` 8 cannot generate this nested npm-workspace patch directly
+because the lockfile records `packages/ui/node_modules/virtua`. To regenerate,
+diff the edited React `lib/index.js` and `lib/index.cjs` against the published
+0.50.6 files, using `node_modules/@maka/ui/node_modules/virtua` as the patch
+path, then verify a clean application with the root postinstall script.
+
 ## `electron-updater@6.8.9`
 
 GitHub can continue serving a withdrawn prerelease in `releases.atom` after
