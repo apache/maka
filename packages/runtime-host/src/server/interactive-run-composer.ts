@@ -18,6 +18,10 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
+import { join } from 'node:path';
+import { hasActiveWorkHubVoiceCall } from './workhub-voice-call-state.js';
+import { VOICE_QUEUE_FILENAME } from './workhub-voice-state.js';
+import { WORKHUB_VOICE_COLLABORATION_PROMPT } from './workhub-coordination-prompt.js';
 import {
   buildSideConversationSystemPromptFragment,
   isSideConversationSession,
@@ -220,7 +224,17 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         input.resolveProfileSystemPrompt
           ? input.resolveProfileSystemPrompt(context, runProfile.systemPrompt)
           : Promise.resolve(runProfile.systemPrompt)
-      ).then((text) => Object.freeze({ text, sourceRevisions: [] }));
+      ).then((text) =>
+        Object.freeze({
+          text:
+            text +
+            (input.toolProfile === 'workhub-coordination-v2' &&
+            hasActiveWorkHubVoiceCall(join(context.cwd, VOICE_QUEUE_FILENAME))
+              ? `\n${WORKHUB_VOICE_COLLABORATION_PROMPT}`
+              : ''),
+          sourceRevisions: [],
+        }),
+      );
     }
     const key = `${context.sessionId}\u0000${context.turnId}`;
     const cached = resolvedBaseSystemPrompts.get(key);

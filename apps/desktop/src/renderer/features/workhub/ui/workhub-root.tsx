@@ -24,6 +24,10 @@ import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
+import { WorkHubVoice } from './workhub-voice.js';
+import type { VoiceTranscript } from '../model/voice-transcript.js';
+import { workHubVoiceCopy } from '../locales/workhub-voice-copy.js';
+import { workHubPublicConversation } from '../model/public-conversation.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
@@ -86,6 +90,9 @@ export function WorkHubRoot() {
   const thinkingLevel = session?.thinkingLevel && thinkingLevels.includes(session.thinkingLevel) ? session.thinkingLevel : undefined;
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
+  const [voiceTranscript, setVoiceTranscript] = useState<VoiceTranscript>();
+  const voiceCopy = workHubVoiceCopy[locale];
+  const publicConversation = useMemo(() => workHubPublicConversation(transcript.messages, controller.liveTurn), [transcript.messages, controller.liveTurn]);
   const shortcutLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘⇧K' : 'Ctrl+Shift+K';
   const composer = useRef<ComposerHandle>(null);
   const composerSurface = useRef<HTMLDivElement>(null);
@@ -310,6 +317,10 @@ export function WorkHubRoot() {
               request={controller.activeQuestion} onRespond={controller.respondToUserQuestion}
               onStop={controller.stop} stopPending={controller.stopPending} />}
             <div className="workHubComposerContent" hidden={Boolean(controller.activeQuestion || controller.activeForm)}>
+            {voiceTranscript && <div className="workHubVoiceTranscript" role="log" aria-label={voiceCopy.transcript}>
+              {voiceTranscript.input && <p><span>{voiceCopy.you}</span>{voiceTranscript.input}</p>}
+              {voiceTranscript.output && <p><span>{voiceCopy.reply}</span>{voiceTranscript.output}</p>}
+            </div>}
             <WorkHubComposer
               pendingMessages={controller.transientMessages}
               queuedMessages={controller.messageQueue.entries}
@@ -359,6 +370,7 @@ export function WorkHubRoot() {
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">
+                  {services.voice && <WorkHubVoice bridge={services.voice} sessionId={controller.sessionId} enabled={Boolean(session?.model)} locale={locale} onTranscript={setVoiceTranscript} />}
                   {control?.canUndo && <IconButton type="button" size="sm" variant="ghost" icon={<Undo2 size={16} />} label={t.undo} isDisabled={busy} onClick={() => call(services.control.undo())} />}
                   {!floating && <IconButton type="button" size="sm" variant="ghost" icon={<PictureInPicture2 size={16} />} label={t.float} tooltip={`${t.float} · ${shortcutLabel}`} onClick={() => call(services.presentation.detach())} />}
                 </div>
@@ -382,12 +394,12 @@ export function WorkHubRoot() {
           onOpenWork={(id) => call(services.presentation.openSession(id))}
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}
-          messages={[...transcript.messages]}
+          messages={publicConversation.messages}
           hasEarlierHistory={transcript.hasOlder}
           onLoadEarlierHistory={controller.loadEarlier}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
-          liveTurns={controller.liveTurns}
+          liveTurns={controller.liveTurns?.flatMap(turn => { const visible = workHubPublicConversation(transcript.messages, turn).liveTurn; return visible ? [visible] : []; })}
           onStreamingSettled={controller.streamingSettled}
           activeTurn={controller.activeTurn}
           messageLoading={!transcript.ready}

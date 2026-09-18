@@ -25,6 +25,7 @@ export interface MainWindowPermissionCheck {
   permission: string;
   isMainFrame: boolean;
   mediaType?: string;
+  voiceArmed?: boolean;
 }
 
 export interface MainWindowPermissionRequest {
@@ -33,6 +34,7 @@ export interface MainWindowPermissionRequest {
   permission: string;
   isMainFrame: boolean;
   mediaTypes?: readonly string[];
+  voiceArmed?: boolean;
 }
 
 /**
@@ -45,7 +47,8 @@ export interface MainWindowPermissionRequest {
  * shared by auxiliary windows. Clipboard write is granted only when
  * `navigator.clipboard.writeText` asks for it (Chromium reports the sanitized
  * text path as `clipboard-sanitized-write`; the unsanitized name is accepted
- * too so the exact version never regresses copy). Media capture is not granted.
+ * too so the exact version never regresses copy). Audio capture additionally requires
+ * an explicitly armed voice call; camera capture is never granted.
  */
 function isAllowedPermission(permission: string): boolean {
   return (
@@ -56,12 +59,12 @@ function isAllowedPermission(permission: string): boolean {
 
 export function allowsMainWindowPermissionCheck(input: MainWindowPermissionCheck): boolean {
   if (!(input.ownerMatches && input.rendererUrlMatches && input.isMainFrame)) return false;
-  return isAllowedPermission(input.permission);
+  return isAllowedPermission(input.permission) || (input.voiceArmed === true && input.permission === 'media' && input.mediaType === 'audio');
 }
 
 export function allowsMainWindowPermissionRequest(input: MainWindowPermissionRequest): boolean {
   if (!(input.ownerMatches && input.rendererUrlMatches && input.isMainFrame)) return false;
-  return isAllowedPermission(input.permission);
+  return isAllowedPermission(input.permission) || (input.voiceArmed === true && input.permission === 'media' && input.mediaTypes?.length === 1 && input.mediaTypes[0] === 'audio');
 }
 
 /**
@@ -83,6 +86,12 @@ export function matchesTrustedRendererUrl(
   } catch {
     return false;
   }
+}
+
+const voiceOwners = new WeakSet<WebContents>();
+export function armVoiceMicrophone(owner: WebContents, enabled: boolean): void {
+  if (enabled) voiceOwners.add(owner);
+  else voiceOwners.delete(owner);
 }
 
 const trustedOwners = new WeakMap<Session, Map<WebContents, string>>();
@@ -108,6 +117,7 @@ export function installMainWindowPermissionPolicy(
       permission,
       isMainFrame: details.isMainFrame,
       mediaType: details.mediaType,
+      voiceArmed: !!requester && voiceOwners.has(requester),
     }));
   rendererSession.setPermissionRequestHandler((requester, permission, callback, details) => {
     const mediaTypes = 'mediaTypes' in details ? details.mediaTypes : undefined;
@@ -117,6 +127,7 @@ export function installMainWindowPermissionPolicy(
       permission,
       isMainFrame: details.isMainFrame,
       mediaTypes,
+      voiceArmed: !!requester && voiceOwners.has(requester),
     }));
   });
 }

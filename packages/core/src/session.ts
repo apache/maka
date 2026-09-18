@@ -764,7 +764,7 @@ export interface SessionChangedEvent {
 // Stored messages (JSONL line 2+, append-only)
 // ============================================================================
 
-export type StoredMessage =
+export type StoredMessage = (
   | UserMessage
   | AssistantMessage
   | ToolCallMessage
@@ -773,7 +773,12 @@ export type StoredMessage =
   | TokenUsageMessage
   | TurnStateMessage
   | WorkHubCoordinationMessage
-  | SystemNoteMessage;
+  | SystemNoteMessage
+) & {
+  /** Host-derived presentation only; model history remains unchanged. */ presentation?:
+    | 'internal'
+    | 'public';
+};
 
 export interface UserMessage extends MessageContent {
   /** Derived from the admitted WorkHub action; does not change physical Turn identity. */
@@ -1222,6 +1227,7 @@ export interface TurnRecord {
  * are part of what that invocation did. Their record is its RuntimeEvent ledger.
  */
 export const RUNTIME_SYSTEM_NOTE_KINDS = [
+  'voice_transcript',
   'context_compacted',
   'context_compaction_failed_open',
   'context_provider_dropping',
@@ -1274,6 +1280,7 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text'],
   [
     'displayText',
+    'workhubSource',
     'attachments',
     'directoryReferences',
     'quotes',
@@ -1531,6 +1538,12 @@ function decodeMessage(
   value: unknown,
   decodeToolResultContent: (content: unknown) => ToolResultContent,
 ): StoredMessage {
+  if (isRecord(value) && value.presentation !== undefined) {
+    if (value.presentation !== 'internal' && value.presentation !== 'public')
+      throw new Error('Invalid message presentation');
+    const { presentation, ...content } = value;
+    return { ...decodeMessage(content, decodeToolResultContent), presentation };
+  }
   const message = decodeStoredMessageContent(value, decodeToolResultContent);
   if (!isRecord(message)) throw new Error('Invalid stored message schema');
   switch (message.type) {
@@ -1545,6 +1558,7 @@ function decodeMessage(
       ) {
         const {
           displayText,
+          workhubSource,
           attachments,
           directoryReferences,
           quotes,
@@ -1559,6 +1573,7 @@ function decodeMessage(
             ...decodeMessageContent({
               text: message.text,
               displayText,
+              workhubSource,
               attachments,
               directoryReferences,
               quotes,

@@ -372,3 +372,18 @@ test('target choice accepts only bounded candidate offers, never caller-supplied
     RuntimeHostProtocolError,
   );
 });
+
+test('voice enqueue is a bounded queue write without caller-selected paths or execution', () => {
+  const spec = HOST_OPERATION_SPECS['workhub.coordination.voiceEnqueue'];
+  assert.equal(spec.mode, 'command');
+  assert.deepEqual(
+    spec.decodeInput({ id: 'workhub-message', kind: 'update', text: 'Report ready' }),
+    { id: 'workhub-message', kind: 'update', text: 'Report ready' },
+  );
+  for (const input of [
+    { id: '../outside', text: 'Report' },
+    { id: 'item', text: 'Report', path: '/tmp/outside' },
+    { id: 'item', text: 'x'.repeat(32_001) },
+  ])
+    assert.throws(() => spec.decodeInput(input));
+});

@@ -287,9 +287,13 @@ function mapBackendSessionEvent(
       if (
         event.activityKind !== undefined ||
         event.displayName !== undefined ||
-        event.intent !== undefined
+        event.intent !== undefined ||
+        event.presentation !== undefined ||
+        event.resultPresentation !== undefined
       ) {
         const stateDelta: Record<string, unknown> = {};
+        if (event.presentation) stateDelta.presentation = event.presentation;
+        if (event.resultPresentation) stateDelta.resultPresentation = event.resultPresentation;
         if (event.activityKind !== undefined) stateDelta.activityKind = event.activityKind;
         if (event.displayName !== undefined) stateDelta.displayName = event.displayName;
         if (event.intent !== undefined) stateDelta.intent = event.intent;

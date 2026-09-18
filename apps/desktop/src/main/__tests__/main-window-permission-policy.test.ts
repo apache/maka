@@ -238,3 +238,15 @@ describe('main window Chromium permission policy', () => {
     assert.equal(checkHandler(owner, 'clipboard-sanitized-write', 'file://', details), true);
   });
 });
+
+// Calling never grants camera access or media access to another frame/window.
+it('grants only audio during an explicitly armed trusted call', () => {
+  const input = { ownerMatches: true, rendererUrlMatches: true, permission: 'media', isMainFrame: true, voiceArmed: true };
+  assert.equal(allowsMainWindowPermissionCheck({ ...input, mediaType: 'audio' }), true);
+  assert.equal(allowsMainWindowPermissionCheck({ ...input, mediaType: 'video' }), false);
+  assert.equal(allowsMainWindowPermissionRequest({ ...input, mediaTypes: ['audio'] }), true);
+  assert.equal(allowsMainWindowPermissionRequest({ ...input, mediaTypes: ['audio', 'video'] }), false);
+  assert.equal(allowsMainWindowPermissionRequest({ ...input, mediaTypes: [] }), false);
+  assert.equal(allowsMainWindowPermissionCheck({ ...input, mediaType: 'audio', isMainFrame: false }), false);
+  assert.equal(allowsMainWindowPermissionCheck({ ...input, mediaType: 'audio', voiceArmed: false }), false);
+});

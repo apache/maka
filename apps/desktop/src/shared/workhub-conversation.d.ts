@@ -27,7 +27,7 @@ export type WorkHubAnswerInput = OperationInput<'workhub.coordination.answer'> &
 };
 
 export type WorkHubAnswerResult =
-  | { readonly kind: 'admitted'; readonly turnId: string; readonly status?: TurnSnapshot['status'] }
+  | { readonly kind: 'admitted'; readonly turnId: string; readonly status?: TurnSnapshot['status']; readonly queued?: true }
   | { readonly kind: 'unknown'; readonly originHostEpoch: string }
   | { readonly kind: 'not_admitted' };
 

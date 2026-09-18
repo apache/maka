@@ -580,6 +580,58 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('persists trusted tool presentation metadata through the real SQLite T1 boundary', async () => {
+    await withStore(async (store) => {
+      const call = functionCallEvent({
+        actions: {
+          stateDelta: {
+            activityKind: 'edit',
+            presentation: 'internal',
+            resultPresentation: 'public_message',
+          },
+        },
+      });
+      const dispatch = toolDispatchEvent();
+
+      const result = await store.commitToolPrepared({
+        operationId: 'operation-1',
+        journalEventId: 'operation-1_prepared',
+        runtimeEvent: call,
+        dispatchRuntimeEvent: dispatch,
+        providerToolCallId: 'provider-call-1',
+        toolName: 'Read',
+        canonicalArgsHash: READ_ARGS_HASH,
+        recoveryMode: 'replay_safe',
+        committedAt: 10,
+      });
+
+      assert.equal(result.created, true);
+      assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), [call, dispatch]);
+    });
+  });
+
+  it('rejects invalid T1 function-call presentation metadata', async () => {
+    await withStore(async (store) => {
+      await assert.rejects(
+        store.commitToolPrepared({
+          operationId: 'operation-1',
+          journalEventId: 'operation-1_prepared',
+          runtimeEvent: functionCallEvent({
+            actions: { stateDelta: { presentation: 'public' } },
+          }),
+          dispatchRuntimeEvent: toolDispatchEvent(),
+          providerToolCallId: 'provider-call-1',
+          toolName: 'Read',
+          canonicalArgsHash: READ_ARGS_HASH,
+          recoveryMode: 'replay_safe',
+          committedAt: 10,
+        }),
+        /T1 argument hash does not match its canonical function call/,
+      );
+      assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), []);
+    });
+  });
+
   it('commits nested T1 events with parent operation linkage', async () => {
     await withStore(async (store) => {
       const parentRefs = {

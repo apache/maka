@@ -18,6 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { WorkHubVoiceStateStore, VOICE_QUEUE_FILENAME } from '../server/workhub-voice-state.js';
+import { WORKHUB_VOICE_COLLABORATION_PROMPT } from '../server/workhub-coordination-prompt.js';
 import { test } from 'node:test';
 import {
   emptyPlanSessionState,
@@ -286,7 +291,17 @@ test('WorkHub v2 binds control, tasks, attachment reading and user questions whi
       clientCapabilities,
       resolveAdditionalTools: () => [tool('plugin_only'), tool('Read')],
     }).tools.map(({ name }) => name),
-    [control.name, tasks.name, ...browserTools.map(({ name }) => name), 'Read', 'AskUserQuestion'],
+    [
+      control.name,
+      tasks.name,
+      ...browserTools.map(({ name }) => name),
+      'voice_reply',
+      'voice_log_read',
+      'voice_queue_read',
+      'voice_queue_update',
+      'Read',
+      'AskUserQuestion',
+    ],
   );
   assert.deepEqual(
     createFixtureComposer({
@@ -435,3 +450,59 @@ function createFixtureComposer(
     ...overrides,
   });
 }
+
+test('voice collaboration instructions follow live calls without changing the base WorkHub prompt', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'workhub-voice-prompt-'));
+  const composer = createFixtureComposer({
+    toolProfile: 'workhub-coordination-v2',
+    clientCapabilities: {
+      tools: [
+        tool('mcp__desktop_workhub__control'),
+        tool('mcp__desktop_workhub__tasks'),
+        ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => tool(`mcp__desktop_browser__${name}`)),
+      ],
+      groups: [],
+    },
+  });
+  const store = new WorkHubVoiceStateStore(join(cwd, VOICE_QUEUE_FILENAME));
+  const context = { cwd, sessionId: 'maka_workhub_coordination', turnId: 'same-turn' };
+  const WORKHUB_COORDINATION_SYSTEM_PROMPT = (await composer.resolveSystemPrompt(context)).text;
+  const lifecycle = async (callId: string, kind: string) =>
+    store.receiveObservation({
+      id: `${callId}-${kind}`,
+      callId,
+      entries: [{ id: `${callId}-${kind}`, kind, data: { callId } }],
+    });
+  try {
+    assert.equal(
+      (await composer.resolveSystemPrompt(context)).text,
+      WORKHUB_COORDINATION_SYSTEM_PROMPT,
+    );
+    await lifecycle('first', 'call_started');
+    assert.equal(
+      (await composer.resolveSystemPrompt(context)).text,
+      `${WORKHUB_COORDINATION_SYSTEM_PROMPT}\n${WORKHUB_VOICE_COLLABORATION_PROMPT}`,
+    );
+    assert.equal(
+      (await composer.resolveSystemPrompt({ ...context, cwd: join(cwd, 'other') })).text,
+      WORKHUB_COORDINATION_SYSTEM_PROMPT,
+      'another workspace does not inherit the call',
+    );
+    await lifecycle('first', 'call_closed');
+    assert.equal(
+      (await composer.resolveSystemPrompt(context)).text,
+      WORKHUB_COORDINATION_SYSTEM_PROMPT,
+    );
+    await lifecycle('first', 'call_started');
+    assert.equal(
+      (await composer.resolveSystemPrompt(context)).text,
+      WORKHUB_COORDINATION_SYSTEM_PROMPT,
+      'retrying an old start does not reactivate a closed call',
+    );
+    await lifecycle('second', 'call_started');
+    assert.match((await composer.resolveSystemPrompt(context)).text!, /Voice collaboration/);
+    await lifecycle('second', 'call_closed');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

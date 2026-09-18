@@ -45,6 +45,7 @@ export interface WorkHubTranscript {
 }
 export interface WorkHubServices extends WorkHubWorkspaceServices {
   readonly inspector: import('../../application/contracts/session-inspector/service.js').SessionInspectorService;
+  readonly voice?: import('../../../shared/workhub-voice.js').WorkHubVoiceBridge;
   readonly surface: 'main' | 'workhub';
   readonly initialLocale: UiLocale;
   subscribeAppearance(handler: (locale: UiLocale) => void): () => void;

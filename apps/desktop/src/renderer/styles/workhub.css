@@ -332,3 +332,12 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 }
 .workhub-conversation-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 16px; }
 .workhub-conversation-filter > span { overflow-wrap: anywhere; }
+
+.workHubVoice { display: flex; align-items: center; gap: 6px; position: relative; font-size: 12px; }
+.workHubVoiceSetup { position: absolute; bottom: 36px; right: 0; width: min(310px, 80vw); padding: 16px; border: 1px solid var(--color-border-subtle, var(--border)); border-radius: 12px; background: var(--background); z-index: 20; }
+.workHubVoiceSetup { display: grid; gap: 12px; box-shadow: 0 8px 32px #0002; }
+.workHubVoiceError { max-width: 220px; color: var(--color-text-danger, #dc5555); }
+
+.workHubVoiceTranscript { margin: 0 12px 10px; padding: 8px 12px; border-left: 2px solid var(--color-border-subtle, var(--border)); font-size: 13px; max-height: 120px; overflow-y: auto; }
+.workHubVoiceTranscript p { margin: 4px 0; line-height: 1.5; overflow-wrap: anywhere; }
+.workHubVoiceTranscript span { margin-right: 8px; color: var(--color-text-secondary, var(--muted-foreground)); }

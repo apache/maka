@@ -1099,6 +1099,7 @@ export interface MakaBridge {
       handler: () => void,
     ): () => void;
   };
+  workHubVoice: import('../shared/workhub-voice.js').WorkHubVoiceBridge;
   workHub: {
     getSession(coordinationSessionId: string): Promise<DesktopSessionSummary>;
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<WorkHubPrepareAttachmentsResult>;

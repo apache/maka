@@ -178,6 +178,35 @@ describe('recovery persistence authority', () => {
     });
   });
 
+  it('accepts only the closed tool-presentation values on function calls', () => {
+    const internalPublication = callEvent({
+      actions: {
+        stateDelta: {
+          activityKind: 'edit',
+          presentation: 'internal',
+          resultPresentation: 'public_message',
+        },
+      },
+    });
+    assert.deepEqual(validateToolLedgerEventLane(internalPublication), {
+      ok: true,
+      lane: 'function_call',
+    });
+
+    for (const stateDelta of [
+      { presentation: 'public' },
+      { resultPresentation: 'internal' },
+      { presentation: true },
+      { resultPresentation: true },
+    ]) {
+      assert.deepEqual(validateToolLedgerEventLane(callEvent({ actions: { stateDelta } })), {
+        ok: false,
+        code: 'semantic_lane_conflict',
+        eventId: 'call-event-1',
+      });
+    }
+  });
+
   it('reserves durable boundary and recovery facts from generic writers', () => {
     assert.deepEqual(validateGenericToolLedgerAppend(dispatchEvent()), {
       ok: false,

@@ -607,11 +607,20 @@ function matchesFunctionCallActions(actions: RuntimeEvent['actions']): boolean {
   const keys = Object.keys(stateDelta);
   return (
     keys.length > 0 &&
-    keys.every(
-      (key) =>
-        ['activityKind', 'displayName', 'intent'].includes(key) &&
-        typeof stateDelta[key] === 'string',
-    )
+    keys.every((key) => {
+      switch (key) {
+        case 'activityKind':
+        case 'displayName':
+        case 'intent':
+          return typeof stateDelta[key] === 'string';
+        case 'presentation':
+          return stateDelta[key] === 'internal';
+        case 'resultPresentation':
+          return stateDelta[key] === 'public_message';
+        default:
+          return false;
+      }
+    })
   );
 }
 

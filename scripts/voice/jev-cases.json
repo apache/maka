@@ -1,0 +1,789 @@
+[
+  {
+    "name": "真实漏续讲",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "id": "e2bc4b6a4417a3b4854de3c4c5126faab4cd64836362455beb4d11eb13d96f69",
+          "callId": "941bada7-5690-4645-ab82-515a27aa5184",
+          "nativeTurnId": "turn_EPIsCunGzBq33Wfw336IU",
+          "role": "user",
+          "text": "请慢慢讲一个关于灯塔守护人林林周的长故事,讲十分钟左右,连贯地往下讲,细节丰富一些。",
+          "start_ms": 3800,
+          "end_ms": 13800
+        },
+        {
+          "kind": "transcript",
+          "id": "02dd9cfc8dce43134f38fd09377e5cb90353ef966621e00f4124e152c06e2976",
+          "callId": "941bada7-5690-4645-ab82-515a27aa5184",
+          "nativeTurnId": "turn_EPIsLzryetbwFGwG5jGSY",
+          "role": "assistant",
+          "text": "好,那我就慢慢讲,讲得细一点。很久以前,在海岸尽头有一座孤零零的灯塔,石阶被海风磨得发亮,墙缝里常年带着咸咸的潮气。灯塔守护人林周就住在这里。他不爱多话,每天清晨做的第一件事,就是沿着旋梯往上走,",
+          "start_ms": 13600,
+          "end_ms": 34000
+        },
+        {
+          "kind": "interruption",
+          "userTurnId": "turn_EPIsgGEPnrFU4X2YkppKj",
+          "user": "先算一下九减四是多少,然后继续刚才的 故事。",
+          "assistant": {
+            "id": "turn_EPIsLzryetbwFGwG5jGSY",
+            "text": "好,那我就慢慢讲,讲得细一点。很久以前,在海岸尽头有一座孤零零的灯塔,石阶被海风磨得发亮,墙缝里常年带着咸咸的潮气。灯塔守护人林周就住在这里。他不爱多话,每天清晨做的第一件事,就是沿着旋梯往上走,",
+            "start_ms": 13600,
+            "end_ms": 34000
+          }
+        },
+        {
+          "kind": "transcript",
+          "id": "7ed07916b9bfe866d20a78d22589fbc23d0074f8886bd60a472b70b6ceb9b347",
+          "callId": "941bada7-5690-4645-ab82-515a27aa5184",
+          "nativeTurnId": "turn_EPIsgGEPnrFU4X2YkppKj",
+          "role": "user",
+          "text": "先算一下九减四是多少,然后继续刚才的 故事。",
+          "start_ms": 33800,
+          "end_ms": 39200
+        },
+        {
+          "kind": "transcript",
+          "id": "3554418bcbe97f231806b9c70c221be2b0a6fa576ce7d6d4dc65617ba45a4800",
+          "callId": "941bada7-5690-4645-ab82-515a27aa5184",
+          "nativeTurnId": "turn_EPIslA2qOssoFGDvGXyVR",
+          "role": "assistant",
+          "text": "九减四等于五。好,我接着讲刚才的故事。林周提着工具箱,一步一步往上,手指习惯性摸过冰凉的栏杆,听着自己的脚步声在塔身里回响。塔顶的铜镜总会蒙上一层薄薄的盐雾,他就用旧布一圈圈擦亮,动作慢而稳,像在跟-",
+          "start_ms": 39000,
+          "end_ms": 59200
+        },
+        {
+          "kind": "interruption",
+          "userTurnId": "turn_EPIt6RlVuVrMUPCveOlx0",
+          "user": "先说说灯塔为什么会旋转,两句话就好。",
+          "assistant": {
+            "id": "turn_EPIslA2qOssoFGDvGXyVR",
+            "text": "九减四等于五。好,我接着讲刚才的故事。林周提着工具箱,一步一步往上,手指习惯性摸过冰凉的栏杆,听着自己的脚步声在塔身里回响。塔顶的铜镜总会蒙上一层薄薄的盐雾,他就用旧布一圈圈擦亮,动作慢而稳,像在跟-",
+            "start_ms": 39000,
+            "end_ms": 59200
+          }
+        },
+        {
+          "kind": "transcript",
+          "id": "bf2537734f5f62f984d50ec5c14e6a6d3da30818dd1b9bc18d62333629eeeaa0",
+          "callId": "941bada7-5690-4645-ab82-515a27aa5184",
+          "nativeTurnId": "turn_EPIt6RlVuVrMUPCveOlx0",
+          "role": "user",
+          "text": "先说说灯塔为什么会旋转,两句话就好。",
+          "start_ms": 59000,
+          "end_ms": 63800
+        },
+        {
+          "kind": "transcript",
+          "id": "4d8251af2bd51423179427876d53b2d82e2cee7f0de4ed0c809567701694af58",
+          "callId": "941bada7-5690-4645-ab82-515a27aa5184",
+          "nativeTurnId": "turn_EPIt90ErwHMz0kLbt57o7",
+          "role": "assistant",
+          "text": "灯塔看起来在旋转,多半是因为里面的透镜组件和遮光板在缓慢转动,把光束扫过不同方向。这样远处的人就能一眼认出是哪一座灯塔在指引。",
+          "start_ms": 63600,
+          "end_ms": 75200
+        }
+      ],
+      "queue": [],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": true,
+      "items": {}
+    }
+  },
+  {
+    "name": "已答算术",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "九减四？"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "五。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "a",
+          "text": "九减四是五。",
+          "context": ""
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "a": "discard"
+      }
+    }
+  },
+  {
+    "name": "取消且已确认",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "讲林舟守灯塔的故事，慢慢讲十分钟。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "林舟走进灯塔，发现楼梯上有一封信。他拾起信，打开。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "不讲故事了，到这里结束。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "好，故事就停在这里。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "a",
+          "text": "林舟打开信，发现一张地图。",
+          "context": ""
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "a": "discard"
+      }
+    }
+  },
+  {
+    "name": "取消未口头确认",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "讲林舟守灯塔的故事，慢慢讲十分钟。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "林舟走进灯塔，发现楼梯上有一封信。他拾起信，打开。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "不讲故事了，到这里结束。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "a",
+          "text": "林舟打开信，发现一张地图。",
+          "context": ""
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "a": "discard"
+      }
+    }
+  },
+  {
+    "name": "插问已答明确续讲",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "讲林舟守灯塔的故事，慢慢讲十分钟。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "林舟走进灯塔，发现楼梯上有一封信。他拾起信，打开。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "先说九减四是多少，然后继续故事。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "五。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "story",
+          "text": "林舟读信，信里写着港口的秘密。",
+          "context": "从林舟打开信之后继续故事。"
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "story": "inject"
+      }
+    }
+  },
+  {
+    "name": "隐式插问已答",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "讲林舟守灯塔的故事，慢慢讲十分钟。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "林舟走进灯塔，发现楼梯上有一封信。他拾起信，打开。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "九减四是多少？"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "五。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "story",
+          "text": "林舟读信，信里写着港口的秘密。",
+          "context": "用户要听十分钟故事，中途插问算术已回答。"
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "story": "inject"
+      }
+    }
+  },
+  {
+    "name": "语音已越过旧断点",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "讲林舟守灯塔的故事，慢慢讲十分钟。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "林舟走进灯塔，发现楼梯上有一封信。他拾起信，打开。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "九减四？然后继续。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "五。林舟读完信，知道港口有秘密。他走到港口，见到了船长。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "story",
+          "text": "林舟拾起楼梯上的信，打开阅读，发现港口的秘密。",
+          "context": "继续未完成的十分钟故事。"
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "story": "rework"
+      }
+    }
+  },
+  {
+    "name": "仅重复短答没有剩余需求",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "主角叫什么？"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "林舟。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "a",
+          "text": "主角叫林舟。",
+          "context": ""
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "a": "discard"
+      }
+    }
+  },
+  {
+    "name": "明确漏任务",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "请在工作区新建灯塔清单.txt，写上明天检查灯泡。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "好的。"
+        }
+      ],
+      "queue": [],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": true,
+      "items": {}
+    }
+  },
+  {
+    "name": "已派活不要重复",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "请新建灯塔清单.txt，写上明天检查灯泡。"
+        },
+        {
+          "kind": "delegation",
+          "handoffId": "h1",
+          "text": "创建灯塔清单.txt并写入明天检查灯泡。"
+        },
+        {
+          "kind": "delegation_receipt",
+          "status": "accepted",
+          "requestId": "r1"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "任务已交给 WorkHub。"
+        }
+      ],
+      "queue": [],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {}
+    }
+  },
+  {
+    "name": "有来源的结果",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "读一下灯塔清单文件。"
+        },
+        {
+          "kind": "task_result",
+          "status": "completed",
+          "text": "已读取灯塔清单.txt，文件内容：明天检查灯泡。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "a",
+          "text": "灯塔清单里写的是：明天检查灯泡。",
+          "context": "WorkHub 已读取文件，向用户报告结果。"
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "a": "inject"
+      }
+    }
+  },
+  {
+    "name": "三条混合",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "讲林舟守灯塔的故事，慢慢讲十分钟。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "林舟走进灯塔，发现楼梯上有一封信。他拾起信，打开。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "先说九减四是多少。然后故事用船长视角讲。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "五。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "math",
+          "text": "九减四等于五。",
+          "context": ""
+        },
+        {
+          "id": "old",
+          "text": "林舟读着信，心中充满好奇。",
+          "context": "继续以林舟为主角的第一人称故事。"
+        },
+        {
+          "id": "new",
+          "text": "我是港口的船长，那夜，我看到林舟拿着信向码头走来。",
+          "context": "按用户最新要求，以船长视角续讲灯塔故事。"
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "math": "discard",
+        "old": "discard",
+        "new": "inject"
+      }
+    },
+    "expectationNote": "原先把 old 固定标为 rework 不合理：new 已按最新视角完整替代旧条目，因此更新为 discard，保留原始测试结果供比较。"
+  },
+  {
+    "name": "尚在回答不算漏答",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "解释灯塔为何旋转。"
+        },
+        {
+          "kind": "media_event",
+          "type": "turn.created",
+          "role": "assistant"
+        }
+      ],
+      "queue": [],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {}
+    }
+  },
+  {
+    "name": "做菜中途插问未续",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "一步步教我把番茄炒蛋做完。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "先洗番茄，把鸡蛋打入碗里。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "对了，一斤是多少克？"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "五百克。"
+        }
+      ],
+      "queue": [],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": true,
+      "items": {}
+    }
+  },
+  {
+    "name": "做菜明确取消",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "教我做番茄炒蛋。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "先打鸡蛋。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "算了，我不做饭了，结束吧。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "a",
+          "text": "接下来切番茄。",
+          "context": ""
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "a": "discard"
+      }
+    }
+  },
+  {
+    "name": "菜谱旧步骤",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "教我把番茄炒蛋做完。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "鸡蛋打散后，倒进热锅，炒到凝固，盛出来。接下来处理番茄。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "a",
+          "text": "把鸡蛋倒进热锅，炒熟后盛出。",
+          "context": "继续教用户完成整道菜。"
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "a": "rework"
+      }
+    }
+  },
+  {
+    "name": "用户明确要求重复",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "一斤是多少克？"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "五百克。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "没听清，刚才的答案再说一次。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "a",
+          "text": "一斤是五百克。",
+          "context": "应用户要求重复刚才的答案。"
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "a": "inject"
+      }
+    }
+  },
+  {
+    "name": "只承诺未派活",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "帮我在工作区建立周报.md，写入本周完成了测试。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "没问题，交给我。"
+        }
+      ],
+      "queue": [],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": true,
+      "items": {}
+    }
+  },
+  {
+    "name": "真实已完成无需新任务",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "建周报.md。"
+        },
+        {
+          "kind": "delegation",
+          "text": "创建周报.md"
+        },
+        {
+          "kind": "task_result",
+          "status": "completed",
+          "text": "周报.md已创建"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "周报.md已经创建完成。"
+        }
+      ],
+      "queue": [],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {}
+    }
+  },
+  {
+    "name": "最新语言要求覆盖旧要求",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "把结果用英文告诉我。"
+        },
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "还是用中文说吧。"
+        }
+      ],
+      "queue": [
+        {
+          "id": "a",
+          "text": "The export has finished.",
+          "context": "报告导出结果。"
+        }
+      ],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": false,
+      "items": {
+        "a": "rework"
+      }
+    }
+  },
+  {
+    "name": "问题只答一半",
+    "input": {
+      "facts": [
+        {
+          "kind": "transcript",
+          "role": "user",
+          "text": "分别告诉我周一和周二会议的地点。"
+        },
+        {
+          "kind": "transcript",
+          "role": "assistant",
+          "text": "周一在A会议室。"
+        }
+      ],
+      "queue": [],
+      "responses": [],
+      "deliveries": []
+    },
+    "expected": {
+      "gap": true,
+      "items": {}
+    }
+  }
+]

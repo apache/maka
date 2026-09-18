@@ -1110,6 +1110,7 @@ export class AgentRun {
         kind: 'text',
         text: input.text,
         ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
+        ...(input.workhubSource !== undefined ? { workhubSource: input.workhubSource } : {}),
         ...(input.origin !== undefined ? { origin: input.origin } : {}),
         ...(input.attachments !== undefined && input.attachments.length > 0
           ? { attachments: input.attachments }

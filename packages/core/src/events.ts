@@ -154,6 +154,8 @@ export interface MessageContent {
   text: string;
   /** Human-facing text when it differs from `text`; omit when equal. */
   displayText?: string;
+  /** Host-authored WorkHub routing metadata; never inferred from model text. */
+  workhubSource?: 'text_request' | 'voice_request' | 'voice_maintenance' | 'task_result';
   /** Ordered attachment references; omit when empty. Attachment bytes never travel here. */
   attachments?: AttachmentRef[];
   directoryReferences?: DirectoryReference[];
@@ -165,7 +167,14 @@ export interface MessageContent {
 
 const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
-  ['displayText', 'attachments', 'directoryReferences', 'quotes', 'inlineReferences'],
+  [
+    'displayText',
+    'workhubSource',
+    'attachments',
+    'directoryReferences',
+    'quotes',
+    'inlineReferences',
+  ],
 );
 
 /**
@@ -222,6 +231,7 @@ const EXTERNAL_FILE_REF_SHAPE = defineObjectShape<Extract<StorageRef, { kind: 'e
 export function normalizeMessageContent(content: MessageContent): MessageContent {
   return {
     text: content.text,
+    ...(content.workhubSource ? { workhubSource: content.workhubSource } : {}),
     ...(content.directoryReferences?.length
       ? { directoryReferences: content.directoryReferences.map((ref) => ({ ...ref })) }
       : {}),
@@ -274,6 +284,9 @@ export function aggregateMessageContents(contents: readonly MessageContent[]): M
   }
   return normalizeMessageContent({
     text,
+    ...(contents.find((content) => content.workhubSource)?.workhubSource
+      ? { workhubSource: contents.find((content) => content.workhubSource)!.workhubSource }
+      : {}),
     ...(displayText !== text ? { displayText } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(directoryReferences.length > 0 ? { directoryReferences } : {}),
@@ -296,6 +309,11 @@ export function isMessageContent(value: unknown): value is MessageContent {
       (Array.isArray(value.directoryReferences) &&
         value.directoryReferences.every(isDirectoryReference))) &&
     (value.displayText === undefined || typeof value.displayText === 'string') &&
+    (value.workhubSource === undefined ||
+      value.workhubSource === 'text_request' ||
+      value.workhubSource === 'voice_request' ||
+      value.workhubSource === 'voice_maintenance' ||
+      value.workhubSource === 'task_result') &&
     (value.attachments === undefined ||
       (Array.isArray(value.attachments) && value.attachments.every(isAttachmentRef))) &&
     (value.quotes === undefined ||
@@ -454,6 +472,7 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
   const rightInlineReferences = right.inlineReferences;
   return (
     left.text === right.text &&
+    left.workhubSource === right.workhubSource &&
     leftDisplayText === rightDisplayText &&
     (left.directoryReferences?.length ?? 0) === (right.directoryReferences?.length ?? 0) &&
     (left.directoryReferences ?? []).every(
@@ -645,6 +664,9 @@ export interface ThinkingCompleteEvent extends BaseEvent {
 
 export interface ToolStartEvent extends BaseEvent, ToolActivityIdentity {
   type: 'tool_start';
+  /** Trusted tool registration metadata, persisted with the call. */
+  presentation?: 'internal';
+  resultPresentation?: 'public_message';
   toolUseId: string;
   toolName: string;
   /** Bounded correlation for a shell-run observation without transporting full tool args. */

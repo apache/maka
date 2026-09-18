@@ -44,6 +44,7 @@ export function createDesktopWorkHubServices(
     MakaBridge,
     | 'browser'
     | 'inspector'
+    | 'workHubVoice'
     | 'workHub'
     | 'workHubControl'
     | 'workHubPresentation'
@@ -59,6 +60,7 @@ export function createDesktopWorkHubServices(
   return {
     inspector: createDesktopInspectorService(bridge),
     bindBrowserSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
+    voice: bridge.workHubVoice,
     surface: new URLSearchParams(window.location.search).get('surface') === 'workhub' ? 'workhub' : 'main',
     initialLocale: resolveSystemUiLocale(navigator.languages),
     subscribeAppearance(handler) {

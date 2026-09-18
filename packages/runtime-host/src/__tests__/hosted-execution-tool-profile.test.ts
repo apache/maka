@@ -178,6 +178,7 @@ test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct
   }).find(({ name }) => name === 'Read')!;
   const tools = [
     makeTool('Bash'),
+    ...['Write', 'Edit', 'Glob', 'Grep', 'apply_patch'].map(makeTool),
     builtinRead,
     ...browserTools,
     control,
@@ -187,7 +188,17 @@ test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct
   const projected = projectHostedExecutionTools(tools, 'workhub-coordination-v2');
   assert.deepEqual(
     projected.map(({ name }) => name),
-    [control.name, tasks.name, ...browserTools.map(({ name }) => name), 'Read', 'AskUserQuestion'],
+    [
+      control.name,
+      tasks.name,
+      ...browserTools.map(({ name }) => name),
+      'voice_reply',
+      'voice_log_read',
+      'voice_queue_read',
+      'voice_queue_update',
+      'Read',
+      'AskUserQuestion',
+    ],
   );
   const read = projected.find(({ name }) => name === 'Read')!;
   const context = {

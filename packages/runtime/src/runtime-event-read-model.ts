@@ -279,6 +279,9 @@ interface ProjectionState {
   diagnostics: RuntimeEventReadModelDiagnostic[];
   toolNameByUseId: Map<string, string>;
   permissionRequestById: Map<string, PermissionRequestProjectionMetadata>;
+  internalTools: Set<string>;
+  publishingTools: Set<string>;
+  publications: Map<string, number>;
   /**
    * Thinking awaiting its assistant text row, keyed by the step message id
    * (function of the event's providerEventId / storedMessageId — the same id the
@@ -316,6 +319,9 @@ export function createRuntimeEventStoredMessageProjector(
     invocations: normalizeInvocations(options.invocations),
     diagnostics: [],
     toolNameByUseId: new Map(),
+    internalTools: new Set(),
+    publishingTools: new Set(),
+    publications: new Map(),
     permissionRequestById: new Map(),
     thinkingByMessageId: new Map(),
     contentOrderByMessageId: new Map(),
@@ -326,9 +332,11 @@ export function createRuntimeEventStoredMessageProjector(
   /**
    * Which event each message came out of, by position.
    *
-   * A message belongs to the event being read when it was appended: nothing
-   * rewrites an earlier message, so the rows that appear while one event is
-   * handled are exactly that event's rows. A durable reader numbers its pages
+   * A message belongs to the event being read when it was appended, so the rows
+   * that appear while one event is
+   * handled are exactly that event's rows. A publication revision retains the
+   * original row identity and position, updating only its displayed text.
+   * A durable reader numbers its pages
    * from this, which is why it is recorded here rather than rediscovered.
    */
   const messageSources: Array<{
@@ -1096,8 +1104,12 @@ function projectFunctionCall(
     );
   }
   state.toolNameByUseId.set(toolUseId, event.content.name);
+  if (event.actions?.stateDelta?.presentation === 'internal') state.internalTools.add(toolUseId);
+  if (event.actions?.stateDelta?.resultPresentation === 'public_message')
+    state.publishingTools.add(toolUseId);
   messages.push({
     type: 'tool_call',
+    ...(state.internalTools.has(toolUseId) ? { presentation: 'internal' as const } : {}),
     id: toolUseId,
     turnId: event.turnId,
     ts: event.ts,
@@ -1220,6 +1232,7 @@ function projectFunctionResponse(
     : decodedResult;
   messages.push({
     type: 'tool_result',
+    ...(state.internalTools.has(toolUseId) ? { presentation: 'internal' as const } : {}),
     id: stableMessageId(event, state, 'tool_result'),
     turnId: event.turnId,
     ts: event.ts,
@@ -1237,6 +1250,51 @@ function projectFunctionResponse(
       : {}),
     ...toolActivityIdentity(event),
   });
+  // Only a successful result from a Host-registered publishing tool can create
+  // a public message. The persisted receipt is shared by live and history views.
+  if (
+    !event.content.isError &&
+    state.publishingTools.has(toolUseId) &&
+    resultContent.kind === 'json'
+  ) {
+    const value = resultContent.value as {
+      publication?: { id?: unknown; text?: unknown };
+      publications?: Array<{ id?: unknown; text?: unknown }>;
+    } | null;
+    const publications = Array.isArray(value?.publications)
+      ? value.publications.slice(0, 64)
+      : value?.publication
+        ? [value.publication]
+        : [];
+    for (const publication of publications) {
+      if (
+        publication &&
+        typeof publication.id === 'string' &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(publication.id) &&
+        typeof publication.text === 'string' &&
+        publication.text.length > 0 &&
+        publication.text.length <= 32_000
+      ) {
+        const previous = state.publications.get(publication.id);
+        if (previous !== undefined) {
+          const message = messages[previous]!;
+          if (message.type === 'assistant')
+            messages[previous] = { ...message, text: publication.text };
+        } else {
+          state.publications.set(publication.id, messages.length);
+          messages.push({
+            type: 'assistant',
+            id: `workhub-public-${publication.id}`,
+            turnId: event.turnId,
+            ts: event.ts,
+            text: publication.text,
+            modelId: '',
+            presentation: 'public',
+          });
+        }
+      }
+    }
+  }
   return true;
 }
 

@@ -40,7 +40,7 @@ export function buildStatusPatch(
 }
 
 export function normalizeStopSessionSource(
-  source: 'stop_button' | 'graph_supervisor' | 'workhub_direct_stop' | undefined,
+  source: 'stop_button' | 'graph_supervisor' | 'voice_rebase' | 'workhub_direct_stop' | undefined,
   workHubActionId?: string,
 ): string | undefined {
   if (source !== 'workhub_direct_stop' && workHubActionId !== undefined) {
@@ -51,6 +51,8 @@ export function normalizeStopSessionSource(
       return 'renderer.stop_button';
     case 'graph_supervisor':
       return 'graph.supervisor';
+    case 'voice_rebase':
+      return 'voice.rebase';
     case 'workhub_direct_stop':
       return workHubDirectStopAbortSource(workHubActionId);
     case undefined:

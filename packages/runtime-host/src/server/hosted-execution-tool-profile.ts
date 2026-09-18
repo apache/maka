@@ -17,9 +17,13 @@
  * under the License.
  */
 
-import type { SessionToolProfile } from '@maka/core/session';
 import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
+import {
+  createWorkHubVoiceQueueTools,
+  WORKHUB_VOICE_QUEUE_TOOL_NAMES,
+} from './workhub-voice-queue-tools.js';
+import type { SessionToolProfile } from '@maka/core/session';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { readParameters, resolveReadInput } from '@maka/runtime/read-page';
 
@@ -117,6 +121,7 @@ export function hostedExecutionRunProfile(
         'mcp__desktop_workhub__control',
         'mcp__desktop_workhub__tasks',
         ...WORKHUB_BROWSER_TOOL_NAMES,
+        ...WORKHUB_VOICE_QUEUE_TOOL_NAMES,
         'Read',
         'AskUserQuestion',
       ],
@@ -149,6 +154,9 @@ export function projectHostedExecutionTools(
   if (profile === undefined) return tools;
   const toolNames = hostedExecutionRunProfile(profile)!.toolNames;
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  if (profile === 'workhub-coordination-v2') {
+    for (const tool of createWorkHubVoiceQueueTools()) byName.set(tool.name, tool);
+  }
   const selected = toolNames.map((name) => byName.get(name));
   const missing = toolNames.filter((_name, index) => selected[index] === undefined);
   if (missing.length > 0) {
