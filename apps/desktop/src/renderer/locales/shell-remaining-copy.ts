@@ -251,10 +251,90 @@ const enCopy: ShellRemainingCopy = {
   },
 };
 
+const koCopy: ShellRemainingCopy = {
+  scheduledTaskActions: {
+    refreshFailed: "작업 새로고침 실패",
+    refreshFallback: "정기 작업을 새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    created: "정기 작업 생성됨",
+    createFailed: "작업 생성 실패",
+    createFallback: "정기 작업을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    createIncognitoBlocked:
+      "시크릿 모드가 켜져 있는 동안에는 정기 작업을 생성할 수 없습니다.",
+    saved: "정기 작업 저장됨",
+    saveFailed: "작업 저장 실패",
+    saveFallback: "정기 작업을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    enabled: "정기 작업 켜짐",
+    paused: "정기 작업 일시 중지됨",
+    updateFailed: "작업 업데이트 실패",
+    updateFallback: "정기 작업을 업데이트하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    triggered: "정기 작업 실행됨",
+    triggerFailed: "작업 실행 실패",
+    triggerFallback:
+      "정기 작업을 실행하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    snoozed: "10분 연기됨",
+    snoozeFailed: "작업 연기 실패",
+    snoozeFallback: "정기 작업을 연기하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    task: "정기 작업",
+    clearTitle: (name) => `“${name}”의 실행 기록을 지울까요?`,
+    clearDescription:
+      "정기 작업은 그대로 유지됩니다. 최근 실행 기록과 상태만 지워집니다.",
+    clear: "기록 지우기",
+    cancel: "취소",
+    cleared: "실행 기록 지워짐",
+    clearFailed: "기록 지우기 실패",
+    clearFallback:
+      "정기 작업 기록을 지우지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    deleteTitle: (name) => `“${name}” 삭제할까요?`,
+    deleteDescription:
+      "작업과 최근 실행 기록이 삭제됩니다. 이 동작은 되돌릴 수 없습니다.",
+    delete: "삭제",
+    deleted: "정기 작업 삭제됨",
+    deleteFailed: "작업 삭제 실패",
+    deleteFallback: "정기 작업을 삭제하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+  },
+  dailyReview: {
+    yesterday: "어제",
+    today: "오늘",
+    followSettings: "설정 따름",
+    unavailable: "데일리 리뷰를 생성할 수 없음",
+    historyUnavailable: "데일리 리뷰 기록을 사용할 수 없음",
+    archiveMissing: "데일리 리뷰 보고서를 찾을 수 없음",
+    settingsUnavailable: "데일리 리뷰 설정을 사용할 수 없음",
+  },
+  connections: {
+    refreshFailed: "모델 연결 새로고침 실패",
+    refreshFallback:
+      "모델 연결을 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+  },
+  tasks: { loadFailed: "할 일 목록을 불러오지 못했습니다. 다시 시도해 주세요." },
+  projects: { ungrouped: "프로젝트 없음" },
+  models: { unavailable: "현재 사용할 수 없음" },
+  overlays: {
+    loadingSettings: "설정 불러오는 중",
+    loadingSettingsProgress: "설정 불러오는 중…",
+  },
+  notifications: {
+    scheduledTask: "정기 작업",
+    viewScheduledTasks: "정기 작업 보기",
+  },
+  previousMainProcessInterruption: {
+    title: "Maka 복구됨",
+    description: "이전 종료가 완료되지 않았습니다.",
+    copyDiagnostics: "보고서 복사",
+  },
+  conversationExport: {
+    exported: (date) => `${date}에 Maka에서 내보냈습니다.`,
+    you: "나",
+    toolCalls: "도구 호출",
+    intentSeparator: " — ",
+  },
+};
+
 const COPY = {
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
+  ko: koCopy,
 } satisfies UiCatalog<ShellRemainingCopy>;
 
 export function getShellRemainingCopy(locale: UiLocale): ShellRemainingCopy {
