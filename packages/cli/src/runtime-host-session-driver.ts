@@ -33,7 +33,7 @@ import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
   type SessionEvent,
-  type ShellRunSnapshotResult,
+  type ShellRunStateResult,
   type ShellRunUpdate,
 } from '@maka/core/events';
 import { isSideConversationSession } from '@maka/core/side-conversation';
@@ -391,7 +391,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async runUserCommand(command: string): Promise<{
     commandId: string;
-    result: ShellRunSnapshotResult;
+    result: ShellRunStateResult;
     takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
   }> {
     const stopGeneration = this.#userCommandStopGeneration;
@@ -1716,17 +1716,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     owner: { readonly sessionId: string; readonly commandId: string },
   ): Promise<void> {
     if (this.#activeUserCommands.get(ref) !== owner) return;
-    const stopped = await this.#request('runtime.resource.stop', {
+    await this.#request('runtime.resource.stop', {
       sessionId: owner.sessionId,
       ref,
     });
-    this.#publishShellRunUpdate({
-      sessionId: owner.sessionId,
-      ownership: { kind: 'local' },
-      sourceTurnId: owner.commandId,
-      sourceToolCallId: owner.commandId,
-      result: stopped.resource,
-    });
+    this.#activeUserCommands.delete(ref);
+    this.#publishRuntimeResource(owner.sessionId, ref);
   }
 
   #publishShellRunUpdate(update: ShellRunUpdate): void {
