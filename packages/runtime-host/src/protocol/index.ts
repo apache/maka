@@ -101,11 +101,13 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 164 as const;
-// 164: Agent Graph operator snapshots carry bounded output previews and metrics.
-// Epoch-161 peers reject the additional `output` field on strict operator shapes.
-// 163: Reserved for Client Capability tri-state results and interrupted tool
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 165 as const;
+// 165: Agent Graph operator snapshots carry bounded output previews and metrics.
+// Epoch-164 peers reject the additional `output` field on strict operator shapes.
+// 164: Reserved for Client Capability tri-state results and interrupted tool
 // continuity, pending #5458.
+// 163: Session reference quotes carry strict capture and truncation provenance.
+// Epoch-162 peers reject the added QuoteRef fields.
 // 162: Runtime Resource control and stop replies drop the unused resource
 // snapshot; start replies allow compact state. Older peers require snapshots.
 // 161: Session transcript reads return the whole transcript under a byte budget,
