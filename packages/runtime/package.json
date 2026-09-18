@@ -50,6 +50,7 @@
     "./computer-use-types": "./dist/computer-use-types.js",
     "./configured-subagent-catalog": "./dist/configured-subagent-catalog.js",
     "./connection-effect-fetch": "./dist/connection-effect-fetch.js",
+    "./connection-usage": "./dist/connection-usage.js",
     "./connection-effect-outcome": "./dist/connection-effect-outcome.js",
     "./context-budget-policy": "./dist/context-budget-policy.js",
     "./context-diagnostics": "./dist/context-diagnostics.js",

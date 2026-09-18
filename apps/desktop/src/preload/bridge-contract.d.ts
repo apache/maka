@@ -1525,6 +1525,8 @@ export interface MakaBridge {
     test(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
     fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
     hasSecret(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean>;
+    /** Read-only account usage for a connection, Host-fetched. */
+    usage(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/runtime-host/protocol').ConnectionUsageReadResult>;
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
       connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity,

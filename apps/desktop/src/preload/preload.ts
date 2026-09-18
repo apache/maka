@@ -3051,6 +3051,9 @@ const makaBridge = {
     hasSecret(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'connections:hasSecret', connection);
     },
+    usage(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/runtime-host/protocol').ConnectionUsageReadResult> {
+      return invokeSelectedRuntimeHost(host, 'connections:usage', connection);
+    },
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders> {
       return invokeSelectedRuntimeHost(host, 'connections:getRequestHeaders', connection);
     },
