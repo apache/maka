@@ -253,12 +253,17 @@ describe('real Host Runtime Resource process lifecycle', {
   });
 
   test('treats acquire during PTY integrity failure as a conflict without draining Host', async () => {
-    // A DA flood makes the emulator emit protocol replies past the 1MB
-    // boundary, which fails the collector and requests termination; the TERM
-    // trap keeps the process alive so acquire lands inside the kill grace.
+    // A bounded DA burst makes the emulator emit protocol replies past the
+    // 1MB boundary, which fails the collector and requests termination; the
+    // TERM trap keeps the process alive so acquire lands inside the kill
+    // grace. The command runs under /bin/sh (dash on CI), where {1..N} brace
+    // expansion is literal and emits one query total; seq stays portable.
+    // The burst must stay under the parser's 1MB pending budget — larger
+    // emissions get evicted before parsing and the reply total goes back to
+    // a throughput race.
     const background = await coordinator.runBackgroundBash({
       ...bashInput(
-        'trap "" TERM; while :; do printf "\\033[c%.0s" {1..200}; done',
+        'trap "" TERM; printf "\\033[c%.0s" $(seq 240000); while :; do sleep 1; done',
         'call.integrity/1',
       ),
       pty: true,
