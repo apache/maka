@@ -328,7 +328,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     assert.deepEqual(sharedKnownEmpty, KNOWN_EMPTY_LIVE_RUN_STATE);
     assert.deepEqual(
       { ...sharedSession, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
-      { ...created, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
+      { ...created, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE, backgroundActivity: 'idle' },
     );
 
     const catalogChanged = new Promise<string>((resolve) => {
@@ -357,7 +357,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     assert.deepEqual(
       { ...localSession, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
       renamed.kind === 'committed'
-        ? { ...renamed.session, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE }
+        ? { ...renamed.session, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE, backgroundActivity: 'idle' }
         : assert.fail('Remote Session rename did not commit'),
     );
 
