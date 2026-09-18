@@ -3724,7 +3724,7 @@ const makaBridge = {
       return invokeSessionRuntimeHost('app:sessionProjectInfo', sessionId);
     },
     openPath(
-      key: 'workspace' | 'skills' | 'memory' | 'project',
+      key: 'workspace' | 'memory' | 'project',
       sessionId?: string,
       host?: DesktopRuntimeHostRef,
     ): Promise<

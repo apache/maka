@@ -55,8 +55,18 @@ const locations: SkillLocation[] = [
   { ref: 'user:agents', scope: 'user', source: 'agents', path: '/home/user/.agents/skills', status: 'available', skillCount: 1 },
 ];
 
-test('Skill locations expose all supported paths and create only a missing directory', async () => {
+test('Skill locations close the menu before opening and create only a missing directory', async () => {
   const { document, window } = parseHTML('<div id="root"></div>');
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  async function flushFrames(): Promise<void> {
+    await act(async () => {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(0);
+      await Promise.resolve();
+    });
+  }
   window.getComputedStyle = () => ({
     direction: 'ltr',
     writingMode: 'horizontal-tb',
@@ -67,10 +77,10 @@ test('Skill locations expose all supported paths and create only a missing direc
     window,
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     requestAnimationFrame: (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
+      frames.set(++frameId, callback);
+      return frameId;
     },
-    cancelAnimationFrame() {},
+    cancelAnimationFrame: (id: number) => frames.delete(id),
     IS_REACT_ACT_ENVIRONMENT: true,
   });
 
@@ -105,7 +115,21 @@ test('Skill locations expose all supported paths and create only a missing direc
   assert.match(menuItem(document, 'User · Maka').outerHTML, /aria-disabled="true"/);
 
   await clickMenuItem(document, window, 'Project · Maka');
+  assert.deepEqual(opened, []);
+  assert.equal(document.querySelector('[aria-label="More Skill actions"]')?.getAttribute('aria-expanded'), 'false');
+  await flushFrames();
   assert.deepEqual(opened, [{ ref: 'project:maka', createIfMissing: true }]);
+
+  await clickByLabel(document, window, 'More Skill actions');
+  await clickMenuItem(document, window, 'Skill locations…');
+  await clickMenuItem(document, window, 'Project · Agents');
+  assert.equal(opened.length, 1);
+  assert.equal(document.querySelector('[aria-label="More Skill actions"]')?.getAttribute('aria-expanded'), 'false');
+  await flushFrames();
+  assert.deepEqual(opened, [
+    { ref: 'project:maka', createIfMissing: true },
+    { ref: 'project:agents', createIfMissing: false },
+  ]);
 });
 
 async function clickByLabel(

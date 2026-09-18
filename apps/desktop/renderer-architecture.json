@@ -419,7 +419,7 @@
           "@maka/core/redaction": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 393
+        "nonTriviaTokens": 391
       },
       "src/renderer/app-shell-detail-panel.tsx": {
         "importDeclarations": 0,

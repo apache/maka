@@ -1870,7 +1870,7 @@ export interface MakaBridge {
       projectGit: { isGitRepo: boolean; branch?: string };
     }>;
     openPath(
-      key: 'workspace' | 'skills' | 'memory' | 'project',
+      key: 'workspace' | 'memory' | 'project',
       sessionId?: string,
       host?: DesktopRuntimeHostRef,
     ): Promise<

@@ -678,7 +678,7 @@ export function SkillsModuleMain(props: {
                         description={location.path}
                         endContent={endContent}
                         isDisabled={disabled}
-                        onClick={() => void runSkillAction(
+                        onClick={() => runPageActionAfterMenuClose(
                           `location:${location.ref}`,
                           () => props.onOpenSkillLocation?.(
                             location.ref,

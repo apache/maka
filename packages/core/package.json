@@ -63,6 +63,7 @@
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",
     "./skill-invocation": "./dist/skill-invocation.js",
+    "./skill-locations": "./dist/skill-locations.js",
     "./runtime-inputs": "./dist/runtime-inputs.js",
     "./e2e-fixture": "./dist/e2e-fixture.js",
     "./capabilities": "./dist/capabilities.js",

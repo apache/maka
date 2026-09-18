@@ -156,7 +156,7 @@ type ShellCopy = {
   actions: {
     retry: string;
   };
-  paths: Record<'workspace' | 'project' | 'skills', string>;
+  paths: Record<'workspace' | 'project', string>;
   errors: {
     messageRead: string;
     messageRefresh: string;
@@ -210,7 +210,7 @@ type ShellCopy = {
     remoteDirectoryHideHidden: string;
     runtimeHostReadiness: Record<'connecting' | 'reconnecting' | 'unavailable', string>;
     openFailedTitle(path: string): string;
-    openPathLabels: Record<'workspace' | 'skills' | 'memory' | 'project', string>;
+    openPathLabels: Record<'workspace' | 'memory' | 'project', string>;
     openPathFailures: Record<
       'unknown-key' | 'not-allowed' | 'missing' | 'not-a-directory' | 'open-failed' | 'unknown',
       string
@@ -761,7 +761,6 @@ const SHELL_COPY_BY_LOCALE = {
     paths: {
       workspace: '工作区文件夹',
       project: '项目目录',
-      skills: 'Skills 文件夹',
     },
     errors: {
       messageRead: '任务内容暂时无法读取，请稍后重试。',
@@ -821,7 +820,6 @@ const SHELL_COPY_BY_LOCALE = {
       openFailedTitle: (path: string) => `无法打开${path}`,
       openPathLabels: {
         workspace: '工作区目录',
-        skills: 'Skills 目录',
         memory: '记忆目录',
         project: '项目目录',
       },
@@ -951,7 +949,7 @@ const SHELL_COPY_BY_LOCALE = {
       openLocationFallback: '无法打开技能位置，请稍后重试。',
       openLocationFailures: {
         unknown_location: '这个技能位置无效。',
-        stale_context: '项目已切换，请刷新技能位置后重试。',
+        stale_context: '技能位置已变化，请重试。',
         missing: '目录不存在。',
         blocked_path: '技能位置不在允许范围内，已阻止打开。',
         read_failed: '无法读取技能目录，请检查文件权限。',
@@ -1281,7 +1279,6 @@ const SHELL_COPY_BY_LOCALE = {
     paths: {
       workspace: '工作區資料夾',
       project: '專案目錄',
-      skills: 'Skills 資料夾',
     },
     errors: {
       messageRead: '任務內容暫時無法讀取，請稍後重試。',
@@ -1341,7 +1338,6 @@ const SHELL_COPY_BY_LOCALE = {
       openFailedTitle: (path: string) => `無法開啟${path}`,
       openPathLabels: {
         workspace: '工作區目錄',
-        skills: 'Skills 目錄',
         memory: '記憶目錄',
         project: '專案目錄',
       },
@@ -1471,7 +1467,7 @@ const SHELL_COPY_BY_LOCALE = {
       openLocationFallback: '無法開啟技能位置，請稍後重試。',
       openLocationFailures: {
         unknown_location: '這個技能位置無效。',
-        stale_context: '專案已切換，請重新整理技能位置後再試。',
+        stale_context: '技能位置已變更，請再試一次。',
         missing: '目錄不存在。',
         blocked_path: '技能位置不在允許範圍內，已阻止開啟。',
         read_failed: '無法讀取技能目錄，請檢查檔案權限。',
@@ -1801,7 +1797,6 @@ const SHELL_COPY_BY_LOCALE = {
     paths: {
       workspace: 'workspace',
       project: 'project folder',
-      skills: 'Skills folder',
     },
     errors: {
       messageRead: 'Task content is temporarily unavailable. Try again later.',
@@ -1863,7 +1858,6 @@ const SHELL_COPY_BY_LOCALE = {
       openFailedTitle: (path: string) => `Could not open ${path}`,
       openPathLabels: {
         workspace: 'workspace folder',
-        skills: 'Skills folder',
         memory: 'memory folder',
         project: 'project folder',
       },
@@ -1996,7 +1990,7 @@ const SHELL_COPY_BY_LOCALE = {
       openLocationFallback: 'The Skill location could not be opened. Try again later.',
       openLocationFailures: {
         unknown_location: 'This Skill location is invalid.',
-        stale_context: 'The project has changed. Refresh Skill locations and try again.',
+        stale_context: 'Skill locations have changed. Try again.',
         missing: 'The folder does not exist.',
         blocked_path: 'The Skill location is outside the allowed paths, so opening was blocked.',
         read_failed: 'The Skill folder could not be read. Check file permissions.',

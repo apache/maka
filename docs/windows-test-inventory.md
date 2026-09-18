@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 27 |
 | portable-candidate | 35 |
-| platform-contract | 37 |
+| platform-contract | 38 |
 
-Total Windows-excluded declarations: **99**
+Total Windows-excluded declarations: **100**
 
 ## Inventory
 
@@ -31,6 +31,7 @@ Total Windows-excluded declarations: **99**
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP published write explicitly reports out-of-sync when reconciliation ${phase} fails | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP cancelled install does not start a new connection during post-rename reconciliation | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
+| platform-contract | `apps/desktop/src/main/__tests__/runtime-host-skills-ipc-main.test.ts` reports create_failed without opening when a Skill directory parent is not writable | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory parent read-only' : process.getuid?.() === 0` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` imports the login PATH without importing application control variables | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |

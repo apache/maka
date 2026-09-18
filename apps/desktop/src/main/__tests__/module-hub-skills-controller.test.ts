@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { act, createElement } from "react";
 import type { SkillEntry, ToastApi } from "@maka/ui";
-import type { SkillLocationsSnapshot } from "../../shared/skill-locations.js";
+import type { OpenSkillLocationResult, SkillLocationsSnapshot } from "../../shared/skill-locations.js";
 import { cleanupFakeDom, installReactRenderer } from "./fake-dom.js";
 import {
   createFakeModuleHubServices,
@@ -177,7 +177,7 @@ test("Skills projections have independent same-Host generation and default-Host 
     },
   });
 
-  await act(async () => renderController(root, services, input(records)));
+  await act(async () => renderController(root, services, input(records, { clientPathsAccessible: true })));
   let first: Promise<void>;
   await act(async () => { first = controller().host.onRefreshSkills(); });
   await act(async () => controller().host.onRefreshSkills());
@@ -484,7 +484,7 @@ test("stale Skills refresh errors do not outlive a newer successful generation",
     },
   });
 
-  await act(async () => renderController(root, services, input(records)));
+  await act(async () => renderController(root, services, input(records, { clientPathsAccessible: true })));
   let staleRefresh: Promise<void>;
   await act(async () => {
     staleRefresh = controller().host.onRefreshSkills();
@@ -662,3 +662,153 @@ test("independent Skill locations stay actionable when the Project has no usable
     { ref: 'user:agents', contextId: 'user-context', createIfMissing: true },
   ]);
 });
+
+for (const reason of ['stale_context', 'missing'] as const) {
+  test(`refreshes Skill locations after ${reason} without retrying the open action`, async () => {
+    const { root } = installReactRenderer();
+    const records: ToastRecord[] = [];
+    const opened: unknown[] = [];
+    const defaults = createFakeModuleHubServices();
+    let locationReads = 0;
+    const services = createFakeModuleHubServices({
+      skills: {
+        ...defaults.skills,
+        listLocations: async () => {
+          locationReads += 1;
+          return skillLocations(locationReads === 1 ? 'project-a' : 'project-b');
+        },
+        openLocation: async (ref, options) => {
+          opened.push({ ref, ...options });
+          return { ok: false, reason };
+        },
+      },
+    });
+    await act(async () => renderController(root, services, input(records, { clientPathsAccessible: true })));
+    await act(async () => controller().refreshProjectSkills());
+    const openPreviousLocation = controller().host.onOpenSkillLocation;
+    assert.ok(openPreviousLocation);
+
+    await act(async () => openPreviousLocation('project:agents', false));
+    assert.equal(controller().host.skillLocations[0]?.path, '/project-b/.agents/skills');
+    assert.equal(locationReads, 2);
+    assert.deepEqual(opened, [{ ref: 'project:agents', contextId: 'project-a', createIfMissing: false }]);
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.kind, 'error');
+
+    await act(async () => openPreviousLocation('project:agents', true));
+    assert.equal(opened.length, 1);
+    await act(async () => controller().host.onOpenSkillLocation?.('project:agents', true));
+    assert.deepEqual(opened[1], { ref: 'project:agents', contextId: 'project-b', createIfMissing: true });
+  });
+}
+
+test('remote Skills refreshes skip location IPC and clear local directory actions', async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const defaults = createFakeModuleHubServices();
+  let locationReads = 0;
+  const services = createFakeModuleHubServices({
+    skills: {
+      ...defaults.skills,
+      list: async () => [skill('host-skill')],
+      listLocations: async () => {
+        locationReads += 1;
+        return skillLocations('local-project');
+      },
+    },
+  });
+  await act(async () => renderController(root, services, input(records)));
+  await act(async () => controller().refreshProjectSkills());
+  assert.equal(locationReads, 0);
+  assert.equal(controller().host.skills[0]?.id, 'host-skill');
+  assert.deepEqual(controller().host.skillLocations, []);
+  assert.equal(controller().host.onOpenSkillLocation, undefined);
+
+  await act(async () => renderController(root, services, input(records, { clientPathsAccessible: true })));
+  await act(async () => controller().refreshProjectSkills());
+  assert.equal(locationReads, 1);
+  assert.equal(controller().host.skillLocations[0]?.path, '/local-project/.agents/skills');
+  await act(async () => renderController(root, services, input(records)));
+  await act(async () => controller().host.onRefreshSkills());
+  assert.equal(locationReads, 1);
+  assert.deepEqual(controller().host.skillLocations, []);
+  assert.equal(controller().host.onOpenSkillLocation, undefined);
+  assert.deepEqual(records, []);
+});
+
+for (const transition of ['Host', 'surface', 'generation', 'capability'] as const) {
+  test(`a late Skill location failure cannot refresh after its ${transition} changes`, async () => {
+    const { root } = installReactRenderer();
+    const records: ToastRecord[] = [];
+    const defaults = createFakeModuleHubServices();
+    const failure = deferred<OpenSkillLocationResult>();
+    let defaultHost = { profileId: 'profile-a', hostId: 'host-a' };
+    let locationReads = 0;
+    const services = createFakeModuleHubServices({
+      runtimeHosts: { ...defaults.runtimeHosts, getDefault: async () => defaultHost },
+      skills: {
+        ...defaults.skills,
+        listLocations: async () => {
+          locationReads += 1;
+          return skillLocations(`project-${locationReads}`);
+        },
+        openLocation: async () => failure.promise,
+      },
+    });
+    const activeInput = input(records, { clientPathsAccessible: true });
+    await act(async () => renderController(root, services, activeInput));
+    await act(async () => controller().refreshProjectSkills());
+    let pending: Promise<void> | undefined;
+    await act(async () => { pending = controller().host.onOpenSkillLocation?.('project:agents', false); });
+    if (transition === 'Host') defaultHost = { profileId: 'profile-b', hostId: 'host-b' };
+    if (transition === 'surface') {
+      await act(async () => renderController(root, services, { ...activeInput, active: false }));
+    }
+    if (transition === 'capability') {
+      await act(async () => renderController(root, services, { ...activeInput, clientPathsAccessible: false }));
+    }
+    if (transition === 'generation') await act(async () => controller().host.onRefreshSkills());
+    const readsBeforeFailure = locationReads;
+    await act(async () => {
+      failure.resolve({ ok: false, reason: 'stale_context' });
+      await pending;
+    });
+    assert.equal(locationReads, readsBeforeFailure);
+    assert.deepEqual(records, []);
+  });
+}
+
+for (const stage of ['Host lookup', 'location response'] as const) {
+  test(`revoking local paths during ${stage} suppresses pending Skill locations`, async () => {
+    const { root } = installReactRenderer();
+    const records: ToastRecord[] = [];
+    const defaults = createFakeModuleHubServices();
+    const host = { profileId: 'profile-a', hostId: 'host-a' };
+    const hostRead = deferred<typeof host>();
+    const locationRead = deferred<SkillLocationsSnapshot>();
+    let locationReads = 0;
+    const services = createFakeModuleHubServices({
+      runtimeHosts: {
+        ...defaults.runtimeHosts,
+        getDefault: async () => stage === 'Host lookup' ? hostRead.promise : host,
+      },
+      skills: {
+        ...defaults.skills,
+        listLocations: async () => { locationReads += 1; return locationRead.promise; },
+      },
+    });
+    await act(async () => renderController(root, services, input(records, { clientPathsAccessible: true })));
+    let pending: Promise<void>;
+    await act(async () => { pending = controller().refreshProjectSkills(); });
+    await act(async () => renderController(root, services, input(records)));
+    await act(async () => {
+      hostRead.resolve(host);
+      locationRead.resolve(skillLocations('local-project'));
+      await pending;
+    });
+    assert.equal(locationReads, stage === 'Host lookup' ? 0 : 1);
+    assert.deepEqual(controller().host.skillLocations, []);
+    assert.equal(controller().host.onOpenSkillLocation, undefined);
+    assert.deepEqual(records, []);
+  });
+}

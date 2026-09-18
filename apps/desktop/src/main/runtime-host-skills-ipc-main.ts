@@ -20,6 +20,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { findSkillLocation } from '@maka/core/skill-locations';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import { resolveSkillDiscoveryPaths, scanSkillsWithDiagnostics } from '@maka/runtime/skills';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
@@ -57,7 +58,6 @@ import { resolveSkillOpenPath } from "./skill-open-path.js";
 import {
   listSkillLocations,
   resolveSkillLocation,
-  skillLocationScope,
   type SkillLocationContext,
 } from "./skill-locations.js";
 import type { CurrentProjectSelection } from './project-root-controller.js';
@@ -218,7 +218,7 @@ export function registerRuntimeHostSkillsIpc(
       if (deps.allowLocalPaths === false) {
         return { ok: false as const, reason: "blocked_path" as const };
       }
-      const scope = skillLocationScope(ref);
+      const scope = findSkillLocation(ref)?.scope;
       if (!scope) return { ok: false, reason: 'unknown_location' };
       const context = await readSkillLocationContext(deps, scope === 'project');
       const contextId = await skillLocationContextId(context, scope, locationContextSeed);

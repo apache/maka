@@ -290,22 +290,26 @@ export function useSkillsController(
     async (options: RefreshOptions = {}): Promise<void> => {
       const generation = ++generationsRef.current.skillLocations;
       setSkillLocationSnapshot(null);
+      const isCurrent = () =>
+        mountedRef.current &&
+        inputRef.current.clientPathsAccessible &&
+        generation === generationsRef.current.skillLocations;
+      if (!isCurrent()) return;
       const copy = getShellCopy(inputRef.current.uiLocale).skillActions;
       try {
         const next = await runOnDefaultRuntimeHost(
           services.runtimeHosts,
-          (host) => services.skills.listLocations(host),
+          async (host) => isCurrent() ? services.skills.listLocations(host) : null,
         );
+        if (!next.value || !isCurrent()) return;
+        const snapshot = next.value;
         await runIfDefaultRuntimeHostCurrent(
           services.runtimeHosts,
           next.host,
           () => {
-            if (
-              mountedRef.current &&
-              generation === generationsRef.current.skillLocations
-            ) {
+            if (isCurrent()) {
               setSkillLocationSnapshot({
-                ...next.value,
+                ...snapshot,
                 host: next.host,
                 generation,
               });
@@ -313,18 +317,9 @@ export function useSkillsController(
           },
         );
       } catch (error) {
-        if (
-          !mountedRef.current ||
-          generation !== generationsRef.current.skillLocations
-        ) {
-          return;
-        }
+        if (!isCurrent()) return;
         const shouldReport = await shouldReportRefreshError(options, error);
-        if (
-          mountedRef.current &&
-          generation === generationsRef.current.skillLocations &&
-          shouldReport
-        ) {
+        if (isCurrent() && shouldReport) {
           reportRuntimeHostError(
             copy.refreshLocationsFailedTitle,
             copy.refreshLocationsFallback,
@@ -890,6 +885,9 @@ export function useSkillsController(
               undefined,
               next.diagnosticTarget,
             );
+            if (next.value.reason === 'stale_context' || next.value.reason === 'missing') {
+              await refreshSkillLocations({ shouldShowError: isSkillsSurfaceActive });
+            }
           }
           return;
         }

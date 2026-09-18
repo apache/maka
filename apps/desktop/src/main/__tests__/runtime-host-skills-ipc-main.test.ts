@@ -18,7 +18,7 @@
  */
 
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, realpath, rename, rm, symlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, realpath, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -26,7 +26,7 @@ import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { createProjectCatalog } from "@maka/storage/project-catalog";
 import { HostProjectMembershipGate } from "../../../../../packages/runtime-host/dist/server/project-membership-gate.js";
 import { HostWorkspaceResolver } from "../../../../../packages/runtime-host/dist/server/workspace-resolver.js";
-import type { SkillLocationsSnapshot } from "../../shared/skill-locations.js";
+import type { OpenSkillLocationResult, SkillLocationsSnapshot } from "../../shared/skill-locations.js";
 import type { IpcHandler } from "../ipc-reconnect-policy.js";
 import { createProjectManagementService } from "../project-management-service.js";
 import type { CurrentProjectSelection } from "../project-root-controller.js";
@@ -409,6 +409,12 @@ test("Skill location contexts reject another scope, a remounted root, and a repl
     const host = register();
     const initial = await host.list();
     assert.deepEqual(initial.locations.map(({ ref }) => ref), ['workspace:legacy', 'user:maka', 'user:agents']);
+    const canonicalFirstRoot = await realpath(firstRoot);
+    assert.deepEqual(initial.locations.map(({ path, status }) => ({ path, status })), [
+      { path: join(canonicalFirstRoot, 'skills'), status: 'missing' },
+      { path: join(canonicalFirstRoot, '.maka', 'skills'), status: 'missing' },
+      { path: join(canonicalFirstRoot, '.agents', 'skills'), status: 'missing' },
+    ]);
     assert.deepEqual(await host.open('user:agents', initial.contextIds.workspace), { ok: false, reason: 'stale_context' });
     assert.deepEqual(await host.open('workspace:legacy', initial.contextIds.user), { ok: false, reason: 'stale_context' });
     assert.deepEqual(await host.open('../outside', initial.contextIds.user), { ok: false, reason: 'unknown_location' });
@@ -432,7 +438,121 @@ test("Skill location contexts reject another scope, a remounted root, and a repl
     assert.deepEqual(await replacement.open('workspace:legacy', current.contextIds.workspace), { ok: true });
     assert.deepEqual(await replacement.open('user:agents', current.contextIds.user), { ok: true });
     assert.deepEqual(opened, [await realpath(join(secondRoot, 'skills')), await realpath(join(secondRoot, '.agents', 'skills'))]);
+    const available = await replacement.list();
+    assert.deepEqual(
+      available.locations.filter(({ status }) => status === 'available').map(({ path }) => path),
+      opened,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('reports open_failed when the native shell cannot open a Skill directory', async () => {
+  await withLocationIpc(async ({ workspaceRoot, list, open, opened }) => {
+    await mkdir(join(workspaceRoot, 'skills'));
+    const snapshot = await list();
+    assert.deepEqual(await open('workspace:legacy', {
+      contextId: snapshot.contextIds.workspace,
+      createIfMissing: false,
+    }), { ok: false, reason: 'open_failed' });
+    assert.deepEqual(opened, [await realpath(join(workspaceRoot, 'skills'))]);
+  }, 'The file manager could not open the directory');
+});
+
+test('reports create_failed without opening when a Skill directory parent is not writable', {
+  skip: process.platform === 'win32'
+    ? 'POSIX permissions are required to make the Skill directory parent read-only'
+    : process.getuid?.() === 0,
+}, async () => {
+  await withLocationIpc(async ({ workspaceRoot, list, open, opened }) => {
+    const snapshot = await list();
+    await chmod(workspaceRoot, 0o500);
+    try {
+      assert.deepEqual(await open('workspace:legacy', {
+        contextId: snapshot.contextIds.workspace,
+        createIfMissing: true,
+      }), { ok: false, reason: 'create_failed' });
+      assert.deepEqual(opened, []);
+      const current = await list();
+      assert.equal(current.locations.find(({ ref }) => ref === 'workspace:legacy')?.status, 'missing');
+    } finally {
+      await chmod(workspaceRoot, 0o700);
+    }
+  });
+});
+
+test('blocks leaf-symlink Skill directories at IPC even when their target is contained', async () => {
+  await withLocationIpc(async ({ root, workspaceRoot, homeDirectory, list, open, opened }) => {
+    const contained = join(workspaceRoot, 'contained');
+    const outside = join(root, 'outside');
+    await Promise.all([contained, outside, join(homeDirectory, '.agents')].map((path) => mkdir(path)));
+    await symlink(contained, join(workspaceRoot, 'skills'), 'junction');
+    await symlink(outside, join(homeDirectory, '.agents', 'skills'), 'junction');
+    const snapshot = await list();
+    for (const [ref, scope] of [['workspace:legacy', 'workspace'], ['user:agents', 'user']] as const) {
+      assert.equal(snapshot.locations.find((location) => location.ref === ref)?.status, 'blocked_path');
+      for (const createIfMissing of [false, true]) {
+        assert.deepEqual(await open(ref, {
+          contextId: snapshot.contextIds[scope],
+          createIfMissing,
+        }), { ok: false, reason: 'blocked_path' });
+      }
+    }
+    assert.deepEqual(opened, []);
+  });
+});
+
+async function withLocationIpc(
+  run: (fixture: {
+    root: string;
+    workspaceRoot: string;
+    homeDirectory: string;
+    opened: string[];
+    list: () => Promise<SkillLocationsSnapshot>;
+    open: (
+      ref: string,
+      options: { contextId?: string; createIfMissing?: boolean },
+    ) => Promise<OpenSkillLocationResult>;
+  }) => Promise<void>,
+  openPathError = '',
+): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), 'maka-skill-location-ipc-'));
+  const workspaceRoot = join(root, 'workspace');
+  const homeDirectory = join(root, 'home');
+  const handlers = new Map<string, IpcHandler>();
+  const opened: string[] = [];
+  try {
+    await Promise.all([workspaceRoot, homeDirectory].map((path) => mkdir(path)));
+    registerRuntimeHostSkillsIpc({
+      ipcMain: {
+        handle: (channel, listener) => handlers.set(channel, listener),
+        handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
+      },
+      client: new Proxy({}, { get() { throw new Error('Location operations must not read the Host catalog'); } }) as DesktopRuntimeHostClient,
+      workspaceRoot,
+      homeDirectory,
+      mainWindowController: {} as never,
+      getSelectedWorkspaceTarget: async () => undefined,
+      getSelectedProject: async () => { throw new Error('No Project selected'); },
+      resolveNewSessionWorkspaceTarget: async () => undefined,
+      getDefaultPermissionMode: async () => 'ask',
+      resolveLocale: async () => 'en',
+      openPath: async (path) => { opened.push(path); return openPathError; },
+    });
+    const list = handlers.get('skills:locations:list');
+    const open = handlers.get('skills:locations:open');
+    assert.ok(list);
+    assert.ok(open);
+    await run({
+      root,
+      workspaceRoot,
+      homeDirectory,
+      opened,
+      list: () => list({} as never),
+      open: (ref, options) => open({} as never, ref, options),
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
