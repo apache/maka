@@ -364,44 +364,56 @@ export class RuntimeHostSessionSubscriptionOwner {
     try {
       for await (const frame of attempt.handle.events) {
         if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
-        if (frame.kind === "subscription.closed") {
-          throw subscriptionClosedError(frame.reason);
-        }
-        if (attempt.phase === 'preparing') {
-          // The Host holds frames until `ready()`, so one arriving here is a
-          // broken contract rather than a consumer falling behind.
-          throw new Error('Runtime Host sent a Session frame before the subscriber was ready');
-        }
-        if (attempt.phase === 'retiring') {
-          const frameBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
-          if (
-            attempt.pendingFrames.length >= MAX_PENDING_FRAMES ||
-            attempt.pendingFrameBytes + frameBytes > MAX_PENDING_FRAME_BYTES
-          ) {
-            throw new RuntimeHostSubscriptionError(
-              'slow_consumer',
-              'Runtime Host Session transcript could not keep up with live events',
-            );
+        try {
+          if (frame.kind === "subscription.closed") {
+            throw subscriptionClosedError(frame.reason);
           }
-          attempt.pendingFrames.push(frame);
-          attempt.pendingFrameBytes += frameBytes;
-        } else {
-          await this.#deps.acceptFrame(frame);
+          if (attempt.phase === 'preparing') {
+            // The Host holds frames until `ready()`, so one arriving here is a
+            // broken contract rather than a consumer falling behind.
+            throw new Error('Runtime Host sent a Session frame before the subscriber was ready');
+          }
+          if (attempt.phase === 'retiring') {
+            const frameBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
+            if (
+              attempt.pendingFrames.length >= MAX_PENDING_FRAMES ||
+              attempt.pendingFrameBytes + frameBytes > MAX_PENDING_FRAME_BYTES
+            ) {
+              throw new RuntimeHostSubscriptionError(
+                'slow_consumer',
+                'Runtime Host Session transcript could not keep up with live events',
+              );
+            }
+            attempt.pendingFrames.push(frame);
+            attempt.pendingFrameBytes += frameBytes;
+          } else {
+            await this.#deps.acceptFrame(frame);
+          }
+        } catch (error) {
+          // Leaving the iterator awaits its return() — the subscription's
+          // close handshake — so the failure has to be on its way to teardown
+          // before this loop exits, not after.
+          this.#failAttempt(attempt, error);
+          return;
         }
       }
       if (!this.#closed) {
         throw new Error("Runtime Host Session subscription ended unexpectedly");
       }
     } catch (error) {
-      if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
-      const failure = asError(error);
-      if (attempt.phase !== 'active') {
-        attempt.fail(failure);
-      } else if (isRecoverableSubscriptionFailure(failure)) {
-        this.#replaceReadyTask(this.#establish(attempt, failure));
-      } else {
-        this.#deps.terminalFailure(failure);
-      }
+      this.#failAttempt(attempt, error);
+    }
+  }
+
+  #failAttempt(attempt: SubscriptionAttempt, error: unknown): void {
+    if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
+    const failure = asError(error);
+    if (attempt.phase !== 'active') {
+      attempt.fail(failure);
+    } else if (isRecoverableSubscriptionFailure(failure)) {
+      this.#replaceReadyTask(this.#establish(attempt, failure));
+    } else {
+      this.#deps.terminalFailure(failure);
     }
   }
 
