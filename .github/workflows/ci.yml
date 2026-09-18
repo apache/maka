@@ -237,6 +237,13 @@ jobs:
         if: steps.plan.outputs.code == 'true'
         run: node --test scripts/biome-staged-check.test.mjs
 
+      # @maka/runtime refuses to build against unpatched dependencies, so the
+      # contract that recognizes a missing patch-package or a patch that no
+      # longer applies is verified here, where patch-package is installed.
+      - name: Test dependency patch application
+        if: steps.plan.outputs.code == 'true'
+        run: node --test --test-concurrency=1 scripts/apply-dependency-patches.test.mjs
+
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter
       # dependency is installed, matching the source-candidate workflow.

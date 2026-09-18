@@ -55,6 +55,9 @@ npm run build               # 按依赖顺序构建全部 workspace
 npm --workspace @maka/core run test:dist
 ```
 
+根目录安装会在 `postinstall` 阶段应用 [`patches/`](./patches)，`@maka/runtime` 构建前会再次应用这些补丁。
+如果缺少 patch-package，或某个补丁无法应用，构建会停止并提示从仓库根目录运行 `npm ci`。
+
 ## 开发
 
 ```sh

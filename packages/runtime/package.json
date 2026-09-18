@@ -145,7 +145,7 @@
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo src/telemetry/model-pricing.generated.ts",
-    "prebuild": "npm --prefix ../.. run sync:model-metadata",
+    "prebuild": "node ../../scripts/apply-dependency-patches.mjs --strict && npm --prefix ../.. run sync:model-metadata",
     "build": "tsc -p tsconfig.json && node scripts/build-filesystem-worker.mjs",
     "pretypecheck": "npm --prefix ../.. run sync:model-metadata",
     "typecheck": "tsc -p tsconfig.json --noEmit",
