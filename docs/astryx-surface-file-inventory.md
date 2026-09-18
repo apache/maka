@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.1` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 282 files — blocker 0, reimplementation 0, polish 4, aligned 278.
+**Totals:** 283 files — blocker 0, reimplementation 0, polish 5, aligned 278.
 
 ## Exclusions (explicit)
 
@@ -112,8 +112,9 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, Collapsible, CollapsibleGroup, EmptyState, HStack, Section, Skeleton, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, CollapsibleGroup, EmptyState, HStack, Section, Skeleton) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx` | shell-chrome-or-panel | Banner | aligned — uses Astryx (Banner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx` | shell-chrome-or-panel | Banner, EmptyState | aligned — uses Astryx (Banner, EmptyState) | aligned |
+| `apps/desktop/src/renderer/features/workbar/ui/recent-turn-overlay.tsx` | shell-chrome-or-panel | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx` | shell-chrome-or-panel | Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, Text, VStack | aligned — uses Astryx (Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter) | aligned |
-| `apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx` | shell-chrome-or-panel | Card, ResizeHandle, Spinner | aligned — uses Astryx (Card, ResizeHandle, Spinner) | aligned |
+| `apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx` | shell-chrome-or-panel | Button, Card, ResizeHandle, Spinner | aligned — uses Astryx (Button, Card, ResizeHandle, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx` | shell-chrome-or-panel | Badge, Button, Card, Heading, Icon, Kbd, List, ListItem, Section, Spinner, Tab, TabList | aligned — uses Astryx (Badge, Button, Card, Heading, Icon, Kbd, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/control-overlay.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/cursor.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -240,7 +241,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/workbar/browser.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/inspector.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/review.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/workbar/shell.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `apps/desktop/src/renderer/styles/workbar/shell.css` | shell-chrome-or-panel | n/a (css) | off-rhythm control height 40px (Design size) | polish |
 | `apps/desktop/src/renderer/styles/workbar/side-chat.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/terminal.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workhub.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |

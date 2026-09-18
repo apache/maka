@@ -19,6 +19,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, FolderOpen, MessageSquare, Minus, Terminal } from '@maka/ui/icons';
+import { Button } from '@astryxdesign/core/Button';
 import { MarkdownBody, applyLiveTurnBufferEvent, type LiveTurnBuffer, type LiveTurnProjection, useUiLocale } from '@maka/ui';
 import { redactSecrets } from '@maka/core/redaction';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
@@ -177,6 +178,7 @@ export function RecentTurnOverlay(props: {
   const elapsed = startedAt && now >= startedAt && now - startedAt < 24 * 60 * 60 * 1_000
     ? Math.floor((now - startedAt) / 1_000) : undefined;
   const label = running ? elapsed === undefined ? copy.processing : copy.processingFor(elapsed) : copy.recent;
+  const toggleLabel = props.minimized ? `${label} · ${copy.restore}` : label;
   const liveItems = running ? visibleLiveItems(activeLive) : undefined;
   const settledText = settledReply?.revision === revision &&
     (!lastLiveTurnId || settledReply.turnId === lastLiveTurnId) ? settledReply.text : undefined;
@@ -189,21 +191,21 @@ export function RecentTurnOverlay(props: {
 
   return <div ref={rootRef} className="maka-recent-turn-overlay" data-expanded={!props.minimized && expanded || undefined}>
     <div className="maka-recent-turn-header">
-      <button type="button" className="maka-recent-turn-toggle" aria-expanded={props.minimized ? undefined : expanded}
+      <Button variant="ghost" size="sm" label={toggleLabel}
+        className="maka-recent-turn-toggle" aria-expanded={props.minimized ? undefined : expanded}
         aria-controls={props.minimized ? undefined : 'maka-focused-recent-turn-content'}
         onClick={() => {
           if (props.minimized) { props.onRestore?.(); return; }
           followRef.current = true;
           setExpanded((value) => !value);
         }}>
-        <span className="maka-recent-turn-label">{props.minimized ? `${label} · ${copy.restore}` : label}</span>
+        <span className="maka-recent-turn-label">{toggleLabel}</span>
         {props.minimized ? <MessageSquare size={16} aria-hidden="true" />
           : expanded ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
-      </button>
-      {!props.minimized && props.onMinimize && <button type="button" className="maka-recent-turn-minimize"
-        aria-label={copy.minimize} title={copy.minimize} onClick={props.onMinimize}>
-        <Minus size={16} aria-hidden="true" />
-      </button>}
+      </Button>
+      {!props.minimized && props.onMinimize && <Button variant="ghost" size="sm" isIconOnly
+        className="maka-recent-turn-minimize" label={copy.minimize} onClick={props.onMinimize}
+        icon={<Minus size={16} aria-hidden="true" />} />}
     </div>
     {expanded && !props.minimized && <div id="maka-focused-recent-turn-content" className="maka-recent-turn-content" ref={contentRef}
       onScroll={(event) => {
