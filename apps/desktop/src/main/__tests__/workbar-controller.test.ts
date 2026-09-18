@@ -1096,7 +1096,7 @@ describe('useWorkbarController', () => {
 
     await act(async () => renderController(root, services, {
       ...input(undefined, createFakeToastApi(), [parent]),
-      available: false,
+      available: true,
       layoutSessionId: child.id,
     }));
     assert.equal(
@@ -1115,6 +1115,20 @@ describe('useWorkbarController', () => {
     await act(async () => renderController(root, services, input(child, createFakeToastApi(), [parent, child])));
     assert.equal(controller().host.activeId, child.id);
     assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+  });
+
+  it('does not mount the retained Side Chat outside the Session workspace', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const services = createFakeWorkbarServices();
+    await act(async () => renderController(root, services, input(parent, createFakeToastApi(), [parent])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    await act(async () => renderController(root, services, {
+      ...input(undefined, createFakeToastApi(), [parent]),
+      available: false,
+      layoutSessionId: 'pending-child',
+    }));
+    assert.equal(controller().host.activeId, undefined);
   });
 
   it('cleans Side Chat when its source is deleted during a pending navigation', async () => {

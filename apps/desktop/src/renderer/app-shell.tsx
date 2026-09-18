@@ -1303,7 +1303,7 @@ function AppShellContent({
   );
   const workbar = useWorkbarController({
     workHub: { enabled: workHubEnabled, active: workHubActive },
-    available: sessionsSelected && (workHubActive || Boolean(activeHostSession)),
+    available: sessionsSelected,
     layoutSessionId: activeId,
     activeSession: activeHostSession,
     sessions,

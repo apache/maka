@@ -949,7 +949,7 @@ export function useWorkbarController(
     },
     host: {
       workspace: workspace,
-      activeId: input.available ? activeSessionId : retainedFamilySessionId,
+      activeId: input.available ? activeSessionId ?? retainedFamilySessionId : undefined,
       projectId: input.projectId,
       projectAliases: input.projectAliases,
       rightCollapsed: layout.workbarCollapsed,
