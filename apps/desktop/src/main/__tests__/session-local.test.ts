@@ -358,6 +358,60 @@ for (const [lateResult, reuseClient] of [
   });
 }
 
+for (const staleResult of ['running', 'removed', 'failed'] as const) {
+  test(`an invalidated Owner catalog rereads after a same-connection ${staleResult} response`, async (t) => {
+    const db = await database(t);
+    const stale = deferred<SessionCatalogProjection[]>();
+    const current = deferred<SessionCatalogProjection[]>();
+    const failure = new Error('superseded catalog unavailable');
+    const errors: unknown[] = [];
+    let reads = 0;
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+      client: { ...client('epoch'), listSessions: () => {
+        reads += 1;
+        if (reads === 1) return Promise.resolve([swarmCatalogSession()]);
+        return reads === 2 ? stale.promise : current.promise;
+      } },
+    };
+    const service = new DesktopSessionLocalService(db.store, {
+      targets: () => [target], changed() {}, onError: (error) => errors.push(error),
+    });
+    db.beforeClose.push(() => service.close());
+    service.catalog();
+    await waitFor(() => db.store.sessions('authority').length === 1);
+    await nextTurn();
+    service.changed(target.scope);
+    service.catalog();
+    assert.equal(reads, 2);
+    const revision = db.store.revision;
+
+    // The Host finishes while this same connection still holds an older read.
+    service.changed(target.scope);
+    service.changed(target.scope);
+    service.catalog();
+    assert.equal(db.store.revision, revision, 'Host invalidations do not mutate the local store');
+    assert.equal(reads, 2, 'in-flight invalidations coalesce');
+    if (staleResult === 'failed') stale.reject(failure);
+    else stale.resolve(staleResult === 'removed' ? [] : [swarmCatalogSession()]);
+
+    // No renderer refresh or new Host event is needed to start the trailing read.
+    await waitFor(() => reads === 3);
+    assert.equal(db.store.revision, revision, 'the superseded catalog must not be committed');
+    assert.equal(db.store.sessions('authority').length, 1);
+    assert.equal(service.catalog()[0]?.authoritative, false);
+    assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, undefined);
+    current.resolve([swarmCatalogSession('idle')]);
+    await waitFor(() => db.store.sessions('authority')[0]?.backgroundActivity === 'idle');
+    await nextTurn();
+    const live = service.catalog()[0]!;
+    assert.equal(live.authoritative, true);
+    assert.equal(live.sessions[0]?.backgroundActivity, 'idle');
+    assert.equal(reads, 3, 'one trailing read consumes both invalidations');
+    assert.deepEqual(errors, staleResult === 'failed' ? [failure] : []);
+  });
+}
+
 test('failed Owner recovery remains cached and retries without disturbing pending local work', async (t) => {
   const db = await database(t);
   const errors: unknown[] = [];
