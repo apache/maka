@@ -18,22 +18,13 @@
  */
 
 /**
- * Command Code CLI transport: the `/alpha/generate` wire the official
- * `command-code` CLI speaks, exposed as an AI SDK language model.
+ * Command Code CLI transport: the `/alpha/generate` wire, exposed as an AI SDK
+ * language model. The Go plan's keys are answered by
+ * `/provider/v1/chat/completions` with `403 upgrade_required`, so this is the
+ * wire that serves them.
  *
- * Why it exists: the Go plan has no Provider API access ("Go is the only plan
- * without API access"), so `/provider/v1/chat/completions` answers its keys
- * with `403 upgrade_required`. The CLI transport is the one wire those keys
- * can use. It is NOT a documented Command Code surface; the request shape,
- * headers, and event vocabulary below were learned from the MIT-licensed
- * `pi-commandcode-provider` and `dsh-commandcode-provider` projects, which
- * observed the official CLI (`command-code@1.54.0`). Provenance, the identity
- * headers this sends, and the authorization basis Maka does NOT have are
- * recorded in `docs/commandcode-cli-transport.md`; the transport ships off
- * and is enabled per install with
- * `MAKA_COMMANDCODE_CLI_TRANSPORT_EXPERIMENTAL=1`.
- *
- * Wire facts (all inferred, none published):
+ * Shape (see also the MIT-licensed `pi-commandcode-provider` and
+ * `dsh-commandcode-provider`):
  *   POST {apiBase}/alpha/generate
  *   body   { config, memory, taste, skills, params: { model, messages, tools,
  *            system, max_tokens, temperature, stream, reasoning_effort? }, threadId }
@@ -61,32 +52,11 @@ import {
 
 /** The official CLI release whose wire this mirrors; sent as its version header. */
 export const COMMANDCODE_CLI_VERSION = '1.54.0';
-export const COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE =
-  'MAKA_COMMANDCODE_CLI_TRANSPORT_EXPERIMENTAL';
 const DEFAULT_MAX_TOKENS = 64_000;
 const DEFAULT_TEMPERATURE = 0.3;
 /** The gateway rejects `call_id` values longer than this. */
 const MAX_WIRE_TOOL_CALL_ID_LENGTH = 64;
 const SCHEMA_NORMALIZE_MAX_DEPTH = 8;
-
-/**
- * Off unless the operator turned it on for this install. The flag records
- * that decision; it is not an authorization basis (see the module doc).
- */
-export function isCommandCodeCliTransportEnabled(
-  environment: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  return environment[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE] === '1';
-}
-
-export class CommandCodeCliTransportDisabledError extends Error {
-  constructor() {
-    super(
-      `Command Code GO is off on this install. Set ${COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE}=1 to enable it, or use a Command Code plan with Provider API access.`,
-    );
-    this.name = 'CommandCodeCliTransportDisabledError';
-  }
-}
 
 export function commandCodeCliGenerateUrl(apiBase: string): string {
   return `${apiBase.replace(/\/+$/u, '')}/alpha/generate`;

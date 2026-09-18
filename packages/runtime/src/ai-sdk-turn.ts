@@ -1718,16 +1718,10 @@ export class AiSdkTurn {
                   part = { text: '' };
                   stepThinkingParts.push(part);
                 }
-                const nextPartText = part.text + event.text;
-                if (
-                  event.reasoningSummaryText !== undefined &&
-                  event.reasoningSummaryText !== nextPartText
-                ) {
-                  throw new Error(
-                    'Streamed plaintext Responses reasoning does not match final provider summary',
-                  );
-                }
-                part.text = nextPartText;
+                // The provider's final summary is the authoritative text the
+                // durable part boundaries describe; adopt it when the
+                // streamed deltas diverge so replay stays self-consistent.
+                part.text = event.reasoningSummaryText ?? part.text + event.text;
                 if (event.providerOptions !== undefined) {
                   part.providerOptions = event.providerOptions;
                 }

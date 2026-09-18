@@ -174,8 +174,7 @@ describe('real Host Runtime Resource process lifecycle', {
       { sessionId: SESSION_ID, ref: background.ref },
       secondConnection,
     );
-    assert.equal(stopped.ok, true);
-    assert.equal(stopped.ok && stopped.result.resource.status, 'completed');
+    assert.deepEqual(stopped.ok && stopped.result, {});
 
     const queried = await coordinator.handlers['runtime.resource.query'](
       { kind: 'get', sessionId: SESSION_ID, ref: background.ref },
@@ -253,6 +252,53 @@ describe('real Host Runtime Resource process lifecycle', {
     assert.equal(drainRequests, 0);
   });
 
+  test('treats acquire during PTY integrity failure as a conflict without draining Host', async () => {
+    // A DA flood makes the emulator emit protocol replies past the 1MB
+    // boundary, which fails the collector and requests termination; the TERM
+    // trap keeps the process alive so acquire lands inside the kill grace.
+    const background = await coordinator.runBackgroundBash({
+      ...bashInput(
+        'trap "" TERM; while :; do printf "\\033[c%.0s" {1..200}; done',
+        'call.integrity/1',
+      ),
+      pty: true,
+    });
+    assert.equal(background.status, 'running');
+
+    // Replies accrue monotonically; under CPU contention the 1MB trip can take
+    // a while, so this probe gets a wide margin.
+    await waitUntil(async () => {
+      try {
+        await manager.writeStdin({
+          sessionId: SESSION_ID,
+          ref: background.ref,
+          input: 'x',
+        });
+        return false;
+      } catch (error) {
+        if (error instanceof ShellRunPtyControlClosedError) return true;
+        throw error;
+      }
+    }, 60_000);
+
+    const acquired = await coordinator.handlers['runtime.resource.controller.acquire'](
+      {
+        sessionId: SESSION_ID,
+        ref: background.ref,
+        controllerId: 'controller-integrity',
+      },
+      connection('connection-integrity'),
+    );
+    assert.equal(acquired.ok, false);
+    assert.equal(!acquired.ok && acquired.error.code, 'operation_conflict');
+    assert.equal(drainRequests, 0);
+
+    const terminal = await waitForTerminal(background.ref);
+    assert.equal(terminal.status, 'failed');
+    assert.equal(activeResidencies, 0);
+    assert.equal(drainRequests, 0);
+  });
+
   test('drain terminates a real process and synchronously rejects new startup', async () => {
     const background = await coordinator.runBackgroundBash(bashInput('sleep 60', 'shutdown-tool'));
     assert.equal(background.status, 'running');
@@ -281,9 +327,9 @@ describe('real Host Runtime Resource process lifecycle', {
     }
   }
 
-  async function waitUntil(check: () => Promise<boolean>): Promise<void> {
+  async function waitUntil(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
     await waitFor(check, {
-      timeoutMs: 10_000,
+      timeoutMs,
       pollMs: 10,
       message: 'Timed out waiting for PTY control to close',
     });
