@@ -125,6 +125,12 @@ export interface QuoteRef {
   text: string;
   /** Optional label shown on the chip (e.g. the source turn's role/preview). */
   label?: string;
+  /**
+   * The user's own note about why they quoted this. Model-facing, so a "look at
+   * this" quote carries its intent instead of leaving the model to guess what
+   * the excerpt is for.
+   */
+  comment?: string;
   /** Provenance: the transcript turn the excerpt was selected from. */
   sourceTurnId?: string;
   /** Source Session identity for a read-only cross-session snapshot. */
@@ -136,6 +142,14 @@ export interface QuoteRef {
   /** Whether the source snapshot was bounded before it was attached. */
   sourceTruncated?: boolean;
 }
+
+/**
+ * Cap for {@link QuoteRef.comment}. A note about a quote carries intent, not
+ * content: long prose belongs in the message text, which has its own limit.
+ * The single authority for the IPC normalizer, the Runtime Host protocol and
+ * the composer's staging cap.
+ */
+export const QUOTE_COMMENT_MAX_LENGTH = 1000;
 
 /**
  * Frozen display metadata for one token embedded in a sent message's visible
@@ -207,6 +221,7 @@ const QUOTE_REF_SHAPE = defineObjectShape<QuoteRef>()(
   ['text'],
   [
     'label',
+    'comment',
     'sourceTurnId',
     'sourceSessionId',
     'sourceSessionName',
