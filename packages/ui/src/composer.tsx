@@ -273,6 +273,8 @@ export const Composer = forwardRef<
      * Hosts use this for configuration failures that the model picker can fix.
      */
     sendBlocked?: boolean;
+    /** Explain a host-owned send gate without adding a second visible notice. */
+    sendBlockedReason?: string;
     hidden?: boolean;
     /**
      * When true, a turn is in flight — live output OR the pre-first-token wait.
@@ -1575,9 +1577,13 @@ export const Composer = forwardRef<
     importActionBusy ||
     (!text.trim() && !hasStagedContext) ||
     noModelConnection;
-  // The disabled Send is explanatory only in the no-model dead-end; other
-  // disabled reasons (empty draft, in-flight import) keep the neutral label.
-  const sendTitle = noModelConnection && !props.disabled ? copy.noModelSendTitle : copy.sendLabel;
+  // Hosts can explain a disabled Send without adding a second visible notice;
+  // other disabled reasons (empty draft, in-flight import) keep the neutral label.
+  const sendTitle = props.sendBlocked && props.sendBlockedReason?.trim()
+    ? props.sendBlockedReason
+    : noModelConnection && !props.disabled
+      ? copy.noModelSendTitle
+      : copy.sendLabel;
   // One slot, one button, two states — Astryx's send/stop toggle. Mid-turn an
   // empty draft has nothing to submit, so the slot is Stop; the moment there is
   // a draft, handing it over is the only meaningful action there and the button

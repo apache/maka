@@ -173,6 +173,8 @@ export function createDesktopWorkHubServices(
     },
     modelChoices: async (sessionId) =>
       (await bridge.connections.getSnapshot(sessionId)).chatModelChoices,
+    setDefaultModel: ({ llmConnectionSlug, model }) =>
+      bridge.connections.setDefaultModel({ slug: llmConnectionSlug, model }),
     attachments: bridge.attachments,
     readAttachmentBytes: bridge.attachments.readBytes,
     prepareAttachments: async (sessionId, items) => {
