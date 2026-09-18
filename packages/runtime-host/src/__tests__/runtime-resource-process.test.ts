@@ -270,21 +270,13 @@ describe('real Host Runtime Resource process lifecycle', {
     });
     assert.equal(background.status, 'running');
 
-    // Replies accrue monotonically; under CPU contention the 1MB trip can take
-    // a while, so this probe gets a wide margin.
-    await waitUntil(async () => {
-      try {
-        await manager.writeStdin({
-          sessionId: SESSION_ID,
-          ref: background.ref,
-          input: 'x',
-        });
-        return false;
-      } catch (error) {
-        if (error instanceof ShellRunPtyControlClosedError) return true;
-        throw error;
-      }
-    }, 60_000);
+    // The snapshot goes null the moment the collector fails and stays null
+    // through teardown — the same predicate acquire consults. A writeStdin
+    // probe is not equivalent: a control write queued behind the parse chain
+    // is parked through the whole teardown window and then resolves with an
+    // ordinary failed operation, so the loop never observes the closed
+    // control even though it closed.
+    await waitUntil(() => manager.getLivePtySnapshot(SESSION_ID, background.ref) === null, 60_000);
 
     const acquired = await coordinator.handlers['runtime.resource.controller.acquire'](
       {
@@ -332,7 +324,10 @@ describe('real Host Runtime Resource process lifecycle', {
     }
   }
 
-  async function waitUntil(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  async function waitUntil(
+    check: () => boolean | Promise<boolean>,
+    timeoutMs = 10_000,
+  ): Promise<void> {
     await waitFor(check, {
       timeoutMs,
       pollMs: 10,
