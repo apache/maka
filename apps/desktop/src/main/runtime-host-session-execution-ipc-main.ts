@@ -275,7 +275,6 @@ export function registerRuntimeHostSessionObservationIpc(
         ),
       );
     },
-    },
   );
   ipcMain.handle(
     'sessions:transcript:load-earlier',
