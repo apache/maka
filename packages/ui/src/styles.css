@@ -205,7 +205,8 @@
    on (the composer's Popover, the transcript's annotation layer), so the same
    note reads the same wherever it is written. */
 .maka-quote-comment-panel { width: 320px; max-width: 100%; }
-.maka-quote-comment-panel-excerpt { max-height: 96px; overflow-y: auto; }
+.maka-quote-comment-panel-source { align-items: flex-start; color: var(--muted-foreground); }
+.maka-quote-comment-panel-source > svg { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; margin-top: 2px; }
 
 .maka-session-todo-empty {
   margin: 0;

@@ -19,13 +19,13 @@
 
 import { useState, type KeyboardEvent } from 'react';
 import {
-  Blockquote,
   Button as UiButton,
   HStack,
   Text,
   TextArea as UiTextarea,
   VStack,
 } from '@astryxdesign/core';
+import { TextQuote } from './icons.js';
 import { QUOTE_COMMENT_MAX_LENGTH, type QuoteRef } from '@maka/core/events';
 import { cn } from './utils.js';
 import { useUiLocale } from './locale-context.js';
@@ -81,12 +81,12 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
       role="group"
       aria-label={props.title}
     >
-      <Text type="label" weight="semibold">
-        {props.title}
-      </Text>
-      <div className="maka-quote-comment-panel-excerpt">
-        <Blockquote cite={props.quote.label}>{excerpt}</Blockquote>
-      </div>
+      <HStack gap={1} className="maka-quote-comment-panel-source">
+        <TextQuote aria-hidden="true" />
+        <Text type="supporting" maxLines={2}>
+          {props.quote.label ? `${props.quote.label}: ${excerpt}` : excerpt}
+        </Text>
+      </HStack>
       <UiTextarea
         label={copy.quoteCommentLabel}
         isLabelHidden
