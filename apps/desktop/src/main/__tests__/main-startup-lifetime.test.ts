@@ -27,7 +27,7 @@ const mainSource = readFileSync(
   'utf8',
 );
 const bootSource = readFileSync(
-  fileURLToPath(new URL('../../../src/main/runtime-host-legacy-boot.ts', import.meta.url)),
+  fileURLToPath(new URL('../../../src/main/runtime-host-boot.ts', import.meta.url)),
   'utf8',
 );
 const appIpcSource = readFileSync(

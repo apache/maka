@@ -44,17 +44,14 @@ async function compile(name: string, asynchronous = false): Promise<string> {
     const imports = parse(source, { sourceType: 'module', plugins: ['typescript'] }).program.body
       .filter((node) => node.type === 'ImportDeclaration');
     const end = imports.at(-1)?.end ?? 0;
-    const body = source
-      .slice(end)
-      .replace('export const runtimeHostPostStartupTasks', 'const runtimeHostPostStartupTasks');
-    source = `${source.slice(0, end)}\nexport default async function() {\n${body}\n}`;
+    source = `${source.slice(0, end)}\nexport default async function() {\n${source.slice(end)}\n}`;
   }
   return (await transform(source, {
     loader: 'ts', format: 'cjs', target: 'esnext', define: { 'import.meta': 'importMeta' },
   })).code;
 }
 
-const boot = await compile('runtime-host-legacy-boot', true);
+const boot = await compile('runtime-host-boot', true);
 const context = await compile('startup-context');
 
 for (const accept of [false, true]) {
