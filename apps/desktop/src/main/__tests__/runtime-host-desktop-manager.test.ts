@@ -30,6 +30,7 @@ import {
   RuntimeHostRequestInterruptedError,
   type RuntimeHostSpawnedProcess,
   type HostHandoffView,
+  type HostHandoffAttentionView,
   type HostHandoffAction,
   type OpenHostHandoffSurface,
   HostHandoffRequiredError,
@@ -49,6 +50,7 @@ import {
   RuntimeHostPairingFinalizationInterruptedError,
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopManager,
+  type RuntimeHostDesktopTargetState,
 } from '../runtime-host-desktop-manager.js';
 
 test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, async () => {
@@ -1729,7 +1731,8 @@ test('cancelling a live handoff does not authorize any replacement', async () =>
   const observed = upgradeRequired(false);
   const conflict = { ...observed,
     registration: { ...observed.registration, lifecycleMode: 'service' as const } };
-  await assert.rejects(startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+  let state: RuntimeHostDesktopTargetState | undefined;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async () => conflict,
     handoffSurface: decideHandoff(() => 'cancel'),
     resolveLocalHostReplacement: async () => ({
@@ -1737,7 +1740,13 @@ test('cancelling a live handoff does not authorize any replacement', async () =>
       replace: async () => assert.fail('cancel must not mutate the service'),
     }),
     onFatalError: () => undefined,
-  }), RuntimeHostUpgradeCancelledError);
+    onTargetStateChanged: (next) => { state = next; },
+  });
+  assert.equal(state?.readiness, 'unavailable');
+  if (state?.readiness === 'unavailable') {
+    assert.ok(state.error instanceof RuntimeHostUpgradeCancelledError);
+  }
+  await owner.close();
 });
 
 test('keeps a known repair actionable when its first authority inspection fails', async () => {
@@ -1777,7 +1786,7 @@ test('keeps a known repair actionable when its first authority inspection fails'
 });
 
 function decideHandoff(
-  choose: (view: HostHandoffView) => HostHandoffAction,
+  choose: (view: HostHandoffAttentionView) => HostHandoffAction,
 ): OpenHostHandoffSurface {
   return (submit) => ({
     update(view) { if (view.state === 'attention') submit(view.revision, choose(view)); },

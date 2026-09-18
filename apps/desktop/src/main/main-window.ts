@@ -107,7 +107,6 @@ interface MainWindowControllerDeps {
   revealMode: WindowRevealMode;
   onClose?: () => void;
   onClosed?: () => void;
-  onShow?: () => void;
   onRendererProcessGone: (details: Electron.RenderProcessGoneDetails) => void | Promise<void>;
 }
 
@@ -160,11 +159,11 @@ const MAIN_WINDOW_TRAFFIC_LIGHT_POSITION = { x: 17, y: 14 } as const;
 const HIDDEN_TRAFFIC_LIGHT_POSITION = { x: -100, y: -100 } as const;
 
 // PR-SHOW-AFTER-FIRST-COMMIT: fallback reveal delay for a renderer that never
-// signals its first painted frame (window:notifyRendererReady). main.tsx's
-// onboarding prefetch bails at 2500ms; the remainder is headroom for React +
-// first paint. The timer is armed only after loadURL/loadFile resolves, so
-// Vite compilation and document loading do not consume this budget, while a
-// wedged renderer still cannot leave the window invisible forever.
+// signals its first painted frame (window:notifyRendererReady). The budget
+// covers React mount + first paint headroom. The timer is armed only after
+// loadURL/loadFile resolves, so Vite compilation and document loading do not
+// consume this budget, while a wedged renderer still cannot leave the window
+// invisible forever.
 const SHOW_FALLBACK_TIMEOUT_MS = 4000;
 
 // PR-WINDOW-TITLEBAR-0: the titleBarOverlay height matches the renderer
@@ -462,7 +461,6 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     //
     // Both are gated on the URL using `http(s):` or `mailto:` — everything else
     // (file://, electron internal, etc.) is allowed/denied per Electron defaults.
-    mainWindow.once('show', () => deps.onShow?.());
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
       if (isExternalUrl(url)) {
         void shell.openExternal(url);

@@ -60,6 +60,7 @@ import type {
   WindowCommand,
   PetPackChangedEvent,
   WorkBoardChangedEvent,
+  DesktopHostHandoffPayload,
   DesktopRuntimeHostProfileAddInput,
   DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
@@ -1620,6 +1621,24 @@ const makaBridge = {
       };
       ipcRenderer.on('runtime-host-profiles:changed', listener);
       return () => ipcRenderer.off('runtime-host-profiles:changed', listener);
+    },
+  },
+  runtimeHostHandoff: {
+    current() {
+      return ipcRenderer.invoke('runtime-host-handoff:current');
+    },
+    decide(revision: string, action: string) {
+      return ipcRenderer.invoke('runtime-host-handoff:decide', { revision, action });
+    },
+    subscribe(handler: (payload: DesktopHostHandoffPayload | null) => void) {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: DesktopHostHandoffPayload | null,
+      ) => {
+        handler(payload);
+      };
+      ipcRenderer.on('runtime-host-handoff:view', listener);
+      return () => ipcRenderer.off('runtime-host-handoff:view', listener);
     },
   },
   localRuntimeHostRemoteAccess: {

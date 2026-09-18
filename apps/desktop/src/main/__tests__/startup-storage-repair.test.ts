@@ -100,8 +100,6 @@ for (const accept of [false, true]) {
         createClientRuntimeHostProfileCatalog: () => ({}),
         resolveDesktopRuntimeHostStartup: async () => ({}),
         resolveE2eFixture: () => undefined,
-        desktopStartupProgressWindow: () => undefined,
-        updateDesktopStartupProgress: () => {},
         resolveDesktopStorageRoot,
         startupStep,
         getNativeDiagnosticDialogCopy,

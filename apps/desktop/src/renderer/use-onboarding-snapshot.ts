@@ -107,16 +107,15 @@ export function getOnboardingActivationCandidate(
  */
 export function useOnboardingSnapshotImpl(
   deps: UseOnboardingSnapshotDeps,
-  initialSnapshot: OnboardingSnapshot | null = null,
 ): UseOnboardingSnapshotResult {
   const locale = useUiLocale();
   const localeRef = useRef(locale);
   localeRef.current = locale;
-  const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(initialSnapshot);
+  const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const sessionsRef = useRef<SessionSummary[] | null>(initialSnapshot?.sessions ?? null);
-  const connectionsRef = useRef<LlmConnection[] | null>(initialSnapshot?.connections ?? null);
-  const defaultSlugRef = useRef<string | null>(initialSnapshot?.defaultSlug ?? null);
+  const sessionsRef = useRef<SessionSummary[] | null>(null);
+  const connectionsRef = useRef<LlmConnection[] | null>(null);
+  const defaultSlugRef = useRef<string | null>(null);
   const pollerRef = useRef<OnboardingSnapshotPoller | null>(null);
 
   if (pollerRef.current === null) {
@@ -247,14 +246,10 @@ export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale)
  * Callers that need a re-pull on a specific UI action (e.g. modal
  * close) should call `refresh()` from the returned object.
  */
-export function useOnboardingSnapshot(initialSnapshot: OnboardingSnapshot | null = null): UseOnboardingSnapshotResult {
+export function useOnboardingSnapshot(): UseOnboardingSnapshotResult {
   // Bind to the live IPC bridge. `deps` is memoized as a module-level
   // object so the effect deps stay stable across re-renders.
-  // `initialSnapshot` comes from main.tsx's pre-mount prefetch: with it,
-  // the very first commit already has sessions + connections, so the
-  // startup path never shows the intermediate loading card ("配置页
-  // 闪了一下"). The mount effect still pulls a fresh snapshot.
-  return useOnboardingSnapshotImpl(LIVE_DEPS, initialSnapshot);
+  return useOnboardingSnapshotImpl(LIVE_DEPS);
 }
 
 const LIVE_DEPS: UseOnboardingSnapshotDeps = {

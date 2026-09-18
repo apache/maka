@@ -30,9 +30,7 @@ import {
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
-  RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   runtimeHostOperatorInvocation,
-  type RuntimeHostOperatorCapability,
   type RuntimeHostOperatorCommand,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
@@ -60,7 +58,6 @@ import {
   RuntimeHostServiceManagerError,
   verifyRuntimeHostManagedServiceReady,
   withRuntimeHostManagedServiceDeploymentLock,
-  withRuntimeHostManagedServiceLegacyOperatorLeases,
   withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceResult,
   type RuntimeHostManagedServiceTarget,
@@ -137,13 +134,11 @@ interface RuntimeHostUpdateCliDeps {
   readonly retireSource: typeof launchRuntimeHostLocalSourceRetirement;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
-  readonly withLegacyOperatorLeases: typeof withRuntimeHostManagedServiceLegacyOperatorLeases;
   readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
   readonly verifyReady: typeof verifyRuntimeHostManagedServiceReady;
   readonly runOperator: (
     operator: RuntimeHostOperatorCommand,
     args: readonly string[],
-    invocation?: RuntimeHostOperatorInvocation,
   ) => Promise<RuntimeHostServiceManagementFrame>;
   readonly canonical: {
     readonly createLifecycleDeps: (rootId: string) => RuntimeHostLifecycleTransactionDeps;
@@ -194,11 +189,6 @@ function runtimeHostPackageUpdateOperation(input: {
   return input.replaceExpectedHost ? 'replace_current' : 'already_current';
 }
 
-interface RuntimeHostOperatorInvocation {
-  readonly inheritedFds?: readonly number[];
-  readonly capabilityRequest?: RuntimeHostOperatorCapability;
-}
-
 interface RuntimeHostUpdateSelectionRejection {
   readonly code: string;
   readonly message: string;
@@ -233,7 +223,6 @@ export async function runManagedRuntimeHostUpdateCli(
       }),
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
     withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
-    withLegacyOperatorLeases: withRuntimeHostManagedServiceLegacyOperatorLeases,
     createBackend: createPlatformRuntimeHostServiceBackend,
     verifyReady: verifyRuntimeHostManagedServiceReady,
     runOperator: runManagedRuntimeHostOperator,
@@ -366,19 +355,25 @@ export async function runManagedRuntimeHostUpdateCli(
         const currentOperator = createRuntimeHostLegacyPosixOperatorCommand(
           join(serviceConfig.managedDeploymentRoot, 'operator'),
         );
-        let currentOperatorUsesProcessLifetimeLock = false;
         let currentOperatorUnavailable = false;
         if (status.service.active) {
           try {
-            currentOperatorUsesProcessLifetimeLock = operatorUsesProcessLifetimeLock(
-              await deps.runOperator(
-                currentOperator,
-                ['status', '--framed', ...expectedTargetArgs(options.expectedTarget)],
-                {
-                  capabilityRequest: RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
-                },
-              ),
-            );
+            const probe = await deps.runOperator(currentOperator, [
+              'status',
+              '--framed',
+              ...expectedTargetArgs(options.expectedTarget),
+            ]);
+            if (probe.kind === 'error') {
+              throw new RuntimeHostServiceManagerError(
+                'service_manager_operation_failed',
+                `The current Runtime Host operator could not report its status: ${probe.error.message}`,
+              );
+            }
+            if (probe.action !== 'status') {
+              throw new Error(
+                'The current Runtime Host operator returned an invalid status result',
+              );
+            }
           } catch (error) {
             if (!activeTargetNeedsRepair) throw error;
             currentOperatorUnavailable = true;
@@ -423,14 +418,6 @@ export async function runManagedRuntimeHostUpdateCli(
 
         if (status.service.active) {
           emit(progress('retiring', currentVersion, options.version));
-          const runCurrentOperator = (args: readonly string[]) =>
-            currentOperatorUsesProcessLifetimeLock
-              ? deps.runOperator(currentOperator, args)
-              : deps.withLegacyOperatorLeases(options.clientDataRoot, (inheritedFds) =>
-                  deps.runOperator(currentOperator, args, {
-                    inheritedFds,
-                  }),
-                );
           let retirement: RuntimeHostServiceManagementFrame = currentOperatorUnavailable
             ? {
                 schemaVersion: 1,
@@ -441,7 +428,7 @@ export async function runManagedRuntimeHostUpdateCli(
                   message: 'The active Runtime Host operator is unavailable',
                 },
               }
-            : await runCurrentOperator([
+            : await deps.runOperator(currentOperator, [
                 'retire',
                 '--framed',
                 ...expectedTargetArgs(options.expectedTarget),
@@ -1143,22 +1130,6 @@ function activeTasksRetirementFrame(
   };
 }
 
-function operatorUsesProcessLifetimeLock(frame: RuntimeHostServiceManagementFrame): boolean {
-  if (frame.kind === 'error') {
-    throw new RuntimeHostServiceManagerError(
-      'service_manager_operation_failed',
-      `The current Runtime Host operator could not report its lock protocol: ${frame.error.message}`,
-    );
-  }
-  if (frame.action !== 'status') {
-    throw new Error('The current Runtime Host operator returned an invalid capability result');
-  }
-  return (
-    frame.operatorCapabilities?.includes(RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY) ===
-    true
-  );
-}
-
 function operatorCapabilities(): {
   readonly operatorCapabilities?: (typeof RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)[];
 } {
@@ -1173,22 +1144,15 @@ function operatorCapabilities(): {
 async function runManagedRuntimeHostOperator(
   operator: RuntimeHostOperatorCommand,
   args: readonly string[],
-  invocation: RuntimeHostOperatorInvocation = {},
 ): Promise<RuntimeHostServiceManagementFrame> {
   return new Promise((resolve, reject) => {
-    const inheritedFds = invocation.inheritedFds ?? [];
     const command = runtimeHostOperatorInvocation(operator, args);
     const child = spawn(command.executable, [...command.args], {
-      // A detached legacy operator keeps the inherited advisory leases alive if
-      // this updater is interrupted, so an exact retry never steals active work.
+      // A detached operator can finish a retirement already in progress even
+      // if this updater exits, so an exact retry never steals active work.
       detached: process.platform !== 'win32',
-      env: invocation.capabilityRequest
-        ? {
-            ...process.env,
-            [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]: invocation.capabilityRequest,
-          }
-        : process.env,
-      stdio: ['ignore', 'pipe', 'pipe', ...inheritedFds],
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
     if (!child.stdout || !child.stderr) {

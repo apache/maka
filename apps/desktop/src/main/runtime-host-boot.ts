@@ -201,8 +201,7 @@ import type {
   DesktopRuntimeHostTargetPolicy,
 } from "./runtime-host-desktop-candidate.js";
 import {
-  RuntimeHostUpgradeCancelledError,
-  startRuntimeHostDesktopManager,
+  createRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
   type RuntimeHostDesktopTargetState,
 } from "./runtime-host-desktop-manager.js";
@@ -210,7 +209,7 @@ import {
   buildRuntimeHostActiveQuitDialog,
 } from "./runtime-host-quit-copy.js";
 import { prepareRuntimeHostQuit } from "./runtime-host-quit.js";
-import { createDesktopHostHandoffSurface } from './startup-presentation.js';
+import { createDesktopHostHandoffSurface } from './runtime-host-handoff-surface.js';
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import {
   createDesktopRuntimeHostProfileService,
@@ -272,12 +271,6 @@ import {
 } from "./startup-context.js";
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep } from "./startup-step.js";
-import {
-  closeDesktopStartupProgress,
-  desktopStartupProgressWindow,
-  isDesktopStartupInProgress,
-  updateDesktopStartupProgress,
-} from './startup-presentation.js';
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
 import {
   parseDesktopSessionResourceKey,
@@ -387,7 +380,7 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
   resolveRuntimeHost: resolveRuntimeHostDiagnostics,
   writeClipboard: (report) => clipboard.writeText(report),
 };
-let resolveBrowserDialogParent = desktopStartupProgressWindow;
+let resolveBrowserDialogParent = (): BrowserWindow | undefined => undefined;
 let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxTheme> => ({
   locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
   palette: "default",
@@ -435,7 +428,6 @@ const resolveLocalStorageRoot = () =>
           confirmRepair: () => confirmDesktopStorageRootRepair(workspaceRoot),
         }),
       );
-updateDesktopStartupProgress('storage');
 const startupLocalStorageRoot =
   await resolveLocalStorageRoot();
 if (!startupLocalStorageRoot) {
@@ -508,7 +500,6 @@ const mainWindowController = createMainWindowController({
   revealMode,
   onClose: () => onMainWindowClose(),
   onClosed: () => onMainWindowClosed(),
-  onShow: closeDesktopStartupProgress,
   onRendererProcessGone: async (details) => {
     const diagnosticInput = createDesktopMainRendererDiagnosticInput({
       title: "Maka main Renderer process exited unexpectedly",
@@ -534,7 +525,7 @@ const mainWindowController = createMainWindowController({
 });
 resolveBrowserDialogParent = () => {
   const main = mainWindowController.browserWindow();
-  return main?.isVisible() ? main : desktopStartupProgressWindow();
+  return main?.isVisible() ? main : undefined;
 };
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
@@ -553,13 +544,8 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
   rootId: startupLocalStorageRoot.rootId,
   directPeerAvailable: runtimeHostDirectPeerAvailable,
   manager: () => runtimeHostManager,
-  resolveSetupPackage: async (signal) => {
-    updateDesktopStartupProgress('package');
-    const result = await runtimeHostSetupPackage.resolveForThisDesktop(signal);
-    updateDesktopStartupProgress('checking');
-    return result;
-  },
-  onUpdateProgress: updateDesktopStartupProgress,
+  resolveSetupPackage: async (signal) =>
+    runtimeHostSetupPackage.resolveForThisDesktop(signal),
   operator: localRuntimeHostOperator,
 });
 const native = assembleDesktopNativeCapabilities({
@@ -665,6 +651,10 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   disable: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     await runtimeHostManager.disable(profileId);
+  },
+  retryLocal: async () => {
+    if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
+    await runtimeHostManager.retryLocalStart();
   },
   finalizePairing: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
@@ -965,7 +955,7 @@ const windowsAppTray = createWindowsAppTray({
 onMainWindowClosed = () => {
   // A hidden WorkHub host window can keep window-all-closed from firing.
   // Without a tray, use the existing quit flow; cancelling it restores Maka.
-  if (process.platform !== 'darwin' && !windowsAppTray.hasTray() && !isDesktopStartupInProgress()) app.quit();
+  if (process.platform !== 'darwin' && !windowsAppTray.hasTray()) app.quit();
 };
 const mcpCapabilityPublisher = createCapabilityRevisionPublisher(() =>
   mcpManager.toolSnapshot().revision,
@@ -1124,7 +1114,7 @@ registerNotificationsIpc({
 });
 
 const sessionCopyOwnerProcessId = randomUUID();
-const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
+const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
   {
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
@@ -1295,7 +1285,11 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
       runtimeHostProfileService.resolveCollaborationConnectionTarget(profile),
   },
   {
-    handoffSurface: createDesktopHostHandoffSurface(() => desktopLocale.resolve()),
+    handoffSurface: createDesktopHostHandoffSurface({
+      ipcMain,
+      send: (payload) => mainWindowController.send('runtime-host-handoff:view', payload),
+      resolveLocale: () => desktopLocale.resolve(),
+    }),
     onTargetStateChanged: (state) => {
       const localTarget = localSessionTarget(state);
       if (localTarget) {
@@ -1407,23 +1401,17 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     }),
     resolveLocalHostReplacement: (registration, signal) =>
       localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
-    onFatalError: (error, target) => {
-      // Initial failure is handled after manager.start() has closed its own
-      // observations. Do not quit before startup-owned resources are drained.
-      if (!runtimeHostManager) return;
-      if (error instanceof RuntimeHostUpgradeCancelledError) {
-        if (target.profile.kind === "local") app.quit();
-        return;
-      }
+    onFatalError: (error) => {
+      // The target was already marked unavailable by the state machine; the
+      // app stays up and the recovery affordance offers the retry.
       console.error("[runtime-host] fatal:", error);
-      if (target.profile.kind === "local") app.quit();
     },
   },
 );
 let workBoardIpc: ReturnType<typeof registerWorkBoardIpc> | undefined;
 let runtimeHostDesktopShutdown: Promise<void> | undefined;
-// The first Host handoff can be cancelled before the main window exists.
-// Install the same cleanup owner used by normal quit before that handoff.
+// The quit coordinator owns cleanup for every later stage, including a Host
+// handoff cancelled while the main window is still loading.
 const quitCoordinator = createAppQuitCoordinator({
   prepareToQuit: prepareRuntimeHostDesktopQuit,
   cleanup: closeRuntimeHostDesktop,
@@ -1442,75 +1430,73 @@ const quitCoordinator = createAppQuitCoordinator({
   resumeQuit: () => app.quit(),
 });
 app.on("before-quit", quitCoordinator.handleBeforeQuit);
-updateDesktopStartupProgress('connect');
-runtimeHostManager = await startLocalRuntimeHostManager().catch(async (error: unknown) => {
-  await closeRuntimeHostDesktop();
-  if (error instanceof RuntimeHostUpgradeCancelledError) {
-    app.quit();
-    return new Promise<never>(() => undefined);
-  }
-  throw error;
-});
-// Runtime Host is the only schema-migration authority for its State Root.
-// Work Board remains a Desktop-owned table, but it opens only after the Host is
-// ready and verifies the schema instead of changing it behind a resident Host.
-workBoardIpc = registerWorkBoardIpc({
-  ipcMain,
-  workspaceRoot,
-  mainWindowController,
-  store: createWorkBoardStore(workspaceRoot, { schemaMigration: 'require_current' }),
-  validateLinkedSession: async (value, expectedProjectId) => {
-    const normalized = normalizeWorkBoardLinkedSession(value);
-    if (!normalized.ok) return false;
-    try {
-      const current = runtimeHostManager?.current(normalized.value.profileId);
-      if (!current?.candidate || current.hostId !== normalized.value.hostId) return false;
-      const sessions = await current.candidate.client.listSessions();
-      const session = sessions.find((candidate) => candidate.id === normalized.value.sessionId);
-      if (!session) return false;
-      if (expectedProjectId !== undefined) {
-        return (
-          session.workspace.target.kind === 'project' &&
-          session.workspace.target.projectId === expectedProjectId
-        );
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  },
-});
-updateDesktopStartupProgress('renderer');
-wireLifecycle();
+// The manager registers its IPC router on construction; starting the Local
+// Host is a background reconciliation, not a prerequisite for the window.
+runtimeHostManager = createLocalRuntimeHostManager();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+wireLifecycle();
 sessionLocal.wake();
 windowsAppTray.start();
-await guestSessionMountService.start().catch((error: unknown) => {
-  console.error('[runtime-host] shared Sessions could not be restored:', error);
-});
-await localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
-  console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
-});
-void runtimeHostProfileService.startEnabledProfiles();
-const unavailableDefault = runtimeHostStartup.unavailable.get(
-  runtimeHostStartup.preferences.defaultProfileId,
+void (async () => {
+  await runtimeHostManager?.start();
+  // Runtime Host is the only schema-migration authority for its State Root.
+  // Work Board remains a Desktop-owned table, but it opens only after the Host is
+  // ready and verifies the schema instead of changing it behind a resident Host.
+  workBoardIpc = registerWorkBoardIpc({
+    ipcMain,
+    workspaceRoot,
+    mainWindowController,
+    store: createWorkBoardStore(workspaceRoot, { schemaMigration: 'require_current' }),
+    validateLinkedSession: async (value, expectedProjectId) => {
+      const normalized = normalizeWorkBoardLinkedSession(value);
+      if (!normalized.ok) return false;
+      try {
+        const current = runtimeHostManager?.current(normalized.value.profileId);
+        if (!current?.candidate || current.hostId !== normalized.value.hostId) return false;
+        const sessions = await current.candidate.client.listSessions();
+        const session = sessions.find((candidate) => candidate.id === normalized.value.sessionId);
+        if (!session) return false;
+        if (expectedProjectId !== undefined) {
+          return (
+            session.workspace.target.kind === 'project' &&
+            session.workspace.target.projectId === expectedProjectId
+          );
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
+  await guestSessionMountService.start().catch((error: unknown) => {
+    console.error('[runtime-host] shared Sessions could not be restored:', error);
+  });
+  await localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
+    console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
+  });
+  void runtimeHostProfileService.startEnabledProfiles();
+  const unavailableDefault = runtimeHostStartup.unavailable.get(
+    runtimeHostStartup.preferences.defaultProfileId,
+  );
+  if (unavailableDefault) {
+    void runtimeHostProfileService
+      .getSnapshot()
+      .then((snapshot) => {
+        const entry = snapshot.entries.find((candidate) => candidate.isDefault);
+        defaultRuntimeHostRecovery.offer({
+          profileId: runtimeHostStartup.preferences.defaultProfileId,
+          profileName:
+            entry?.profile.name ?? runtimeHostStartup.preferences.defaultProfileId,
+          error: unavailableDefault,
+        });
+      })
+      .catch((error) =>
+        console.error("[runtime-host] failed to resolve unavailable default Host:", error),
+      );
+  }
+})().catch((error: unknown) =>
+  console.error("[runtime-host] background startup failed:", error),
 );
-if (unavailableDefault) {
-  void runtimeHostProfileService
-    .getSnapshot()
-    .then((snapshot) => {
-      const entry = snapshot.entries.find((candidate) => candidate.isDefault);
-      defaultRuntimeHostRecovery.offer({
-        profileId: runtimeHostStartup.preferences.defaultProfileId,
-        profileName:
-          entry?.profile.name ?? runtimeHostStartup.preferences.defaultProfileId,
-        error: unavailableDefault,
-      });
-    })
-    .catch((error) =>
-      console.error("[runtime-host] failed to resolve unavailable default Host:", error),
-    );
-}
 const stopComputerUseSession = (sessionId: string): void => {
   const ref = parseDesktopSessionResourceKey(sessionId);
   void runtimeHostManager
@@ -2161,8 +2147,7 @@ function wireLifecycle(): void {
   app.on("window-all-closed", () => {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
-    if (process.platform !== "darwin" && !windowsAppTray.hasTray() && !isBrowserMessageBoxPresentationActive() &&
-      !isDesktopStartupInProgress()) app.quit();
+    if (process.platform !== "darwin" && !windowsAppTray.hasTray() && !isBrowserMessageBoxPresentationActive()) app.quit();
   });
   powerMonitor.on("resume", wakePeerRecoveryAfterResume);
   quitCoordinator.focusOrCreateWindow();

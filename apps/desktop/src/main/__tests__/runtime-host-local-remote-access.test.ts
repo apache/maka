@@ -344,7 +344,6 @@ test('repairs an existing managed Host with the current setup package and restar
     directPeerAvailable: true,
     manager: () => undefined,
     resolveSetupPackage: async () => setupPackage,
-    onUpdateProgress: (phase) => phases.push(phase),
     operator: {
       async runUpdate(input: {
         readonly setupPackage: unknown;
@@ -382,7 +381,10 @@ test('repairs an existing managed Host with the current setup package and restar
   });
   t.after(() => service.close());
 
-  assert.deepEqual(await service.repairManagedStartup({ allowManualUpdate: true }), {
+  assert.deepEqual(await service.repairManagedStartup({
+    allowManualUpdate: true,
+    onProgress: (phase) => phases.push(phase),
+  }), {
     kind: 'repaired',
   });
   assert.deepEqual(actions, ['update', 'restart']);

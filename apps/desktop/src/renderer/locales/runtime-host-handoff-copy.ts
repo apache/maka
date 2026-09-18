@@ -17,23 +17,24 @@
  * under the License.
  */
 
-import { createRoot } from 'react-dom/client';
-import { syncUiLocaleDocument } from '@maka/ui';
-import { App } from './app';
-import { applyCachedThemeBeforeMount } from './cached-theme-bootstrap';
-import './styles.css';
-import { readSystemUiLocale } from './use-system-ui-locale';
-import {
-  createDesktopFeatureServices,
-  DesktopFeatureServicesProvider,
-} from './composition/desktop-feature-services';
+import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
-syncUiLocaleDocument(readSystemUiLocale());
-applyCachedThemeBeforeMount();
-const desktopFeatureServices = createDesktopFeatureServices();
+interface RuntimeHostHandoffCopy {
+  readonly copyDiagnostics: string;
+}
 
-createRoot(document.getElementById('root')!).render(
-  <DesktopFeatureServicesProvider services={desktopFeatureServices}>
-    <App />
-  </DesktopFeatureServicesProvider>,
-);
+const COPY_BY_LOCALE: UiCatalog<RuntimeHostHandoffCopy> = {
+  'zh-CN': {
+    copyDiagnostics: '复制诊断信息',
+  },
+  'zh-TW': {
+    copyDiagnostics: '複製診斷資訊',
+  },
+  en: {
+    copyDiagnostics: 'Copy diagnostics',
+  },
+};
+
+export function getRuntimeHostHandoffCopy(locale: UiLocale): RuntimeHostHandoffCopy {
+  return COPY_BY_LOCALE[locale];
+}
