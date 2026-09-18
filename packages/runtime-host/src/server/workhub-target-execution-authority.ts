@@ -105,6 +105,7 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
           JSON.stringify({
             kind: 'workhub_target_model_repair_v1',
             actionId: input.actionId,
+            coordinationRunId: input.coordinationRunId,
             targetSessionId: input.targetSessionId,
             revision: readiness.record.revision,
             replacements: readiness.replacements.map(({ value }) => value),
@@ -120,7 +121,10 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
         create: async () => ({
           kind: 'form',
           toolUseId: input.actionId,
-          message: `Task “${input.targetSessionName}” uses model “${readiness.record.header.model}”, which is no longer available. Choose a replacement to continue.`,
+          message:
+            rejectedSelections.length === 0
+              ? `Task “${input.targetSessionName}” uses model “${readiness.record.header.model}”, which is no longer available. Choose a replacement to continue.`
+              : `The selected model cannot currently run task “${input.targetSessionName}”. Choose another model to continue.`,
           requester: { name: 'WorkHub' },
           fields: [
             {
@@ -160,7 +164,9 @@ export class HostWorkHubTargetExecutionAuthority implements WorkHubTargetExecuti
     }
     throw new WorkHubActionEffectFailure(
       'operation_conflict',
-      'Task model changed while WorkHub was preparing the delegation; try again',
+      rejectedSelections.length > 0
+        ? 'No executable replacement model was selected for this task'
+        : 'Task model changed while WorkHub was preparing the delegation; try again',
     );
   }
 

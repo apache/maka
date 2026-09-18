@@ -2151,8 +2151,8 @@ export async function createExecutionRuntimeHostComposition(
             }
             return { outcome: 'resume_started' as const, targetTurnId };
           }
-          await prepareTargetExecution?.();
           await validateFreshTarget();
+          await prepareTargetExecution?.();
           const disposition = await messages.readMessageExecutionDisposition(
             assignment.targetSessionId,
             assignment.targetMessageId,

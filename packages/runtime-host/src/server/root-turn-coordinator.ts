@@ -2376,7 +2376,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             );
           }
 
-          await beforeFreshAdmission?.();
+          try {
+            await beforeFreshAdmission?.();
+          } catch (error) {
+            return {
+              kind: 'complete',
+              outcome: operationConflict(errorMessage(error)),
+            };
+          }
 
           reservation ??= this.reserveRootTurn(input.sessionId);
           if (!reservation) {

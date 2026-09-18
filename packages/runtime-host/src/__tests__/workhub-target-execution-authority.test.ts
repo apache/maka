@@ -122,7 +122,26 @@ describe('WorkHub target execution authority', () => {
     await fixture.authority.prepare(PREPARATION, CONTEXT);
 
     assert.equal(fixture.formRequests.length, 2);
+    assert.match(
+      (await fixture.formRequests[1]!.create()).message,
+      /selected model cannot currently run/,
+    );
     assert.equal(fixture.model(), 'replacement-model');
+  });
+
+  test('uses a fresh repair interaction after a Host restart changes the run', async () => {
+    const first = createFixture('removed-model', ['replacement-model'], 'cancel');
+    const second = createFixture('removed-model', ['replacement-model'], 'cancel');
+
+    await assert.rejects(first.authority.prepare(PREPARATION, CONTEXT));
+    await assert.rejects(
+      second.authority.prepare(
+        { ...PREPARATION, coordinationRunId: 'coordination-run-after-restart' },
+        CONTEXT,
+      ),
+    );
+
+    assert.notEqual(first.formRequests[0]!.requestId, second.formRequests[0]!.requestId);
   });
 
   test('reopens model selection when the accepted replacement disappears before admission', async () => {
