@@ -21,8 +21,14 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
-import { Blockquote, Text, VStack } from '@astryxdesign/core';
-import { MessageSquare, MessagesSquare, TextQuote, X } from './icons.js';
+import {
+  Blockquote,
+  MetadataList,
+  MetadataListItem,
+  Text,
+  VStack,
+} from '@astryxdesign/core';
+import { MessageSquareQuote, MessagesSquare, TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { QuoteRef } from '@maka/core/events';
@@ -57,20 +63,20 @@ export function QuoteHoverCardContent(props: { quote: QuoteRef }) {
   const provenance = quoteProvenanceSummary(props.quote, locale);
   return (
     <VStack gap={2} className="maka-quote-hover-card">
-      <VStack gap={0.5}>
-        <Text type="supporting">{copy.quoteSelectedTextLabel}</Text>
-        <Blockquote cite={props.quote.label}>
-          <Text type="inherit" maxLines={4} textWrap="wrap">
-            {stripQuoteHeadingMarkers(props.quote.text)}
-          </Text>
-        </Blockquote>
-      </VStack>
-      {props.quote.comment ? (
-        <VStack gap={0.5}>
-          <Text type="supporting">{copy.quoteCommentLabel}</Text>
-          <Text>{props.quote.comment}</Text>
-        </VStack>
-      ) : null}
+      <MetadataList columns="single" label={{ position: 'top' }}>
+        <MetadataListItem label={copy.quoteSelectedTextLabel}>
+          <Blockquote cite={props.quote.label}>
+            <Text type="inherit" maxLines={4} textWrap="wrap">
+              {stripQuoteHeadingMarkers(props.quote.text)}
+            </Text>
+          </Blockquote>
+        </MetadataListItem>
+        {props.quote.comment ? (
+          <MetadataListItem label={copy.quoteCommentLabel}>
+            <Text>{props.quote.comment}</Text>
+          </MetadataListItem>
+        ) : null}
+      </MetadataList>
       {provenance ? <Text type="supporting">{provenance}</Text> : null}
     </VStack>
   );
@@ -127,7 +133,7 @@ export function QuoteRefChip(props: {
       {/* Marks that the excerpt carries a note. The note itself lives in the
           hover card and the model-facing content, not in the chip's own line. */}
       {props.quote.comment ? (
-        <MessageSquare className="maka-quote-chip-comment-icon" aria-hidden="true" />
+        <MessageSquareQuote className="maka-quote-chip-comment-icon" aria-hidden="true" />
       ) : null}
       <Button
         type="button"

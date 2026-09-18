@@ -43,7 +43,7 @@ import {
   CircleGauge,
   FileText,
   ListTodo,
-  MessageSquare,
+  MessageSquareQuote,
   MessagesSquare,
   Network,
   Pencil,
@@ -2076,7 +2076,7 @@ export const Composer = forwardRef<
                             label={label}
                             endContent={
                               quote.comment ? (
-                                <MessageSquare
+                                <MessageSquareQuote
                                   className="maka-composer-quote-comment-icon"
                                   aria-hidden="true"
                                 />
