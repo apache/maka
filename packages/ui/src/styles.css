@@ -251,6 +251,15 @@
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
 .maka-turn-elapsed { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
 .maka-turn-elapsed:empty { display: none; }
+/* #5138: default transcript notes can contain full diagnostics. Let Astryx's
+   content span shrink and wrap inside the reading measure; dividers stay compact. */
+.maka-chat-system-message[data-variant='default'] > span {
+  min-width: 0;
+  max-width: 100%;
+  flex-shrink: 1;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .maka-compaction-status { display: inline-flex; align-items: center; gap: 8px; font: var(--maka-text-body); vertical-align: top; }
 /* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
    draw by hand (hairline + 5% wash) is a variant, and the box comes with it.

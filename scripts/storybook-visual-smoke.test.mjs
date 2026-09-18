@@ -19,9 +19,28 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { catalogJobs, isExpectedConsoleError, storyUrl } from './storybook-visual-smoke.mjs';
+import {
+  catalogJobs,
+  isExpectedConsoleError,
+  jobLabel,
+  storyUrl,
+} from './storybook-visual-smoke.mjs';
 
 const REFERENCE_STORY_ID = 'product-shell-official-appshell--native-conversation';
+
+test('job labels support independent locale and viewport overrides', () => {
+  const job = { storyId: 'example', colorScheme: 'light', palette: 'default' };
+  assert.equal(jobLabel(job), 'example (light/default)');
+  assert.equal(jobLabel({ ...job, locale: 'en' }), 'example (light/default/en)');
+  assert.equal(
+    jobLabel({ ...job, viewport: { width: 720, height: 900 } }),
+    'example (light/default/720px)',
+  );
+  assert.equal(
+    jobLabel({ ...job, locale: 'en', viewport: { width: 720, height: 900 } }),
+    'example (light/default/en/720px)',
+  );
+});
 const THEME_PALETTES = [
   'default',
   ...Array.from({ length: 10 }, (_, index) => `test-palette-${index + 1}`),
@@ -56,6 +75,29 @@ test('dark theme sentinel stories render the default palette in both colour sche
     { storyId, colorScheme: 'light', forcedColors: 'none', palette: 'default' },
     { storyId, colorScheme: 'dark', forcedColors: 'none', palette: 'default' },
   ]);
+});
+
+test('system-note regression covers both locales at standard and narrow widths', () => {
+  const storyId = 'product-shell-official-appshell--long-system-notes';
+  const jobs = catalogJobs(storyIndex(storyId));
+  assert.equal(jobs.length, 4);
+  assert.deepEqual(
+    jobs.map(({ locale, viewport }) => [locale, viewport.width, viewport.height]),
+    [
+      ['zh-CN', 1280, 900],
+      ['zh-CN', 720, 900],
+      ['en', 1280, 900],
+      ['en', 720, 900],
+    ],
+  );
+  for (const job of jobs) {
+    const url = new URL(storyUrl('http://localhost:6006', job));
+    assert.equal(url.searchParams.get('id'), storyId);
+    assert.equal(
+      url.searchParams.get('globals'),
+      `colorScheme:light;palette:default;locale:${job.locale}`,
+    );
+  }
 });
 
 test('forced-colors stories render under the forced palette', () => {
