@@ -2153,6 +2153,10 @@ export async function createExecutionRuntimeHostComposition(
           }
           await validateFreshTarget();
           await prepareTargetExecution?.();
+          // A model-repair form can remain open while another action changes
+          // the delegated target. Recheck freshness before reading its
+          // terminal lineage so the resumed action never uses a stale target.
+          await validateFreshTarget();
           const disposition = await messages.readMessageExecutionDisposition(
             assignment.targetSessionId,
             assignment.targetMessageId,
