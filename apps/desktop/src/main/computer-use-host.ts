@@ -60,6 +60,8 @@ export function createComputerUseHost(input: {
   resourcesPath: string;
   manifestPath?: string;
   binaryPath?: string;
+  /** Test/host seam; production defaults to Node's platform. */
+  platform?: NodeJS.Platform;
   compressFrame?: (
     base64: string,
     mimeType: string,
@@ -70,6 +72,7 @@ export function createComputerUseHost(input: {
   onTrace?: MakaCuBackendOptions['onTrace'];
   overlay?: CuOverlayHook;
 }): ComputerUseHostState {
+  const platform = input.platform ?? process.platform;
   const manifestPath = input.manifestPath ?? (input.isPackaged
     ? join(input.resourcesPath, 'bundled-tools.json')
     : resolve(
@@ -97,17 +100,17 @@ export function createComputerUseHost(input: {
     };
     const expectedBinarySha256 = manifest.makaCu?.binarySha256;
     if (input.isPackaged && manifest.makaCu?.distributionReady !== true) {
-      return { selected: selectComputerUseBackend() };
+      return { selected: selectComputerUseBackend({ platform }) };
     }
     if (!expectedBinarySha256 || !/^[a-f0-9]{64}$/.test(expectedBinarySha256)) {
-      return { selected: selectComputerUseBackend() };
+      return { selected: selectComputerUseBackend({ platform }) };
     }
     accessSync(binaryPath, constants.R_OK | constants.X_OK);
     const actual = createHash('sha256')
       .update(readRegularFile(binaryPath))
       .digest('hex');
     if (actual !== expectedBinarySha256) {
-      return { selected: selectComputerUseBackend() };
+      return { selected: selectComputerUseBackend({ platform }) };
     }
     return {
       // No `backendId`: the host takes whatever `DEFAULT_CU_BACKEND_ID` names,
@@ -121,12 +124,13 @@ export function createComputerUseHost(input: {
         ...(input.screenLocked ? { screenLocked: input.screenLocked } : {}),
         ...(input.onTrace ? { onTrace: input.onTrace } : {}),
         ...(input.overlay ? { overlay: input.overlay } : {}),
+        platform,
       }),
       binaryPath,
       expectedBinarySha256,
     };
   } catch {
-    return { selected: selectComputerUseBackend() };
+    return { selected: selectComputerUseBackend({ platform }) };
   }
 }
 
@@ -134,6 +138,22 @@ export function createDesktopPhysicalInputGuard(
   getSystemIdleTime: () => number,
 ): () => boolean {
   return () => getSystemIdleTime() < 1;
+}
+
+/**
+ * Why a `none` selection is none, as a code the capability surface can show.
+ *
+ * Three ways to have no executor used to project one word, so an unbound
+ * platform, a missing artifact and a backend that failed to construct all read
+ * as an integrity problem. The distinction is the point of carrying the reason
+ * this far; a `none` without one is still an undistributable artifact.
+ */
+function unavailableReasonCode(
+  reason: SelectedComputerUseBackend['unavailableReason'],
+): CapabilityReasonCode {
+  if (reason === 'unsupported_platform') return 'cu_platform_unsupported';
+  if (reason === 'backend_failed') return 'cu_backend_unavailable';
+  return 'cu_executor_undistributable';
 }
 
 /**
@@ -146,11 +166,15 @@ export function createDesktopPhysicalInputGuard(
 export function computerUseServiceHealth(
   backendId: SelectedComputerUseBackend['backendId'],
   state: MakaCuServiceSnapshot | undefined,
+  unavailableReason?: SelectedComputerUseBackend['unavailableReason'],
 ): {
   state: 'not_available' | 'not_run' | 'healthy' | 'degraded';
   reason: CapabilityReasonCode;
 } {
-  if (backendId === 'none' || !state) {
+  if (backendId === 'none') {
+    return { state: 'not_available', reason: unavailableReasonCode(unavailableReason) };
+  }
+  if (!state) {
     return { state: 'not_available', reason: 'cu_executor_undistributable' };
   }
   switch (state.state) {

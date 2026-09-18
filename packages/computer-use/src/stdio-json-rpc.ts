@@ -17,17 +17,16 @@
  * under the License.
  */
 
-// Transport pieces shared by every stdio JSON-RPC executor the host supervises:
-// trycua/cua-driver (MCP) and maka-cu (maka.cu/1). Both frame one JSON value per
-// line over a direct child's stdio, so the decoder and the lifecycle vocabulary
-// live here.
+// Framing and lifecycle vocabulary for the one supervised child every
+// `maka.cu/2` platform executor uses. One JSON value is framed per line over a
+// direct child's stdio, the unparsed tail is bounded by a negotiated byte
+// budget, and the host classifies where a request was when the child died.
 //
-// What is deliberately NOT shared is the supervision policy above the framing:
-// cua-driver kills the child to cancel a delivered request, maka-cu sends
-// `$/cancel` and waits for the executor's own answer (maka.cu/1 §7.2), and the
-// two handshakes and shutdown sequences have nothing in common. A single
-// supervisor would carry a flag per divergence, which is how the behaviour that
-// only one of the two executors needs ends up running against both.
+// There is deliberately only one supervisor (`MakaCuService`); a platform
+// backend adds a native executor and composition, never a second framing or
+// lifecycle authority. cua-driver, the previous second executor with its own
+// MCP-mode decoder and kill-to-cancel policy, was removed along with the role
+// pair it belonged to.
 
 /** Where a request was when the child died — the input to death classification. */
 export type HostRequestStage = 'queued' | 'writing' | 'delivered' | 'settled';

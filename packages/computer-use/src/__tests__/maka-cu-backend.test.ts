@@ -1544,7 +1544,6 @@ describe('maka-cu backend', () => {
 
 describe('maka-cu backend selection', () => {
   it('is reached by being named, and refuses without a pinned digest', () => {
-    if (process.platform !== 'darwin') return;
     let made = 0;
     const stub = () => ({
       preflight: async () => ({ accessibility: false, screenRecording: false }),
@@ -1555,6 +1554,7 @@ describe('maka-cu backend selection', () => {
     };
 
     const selected = selectComputerUseBackend({
+      platform: 'darwin',
       backendId: 'maka-cu',
       binaryPath: '/tmp/does-not-matter',
       expectedBinarySha256: 'deadbeef',
@@ -1566,6 +1566,7 @@ describe('maka-cu backend selection', () => {
     // No digest, no executor — and `'none'` rather than a backend that would
     // spawn whatever happens to be at that path.
     const unpinned = selectComputerUseBackend({
+      platform: 'darwin',
       backendId: 'maka-cu',
       binaryPath: '/tmp/does-not-matter',
       createBackend,
@@ -1579,10 +1580,10 @@ describe('maka-cu backend selection', () => {
     // "which executor runs" is a decision the selector owns, and a host that
     // names nothing must land on the same one the constant names. If the two
     // ever disagree, a machine runs an executor nobody chose.
-    if (process.platform !== 'darwin') return;
     assert.equal(DEFAULT_CU_BACKEND_ID, 'maka-cu');
     let made = 0;
     const selected = selectComputerUseBackend({
+      platform: 'darwin',
       binaryPath: '/tmp/does-not-matter',
       expectedBinarySha256: 'deadbeef',
       createBackend: () => {
