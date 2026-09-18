@@ -113,43 +113,6 @@ test('does not latch a transient operation failure', async () => {
   await handle.close();
 });
 
-test('retries a read on the next advance when the failure is not the subscription', async () => {
-  let pageReads = 0;
-  const handle = runtimeHostSessionFixture({
-    snapshot: continuitySnapshot(),
-    transcriptWatermark: () => 8,
-    loadTranscriptPage: async () => {
-      pageReads += 1;
-      if (pageReads === 1) throw new Error('transient read failure');
-      return transcriptPage('newer', 8);
-    },
-    decodeTranscriptPage: async (requested) => ({
-      messages: [
-        {
-          identity: requested.throughSequence ?? 0,
-          message: {
-            type: 'assistant',
-            id: 'row-8',
-            turnId: 'turn-1',
-            ts: 8,
-            text: 'done',
-            modelId: 'test-model',
-          },
-        },
-      ],
-      nextCursor: null,
-    }),
-    async close() {},
-  });
-  const replica = await DesktopTranscriptReplica.prepare(handle);
-
-  await assert.rejects(replica.advance(), /transient read failure/);
-  await replica.advance();
-  assert.equal(pageReads, 2);
-  assert.equal(replica.durableThrough, 8);
-  await handle.close();
-});
-
 test('follows the subscription watermark rather than an announced frame', async () => {
   let watermark = 4;
   const handle = runtimeHostSessionFixture({

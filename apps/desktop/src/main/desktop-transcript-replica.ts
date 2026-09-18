@@ -212,10 +212,8 @@ export class DesktopTranscriptReplica {
 
   adoptResidentAccounting(): void {
     if (!this.#residentExternallyAccounted) return;
-    // Release before clearing the flag so a throwing release can be retried
-    // instead of leaving the prep count permanently inflated.
-    this.#accountPreparationBytes(-this.#residentBytes);
     this.#residentExternallyAccounted = false;
+    this.#accountPreparationBytes(-this.#residentBytes);
   }
 
   get durableThrough(): number | null {
