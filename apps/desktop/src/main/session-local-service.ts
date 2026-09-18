@@ -74,6 +74,7 @@ interface SessionCatalogConnection {
   readonly hostEpoch: string | undefined;
   readonly targetEpoch: string;
   readonly controller: AbortController;
+  invalidationVersion: number;
 }
 
 /** Includes the credential's lifetime without persisting a reusable secret. */
@@ -142,7 +143,11 @@ export class DesktopSessionLocalService {
           (target) =>
             target.scope.hostId === scope.hostId && target.scope.targetEpoch === scope.targetEpoch,
         );
-      if (target) this.#catalogFresh.delete(target.partition);
+      if (target) {
+        this.#catalogFresh.delete(target.partition);
+        const connection = this.#catalogConnections.get(target.partition);
+        if (connection) connection.invalidationVersion += 1;
+      }
     }
     this.wake();
   }
@@ -284,6 +289,7 @@ export class DesktopSessionLocalService {
       hostEpoch: target.client?.hostEpoch,
       targetEpoch: target.scope.targetEpoch,
       controller: new AbortController(),
+      invalidationVersion: 0,
     };
     this.#catalogConnections.set(target.partition, connection);
     this.#catalogFresh.delete(target.partition);
@@ -311,9 +317,11 @@ export class DesktopSessionLocalService {
       return;
     const client = target.client;
     const revision = this.store.revision;
+    const invalidationVersion = connection.invalidationVersion;
     const task = abortable(() => client.listSessions(), connection.controller.signal)
       .then((sessions) => {
         if (!this.#currentCatalogConnection(target, connection)) return;
+        if (connection.invalidationVersion !== invalidationVersion) return;
         // A late catalog cannot erase a Session created/removed while it read.
         if (this.store.revision !== revision) return;
         this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
@@ -329,8 +337,14 @@ export class DesktopSessionLocalService {
       .finally(() => {
         if (this.#catalogTasks.get(target.partition) === task)
           this.#catalogTasks.delete(target.partition);
+        if (!this.#currentCatalogConnection(target, connection)) return;
+        if (connection.invalidationVersion !== invalidationVersion) {
+          // Host events do not change the local store revision. Consume all
+          // invalidations received during this read with one fresh request.
+          this.#refreshCatalog(target, connection);
+          return;
+        }
         if (
-          this.#currentCatalogConnection(target, connection) &&
           !this.#catalogFresh.has(target.partition) &&
           this.store.revision !== revision
         )

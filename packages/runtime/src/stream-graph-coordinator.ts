@@ -278,16 +278,13 @@ export class AgentGraphCoordinator {
     if (this.#closed || !driver || driver.closed) return 'idle';
     if (driver.stopping) return 'running';
     if (driver.paused) return driver.stopFailed ? 'blocked' : 'idle';
+    const hasLiveWork = Boolean(driver.task || driver.requested || driver.clientProjectionTask);
+    // After execution settles, a failed projection cannot establish that its
+    // cached running or waiting state is still current.
+    if (!hasLiveWork && (driver.lastError !== undefined || driver.clientProjectionDirty))
+      return 'blocked';
     if (driver.activityProjection === 'waiting_for_user') return 'waiting_for_user';
-    if (
-      driver.task ||
-      driver.requested ||
-      driver.clientProjectionTask ||
-      driver.activityProjection === 'running'
-    )
-      return 'running';
-    if (driver.lastError !== undefined || driver.clientProjectionDirty) return 'blocked';
-    return driver.activityProjection;
+    return hasLiveWork ? 'running' : driver.activityProjection;
   }
 
   /** An authoritative child interaction snapshot changed; never schedules graph work. */
