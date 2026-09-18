@@ -28,11 +28,13 @@ import {
   buildCommandCodeAuthUrl,
   studioBaseForApiBase,
 } from '../commandcode-browser-login.js';
+import { CONTROLLER_SUITE_PORTS } from './commandcode-login-test-ports.js';
 
 // Every test binds a real loopback listener and talks to it with real fetch —
 // exactly the requests the Studio page makes. Only the browser is replaced.
 
 const STATE = 'test-state-token';
+const START_PORT = CONTROLLER_SUITE_PORTS.startPort;
 const controllers: CommandCodeBrowserLoginController[] = [];
 const netServers: NetServer[] = [];
 
@@ -44,10 +46,7 @@ function makeController(
     openExternal: async (url) => {
       opened.push(url);
     },
-    // Off the CLI's range so a developer's own `command-code login` and the
-    // tests never contend for a port.
-    startPort: 46_959,
-    maxPortAttempts: 10,
+    ...CONTROLLER_SUITE_PORTS,
     randomToken: () => STATE,
     ...overrides,
   });
@@ -146,7 +145,7 @@ describe('CommandCodeBrowserLoginController', () => {
     const opened: string[] = [];
     const controller = makeController({}, opened);
     const started = await startOk(controller);
-    assert.equal(started.port, 46_959);
+    assert.equal(started.port, START_PORT);
     assert.deepEqual(opened, [started.authUrl]);
     assert.equal(new URL(started.authUrl).searchParams.get('state'), STATE);
   });
@@ -321,6 +320,43 @@ describe('CommandCodeBrowserLoginController', () => {
     controller.cancel('unknown');
   });
 
+  test('cancelling an attempt nobody is collecting drops it', async () => {
+    // The renderer's stale-start path: an ok start that is only ever cancelled.
+    const controller = makeController();
+    const started = await startOk(controller);
+    controller.cancel(started.attemptId);
+    assert.equal(controller.attemptCount(), 0);
+    assert.deepEqual(await controller.complete(started.attemptId), {
+      ok: false,
+      reason: 'superseded',
+    });
+
+    await startOk(controller);
+    controller.cancel();
+    assert.equal(controller.attemptCount(), 0);
+  });
+
+  test('abandoning an owner drops the attempts it started and nothing else', async () => {
+    const controller = makeController();
+    // Superseded and never collected: one owned, one started without an owner.
+    assert.equal((await controller.start({}, 'renderer-a')).ok, true);
+    await startOk(controller);
+    const live = await controller.start({}, 'renderer-b');
+    assert.equal(live.ok, true, JSON.stringify(live));
+    if (!live.ok) throw new Error('unreachable');
+    const completion = controller.complete(live.attemptId);
+
+    controller.abandonOwner('renderer-c');
+    assert.equal(controller.attemptCount(), 3);
+    controller.abandonOwner('renderer-a');
+    assert.equal(controller.attemptCount(), 2);
+    controller.abandonOwner('renderer-b');
+    assert.deepEqual(await completion, { ok: false, reason: 'cancelled' });
+    const callback = new URL(new URL(live.authUrl).searchParams.get('callback') ?? '');
+    await assert.rejects(post(callback.toString(), APPROVED), 'the port goes with its owner');
+    assert.equal(controller.attemptCount(), 1, 'an attempt without an owner is left to its caller');
+  });
+
   test('a new start supersedes the live attempt and rebinds the same port', async () => {
     const controller = makeController();
     const first = await startOk(controller);
@@ -349,10 +385,11 @@ describe('CommandCodeBrowserLoginController', () => {
     assert.deepEqual(opened, [winner.authUrl], 'only the live attempt opens a browser tab');
 
     const free: number[] = [];
-    for (const port of [46_959, 46_960]) {
+    for (const port of [START_PORT, START_PORT + 1]) {
       if (await isPortFree(port)) free.push(port);
     }
     assert.equal(free.length, 1, `exactly one port stays bound, free: ${free.join(',')}`);
+    assert.equal(controller.attemptCount(), 1, 'the loser is not held for a complete()');
 
     const callback = new URL(new URL(winner.authUrl).searchParams.get('callback') ?? '');
     const completion = controller.complete(winner.attemptId);
@@ -361,18 +398,19 @@ describe('CommandCodeBrowserLoginController', () => {
   });
 
   test('an occupied port is skipped for the next one in the CLI range', async () => {
-    await occupyPort(46_959);
+    await occupyPort(START_PORT);
     const controller = makeController();
     const started = await startOk(controller);
-    assert.equal(started.port, 46_960);
+    assert.equal(started.port, START_PORT + 1);
   });
 
   test('no free port in range fails the start without opening a browser', async () => {
-    await occupyPort(46_959);
+    await occupyPort(START_PORT);
     const opened: string[] = [];
     const controller = makeController({ maxPortAttempts: 1 }, opened);
     assert.deepEqual(await controller.start(), { ok: false, reason: 'port_unavailable' });
     assert.deepEqual(opened, []);
+    assert.equal(controller.attemptCount(), 0, 'a failed start hands out no id to complete()');
   });
 
   test('a browser that cannot open fails the start and releases the port', async () => {
@@ -382,10 +420,11 @@ describe('CommandCodeBrowserLoginController', () => {
       },
     });
     assert.deepEqual(await controller.start(), { ok: false, reason: 'browser_unavailable' });
+    assert.equal(controller.attemptCount(), 0, 'a failed start hands out no id to complete()');
     // The port is free again for a controller that can open a browser.
     const next = makeController();
     const started = await startOk(next);
-    assert.equal(started.port, 46_959);
+    assert.equal(started.port, START_PORT);
   });
 
   test('a staging Provider API base sends the browser to the staging Studio', async () => {
@@ -401,5 +440,14 @@ describe('CommandCodeBrowserLoginController', () => {
     controller.dispose();
     assert.deepEqual(await completion, { ok: false, reason: 'cancelled' });
     assert.equal((await controller.start()).ok, false);
+  });
+
+  test('dispose drops attempts nobody collected', async () => {
+    const controller = makeController();
+    // Superseded by the next start, and never collected.
+    await startOk(controller);
+    await startOk(controller);
+    controller.dispose();
+    assert.equal(controller.attemptCount(), 0);
   });
 });

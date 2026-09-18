@@ -70,7 +70,7 @@ export type CommandCodeBrowserLoginFailureReason =
   | 'denied'
   /** No callback arrived within the login window. */
   | 'timeout'
-  /** Cancelled by the user or torn down with the app. */
+  /** Cancelled by the user, or torn down with the app or the renderer that started it. */
   | 'cancelled'
   /** A newer attempt replaced this one, or the attempt id is unknown/spent. */
   | 'superseded'
@@ -141,6 +141,8 @@ export function buildCommandCodeAuthUrl(input: {
 
 interface Attempt {
   readonly id: string;
+  /** Whoever started it, when the caller named one; see `abandonOwner()`. */
+  readonly ownerId: string | undefined;
   readonly state: string;
   port: number;
   server: Server | undefined;
@@ -168,24 +170,25 @@ export class CommandCodeBrowserLoginController {
    */
   async start(
     input: CommandCodeBrowserLoginStartInput = {},
+    ownerId?: string,
   ): Promise<CommandCodeBrowserLoginStartResult> {
     if (this.#disposed) return { ok: false, reason: 'browser_unavailable' };
     // Reserved before the first await. Binding a port is asynchronous, so a
     // second start() that ran the supersession check first would see no
     // current attempt, bind a second port beside this one, and leave two live
     // attempts each able to deliver its own credentials.
-    const attempt = this.#reserve();
+    const attempt = this.#reserve(ownerId);
 
     const bound = await this.#bind(attempt);
     if (!bound) {
-      this.#finish(attempt, { ok: false, reason: 'port_unavailable' });
+      this.#abandon(attempt, { ok: false, reason: 'port_unavailable' });
       return { ok: false, reason: 'port_unavailable' };
     }
-    // A newer start (or a cancel, or dispose) retired this attempt while it
-    // was binding. Its result has already settled; the port it just took is
-    // held by nobody, so release it here.
+    // A newer start (or a cancel, dispose, or its owner going away) retired
+    // this attempt while it was binding. Its result has already settled; the
+    // port it just took is held by nobody, so release it here.
     if (attempt.settle === undefined || this.#disposed) {
-      this.#finish(attempt, { ok: false, reason: 'superseded' });
+      this.#abandon(attempt, { ok: false, reason: 'superseded' });
       return { ok: false, reason: 'superseded' };
     }
 
@@ -203,7 +206,7 @@ export class CommandCodeBrowserLoginController {
     try {
       await this.#deps.openExternal(authUrl);
     } catch {
-      this.#finish(attempt, { ok: false, reason: 'browser_unavailable' });
+      this.#abandon(attempt, { ok: false, reason: 'browser_unavailable' });
       return { ok: false, reason: 'browser_unavailable' };
     }
     // The browser may already have posted back while openExternal was
@@ -227,13 +230,34 @@ export class CommandCodeBrowserLoginController {
   cancel(attemptId?: string): void {
     const attempt = attemptId === undefined ? this.#current : this.#attempts.get(attemptId);
     if (attempt === undefined) return;
-    this.#finish(attempt, { ok: false, reason: 'cancelled' });
+    this.#abandon(attempt, { ok: false, reason: 'cancelled' });
+  }
+
+  /**
+   * Abandons every attempt `ownerId` started. The document that started them
+   * is gone (its renderer crashed or was destroyed, or it was reloaded), so no
+   * `complete()` or `cancel()` will arrive for them; a start still binding or
+   * opening the browser gives up its port here too. A `complete()` already
+   * waiting settles as it would for `cancel()`.
+   */
+  abandonOwner(ownerId: string): void {
+    for (const attempt of this.#attempts.values()) {
+      if (attempt.ownerId === ownerId) this.#abandon(attempt, { ok: false, reason: 'cancelled' });
+    }
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#finish(this.#current, { ok: false, reason: 'cancelled' });
+    // Every other attempt settled when it was retired, and a waiting
+    // `complete()` holds its own.
+    this.#attempts.clear();
+  }
+
+  /** Attempts held for a `complete()` — asserts the leak invariant in tests. */
+  attemptCount(): number {
+    return this.#attempts.size;
   }
 
   // ---------------------------------------------------------------------
@@ -241,13 +265,14 @@ export class CommandCodeBrowserLoginController {
   // ---------------------------------------------------------------------
 
   /** Retires the live attempt and installs a fresh one, without awaiting. */
-  #reserve(): Attempt {
+  #reserve(ownerId: string | undefined): Attempt {
     let settle!: (result: CommandCodeBrowserLoginResult) => void;
     const settled = new Promise<CommandCodeBrowserLoginResult>((resolve) => {
       settle = resolve;
     });
     const attempt: Attempt = {
       id: randomUUID(),
+      ownerId,
       state: this.#deps.randomToken?.(32) ?? randomBytes(32).toString('base64url'),
       port: 0,
       server: undefined,
@@ -383,6 +408,17 @@ export class CommandCodeBrowserLoginController {
     const settle = attempt.settle;
     attempt.settle = undefined;
     settle?.(result);
+  }
+
+  /**
+   * Finishes an attempt nobody will look up again: a failed start never
+   * handed its id out, a cancel walks away from its own, and a renderer that
+   * went away can no longer ask. A `complete()` already waiting holds the
+   * attempt itself and still reads the result.
+   */
+  #abandon(attempt: Attempt, result: CommandCodeBrowserLoginResult): void {
+    this.#finish(attempt, result);
+    this.#attempts.delete(attempt.id);
   }
 }
 

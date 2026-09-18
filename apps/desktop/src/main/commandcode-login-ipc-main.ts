@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { IpcMain } from 'electron';
+import type { Event, IpcMain, IpcMainInvokeEvent } from 'electron';
 import type {
   CommandCodeBrowserLoginController,
   CommandCodeBrowserLoginResult,
@@ -39,17 +39,77 @@ export const COMMANDCODE_LOGIN_IPC_CHANNELS = {
  */
 export interface CommandCodeLoginIpcDeps {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
-  readonly controller: Pick<CommandCodeBrowserLoginController, 'start' | 'complete' | 'cancel'>;
+  readonly controller: Pick<
+    CommandCodeBrowserLoginController,
+    'start' | 'complete' | 'cancel' | 'abandonOwner'
+  >;
 }
 
 const MAX_BASE_URL_CHARS = 2_048;
 const MAX_ATTEMPT_ID_CHARS = 128;
+/** Chromium's net::ERR_ABORTED: a cancelled load, which commits no error page. */
+const NET_ERR_ABORTED = -3;
 
 export function registerCommandCodeLoginIpc(deps: CommandCodeLoginIpcDeps): void {
+  // The controller outlives every renderer, and crash recovery and the error
+  // boundary both reload the same WebContents without destroying it. A document
+  // that goes away mid-login never sends the complete() or cancel() that would
+  // release its attempt.
+  const observedOwners = new Set<string>();
+  const bindOwner = (event: IpcMainInvokeEvent): string => {
+    const ownerId = `web-contents:${event.sender.id}`;
+    if (!observedOwners.has(ownerId)) {
+      observedOwners.add(ownerId);
+      // Whichever event comes first detaches them all, so this runs once per
+      // observation; the next start, from a recovered renderer or a new
+      // document, observes it afresh.
+      const abandon = () => {
+        observedOwners.delete(ownerId);
+        event.sender.removeListener('render-process-gone', abandon);
+        event.sender.removeListener('destroyed', abandon);
+        event.sender.removeListener('did-frame-navigate', onFrameNavigated);
+        event.sender.removeListener('did-fail-provisional-load', onErrorPageCommitted);
+        deps.controller.abandonOwner(ownerId);
+      };
+      // A reload keeps the WebContents, so neither lifecycle event fires; the
+      // next main-frame document's commit retires this one. A navigation's start
+      // is too early, since will-navigate may block it, and a same-document
+      // route commits no document.
+      const onFrameNavigated = (
+        _event: Event,
+        _url: string,
+        _httpResponseCode: number,
+        _httpStatusText: string,
+        isMainFrame: boolean,
+      ): void => {
+        if (isMainFrame) abandon();
+      };
+      // A reload that fails, say while the dev server is down, commits an error
+      // page instead. A load that is stopped, prevented by will-navigate, or
+      // turned into a download keeps the document. Electron 43 reports nothing
+      // here for such a load, though its documentation describes this event for
+      // one window.stop() cancels, which Chromium fails with net::ERR_ABORTED.
+      const onErrorPageCommitted = (
+        _event: Event,
+        errorCode: number,
+        _errorDescription: string,
+        _validatedURL: string,
+        isMainFrame: boolean,
+      ): void => {
+        if (isMainFrame && errorCode !== NET_ERR_ABORTED) abandon();
+      };
+      event.sender.once('render-process-gone', abandon);
+      event.sender.once('destroyed', abandon);
+      event.sender.on('did-frame-navigate', onFrameNavigated);
+      event.sender.on('did-fail-provisional-load', onErrorPageCommitted);
+    }
+    return ownerId;
+  };
+
   deps.ipcMain.handle(
     COMMANDCODE_LOGIN_IPC_CHANNELS.start,
-    (_event, raw: unknown): Promise<CommandCodeBrowserLoginStartResult> =>
-      deps.controller.start(decodeStartInput(raw)),
+    (event, raw: unknown): Promise<CommandCodeBrowserLoginStartResult> =>
+      deps.controller.start(decodeStartInput(raw), bindOwner(event)),
   );
   deps.ipcMain.handle(
     COMMANDCODE_LOGIN_IPC_CHANNELS.complete,
