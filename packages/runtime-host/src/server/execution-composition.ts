@@ -948,6 +948,8 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       onProjectionChanged: (sessionId) =>
         continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'deep_research'),
+      onArtifactDeleted: (sessionId, artifactId) =>
+        hostChanges.publishArtifactDeleted(sessionId, artifactId),
     });
     dailyReview = new HostDailyReviewCoordinator({
       store: openedDailyReviewStore,
@@ -1588,6 +1590,7 @@ export async function createExecutionRuntimeHostComposition(
       stores.sessionStore,
       Date.now,
       context.sessionAccessAuthority,
+      (sessionId, artifactId) => hostChanges.publishArtifactDeleted(sessionId, artifactId),
     );
     rootCoordinator = new RootTurnCoordinator(
       manager,
@@ -2475,6 +2478,7 @@ export async function createExecutionRuntimeHostComposition(
       graph: requireGraphCoordinator(graphCoordinator),
       isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
       requestDrain: context.requestDrain,
+      onArtifactsPurged: (sessionId) => hostChanges.publishArtifactSessionPurged(sessionId),
     });
     const sessionRetirement = new HostSessionRetirementCoordinator({
       stores: stores.sessionStore,
@@ -2502,6 +2506,7 @@ export async function createExecutionRuntimeHostComposition(
         await openedPlanStore.purgeSessionState(sessionId);
         await openedDeepResearchStore.purgeSessionState(sessionId);
       },
+      onArtifactsPurged: (sessionId) => hostChanges.publishArtifactSessionPurged(sessionId),
       purgeAgentGraphState: async (sessionId) => {
         for (const graphId of await requireGraphCoordinator(graphCoordinator).listGraphIds(
           sessionId,

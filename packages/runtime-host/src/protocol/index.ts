@@ -41,6 +41,7 @@ import {
   decodeConfigurationChangedFrame,
   type ConfigurationChangedFrame,
 } from './configuration-change.js';
+import { decodeArtifactChangedFrame, type ArtifactChangedFrame } from './artifact-change.js';
 import {
   decodeSessionCatalogChangedFrame,
   type SessionCatalogChangedFrame,
@@ -67,6 +68,7 @@ import {
 import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
 
 export * from './access-authority.js';
+export * from './artifact-change.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
 export * from './daily-review.js';
@@ -101,7 +103,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 163 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 164 as const;
+// 164: Host change feed includes Artifact deletion and Session purge invalidation frames.
 // 163: Session reference quotes carry strict capture and truncation provenance.
 // Epoch-162 peers reject the added QuoteRef fields.
 // 162: Runtime Resource control and stop replies drop the unused resource
@@ -496,6 +499,7 @@ export type HostFrame =
   | SubscriptionFrame
   | ClientCapabilityHostFrame
   | ConfigurationChangedFrame
+  | ArtifactChangedFrame
   | ConnectionCatalogChangedFrame
   | ProjectCatalogChangedFrame
   | SessionCatalogChangedFrame
@@ -630,6 +634,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
     return decodeClientCapabilityHostFrame(frame);
   }
   if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === 'artifact.changed') return decodeArtifactChangedFrame(frame);
   if (frame.kind === 'connection.catalog.changed') {
     return decodeConnectionCatalogChangedFrame(frame);
   }

@@ -688,6 +688,7 @@ describe('Maka ACP stdio server', () => {
         return subscription;
       },
       subscribeConfigurationChanges: () => () => undefined,
+      subscribeArtifactChanges: () => () => undefined,
       subscribeConnectionCatalogChanges: () => () => undefined,
       subscribeProjectCatalogChanges: () => () => undefined,
       subscribeSessionCatalogChanges: () => () => undefined,

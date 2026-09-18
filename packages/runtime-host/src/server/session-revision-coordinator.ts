@@ -123,6 +123,7 @@ export interface HostSessionRevisionCoordinatorOptions {
   >;
   readonly isSessionActive: (sessionId: string) => boolean;
   readonly requestDrain: () => void;
+  readonly onArtifactsPurged?: (sessionId: string) => void;
 }
 
 /** Host authority for exact, retryable cross-Session branch and revision copies. */
@@ -894,6 +895,9 @@ export class HostSessionRevisionCoordinator {
         ...(this.options.contextOffload ? { contextOffload: this.options.contextOffload } : {}),
         purgeOperationalState: (sessionId) =>
           this.#stores.purgeConversationOperationalState(sessionId),
+        ...(this.options.onArtifactsPurged
+          ? { onArtifactsPurged: this.options.onArtifactsPurged }
+          : {}),
       },
       header.id,
     );

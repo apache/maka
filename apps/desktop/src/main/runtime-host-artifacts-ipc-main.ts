@@ -83,6 +83,8 @@ export function registerRuntimeHostArtifactsIpc(
     "artifacts:delete",
     async (_event, sessionId: string, artifactId: string) => {
       const result = await deps.client.deleteArtifact(sessionId, artifactId);
+      // Keep the direct revoke: the Host also publishes artifact.changed, but
+      // stopping the bytes here must not depend on feed delivery to this Client.
       await deps.preview?.service.revoke(deps.preview.scope, sessionId, artifactId);
       return result;
     },

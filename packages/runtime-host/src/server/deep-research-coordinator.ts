@@ -49,6 +49,7 @@ export interface HostDeepResearchCoordinatorInput {
   readonly sessions: Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly onProjectionChanged: (sessionId: string) => void;
+  readonly onArtifactDeleted?: (sessionId: string, artifactId: string) => void;
 }
 
 /** Host-owned Deep Research ledger, model-tool, and Client projection boundary. */
@@ -63,12 +64,14 @@ export class HostDeepResearchCoordinator {
   readonly #sessions: HostDeepResearchCoordinatorInput['sessions'];
   readonly #sessionAdmission: SessionAdmissionGate;
   readonly #unsubscribe: () => void;
+  readonly #onArtifactDeleted: HostDeepResearchCoordinatorInput['onArtifactDeleted'];
 
   constructor(input: HostDeepResearchCoordinatorInput) {
     this.#store = authenticateInteractiveDeepResearchStoreWriter(input.store);
     this.#artifacts = authenticateInteractiveArtifactStoreWriter(input.artifacts);
     this.#sessions = input.sessions;
     this.#sessionAdmission = input.sessionAdmission;
+    this.#onArtifactDeleted = input.onArtifactDeleted;
     this.#unsubscribe = this.#store.subscribe(({ sessionId }) => {
       input.onProjectionChanged(sessionId);
     });
@@ -88,8 +91,16 @@ export class HostDeepResearchCoordinator {
           (await this.#artifacts.getInSession(sessionId, artifactId)).record ?? null,
         readText: (artifactId, options) =>
           this.#artifacts.readTextInSession(sessionId, artifactId, options),
-        delete: (artifactId) =>
-          this.#artifacts.deleteOwnedArtifactInSession(sessionId, artifactId, 'deep_research'),
+        // deleteOwnedArtifactInSession throws unless the Artifact was owned and
+        // removed, so reaching the invalidation means the bytes are gone.
+        delete: async (artifactId) => {
+          await this.#artifacts.deleteOwnedArtifactInSession(
+            sessionId,
+            artifactId,
+            'deep_research',
+          );
+          this.#onArtifactDeleted?.(sessionId, artifactId);
+        },
       },
     });
   }

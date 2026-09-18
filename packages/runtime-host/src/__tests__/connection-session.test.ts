@@ -57,6 +57,7 @@ import type {
   ClientCapabilityService,
 } from '../server/client-capability-service.js';
 import { RuntimeHostConnectionSession } from '../server/connection-session.js';
+import { HostChangeFeed } from '../server/host-change-feed.js';
 import type { SessionContinuityService } from '../server/session-continuity-service.js';
 import {
   createUnavailableHostCoreOperationHandlers,
@@ -134,6 +135,65 @@ test('concurrent responses remain framed and correlated in reverse completion or
       }
     },
   );
+});
+
+test('scopes Session Guest Artifact changes to the shared Session', async () => {
+  const pair = await openTransportPair();
+  const hostChanges = new HostChangeFeed();
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: {
+      ...acceptedConnection('session-guest-artifact-changes'),
+      authority: {
+        principalKind: 'session_guest',
+        principalId: 'session_guest:guest-1',
+        credentialId: 'credential-1',
+        operationGrants: ['artifact.query', 'session.shared.query'],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+      },
+    },
+    resolveHandlers: () => ({
+      'host.status': async () => ({
+        ok: true,
+        result: {
+          hostEpoch: 'host-epoch',
+          compositionId: 'maka.interactive',
+          compositionRevision: '1',
+          state: 'ready',
+          connections: 1,
+          activeOperations: 0,
+          activeResidencies: 0,
+        },
+      }),
+      ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+      ...createUnavailableHostCoreOperationHandlers(),
+      ...createUnavailableDomainOperationHandlers(),
+    }),
+    resolveContinuity: () => undefined,
+    resolveHostChanges: () => hostChanges,
+    resolveSharedSessionId: () => 'session-1',
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  try {
+    hostChanges.publishArtifactDeleted('session-2', 'artifact-2');
+    hostChanges.publishArtifactDeleted('session-1', 'artifact-1');
+    assert.deepEqual(decodeHostFrame(await pair.clientTransport.read(1_000)), {
+      kind: 'artifact.changed',
+      reason: 'deleted',
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+    });
+  } finally {
+    pair.clientTransport.abort();
+    await Promise.allSettled([run, pair.close()]);
+  }
 });
 
 test('transcript pages are serialized per connection before their responses are retained', async () => {

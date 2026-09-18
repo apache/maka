@@ -115,6 +115,7 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await expect(queued.locator('.maka-composer-queue-text')).toHaveText([
       'first follow-up', 'second follow-up', 'retract this follow-up',
     ]);
+    await expect(queued.locator('[draggable="true"]')).toHaveCount(3);
     await queued.getByRole('button', { name: '编辑', exact: true }).first().click();
     const edit = queued.getByRole('textbox', { name: '编辑', exact: true });
     await edit.fill('edited first follow-up');
@@ -181,6 +182,7 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
       await sideComposer.press('Enter');
       await expect(queued).toContainText(text);
     }
+    await expect(queued.locator('[draggable="true"]')).toHaveCount(2);
     await armConnectionGap(app);
     // Capture the actual Desktop client before closing its transport.
     await page.evaluate((id) => window.maka.sessions.queryMessageExecutions(id, ['e2e-connection-probe']), forkId);

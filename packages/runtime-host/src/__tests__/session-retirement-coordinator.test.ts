@@ -196,6 +196,56 @@ describe('Host Session retirement coordinator', () => {
     assert.equal(garbageBatches, 0);
   });
 
+  test('publishes Session Artifact invalidation only when Artifact purge succeeds', async () => {
+    const purged: string[] = [];
+    await purgeSessionSidecars(
+      {
+        artifacts: { purgeSessionArtifacts: async () => {} },
+        sessionTodo: { purgeSessionState: async () => {} },
+        purgeOperationalState: async () => {},
+        onArtifactsPurged: (sessionId) => purged.push(sessionId),
+      },
+      'session-success',
+    );
+    assert.deepEqual(purged, ['session-success']);
+
+    await assert.rejects(
+      purgeSessionSidecars(
+        {
+          artifacts: {
+            purgeSessionArtifacts: async () => {
+              throw new Error('Artifact purge failed');
+            },
+          },
+          sessionTodo: { purgeSessionState: async () => {} },
+          purgeOperationalState: async () => {},
+          onArtifactsPurged: (sessionId) => purged.push(sessionId),
+        },
+        'session-artifact-failure',
+      ),
+      AggregateError,
+    );
+    assert.deepEqual(purged, ['session-success']);
+
+    await assert.rejects(
+      purgeSessionSidecars(
+        {
+          artifacts: { purgeSessionArtifacts: async () => {} },
+          sessionTodo: {
+            purgeSessionState: async () => {
+              throw new Error('Todo purge failed');
+            },
+          },
+          purgeOperationalState: async () => {},
+          onArtifactsPurged: (sessionId) => purged.push(sessionId),
+        },
+        'session-other-failure',
+      ),
+      AggregateError,
+    );
+    assert.deepEqual(purged, ['session-success', 'session-other-failure']);
+  });
+
   test('rejects ordinary archive and remove operations for the Coordination Session', async () => {
     await withHarness(async (harness) => {
       const created = await harness.store.createStableSession({

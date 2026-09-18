@@ -61,6 +61,7 @@ import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
+import { ManagedArtifactPreview } from '../managed-artifact-preview.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
@@ -497,6 +498,67 @@ test('tears down the whole candidate when the Host connection closes', async () 
   await candidate.closed;
 
   assert.equal(host.closeCalls, 1);
+});
+
+test('closes old managed Artifact previews and reopens the scope after reconnect', async () => {
+  const ipc = ipcHarness();
+  const firstHost = connectionHarness('preview-first');
+  const preview = new ManagedArtifactPreview();
+  const bytes = Buffer.from('<!doctype html><title>Preview</title>');
+  const candidateDeps = {
+    ...deps(ipc),
+    registerClientIpc: (_client, _ipc, _controls, _target, scope) => {
+      preview.openScope(scope.targetEpoch);
+      return () => preview.closeScope(scope.targetEpoch);
+    },
+  } satisfies DesktopRuntimeHostCandidateDeps;
+  const firstCandidate = await createDesktopRuntimeHostCandidate(firstHost.connection, candidateDeps);
+  let secondCandidate: Awaited<ReturnType<typeof createDesktopRuntimeHostCandidate>> | undefined;
+  const source = {
+    getArtifact: async () => ({
+      id: 'artifact-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      createdAt: 0,
+      name: 'preview.html',
+      kind: 'html' as const,
+      sizeBytes: bytes.length,
+      source: 'tool_result' as const,
+    }),
+    streamArtifact: async (_sessionId: string, _artifactId: string, write: (chunk: Uint8Array) => Promise<void>) => {
+      await write(bytes);
+      return bytes.length;
+    },
+  };
+
+  try {
+    const endpoint = await preview.prepare(
+      TEST_TARGET_EPOCH,
+      source,
+      'session-1',
+      'artifact-1',
+    );
+    assert.equal(await (await fetch(endpoint.url)).text(), bytes.toString());
+
+    firstHost.disconnect();
+    await firstCandidate.closed;
+
+    await assert.rejects(fetch(endpoint.url));
+
+    const secondHost = connectionHarness('preview-second');
+    secondCandidate = await createDesktopRuntimeHostCandidate(secondHost.connection, candidateDeps);
+    const replacement = await preview.prepare(
+      TEST_TARGET_EPOCH,
+      source,
+      'session-1',
+      'artifact-1',
+    );
+    assert.equal(await (await fetch(replacement.url)).text(), bytes.toString());
+  } finally {
+    await firstCandidate.close();
+    await secondCandidate?.close();
+    await preview.close();
+  }
 });
 
 test('preserves supported IPC when the connection closes before candidate startup returns', { timeout: 5_000 }, async (t) => {
