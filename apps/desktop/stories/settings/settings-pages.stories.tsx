@@ -97,6 +97,8 @@ import { withScopedMakaBridge } from '../maka-bridge';
 import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
 import { getExternalSessionImportCopy } from '../../src/renderer/locales/external-session-import-copy';
 import { getUsageSettingsCopy } from '../../src/renderer/locales/settings-usage-copy';
+import { getHealthCenterCopy } from '../../src/renderer/locales/settings-health-copy';
+import { getPermissionCenterCopy } from '../../src/renderer/locales/permission-center-copy';
 
 /**
  * Read from the copy table, not typed out again. This selector matched a
@@ -1040,6 +1042,56 @@ const settingsPageTransitionBridge = {
   },
 } satisfies Record<string, unknown>;
 const withSettingsPageTransitionBridge = withScopedMakaBridge(settingsPageTransitionBridge);
+
+// Hold each read until play has observed the cached page and its refresh
+// control. This covers an indefinitely pending request without timer races.
+function controlledSettingsRead<T>() {
+  let pending: Array<{ resolve(value: T): void; reject(error: Error): void }> = [];
+  return {
+    getSnapshot: () => new Promise<T>((resolve, reject) => pending.push({ resolve, reject })),
+    resolve(snapshot: T) {
+      const reads = pending.splice(0);
+      expect(reads.length).toBeGreaterThan(0);
+      for (const read of reads) read.resolve(snapshot);
+    },
+    reject() {
+      const reads = pending.splice(0);
+      expect(reads.length).toBeGreaterThan(0);
+      for (const read of reads) read.reject(new Error('Snapshot request timeout'));
+    },
+    reset() { pending = []; },
+  };
+}
+
+const healthRefreshRead = controlledSettingsRead<HealthSnapshot>();
+const permissionRefreshRead = controlledSettingsRead<PermissionSnapshot>();
+const capabilityRefreshRead = controlledSettingsRead<CapabilitySnapshotCollection>();
+const withSettingsRefreshFailureBridge = withScopedMakaBridge({
+  ...makaBridge,
+  health: { getSnapshot: healthRefreshRead.getSnapshot },
+  permissions: { ...makaBridge.permissions, getSnapshot: permissionRefreshRead.getSnapshot },
+  capabilities: { getSnapshot: capabilityRefreshRead.getSnapshot },
+} satisfies Record<string, unknown>);
+
+function observeSettingsSkeletons(canvasElement: HTMLElement) {
+  let inserted = 0;
+  const inspect = (records: MutationRecord[]) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (!(node instanceof Element)) continue;
+        if (node.matches('.settingsSkeletonStack')) inserted += 1;
+        inserted += node.querySelectorAll('.settingsSkeletonStack').length;
+      }
+    }
+  };
+  const observer = new MutationObserver(inspect);
+  observer.observe(canvasElement, { childList: true, subtree: true });
+  return () => {
+    inspect(observer.takeRecords());
+    observer.disconnect();
+    expect(inserted).toBe(0);
+  };
+}
 
 let typographyStoryDefaultSlug: string | null = 'zai-live';
 let typographyStorySelectedPetId: string | null = 'storybook.typography-pet';
@@ -3396,26 +3448,15 @@ export const HealthCenter: Story = {
     // A delayed revalidation makes the old full-page loading placeholder
     // observable instead of depending on IPC timing or a paint screenshot.
     await canvas.findByRole('heading', { name: '支持' });
-    let insertedSkeletons = 0;
-    const observer = new MutationObserver((records) => {
-      for (const record of records) {
-        for (const node of record.addedNodes) {
-          if (!(node instanceof Element)) continue;
-          if (node.matches('.settingsSkeletonStack')) insertedSkeletons += 1;
-          insertedSkeletons += node.querySelectorAll('.settingsSkeletonStack').length;
-        }
-      }
-    });
-    observer.observe(canvasElement, { childList: true, subtree: true });
+    const assertNoSkeletons = observeSettingsSkeletons(canvasElement);
     try {
       await userEvent.click(canvas.getByRole('button', { name: /^权限与能力$/ }));
       await canvas.findByRole('button', { name: /^仅显示已授权权限/ });
       await userEvent.click(canvas.getByRole('button', { name: /^健康$/ }));
       await canvas.findByRole('button', { name: /^仅显示错误健康信号/ });
     } finally {
-      observer.disconnect();
+      assertNoSkeletons();
     }
-    expect(insertedSkeletons).toBe(0);
 
     const errorFilter = canvas.getByRole('button', { name: /^仅显示错误健康信号/ });
     expect(errorFilter).toHaveAttribute('aria-pressed', 'false');
@@ -3432,6 +3473,116 @@ export const HealthCenter: Story = {
       expect(errorFilter).toHaveAttribute('aria-pressed', 'false');
       expect(canvas.getByText('Z.AI Live')).toBeInTheDocument();
     });
+  },
+};
+
+// Real path: 设置 → 健康, revisit a cached snapshot while the Host read fails;
+// retry successfully, then leave a subsequent failed refresh visible.
+export const HealthCenterRefreshFailed: Story = {
+  decorators: [withSettingsRefreshFailureBridge],
+  beforeEach: () => { healthRefreshRead.reset(); },
+  render: () => (
+    <SettingsStory section="about" seedSnapshotCache={seedSettingsPageTransitionSnapshotCache} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = getHealthCenterCopy('zh-CN');
+    await canvas.findByRole('heading', { name: '支持' });
+    const assertNoSkeletons = observeSettingsSkeletons(canvasElement);
+    try {
+      await userEvent.click(canvas.getByRole('button', { name: /^健康$/ }));
+      const refresh = await canvas.findByRole('button', { name: copy.refresh });
+      await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'true'));
+      expect(canvas.getByText('Z.AI Live')).toBeVisible();
+      healthRefreshRead.reject();
+      await canvas.findByText(copy.readFailed);
+      expect(canvas.getByText('Z.AI Live')).toBeVisible();
+      expect(refresh).not.toHaveAttribute('aria-busy', 'true');
+
+      await userEvent.click(canvas.getByRole('button', { name: copy.readAgain }));
+      await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'true'));
+      expect(canvas.queryByText(copy.readFailed)).not.toBeInTheDocument();
+      expect(canvas.getByText('Z.AI Live')).toBeVisible();
+      healthRefreshRead.resolve({
+        ...healthSnapshot,
+        signals: healthSnapshot.signals.map((signal) => (
+          signal.label === 'Z.AI Live' ? { ...signal, label: 'Z.AI Updated' } : signal
+        )),
+      });
+      await canvas.findByText('Z.AI Updated');
+      expect(refresh).not.toHaveAttribute('aria-busy', 'true');
+
+      await userEvent.click(refresh);
+      await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'true'));
+      healthRefreshRead.reject();
+      await canvas.findByText(copy.readFailed);
+      expect(canvas.getByText('Z.AI Updated')).toBeVisible();
+      expect(refresh).not.toHaveAttribute('aria-busy', 'true');
+    } finally {
+      assertNoSkeletons();
+    }
+  },
+};
+
+// Real path: 设置 → 权限与能力, revisit cached permissions/capabilities; a
+// permission read fails, retry succeeds, then the capability read fails.
+export const PermissionCenterRefreshFailed: Story = {
+  decorators: [withSettingsRefreshFailureBridge],
+  beforeEach: () => {
+    permissionRefreshRead.reset();
+    capabilityRefreshRead.reset();
+  },
+  render: () => (
+    <SettingsStory section="about" seedSnapshotCache={seedSettingsPageTransitionSnapshotCache} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const copy = getPermissionCenterCopy('zh-CN');
+    await canvas.findByRole('heading', { name: '支持' });
+    const assertNoSkeletons = observeSettingsSkeletons(canvasElement);
+    try {
+      await userEvent.click(canvas.getByRole('button', { name: /^权限与能力$/ }));
+      const refresh = await canvas.findByRole('button', { name: copy.detectAgain });
+      const grantedFilter = (count: number) => canvas.getByRole('button', {
+        name: copy.summaryFilterAria(copy.granted, count, false),
+      });
+      await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'true'));
+      expect(grantedFilter(2)).toBeVisible();
+      expect(canvas.getByRole('group', { name: copy.capabilityListAria })).toBeInTheDocument();
+      permissionRefreshRead.reject();
+      capabilityRefreshRead.resolve(capabilitySnapshot);
+      await canvas.findByText(copy.readFailed);
+      expect(grantedFilter(2)).toBeVisible();
+      expect(canvas.getByRole('group', { name: copy.capabilityListAria })).toBeInTheDocument();
+      expect(refresh).not.toHaveAttribute('aria-busy', 'true');
+
+      await userEvent.click(canvas.getByRole('button', { name: copy.readAgain }));
+      await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'true'));
+      expect(canvas.queryByText(copy.readFailed)).not.toBeInTheDocument();
+      expect(grantedFilter(2)).toBeVisible();
+      permissionRefreshRead.resolve({
+        ...permissionSnapshot,
+        permissions: {
+          ...permissionSnapshot.permissions,
+          screen_recording: { ...permissionSnapshot.permissions.screen_recording, status: 'granted' },
+        },
+      });
+      capabilityRefreshRead.resolve(capabilitySnapshot);
+      await waitFor(() => expect(grantedFilter(3)).toBeVisible());
+      expect(refresh).not.toHaveAttribute('aria-busy', 'true');
+
+      await userEvent.click(refresh);
+      await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'true'));
+      permissionRefreshRead.resolve(permissionSnapshot);
+      capabilityRefreshRead.reject();
+      await canvas.findByText(copy.readFailed);
+      // A partially successful read must not replace the last complete pair.
+      expect(grantedFilter(3)).toBeVisible();
+      expect(canvas.getByRole('group', { name: copy.capabilityListAria })).toBeInTheDocument();
+      expect(refresh).not.toHaveAttribute('aria-busy', 'true');
+    } finally {
+      assertNoSkeletons();
+    }
   },
 };
 // Real path: 设置 → 关于 (also reachable from 反馈 in the topbar).

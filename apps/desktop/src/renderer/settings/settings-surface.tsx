@@ -64,6 +64,7 @@ import type {
   DesktopSessionSummary,
 } from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
+import type { HealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
 import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
@@ -124,6 +125,7 @@ import {
 import {
   runtimeHostSettingsKey,
   settingsSnapshotCacheFor,
+  type PermissionCenterSnapshot,
   type RuntimeHostConnectionsSnapshot,
   type SettingsSnapshotCache,
 } from './settings-snapshot-cache.js';
@@ -1124,8 +1126,8 @@ function SettingsPageBody(props: {
   onTaskImported(session: DesktopSessionSummary): void;
   onRemoteHostAdded(profileId: string): void;
   snapshotKey?: string;
-  healthSnapshot?: Parameters<typeof HealthCenterPage>[0]['initialSnapshot'];
-  permissionCenterSnapshot?: Parameters<typeof PermissionCenterPage>[0]['initialSnapshot'];
+  healthSnapshot?: HealthSnapshot;
+  permissionCenterSnapshot?: PermissionCenterSnapshot;
   onHealthSnapshot: Parameters<typeof HealthCenterPage>[0]['onSnapshot'];
   onPermissionCenterSnapshot: Parameters<typeof PermissionCenterPage>[0]['onSnapshot'];
   openProviderCatalog?: boolean;

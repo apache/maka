@@ -162,6 +162,7 @@ export function HealthCenterPage(props: {
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
+              isLoading={loading}
               label={copy.refresh}
             />
           </div>

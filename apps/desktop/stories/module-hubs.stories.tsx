@@ -919,6 +919,12 @@ export const HostAutomationsScheduledTasks: Story = {
   ),
 };
 
+/**
+ * Starts on Scheduled Tasks to observe the first switch; `play` leaves Daily
+ * Review visible for the visual catalog. With autoplay disabled, the initial
+ * Scheduled Tasks page is intentional.
+ */
+// Real path: sidebar → 定时任务 → 每日回顾.
 export const HostAutomationsDailyReview: Story = {
   render: () => (
     <ModuleHubHostSurface
@@ -935,11 +941,20 @@ export const HostAutomationsDailyReview: Story = {
     const mutationObserver = new MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.addedNodes) {
-          if (
-            node instanceof Element
-            && (node.matches('.maka-lazy-fallback') || node.querySelector('.maka-lazy-fallback'))
-          ) {
-            lazyFallbacks += 1;
+          if (!(node instanceof Element)) continue;
+          const fallbacks = [
+            ...(node.matches('.maka-lazy-fallback') ? [node] : []),
+            ...node.querySelectorAll('.maka-lazy-fallback'),
+          ];
+          for (const fallback of fallbacks) {
+            // Ignore Scheduled Tasks even if its chunk settles after play
+            // starts. The target also covers an added fallback removed again
+            // before this observer callback runs.
+            if (
+              fallback.closest('[data-module="daily-review"]')
+              || (record.target instanceof Element
+                && record.target.closest('[data-module="daily-review"]'))
+            ) lazyFallbacks += 1;
           }
         }
       }

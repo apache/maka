@@ -66,6 +66,7 @@ import {
 } from './runtime-host-settings-target.js';
 import { dotForStatus } from '@maka/ui';
 import { SettingsSkeletonStack } from './settings-skeleton';
+import type { PermissionCenterSnapshot } from './settings-snapshot-cache.js';
 import { useActionGuard } from './use-action-guard';
 import {
   SettingsStatusSummaryFilter,
@@ -102,14 +103,8 @@ type PermissionStatusFilter = 'granted' | 'pending' | 'denied' | 'other';
 
 export function PermissionCenterPage(props: {
   snapshotKey?: string;
-  initialSnapshot?: {
-    readonly permissions: PermissionSnapshot;
-    readonly capabilities: CapabilitySnapshotCollection;
-  };
-  onSnapshot(key: string, snapshot: {
-    readonly permissions: PermissionSnapshot;
-    readonly capabilities: CapabilitySnapshotCollection;
-  }): void;
+  initialSnapshot?: PermissionCenterSnapshot;
+  onSnapshot(key: string, snapshot: PermissionCenterSnapshot): void;
 }) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
@@ -120,7 +115,7 @@ export function PermissionCenterPage(props: {
   const [capabilities, setCapabilities] = useState<CapabilitySnapshotCollection | null>(
     () => props.initialSnapshot?.capabilities ?? null,
   );
-  const [loading, setLoading] = useState(props.initialSnapshot === undefined);
+  const [loading, setLoading] = useState(permissions === null || capabilities === null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [pendingPermAction, setPendingPermAction] = useState<string | null>(null);
@@ -291,6 +286,7 @@ export function PermissionCenterPage(props: {
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
+              isLoading={loading}
               label={copy.detectAgain}
             />
           </div>
