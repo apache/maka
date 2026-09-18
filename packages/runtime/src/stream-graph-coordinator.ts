@@ -162,6 +162,7 @@ interface GraphDriver {
   stopTask?: Promise<void>;
   clientProjectionTask?: Promise<void>;
   clientProjectionDirty: boolean;
+  outputProjectionFlushScheduled: boolean;
   pendingOutputDeltas: Map<
     string,
     {
@@ -1188,26 +1189,45 @@ export class AgentGraphCoordinator {
     }
     const next = { event, activationHadError, sampleStartedAt: event.event.ts };
     driver.pendingOutputDeltas.set(operatorId, next);
-    const due = new Promise<void>((resolve) => {
-      setTimeout(resolve, OUTPUT_DELTA_PROJECTION_INTERVAL_MS);
-    });
+    this.#scheduleOutputProjectionFlush(driver);
+  }
+
+  #scheduleOutputProjectionFlush(driver: GraphDriver): void {
+    if (driver.outputProjectionFlushScheduled) return;
+    driver.outputProjectionFlushScheduled = true;
     this.#queueClientProjectionUpdate(driver, async () => {
-      await due;
-      driver.pendingOutputDeltas.delete(operatorId);
-      await this.#advanceClientProjection(
-        driver,
-        next.event,
-        next.activationHadError,
-        next.sampleStartedAt,
-      );
+      try {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, OUTPUT_DELTA_PROJECTION_INTERVAL_MS);
+        });
+        const pending = [...driver.pendingOutputDeltas.values()];
+        driver.pendingOutputDeltas.clear();
+        for (const delta of pending) {
+          await this.#advanceClientProjection(
+            driver,
+            delta.event,
+            delta.activationHadError,
+            delta.sampleStartedAt,
+          );
+        }
+      } finally {
+        driver.outputProjectionFlushScheduled = false;
+        if (driver.pendingOutputDeltas.size > 0) {
+          this.#scheduleOutputProjectionFlush(driver);
+        }
+      }
     });
   }
 
   async #waitForClientProjectionUpdates(driver: GraphDriver): Promise<void> {
-    await driver.clientProjectionTask?.catch(() => {
-      // A best-effort repair or later durable observation may repair this
-      // derived read side; graph authority never depends on it.
-    });
+    while (driver.clientProjectionTask) {
+      const task = driver.clientProjectionTask;
+      await task.catch(() => {
+        // A best-effort repair or later durable observation may repair this
+        // derived read side; graph authority never depends on it.
+      });
+      if (driver.clientProjectionTask === task) return;
+    }
   }
 
   async #repairClientProjectionBestEffort(driver: GraphDriver): Promise<void> {
@@ -1628,6 +1648,7 @@ export class AgentGraphCoordinator {
       closed: false,
       reconciliationReaders: 0,
       clientProjectionDirty: false,
+      outputProjectionFlushScheduled: false,
       pendingOutputDeltas: new Map(),
       runtimeFailureRunIds: new Set(),
       yieldWaiters: new Set(),
