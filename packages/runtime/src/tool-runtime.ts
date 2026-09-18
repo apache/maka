@@ -994,6 +994,7 @@ export class ToolRuntime {
     uncertainOutcome?: ToolUncertainOutcomeSignal,
     activityIdentity: ToolActivityIdentity = {},
     attempt?: DurableToolAttempt,
+    outcome?: ToolCallOutcome,
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
@@ -1020,6 +1021,7 @@ export class ToolRuntime {
           name: toolName,
           result: content,
           isError: true,
+          ...(outcome ? { outcome } : {}),
         },
         this.input.sessionId,
       ) ?? DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
@@ -1028,6 +1030,7 @@ export class ToolRuntime {
       turnId,
       toolUseId,
       isError: true,
+      ...(outcome ? { outcome } : {}),
       content,
       modelProjection,
       activityIdentity,
@@ -1663,7 +1666,7 @@ export class ToolRuntime {
           turnId,
           toolUseId,
           isError,
-          ...(tool.resultOutcome ? { outcome } : {}),
+          outcome,
           content,
           modelProjection,
           durationMs,
@@ -1766,6 +1769,7 @@ export class ToolRuntime {
         );
       }
       const uncertainOutcome = uncertainOutcomeSignalFromError(err);
+      const failureOutcome = ctx.abortSignal.aborted && !uncertainOutcome ? 'aborted' : 'error';
       const errorClass = uncertainOutcome ? 'OutcomeUnknown' : classifyError(err);
       const terminalFailure = coerceTerminalFailure(
         tool,
@@ -1803,6 +1807,7 @@ export class ToolRuntime {
           turnId,
           toolUseId,
           isError: true,
+          outcome: failureOutcome,
           content: terminalFailure.content,
           modelProjection,
           durationMs,
@@ -1817,7 +1822,7 @@ export class ToolRuntime {
           providerId: this.input.connection.providerType,
           modelId: this.input.modelId,
           durationMs,
-          status: 'error',
+          status: failureOutcome,
           errorClass,
           argsSummary:
             tool.categoryHint === 'computer_use'
@@ -1832,7 +1837,7 @@ export class ToolRuntime {
           toolUseId,
           toolName: tool.name,
           durationMs,
-          status: 'error',
+          status: failureOutcome,
           errorClass,
           ...(sandboxError ? { sandbox: sandboxError } : {}),
         });
@@ -1857,6 +1862,7 @@ export class ToolRuntime {
         uncertainOutcome,
         activityIdentity,
         durableAttempt,
+        failureOutcome,
       );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
@@ -1866,7 +1872,7 @@ export class ToolRuntime {
         providerId: this.input.connection.providerType,
         modelId: this.input.modelId,
         durationMs: Math.max(0, this.input.now() - startedAt),
-        status: 'error',
+        status: failureOutcome,
         errorClass,
         argsSummary:
           tool.categoryHint === 'computer_use'
@@ -1880,7 +1886,7 @@ export class ToolRuntime {
         toolUseId,
         toolName: tool.name,
         durationMs: Math.max(0, this.input.now() - startedAt),
-        status: 'error',
+        status: failureOutcome,
         errorClass,
         ...(sandboxError ? { sandbox: sandboxError } : {}),
       });

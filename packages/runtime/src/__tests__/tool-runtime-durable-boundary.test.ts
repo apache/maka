@@ -80,6 +80,43 @@ describe('ToolRuntime durable boundary', () => {
     assert.equal(ordinaryEvent?.type === 'tool_result' && ordinaryEvent.isError, false);
   });
 
+  it('commits a thrown stop as aborted without changing ordinary thrown failures', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const telemetry: string[] = [];
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+        commitToolOutcome: async (input) => {
+          outcomes.push(input);
+          return { created: true, runtimeEventSeq: 2 };
+        },
+      },
+      undefined,
+      'run-1',
+      { recordToolInvocation: (record) => telemetry.push(record.status) },
+    );
+    const controller = new AbortController();
+    await harness.execute(
+      tool(() => {
+        controller.abort(new Error('user stopped'));
+        throw controller.signal.reason;
+      }),
+      controller.signal,
+    );
+    const aborted = outcomes[0]?.runtimeEvent.content;
+    assert.equal(aborted?.kind === 'function_response' && aborted.outcome, 'aborted');
+    const live = harness.events.at(-1);
+    assert.equal(live?.type === 'tool_result' && live.outcome, 'aborted');
+    await harness.execute(
+      tool(() => {
+        throw new Error('ordinary failure');
+      }),
+    );
+    const failed = outcomes[1]?.runtimeEvent.content;
+    assert.equal(failed?.kind === 'function_response' && failed.outcome, 'error');
+    assert.deepEqual(telemetry, ['aborted', 'error']);
+  });
+
   it('does not invoke the tool or publish a result when T1 fails', async () => {
     let implementationCalls = 0;
     const harness = makeHarness({
