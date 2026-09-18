@@ -3,9 +3,10 @@ doc_id: computer-use-host-events-contract
 title: "Computer Use Host Events Contract"
 language: en
 source_language: en
+counterpart: ./computer-use-host-events-contract.zh-CN.md
 implementation_status: current
 document_status: current
-translation_status: source-only
+translation_status: synced
 last_verified: 2026-09-11
 owners:
   - maka-backend
