@@ -160,10 +160,17 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
     assertSafeCodexSessionId(sessionId);
-    const catalogEntry = await this.findCatalogEntry(sessionId);
-    if (!catalogEntry) throw new ExternalSessionNotFoundError();
+    const found = await this.findCatalogEntry(sessionId);
+    if (!found) throw new ExternalSessionNotFoundError();
+    const { entry: catalogEntry, fromStateDatabase } = found;
 
-    const rolloutPaths = await this.collectRolloutFamily(catalogEntry.rolloutPath, sessionId);
+    // Codex moves the state row to each new hand-off file, so a row that still
+    // names the opening rollout has no continuation to find; only a hand-off
+    // row, or an entry the filesystem fallback located, pays for the walk.
+    const rolloutPaths =
+      fromStateDatabase && isOpeningRolloutFilename(basename(catalogEntry.rolloutPath), sessionId)
+        ? [catalogEntry.rolloutPath]
+        : await this.collectRolloutFamily(catalogEntry.rolloutPath, sessionId);
     if (rolloutPaths.length === 0) throw new ExternalSessionNotFoundError();
     return convertCodexRollout(rolloutPaths, sessionId, catalogEntry.name, catalogEntry.cwd, {
       maxRolloutBytes: this.maxRolloutBytes,
@@ -186,20 +193,15 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     const family = new Map<string, string>();
     const own = await this.resolveRolloutPath(rowPath, sessionId);
     if (own) family.set(basename(own), own);
-    let candidatesSeen = 0;
+    // No candidate cap here: the catalog cap guards a listing that would
+    // otherwise grow without bound, whereas this walk keeps only the handful
+    // of files that name `sessionId`, and a store too large to list must not
+    // also become a store whose threads cannot be imported.
     for (const [root, archived] of [
       [join(this.codexHome, 'sessions'), false],
       [join(this.codexHome, 'archived_sessions'), true],
     ] as const) {
       for await (const candidate of iterateRolloutFiles(root, archived)) {
-        candidatesSeen += 1;
-        if (candidatesSeen > this.maxCatalogCandidates) {
-          throw new ExternalSessionLimitError(
-            'records',
-            this.maxCatalogCandidates,
-            `Codex catalog contains more than ${this.maxCatalogCandidates} rollout files`,
-          );
-        }
         const name = basename(candidate.path);
         if (family.has(name) || !rolloutFilenameMatchesId(name, sessionId)) continue;
         const resolved = await this.resolveRolloutPath(candidate.path, sessionId);
@@ -217,18 +219,21 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     return [...family.keys()].sort().map((name) => family.get(name)!);
   }
 
-  private async findCatalogEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
+  private async findCatalogEntry(
+    sessionId: string,
+  ): Promise<{ entry: CodexCatalogEntry; fromStateDatabase: boolean } | undefined> {
     for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
       const rows = await readCodexThreadRows(dbPath, { includeArchived: true }, sessionId);
       if (rows === undefined) continue;
       for (const row of rows) {
         const entry = await this.entryFromRow(row);
-        if (entry?.id === sessionId) return entry;
+        if (entry?.id === sessionId) return { entry, fromStateDatabase: true };
       }
       break;
     }
 
-    return this.findRolloutEntry(sessionId);
+    const entry = await this.findRolloutEntry(sessionId);
+    return entry ? { entry, fromStateDatabase: false } : undefined;
   }
 
   private async entryFromRow(row: CodexThreadRow): Promise<CodexCatalogEntry | undefined> {
