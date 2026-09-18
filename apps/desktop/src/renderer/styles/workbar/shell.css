@@ -99,46 +99,8 @@
   pointer-events: auto;
 }
 
-.maka-recent-turn-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-}
-
-.maka-recent-turn-toggle {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  font: var(--maka-text-body);
-  text-align: left;
-  cursor: pointer;
-}
-
-.maka-recent-turn-toggle:hover { background: var(--state-hover-bg); color: var(--foreground); }
-.maka-recent-turn-toggle:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: -3px; }
-.maka-recent-turn-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-recent-turn-minimize {
-  flex: 0 0 40px;
-  height: 40px;
-  display: grid;
-  place-items: center;
-  margin-right: var(--space-1);
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-}
-.maka-recent-turn-minimize:hover { background: var(--state-hover-bg); color: var(--foreground); }
-.maka-recent-turn-minimize:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); }
+/* The card header stays visible while the latest-turn body scrolls. */
+.maka-recent-turn-overlay > .maka-progress-card { flex: 0 0 auto; }
 
 .maka-recent-turn-content {
   min-height: 0;

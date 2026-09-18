@@ -21,7 +21,7 @@ import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { GripVertical, ICON_SIZE } from '@maka/ui/icons';
 import { Card } from '@astryxdesign/core/Card';
-import { Button } from '@astryxdesign/core/Button';
+import { IconButton } from '@astryxdesign/core/IconButton';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Composer, useToast, useUiLocale } from '@maka/ui';
@@ -145,15 +145,15 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
       {previewFocus.composerTarget && !previewFocus.focusedPreview && props.activeId && props.workspace !== 'workhub' &&
         previewFocus.activeRightTab?.kind === 'files' && !props.rightCollapsed &&
         createPortal(
-          <Button variant="ghost" size="sm" isIconOnly className="maka-composer-drag-handle" draggable
+          <IconButton className="maka-composer-drag-handle" size="sm" variant="ghost" draggable
             label={getArtifactCopy(locale).pane.moveComposer}
+            tooltip={getArtifactCopy(locale).pane.moveComposer}
             icon={<GripVertical size={ICON_SIZE.control} aria-hidden="true" />}
             onDragStart={(event) => event.dataTransfer.setData('application/x-maka-composer', props.activeId!)}
             onClick={() => {
               previewFocus.toggle('files');
               requestAnimationFrame(() => previewFocus.composerTarget?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus());
-            }}>
-          </Button>,
+            }} />,
           previewFocus.composerTarget,
         )}
       {previewFocus.composerTarget && previewFocus.focusedPreview && props.activeId &&

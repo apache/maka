@@ -1894,6 +1894,9 @@ export const FilesRecentVisualRunningCollapsed: Story = {
     await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
     await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
     expect(await canvas.findByRole('button', { name: /已处理/ })).toHaveAttribute('aria-expanded', 'false');
+    const card = canvasElement.querySelector('.maka-recent-turn-overlay .maka-progress-card');
+    await waitFor(() => expect(card?.querySelector('.maka-progress-card-summary')).not.toHaveTextContent('等待下一步'));
+    expect(card?.querySelector('[role="status"] i')).toHaveAttribute('data-active', 'true');
   },
 };
 
@@ -1907,6 +1910,9 @@ export const FilesRecentVisualIdleCollapsed: Story = {
     await userEvent.click(canvasElement.querySelector<HTMLElement>('.maka-artifact-row')!);
     await userEvent.click(await canvas.findByRole('button', { name: '聚焦文件' }));
     expect(await canvas.findByRole('button', { name: '最近一条' })).toHaveAttribute('aria-expanded', 'false');
+    const summary = canvasElement.querySelector('.maka-progress-card-summary');
+    await waitFor(() => expect(summary).toHaveTextContent('The latest check is complete'));
+    expect(canvasElement.querySelector('.maka-progress-card-status i')).toHaveAttribute('data-active', 'false');
   },
 };
 

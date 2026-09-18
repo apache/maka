@@ -84,7 +84,7 @@ export function useFocusedPreview(input: {
     focusedPreview, minimized, activeRightTab, composerTarget, surfaceRef, setOverlayHeight, toggle,
     minimize: () => {
       setMinimized(true);
-      requestAnimationFrame(() => composerTarget?.querySelector<HTMLElement>('.maka-recent-turn-toggle')?.focus());
+      requestAnimationFrame(() => composerTarget?.querySelector<HTMLElement>('.maka-progress-card-primary')?.focus());
     },
     restore: () => {
       setMinimized(false);

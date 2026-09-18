@@ -256,6 +256,7 @@ packages/ui/src/platform-shortcut-text.tsx
 packages/ui/src/primitives/chat.tsx
 packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/stat-tile.tsx
+packages/ui/src/progress-card.tsx
 packages/ui/src/prompt-anchor-rail.tsx
 packages/ui/src/quote-ref-chip.tsx
 packages/ui/src/relative-time.tsx
