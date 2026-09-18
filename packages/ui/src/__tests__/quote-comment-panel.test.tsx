@@ -24,7 +24,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { QuoteCommentPanel } from '../quote-comment-panel.js';
 import { LocaleProvider } from '../locale-context.js';
-import { QUOTE_COMMENT_MAX_LENGTH, type QuoteRef } from '@maka/core/events';
+import { QUOTE_COMMENT_MAX_LENGTH } from '@maka/core/events';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -47,9 +47,18 @@ afterEach(async () => {
 
 function domRoot() {
   const { document, window } = parseHTML('<div id="root"></div>');
+  // linkedom stores `contentEditable` verbatim, so the lowercase
+  // `[contenteditable]` selector would miss the editable node.
+  const setAttribute = window.Element.prototype.setAttribute;
+  window.Element.prototype.setAttribute = function normalized(name: string, value: string) {
+    return setAttribute.call(this, name === 'contentEditable' ? 'contenteditable' : name, value);
+  };
+  // linkedom has no Selection; the input's focus() only needs it to exist.
+  window.getSelection ??= () => null;
   Object.assign(globalThis, {
     document,
     window,
+    Node: window.Node,
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,
@@ -60,12 +69,6 @@ function domRoot() {
   mountedRoots.push(root);
   return { container, root };
 }
-
-const QUOTE: QuoteRef = {
-  text: 'the deploy failed at step three',
-  label: 'Assistant',
-  sourceTurnId: 'turn-9',
-};
 
 interface PanelProps {
   comment?: string;
@@ -81,7 +84,6 @@ async function renderPanel(props: PanelProps = {}) {
     root.render(
       <LocaleProvider locale="en">
         <QuoteCommentPanel
-          quote={QUOTE}
           comment={props.comment}
           title="Annotate this quote"
           submitLabel="Quote"
@@ -102,7 +104,7 @@ async function renderPanel(props: PanelProps = {}) {
     container,
     submitted,
     skipped: () => skipped,
-    textarea: () => container.querySelector('textarea'),
+    editable: () => container.querySelector('[contenteditable="true"]'),
     button: (label: string) =>
       Array.from(container.querySelectorAll('button')).find(
         (candidate) => candidate.textContent?.trim() === label,
@@ -127,33 +129,38 @@ function reactHandler<T>(element: Element, name: string): T {
 }
 
 async function type(container: Element, value: string) {
-  const textarea = container.querySelector('textarea');
-  assert.ok(textarea, 'the panel renders its note field');
-  textarea.value = value;
+  const editable = container.querySelector('[contenteditable="true"]');
+  assert.ok(editable, 'the panel renders its note field');
+  editable.textContent = value;
   await act(async () => {
-    reactHandler<(event: { target: HTMLTextAreaElement }) => void>(textarea, 'onChange')({
-      target: textarea as HTMLTextAreaElement,
+    reactHandler<(event: { target: Element }) => void>(editable, 'onInput')({
+      target: editable,
     });
     await Promise.resolve();
   });
 }
 
 async function pressSubmitShortcut(container: Element) {
-  const textarea = container.querySelector('textarea');
-  assert.ok(textarea);
+  const editable = container.querySelector('[contenteditable="true"]');
+  assert.ok(editable);
   await act(async () => {
     reactHandler<
-      (event: { key: string; metaKey?: boolean; preventDefault(): void }) => void
-    >(textarea, 'onKeyDown')({ key: 'Enter', metaKey: true, preventDefault() {} });
+      (event: {
+        key: string;
+        nativeEvent: { isComposing: boolean };
+        preventDefault(): void;
+      }) => void
+    >(editable, 'onKeyDown')({
+      key: 'Enter',
+      nativeEvent: { isComposing: false },
+      preventDefault() {},
+    });
     await Promise.resolve();
   });
 }
 
-test('the panel shows the excerpt it annotates and writes the note back', async () => {
+test('the panel writes the note back', async () => {
   const view = await renderPanel();
-  assert.match(view.container.textContent ?? '', /the deploy failed at step three/);
-  assert.match(view.container.textContent ?? '', /Assistant/);
-
   await type(view.container, '  is this the retry path?  ');
   view.button('Quote')?.click();
   await act(async () => {});
@@ -192,7 +199,7 @@ test('an empty note submits as no annotation at all', async () => {
 
 test('an existing note is editable in place', async () => {
   const view = await renderPanel({ comment: 'first draft' });
-  assert.equal(view.textarea()?.value, 'first draft');
+  assert.equal(view.editable()?.textContent, 'first draft');
 });
 
 test('the submit shortcut does not need the button', async () => {
