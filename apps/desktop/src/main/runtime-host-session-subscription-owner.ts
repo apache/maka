@@ -185,6 +185,10 @@ export class RuntimeHostSessionSubscriptionOwner {
     }
     attempt.replica = replica;
     evicted?.close();
+    // Rows committed between the reseed's fetch and this commit are still
+    // unread; the catch-up is an attempt read, so a dead handle takes the
+    // same recovery path as a pump-frame rejection.
+    void replica.advance().catch((error) => this.#failAttempt(attempt, error));
     return replica;
   }
 

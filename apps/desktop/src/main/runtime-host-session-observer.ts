@@ -690,17 +690,16 @@ export class RuntimeHostSessionObserver {
           this.#cacheTranscript(replica.snapshot());
         },
       },
-      // Runs inside the owner's staleness check: the pointer moves last, after
-      // every side effect, so a throw leaves the state on the evicted replica
-      // and the owner closes the orphan. The final advance() covers rows
-      // committed between the reseed's fetch and this commit.
+      // Runs inside the owner's staleness check. The pointer moves after the
+      // only throwing steps, so a throw leaves the state on the evicted
+      // replica and the owner closes the orphan; the consumer resets and the
+      // budget pass then see the installed replica, like in activate().
       installReseededReplica: (replica) => {
         this.#cacheTranscript(replica.snapshot());
         replica.adoptResidentAccounting();
+        state.replica = replica;
         this.#resetTranscriptConsumers(state);
         this.#touchReplica(state);
-        state.replica = replica;
-        void replica.advance().catch(() => undefined);
       },
       prepareActivation: (subscription, recovered) =>
         this.#prepareSubscriptionActivation(state, subscription, recovered),

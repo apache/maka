@@ -3235,6 +3235,131 @@ test('reseeds an evicted replica on the live subscription when a transcript open
   await observer.close();
 });
 
+test('trims around a replica that recovery already closed', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const reopen = deferred<void>();
+  let reopenRequested = false;
+  let firstOpens = 0;
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async (sessionId: string) => {
+        if (sessionId === 'session-1') {
+          firstOpens += 1;
+          if (firstOpens === 2) {
+            reopenRequested = true;
+            await reopen.promise;
+          }
+        }
+        return runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events: sessionId === 'session-1' ? firstEvents : new AsyncFrameQueue(),
+          transcriptBootstrap: {
+            durable: transcriptPage('older', sessionId === 'session-1' ? 2 : 0),
+          },
+          transcriptWatermark: () => 2,
+          decodeTranscriptPage: async (page) => ({
+            messages: rowsThrough(
+              page.throughSequence,
+              sessionId === 'session-1' ? 20 : 2000,
+            ),
+            nextCursor: page.nextCursor,
+          }),
+          async close() {},
+        });
+      },
+    },
+    emitSessionsChanged() {},
+    transcriptGlobalCacheMaxBytes: 1500,
+  });
+  await observer.observe('session-1', 'observer-1', eventTarget(1));
+
+  firstEvents.push({
+    kind: 'subscription.closed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sequence: 1,
+    reason: 'slow_consumer',
+  });
+  // Recovery has already closed the failed attempt's replica and is parked on
+  // the reopen: a budget pass from an unrelated session must meet the closed
+  // replica as a no-op, not throw through it.
+  await waitFor(() => reopenRequested);
+  await assert.rejects(
+    observer.observe('session-2', 'observer-2', eventTarget(2)),
+    /global cache limit/,
+  );
+
+  reopen.resolve(undefined);
+  await observer.close();
+});
+
+test('does not cache a snapshot published before the replica is installed', async () => {
+  const firstEvents = new AsyncFrameQueue();
+  const cachedGenerations: unknown[] = [];
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async (sessionId: string) =>
+        runtimeHostSessionFixture({
+          snapshot: continuitySnapshot(),
+          events: sessionId === 'session-1' ? firstEvents : new AsyncFrameQueue(),
+          transcriptBootstrap: {
+            durable: transcriptPage('older', sessionId === 'session-1' ? 2 : 0),
+          },
+          transcriptWatermark: () => 2,
+          decodeTranscriptPage: async (page) => ({
+            // The catch-up page covers only rows past the lagging tail, so it
+            // carries identity 2 alone.
+            messages:
+              page.direction === 'newer'
+                ? rowsThrough(page.throughSequence, 20).slice(2)
+                : rowsThrough(
+                    page.throughSequence,
+                    sessionId === 'session-1' ? 20 : 2000,
+                  ),
+            nextCursor: page.nextCursor,
+          }),
+          // The tail page lags the live watermark, so the reseed's catch-up
+          // publishes once before the replica is installed.
+          loadTranscriptPage: async (input) =>
+            transcriptPage(input.direction, input.direction === 'older' ? 1 : 2),
+          async close() {},
+        }),
+    },
+    emitSessionsChanged() {},
+    cacheTranscript: (snapshot) => cachedGenerations.push(snapshot.generation),
+    transcriptGlobalCacheMaxBytes: 1500,
+  });
+  await observer.observe('session-1', 'observer-1', eventTarget(1));
+  await assert.rejects(
+    observer.observe('session-2', 'observer-2', eventTarget(2)),
+    /global cache limit/,
+  );
+
+  const opened = await observer.openTranscript('session-1', 'consumer-1', {
+    id: 7,
+    send(_channel, batch) {
+      queueMicrotask(() =>
+        observer.acknowledgeTranscript(
+          'consumer-1',
+          batch.generation,
+          batch.deliverySequence!,
+          7,
+        ),
+      );
+    },
+    once() {},
+    off() {},
+  });
+
+  assert.equal(
+    cachedGenerations.filter((generation) => generation === opened.generation)
+      .length,
+    1,
+    'only the installed snapshot may be cached',
+  );
+  await observer.close();
+});
+
 function rowsThrough(
   throughSequence: number | null,
   textBytes: number,
