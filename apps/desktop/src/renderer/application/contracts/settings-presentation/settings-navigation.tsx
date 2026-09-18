@@ -17,9 +17,24 @@
  * under the License.
  */
 
-export * from "./settings-section.js";
-export * from "./runtime-host-settings-target.js";
-export * from "./action-guard.js";
-export * from "./oauth-login-flow-guard.js";
-export * from "./use-action-guard.js";
-export * from "./settings-navigation.js";
+import { createContext, useContext, type ReactNode } from 'react';
+import type { SettingsSection } from '@maka/core/settings';
+
+export interface SettingsNavigation {
+  openSettingsSection(section: SettingsSection): void;
+}
+
+export const SettingsNavigationContext = createContext<SettingsNavigation | null>(null);
+
+export function useSettingsNavigation(): SettingsNavigation {
+  const navigation = useContext(SettingsNavigationContext);
+  if (!navigation) throw new Error('SettingsNavigationProvider is missing');
+  return navigation;
+}
+
+export function SettingsNavigationProvider(props: {
+  navigation: SettingsNavigation;
+  children: ReactNode;
+}) {
+  return <SettingsNavigationContext.Provider value={props.navigation}>{props.children}</SettingsNavigationContext.Provider>;
+}
