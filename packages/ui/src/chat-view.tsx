@@ -21,12 +21,14 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type ReactNode,
+  type Ref,
   type RefObject,
 } from 'react';
 import { Virtualizer, type CustomContainerComponentProps, type VirtualizerHandle } from 'virtua';
@@ -42,6 +44,7 @@ import {
   type PromptAnchorRailTurn,
 } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
+import { findQuoteTextRange } from './selection-quote-target.js';
 import { QuoteCommentPanel } from './quote-comment-panel.js';
 import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
@@ -172,7 +175,24 @@ export interface TransientUserMessageProjection {
   hostTurnId?: string;
 }
 
+export interface ChatViewHandle {
+  /**
+   * Re-open the note editor over a staged quote's own excerpt in the
+   * transcript, restoring the selection so the gesture lands where the quote
+   * was taken. Returns false when the excerpt is not on screen — the caller
+   * falls back to editing beside the composer's token.
+   */
+  openQuoteAnnotation(request: {
+    index: number;
+    text: string;
+    turnId?: string;
+    comment?: string;
+  }): boolean;
+}
+
 export function ChatView(props: {
+  /** Imperative handle for host-driven transcript gestures. */
+  handleRef?: Ref<ChatViewHandle>;
   messages: StoredMessage[];
   transientMessages?: readonly TransientUserMessageProjection[];
   messageLoading?: boolean;
@@ -358,6 +378,12 @@ export function ChatView(props: {
    * seeded with the quote. Omitted by hosts that don't support the side panel.
    */
   onAskAboutSelection?(input: { text: string; turnId: string }): void;
+  /**
+   * The transcript-side note editor saved a comment for the staged quote at
+   * `index` in the host's quote list. Only fires for edits opened through
+   * {@link ChatViewHandle.openQuoteAnnotation}.
+   */
+  onQuoteAnnotationSubmit?(index: number, comment: string): void;
 } & ChatViewGoalIndicatorProps) {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
@@ -625,19 +651,50 @@ export function ChatView(props: {
   const [annotatingSelection, setAnnotatingSelection] = useState<{
     text: string;
     turnId: string;
+    anchor: { x: number; y: number };
   } | null>(null);
+  // A staged quote whose note is being edited back at its own excerpt, opened
+  // through the handle rather than the selection gesture. `anchor` covers the
+  // settle window before the restored selection produces a live quote.
+  const [editingQuote, setEditingQuote] = useState<{
+    index: number;
+    text: string;
+    turnId?: string;
+    comment?: string;
+    anchor: { x: number; y: number };
+  } | null>(null);
+  const barVisible =
+    selectionQuote !== null && annotatingSelection === null && editingQuote === null;
+  const panelVisible = annotatingSelection !== null || editingQuote !== null;
+  // The bar and the panel are separate layers on purpose: useLayer maps
+  // lightDismiss onto the popover attribute, and flipping auto↔manual on an
+  // open popover closes it (the browser fires toggle:closed). A single layer
+  // that disables dismissal while annotating would therefore tear itself down
+  // the moment the 引用 button opens the panel. Constant values per layer keep
+  // the attribute stable for each one's lifetime: the bar still light-dismisses
+  // and answers Escape; the panel stays up until its own buttons close it.
   const selectionActionsLayer = useLayer({
     mode: 'fixed',
-    // While a note is being written the layer stops answering clicks and
-    // Escape: the panel's own two buttons are how it closes, here and in the
-    // composer's popover, so a stray gesture cannot drop a half-written note.
-    lightDismiss: annotatingSelection === null,
+    lightDismiss: true,
     onHide: clearSelectionQuote,
   });
+  const annotationLayer = useLayer({
+    mode: 'fixed',
+    lightDismiss: false,
+    onHide: () => {
+      setAnnotatingSelection(null);
+      setEditingQuote(null);
+      clearSelectionQuote();
+    },
+  });
   useEffect(() => {
-    if (selectionQuote) selectionActionsLayer.show();
+    if (barVisible) selectionActionsLayer.show();
     else selectionActionsLayer.hide();
-  }, [selectionQuote, selectionActionsLayer.show, selectionActionsLayer.hide]);
+  }, [barVisible, selectionActionsLayer.show, selectionActionsLayer.hide]);
+  useEffect(() => {
+    if (panelVisible) annotationLayer.show();
+    else annotationLayer.hide();
+  }, [panelVisible, annotationLayer.show, annotationLayer.hide]);
   const selectionActionsLabel = [
     props.onQuoteSelection ? copy.quoteSelection : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
@@ -649,9 +706,60 @@ export function ChatView(props: {
    *  no longer selected, so the bar cannot offer it a second time. */
   function dismissSelectionActions(): void {
     setAnnotatingSelection(null);
+    setEditingQuote(null);
     clearSelectionQuote();
     window.getSelection()?.removeAllRanges();
   }
+
+  const openQuoteAnnotation = useCallback(
+    (request: { index: number; text: string; turnId?: string; comment?: string }): boolean => {
+      const root = scrollRef.current;
+      if (!root || !request.turnId) return false;
+      const escaped =
+        typeof CSS !== 'undefined' && CSS.escape
+          ? CSS.escape(request.turnId)
+          : request.turnId;
+      const turn = root.querySelector(`[data-turn-id="${escaped}"]`);
+      const range = turn ? findQuoteTextRange(turn, request.text) : null;
+      if (!turn || !range) return false;
+      // The panel anchors to the excerpt: if it has scrolled out of the
+      // transcript's band, bring it back first rather than hanging the panel
+      // off-screen.
+      const before = range.getBoundingClientRect();
+      const band = root.getBoundingClientRect();
+      if (before.top < band.top || before.bottom > band.bottom) {
+        turn.scrollIntoView({ block: 'center' });
+      }
+      const box = range.getBoundingClientRect();
+      if (box.width === 0 && box.height === 0) return false;
+      // Handing the found range to the real selection puts the whole existing
+      // machine in charge — highlight, anchor, scroll-follow — instead of a
+      // second positioner shadowing it.
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      setEditingQuote({
+        ...request,
+        anchor: { x: box.left + box.width / 2, y: box.top },
+      });
+      return true;
+    },
+    [scrollRef],
+  );
+  useImperativeHandle(props.handleRef, () => ({ openQuoteAnnotation }), [openQuoteAnnotation]);
+
+  // The panel hangs from the live quote once the restored selection settles
+  // into one; until then the anchor measured at open time holds it. A
+  // selection resolving to a different excerpt never moves the panel.
+  const annotationAnchor = editingQuote
+    ? selectionQuote &&
+      selectionQuote.turnId === editingQuote.turnId &&
+      selectionQuote.text === editingQuote.text
+      ? selectionQuote.anchor
+      : editingQuote.anchor
+    : annotatingSelection
+      ? (selectionQuote?.anchor ?? annotatingSelection.anchor)
+      : null;
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -949,33 +1057,70 @@ export function ChatView(props: {
             </>
           )}
         </ChatMessageList>
-        {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
-          selectionActionsLayer.render(
-            annotatingSelection ? (
-              <div
-                className="maka-quote-annotation-layer"
-                // Keep the live selection alive while the note is written.
-                onMouseDown={(event) => event.preventDefault()}
-              >
-                <QuoteCommentPanel
-                  quote={{
-                    text: annotatingSelection.text,
-                    sourceTurnId: annotatingSelection.turnId,
-                  }}
-                  title={copy.quoteCommentTitle}
-                  submitLabel={copy.quoteSelection}
-                  skipLabel={copy.quoteCommentSkip}
-                  onSubmit={(comment) => {
-                    props.onQuoteSelection?.({ ...annotatingSelection, comment });
-                    dismissSelectionActions();
-                  }}
-                  onSkip={() => {
-                    props.onQuoteSelection?.(annotatingSelection);
-                    dismissSelectionActions();
-                  }}
-                />
-              </div>
-            ) : (
+        {annotationAnchor && panelVisible
+          ? annotationLayer.render(
+              editingQuote ? (
+                <div
+                  className="maka-quote-annotation-layer"
+                  // Keep the restored selection alive while the note is edited.
+                  onMouseDown={(event) => event.preventDefault()}
+                >
+                  <QuoteCommentPanel
+                    key={editingQuote.index}
+                    quote={{
+                      text: editingQuote.text,
+                      sourceTurnId: editingQuote.turnId,
+                    }}
+                    comment={editingQuote.comment}
+                    title={conversationCopy.composer.quoteCommentTitle}
+                    submitLabel={conversationCopy.composer.quoteCommentSave}
+                    skipLabel={conversationCopy.composer.quoteCommentCancel}
+                    onSubmit={(comment) => {
+                      props.onQuoteAnnotationSubmit?.(editingQuote.index, comment);
+                      dismissSelectionActions();
+                    }}
+                    onSkip={dismissSelectionActions}
+                  />
+                </div>
+              ) : annotatingSelection ? (
+                <div
+                  className="maka-quote-annotation-layer"
+                  // Keep the live selection alive while the note is written.
+                  onMouseDown={(event) => event.preventDefault()}
+                >
+                  <QuoteCommentPanel
+                    quote={{
+                      text: annotatingSelection.text,
+                      sourceTurnId: annotatingSelection.turnId,
+                    }}
+                    title={copy.quoteCommentTitle}
+                    submitLabel={copy.quoteSelection}
+                    skipLabel={copy.quoteCommentSkip}
+                    onSubmit={(comment) => {
+                      props.onQuoteSelection?.({ ...annotatingSelection, comment });
+                      dismissSelectionActions();
+                    }}
+                    onSkip={() => {
+                      props.onQuoteSelection?.(annotatingSelection);
+                      dismissSelectionActions();
+                    }}
+                  />
+                </div>
+              ) : null,
+              {
+                x: annotationAnchor.x,
+                // Below the excerpt, clamped so the panel's lower edge stays
+                // inside the window when a selection sits near the bottom.
+                y: Math.min(
+                  annotationAnchor.y + 12,
+                  Math.max(8, window.innerHeight - QUOTE_ANNOTATION_PANEL_HEIGHT),
+                ),
+                style: { transform: 'translateX(-50%)' },
+              },
+            )
+          : null}
+        {barVisible
+          ? selectionActionsLayer.render(
               <div
                 className="maka-quote-actions"
                 // Keep the live selection alive while clicking an action.
@@ -997,6 +1142,7 @@ export function ChatView(props: {
                         setAnnotatingSelection({
                           text: selectionQuote.text,
                           turnId: selectionQuote.turnId,
+                          anchor: selectionQuote.anchor,
                         })
                       }
                     />
@@ -1016,26 +1162,14 @@ export function ChatView(props: {
                     />
                   ) : null}
                 </ButtonGroup>
-              </div>
-            ),
-            annotatingSelection
-              ? {
-                  x: selectionQuote.anchor.x,
-                  // Below the excerpt, clamped so the panel's lower edge stays
-                  // inside the window when a selection sits near the bottom.
-                  y: Math.min(
-                    selectionQuote.anchor.y + 12,
-                    Math.max(8, window.innerHeight - QUOTE_ANNOTATION_PANEL_HEIGHT),
-                  ),
-                  style: { transform: 'translateX(-50%)' },
-                }
-              : {
-                  x: selectionQuote.anchor.x,
-                  y: Math.max(8, selectionQuote.anchor.y - 42),
-                  style: { transform: 'translateX(-50%)' },
-                },
-          )
-        ) : null}
+              </div>,
+              {
+                x: selectionQuote.anchor.x,
+                y: Math.max(8, selectionQuote.anchor.y - 42),
+                style: { transform: 'translateX(-50%)' },
+              },
+            )
+          : null}
       </div>
       </section>
       </SessionAttachmentProvider>

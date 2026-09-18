@@ -44,6 +44,7 @@ import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
   ChatSurfaceLayout,
+  type ChatViewHandle,
   type ComposerHandle,
   type ComposerSendMetadata,
   type ComposerSlashCommandOption,
@@ -601,6 +602,7 @@ function AppShellContent({
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
   const composerRef = useRef<ComposerHandle>(null);
+  const chatViewRef = useRef<ChatViewHandle>(null);
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
@@ -2418,10 +2420,27 @@ function AppShellContent({
                   slashCommands={desktopSlashCommands}
                   pendingAttachments={pendingAttachments}
                   allowAttachmentOnlySend={canStageComposerContext}
-                  onRemoveAttachment={removeAttachment}                  pendingQuotes={pendingQuotes}
+                  onRemoveAttachment={removeAttachment}
+                  pendingQuotes={pendingQuotes}
                   onRemoveQuote={removeQuote}
                   onEditQuoteComment={
                     canStageComposerContext ? updateQuoteComment : undefined
+                  }
+                  onAnnotateQuote={
+                    canStageComposerContext
+                      ? (index) => {
+                          const quote = pendingQuotes[index];
+                          return (
+                            quote !== undefined &&
+                            (chatViewRef.current?.openQuoteAnnotation({
+                              index,
+                              text: quote.text,
+                              turnId: quote.sourceTurnId,
+                              comment: quote.comment,
+                            }) ?? false)
+                          );
+                        }
+                      : undefined
                   }
                   onPasteAsQuote={canStageComposerContext ? addQuote : undefined}
                   onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
@@ -2514,6 +2533,8 @@ function AppShellContent({
                   >
                     {(turnActions) => (
                   <ChatMessageSurface
+                handleRef={chatViewRef}
+                onQuoteAnnotationSubmit={updateQuoteComment}
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}

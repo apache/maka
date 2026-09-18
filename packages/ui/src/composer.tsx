@@ -373,6 +373,12 @@ export const Composer = forwardRef<
     /** Save the annotation written for one staged quote. Omitted by hosts that
      *  only remove quotes, in which case the token stays read-only. */
     onEditQuoteComment?(index: number, comment: string): void;
+    /**
+     * Open the note editor over the quote's own excerpt in the transcript.
+     * Returning false means the excerpt is not on screen and the token falls
+     * back to its own editor popover.
+     */
+    onAnnotateQuote?(index: number): boolean;
     /** Start staged context collapsed on compact secondary composer surfaces. */
     contextDrawerDefaultCollapsed?: boolean;
     /** Hide the unavailable dot when an inherited model is intentionally read-only. */
@@ -1673,6 +1679,10 @@ export const Composer = forwardRef<
   const [attachmentLightboxOpen, setAttachmentLightboxOpen] = useState(false);
   /** Which staged quote has its annotation panel open, by staging index. */
   const [editingQuoteIndex, setEditingQuoteIndex] = useState<number | null>(null);
+  /** The staged quote whose note is being edited over the transcript excerpt —
+   *  its hover card stays down until the pointer leaves, or the token and the
+   *  panel would both describe the same quote at once. */
+  const [annotatedQuoteIndex, setAnnotatedQuoteIndex] = useState<number | null>(null);
   useEffect(() => {
     if (attachmentLightboxOpen || !attachmentLightbox) return;
     // Unmount one commit AFTER the closed render, never in it: child effects
@@ -1996,8 +2006,8 @@ export const Composer = forwardRef<
                           // delay fire the card over it. The controlled
                           // isOpen=false cancels that show and any card
                           // already up, then hands control back on close.
-                          isEnabled={!editing}
-                          isOpen={editing ? false : undefined}
+                          isEnabled={!editing && annotatedQuoteIndex !== index}
+                          isOpen={editing || annotatedQuoteIndex === index ? false : undefined}
                         >
                           <Token
                             ref={trigger.ref}
@@ -2024,7 +2034,18 @@ export const Composer = forwardRef<
                                   }
                                 : undefined
                             }
-                            onClick={trigger.onClick}
+                            onPointerLeave={() => setAnnotatedQuoteIndex(null)}
+                            onClick={(event) => {
+                              // The transcript owns the edit when it can still
+                              // point at the excerpt; its panel anchors to the
+                              // quote's own text, not this token.
+                              if (props.onAnnotateQuote?.(index)) {
+                                setAnnotatedQuoteIndex(index);
+                                setEditingQuoteIndex(null);
+                                return;
+                              }
+                              trigger.onClick?.(event);
+                            }}
                             aria-haspopup={trigger['aria-haspopup']}
                             aria-expanded={trigger['aria-expanded']}
                             aria-controls={trigger['aria-controls']}
