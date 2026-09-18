@@ -58,6 +58,8 @@
 
 ## 实现边界
 
+- 完整原生体验与逐步截图见 [交互验收图解](images/pr/desktop-focused-preview/native-journey/README.md)。拖动聚焦后回到原编辑器，临界位置显示松手提示；Browser 的 Escape 先撤销未提交地址，在工具栏上则还原分栏。
+- 中断回合没有最终落盘助手消息时，保留已有的有界 live projection 并标记“本轮已中断”。只读观察器跟随当前 Files/Browser 面板生命周期，分栏时不渲染回复 DOM，切回聚焦仍可看到本次收到的部分内容；不另建持久化消息缓存。
 - 分隔线向左拖动时，预览临时跟随鼠标突破普通工作栏的宽度上限；左侧剩余空间不超过 240px 时标记收起意图，松手进入同一个聚焦态。往回拖会撤销意图，取消或切换任务/标签会清理临时宽度；聚焦不保存这个临时宽度，还原仍使用原分栏宽度。WorkHub 和其他工具保持普通 resize 行为。
 - 原生窗口聚焦后，任务标题和窗口控件保留第一行，工作栏标签放在下一行，网页/文件内容同步避让。共享卡片的状态整行可点击，次要按钮采用 28px 点击区域；最小化状态直接显示“继续输入”。
 - 本地验收：以隔离资料目录启动 Electron 开发版，实际拖动空白 Browser 分隔线、收起/恢复输入区、还原分栏，确认草稿保留与标题区不重叠。Storybook 的 `BrowserDividerFocus` 覆盖拖动回退和聚焦/还原路径，使用生产布局 reducer。
@@ -84,7 +86,7 @@ WorkbarHost
   ├─ useFocusedPreview：{ sessionId, kind } 的临时展示意图
   │   ├─ 当前 session、右侧活动 tab、面板可见性、WorkHub/弹窗共同校验
   │   └─ ResizeObserver 测输入槽与最近 turn 面板高度，为页面/文档留出实际空间
-  ├─ RecentTurnOverlay：仅聚焦时订阅 Host 观察事件和读取最新落盘 turn
+  ├─ RecentTurnOverlay：当前 Files/Browser 面板观察 Host；仅聚焦时显示最近 turn
   └─ WorkbarSurface → ArtifactPane / BrowserPanel
       ├─ 聚焦/还原按钮、Esc/返回列表/关闭清理
       └─ BrowserPanel 的原生 viewport 按缩小后的 strip rect 同步
@@ -93,16 +95,16 @@ WorkbarHost
 | 事件 | 原状态 | 后状态 | 必须不变的内容 |
 | --- | --- | --- | --- |
 | 选中 Files 文件并按聚焦，或将输入把手放到文件预览 | 分栏 | 文件聚焦 | 当前 session、文件 ID、文件读取结果、输入草稿 |
-| Browser 有页面并按聚焦 | 分栏 | 网页聚焦 | URL、历史、同一输入节点 |
+| Browser 打开后按聚焦或左拖分隔线 | 分栏 | 网页聚焦 | URL、历史、同一输入节点 |
 | 展开/收起最近一条 | 聚焦 | 聚焦 | 文件/网页阅读位置、草稿、会话输入所有权 |
 | Host 当前 turn 结束 | 运行中展开 | 最近回复展开 | 展开状态和输入草稿；流式投影由落盘回复接管 |
-| 按还原，或在文件预览上按 Esc | 聚焦 | 分栏 | 当前文件、源码/预览切换状态、会话滚动 |
+| 按还原，或在文件预览/浏览器工具栏上按 Esc | 聚焦 | 分栏 | 当前文件、源码/预览切换状态、会话滚动 |
 | 返回文件列表/关闭网页 | 聚焦 | 普通布局 | 输入仍属原会话；不发送、不上传 |
 | 切会话、切右侧 tab、折叠右栏、打开遮挡 shell 的弹窗 | 聚焦 | 普通布局 | 不把旧会话的展示意图套到新会话 |
 
 聚焦是一个视图投影，不是持久化会话偏好。`useFocusedPreview` 在目标不再有效时清除请求。WorkbarHost 对已有的输入槽附着把手与最近 turn 面板；portal **仅承载这两层辅助 UI**，输入区本身既不 portal 也不 remount。当前布局根节点的 `data-preview-focused` 和 `--maka-focused-composer-space` 是私有 DOM/CSS 合同，离开聚焦后应清理。非文件预览页即使打开 Files tab，也不显示拖动把手。
 
-最近 turn 面板状态与输入内容相互独立。运行中复用 `applyLiveTurnBufferEvent` 对 Host `subscribeEvents` 的有界/脱敏投影，并按 `contentOrder` 展示文字与可见工具活动；停止后使用 `listTurns` 和 `readSettledMessages` 锁定同一 turn 的最后助手回复，仅在 `settled=true` 时接管，未落盘时有限重试，不把上一 turn 的话错标成当前结果。观察不可用或刚开始尚无可显示内容时明确给出等待/回退文案。收起时只保留一行入口，展开高度由 ResizeObserver 计入 Browser 原生视口让位；每秒更新时间不设持续朗读的 live region。聚焦退出时释放事件订阅，不为整个 AppShell 增加流式订阅。
+最近 turn 面板状态与输入内容相互独立。运行中复用 `applyLiveTurnBufferEvent` 对 Host `subscribeEvents` 的有界/脱敏投影，并按 `contentOrder` 展示文字与可见工具活动；停止后使用 `listTurns` 和 `readSettledMessages` 锁定同一 turn 的最后助手回复，仅在 `settled=true` 时接管，未落盘时有限重试，不把上一 turn 的话错标成当前结果。观察不可用或刚开始尚无可显示内容时明确给出等待/回退文案。收起时保留共享状态行和两行摘要，展开高度由 ResizeObserver 计入 Browser 原生视口让位。观察器在当前 Files/Browser 面板关闭、切到其他工具或切换会话时释放；只在聚焦和分栏间切换时保留已有的有界投影。
 
 ## 各类型渲染合同
 
@@ -116,7 +118,7 @@ WorkbarHost
 | `kind=html` | 受限 `srcdoc` iframe；提示外链禁用 | 超界回到代码视图并提示 | iframe 在剩余空间内伸展；不加 `allow-same-origin` |
 | `kind=image` | 仅白名单 raster MIME、最大 2 MiB，`contain` 完整展示 | 不支持格式或过大有说明 | 宽屏居中，不拉伸或裁切 |
 | `kind=pdf` | Host 二进制读取后嵌入浏览器 PDF 视图 | 插件不可用/读取失败有回退 | 独立内部滚动和底部留白 |
-| Browser 网页 | Electron 原生 WebContentsView，地址/前进/后退/刷新 | 空页无聚焦按钮 | 实际 viewport 不覆盖浮动输入；DOM z-index 不足以保护它 |
+| Browser 网页 | Electron 原生 WebContentsView，地址/前进/后退/刷新 | 空页也可聚焦 | 实际 viewport 不覆盖浮动输入；DOM z-index 不足以保护它 |
 
 尚不能宣称完整支持：CSV/TSV 现在只可能走 `kind=file` 的有界源码视图；DOCX/PPTX/XLSX 是压缩二进制容器，当前遇到这些扩展名会显示不可内联预览的说明和外部打开/另存操作，不调用 `readText` 或复制乱码；`.ipynb` 虽可当 JSON 文本读取，但没有单元格/输出渲染。这些不是把扩展名加到 switch 就能解决的问题。尤其 Office 需要 Host 接口、解析器、内存/页数/行数预算、图片和公式的安全策略；Notebook 还要处理不可信 HTML 输出，默认不得执行。
 
@@ -128,9 +130,9 @@ WorkbarHost
 4. Notebook 只解析 nbformat JSON；区分 Markdown、代码、纯文本与受限图片输出，HTML/脚本默认不执行；错误单元有定位。所有格式都有加载、过大、损坏、不支持和另存/外部打开路径。
 5. 每种格式提供小样本、边界样本和长内容样本，跑分栏/聚焦、1440×900、960×720、390×844、键盘与读屏测试。实现后才将文档中的“未支持”改为“支持”。
 
-## 本轮变更与可验证结果
+## 初版实现与历史验收
 
 - 本轮只改已有类型的聚焦阅读方式和 Browser 页面聚焦，不改变 artifact 的持久化 schema 或读取 IPC。按钮有可读名称和 `aria-pressed`；拖动只接受同 session 的专用 MIME，点击把手可代替拖放。
-- 文件故事覆盖草稿节点不变、聚焦/还原/再聚焦；浏览器故事覆盖相同草稿和 strip 结束位置在输入框之上。Storybook 的浏览器是服务替身；Electron 原生子视图仍须在打包/开发应用里复核。
+- 文件故事覆盖草稿节点不变、聚焦/还原/再聚焦；浏览器故事覆盖相同草稿和 strip 结束位置在输入框之上。Storybook 的浏览器是服务替身；本轮已在开发应用中补做 Electron 原生子视图复核，见上方交互验收图解。
 - 最近 turn 故事覆盖运行中折叠/展开、停止后折叠/展开、运行中到已落盘回复的原位接管，以及真实 WorkbarHost 的输入槽 portal 和 Browser strip 动态让位；另外用真实 `Composer` 和长流/长回复做视觉故事，验证同宽、贴合、上覆、滚动与键盘焦点。带附件阅读回归检查浮层下沿与附件区上沿相接、滚动到底后最后代码行无遮挡、收起/恢复前后是同一输入 DOM 和草稿。1440×900、960×720、390×844 与宽窗口内 600px 的内容列无水平溢出或错误覆盖；紧凑单行以 Composer 容器宽度而非窗口宽度为准。
 - 消融检查：原先把状态放到 AppShell 会扩大整棵树的 hook 范围并违反架构门禁，已移到 WorkbarHost；未新增独立全屏渲染器、第二个 composer 或文档解析依赖。拖动把手 portal 仍由拖动手势要求支撑。390px Browser 最终视觉故事里临时设 `--maka-focused-composer-space: 0px`，网页 strip 侵入最近流层约 502px；保留动态留白时两者间有约 24px 安全间隔，故不能删。390px 运行流加附件故事里去掉文件预览的尾部留白，最后一行被浮层覆盖约 573px；保留时高于浮层约 29px。模拟 346px 高的输入区时，最近流最大高度自动从 400px 降到 298px。去掉宽屏紧凑输入布局会回到明显更高的分行卡片，和截图中的单行底部锚点不符。
