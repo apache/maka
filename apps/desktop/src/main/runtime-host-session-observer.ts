@@ -128,6 +128,13 @@ interface ObservedSessionState {
   readonly transcriptConsumers: Map<string, TranscriptConsumer>;
   readonly subscriptionOwner: RuntimeHostSessionSubscriptionOwner;
   pendingTranscriptConsumers: number;
+  /**
+   * The installed replica is not always live: eviction leaves it non-resident,
+   * and a recovery window can leave it closed until activate() installs the
+   * replacement. Readers check `resident`; lifecycle passes (trim/discard)
+   * treat a dead replica as a no-op. It is only ever swapped inside the
+   * owner's staleness check — activation or installReseededReplica.
+   */
   replica?: DesktopTranscriptReplica;
   snapshot?: SessionContinuitySnapshot;
   projector?: RuntimeHostSessionProjector;
