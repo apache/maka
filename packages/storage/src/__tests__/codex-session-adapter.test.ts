@@ -1298,7 +1298,7 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
-  test('imports the whole hand-off family whichever file the row names and wherever it is archived', async () => {
+  test('trusts a row that names the opening rollout and walks the store for a hand-off row', async () => {
     await withCodexHome(async (codexHome) => {
       const activeId = 'codex-handoff-active';
       const opening = await seedHandoffRollout(codexHome, {
@@ -1332,9 +1332,11 @@ describe('CodexSessionAdapter', () => {
       ]);
       const adapter = new CodexSessionAdapter({ codexHome });
 
+      // Codex moves the row to every hand-off, so a row still naming the opening
+      // rollout is read on its own, without a walk of the whole store.
       assert.deepEqual(
         (await importedUserMessages(adapter, activeId)).map((message) => message.text),
-        ['active opening', 'active continuation'],
+        ['active opening'],
       );
       assert.deepEqual(
         (await listSessions(adapter, { includeArchived: true }))
