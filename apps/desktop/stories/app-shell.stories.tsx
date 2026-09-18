@@ -1513,6 +1513,8 @@ export const LongSystemNotes: Story = {
         kind: 'context_window_overrun', data: { usedTokens: 129_127, declaredContextWindow: 128_000 } },
       { type: 'system_note', id: 'short', turnId: 'diagnostic-turn', ts: NOW - 70_000,
         kind: 'step_limit' },
+      { type: 'system_note', id: 'failed', turnId: 'diagnostic-turn', ts: NOW - 65_000,
+        kind: 'context_compaction_failed_open' },
       { type: 'system_note', id: 'compacted', turnId: 'diagnostic-turn', ts: NOW - 60_000,
         kind: 'context_compacted' },
       assistant('diagnostic-answer', 'diagnostic-turn', 0, 'Ready to continue.'),
@@ -1521,7 +1523,7 @@ export const LongSystemNotes: Story = {
   play: async ({ canvasElement }) => {
     await document.fonts.ready;
     await waitFor(() => {
-      expect(canvasElement.querySelectorAll('.maka-chat-system-message').length).toBe(4);
+      expect(canvasElement.querySelectorAll('.maka-chat-system-message').length).toBe(5);
     });
     const notes = canvasElement.querySelectorAll<HTMLElement>('.maka-chat-system-message');
     for (const note of notes) {
@@ -1535,6 +1537,14 @@ export const LongSystemNotes: Story = {
         expect(rect.right).toBeLessThanOrEqual(bounds.right + 1);
       }
       expect(note.scrollWidth).toBeLessThanOrEqual(note.clientWidth + 1);
+    }
+    if (window.innerWidth === 1280) {
+      const shortNote = notes[2];
+      const shortText = shortNote.querySelector('span')?.firstChild;
+      if (!shortText) throw new Error('The short system note did not render text');
+      const shortRange = document.createRange();
+      shortRange.selectNodeContents(shortText);
+      expect(shortRange.getClientRects()).toHaveLength(1);
     }
   },
 };
