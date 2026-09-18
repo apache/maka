@@ -101,7 +101,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 162 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 163 as const;
+// 163: WorkHub voice history, request correlation and prepared speech operations.
 // 162: Runtime Resource control and stop replies drop the unused resource
 // snapshot; start replies allow compact state. Older peers require snapshots.
 // 161: Session transcript reads return the whole transcript under a byte budget,
@@ -798,3 +799,14 @@ function requireReplacement(value: unknown): HostIncompatible['replacement'] {
   if (value === 'blocked_by_residency' || value === 'wait_for_idle_exit') return value;
   throw invalidProtocolFrame('Invalid replacement disposition');
 }
+
+export type {
+  VoiceQueueItem,
+  VoiceDelivery,
+  VoiceDeliveryInput,
+  WorkHubVoiceState,
+  VoiceInterruption,
+  WorkHubVoiceObservation,
+  VoiceReview,
+  VoiceLogInput,
+} from './workhub-voice-state.js';

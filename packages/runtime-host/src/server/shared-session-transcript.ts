@@ -49,6 +49,7 @@ export function projectSharedSessionTranscriptMessage(
   message: StoredMessage,
   sessionId: string,
 ): StoredMessage | null {
+  if (message.presentation === 'internal') return null;
   switch (message.type) {
     case 'user': {
       return {

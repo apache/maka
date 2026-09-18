@@ -2050,6 +2050,50 @@ export async function createExecutionRuntimeHostComposition(
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
       routingModel: dependencies.workHubRoutingModel,
       requestForm: (input) => interactions.requestForm(input),
+      backgroundContext: {
+        hostEpoch: context.hostEpoch,
+        connectionId: 'workhub-inbox',
+        principal: 'runtime_host',
+        acquireResidency: () => context.acquireResidency('voice-maintenance'),
+      },
+      findInputReceipt: async (id, content) => {
+        const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+        const root = await stores.agentRunStore.readRootTurnAdmission(sessionId, id);
+        if (root) {
+          if (
+            root.execution.kind !== 'workhub_coordination' ||
+            root.execution.inputDigest !== messageContentDigest(content)
+          )
+            throw new Error('WorkHub request identity conflict');
+          return { turnId: root.turnId };
+        }
+        const source = await stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, id);
+        if (source) {
+          if (messageContentDigest(source.sourceMessage.content) !== messageContentDigest(content))
+            throw new Error('WorkHub request identity conflict');
+          return { turnId: source.admission.turnId };
+        }
+        const steering = await stores.runtimeEventStore.readImmutableSteeringMessageProof(
+          sessionId,
+          id,
+        );
+        if (steering) {
+          if (
+            steering.event.content?.kind !== 'text' ||
+            messageContentDigest(steering.event.content) !== messageContentDigest(content)
+          )
+            throw new Error('WorkHub request identity conflict');
+          return { turnId: steering.event.turnId };
+        }
+        const pending = await stores.sessionStore.readMessageAdmission(sessionId, id);
+        if (pending) {
+          if (pending.submittedContentDigest !== messageContentDigest(content))
+            throw new Error('WorkHub request identity conflict');
+          return { turnId: pending.turnId, queued: true };
+        }
+        return undefined;
+      },
+      acquireVoiceResidency: () => context.acquireResidency('voice-maintenance'),
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),
       transitionConfiguration: (input) =>
         requireSessionManager(manager).transitionSessionConfiguration(
@@ -2776,6 +2820,7 @@ export async function createExecutionRuntimeHostComposition(
           () => runtimeResources?.close(),
           () => workspaceExecution?.close(),
           () => sessionEffects?.close(),
+          () => workHubCoordination.close(),
           () => messages.close(),
           () => interactions.close(),
           () => turnAccessRequests?.close(),

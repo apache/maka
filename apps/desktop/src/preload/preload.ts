@@ -2067,6 +2067,29 @@ const makaBridge = {
       };
     },
   },
+  workHubVoice: {
+    async prepare(sessionId) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(sessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:voice:prepare', scope);
+    },
+    async connect(sessionId, input) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(sessionId, runtimeHostSessionRef);
+      return ipcRenderer.invoke('workhub:voice:connect', scope, input);
+    },
+    async event(sessionId, id, message) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(sessionId, runtimeHostSessionRef);
+      await ipcRenderer.invoke('workhub:voice:event', scope, id, message);
+    },
+    async disconnect(sessionId, id) {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(sessionId, runtimeHostSessionRef);
+      await ipcRenderer.invoke('workhub:voice:disconnect', scope, id);
+    },
+    subscribe(handler) {
+      const listener = (_event: Electron.IpcRendererEvent, message: { id: string; event: Record<string, unknown> }) => handler(message);
+      ipcRenderer.on('workhub:voice:event', listener);
+      return () => ipcRenderer.removeListener('workhub:voice:event', listener);
+    },
+  } satisfies import('../shared/workhub-voice.js').WorkHubVoiceBridge,
   workHub: {
     async getSession(coordinationSessionId: string) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { registerWorkHubVoice } from './workhub-voice.js';
 import { randomUUID } from "node:crypto";
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
@@ -890,6 +891,9 @@ export async function createDesktopRuntimeHostCandidate(
       throw new Error('This Runtime Host does not have a shareable connection target');
     });
     if (target.access === 'owner') {
+      const disposeVoice = registerWorkHubVoice(client, ipc);
+      const disposeOtherClientIpc = disposeClientIpc;
+      disposeClientIpc = () => { disposeVoice(); disposeOtherClientIpc?.(); };
       registerRuntimeHostWorkHubIpc(client, ipc, {
         attachmentIngest: { approvals: deps.attachmentApprovals, stat: deps.stat, resizeImage: deps.resizeImage },
       });

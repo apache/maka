@@ -244,6 +244,7 @@ const baseDesktopBuilderConfig = {
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.inherit.plist',
     extendInfo: {
+      NSMicrophoneUsageDescription: 'Maka uses your microphone during WorkHub voice calls.',
       NSAppleEventsUsageDescription:
       'Maka may automate other applications when you explicitly run an agent task.',
     },

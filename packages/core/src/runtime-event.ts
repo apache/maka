@@ -737,6 +737,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
   [
     'displayText',
     'interrupted',
+    'workhubSource',
     'origin',
     'attachments',
     'directoryReferences',
@@ -1080,6 +1081,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
       return isMessageContent({
         text: value.text,
         ...(value.displayText !== undefined ? { displayText: value.displayText } : {}),
+        ...(value.workhubSource !== undefined ? { workhubSource: value.workhubSource } : {}),
         ...(value.attachments !== undefined ? { attachments: value.attachments } : {}),
         ...(value.directoryReferences !== undefined
           ? { directoryReferences: value.directoryReferences }

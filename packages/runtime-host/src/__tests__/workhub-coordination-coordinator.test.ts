@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -42,6 +42,8 @@ import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import type { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import type { HostWorkHubRoutingModel } from '../server/execution-model-authority.js';
+import { WorkHubInbox } from '../server/workhub-inbox.js';
+import { WorkHubVoiceStateStore } from '../server/workhub-voice-state.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { SessionOperationFailure } from '../server/session-catalog-coordinator.js';
 import {
@@ -139,6 +141,7 @@ describe('Host WorkHub Coordination coordinator', () => {
     const store = createSessionStore(root);
     try {
       const workhub = coordinator(root, store, undefined, undefined, {
+        ...coordinationExecutions(new SessionAdmissionGate()).executions,
         startWorkHubCoordinationMessage: async () => ({
           ok: false,
           error: { code: 'operation_unavailable', message: 'not used' },
@@ -165,6 +168,146 @@ describe('Host WorkHub Coordination coordinator', () => {
           message: 'WorkHub action does not match the routing decision bound to this Turn',
         },
       });
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('only voice interface requests steer; ordinary input preserves native busy admission', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-placement-'));
+    const store = createSessionStore(root);
+    const admission = new SessionAdmissionGate();
+    const { executions } = coordinationExecutions(admission);
+    const steered: MessageContent[] = [];
+    try {
+      const host = coordinator(
+        root,
+        store,
+        undefined,
+        undefined,
+        {
+          ...executions,
+          startWorkHubCoordinationMessage: async () => ({
+            ok: false,
+            error: { code: 'session_busy', message: 'busy' },
+          }),
+          steerWorkHubCoordinationMessage: async (_id, content) => {
+            steered.push(content);
+            return { ok: true, result: { turnId: 'active' } };
+          },
+        },
+        admission,
+      );
+      assert.deepEqual(
+        await host.handlers['workhub.coordination.answer'](
+          { turnId: 'voice', text: 'Change to Top5', source: 'voice' },
+          CONTEXT,
+        ),
+        { ok: true, result: { turnId: 'voice', queued: true } },
+      );
+      assert.deepEqual(
+        await host.handlers['workhub.coordination.answer'](
+          { turnId: 'typed', text: 'Another task' },
+          CONTEXT,
+        ),
+        { ok: false, error: { code: 'session_busy', message: 'busy' } },
+      );
+      await eventually(() => steered.length === 1);
+      await host.close();
+      assert.deepEqual(steered, [{ text: 'Change to Top5', workhubSource: 'voice_request' }]);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('voice admission yields through reserved-root startup instead of exhausting immediate retries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-voice-reserved-root-'));
+    const store = createSessionStore(root);
+    const admission = new SessionAdmissionGate();
+    const { executions } = coordinationExecutions(admission);
+    let active = false,
+      attempts = 0,
+      accepted = 0;
+    const ready = setTimeout(() => {
+      active = true;
+    }, 150);
+    const host = coordinator(
+      root,
+      store,
+      undefined,
+      undefined,
+      {
+        ...executions,
+        startWorkHubCoordinationMessage: async () => ({
+          ok: false,
+          error: { code: 'session_busy', message: 'reserved' },
+        }),
+        steerWorkHubCoordinationMessage: async () => {
+          attempts++;
+          if (!active)
+            return {
+              ok: false,
+              error: {
+                code: 'session_busy',
+                message: 'WorkHub turn changed before voice admission',
+              },
+            };
+          accepted++;
+          return { ok: true, result: { turnId: 'active' } };
+        },
+      },
+      admission,
+    );
+    try {
+      const result = await host.handlers['workhub.coordination.answer'](
+        { turnId: 'voice-handoff', text: 'write file then resume', source: 'voice' },
+        CONTEXT,
+      );
+      assert.deepEqual(result, { ok: true, result: { turnId: 'voice-handoff', queued: true } });
+      await eventually(() => accepted === 1);
+      assert.ok(attempts > 1);
+      assert.equal(accepted, 1);
+    } finally {
+      clearTimeout(ready);
+      await host.close();
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('voice transcripts are durable, idempotent context without a model Turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-voice-history-'));
+    const store = createSessionStore(root);
+    try {
+      const workhub = coordinator(root, store);
+      const input = {
+        id: 'voice-record-one',
+        callId: 'call-one',
+        role: 'user' as const,
+        text: '先聊聊方案',
+      };
+      for (let i = 0; i < 2; i++)
+        assert.equal(
+          (await workhub.handlers['workhub.coordination.voiceTranscript'](input, CONTEXT)).ok,
+          true,
+        );
+      const messages = await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID);
+      const notes = messages.filter(
+        (message) => message.type === 'system_note' && message.kind === 'voice_transcript',
+      );
+      assert.equal(notes.length, 1);
+      assert.deepEqual(await store.listTurnsSnapshot(WORKHUB_COORDINATION_SESSION_ID), []);
+      assert.equal(
+        (
+          await workhub.handlers['workhub.coordination.voiceTranscript'](
+            { ...input, text: 'different' },
+            CONTEXT,
+          )
+        ).ok,
+        false,
+      );
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
@@ -712,10 +855,14 @@ describe('Host WorkHub Coordination coordinator', () => {
         ),
         { ok: true, result: { turnId: 'answer-turn' } },
       );
+      await eventually(() => starts.length === 1);
+      await workhub.close();
       assert.equal(starts.length, 1);
       assert.equal(starts[0]?.sessionId, WORKHUB_COORDINATION_SESSION_ID);
       assert.equal(starts[0]?.execution.kind, 'workhub_coordination');
-      assert.deepEqual(prepared, [{ text: 'What should we do next?' }]);
+      assert.deepEqual(prepared, [
+        { text: 'What should we do next?', workhubSource: 'text_request' },
+      ]);
       assert.deepEqual(
         (await store.listHeaders()).map(({ id, role }) => ({ id, role })),
         [{ id: WORKHUB_COORDINATION_SESSION_ID, role: WORKHUB_COORDINATION_SESSION_ROLE }],
@@ -2221,7 +2368,14 @@ describe('Host WorkHub Coordination coordinator', () => {
 
 type CoordinationExecutions = Pick<
   RootTurnCoordinator,
-  'startWorkHubCoordinationMessage' | 'isSessionExecutionIdle' | 'readActiveWorkHubRoutingRequest'
+  | 'startWorkHubCoordinationMessage'
+  | 'steerWorkHubCoordinationMessage'
+  | 'stopSession'
+  | 'isSessionExecutionIdle'
+  | 'readActiveWorkHubRequest'
+  | 'lookup'
+  | 'read'
+  | 'readActiveWorkHubRoutingRequest'
 >;
 
 /**
@@ -2231,10 +2385,33 @@ type CoordinationExecutions = Pick<
  */
 function coordinationExecutions(admission: SessionAdmissionGate) {
   const admitted = new Set<string>();
+  const completed = new Set<string>();
   const starts: Parameters<RootTurnCoordinator['startWorkHubCoordinationMessage']>[0][] = [];
   const prepared: MessageContent[] = [];
   const executions: CoordinationExecutions = {
     readActiveWorkHubRoutingRequest: async () => undefined,
+    lookup: async (sessionId, turnId) => {
+      const request = starts.find((item) => item.turnId === turnId);
+      return request
+        ? {
+            sessionId,
+            turnId,
+            runId: `workhub-run-${turnId}`,
+            userMessageId: null,
+            descriptor: request.execution,
+          }
+        : undefined;
+    },
+    read: async (identity) =>
+      completed.has(identity.turnId)
+        ? { ...identity, status: 'completed', terminalEventId: `done-${identity.turnId}` }
+        : { ...identity, status: 'running' },
+    stopSession: async () => {},
+    steerWorkHubCoordinationMessage: async () => ({
+      ok: false,
+      error: { code: 'session_busy', message: 'No active test turn' },
+    }),
+    readActiveWorkHubRequest: async () => undefined,
     startWorkHubCoordinationMessage: async (request) => {
       starts.push(request);
       return admission.run(WORKHUB_COORDINATION_SESSION_ID, async (lease) => {
@@ -2255,7 +2432,7 @@ function coordinationExecutions(admission: SessionAdmissionGate) {
     },
     isSessionExecutionIdle: () => true,
   };
-  return { executions, starts, prepared };
+  return { executions, starts, prepared, completed };
 }
 
 function coordinator(
@@ -2265,6 +2442,16 @@ function coordinator(
   resolveCreateTarget: (() => Promise<CoordinationCreateTarget>) | undefined = undefined,
   executions: CoordinationExecutions = {
     readActiveWorkHubRoutingRequest: async () => undefined,
+    lookup: async () => undefined,
+    read: async () => {
+      throw new Error('No runtime execution in fixture');
+    },
+    stopSession: async () => {},
+    steerWorkHubCoordinationMessage: async () => ({
+      ok: false,
+      error: { code: 'session_busy', message: 'No active test turn' },
+    }),
+    readActiveWorkHubRequest: async () => undefined,
     startWorkHubCoordinationMessage: async () => ({
       ok: false,
       error: {
@@ -2279,6 +2466,11 @@ function coordinator(
   routingModel: HostWorkHubRoutingModel = {
     decide: async () => ({ kind: 'routing', disposition: 'answer_here' }),
   },
+  acquireVoiceResidency?: ConnectionContext['acquireResidency'],
+  inboxOptions: Pick<
+    HostWorkHubCoordinationCoordinatorOptions,
+    'backgroundContext' | 'findInputReceipt'
+  > = {},
 ) {
   const assign =
     sessionActions.assign ??
@@ -2287,6 +2479,8 @@ function coordinator(
     }));
   const activeRequests = new Map<string, MessageContent>();
   const host = new HostWorkHubCoordinationCoordinator({
+    ...inboxOptions,
+    acquireVoiceResidency,
     transitionConfiguration: async (input) =>
       store.updateSessionConfiguration(WORKHUB_COORDINATION_SESSION_ID, {
         expectedVersion: input.expectedRevision,
@@ -2343,6 +2537,7 @@ function coordinator(
   return {
     handlers: host.handlers,
     prepareRoutingDecision: host.prepareRoutingDecision.bind(host),
+    close: () => host.close(),
     async act(input: WorkHubAdmittedAction, context: ConnectionContext) {
       const turnId = randomUUID();
       const { userText, attachments, ...action } = input;
@@ -2417,3 +2612,274 @@ function persistTestAssignmentAction(
     return { turnId: result.turnId };
   };
 }
+
+async function eventually(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 4000;
+  while (!predicate() && Date.now() < deadline)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(predicate(), 'Expected native admission before deadline');
+}
+
+test('persisted inbox resumes after Host restart and native proof prevents duplicate execution', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'workhub-inbox-restart-'));
+  const store = createSessionStore(root),
+    admission = new SessionAdmissionGate();
+  const { executions, prepared } = coordinationExecutions(admission);
+  let first: ReturnType<typeof coordinator> | undefined,
+    second: ReturnType<typeof coordinator> | undefined;
+  try {
+    first = coordinator(
+      root,
+      store,
+      undefined,
+      undefined,
+      {
+        ...executions,
+        startWorkHubCoordinationMessage: async () => ({
+          ok: false,
+          error: { code: 'session_busy', message: 'reserved' },
+        }),
+      },
+      admission,
+    );
+    const input = { turnId: 'request', text: 'Do the work', source: 'voice' as const };
+    assert.deepEqual(await first.handlers['workhub.coordination.answer'](input, CONTEXT), {
+      ok: true,
+      result: { turnId: 'request', queued: true },
+    });
+    await first.close();
+    const inbox = new WorkHubInbox(join(root, 'workhub-coordination', 'inbox.sqlite'));
+    assert.equal((await inbox.pending()).length, 1);
+    second = coordinator(
+      root,
+      store,
+      undefined,
+      undefined,
+      executions,
+      admission,
+      {},
+      undefined,
+      undefined,
+      {
+        backgroundContext: CONTEXT,
+      },
+    );
+    await eventually(() => prepared.length === 1);
+    await second.close();
+    second = undefined;
+    assert.deepEqual(await inbox.pending(), []);
+    // Simulate a crash after native admission but before inbox acknowledgement.
+    await inbox.receive({
+      id: 'already-steered',
+      input: { text: 'correction' },
+      content: { text: 'correction', workhubSource: 'voice_request' },
+    });
+    let proofs = 0;
+    second = coordinator(
+      root,
+      store,
+      undefined,
+      undefined,
+      executions,
+      admission,
+      {},
+      undefined,
+      undefined,
+      {
+        backgroundContext: CONTEXT,
+        findInputReceipt: async (id) => {
+          if (id === 'already-steered') {
+            proofs++;
+            return { turnId: 'existing-root' };
+          }
+          return undefined;
+        },
+      },
+    );
+    await eventually(() => proofs === 1);
+    await second.close();
+    second = undefined;
+    assert.equal(prepared.length, 1);
+    assert.deepEqual(await inbox.pending(), []);
+    const receipt = await inbox.read('already-steered');
+    assert.equal(receipt?.receipt?.turnId, 'existing-root');
+  } finally {
+    await first?.close();
+    await second?.close();
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('idle review archives continuously, waits for WorkHub, and completes without queue mutation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voice-idle-review-'));
+  const store = createSessionStore(root);
+  const admission = new SessionAdmissionGate();
+  const f = coordinationExecutions(admission);
+  let idle = true;
+  const host = coordinator(
+    root,
+    store,
+    undefined,
+    undefined,
+    { ...f.executions, isSessionExecutionIdle: () => idle },
+    admission,
+  );
+  const observe = (
+    id: string,
+    review = false,
+    entries: import('../protocol/workhub-voice-state.js').VoiceLogInput[] = [],
+  ) =>
+    host.handlers['workhub.coordination.voice-maintain'](
+      { id, callId: 'call', entries, review },
+      CONTEXT,
+    );
+  try {
+    assert.equal(
+      (
+        await observe('log', false, [
+          { id: 'fact', kind: 'transcript', data: { role: 'user', text: 'question' } },
+        ])
+      ).ok,
+      true,
+    );
+    assert.equal(f.starts.length, 0);
+    idle = false;
+    await observe('busy', true);
+    assert.equal(f.starts.length, 0);
+    idle = true;
+    const first = await observe('first', true);
+    assert.ok(first.ok);
+    assert.equal(f.starts.length, 1);
+    idle = false;
+    for (let n = 0; n < 20; n++) await observe(`poll-${n}`, true);
+    assert.equal(f.starts.length, 1);
+    await observe('new-log', false, [
+      { id: 'new-fact', kind: 'transcript', data: { role: 'assistant', text: 'answer' } },
+    ]);
+    f.completed.add('voice-maintenance-first');
+    assert.equal(
+      (await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID)).filter(
+        (message) => message.type === 'turn_state',
+      ).length,
+      0,
+      'runtime completion is not a legacy message',
+    );
+    idle = true;
+    const next = await observe('next', true);
+    assert.ok(next.ok);
+    assert.equal(f.starts.length, 2);
+    assert.equal(next.result.review?.after, first.result.review?.through);
+    f.completed.add('voice-maintenance-next');
+    assert.equal(
+      (await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID)).filter(
+        (message) => message.type === 'turn_state',
+      ).length,
+      0,
+      'runtime completion is not a legacy message',
+    );
+    for (let n = 0; n < 20; n++) await observe(`noop-${n}`, true);
+    assert.equal(f.starts.length, 2);
+    assert.match(f.prepared[0]!.text, /after=0/);
+    assert.doesNotMatch(f.prepared[0]!.text, /currentState|2.seconds|strong conflict/);
+  } finally {
+    host.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('review admission losing the idle race does not queue or lose the unchecked range', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voice-review-busy-'));
+  const store = createSessionStore(root);
+  const admission = new SessionAdmissionGate();
+  const f = coordinationExecutions(admission);
+  let busy = true;
+  const host = coordinator(
+    root,
+    store,
+    undefined,
+    undefined,
+    {
+      ...f.executions,
+      startWorkHubCoordinationMessage: async (request, context) =>
+        busy
+          ? { ok: false, error: { code: 'session_busy', message: 'raced' } }
+          : f.executions.startWorkHubCoordinationMessage(request, context),
+    },
+    admission,
+  );
+  try {
+    await host.handlers['workhub.coordination.voice-maintain'](
+      {
+        id: 'race',
+        callId: 'call',
+        review: true,
+        entries: [{ id: 'fact', kind: 'interruption', data: {} }],
+      },
+      CONTEXT,
+    );
+    busy = false;
+    const retry = await host.handlers['workhub.coordination.voice-maintain'](
+      { id: 'retry', callId: 'call', review: true, entries: [] },
+      CONTEXT,
+    );
+    assert.ok(retry.ok);
+    assert.equal(retry.result.review?.status, 'admitted');
+    assert.equal(f.starts.length, 1);
+  } finally {
+    host.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a completed legacy message cannot acknowledge a failed runtime review', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'voice-review-authority-'));
+  const store = createSessionStore(root);
+  const admission = new SessionAdmissionGate();
+  const f = coordinationExecutions(admission);
+  const host = coordinator(
+    root,
+    store,
+    undefined,
+    undefined,
+    {
+      ...f.executions,
+      read: async (identity) => ({
+        ...identity,
+        status: 'failed',
+        terminalEventId: 'failed',
+        failureClass: 'provider',
+      }),
+    },
+    admission,
+  );
+  try {
+    const observe = (
+      id: string,
+      entries: import('../protocol/workhub-voice-state.js').VoiceLogInput[] = [],
+    ) =>
+      host.handlers['workhub.coordination.voice-maintain'](
+        { id, callId: 'call', entries, review: true },
+        CONTEXT,
+      );
+    await observe('first', [{ id: 'fact', kind: 'transcript', data: {} }]);
+    await store.appendMessages(WORKHUB_COORDINATION_SESSION_ID, [
+      {
+        type: 'turn_state',
+        id: 'legacy-completed',
+        turnId: 'voice-maintenance-first',
+        ts: Date.now(),
+        status: 'completed',
+      },
+    ]);
+    const settled = await observe('poll');
+    assert.ok(settled.ok);
+    assert.equal(settled.result.review?.status, 'failed');
+    const next = await observe('second', [{ id: 'new-fact', kind: 'transcript', data: {} }]);
+    assert.ok(next.ok);
+    assert.equal(next.result.review?.after, 0);
+  } finally {
+    host.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

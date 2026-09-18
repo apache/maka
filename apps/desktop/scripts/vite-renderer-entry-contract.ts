@@ -33,7 +33,7 @@ const ALLOWED_HTML_TAGS = new Set([
   'title',
 ]);
 const CONTENT_SECURITY_POLICY =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'";
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:";
 
 function normalizePath(path: string): string {
   return path.split(sep).join('/');

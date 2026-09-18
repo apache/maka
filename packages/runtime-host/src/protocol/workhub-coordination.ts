@@ -18,6 +18,18 @@
  */
 
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import {
+  decodeVoiceRequest,
+  type VoiceRequest,
+  decodeVoiceEnqueue,
+  type VoiceEnqueueInput,
+  decodeVoiceDelivery,
+  type VoiceDeliveryInput,
+  decodeVoiceObservation,
+  decodeVoiceState,
+  type WorkHubVoiceObservation,
+  type WorkHubVoiceState,
+} from './workhub-voice-state.js';
 import type { AttachmentRef } from '@maka/core/events';
 import { isWorkHubActionResult, type WorkHubActionResult } from '@maka/core/workhub-action-result';
 import { decodeMessageContent } from './turn.js';
@@ -124,13 +136,26 @@ export interface WorkHubCoordinationResolveResult {
 }
 
 export interface WorkHubCoordinationAnswerInput {
+  readonly source?: 'voice';
+  readonly displayText?: string;
   readonly turnId: string;
   readonly text: string;
   readonly attachments?: AttachmentRef[];
 }
 
+export interface WorkHubVoiceTranscriptInput {
+  readonly id: string;
+  readonly callId: string;
+  readonly role: 'user' | 'assistant';
+  readonly text: string;
+  readonly nativeTurnId?: string;
+  readonly start_ms?: number;
+  readonly end_ms?: number;
+}
+
 export interface WorkHubCoordinationTurnResult {
   readonly turnId: string;
+  readonly queued?: true;
 }
 
 export type WorkHubCoordinationCandidateState =
@@ -292,6 +317,112 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
     decodeInput: decodeWorkHubCoordinationResolveInput,
     decodeOutput: decodeWorkHubCoordinationResolveResult,
   }),
+  'workhub.coordination.voiceState': defineOperation<
+    Record<string, never>,
+    WorkHubVoiceState,
+    (typeof RESOLVE_ERRORS)[number]
+  >({
+    decodeInput: (value) => {
+      requireExactRecord(value, 'Voice state read', []);
+      return {};
+    },
+    mode: 'query',
+    availability: 'ready',
+    decodeOutput: decodeVoiceState,
+    errors: RESOLVE_ERRORS,
+  }),
+  'workhub.coordination.voiceRequest': defineOperation<
+    VoiceRequest,
+    WorkHubVoiceState,
+    (typeof RESOLVE_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: RESOLVE_ERRORS,
+    decodeInput: decodeVoiceRequest,
+    decodeOutput: decodeVoiceState,
+  }),
+  'workhub.coordination.voiceEnqueue': defineOperation<
+    VoiceEnqueueInput,
+    WorkHubVoiceState,
+    (typeof RESOLVE_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: RESOLVE_ERRORS,
+    decodeInput: decodeVoiceEnqueue,
+    decodeOutput: decodeVoiceState,
+  }),
+  'workhub.coordination.voiceDelivery': defineOperation<
+    VoiceDeliveryInput,
+    WorkHubVoiceState,
+    (typeof RESOLVE_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: RESOLVE_ERRORS,
+    decodeInput: decodeVoiceDelivery,
+    decodeOutput: decodeVoiceState,
+  }),
+  'workhub.coordination.voice-maintain': defineOperation<
+    WorkHubVoiceObservation,
+    WorkHubVoiceState,
+    (typeof RESOLVE_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: RESOLVE_ERRORS,
+    decodeInput: decodeVoiceObservation,
+    decodeOutput: decodeVoiceState,
+  }),
+  'workhub.coordination.voiceTranscript': defineOperation<
+    WorkHubVoiceTranscriptInput,
+    WorkHubCoordinationResolveResult,
+    (typeof RESOLVE_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: RESOLVE_ERRORS,
+    decodeInput: (value) => {
+      const record = requireRecord(value, 'WorkHub voice transcript');
+      const input = requireExactRecord(record, 'WorkHub voice transcript', [
+        'id',
+        'callId',
+        'role',
+        'text',
+        ...['nativeTurnId', 'start_ms', 'end_ms'].filter((key) => Object.hasOwn(record, key)),
+      ]);
+      for (const key of ['start_ms', 'end_ms']) {
+        if (
+          input[key] !== undefined &&
+          (typeof input[key] !== 'number' ||
+            !Number.isFinite(input[key]) ||
+            (input[key] as number) < 0)
+        )
+          throw invalidProtocolFrame('Invalid transcript interval');
+      }
+      if (
+        typeof input.start_ms === 'number' &&
+        typeof input.end_ms === 'number' &&
+        input.end_ms < input.start_ms
+      )
+        throw invalidProtocolFrame('Invalid transcript interval');
+      if (input.role !== 'user' && input.role !== 'assistant')
+        throw invalidProtocolFrame('Invalid voice speaker');
+      return {
+        id: requireEntityId(input.id, 'Voice item id'),
+        callId: requireEntityId(input.callId, 'Voice call id'),
+        role: input.role,
+        text: requireUtf8String(input.text, 'Voice transcript', 32_000),
+        ...(input.nativeTurnId === undefined
+          ? {}
+          : { nativeTurnId: requireEntityId(input.nativeTurnId, 'Native turn id') }),
+        ...(typeof input.start_ms === 'number' ? { start_ms: input.start_ms } : {}),
+        ...(typeof input.end_ms === 'number' ? { end_ms: input.end_ms } : {}),
+      };
+    },
+    decodeOutput: decodeWorkHubCoordinationResolveResult,
+  }),
   'workhub.coordination.answer': defineOperation<
     WorkHubCoordinationAnswerInput,
     WorkHubCoordinationTurnResult,
@@ -370,9 +501,22 @@ export function decodeWorkHubCoordinationAnswerInput(
     value,
     'WorkHub Coordination answer input',
     ['turnId', 'text'],
-    ['attachments'],
+    ['attachments', 'source', 'displayText'],
   );
+  if (input.source !== undefined && input.source !== 'voice') {
+    throw invalidProtocolFrame('Invalid WorkHub source');
+  }
   return {
+    ...(input.displayText !== undefined
+      ? {
+          displayText: requireUtf8String(
+            input.displayText,
+            'WorkHub displayed input',
+            WORKHUB_COORDINATION_TEXT_MAX_BYTES,
+          ),
+        }
+      : {}),
+    ...(input.source === 'voice' ? { source: input.source } : {}),
     ...(input.attachments !== undefined
       ? {
           attachments: decodeMessageContent({ text: input.text, attachments: input.attachments })
@@ -389,9 +533,17 @@ export function decodeWorkHubCoordinationAnswerInput(
 }
 
 export function decodeWorkHubCoordinationTurnResult(value: unknown): WorkHubCoordinationTurnResult {
-  const result = requireExactRecord(value, 'WorkHub Coordination Turn result', ['turnId']);
+  const result = requireShapedRecord(
+    value,
+    'WorkHub Coordination Turn result',
+    ['turnId'],
+    ['queued'],
+  );
+  if (result.queued !== undefined && result.queued !== true)
+    throw invalidProtocolFrame('Invalid WorkHub queue receipt');
   return {
     turnId: requireEntityId(result.turnId, 'WorkHub Coordination Turn id'),
+    ...(result.queued ? { queued: true as const } : {}),
   };
 }
 

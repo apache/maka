@@ -270,7 +270,7 @@ function runtimeCommitSinkFromEventStore(
 
 export type StopSessionInput =
   | {
-      source?: 'stop_button' | 'graph_supervisor';
+      source?: 'stop_button' | 'graph_supervisor' | 'voice_rebase';
       workHubActionId?: never;
       mode?: BackendStopMode;
     }

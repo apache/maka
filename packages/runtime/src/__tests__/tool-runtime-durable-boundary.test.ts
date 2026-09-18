@@ -190,6 +190,32 @@ describe('ToolRuntime durable boundary', () => {
     assert.equal(outcomes[0]?.runtimeEvent.refs?.operationId, prepared[0]?.operationId);
   });
 
+  it('persists internal tool presentation in T1 and its result in T2', async () => {
+    const prepared: ToolPreparedCommit[] = [];
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async (input) => {
+        prepared.push(input);
+        return { created: true, runtimeEventSeq: 1 };
+      },
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const result = { id: 'answer', status: 'accepted' };
+    await harness.execute({
+      ...tool(() => result),
+      presentation: 'internal',
+    });
+    assert.equal(prepared[0]!.runtimeEvent.actions?.stateDelta?.presentation, 'internal');
+    assert.deepEqual(
+      outcomes[0]!.runtimeEvent.content?.kind === 'function_response' &&
+        outcomes[0]!.runtimeEvent.content.result,
+      { kind: 'json', value: result },
+    );
+  });
+
   it('commits the completed outcome with its model projection in T2', async () => {
     const order: string[] = [];
     const outcomes: ToolOutcomeCommit[] = [];

@@ -998,6 +998,30 @@ export class DesktopRuntimeHostClient {
     return requireSessionProjection(await this.request('workhub.coordination.query', {}));
   }
 
+  readWorkHubVoiceState() {
+    return this.request('workhub.coordination.voiceState', {});
+  }
+
+  registerWorkHubVoiceRequest(input: OperationInput<'workhub.coordination.voiceRequest'>) {
+    return this.request('workhub.coordination.voiceRequest', input);
+  }
+
+  enqueueWorkHubVoice(input: OperationInput<'workhub.coordination.voiceEnqueue'>) {
+    return this.request('workhub.coordination.voiceEnqueue', input);
+  }
+
+  recordWorkHubVoiceDelivery(input: OperationInput<'workhub.coordination.voiceDelivery'>) {
+    return this.request('workhub.coordination.voiceDelivery', input);
+  }
+
+  observeWorkHubVoice(input: OperationInput<'workhub.coordination.voice-maintain'>) {
+    return this.request('workhub.coordination.voice-maintain', input);
+  }
+
+  recordWorkHubVoiceTranscript(input: OperationInput<'workhub.coordination.voiceTranscript'>) {
+    return this.request('workhub.coordination.voiceTranscript', input);
+  }
+
   answerWorkHubCoordination(input: OperationInput<'workhub.coordination.answer'>) {
     return this.request('workhub.coordination.answer', input);
   }

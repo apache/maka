@@ -23,6 +23,7 @@ import type {
   ContextCompactionStartedEvent,
   SessionEvent,
 } from '@maka/core/events';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
   InteractionPendingSnapshot,
@@ -167,7 +168,14 @@ export class RuntimeHostSessionProjector {
     const events: SessionEvent[] = [];
     const queueEvents =
       this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)
-        ? [projectQueueUpdate(this.#snapshot.queue, root.turnId, this.#now())]
+        ? [
+            projectQueueUpdate(
+              this.#snapshot.queue,
+              root.turnId,
+              this.#now(),
+              this.#snapshot.session?.sessionId,
+            ),
+          ]
         : [];
     if (this.#projectMessageAdmissions) {
       events.push(
@@ -210,6 +218,8 @@ export class RuntimeHostSessionProjector {
     }
     for (const entry of rootQueueInFlight(this.#snapshot.queue)) {
       if (
+        (this.#snapshot.session?.sessionId === WORKHUB_COORDINATION_SESSION_ID &&
+          entry.content.workhubSource === 'voice_maintenance') ||
         this.#durableTurnByMessage.has(entry.messageId) ||
         this.#renderedSteeringMessageIds.has(entry.messageId)
       )
@@ -400,6 +410,11 @@ export class RuntimeHostSessionProjector {
       const event = projectSessionEvent(frame);
       if (event.type === 'steering_message') {
         if (
+          this.#snapshot.session?.sessionId === WORKHUB_COORDINATION_SESSION_ID &&
+          event.content.workhubSource === 'voice_maintenance'
+        )
+          return emptyUpdate(events);
+        if (
           this.#durableTurnByMessage.has(event.messageId) ||
           this.#renderedSteeringMessageIds.has(event.messageId)
         ) {
@@ -431,6 +446,8 @@ export class RuntimeHostSessionProjector {
     if (root && queueChanged(previousSnapshot.queue, next.queue)) {
       for (const entry of enteredActiveTurn) {
         if (
+          (this.#snapshot.session?.sessionId === WORKHUB_COORDINATION_SESSION_ID &&
+            entry.content.workhubSource === 'voice_maintenance') ||
           this.#durableTurnByMessage.has(entry.messageId) ||
           this.#renderedSteeringMessageIds.has(entry.messageId)
         )
@@ -445,7 +462,9 @@ export class RuntimeHostSessionProjector {
           content: structuredClone(entry.content),
         });
       }
-      events.push(projectQueueUpdate(next.queue, root.turnId, this.#now()));
+      events.push(
+        projectQueueUpdate(next.queue, root.turnId, this.#now(), next.session?.sessionId),
+      );
     }
     if (startedTurn) this.#accumulators.clear();
     // Emit the presentation-only compaction-started event when the root Turn
@@ -777,6 +796,7 @@ function projectQueueUpdate(
   queue: SessionMessageQueueProjection,
   turnId: string,
   now: number,
+  sessionId: string | undefined,
 ): Extract<SessionEvent, { type: 'queue_update' }> {
   return {
     type: 'queue_update',
@@ -784,22 +804,46 @@ function projectQueueUpdate(
     turnId,
     ts: now,
     queueRevision: queue.queueRevision,
-    steering: queue.steering.map((entry) => entry.content.text),
-    followup: queue.followup.map((entry) => entry.content.text),
-    steeringEntries: queue.steering.map((entry) => ({
-      entryId: entry.entryId,
-      messageId: entry.messageId,
-      content: structuredClone(entry.content),
-      placement: entry.placement,
-      state: entry.state,
-    })),
-    followupEntries: queue.followup.map((entry) => ({
-      entryId: entry.entryId,
-      messageId: entry.messageId,
-      content: structuredClone(entry.content),
-      placement: entry.placement,
-      state: entry.state,
-    })),
+    steering: queue.steering
+      .filter(
+        (entry) =>
+          sessionId !== WORKHUB_COORDINATION_SESSION_ID ||
+          entry.content.workhubSource !== 'voice_maintenance',
+      )
+      .map((entry) => entry.content.text),
+    followup: queue.followup
+      .filter(
+        (entry) =>
+          sessionId !== WORKHUB_COORDINATION_SESSION_ID ||
+          entry.content.workhubSource !== 'voice_maintenance',
+      )
+      .map((entry) => entry.content.text),
+    steeringEntries: queue.steering
+      .filter(
+        (entry) =>
+          sessionId !== WORKHUB_COORDINATION_SESSION_ID ||
+          entry.content.workhubSource !== 'voice_maintenance',
+      )
+      .map((entry) => ({
+        entryId: entry.entryId,
+        messageId: entry.messageId,
+        content: structuredClone(entry.content),
+        placement: entry.placement,
+        state: entry.state,
+      })),
+    followupEntries: queue.followup
+      .filter(
+        (entry) =>
+          sessionId !== WORKHUB_COORDINATION_SESSION_ID ||
+          entry.content.workhubSource !== 'voice_maintenance',
+      )
+      .map((entry) => ({
+        entryId: entry.entryId,
+        messageId: entry.messageId,
+        content: structuredClone(entry.content),
+        placement: entry.placement,
+        state: entry.state,
+      })),
   };
 }
 

@@ -18,6 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import { isDeepStrictEqual } from 'node:util';
 import type { SteeringLease } from '@maka/core/backend-types';
 import {
@@ -1172,10 +1173,37 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     this.#sessions.clear();
   }
 
+  /** Only the WorkHub authority may supplement its reserved active coordination run. */
+  submitWorkHubSteering(
+    identity: RuntimeMessageRunIdentity,
+    messageId: string,
+    content: MessageContent,
+    context: ConnectionContext,
+  ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
+    if (identity.sessionId !== WORKHUB_COORDINATION_SESSION_ID) {
+      return Promise.resolve(
+        failure('operation_unavailable', 'Expected the WorkHub coordination Session'),
+      );
+    }
+    return this.submit(
+      {
+        originHostEpoch: this.#hostEpoch,
+        sessionId: identity.sessionId,
+        messageId,
+        content,
+        placement: 'current_turn',
+      },
+      context,
+      undefined,
+      identity,
+    );
+  }
+
   private submit(
     input: TurnMessageSubmitInput,
     context: ConnectionContext,
     admission?: SessionAdmissionLease,
+    workHubIdentity?: RuntimeMessageRunIdentity,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     const payload = canonicalSubmitPayload(input);
     const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
@@ -1193,10 +1221,16 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
     }
     if (!isCurrentEpoch) {
-      return this.#submitAdmitted(input, payload, context.connectionId, admission);
+      return this.#submitAdmitted(input, payload, context.connectionId, admission, workHubIdentity);
     }
     const key = operationKey(input.sessionId, input.messageId);
-    const result = this.#submitAdmitted(input, payload, context.connectionId, admission);
+    const result = this.#submitAdmitted(
+      input,
+      payload,
+      context.connectionId,
+      admission,
+      workHubIdentity,
+    );
     this.#pendingSubmits.set(key, { payload, result });
     void result.then(
       () => this.#deletePendingSubmit(key, result),
@@ -1210,6 +1244,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     payload: CanonicalSubmitPayload,
     initiatingConnectionId: string,
     admittedLease?: SessionAdmissionLease,
+    workHubIdentity?: RuntimeMessageRunIdentity,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     const execute = async (
       admission: SessionAdmissionLease,
@@ -1257,10 +1292,19 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         }
         if (!header) return failure('not_found', 'Session does not exist');
         if (header.isArchived) return failure('session_archived', 'Session is archived');
-        if (header.unavailableReason) {
+        if (header.unavailableReason && !workHubIdentity) {
           return failure('operation_unavailable', header.unavailableReason);
         }
         const rootState = await this.#root.readRootState(input.sessionId);
+        if (
+          workHubIdentity &&
+          (rootState.kind !== 'active' || !sameRun(rootState, workHubIdentity))
+        ) {
+          return failure(
+            'session_busy',
+            'The WorkHub coordination turn changed before steering was accepted',
+          );
+        }
         if (this.#failStopped) {
           return failure('host_draining', 'Runtime Host message authority has failed');
         }

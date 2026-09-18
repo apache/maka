@@ -1793,6 +1793,40 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     return this.startRootMessage(request, context);
   }
 
+  /** Uses the shared durable message authority without opening ordinary WorkHub admission. */
+  async steerWorkHubCoordinationMessage(
+    messageId: string,
+    content: MessageContent,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'workhub.coordination.answer'>> {
+    const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+    const root = this.readRootState(sessionId);
+    if (root.kind !== 'active')
+      return {
+        ok: false,
+        error: { code: 'session_busy', message: 'WorkHub turn changed before voice admission' },
+      };
+    const admission = await this.stores.agentRunStore.readRootTurnAdmission(sessionId, root.turnId);
+    if (
+      admission?.execution.kind !== 'workhub_coordination' ||
+      admission.execution.operation === 'action'
+    ) {
+      return operationUnavailable('WorkHub is not running a conversational coordination turn');
+    }
+    const result = await this.messages.submitWorkHubSteering(root, messageId, content, context);
+    if (!result.ok)
+      return {
+        ok: false,
+        error: {
+          code: result.error.code === 'session_busy' ? 'session_busy' : 'operation_unavailable',
+          message: result.error.message,
+        },
+      };
+    if (result.result.disposition !== 'steering')
+      return operationConflict('WorkHub did not accept steering');
+    return { ok: true, result: { turnId: root.turnId } };
+  }
+
   async runWorkHubCoordinationOperation(
     request: Extract<RootMessageStartRequest, { execution: { kind: 'workhub_coordination' } }>,
     context: ConnectionContext,

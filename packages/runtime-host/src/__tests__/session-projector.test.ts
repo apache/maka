@@ -882,7 +882,11 @@ function steeringEntry(state: 'queued' | 'in_flight'): SteeringMessageSnapshot {
   };
 }
 
-function steeringFrame(sequence: number, messageId = 'steering-message-1'): SubscriptionFrame {
+function steeringFrame(
+  sequence: number,
+  messageId = 'steering-message-1',
+  content = { text: 'steer the turn' },
+): SubscriptionFrame {
   return {
     kind: 'subscription.session_event',
     hostEpoch: 'host-1',
@@ -896,7 +900,7 @@ function steeringFrame(sequence: number, messageId = 'steering-message-1'): Subs
       turnId: 'turn-1',
       ts: 10,
       messageId,
-      content: { text: 'steer the turn' },
+      content,
     },
   };
 }
@@ -1145,4 +1149,51 @@ test('projects the typed context-compaction outcome onto the completed Turn even
       : undefined,
     { kind: 'compacted', checkpointId: 'checkpoint-1' },
   );
+});
+
+test('internal voice steering is absent from live queues, echoes and rejoin while public text survives', () => {
+  const internal = {
+    ...steeringEntry('in_flight'),
+    messageId: 'voice-maintenance-one',
+    content: {
+      text: 'events',
+      displayText: 'Voice continuity',
+      workhubSource: 'voice_maintenance' as const,
+    },
+  };
+  const publicEntry = {
+    ...steeringEntry('in_flight'),
+    entryId: 'public-entry',
+    messageId: 'real-user',
+  };
+  const state = snapshot({
+    session: { ...snapshot().session, sessionId: 'maka_workhub_coordination' },
+    queue: queue(1, [internal, publicEntry]),
+  });
+  const projector = new RuntimeHostSessionProjector(state, {
+    durableUserMessages: [],
+    activeAssistantMessages: [],
+  });
+  const seeded = projector.seedActive(true);
+  assert.deepEqual(
+    seeded.filter((e) => e.type === 'steering_message').map((e) => e.messageId),
+    ['real-user'],
+  );
+  assert.ok(!JSON.stringify(seeded).includes('Voice continuity'));
+  assert.ok(!JSON.stringify(seeded).includes('voice-maintenance-one'));
+  assert.deepEqual(
+    projector.accept(steeringFrame(2, internal.messageId, internal.content)).events,
+    [],
+  );
+  const fresh = new RuntimeHostSessionProjector(snapshot({ queue: queue(0, []) }), {
+    durableUserMessages: [],
+    activeAssistantMessages: [],
+  });
+  const update = fresh.accept({
+    kind: 'subscription.session_projection',
+    subscriptionId: 's',
+    snapshot: state,
+  } as SubscriptionFrame);
+  assert.ok(!JSON.stringify(update.events).includes('Voice continuity'));
+  assert.equal(update.events.filter((e) => e.type === 'steering_message').length, 1);
 });

@@ -17,11 +17,18 @@
  * under the License.
  */
 
+import { WorkHubInbox, WorkHubInboxConflict } from './workhub-inbox.js';
+import { activeWorkHubVoiceCallId } from './workhub-voice-call-state.js';
+import { VOICE_QUEUE_FILENAME, WorkHubVoiceStateStore } from './workhub-voice-state.js';
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { normalizeMessageContent } from '@maka/core/events';
+import {
+  messageContentDigest,
+  normalizeMessageContent,
+  type MessageContent,
+} from '@maka/core/events';
 import type { SessionConfigurationTransitionRequest } from '@maka/runtime/session-manager';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import {
@@ -124,8 +131,14 @@ type CoordinationStores = Pick<
 
 type CoordinationExecutions = Pick<
   RootTurnCoordinator,
-  'startWorkHubCoordinationMessage' | 'isSessionExecutionIdle' | 'readActiveWorkHubRoutingRequest'
->;
+  | 'startWorkHubCoordinationMessage'
+  | 'steerWorkHubCoordinationMessage'
+  | 'isSessionExecutionIdle'
+  | 'readActiveWorkHubRoutingRequest'
+  | 'lookup'
+  | 'read'
+> &
+  Partial<Pick<RootTurnCoordinator, 'subscribe'>>;
 
 type WorkHubResumeResult =
   | {
@@ -149,6 +162,12 @@ type CoordinationSessionActions = Pick<
 export type CoordinationCreateTarget = Omit<CreateSessionInput, 'cwd' | 'name' | 'projectId'>;
 
 export interface HostWorkHubCoordinationCoordinatorOptions {
+  readonly backgroundContext?: ConnectionContext;
+  readonly findInputReceipt?: (
+    id: string,
+    content: MessageContent,
+  ) => Promise<{ turnId: string; queued?: true } | undefined>;
+  readonly acquireVoiceResidency?: ConnectionContext['acquireResidency'];
   readonly stateRoot: string;
   readonly stores: CoordinationStores;
   readonly admission: SessionAdmissionGate;
@@ -176,7 +195,31 @@ export class HostWorkHubCoordinationCoordinator {
     'workhub.coordination.resolve': () => this.#resolve(),
     'workhub.coordination.query': () => this.#query(),
     'workhub.coordination.configureModel': (input) => this.#configureModel(input),
-    'workhub.coordination.answer': (input, context) => this.#answer(input, context),
+    'workhub.coordination.voiceState': async (_input, context) => {
+      this.#voiceContext = {
+        ...context,
+        acquireResidency: this.#acquireVoiceResidency ?? context.acquireResidency,
+      };
+      this.#pumpVoice();
+      return { ok: true, result: await this.#voiceState.snapshot() };
+    },
+    'workhub.coordination.voiceRequest': async (input) => ({
+      ok: true,
+      result: await this.#voiceState.request(input),
+    }),
+    'workhub.coordination.voiceEnqueue': async (input) => ({
+      ok: true,
+      result: await this.#voiceState.enqueue(input),
+    }),
+    'workhub.coordination.voiceDelivery': async (input) => ({
+      ok: true,
+      result: await this.#voiceState.delivery(input),
+    }),
+    'workhub.coordination.voice-maintain': (input, context) => this.#observeVoice(input, context),
+    'workhub.coordination.voiceTranscript': (input, context) =>
+      this.#recordVoiceTranscript(input, context),
+    'workhub.coordination.answer': (input, context) =>
+      input.source === 'voice' ? this.#receiveAnswer(input, context) : this.#answer(input, context),
 
     'workhub.coordination.candidates': () => this.#candidates(),
 
@@ -196,8 +239,41 @@ export class HostWorkHubCoordinationCoordinator {
   readonly #routingModel: HostWorkHubRoutingModel | undefined;
   readonly #readDelegationRetirement: HostWorkHubCoordinationCoordinatorOptions['sessionActions']['readDelegationRetirement'];
 
+  readonly #inbox: WorkHubInbox;
+  readonly #findInputReceipt?: HostWorkHubCoordinationCoordinatorOptions['findInputReceipt'];
+  #inboxContext?: ConnectionContext;
+  #inboxPump?: Promise<void>;
+  #inboxTimer?: ReturnType<typeof setTimeout>;
+  #inboxWake = false;
+  #hasPendingInput = false;
+
+  readonly #voiceState: WorkHubVoiceStateStore;
+  readonly #acquireVoiceResidency?: ConnectionContext['acquireResidency'];
+  #voiceContext?: ConnectionContext;
+  #voicePump?: Promise<void>;
+  #voiceClosed = false;
+  #voiceStarting = false;
+  #voiceWake = false;
+  #unsubscribeVoice?: () => void;
+
+  async close(): Promise<void> {
+    this.#voiceClosed = true;
+    clearTimeout(this.#inboxTimer);
+    this.#unsubscribeVoice?.();
+    await Promise.allSettled([this.#inboxPump, this.#voicePump]);
+  }
+
   constructor(options: HostWorkHubCoordinationCoordinatorOptions) {
     this.#requestForm = options.requestForm;
+    this.#inbox = new WorkHubInbox(
+      join(options.stateRoot, COORDINATION_CWD_DIRECTORY, 'inbox.sqlite'),
+    );
+    this.#findInputReceipt = options.findInputReceipt;
+    this.#inboxContext = options.backgroundContext;
+    this.#acquireVoiceResidency = options.acquireVoiceResidency;
+    this.#voiceState = new WorkHubVoiceStateStore(
+      join(options.stateRoot, COORDINATION_CWD_DIRECTORY, VOICE_QUEUE_FILENAME),
+    );
     this.#configureModel = options.configureModel;
     this.#routingModel = options.routingModel;
     this.#transitionConfiguration = options.transitionConfiguration;
@@ -207,6 +283,13 @@ export class HostWorkHubCoordinationCoordinator {
     this.#admission = options.admission;
     this.#continuity = options.continuity;
     this.#executions = options.executions;
+    this.#unsubscribeVoice = options.executions.subscribe?.((ref) => {
+      if (ref.sessionId === WORKHUB_COORDINATION_SESSION_ID) this.#pumpVoice();
+      void this.#pumpInbox();
+    });
+    queueMicrotask(() => {
+      void this.#pumpInbox();
+    });
     this.#resolveCreateTarget = options.resolveCreateTarget;
     this.#requestDrain = options.requestDrain;
     this.#actionGate = new WorkHubCoordinationActionGate({
@@ -892,53 +975,296 @@ export class HostWorkHubCoordinationCoordinator {
     });
   }
 
+  async #observeVoice(
+    input: import('../protocol/workhub-voice-state.js').WorkHubVoiceObservation,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'workhub.coordination.voice-maintain'>> {
+    const resolved = await this.#resolve();
+    if (!resolved.ok) return resolved;
+    await this.#voiceState.receiveObservation(input);
+    this.#voiceContext = {
+      ...context,
+      acquireResidency: this.#acquireVoiceResidency ?? context.acquireResidency,
+    };
+    if (
+      input.review &&
+      !this.#voiceStarting &&
+      this.#executions.isSessionExecutionIdle(WORKHUB_COORDINATION_SESSION_ID)
+    ) {
+      this.#voiceStarting = true;
+      try {
+        await this.#drainVoice(true);
+        const review = await this.#voiceState.claimReview(input.callId, input.id);
+        if (review) {
+          const text = `Voice maintenance requested by Jev. Inspect the jev_review event and relevant conversation; repair the list and handle any missing work. Voice may still be talking.
+New voice log range: callId=${review.callId}, after=${review.after}, snapshot=${review.through}.`;
+          const admitted = await this.#answer(
+            { turnId: `voice-maintenance-${review.id}`, text, displayText: 'Voice gap check' },
+            this.#voiceContext!,
+            'voice_maintenance',
+          );
+          if (!admitted.ok) {
+            if (admitted.error.code === 'session_busy')
+              await this.#voiceState.releaseReview(review.id);
+            else {
+              await this.#voiceState.finishReview(review.id, false);
+              return operationUnavailable(admitted.error.message);
+            }
+          }
+        }
+      } finally {
+        this.#voiceStarting = false;
+      }
+    }
+    return { ok: true, result: await this.#voiceState.snapshot() };
+  }
+
+  #pumpVoice(): void {
+    if (this.#voiceClosed || !this.#voiceContext) return;
+    if (this.#voicePump) {
+      this.#voiceWake = true;
+      return;
+    }
+    this.#voicePump = this.#drainVoice()
+      .catch((error) => console.warn('[voice-review]', String(error)))
+      .finally(() => {
+        this.#voicePump = undefined;
+        if (this.#voiceWake) {
+          this.#voiceWake = false;
+          this.#pumpVoice();
+        }
+      });
+  }
+
+  async #drainVoice(admitting = false): Promise<void> {
+    if (
+      (this.#voiceStarting && !admitting) ||
+      !this.#executions.isSessionExecutionIdle(WORKHUB_COORDINATION_SESSION_ID)
+    )
+      return;
+    const review = (await this.#voiceState.snapshot()).review;
+    if (!review || review.status !== 'admitted') return;
+    const identity = await this.#executions.lookup(
+      WORKHUB_COORDINATION_SESSION_ID,
+      `voice-maintenance-${review.id}`,
+    );
+    // WorkHub execution results live in the runtime ledger, not the legacy
+    // session message archive. Missing admissions never count as completion.
+    if (!identity) {
+      await this.#voiceState.finishReview(review.id, false);
+      return;
+    }
+    const execution = await this.#executions.read(identity);
+    if (
+      execution.status === 'completed' ||
+      execution.status === 'failed' ||
+      execution.status === 'cancelled'
+    )
+      await this.#voiceState.finishReview(review.id, execution.status === 'completed');
+  }
+
+  async #recordVoiceTranscript(
+    input: import('../protocol/workhub-coordination.js').WorkHubVoiceTranscriptInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'workhub.coordination.voiceTranscript'>> {
+    const resolved = await this.#resolve();
+    if (!resolved.ok) return resolved;
+    return this.#admission.run(WORKHUB_COORDINATION_SESSION_ID, async (lease) => {
+      const throughSequence = await this.#stores.readTranscriptHighWaterSnapshot(
+        WORKHUB_COORDINATION_SESSION_ID,
+      );
+      const existing =
+        throughSequence === null
+          ? []
+          : await this.#stores.readTranscriptMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID, {
+              messageIds: [input.id],
+              throughSequence,
+              maxBytes: 200_000,
+              maxMessages: 1,
+            });
+      const { id: _id, ...data } = input;
+      if (existing.length) {
+        const note = existing[0];
+        if (
+          note.type !== 'system_note' ||
+          note.kind !== 'voice_transcript' ||
+          JSON.stringify(note.data) !== JSON.stringify(data)
+        )
+          return operationUnavailable('Voice transcript identity has different content');
+      } else {
+        // A conversation record, not a model Turn or another work request.
+        await this.#stores.appendMessages(WORKHUB_COORDINATION_SESSION_ID, [
+          {
+            type: 'system_note',
+            kind: 'voice_transcript',
+            id: input.id,
+            ts: Date.now(),
+            data,
+          },
+        ]);
+        await this.#continuity.refreshCanonical(WORKHUB_COORDINATION_SESSION_ID, lease);
+      }
+      await this.#voiceState.recordTranscript(input);
+      // Transcript persistence is archival. Only an explicit idle review can trigger a model turn.
+      return { ok: true, result: { sessionId: WORKHUB_COORDINATION_SESSION_ID } };
+    });
+  }
+
+  async #receiveAnswer(
+    input: WorkHubCoordinationAnswerInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'workhub.coordination.answer'>> {
+    if (!input.text.trim())
+      return turnFailure('operation_conflict', 'WorkHub answer text is empty');
+    const resolved = await this.#resolve();
+    if (!resolved.ok) return resolved;
+    const source = input.source === 'voice' ? 'voice_request' : 'text_request';
+    const prior = await this.#inbox.read(input.turnId);
+    if (!prior && (await this.#readSummaryMessages(input.turnId)).length)
+      return turnIdentityConflict();
+    const content =
+      prior?.content ??
+      normalizeMessageContent({
+        text: input.text,
+        workhubSource: source,
+        ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
+        ...(input.attachments ? { attachments: input.attachments } : {}),
+      });
+    try {
+      await this.#findInputReceipt?.(input.turnId, content);
+      await this.#inbox.receive({ id: input.turnId, input, content });
+    } catch (error) {
+      return turnFailure(
+        error instanceof WorkHubInboxConflict ||
+          (error instanceof Error && error.message === 'WorkHub request identity conflict')
+          ? 'operation_conflict'
+          : 'persistence_failed',
+        String(error),
+      );
+    }
+    this.#inboxContext ??= {
+      ...context,
+      inputClosedSignal: undefined,
+      acquireResidency: this.#acquireVoiceResidency ?? context.acquireResidency,
+    };
+    // Try immediately; busy/startup is still successful durable receipt, not lost work.
+    void this.#pumpInbox();
+    return {
+      ok: true,
+      result: (await this.#inbox.read(input.turnId))?.receipt ?? {
+        turnId: input.turnId,
+        queued: true,
+      },
+    };
+  }
+
+  async #pumpInbox(): Promise<void> {
+    if (this.#voiceClosed || !this.#inboxContext) return;
+    if (this.#inboxPump) {
+      this.#inboxWake = true;
+      return this.#inboxPump;
+    }
+    clearTimeout(this.#inboxTimer);
+    this.#inboxPump = (async () => {
+      const pending = await this.#inbox.pending();
+      this.#hasPendingInput = pending.length > 0;
+      for (const entry of pending) {
+        if (this.#voiceClosed) return;
+        try {
+          const receipt = await this.#findInputReceipt?.(entry.id, entry.content);
+          if (receipt) {
+            await this.#inbox.delivered(entry.id, receipt);
+            continue;
+          }
+          const outcome = await this.#admitContent(
+            entry.id,
+            entry.content,
+            this.#inboxContext!,
+            entry.content.workhubSource ?? 'text_request',
+          );
+          if (outcome.ok) await this.#inbox.delivered(entry.id, outcome.result);
+          else await this.#inbox.failed(entry.id, outcome.error.message);
+        } catch (error) {
+          await this.#inbox.failed(entry.id, String(error));
+        }
+      }
+    })()
+      .catch((error) => {
+        console.warn('[workhub-inbox]', error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        this.#inboxPump = undefined;
+        if (!this.#voiceClosed && (this.#hasPendingInput || this.#inboxWake)) {
+          const delay = this.#inboxWake ? 0 : 1000;
+          this.#inboxWake = false;
+          this.#inboxTimer = setTimeout(() => {
+            void this.#pumpInbox();
+          }, delay);
+          this.#inboxTimer.unref?.();
+        }
+      });
+    return this.#inboxPump;
+  }
+
   async #answer(
     input: WorkHubCoordinationAnswerInput,
     context: ConnectionContext,
+    source: NonNullable<MessageContent['workhubSource']> = input.source === 'voice'
+      ? 'voice_request'
+      : 'text_request',
   ): Promise<OperationOutcome<'workhub.coordination.answer'>> {
     if (!input.text.trim()) {
       return turnFailure('operation_conflict', 'WorkHub answer text is empty');
     }
-    const outcome = await this.#executions.startWorkHubCoordinationMessage(
-      {
-        sessionId: WORKHUB_COORDINATION_SESSION_ID,
-        turnId: input.turnId,
-        execution: {
-          kind: 'workhub_coordination',
-          inputDigest: digest({
-            text: input.text,
-            ...(input.attachments ? { attachments: input.attachments } : {}),
-          }),
-        },
-        archivedMessage: 'WorkHub Coordination Session is unavailable',
-        // Historical v1 summaries still own their Turn identities. Reject a
-        // fresh answer that would reuse one, even though new summaries are no longer written.
-        prepareFreshContent: async () => {
-          let recorded: readonly StoredMessage[];
-          try {
-            recorded = await this.#readSummaryMessages(input.turnId);
-          } catch {
-            return {
-              kind: 'rejected',
-              outcome: operationUnavailable(
-                'WorkHub Coordination Turn identity could not be verified',
-              ),
-            };
-          }
-          return recorded.length > 0
-            ? { kind: 'rejected', outcome: turnIdentityConflict() }
-            : {
-                kind: 'ready',
-                content: normalizeMessageContent({
-                  text: input.text,
-                  ...(input.attachments ? { attachments: input.attachments } : {}),
-                }),
-              };
-        },
+    const content = normalizeMessageContent({
+      text: input.text,
+      workhubSource: source,
+      ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
+      ...(input.attachments ? { attachments: input.attachments } : {}),
+    });
+    return this.#admitContent(input.turnId, content, context, source);
+  }
+
+  async #admitContent(
+    id: string,
+    content: MessageContent,
+    context: ConnectionContext,
+    source: NonNullable<MessageContent['workhubSource']>,
+  ): Promise<OperationOutcome<'workhub.coordination.answer'>> {
+    const request: Parameters<RootTurnCoordinator['startWorkHubCoordinationMessage']>[0] = {
+      sessionId: WORKHUB_COORDINATION_SESSION_ID,
+      turnId: id,
+      execution: {
+        kind: 'workhub_coordination',
+        inputDigest: messageContentDigest(content),
       },
-      context,
-    );
-    return outcome.ok ? { ok: true, result: { turnId: input.turnId } } : outcome;
+      archivedMessage: 'WorkHub Coordination Session is unavailable',
+      // Historical v1 summaries still own their Turn identities. Reject a
+      // fresh answer that would reuse one, even though new summaries are no longer written.
+      prepareFreshContent: async () => {
+        let recorded: readonly StoredMessage[];
+        try {
+          recorded = await this.#readSummaryMessages(id);
+        } catch {
+          return {
+            kind: 'rejected',
+            outcome: operationUnavailable(
+              'WorkHub Coordination Turn identity could not be verified',
+            ),
+          };
+        }
+        return recorded.length > 0
+          ? { kind: 'rejected', outcome: turnIdentityConflict() }
+          : {
+              kind: 'ready',
+              content,
+            };
+      },
+    };
+    const outcome = await this.#executions.startWorkHubCoordinationMessage(request, context);
+    if (outcome.ok) return { ok: true, result: { turnId: id } };
+    if (outcome.error.code !== 'session_busy' || source !== 'voice_request') return outcome;
+    return this.#executions.steerWorkHubCoordinationMessage(id, content, context);
   }
 
   async prepareRoutingDecision(

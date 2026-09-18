@@ -2791,3 +2791,32 @@ test('Coordination receipts materialize as host facts, never assistant output', 
     false,
   );
 });
+
+test('internal voice tool results do not manufacture assistant messages', () => {
+  const out = projectRuntimeEventsToStoredMessages(
+    [
+      ev({
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'one', name: 'voice_queue_update', args: {} },
+        actions: { stateDelta: { presentation: 'internal' } },
+      }),
+      ev({
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'one',
+          name: 'voice_queue_update',
+          result: { kind: 'json', value: { status: 'accepted' } },
+        },
+      }),
+    ],
+    { invocations: [invocation] },
+  );
+  assert.equal(out.messages.filter((item) => item.type === 'assistant').length, 0);
+  assert.deepEqual(
+    out.messages.map((item) => item.presentation),
+    ['internal', 'internal'],
+  );
+});

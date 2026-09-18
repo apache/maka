@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { decodeVoiceObservation } from '../protocol/workhub-voice-state.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
@@ -371,4 +372,38 @@ test('target choice accepts only bounded candidate offers, never caller-supplied
     () => spec.decodeOutput({ kind: 'cancelled', result: {} }),
     RuntimeHostProtocolError,
   );
+});
+
+test('voice reply requires correlation and cannot be used as a generic list write', () => {
+  const spec = HOST_OPERATION_SPECS['workhub.coordination.voiceEnqueue'];
+  assert.equal(spec.mode, 'command');
+  assert.deepEqual(
+    spec.decodeInput({
+      id: 'workhub-message',
+      kind: 'update',
+      text: 'Report ready',
+      requestId: 'voice-request',
+    }),
+    { id: 'workhub-message', kind: 'update', text: 'Report ready', requestId: 'voice-request' },
+  );
+  for (const input of [
+    { id: 'unlinked', kind: 'update', text: 'Report' },
+    { id: 'status', kind: 'status', text: 'Report', requestId: 'voice-request' },
+    { id: '../outside', text: 'Report' },
+    { id: 'item', text: 'Report', path: '/tmp/outside' },
+    { id: 'item', text: 'x'.repeat(32_001) },
+  ])
+    assert.throws(() => spec.decodeInput(input));
+});
+
+test('voice log writes carry facts and an optional idle review, without legacy windows', () => {
+  const input = {
+    id: 'write',
+    callId: 'call',
+    entries: [{ id: 'entry', kind: 'transcript_delta', data: { role: 'user', delta: 'hello' } }],
+  };
+  assert.deepEqual(decodeVoiceObservation(input), input);
+  assert.equal(decodeVoiceObservation({ ...input, review: true }).review, true);
+  assert.throws(() => decodeVoiceObservation({ ...input, context: 'old window' }));
+  assert.throws(() => decodeVoiceObservation({ ...input, review: 'yes' }));
 });
