@@ -191,13 +191,14 @@ export class AcpToolEventMapper {
       status: resolved.status,
       ...(outcome.kind === 'closure' ? { reason: outcome.reason } : {}),
       ...('decision' in outcome ? { decision: outcome.decision } : {}),
+      ...(outcome.kind === 'sandbox_boundary_decision' ? { outcomeStatus: outcome.status } : {}),
       ...('action' in outcome ? { action: outcome.action } : {}),
     };
     if (!tool.terminal) {
       if (pending.request.kind === 'sandbox_boundary') {
         tool.terminal = true;
         tool.status =
-          outcome.kind === 'sandbox_boundary_decision' && outcome.decision === 'allow'
+          outcome.kind === 'sandbox_boundary_decision' && outcome.status === 'approved'
             ? 'completed'
             : 'failed';
       } else tool.status = 'in_progress';
