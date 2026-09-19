@@ -24,7 +24,12 @@ import {
   lookupModelMetadata,
   modelIdAliasesForProvider,
 } from '../model-metadata.js';
-import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
+import {
+  CATALOG_PROVIDER_TYPES,
+  PROVIDER_REGISTRY,
+  RECOMMENDED_PROVIDER_TYPES,
+  providerFallbackModelIds,
+} from '../provider-registry.js';
 import {
   authorizeConnectionModel,
   effectiveBaseUrl,
@@ -68,6 +73,23 @@ test('slug validation returns stable issues and preserves format and length boun
   for (const slug of ['ab', 'valid-slug-1', 'a'.repeat(64)]) {
     assert.equal(validateSlug(slug), null, slug);
   }
+});
+
+test('Atlas Cloud is wired as a ready OpenAI-compatible provider', () => {
+  assert.deepEqual(PROVIDER_REGISTRY.atlascloud, {
+    label: 'Atlas Cloud',
+    baseUrl: 'https://api.atlascloud.ai/v1',
+    authKind: 'api_key',
+    fallbackModels: ['qwen/qwen3.8-max'],
+    status: 'ready',
+    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    modelDiscovery: { kind: 'protocol', path: '/v1/models' },
+    category: 'overseas',
+    catalogGroup: 'api',
+    signupUrl: 'https://atlascloud.ai',
+    catalogOrder: 29.5,
+  });
+  assert.equal(CATALOG_PROVIDER_TYPES.includes('atlascloud'), true);
 });
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
