@@ -161,6 +161,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   refreshProjects: () => Promise<unknown>;
   refreshShellSettings: () => Promise<void>;
   refreshSessions: () => Promise<SessionSummary[]>;
+  refreshChangedSession: (sessionId: string) => Promise<SessionSummary | null>;
   rendererMountedRef: RefBox<boolean>;
   retireSession: (sessionId: string) => void;
   retiredSessionIds(sessions: readonly { id: string }[]): string[];
@@ -198,7 +199,10 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const handleSessionChange = useEffectEvent(
     (event: SessionChangedEvent) => {
-      const refreshedSessions = options.refreshSessions();
+      const refreshedSessions: Promise<SessionSummary[]> = event.sessionId === undefined
+        ? options.refreshSessions()
+        : options.refreshChangedSession(event.sessionId).then((session) =>
+            session === null ? [] : [session]);
       if (event.reason === 'archived' && event.sessionId) options.retireSession(event.sessionId);
       if (event.reason === 'created' || event.reason === 'migrated') {
         void options.refreshProjects();

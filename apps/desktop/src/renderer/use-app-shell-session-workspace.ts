@@ -47,7 +47,7 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
   const actionsRef = useRef<SessionWorkspaceActions | null>(null);
   const sessionList = useAppShellSessionList(toastApi, { catalog });
   const { controller: sessionUiController, publication, display } = Conversation.useAppShellSessionUiState(
-    sessionList.sessions,
+    catalog,
     requestedSessionId,
     activeIdRef,
     (sessionId, messages, controller: DesktopTranscriptRangeController) =>

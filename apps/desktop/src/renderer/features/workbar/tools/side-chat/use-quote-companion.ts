@@ -29,6 +29,7 @@ import {
   reconcileLiveTurnBuffer,
   useMountedRef,
   useSessionSettingIntent,
+  type SessionSettingIntentCatalog,
   type InteractionQueues,
   type LiveTurnProjection,
   type TransientUserMessageProjection,
@@ -54,6 +55,7 @@ import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
+import { createObservableState } from '../../../../observable-state.js';
 import type { WorkbarIngestInput } from '../../ports.js';
 import {
   abandonPendingCompanionCopy,
@@ -368,9 +370,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // double-invoke; a hand-rolled disposed flag would stay tripped after replay).
   const mountedRef = useMountedRef();
   const dismissalGuardRef = useRef(createCompanionDismissalGuard());
-  const [permissionCatalogRevision, setPermissionCatalogRevision] = useState(0);
+  // The companion's own one-row catalog: its commits retire the intent
+  // overlay, not the shell catalog's.
+  const permissionCatalogRevisionRef = useRef(createObservableState(0));
+  const permissionCatalogRef = useRef<SessionSettingIntentCatalog | null>(null);
+  permissionCatalogRef.current ??= {
+    revision: () => permissionCatalogRevisionRef.current.getState(),
+    subscribeChanged: permissionCatalogRevisionRef.current.subscribe,
+  };
   const permissionModeIntent = useSessionSettingIntent<QuoteCompanionSettingValues>({
-    catalogRevision: permissionCatalogRevision,
+    catalog: permissionCatalogRef.current,
     refreshCatalog: async () => {
       const sessionId = companionIdRef.current;
       if (!sessionId) return;
@@ -379,7 +388,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       if (!mountedRef.current || companionIdRef.current !== sessionId || !next) return;
       companionRef.current = next;
       setCompanion(next);
-      setPermissionCatalogRevision((revision) => revision + 1);
+      const revisions = permissionCatalogRevisionRef.current;
+      revisions.replaceState(revisions.getState() + 1);
     },
     channels: {
       permissionMode: {

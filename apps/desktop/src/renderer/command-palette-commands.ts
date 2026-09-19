@@ -491,7 +491,7 @@ export function buildCommandList(args: {
  */
 export function buildSessionCommands(args: {
   locale: UiLocale;
-  sessions: SessionSummary[];
+  sessions: readonly SessionSummary[];
   activeSessionId: string | undefined;
   onSelectSession(id: string): void;
 }): Command[] {

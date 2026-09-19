@@ -40,13 +40,16 @@ import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
 } from '../model/session-list-layout.js';
-import type { SessionRailProjection } from '../model/session-rail.js';
+import { deriveSessionRail } from '../model/session-rail.js';
+import { sessionMatchesRail } from '../model/session-nav-filter.js';
 import { sessionRailLayoutStore } from '../model/session-rail-layout-store.js';
 import type {
   SessionNavigationPorts,
   SessionNavigationProjectScope,
   SessionNavigationSession,
 } from '../ports.js';
+import { selectSessions, type SessionCatalogController } from '../../../session-catalog-state.js';
+import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -65,7 +68,10 @@ export interface SessionNavigationChromeInput {
 }
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
-  rail: SessionRailProjection<SessionNavigationSession>;
+  /** The rail subscribes the catalog itself: its rows are the churn it displays. */
+  catalog: SessionCatalogController;
+  activeSessionId: string | undefined;
+  hiddenSessionIds: ReadonlySet<string>;
   projectScopes: readonly SessionNavigationProjectScope[];
   streamingSessionIds: ReadonlySet<string>;
   staleSessionIds: ReadonlySet<string>;
@@ -92,8 +98,16 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
  * first, the few dozen fibers of permanent chrome on the second.
  */
 export function SessionNavigationProvider(props: SessionNavigationProviderProps) {
+  const sessions = useExternalStoreSelector(props.catalog, selectSessions);
+  const rail = useMemo(
+    () =>
+      deriveSessionRail(sessions, props.activeSessionId, (session) =>
+        !props.hiddenSessionIds.has(session.id) && sessionMatchesRail(session),
+      ),
+    [sessions, props.activeSessionId, props.hiddenSessionIds],
+  );
   const controller = useSessionNavigationController({
-    rail: props.rail,
+    rail,
     projectScopes: props.projectScopes,
     ports: props.ports,
   });
@@ -173,8 +187,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
 
   const data = useMemo<SessionRailData>(
     () => ({
-      sessions: props.rail.sessions,
-      activeId: props.workHubActive ? undefined : props.rail.activeRowId,
+      sessions: rail.sessions,
+      activeId: props.workHubActive ? undefined : rail.activeRowId,
       streamingSessionIds: props.streamingSessionIds,
       staleSessionIds: props.staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
@@ -197,7 +211,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onSelectSession,
       projectActions,
       relinkableProjectIds,
-      props.rail,
+      rail,
       props.staleSessionIds,
       props.streamingSessionIds,
       props.workHubActive,

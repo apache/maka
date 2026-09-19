@@ -1246,7 +1246,7 @@ function SettingsPageBody(props: {
         <SettingsPage as="section">
           <SessionBundleTasks
             isLocalTarget={props.isLocalRuntimeHost}
-            sessions={props.archivedTasks.sessions}
+            catalog={props.archivedTasks.catalog}
             renderSection={({ children, ...section }) => (
               <SettingsSectionBlock {...section}>{children}</SettingsSectionBlock>
             )}

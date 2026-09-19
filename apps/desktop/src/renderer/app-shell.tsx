@@ -79,11 +79,19 @@ import * as ModuleHub from './features/module-hub';
 import {
   SessionNavigationProvider,
   createSessionOpenCommand,
+  sessionMatchesRail,
   sessionRailLayoutStore,
   useSessionNavigationReads,
   type SessionNavigationPorts,
   type SessionNavigationRowActions,
 } from './features/session-navigation';
+import {
+  selectSessionById,
+  selectSessionCount,
+  selectSessions,
+  type SessionCatalogState,
+} from './session-catalog-state';
+import { useExternalStoreSelector } from './use-external-store-selector';
 import * as TaskEntry from './features/task-entry';
 import type { TaskEntryShellProjection } from './features/task-entry';
 import * as Overlays from './features/overlays/index.js';
@@ -124,7 +132,7 @@ import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { useSessionSettingIntent } from './features/session-settings';
-import { deriveStaleSessionIds } from './stale-sessions';
+import { selectStaleSessionIds } from './stale-sessions';
 import { pendingSessionView } from './pending-session-view';
 import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
@@ -212,6 +220,27 @@ type ComposerImportOwner = {
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const { useSessionCollaborationDialog } = SessionCollaboration;
+
+/** The command palette lists the rail's membership minus its hidden rows. */
+const selectPaletteSessions = (
+  state: SessionCatalogState,
+  hiddenSessionIds: ReadonlySet<string>,
+) =>
+  state.sessions.filter(
+    (session) => sessionMatchesRail(session) && !hiddenSessionIds.has(session.id),
+  );
+
+/** A palette command shows id, name and the flag glyph; nothing else re-lists it. */
+function paletteSessionsEqual(
+  left: readonly DesktopSessionSummary[],
+  right: readonly DesktopSessionSummary[],
+): boolean {
+  return left.length === right.length
+    && left.every((session, index) =>
+      session.id === right[index]!.id
+      && session.name === right[index]!.name
+      && session.isFlagged === right[index]!.isFlagged);
+}
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
@@ -300,11 +329,10 @@ function AppShellContent({
   const sharedSessionDialog = useSessionCollaborationDialog();
   const previousInterruptionShownRef = useRef(false);
   const {
-    sessions,
-    catalogRevision,
     authoritativeSessionIds,
     sessionsRef,
     refreshSessions,
+    refreshChangedSession,
     seedSessions,
     activeId,
     activeIdRef,
@@ -332,6 +360,7 @@ function AppShellContent({
     messageLoadPending,
     setMessageLoadPending,
     sessionUiController,
+    sessionCatalogController,
     activeCatalogSession,
     activeHostSession,
     requestedCatalogSession,
@@ -340,6 +369,10 @@ function AppShellContent({
     ownerActiveId,
     switchingSession,
   } = useAppShellSessionWorkspace(toastApi);
+  // The shell's own readings of the catalog, at the granularity it displays —
+  // background row churn belongs to the rail, which subscribes the catalog
+  // inside SessionNavigationProvider (#4109).
+  const sessionCount = useExternalStoreSelector(sessionCatalogController, selectSessionCount);
   // Only the outstanding read needs a fence; past Sessions leave no hydration metadata.
   const interactionHydrationRef = useRef<{ sessionId: string } | null>(null);
   const markInteractionChanged = useCallback((sessionId: string) => {
@@ -537,7 +570,7 @@ function AppShellContent({
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
   const onboardingActivationCandidate = getOnboardingActivationCandidate(
     onboarding.snapshot,
-    sessions.length > 0,
+    sessionCount > 0,
   );
   const {
     themePref,
@@ -615,19 +648,31 @@ function AppShellContent({
     revisionDraftRef.current = draft;
     setRevisionDraft(draft);
   }, []);
+  // The draft survives on exactly two rows; only their changes can retire it.
+  const revisionDraftSource = useExternalStoreSelector(
+    sessionCatalogController,
+    selectSessionById,
+    revisionDraft?.sourceSessionId,
+  );
+  const revisionDraftOwner = useExternalStoreSelector(
+    sessionCatalogController,
+    selectSessionById,
+    revisionDraft?.draftSessionId,
+  );
   useEffect(() => {
     const draft = revisionDraftRef.current;
     if (!draft) return;
-    const source = sessions.find((session) => session.id === draft.sourceSessionId);
-    const owner = sessions.find((session) => session.id === draft.draftSessionId);
-    if (source && owner && !source.isArchived && !owner.isArchived) return;
+    if (
+      revisionDraftSource && revisionDraftOwner
+      && !revisionDraftSource.isArchived && !revisionDraftOwner.isArchived
+    ) return;
     composerRef.current?.clearDraft(draft.draftSessionId);
     if (draft.sourceSessionId !== draft.draftSessionId)
       composerRef.current?.clearDraft(draft.sourceSessionId);
     if (draft.copyPhase === 'reserved') completeTurnRevisionCopyAttempt(draft);
     else void abandonTurnRevisionCopyAttempt(draft);
     commitRevisionDraft(null);
-  }, [sessions, commitRevisionDraft]);
+  }, [revisionDraftSource, revisionDraftOwner, commitRevisionDraft]);
 
   const {
     resumePendingSessionId,
@@ -639,20 +684,17 @@ function AppShellContent({
   // drives the sidebar "已过期" pill (PR108g, paired with the PR108e chat
   // header banner). Derivation is pure (see `stale-sessions.ts`) so the
   // classifier is testable without a DOM.
-  const staleSessionIds = useMemo(
-    () =>
-      deriveStaleSessionIds({
-        sessions,
-        sendOutcomes: onboarding.snapshot?.sessionSendOutcomes ?? {},
-      }),
-    [sessions, onboarding.snapshot?.sessionSendOutcomes],
+  const staleSessionIds = useExternalStoreSelector(
+    sessionCatalogController,
+    selectStaleSessionIds,
+    onboarding.snapshot?.sessionSendOutcomes,
+    Conversation.sessionIdSetsEqual,
   );
   const activeInteraction = activeInteractionFor(interactionBySession, ownerActiveId);
   const activeSession = activeCatalogSession;
   const sessionSettingIntent = useSessionSettingIntent({
-    catalogRevision,
+    catalog: sessionCatalogController,
     isActiveSession: (sessionId) => activeIdRef.current === sessionId,
-    sessions,
     newSessionPermissionMode,
     refreshCatalog: refreshSessions,
     saveComposerDefaults: (model) => saveComposerDefaults({ model }),
@@ -1072,12 +1114,12 @@ function AppShellContent({
   // while the initial snapshot is in flight. Otherwise sessions.length===0
   // + snapshot===null flashes the prompt-suggestion EmptyChatHero before
   // the state-routed OnboardingHero mounts.
-  const isOnboardingLoading = sessions.length === 0 && onboardingState === undefined && !onboardingSettled;
+  const isOnboardingLoading = sessionCount === 0 && onboardingState === undefined && !onboardingSettled;
   // Only unfinished setup takes the chat surface over. A configured user with
   // no sessions is not onboarding: they land on the normal empty chat and use
   // the one real Composer, which creates the session on its first send.
   const showOnboardingHero =
-    sessions.length === 0 &&
+    sessionCount === 0 &&
     !onboardingSettled &&
     onboardingState !== undefined &&
     onboardingState.kind !== 'ready_with_history' &&
@@ -1328,32 +1370,36 @@ function AppShellContent({
     toastApi,
   };
   const {
-    rail: sessionRail,
     branchBanner,
     revisionNavigation,
+    activeParentSession,
     layout: railLayout,
   } = useSessionNavigationReads({
-    sessions,
+    catalog: sessionCatalogController,
     activeSessionId: activeId,
-    activeSession,
-    hiddenSessionIds: selectors.hiddenSessionIds,
   });
-  const visibleSessions = sessionRail.sessions;
+  // The palette's 会话 rows: rail membership minus what the rail itself hides,
+  // re-rendered only when a field a command displays actually changes.
+  const visibleSessions = useExternalStoreSelector(
+    sessionCatalogController,
+    selectPaletteSessions,
+    selectors.hiddenSessionIds,
+    paletteSessionsEqual,
+  );
   const sessionListCollapsed = railLayout.collapsed;
   const sessionListWidth = railLayout.width;
   const sessionSideNavHandleRef = sessionRailLayoutStore.collapseHandleRef;
   const titlebarParentSession = useMemo(() => {
-    const parent = sessionRail.activeParentSession;
-    if (!parent) return undefined;
-    const parentId = parent.id;
+    if (!activeParentSession) return undefined;
+    const parentId = activeParentSession.id;
     return {
-      name: parent.name,
+      name: activeParentSession.name,
       onOpen: () => openSessionInChatRef.current(parentId),
     };
-  }, [sessionRail.activeParentSession]);
+  }, [activeParentSession]);
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
     () => ({
-      sessions,
+      catalog: sessionCatalogController,
       projects: localProjects,
       onRestore: (sessionId) =>
         void sessionNavigationCommandsRef.current?.unarchiveSession(sessionId),
@@ -1362,7 +1408,7 @@ function AppShellContent({
       onPurge: (sessionIds) =>
         sessionNavigationCommandsRef.current!.purgeSessions(sessionIds),
     }),
-    [sessions, localProjects],
+    [sessionCatalogController, localProjects],
   );
 
   const activateSessionForFirstSend = useCallback((sessionId: string): Promise<void> => {
@@ -1879,6 +1925,7 @@ function AppShellContent({
     refreshProjects,
     refreshShellSettings,
     refreshSessions,
+    refreshChangedSession,
     rendererMountedRef,
     retireSession: clearSessionRendererState,
     retiredSessionIds,
@@ -2120,7 +2167,7 @@ function AppShellContent({
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
     settingsProfileId: overlays.selectors.settings.request.profileId,
-    sessions,
+    sessionCatalog: sessionCatalogController,
     themePref,
     visibleSessions,
     captureComposerImportOwner,
@@ -2183,7 +2230,7 @@ function AppShellContent({
       render={renderComposerMentionsProvider(composerMentionsSurface)}
     >
     <SessionCollaboration.SessionTurnRequestInboxProvider
-      sessions={sessions}
+      catalog={sessionCatalogController}
       onOpenSession={openSession}
     >
     <div
@@ -2313,7 +2360,9 @@ function AppShellContent({
             render={(scheduledTasks) => (
               <SessionNavigationProvider
                 scheduledTasks={scheduledTasks}
-                rail={sessionRail}
+                catalog={sessionCatalogController}
+                activeSessionId={activeId}
+                hiddenSessionIds={selectors.hiddenSessionIds}
                 projectScopes={taskEntry.selectors.projectScopes}
                 streamingSessionIds={streamingSessionIds}
                 staleSessionIds={staleSessionIds}

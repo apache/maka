@@ -35,6 +35,7 @@ import {
   buildSessionCommands,
 } from "./command-palette-commands.js";
 import type { Command } from './features/overlays/index.js';
+import type { SessionCatalogController } from './session-catalog-state.js';
 import { renderConversationMarkdown } from "./conversation-markdown.js";
 import {
   commandPaletteActionErrorMessage,
@@ -75,9 +76,9 @@ export interface AppShellCommandListOptions {
   newTaskProfileId: string | undefined;
   settingsOpen: boolean;
   settingsProfileId: string | undefined;
-  sessions: readonly SessionSummary[];
+  sessionCatalog: SessionCatalogController;
   themePref: ThemePreference;
-  visibleSessions: SessionSummary[];
+  visibleSessions: readonly SessionSummary[];
   captureComposerImportOwner: () => ComposerImportOwner;
   createSession: () => void;
   openSideConversation: () => void;
@@ -224,9 +225,9 @@ export function buildAppShellCommandList(
       optionsRef.current.setNavSelection(selection);
     },
     onExportActiveConversation: async () => {
-      const { activeId, messages, sessions, toastApi } = optionsRef.current;
+      const { activeId, messages, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
-      const session = sessions.find((s) => s.id === activeId);
+      const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
       const markdown = renderConversationMarkdown(
         session?.name ?? copy.newConversation,
         messages,
@@ -243,9 +244,9 @@ export function buildAppShellCommandList(
       }
     },
     onSaveActiveConversationToFile: async () => {
-      const { activeId, messages, sessions, toastApi } = optionsRef.current;
+      const { activeId, messages, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
-      const session = sessions.find((s) => s.id === activeId);
+      const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
       const sessionName = session?.name ?? copy.newConversation;
       const markdown = renderConversationMarkdown(
         sessionName,

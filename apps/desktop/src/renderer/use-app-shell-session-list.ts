@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useRef } from 'react';
+import { useRef } from 'react';
 import { useUiLocale } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -30,8 +30,6 @@ import {
 } from './session-read-state.js';
 import {
   selectAuthoritativeSessionIds,
-  selectCatalogRevision,
-  selectSessions,
   type SessionCatalogController,
 } from './session-catalog-state.js';
 import { sessionIdSetsEqual } from './features/conversation/index.js';
@@ -55,9 +53,9 @@ export function useAppShellSessionList(
   uiLocaleRef.current = uiLocale;
   const { catalog } = options;
   // Selected from the catalog store rather than held here: the rail follows the
-  // same authority without the shell carrying it down a prop chain (#4109).
-  const sessions = useExternalStoreSelector(catalog, selectSessions);
-  const catalogRevision = useExternalStoreSelector(catalog, selectCatalogRevision);
+  // same authority without the shell carrying it down a prop chain (#4109). The
+  // shell reads rows through its own selectors — this hook only carries the
+  // membership set and the imperative surface.
   const authoritativeSessionIds = useExternalStoreSelector(
     catalog,
     selectAuthoritativeSessionIds,
@@ -66,10 +64,61 @@ export function useAppShellSessionList(
   );
   const sessionsRef = useRef<DesktopSessionSummary[]>([]);
   const refresherRef = useRef<SessionListRefresher<DesktopSessionSummary> | null>(null);
+  const pendingPatchesRef = useRef(
+    new Map<string, { resolve: (session: DesktopSessionSummary | null) => void }[]>(),
+  );
+  const patchDrainActiveRef = useRef(false);
 
   function commitSessions(next: DesktopSessionSummary[]): void {
     sessionsRef.current = next;
     catalog.commitSessions(next);
+  }
+
+  function commitPatch(sessionId: string, summary: DesktopSessionSummary | null): void {
+    catalog.commitPatch(sessionId, summary);
+    sessionsRef.current = [...catalog.getState().sessions];
+  }
+
+  // `sessions:changed` carries the changed row's id, so the hot path reads and
+  // commits only that row. Calls arriving while a batch is in flight fold into
+  // the next drain instead of queueing one IPC per event.
+  async function drainSessionPatches(): Promise<void> {
+    try {
+      while (pendingPatchesRef.current.size > 0) {
+        const batch = [...pendingPatchesRef.current.entries()];
+        pendingPatchesRef.current.clear();
+        await Promise.all(batch.map(async ([sessionId, waiters]) => {
+          try {
+            const summary = await window.maka.sessions.get(sessionId);
+            const normalized = summary === null
+              ? null
+              : normalizeSessionSummaryForDisplay(summary);
+            commitPatch(sessionId, normalized);
+            waiters.forEach(({ resolve }) => resolve(normalized));
+          } catch {
+            // A failed row read must not evict the row; fall back to a full
+            // refresh (deduped by the refresher) so it cannot strand stale.
+            waiters.forEach(({ resolve }) => resolve(null));
+            void refresherRef.current?.refresh().catch(() => undefined);
+          }
+        }));
+      }
+    } finally {
+      patchDrainActiveRef.current = false;
+    }
+  }
+
+  function refreshChangedSession(sessionId: string): Promise<DesktopSessionSummary | null> {
+    const pending = new Promise<DesktopSessionSummary | null>((resolve) => {
+      const waiters = pendingPatchesRef.current.get(sessionId);
+      if (waiters) waiters.push({ resolve });
+      else pendingPatchesRef.current.set(sessionId, [{ resolve }]);
+    });
+    if (!patchDrainActiveRef.current) {
+      patchDrainActiveRef.current = true;
+      void drainSessionPatches();
+    }
+    return pending;
   }
 
   if (!refresherRef.current) {
@@ -93,6 +142,7 @@ export function useAppShellSessionList(
   // down as props (see `session-workspace-actions.ts`).
   const actionsRef = useRef<{
     refreshSessions(): Promise<DesktopSessionSummary[]>;
+    refreshChangedSession(sessionId: string): Promise<DesktopSessionSummary | null>;
     seedSessions(
       snapshotSessions: readonly DesktopSessionSummary[],
     ): DesktopSessionSummary[];
@@ -101,6 +151,7 @@ export function useAppShellSessionList(
     async refreshSessions() {
       return refresherRef.current!.refresh();
     },
+    refreshChangedSession,
     seedSessions(snapshotSessions) {
       const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
       commitSessions(next);
@@ -110,11 +161,10 @@ export function useAppShellSessionList(
   const { refreshSessions, seedSessions } = actionsRef.current;
 
   return {
-    sessions,
-    catalogRevision,
     authoritativeSessionIds,
     sessionsRef,
     refreshSessions,
+    refreshChangedSession: actionsRef.current.refreshChangedSession,
     seedSessions,
   };
 }

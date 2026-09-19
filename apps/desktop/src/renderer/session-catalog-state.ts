@@ -18,7 +18,10 @@
  */
 
 import { useRef } from 'react';
-import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
+import {
+  compareDesktopSessionCatalogSummaries,
+  type DesktopSessionSummary,
+} from '../shared/desktop-session-projection.js';
 import { createObservableState } from './observable-state.js';
 
 /**
@@ -54,7 +57,50 @@ export function createSessionCatalogController() {
     subscribe: state.subscribe,
     commitSessions(next: readonly DesktopSessionSummary[]): void {
       const current = state.getState();
-      state.replaceState({ ...current, sessions: next, revision: current.revision + 1 });
+      // Published references change iff values change: an unchanged row keeps
+      // its identity so per-row readers and memos survive a re-list, and a
+      // row already patched to a newer revision is never regressed by an
+      // older snapshot.
+      const previousById = new Map(current.sessions.map((s) => [s.id, s]));
+      const reconciled = next.map((s) => {
+        const prior = previousById.get(s.id);
+        return prior !== undefined && (isStaleSummary(prior, s) || summaryValuesEqual(prior, s))
+          ? prior
+          : s;
+      });
+      const sameRows = reconciled.length === current.sessions.length
+        && reconciled.every((s, i) => s === current.sessions[i]);
+      state.replaceState({
+        ...current,
+        sessions: sameRows ? current.sessions : reconciled,
+        revision: current.revision + 1,
+      });
+    },
+    commitPatch(sessionId: string, summary: DesktopSessionSummary | null): void {
+      const current = state.getState();
+      const index = current.sessions.findIndex((s) => s.id === sessionId);
+      const prior = index < 0 ? undefined : current.sessions[index];
+      if (summary === null) {
+        if (prior === undefined) return;
+        state.replaceState({
+          ...current,
+          sessions: current.sessions.filter((s) => s.id !== sessionId),
+          revision: current.revision + 1,
+        });
+        return;
+      }
+      if (prior !== undefined && isStaleSummary(prior, summary)) return;
+      const row = prior !== undefined && summaryValuesEqual(prior, summary) ? prior : summary;
+      const sessions = [...current.sessions];
+      if (index < 0) sessions.push(row); else sessions[index] = row;
+      sessions.sort(compareDesktopSessionCatalogSummaries);
+      const sameRows = sessions.length === current.sessions.length
+        && sessions.every((s, i) => s === current.sessions[i]);
+      state.replaceState({
+        ...current,
+        sessions: sameRows ? current.sessions : sessions,
+        revision: current.revision + 1,
+      });
     },
     setActiveSessionId(next: string | undefined): void {
       const current = state.getState();
@@ -66,8 +112,32 @@ export function createSessionCatalogController() {
 
 export type SessionCatalogController = ReturnType<typeof createSessionCatalogController>;
 
+/** A committed row at a newer revision is authoritative over an older snapshot of it. */
+function isStaleSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): boolean {
+  return prior.revision > next.revision;
+}
+
+function summaryValuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+      && a.every((v, i) => summaryValuesEqual(v, b[i]));
+  }
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  return aKeys.length === bKeys.length
+    && aKeys.every((k) => summaryValuesEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
+
 export const selectSessions = (state: SessionCatalogState): readonly DesktopSessionSummary[] =>
   state.sessions;
+export const selectSessionById = (
+  state: SessionCatalogState,
+  sessionId: string | undefined,
+): DesktopSessionSummary | undefined =>
+  sessionId === undefined ? undefined : state.sessions.find((s) => s.id === sessionId);
+export const selectSessionCount = (state: SessionCatalogState): number => state.sessions.length;
 export const selectCatalogRevision = (state: SessionCatalogState): number => state.revision;
 export const selectActiveSessionId = (state: SessionCatalogState): string | undefined =>
   state.activeSessionId;
