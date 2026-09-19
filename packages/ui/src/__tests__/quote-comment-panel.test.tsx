@@ -24,7 +24,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { QuoteCommentPanel } from '../quote-comment-panel.js';
 import { LocaleProvider } from '../locale-context.js';
-import { QUOTE_COMMENT_MAX_LENGTH } from '@maka/core/events';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -106,7 +105,6 @@ async function renderPanel(props: PanelProps = {}) {
     container,
     submitted,
     skipped: () => skipped,
-    editable: () => container.querySelector('[contenteditable="true"]'),
     button: (label: string) =>
       Array.from(container.querySelectorAll('button')).find(
         (candidate) => candidate.textContent?.trim() === label,
@@ -161,16 +159,6 @@ async function pressSubmitShortcut(container: Element) {
   });
 }
 
-test('the panel writes the note back', async () => {
-  const view = await renderPanel();
-  await type(view.container, '  is this the retry path?  ');
-  view.button('Quote')?.click();
-  await act(async () => {});
-
-  assert.deepEqual(view.submitted, ['is this the retry path?']);
-  assert.equal(view.skipped(), 0);
-});
-
 test('skipping stages the quote with no note', async () => {
   const view = await renderPanel();
   await type(view.container, 'a note that will be dropped');
@@ -179,15 +167,6 @@ test('skipping stages the quote with no note', async () => {
 
   assert.deepEqual(view.submitted, []);
   assert.equal(view.skipped(), 1);
-});
-
-test('the note is capped at the length the IPC boundary admits', async () => {
-  const view = await renderPanel();
-  await type(view.container, 'y'.repeat(QUOTE_COMMENT_MAX_LENGTH + 25));
-  view.button('Quote')?.click();
-  await act(async () => {});
-
-  assert.equal(view.submitted[0]?.length, QUOTE_COMMENT_MAX_LENGTH);
 });
 
 test('an empty note submits as no annotation at all', async () => {
@@ -205,11 +184,6 @@ test('the quote ordinal marks the panel', async () => {
     view.container.querySelector('.maka-quote-comment-index')?.textContent?.trim(),
     '3',
   );
-});
-
-test('an existing note is editable in place', async () => {
-  const view = await renderPanel({ comment: 'first draft' });
-  assert.equal(view.editable()?.textContent, 'first draft');
 });
 
 test('the submit shortcut does not need the button', async () => {

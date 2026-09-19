@@ -202,7 +202,7 @@ export function estimateRuntimeEventChars(event: RuntimeEvent): number {
     // history-compact gate drops a model-visible event (#4804).
     if (content.kind === 'text') {
       for (const quote of content.quotes ?? []) {
-        total += quote.text.length + (quote.label?.length ?? 0);
+        total += formatQuoteRefs([quote]).length;
       }
       for (const attachment of content.attachments ?? []) {
         // Weight the block the projection actually emits, not the display

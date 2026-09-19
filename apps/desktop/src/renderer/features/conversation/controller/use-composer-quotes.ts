@@ -91,26 +91,11 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     publish();
   }, [bucket, publish]);
 
-  const clearAllQuotes = useCallback((): void => {
-    for (const quotes of Object.values(pendingByKeyRef.current)) quotes.splice(0, quotes.length);
-    publish();
-  }, [publish]);
-
-  const restoreQuotes = useCallback((ownerKey: string, quotes: readonly QuoteRef[]): void => {
-    if (quotes.length === 0) return;
-    const ownerBucket = pendingByKeyRef.current[ownerKey] ??
-      (pendingByKeyRef.current[ownerKey] = []);
-    ownerBucket.push(...quotes.map((quote) => ({ ...quote })));
-    publish();
-  }, [publish]);
-
   return {
     pendingQuotes,
     addQuote,
     updateQuoteComment,
     removeQuote,
     clearQuotes,
-    clearAllQuotes,
-    restoreQuotes,
   };
 }

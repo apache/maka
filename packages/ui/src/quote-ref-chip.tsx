@@ -18,11 +18,9 @@
  */
 
 import { Button } from '@astryxdesign/core/Button';
-import { IconButton } from '@astryxdesign/core/IconButton';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { MetadataList, MetadataListItem, Text, VStack } from '@astryxdesign/core';
-import { MessageSquareQuote, MessagesSquare, TextQuote, X } from './icons.js';
-import { cn } from './utils.js';
+import { MessageSquareQuote, MessagesSquare, TextQuote } from './icons.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { QuoteRef } from '@maka/core/events';
 import { useUiLocale } from './locale-context.js';
@@ -73,12 +71,8 @@ export function QuoteHoverCardContent(props: { quote: QuoteRef }) {
   );
 }
 
-/** Inline quote chip for the composer (removable) and sent user messages (read-only). */
-export function QuoteRefChip(props: {
-  quote: QuoteRef;
-  onRemove?: () => void;
-  className?: string;
-}) {
+/** Inline quote chip on a sent user message. */
+export function QuoteRefChip(props: { quote: QuoteRef }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
   const label = props.quote.sourceSessionId && props.quote.sourceSessionName
@@ -91,13 +85,7 @@ export function QuoteRefChip(props: {
   const SourceIcon = props.quote.sourceSessionId ? MessagesSquare : TextQuote;
 
   const chip = (
-    <span
-      className={cn(
-        'maka-quote-chip',
-        props.onRemove ? 'maka-quote-chip-removable' : 'maka-quote-chip-readonly',
-        props.className,
-      )}
-    >
+    <span className="maka-quote-chip">
       <SourceIcon className="maka-quote-chip-icon" aria-hidden="true" />
       {/* Marks that the excerpt carries a note. The note itself lives in the
           hover card and the model-facing content, not in the chip's own line. */}
@@ -115,20 +103,9 @@ export function QuoteRefChip(props: {
         <span className="maka-quote-chip-text-body">
           {label ? <span className="maka-quote-chip-label">{label} </span> : null}
           {displayText}
-          {provenance ? <span className="maka-quote-chip-provenance"> · {provenance}</span> : null}
+          {provenance ? ` · ${provenance}` : null}
         </span>
       </Button>
-      {props.onRemove ? (
-        <IconButton
-          type="button"
-          variant="ghost"
-          size="sm"
-          label={copy.removeQuoteAriaLabel}
-          icon={<X aria-hidden="true" />}
-          className="maka-quote-chip-remove"
-          onClick={props.onRemove}
-        />
-      ) : null}
     </span>
   );
 

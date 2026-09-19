@@ -316,38 +316,6 @@ function Frame({ children, width = 960 }: { children: React.ReactNode; width?: n
   );
 }
 
-/** The composer's staged quotes are host state, so the story holds them the
- *  way AppShell does: editing a note writes back to the staged quote. */
-function AnnotatingComposer(props: { draftKey: string }) {
-  const [quotes, setQuotes] = useState<QuoteRef[]>([ANNOTATED_QUOTE, BARE_QUOTE]);
-  return (
-    <Composer
-      {...baseComposer}
-      draftKey={props.draftKey}
-      pendingQuotes={quotes}
-      onRemoveQuote={(index) => setQuotes((current) => current.filter((_, i) => i !== index))}
-      onEditQuoteComment={(index, comment) =>
-        setQuotes((current) =>
-          current.map((quote, i) => (i === index ? { ...quote, comment } : quote)),
-        )
-      }
-    />
-  );
-}
-
-// Real path: select text in a transcript answer → the floating 引用 action → write a
-// note in the panel that opens under the selection → the staged quote chip in the
-// composer drawer.
-export const ComposerStagedQuoteWithNote: Story = {
-  render: () => (
-    <Frame>
-      <div style={{ padding: '0 24px 24px', width: '100%' }}>
-        <AnnotatingComposer draftKey="composer-quote-notes" />
-      </div>
-    </Frame>
-  ),
-};
-
 // Real path, the fallback: the staged quote outlives its source — the turn has
 // left the transcript (rewritten history, virtualized out, a different session)
 // — so clicking the token cannot anchor an editor at the excerpt and degrades
@@ -407,9 +375,11 @@ export const TranscriptQuoteGesture: Story = {
     // its ordinal pinned at the end, so the transcript still shows what was
     // quoted.
     await expectOrdinal('1', 1);
-    // The token's editor anchors back at the excerpt, with the note prefilled.
+    // The token's editor anchors back at the excerpt — the transcript's
+    // layer, not the token's popover — with the note prefilled.
     await userEvent.click(token);
     const reopened = await visiblePanel();
+    expect(reopened.closest('.maka-quote-annotation-layer')).toBeTruthy();
     expect(
       reopened.querySelector('[contenteditable="true"]')?.textContent,
     ).toBe('按 debug 技能核对限流规则，再判断是否能降速继续。');
