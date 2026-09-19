@@ -54,6 +54,10 @@ import type {
   ToolResultOutput,
   UserContent,
 } from './model-protocol.js';
+import {
+  openResponsesExtensionReplayCarrierPart,
+  openResponsesExtensionReplayReferenceOptions,
+} from './deepseek-open-responses-extensions.js';
 import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import {
   decodePlaintextResponsesReasoningState,
@@ -402,12 +406,19 @@ export class AiSdkMessageProjection {
       // stay after text because their execution begins only after this step.
       for (const { call, result } of exchanges) {
         if (call.providerExecuted !== true) continue;
+        const replayCarrier = openResponsesExtensionReplayCarrierPart(call.providerOptions);
+        if (replayCarrier) content.push(replayCarrier);
+        const replayReference = openResponsesExtensionReplayReferenceOptions(call.providerOptions);
         content.push({
           type: 'tool-call',
           toolCallId: call.toolCallId,
           toolName: call.toolName,
           input: call.input,
-          ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
+          ...(replayReference !== undefined
+            ? { providerOptions: replayReference }
+            : call.providerOptions !== undefined
+              ? { providerOptions: call.providerOptions }
+              : {}),
           providerExecuted: true,
         });
         if (!result || result.providerExecuted !== true) continue;
@@ -417,6 +428,7 @@ export class AiSdkMessageProjection {
           toolCallId: result.toolCallId,
           toolName: result.toolName,
           output: await materializeReplayToolResult(result, call.toolName),
+          ...(replayReference !== undefined ? { providerOptions: replayReference } : {}),
         });
       }
       if (text && text.content.length > 0) {
