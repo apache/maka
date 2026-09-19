@@ -218,6 +218,7 @@ import {
   registerDesktopRuntimeHostProfileIpc,
   resolveDesktopRuntimeHostStartup,
 } from "./runtime-host-profile-service.js";
+import { createRuntimeHostPostStartupTaskRegistry } from './runtime-host-post-startup-tasks.js';
 import {
   createDesktopGuestSessionMountService,
   createGuestSessionMountStore,
@@ -1493,78 +1494,92 @@ wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
 sessionLocal.wake();
 windowsAppTray.start();
-await guestSessionMountService.start().catch((error: unknown) => {
-  console.error('[runtime-host] shared Sessions could not be restored:', error);
-});
-await localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
-  console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
-});
-void runtimeHostProfileService.startEnabledProfiles();
-const unavailableDefault = runtimeHostStartup.unavailable.get(
-  runtimeHostStartup.preferences.defaultProfileId,
-);
-if (unavailableDefault) {
-  void runtimeHostProfileService
-    .getSnapshot()
-    .then((snapshot) => {
-      const entry = snapshot.entries.find((candidate) => candidate.isDefault);
-      defaultRuntimeHostRecovery.offer({
-        profileId: runtimeHostStartup.preferences.defaultProfileId,
-        profileName:
-          entry?.profile.name ?? runtimeHostStartup.preferences.defaultProfileId,
-        error: unavailableDefault,
-      });
-    })
-    .catch((error) =>
-      console.error("[runtime-host] failed to resolve unavailable default Host:", error),
-    );
-}
-const stopComputerUseSession = (sessionId: string): void => {
-  const ref = parseDesktopSessionResourceKey(sessionId);
-  void runtimeHostManager
-    ?.stopSession(ref)
-    .catch((error) => console.error("[runtime-host] stop failed:", error));
-};
-native.computerUsePip.setStopHandler(stopComputerUseSession);
-native.computerUseStatusItem.setStopHandler(stopComputerUseSession);
 
-updateService.start();
-void ensureMcpReady()
-  .then(() => mcpCapabilityPublisher.refreshIfChanged())
-  .catch((error) => console.error("[runtime-host] MCP startup failed:", error));
-// A login round persists its verifier and callback port; if the app
-// restarted mid-round, rebind the listener so the browser's redirect still
-// lands instead of hitting a dead port. Deliberately NOT chained behind the
-// connect/publish sequence above: a slow server or a publish failure must
-// not delay or block the rebind — it needs only the persisted state, and
-// the controller awaits readiness itself before the token exchange.
-void mcpConfigStore
-  .get()
-  .then((config) => {
-    for (const serverId of Object.keys(config.mcpServers)) {
-      void mcpOAuthController
-        .resumeLogin(serverId)
-        // No explicit mcp:changed here: a successful resume ends in
-        // finishAuthorization → reconnect, whose onChange handler already
-        // emits AND refreshes capabilities — a second identical emit here
-        // was strictly weaker.
+const postStartupTasks = createRuntimeHostPostStartupTaskRegistry({
+  'offer-unavailable-default-runtime-host': () => {
+    const unavailableDefault = runtimeHostStartup.unavailable.get(
+      runtimeHostStartup.preferences.defaultProfileId,
+    );
+    if (unavailableDefault) {
+      return runtimeHostProfileService
+        .getSnapshot()
+        .then((snapshot) => {
+          const entry = snapshot.entries.find((candidate) => candidate.isDefault);
+          defaultRuntimeHostRecovery.offer({
+            profileId: runtimeHostStartup.preferences.defaultProfileId,
+            profileName:
+              entry?.profile.name ?? runtimeHostStartup.preferences.defaultProfileId,
+            error: unavailableDefault,
+          });
+        })
         .catch((error) =>
-          console.error(
-            `[runtime-host] MCP login resume failed for ${serverId}:`,
-            error,
-          ),
+          console.error("[runtime-host] failed to resolve unavailable default Host:", error),
         );
     }
-  })
-  .catch((error) =>
-    console.error("[runtime-host] MCP login resume scan failed:", error),
-  );
+    return undefined;
+  },
+  'recover-local-runtime-host-access': () =>
+    localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
+      console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
+    }),
+  'refresh-client-settings': () =>
+    clientSettingsEffects
+      .refresh(false)
+      .catch((error) =>
+        console.error("[runtime-host] Client settings startup failed:", error),
+      ),
+  'restore-guest-session-mounts': () =>
+    guestSessionMountService.start().catch((error: unknown) => {
+      console.error('[runtime-host] shared Sessions could not be restored:', error);
+    }),
+  // A login round persists its verifier and callback port; if the app
+  // restarted mid-round, rebind the listener so the browser's redirect still
+  // lands instead of hitting a dead port. Registration order dispatches this
+  // after MCP startup without waiting for it to settle; both tasks are detached.
+  'resume-mcp-logins': () =>
+    mcpConfigStore
+      .get()
+      .then((config) =>
+        Promise.all(
+          Object.keys(config.mcpServers).map((serverId) =>
+            mcpOAuthController
+              .resumeLogin(serverId)
+              // No explicit mcp:changed here: a successful resume ends in
+              // finishAuthorization → reconnect, whose onChange handler already
+              // emits AND refreshes capabilities — a second identical emit here
+              // was strictly weaker.
+              .catch((error) =>
+                console.error(
+                  `[runtime-host] MCP login resume failed for ${serverId}:`,
+                  error,
+                ),
+              ),
+          ),
+        ),
+      )
+      .catch((error) =>
+        console.error("[runtime-host] MCP login resume scan failed:", error),
+      ),
+  'start-desktop-background-services': () => {
+    const stopComputerUseSession = (sessionId: string): void => {
+      const ref = parseDesktopSessionResourceKey(sessionId);
+      void runtimeHostManager
+        ?.stopSession(ref)
+        .catch((error) => console.error("[runtime-host] stop failed:", error));
+    };
+    native.computerUsePip.setStopHandler(stopComputerUseSession);
+    native.computerUseStatusItem.setStopHandler(stopComputerUseSession);
+    updateService.start();
+  },
+  'start-enabled-runtime-host-profiles': () =>
+    runtimeHostProfileService.startEnabledProfiles(),
+  'start-mcp': () =>
+    ensureMcpReady()
+      .then(() => mcpCapabilityPublisher.refreshIfChanged())
+      .catch((error) => console.error("[runtime-host] MCP startup failed:", error)),
+});
 
-void clientSettingsEffects
-  .refresh(false)
-  .catch((error) =>
-    console.error("[runtime-host] Client settings startup failed:", error),
-  );
+await postStartupTasks.runAll();
 
 function registerHostClientIpc(
   client: DesktopRuntimeHostClient,
