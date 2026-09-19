@@ -79,7 +79,6 @@ import * as ModuleHub from './features/module-hub';
 import {
   SessionNavigationProvider,
   createSessionOpenCommand,
-  sessionMatchesRail,
   sessionRailLayoutStore,
   useSessionNavigationReads,
   type SessionNavigationPorts,
@@ -88,8 +87,6 @@ import {
 import {
   selectSessionById,
   selectSessionCount,
-  selectSessions,
-  type SessionCatalogState,
 } from './session-catalog-state';
 import { useExternalStoreSelector } from './use-external-store-selector';
 import * as TaskEntry from './features/task-entry';
@@ -115,7 +112,6 @@ import {
 } from './plan-mode-panel';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type {
-  DesktopSessionSummary,
   OnboardingSnapshot,
 } from '../preload/bridge-contract.js';
 import { ProviderLogo } from './settings/provider-display';
@@ -221,26 +217,6 @@ type ComposerImportOwner = {
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const { useSessionCollaborationDialog } = SessionCollaboration;
 
-/** The command palette lists the rail's membership minus its hidden rows. */
-const selectPaletteSessions = (
-  state: SessionCatalogState,
-  hiddenSessionIds: ReadonlySet<string>,
-) =>
-  state.sessions.filter(
-    (session) => sessionMatchesRail(session) && !hiddenSessionIds.has(session.id),
-  );
-
-/** A palette command shows id, name and the flag glyph; nothing else re-lists it. */
-function paletteSessionsEqual(
-  left: readonly DesktopSessionSummary[],
-  right: readonly DesktopSessionSummary[],
-): boolean {
-  return left.length === right.length
-    && left.every((session, index) =>
-      session.id === right[index]!.id
-      && session.name === right[index]!.name
-      && session.isFlagged === right[index]!.isFlagged);
-}
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
@@ -1378,14 +1354,6 @@ function AppShellContent({
     catalog: sessionCatalogController,
     activeSessionId: activeId,
   });
-  // The palette's 会话 rows: rail membership minus what the rail itself hides,
-  // re-rendered only when a field a command displays actually changes.
-  const visibleSessions = useExternalStoreSelector(
-    sessionCatalogController,
-    selectPaletteSessions,
-    selectors.hiddenSessionIds,
-    paletteSessionsEqual,
-  );
   const sessionListCollapsed = railLayout.collapsed;
   const sessionListWidth = railLayout.width;
   const sessionSideNavHandleRef = sessionRailLayoutStore.collapseHandleRef;
@@ -2169,7 +2137,7 @@ function AppShellContent({
     settingsProfileId: overlays.selectors.settings.request.profileId,
     sessionCatalog: sessionCatalogController,
     themePref,
-    visibleSessions,
+    hiddenSessionIds: selectors.hiddenSessionIds,
     captureComposerImportOwner,
     createSession,
     startModeSession,

@@ -35,7 +35,10 @@ import {
   buildSessionCommands,
 } from "./command-palette-commands.js";
 import type { Command } from './features/overlays/index.js';
-import type { SessionCatalogController } from './session-catalog-state.js';
+import { sessionMatchesRail } from './features/session-navigation/index.js';
+import type { SessionCatalogController, SessionCatalogState } from './session-catalog-state.js';
+import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
+import { useExternalStoreSelector } from './use-external-store-selector.js';
 import { renderConversationMarkdown } from "./conversation-markdown.js";
 import {
   commandPaletteActionErrorMessage,
@@ -78,7 +81,8 @@ export interface AppShellCommandListOptions {
   settingsProfileId: string | undefined;
   sessionCatalog: SessionCatalogController;
   themePref: ThemePreference;
-  visibleSessions: readonly SessionSummary[];
+  /** Sessions the rail hides (mounted side-chat forks) — the palette skips them too. */
+  hiddenSessionIds: ReadonlySet<string>;
   captureComposerImportOwner: () => ComposerImportOwner;
   createSession: () => void;
   openSideConversation: () => void;
@@ -396,13 +400,38 @@ export function buildAppShellCommandList(
   });
 }
 
+/** The command palette lists the rail's membership minus its hidden rows. */
+const selectPaletteSessions = (
+  state: SessionCatalogState,
+  hiddenSessionIds: ReadonlySet<string>,
+) =>
+  state.sessions.filter(
+    (session) => sessionMatchesRail(session) && !hiddenSessionIds.has(session.id),
+  );
+
+const EMPTY_PALETTE_SESSIONS: readonly DesktopSessionSummary[] = [];
+const selectClosedPaletteSessions = () => EMPTY_PALETTE_SESSIONS;
+
+/** A palette command shows id, name and the flag glyph; nothing else re-lists it. */
+function paletteSessionsEqual(
+  left: readonly DesktopSessionSummary[],
+  right: readonly DesktopSessionSummary[],
+): boolean {
+  return left.length === right.length
+    && left.every((session, index) =>
+      session.id === right[index]!.id
+      && session.name === right[index]!.name
+      && session.isFlagged === right[index]!.isFlagged);
+}
+
 export function buildAppShellSessionCommands(
   optionsRef: RefBox<AppShellCommandListOptions>,
+  visibleSessions: readonly SessionSummary[],
 ): ReturnType<typeof buildSessionCommands> {
   const options = optionsRef.current;
   return buildSessionCommands({
     locale: options.uiLocale,
-    sessions: options.visibleSessions,
+    sessions: visibleSessions,
     activeSessionId: options.activeId,
     onSelectSession: (sessionId) => {
       optionsRef.current.openSessionInChat(sessionId);
@@ -418,8 +447,8 @@ export function buildAppShellSessionCommands(
  * frozen list still acts on current data. Session rows are derived separately,
  * memoized on the visible session catalog + active session only: background
  * session creates/renames stay live while the palette is open, without
- * reintroducing per-tick rebuilds (visibleSessions is itself memoized in
- * app-shell, so rows rebuild only on real catalog changes).
+ * reintroducing per-tick rebuilds. The catalog subscription lives here — the
+ * consumption point — so shell renders are not driven by palette-only reads.
  */
 export function useAppShellCommands(
   paletteOpen: boolean,
@@ -427,13 +456,19 @@ export function useAppShellCommands(
 ): Command[] {
   const optionsRef = useRef(commandOptions);
   optionsRef.current = commandOptions;
-  const { activeId, uiLocale, visibleSessions } = commandOptions;
+  const { activeId, uiLocale, sessionCatalog, hiddenSessionIds } = commandOptions;
+  const visibleSessions = useExternalStoreSelector(
+    sessionCatalog,
+    paletteOpen ? selectPaletteSessions : selectClosedPaletteSessions,
+    hiddenSessionIds,
+    paletteSessionsEqual,
+  );
   const baseCommands = useMemo(
     () => buildAppShellCommandList(optionsRef),
     [paletteOpen, uiLocale],
   );
   const sessionCommands = useMemo(
-    () => buildAppShellSessionCommands(optionsRef),
+    () => (paletteOpen ? buildAppShellSessionCommands(optionsRef, visibleSessions) : []),
     [paletteOpen, visibleSessions, activeId, uiLocale],
   );
   return useMemo(
