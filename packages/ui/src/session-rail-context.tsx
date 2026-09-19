@@ -52,6 +52,8 @@ export interface SessionRailData {
   groupVariant: SessionViewMode;
   /** Human-readable project identity for a session hover card. */
   sessionProjectName?(session: SessionSummary): string | undefined;
+  /** Session's location path, shown only when its project has multiple locations. */
+  sessionLocation?(session: SessionSummary): string | undefined;
   sessionMeta?(session: SessionSummary): string | undefined;
   sessionBadge?(session: SessionSummary): ReactNode;
   onSelectSession(sessionId: string): void;
