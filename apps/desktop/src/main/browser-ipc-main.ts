@@ -33,6 +33,9 @@ import {
 
 interface BrowserIpcDeps {
   mainWindowController: ReturnType<typeof createMainWindowController>;
+  auxiliaryWindowRegistry: {
+    rendererParent(contents: Electron.WebContents): Electron.View | undefined;
+  };
   isHostActive(scope: DesktopTargetScope): boolean;
 }
 
@@ -52,7 +55,15 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
 
   const selections = new Map<Electron.WebContents, RendererSelection>();
   const observedRenderers = new WeakSet<Electron.WebContents>();
-  const views = deps.mainWindowController.getBrowserViews();
+  const ownsRenderer = (contents: Electron.WebContents): boolean =>
+    deps.mainWindowController.isMainRenderer(contents) || deps.auxiliaryWindowRegistry.rendererParent(contents) !== undefined;
+  const browserParentForRenderer = (contents: Electron.WebContents): Electron.View | undefined => {
+    if (deps.mainWindowController.isMainRenderer(contents)) {
+      const window = BrowserWindow.fromWebContents(contents);
+      return window && !window.isDestroyed() ? window.contentView : undefined;
+    }
+    return deps.auxiliaryWindowRegistry.rendererParent(contents);
+  };
 
   const isCoordination = (sessionId: string): boolean =>
     isWorkHubCoordinationSessionId(parseDesktopSessionResourceKey(sessionId).sessionId);
@@ -62,24 +73,29 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   const ownerForSession = (sessionId: string): Electron.WebContents | undefined => {
     let owner: Electron.WebContents | undefined;
     for (const [contents, selection] of selections) {
-      if (selection.sessionId !== sessionId || !deps.mainWindowController.ownsRenderer(contents)) continue;
+      if (selection.sessionId !== sessionId || !ownsRenderer(contents)) continue;
       if (!deps.mainWindowController.isMainRenderer(contents)) return contents;
       owner = contents;
     }
     return owner;
   };
+  const parentForSession = (sessionId: string): Electron.View | undefined => {
+    const owner = ownerForSession(sessionId);
+    return owner ? browserParentForRenderer(owner) : undefined;
+  };
+  const views = deps.mainWindowController.getBrowserViews(parentForSession);
 
   const isSessionShown = (sessionId: string): boolean => {
     const owner = ownerForSession(sessionId);
     if (!owner) return false;
-    const parent = deps.mainWindowController.browserParentForRenderer(owner);
+    const parent = browserParentForRenderer(owner);
     const window = BrowserWindow.fromWebContents(owner);
     return !!parent?.getVisible() && !!window && !window.isDestroyed() &&
       window.isVisible() && !window.isMinimized();
   };
   const canRunInBackground = (sessionId: string): boolean => {
     const owner = ownerForSession(sessionId);
-    if (!owner || !deps.mainWindowController.browserParentForRenderer(owner)) return false;
+    if (!owner || !browserParentForRenderer(owner)) return false;
     const ref = parseDesktopSessionResourceKey(sessionId);
     return isWorkHubCoordinationSessionId(ref.sessionId) && deps.isHostActive(ref);
   };
@@ -96,7 +112,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const sessionId = selection.sessionId;
     if (!sessionId) return;
     const view = views.get(sessionId);
-    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    const parent = browserParentForRenderer(contents);
     if (!view || !parent) return;
     if (!selection.viewport) {
       if (view.hasParent(parent)) view.park();
@@ -121,7 +137,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const sessionId = selection?.sessionId;
     if (!selection || !sessionId) return;
     const view = views.get(sessionId);
-    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    const parent = browserParentForRenderer(contents);
     selection.sessionId = null;
     selection.viewport = null;
     if (view && parent && view.hasParent(parent)) {
@@ -138,7 +154,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   const observeRenderer = (contents: Electron.WebContents): void => {
     if (observedRenderers.has(contents)) return;
     observedRenderers.add(contents);
-    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    const parent = browserParentForRenderer(contents);
     const window = BrowserWindow.fromWebContents(contents);
     const parkPresentedPages = () => {
       if (!parent) return;
@@ -179,18 +195,12 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const frame = event.senderFrame;
     if (
       !frame || frame.frameToken !== event.sender.mainFrame.frameToken ||
-      !deps.mainWindowController.ownsRenderer(event.sender)
+      !ownsRenderer(event.sender)
     ) return undefined;
     observeRenderer(event.sender);
     return event.sender;
   };
 
-  deps.mainWindowController.setBrowserViewParentResolver((sessionId) => {
-    const owner = ownerForSession(sessionId);
-    return owner
-      ? deps.mainWindowController.browserParentForRenderer(owner)
-      : undefined;
-  });
   provideBrowserViewHost(createBrowserViewHost(views, isSessionShown, canRunInBackground));
 
   const requireBrowserTarget = (scope: unknown, target: unknown): string | undefined => {
@@ -249,7 +259,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     selection.sessionId = sessionId;
     if (changed) selection.viewport = null;
     if (isCoordination(sessionId) && !deps.mainWindowController.isMainRenderer(contents)) {
-      const parent = deps.mainWindowController.browserParentForRenderer(contents);
+      const parent = browserParentForRenderer(contents);
       if (parent) views.get(sessionId)?.setOwner(parent);
     }
     revokeHiddenActions();
@@ -263,7 +273,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const contents = ownedRenderer(event);
     if (!contents) return undefined;
     const sessionId = requireBrowserTarget(scope, target);
-    return sessionId && deps.mainWindowController.browserParentForRenderer(contents) &&
+    return sessionId && browserParentForRenderer(contents) &&
       selections.get(contents)?.sessionId === sessionId
       ? sessionId
       : undefined;
@@ -315,7 +325,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
 
   ipcMain.handle('browser:capture-page', (event, scope: unknown, target: unknown) => {
     const selected = selectedTarget(event, scope, target);
-    const parent = deps.mainWindowController.browserParentForRenderer(event.sender);
+    const parent = browserParentForRenderer(event.sender);
     const view = selected ? views.get(selected) : undefined;
     return parent && view?.hasParent(parent) ? view.capturePage() : undefined;
   });

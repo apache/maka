@@ -22,7 +22,8 @@ import { MAKA_WORDMARK_PATH } from '@maka/core/maka-wordmark';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import { formatHostHandoff, type HostHandoffView, type HostHandoffAction } from '@maka/runtime-host/client';
 import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron';
-import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
+import type { WindowRevealMode } from './window-reveal.js';
+import { auxiliaryWindowRegistry } from './auxiliary-window-registry.js';
 
 export type StartupPhase =
   | 'prepare' | 'storage' | 'connect' | 'package'
@@ -103,8 +104,8 @@ export function createStartupProgressWindow(input: {
 }): StartupProgressWindow {
   const copy = COPY[input.locale];
   const win = input.createWindow({
-    width: 520, height: 350, useContentSize: true, title: 'Maka', icon: input.icon,
-    show: false, resizable: false, maximizable: false, fullscreenable: false,
+    title: 'Maka', icon: input.icon,
+    resizable: false, maximizable: false, fullscreenable: false,
     backgroundColor: input.dark ? '#1c1d21' : '#ffffff',
     webPreferences: {
       contextIsolation: true, nodeIntegration: false, sandbox: true,
@@ -147,7 +148,7 @@ export function createStartupProgressWindow(input: {
   const close = () => {
     if (closed) return;
     closed = true;
-    if (!win.isDestroyed()) win.destroy();
+    auxiliaryWindowRegistry.destroy(win);
   };
   win.setMenuBarVisibility(false);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -188,8 +189,8 @@ export function createStartupProgressWindow(input: {
     if (closed || win.isDestroyed()) return;
     loaded = true;
     publish();
-    if (handoff?.view.state === 'attention') focusWindow(win, input.revealMode);
-    else showWindowInactive(win, input.revealMode);
+    if (handoff?.view.state === 'attention') auxiliaryWindowRegistry.focus(win, input.revealMode);
+    else auxiliaryWindowRegistry.show('startup-progress', win, input.revealMode);
   }).catch((error) => {
     input.onError(error);
     handoff?.submit(handoff.view.revision, 'cancel');
@@ -202,7 +203,7 @@ export function createStartupProgressWindow(input: {
       const needsAttention = handoff?.view.state !== 'attention' && view.state === 'attention';
       handoff = { view, submit, locale };
       publish();
-      if (loaded && needsAttention) focusWindow(win, input.revealMode);
+      if (loaded && needsAttention) auxiliaryWindowRegistry.focus(win, input.revealMode);
     },
     clearHandoff() {
       handoff = undefined;
@@ -210,7 +211,7 @@ export function createStartupProgressWindow(input: {
     },
     focus() {
       if (closed || !loaded || win.isDestroyed()) return;
-      focusWindow(win, input.revealMode);
+      auxiliaryWindowRegistry.focus(win, input.revealMode);
     },
     close,
     window: () => closed || win.isDestroyed() ? undefined : win,
