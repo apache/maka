@@ -349,11 +349,14 @@
    to the transcript, so reaching the top/bottom of the box scrolls the page
    instead of dead-stopping. `contain` would make the transcript authority treat
    the box as a dead end and hand off nothing. */
+/* The viewport's overflow is owned by Astryx's `useScrollableArea` (applied
+   through the class that carries `--x-overflow*`): product CSS here only states
+   the cap, the radius and the scrollbar width. Do NOT restate `overflow-y`
+   — it would override the primitive and make `stickyContainment` inert. */
 .maka-processing-body {
   --maka-process-cap: min(50vh, 360px);
   max-height: var(--maka-process-cap);
   min-height: 0;
-  overflow-y: auto;
   border-radius: 0 0 calc(var(--radius-surface) - 1px) calc(var(--radius-surface) - 1px);
   scrollbar-width: thin;
 }
@@ -369,14 +372,18 @@
 /* A soft fade on an edge that has content hidden past it, so the clamped rows
    read as "more above/below" rather than cut off. The mask is set on the
    scroller itself (not an overlay), so nothing adds flow height or a layer; a
-   box that fits, or an edge sitting at its own end, shows no fade. */
-.maka-processing-body[data-overflow-top='true'] {
+   box that fits, or an edge sitting at its own end, shows no fade.
+   The edge flags are Astryx's OWN viewport attributes from
+   `useScrollableArea` (`data-scrollable-block` while the body overflows,
+   `data-scroll-block-start/end` while an edge is at its end), so this layer
+   reads the primitive's state directly instead of a mirrored copy. */
+.maka-processing-body[data-scrollable-block='true']:not([data-scroll-block-start='true']) {
   mask-image: linear-gradient(transparent, black var(--space-6));
 }
-.maka-processing-body[data-overflow-bottom='true'] {
+.maka-processing-body[data-scrollable-block='true']:not([data-scroll-block-end='true']) {
   mask-image: linear-gradient(black calc(100% - var(--space-6)), transparent);
 }
-.maka-processing-body[data-overflow-top='true'][data-overflow-bottom='true'] {
+.maka-processing-body[data-scrollable-block='true']:not([data-scroll-block-start='true']):not([data-scroll-block-end='true']) {
   mask-image: linear-gradient(transparent, black var(--space-6), black calc(100% - var(--space-6)), transparent);
 }
 /* The zoom switch's wrapper: zero-height and sticky inside the body, so the

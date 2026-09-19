@@ -3942,6 +3942,15 @@ export const CompletedProcessExpanded: Story = {
     // The body grows with its content up to a cap and scrolls past it; the
     // open frame therefore equals header + (capped) body.
     await waitFor(() => expect(process.getBoundingClientRect().height).toBeGreaterThanOrEqual(summary.getBoundingClientRect().height + process.querySelector<HTMLElement>('.maka-processing-body')!.clientHeight - 1));
+    // The viewport's overflow belongs to the ScrollableArea primitive, not
+    // product CSS. This body fits, so `stickyContainment: 'whenScrollable'`
+    // keeps it a NON-scroll-container: `clip`. A `className` written after the
+    // getter's props (the earlier bug) replaces the primitive's class and leaves
+    // product CSS's `overflow-y: auto` in force — a scroll container, and a
+    // different computed value — so this pins the fix.
+    const processBody = process.querySelector<HTMLElement>('.maka-processing-body')!;
+    await expect([...processBody.classList].some((name) => /^x[a-z0-9]+$/i.test(name))).toBe(true);
+    await expect(getComputedStyle(processBody).overflowY).toBe('clip');
     await expect(summary).toHaveFocus();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
@@ -3983,8 +3992,21 @@ export const CompletedProcessZoomThenFold: Story = {
     const body = process.querySelector<HTMLElement>('.maka-processing-body')!;
     if (!process.open) process.querySelector('summary')!.click();
     await waitFor(() => expect(process.open).toBe(true));
-    const corner = body.querySelector<HTMLElement>('.maka-processing-zoom')!;
+    // The body's scrollability is measured a frame after mount (Astryx's
+    // `useScrollableArea` schedules its first measure on an animation frame),
+    // and the switch renders once it knows the body overflows.
+    const corner = await waitFor(() => {
+      const found = body.querySelector<HTMLElement>('.maka-processing-zoom');
+      expect(found).not.toBeNull();
+      return found!;
+    });
     await expect(corner).toBeVisible();
+    // The primitive owns the viewport's overflow here too: the scrollable path
+    // is `overflow-y: auto` with the inactive axis clipped by the primitive
+    // itself (`hidden`), not a product rule.
+    await expect(getComputedStyle(body).overflowY).toBe('auto');
+    await expect(getComputedStyle(body).overflowX).toBe('hidden');
+    await expect(body.getAttribute('data-scrollable-block')).toBe('true');
     const toggle = corner.querySelector<HTMLButtonElement>('button')!;
     // Where the switch sits relative to the body's own box. This is independent
     // of where the transcript happens to be scrolled: a switch that has drifted

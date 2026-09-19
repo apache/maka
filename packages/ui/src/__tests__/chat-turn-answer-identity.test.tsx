@@ -55,7 +55,7 @@ afterEach(async () => {
   });
 });
 
-function domRoot() {
+function domRoot({ clientHeight = 360, scrollHeight = 360 }: { clientHeight?: number; scrollHeight?: number } = {}) {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
     document,
@@ -64,7 +64,29 @@ function domRoot() {
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,
+    // The process body is measured through Astryx's `useScrollableArea`, which
+    // reads computed styles and a real (non-zero) client box. LinkeDOM supplies
+    // neither, so stand in for both; each case passes the numbers it is about.
+    getComputedStyle: () =>
+      new Proxy(
+        { display: 'block', writingMode: 'horizontal-tb', direction: 'ltr', overflowX: 'auto', overflowY: 'auto' },
+        {
+          get: (target, prop) =>
+            (target as Record<string | symbol, unknown>)[prop] ??
+            (prop === 'getPropertyValue' ? () => '' : ''),
+        },
+      ),
   });
+  const define = (name: string, value: number) => {
+    Object.defineProperty(window.HTMLElement.prototype, name, {
+      configurable: true,
+      get() { return value; },
+    });
+  };
+  define('clientWidth', 800);
+  define('clientHeight', clientHeight);
+  define('scrollWidth', 800);
+  define('scrollHeight', scrollHeight);
   const container = document.querySelector('#root');
   assert.ok(container);
   const root = createRoot(container);
@@ -835,17 +857,13 @@ test('uses a generic process label when no duration is recorded, and localizes t
   );
 });
 
-/** jsdom has no layout: give the body the two numbers the overflow gate reads. */
-function giveBodyGeometry(body: Element, scrollHeight: number, clientHeight: number) {
-  Object.defineProperty(body, 'scrollHeight', { configurable: true, value: scrollHeight });
-  Object.defineProperty(body, 'clientHeight', { configurable: true, value: clientHeight });
-}
-
 const clickOn = (element: Element) =>
   act(() => { element.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
 
 test('the zoom switch unclamps the body, rides the body corner, and survives folding', async () => {
-  const { container, root } = domRoot();
+  // jsdom has no layout: hand the hook a body taller than its client box so it
+  // measures one overflowing process (the fixture values are the real story's).
+  const { container, root } = domRoot({ clientHeight: 360, scrollHeight: 900 });
   const thinking: TurnTimelineItem = {
     kind: 'thinking',
     text: 'weighing the options',
@@ -858,9 +876,8 @@ test('the zoom switch unclamps the body, rides the body corner, and survives fol
   assert.ok(process);
   const summary = process.querySelector('summary')!;
   const body = process.querySelector('.maka-processing-body')!;
-  // Overflowing content: the switch is offered only when there is something to
-  // unclamp.
-  giveBodyGeometry(body, 720, 360);
+  // Geometry comes from `domRoot` (a body taller than its client box): the
+  // switch is offered only when there is something to unclamp.
   await clickOn(summary);
   assert.equal(process.hasAttribute('open'), true);
   // Default: the reading cap is on, so no unclamped flag.
@@ -889,19 +906,17 @@ test('the zoom switch unclamps the body, rides the body corner, and survives fol
 test('the zoom switch follows overflow, not entry kind', async () => {
   const rendered = () => turnWith([PROCESS_TEXT, { ...ANSWER, live: false }]);
   // A process that fits under the cap offers nothing to unclamp.
-  const fits = domRoot();
+  const fits = domRoot({ clientHeight: 360, scrollHeight: 280 });
   await renderTurn(fits.root, { ...rendered(), status: 'completed' as const });
   const fitsProcess = fits.container.querySelector('details.maka-processing-sequence')!;
-  giveBodyGeometry(fitsProcess.querySelector('.maka-processing-body')!, 280, 360);
   await clickOn(fitsProcess.querySelector('summary')!);
   assert.equal(fitsProcess.querySelector('.maka-processing-zoom'), null);
 
   // ...even a text-only process that DOES overflow gets the way out, because the
   // cap it escapes is about height, not about which kinds of entries fill it.
-  const over = domRoot();
+  const over = domRoot({ clientHeight: 360, scrollHeight: 900 });
   await renderTurn(over.root, { ...rendered(), status: 'completed' as const });
   const overProcess = over.container.querySelector('details.maka-processing-sequence')!;
-  giveBodyGeometry(overProcess.querySelector('.maka-processing-body')!, 900, 360);
   await clickOn(overProcess.querySelector('summary')!);
   assert.ok(overProcess.querySelector('.maka-processing-zoom button'));
 });

@@ -42,6 +42,7 @@ import {
   Token,
   useLightbox,
   useMediaQuery,
+  useScrollableArea,
 } from '@astryxdesign/core';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
@@ -1489,50 +1490,27 @@ export function ProcessingBlock(props: {
   // under the answer that a growing reply cannot scroll out of view; restating
   // them here said the same thing twice, once where it gets lost.
   const label = copy.processDetails;
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const [overflow, setOverflow] = useState({ top: false, bottom: false });
-  const [overflows, setOverflows] = useState(false);
   // The whole box's height switch: false keeps the reading cap (the default
-  // frame), true drops it so the process lists in full — the reader's "show me
-  // everything at once" for a turn they want to read end to end.
+  // frame), true raises it so more of the process shows at once — the reader's
+  // "show me more" for a turn they want to read end to end.
   const [unclamped, setUnclamped] = useState(false);
-  // Re-measure whenever the box can change height: opening, entries streaming
-  // in, the reader dropping the cap, and their own scrolling. Only re-set state
-  // when a flag actually flips, so a live turn does not re-render each frame.
-  // An unclamped body has no clipped edge, so it measures no fade.
-  useEffect(() => {
-    const body = bodyRef.current;
-    if (!body || !open) {
-      setOverflow((previous) =>
-        previous.top || previous.bottom ? { top: false, bottom: false } : previous,
-      );
-      return;
-    }
-    const measure = () => {
-      // Whether the body is taller than it shows — the real condition for
-      // offering the height switch, independent of what KIND of entries fill it.
-      setOverflows(body.scrollHeight > body.clientHeight + 1);
-      const top = !unclamped && body.scrollTop > 0;
-      const bottom = !unclamped && body.scrollTop + body.clientHeight < body.scrollHeight - 1;
-      setOverflow((previous) =>
-        previous.top === top && previous.bottom === bottom ? previous : { top, bottom },
-      );
-    };
-    measure();
-    body.addEventListener('scroll', measure, { passive: true });
-    // Absent in the SSR/test DOM: appended entries and the reader's own scroll
-    // still re-measure there, so the fade simply stays off.
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
-    // Observe the CONTENT, not the body: at the cap the body stops resizing,
-    // but content keeps growing inside an existing entry (streaming reasoning, a
-    // tool gaining output). The content's box is what actually changes height.
-    const content = body.querySelector('.maka-processing-content');
-    observer?.observe(content ?? body);
-    return () => {
-      body.removeEventListener('scroll', measure);
-      observer?.disconnect();
-    };
-  }, [open, props.entries.length, unclamped]);
+  // Astryx measures the body for us: `isScrollable` is the "taller than it
+  // shows" condition (what offers the switch, independent of what KIND of
+  // entries fill the body), and `atStart` / `atEnd` are the edge-fade flags.
+  // It also sets `overscroll-behavior: auto`, so reaching an edge chains the
+  // wheel to the transcript instead of dead-stopping. `stickyContainment`
+  // leaves a fitting body a non-scroll-container so the corner switch resolves
+  // against the transcript; a scrollable body (capped or magnified) is the
+  // switch's scrollport, which is what keeps it pinned to the visible edge.
+  const scrollable = useScrollableArea({
+    axis: 'block',
+    // The transcript owns keyboard scrolling (it handles it in the capture
+    // phase); the body stays a native scroll target, not a second tab stop.
+    keyboardAccess: { owner: 'content' },
+    overscroll: 'allow',
+    stickyContainment: 'whenScrollable',
+  });
+  const overflows = scrollable.state.block.isScrollable;
   return (
     <details
       className="maka-processing-sequence"
@@ -1581,13 +1559,14 @@ export function ProcessingBlock(props: {
           only when the body actually overflows (nothing to unclamp otherwise),
           and stays put while magnified so the reader can take the cap back. */}
       <div
-        className="maka-processing-body"
-        ref={bodyRef}
+        // The class goes INTO the getter, not after the spread: the returned
+        // props already carry the primitive's overflow class, and a later
+        // `className` would replace it (keeping only the inline vars) and leave
+        // the overflow — including `stickyContainment` — up to product CSS.
+        {...scrollable.getViewportProps<HTMLDivElement>({ className: 'maka-processing-body' })}
         data-unclamped={unclamped ? 'true' : undefined}
-        data-overflow-top={overflow.top ? 'true' : undefined}
-        data-overflow-bottom={overflow.bottom ? 'true' : undefined}
       >
-        <div className="maka-processing-content">
+        <div {...scrollable.getContentProps<HTMLDivElement>()} className="maka-processing-content">
           {props.entries.map((entry, index) => (
             <TurnTimelineEntry
               key={timelineEntryKey(entry, index)}

@@ -137,6 +137,7 @@ test('the pending Turn waits without a clock until the Turn start time reaches t
     ResizeObserver: globalThis.ResizeObserver,
     MutationObserver: globalThis.MutationObserver,
     IntersectionObserver: globalThis.IntersectionObserver,
+    getComputedStyle: globalThis.getComputedStyle,
     IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT,
   };
   const { document, window } = parseHTML('<div id="root"></div>');
@@ -147,7 +148,22 @@ test('the pending Turn waits without a clock until the Turn start time reaches t
     ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
     MutationObserver: class { observe() {} disconnect() {} },
     IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },
+    // The process body is measured through Astryx's `useScrollableArea`, which
+    // reads computed styles and a real (non-zero) client box. LinkeDOM supplies
+    // neither; stand in for both so mounting a Turn does not throw.
+    getComputedStyle: () =>
+      new Proxy(
+        { display: 'block', writingMode: 'horizontal-tb', direction: 'ltr', overflowX: 'auto', overflowY: 'auto' },
+        {
+          get: (target, prop) =>
+            (target as Record<string | symbol, unknown>)[prop] ??
+            (prop === 'getPropertyValue' ? () => '' : ''),
+        },
+      ),
   });
+  for (const [name, value] of [['clientWidth', 800], ['clientHeight', 360], ['scrollWidth', 800], ['scrollHeight', 360]] as const) {
+    Object.defineProperty(window.HTMLElement.prototype, name, { configurable: true, get() { return value; } });
+  }
   const container = document.querySelector('#root')!;
   const root = createRoot(container);
   t.after(async () => { await act(() => root.unmount()); Object.assign(globalThis, original); });
