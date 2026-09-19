@@ -19,7 +19,12 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { catalogJobs, isExpectedConsoleError, storyUrl } from './storybook-visual-smoke.mjs';
+import {
+  catalogJobs,
+  isExpectedConsoleError,
+  rescuedRenderSummary,
+  storyUrl,
+} from './storybook-visual-smoke.mjs';
 
 const REFERENCE_STORY_ID = 'product-shell-official-appshell--native-conversation';
 const THEME_PALETTES = [
@@ -56,6 +61,32 @@ test('dark theme sentinel stories render the default palette in both colour sche
     { storyId, colorScheme: 'light', forcedColors: 'none', palette: 'default' },
     { storyId, colorScheme: 'dark', forcedColors: 'none', palette: 'default' },
   ]);
+});
+
+test('long system notes cover both locales at standard and narrow widths', () => {
+  const storyId = 'product-shell-official-appshell--long-system-notes';
+  const jobs = catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES });
+
+  assert.deepEqual(
+    jobs,
+    ['zh-CN', 'en'].flatMap((locale) =>
+      [1280, 720].map((width) => ({
+        storyId,
+        colorScheme: 'light',
+        forcedColors: 'none',
+        palette: 'default',
+        locale,
+        viewport: { width, height: 900 },
+      })),
+    ),
+  );
+  for (const job of jobs) {
+    const url = new URL(storyUrl('http://127.0.0.1:6006', job));
+    assert.equal(
+      url.searchParams.get('globals'),
+      `colorScheme:light;palette:default;locale:${job.locale}`,
+    );
+  }
 });
 
 test('forced-colors stories render under the forced palette', () => {
@@ -165,4 +196,31 @@ test('keeps unexpected settings errors fatal, including errors in the error stor
   );
   assert.equal(isExpectedConsoleError(errorStory, `${expectedError} unexpected detail`), false);
   assert.equal(isExpectedConsoleError(errorStory, 'unexpected render failure'), false);
+});
+
+// A gate that goes green leaves nobody reading its output, so what the retry
+// absorbed has to be recorded somewhere a passing run is still read. These pin
+// the record's content: the story id and why it failed, not a bare count.
+test('a rescued render is recorded with its story id and reason', () => {
+  const summary = rescuedRenderSummary([
+    {
+      job: {
+        storyId: 'product-x--y',
+        colorScheme: 'light',
+        palette: 'default',
+        forcedColors: 'none',
+      },
+      message: 'page.waitForFunction: Timeout 15000ms exceeded.',
+    },
+  ]);
+  assert.match(summary, /rescued by isolating a failure/);
+  assert.match(summary, /product-x--y \(light\/default\)/);
+  assert.match(summary, /Timeout 15000ms exceeded/);
+  // The recurrence is the signal, so the record must name the ambiguity it
+  // cannot resolve rather than implying every entry is harmless.
+  assert.match(summary, /load-dependent regression/);
+});
+
+test('a run with no rescued renders records nothing', () => {
+  assert.equal(rescuedRenderSummary([]).includes('- `'), false);
 });

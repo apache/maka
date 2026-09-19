@@ -305,7 +305,15 @@ export function WorkHubRoot() {
                 )}
               </div>
             )}
-            {controller.activeForm && <FormInteractionPrompt request={controller.activeForm} onRespond={controller.respondToUserForm} onStop={controller.stop} stopPending={controller.stopPending} />}
+            {controller.activeForm && (
+              <FormInteractionPrompt
+                request={controller.activeForm}
+                modelChoices={controller.choices}
+                onRespond={controller.respondToUserForm}
+                onStop={controller.stop}
+                stopPending={controller.stopPending}
+              />
+            )}
             {controller.activeQuestion && <UserQuestionPrompt key={controller.activeQuestion.requestId}
               request={controller.activeQuestion} onRespond={controller.respondToUserQuestion}
               onStop={controller.stop} stopPending={controller.stopPending} />}
@@ -323,6 +331,15 @@ export function WorkHubRoot() {
               sessionId={controller.sessionId}
               streaming={busy}
               sendBlocked={!controller.sessionId || controller.sending || !session?.model}
+              sendBlockedReason={controller.modelSetupRequired
+                ? controller.modelSetupChoicesReady
+                  ? controller.choices.length > 0
+                    ? t.selectModelToSend
+                    : t.configureModelToSend
+                  : t.loadingModels
+                : undefined}
+              noModelConnection={controller.modelSetupRequired && controller.modelSetupChoicesReady && controller.choices.length === 0}
+              noModelHint={t.noModelsAvailable}
               allowAttachmentImportWhileStreaming
               stopPending={controller.stopPending}
               onSend={async (text, attachments, followUpMode) => {
@@ -342,9 +359,15 @@ export function WorkHubRoot() {
               activeModelConnectionSlug={session?.llmConnectionSlug}
               modelChoices={controller.choices}
               pickerPresentation={showConversation ? 'popover' : 'wheel'}
-              pickersReadOnly={Boolean(controller.activeQuestion || controller.activeForm)}
+              pickersReadOnly={Boolean(controller.activeQuestion || controller.activeForm || controller.configuringModel)}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
+              onPickNewChatModel={controller.modelSetupRequired && controller.modelSetupChoicesReady && controller.choices.length > 0
+                ? controller.selectSetupModel
+                : undefined}
+              onOpenModelSettings={controller.modelSetupRequired && controller.modelSetupChoicesReady && controller.choices.length === 0
+                ? () => call(services.presentation.openSettings('models'))
+                : undefined}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
               contextUsage={session ? {
                 usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, session.model, session),

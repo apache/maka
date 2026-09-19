@@ -29,7 +29,8 @@ import type { IpcHandler } from '../ipc-reconnect-policy.js';
 import type { DesktopSessionStopResult } from '../../preload/bridge-contract.js';
 import type { AttachmentRef } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
-import { WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../../renderer/features/workhub/index.js';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import { WorkHubModelConfigurationRequiredError, WorkHubServicesProvider, type WorkHubServices, type WorkHubTranscriptSnapshot } from '../../renderer/features/workhub/index.js';
 import { useWorkHubController } from '../../renderer/features/workhub/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
@@ -91,6 +92,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     getSession: async () => ({ id: sessionId, runningTurnIds: [] }),
     listSessions: async () => [],
     modelChoices: async () => [],
+    setDefaultModel: async () => {},
     subscribeHosts: () => () => {},
     subscribeAvailability: () => () => {},
     subscribeSessions: () => () => {},
@@ -129,7 +131,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
       createElement(WorkHubServicesProvider, { services }, createElement(Probe)),
     }));
   });
-  assert.equal(controller.sessionId, sessionId);
+  if (!overrides.resolve) assert.equal(controller.sessionId, sessionId);
   return {
     get submissions() { return submissions; },
     get controller() { return controller; }, get openCount() { return openCount; },
@@ -147,6 +149,57 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false }); },
   };
 }
+
+test('WorkHub presents model setup instead of a retry-only resolution error', async () => {
+  const h = await mountController(false, {
+    resolve: async () => { throw new WorkHubModelConfigurationRequiredError(); },
+  });
+
+  assert.equal(h.controller.modelSetupRequired, true);
+  assert.equal(h.controller.modelSetupChoicesReady, true);
+  assert.deepEqual(h.controller.choices, []);
+  assert.equal(h.controller.error, undefined);
+  assert.equal(h.controller.canRetry, false);
+});
+
+test('WorkHub offers pre-session models and saves the selected default', async () => {
+  const choice: ChatModelChoice = {
+    connectionId: 'connection',
+    connectionSlug: 'provider',
+    connectionName: 'Provider',
+    providerType: 'openai',
+    providerLabel: 'OpenAI',
+    model: 'model-a',
+    label: 'Model A',
+    isDefault: false,
+    thinkingLevels: [],
+  };
+  const reads: Array<string | undefined> = [];
+  const defaults: Array<{ llmConnectionSlug: string; model: string }> = [];
+  const h = await mountController(false, {
+    resolve: async () => { throw new WorkHubModelConfigurationRequiredError(); },
+    modelChoices: async (sessionId) => {
+      reads.push(sessionId);
+      return [choice];
+    },
+    setDefaultModel: async (input) => { defaults.push(input); },
+  });
+
+  assert.equal(h.controller.modelSetupRequired, true);
+  assert.equal(h.controller.modelSetupChoicesReady, true);
+  assert.deepEqual(h.controller.choices, [choice]);
+  assert.deepEqual(reads, [undefined]);
+  await act(async () => {
+    await h.controller.selectSetupModel({
+      llmConnectionId: choice.connectionId,
+      llmConnectionSlug: choice.connectionSlug,
+      model: choice.model,
+    });
+  });
+  assert.deepEqual(defaults, [{ llmConnectionSlug: 'provider', model: 'model-a' }]);
+  assert.equal(h.controller.configuringModel, false);
+  assert.equal(h.controller.error, undefined);
+});
 
 test('WorkHub model and thinking selection share versioned saves and reject stale reads', async () => {
   type Session = Awaited<ReturnType<WorkHubServices['getSession']>>;

@@ -49,7 +49,7 @@ The design does not track source updates or incrementally synchronize an importe
 | Obligation | Single authority | Public seam |
 | --- | --- | --- |
 | Source format, discovery, filtering, paging, decoding, and conversion | Corresponding Storage adapter | `listSessionPage(query)`, `readSession(id)` |
-| Shared query, sanitize, and limit contracts | Core external-session | Contracts consumed by adapters and Host |
+| Shared query, source Session ID/title/cwd matching, sanitize, and limit contracts | Core external-session | Contracts consumed by adapters and Host |
 | Workspace resolution, import concurrency, result classification, staging, publication, and recovery | Runtime Host external-session coordinator | `external-session.catalog.query`, `external-session.import` |
 | Current published import count and recent Maka Session IDs | Storage Session authority | `lookupExternalSessionImports(adapterId, sourceSessionIds, limit)`, projected by Host as `importState` |
 | Provider admission for stored history | Runtime replay planner | `buildRuntimeEventModelReplayPlan`; continuation has separate admission |
@@ -94,7 +94,7 @@ The Ledger preserves a source transcript that starts with assistant content. `bu
 
 ## 6 · Workspace scope
 
-The Runtime Host TUI external-session surface decides scope. With a current workspace target, it offers current workspace and all, defaulting to current; without a target, it offers only all. If the target disappears before a scoped query, the surface rejects that request instead of silently broadening it. TUI runner forwards this choice rather than deriving scope from the Session driver. External-source scope is independent of the Maka task list's Current/All filter.
+The Runtime Host TUI external-session surface decides scope. With a current workspace target, it offers current workspace and all, defaulting to current; without a target, it offers only all. If the target disappears before a scoped query, the surface rejects that request instead of silently broadening it. TUI runner forwards this choice rather than deriving scope from the Session driver. External-source scope is independent of the Maka task list's Current/All filter. The TUI runner briefly coalesces consecutive search edits before querying the Host. Every edit advances the same request revision immediately and retires the displayed rows and cursor, so an older in-flight response cannot repaint or paginate the catalog while the newer query waits for its debounce.
 
 ## 7 · Adapter-owned paging
 
@@ -104,9 +104,9 @@ Host requests at most `page size + 1` source entries. Each returned entry carrie
 
 ## 8 · Codex keyset catalog
 
-Codex keeps no server-side catalog snapshot, SQLite transaction, TTL, or LRU across requests. Cursors are bound to the current query. State DB pages order by `(sort_key DESC, id DESC)`, where `sort_key` is computed once by the query, selected alongside the row, and read straight back off that row to build the cursor — so the position a cursor names is by construction the position the query ordered by. Seconds and milliseconds are normalized into that one numeric key before ordering. The first page reads the newest `state_N.sqlite`; if that generation cannot be read, the page is served by the filesystem fallback rather than by an older generation, because a lower generation is the snapshot frozen at the last bump and is missing everything created since. Continuation names the generation it started on, uses a SQL keyset condition, and stays strict — a missing original generation invalidates the cursor, and a transient read failure remains a persistence failure. Connections close after each request.
+Codex keeps no server-side catalog snapshot, SQLite transaction, TTL, or LRU across requests. Cursors are bound to the current query. State DB pages order by `(sort_key DESC, id DESC)`, where `sort_key` is computed once by the query, selected alongside the row, and read straight back off that row to build the cursor — so the position a cursor names is by construction the position the query ordered by. One adapter normalizer accepts finite numeric or numeric-string epoch seconds/milliseconds and parseable date-time strings such as ISO 8601; SQLite ordering, cursor position, and displayed summary timestamps all call that same rule. The first page reads the newest `state_N.sqlite`; if that generation cannot be read, the page is served by the filesystem fallback rather than by an older generation, because a lower generation is the snapshot frozen at the last bump and is missing everything created since. Continuation names the generation it started on, uses a SQL keyset condition, and stays strict — a missing original generation invalidates the cursor, and a transient read failure remains a persistence failure. Connections close after each request.
 
-The filesystem fallback orders by `(mtime DESC, relative path ASC)` across active and optionally archived roots. One traversal has a `maxCatalogCandidates` file bound; exceeding it returns a typed source limit. Stat-known keys reject candidates that cannot enter the current page before reading their bounded heads. The page retains at most `limit + 1` matching summaries instead of materializing the corpus or rescanning it repeatedly for deep pages.
+The filesystem fallback orders by `(mtime DESC, fixed-size path identity ASC)` across active and optionally archived roots. Its opaque cursor uses the versioned `f2` filesystem tag; the identity is derived once from the relative rollout path, so deeply nested paths cannot enlarge the cursor past the Host wire bound. One traversal has a `maxCatalogCandidates` file bound; exceeding it returns a typed source limit. Stat-known keys reject candidates that cannot enter the current page before reading their bounded heads. The page retains at most `limit + 1` matching summaries instead of materializing the corpus or rescanning it repeatedly for deep pages.
 
 Keysets resume strictly after the last delivered record. A live source updated between pages may move ahead of the cursor and be absent from that traversal; a fresh catalog query sees the new order. The design does not claim a stable snapshot of mutable external data.
 
@@ -118,7 +118,7 @@ Storage counts extant published Sessions whose immutable `externalOrigin` matche
 
 ## 10 · Staging, publication, and recovery
 
-Importer validates canonical input before the durable commit attempt. It creates a `transcriptLedgerVersion: 0` staged Session, materializes its Ledger, then publishes it as a usable Session. A pre-materialization failure deletes staging; Host startup `recover()` processes remaining version-0 Sessions. Only published copies count in the catalog. Host coalesces concurrent imports of the same `(adapterId, sourceSessionId)` onto one in-flight Promise. An explicit import after completion creates an independent copy.
+Importer validates canonical input and completes deterministic catalog projection before announcing the durable commit attempt. It creates a `transcriptLedgerVersion: 0` staged Session, materializes its Ledger, then publishes it as a usable Session. A pre-materialization failure deletes staging; Host startup `recover()` processes remaining version-0 Sessions. Recovery isolates each staged Session: if both preparation and discard fail, that Session remains unpublished for a later Host recovery attempt while recovery continues with the other staged Sessions. Only published copies count in the catalog. Host coalesces concurrent imports of the same `(adapterId, sourceSessionId)` onto one in-flight Promise. An explicit import after completion creates an independent copy.
 
 ## 11 · Unknown outcome and client interaction
 

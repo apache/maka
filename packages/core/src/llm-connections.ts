@@ -146,6 +146,15 @@ export interface ModelDiscoveryResult {
 
 export type ConnectionLastTestStatus = 'verified' | 'needs_reauth' | 'error';
 
+/** Stable client/Host value for one exact configured connection and model. */
+export function connectionModelChoiceValue(
+  connectionId: string,
+  connectionSlug: string,
+  model: string,
+): string {
+  return `${encodeURIComponent(connectionId)}:${encodeURIComponent(connectionSlug)}:${encodeURIComponent(model)}`;
+}
+
 /** Non-secret provider/model configuration required by runtime execution. */
 export interface RuntimeExecutionConnection {
   slug: string;

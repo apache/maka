@@ -94,6 +94,11 @@ interface ChatComposerRegionProps
     | 'mentionSkillsUnavailable'
     | 'mentionSkillsLoading'
     | 'onSearchMentionFiles'
+    | 'sessionReferences'
+    | 'onPickSessionReference'
+    | 'pendingSessionReferences'
+    | 'onRemovePendingSessionReference'
+    | 'waitForSessionReference'
     | 'pendingDirectories'
     | 'onRemoveDirectory'
     | 'onPickDirectory'
@@ -145,6 +150,7 @@ interface ChatComposerRegionProps
      */
     children: (
       usage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
+      gitBranch: { readonly name?: string; readonly shortSha?: string } | undefined,
     ) => ReactNode;
   }>;
   directoryComposerProps: Pick<
@@ -261,12 +267,14 @@ export function ChatComposerRegion({
   // the anchor prop remains the reading it falls back to.
   const renderComposer = (
     liveContextUsage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
+    gitBranch: { name?: string; shortSha?: string } | undefined,
   ) => (
     <ComposerGoalProjectionConsumer>
       {(goalProjection) => (
         <Composer
           ref={composerRef}
           {...composerRest}
+          gitBranch={gitBranch}
           contextUsage={contextUsage && liveContextUsage
             ? {
                 ...contextUsage,
@@ -282,6 +290,11 @@ export function ChatComposerRegion({
           mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
           mentionSkillsLoading={mentions?.mentionSkillsLoading}
           onSearchMentionFiles={mentions?.searchMentionFiles}
+          sessionReferences={mentions?.sessionReferences}
+          onPickSessionReference={mentions?.onPickSessionReference}
+          pendingSessionReferences={mentions?.pendingSessionReferences}
+          onRemovePendingSessionReference={mentions?.onRemovePendingSessionReference}
+          waitForSessionReference={mentions?.waitForSessionReference}
           {...directoryComposerProps}
           onPickDirectory={
             directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
@@ -323,6 +336,14 @@ export function ChatComposerRegion({
               />} />
           </div>
         )}
+        {mentions?.sessionReferenceError && active && !onboardingComposerHidden && !activeInteraction && (
+          <Banner
+            status="warning"
+            role="alert"
+            title={mentions.sessionReferenceError.title}
+            description={mentions.sessionReferenceError.detail}
+          />
+        )}
         {activeSandboxBoundary && (
           <SandboxBoundaryPrompt
             request={activeSandboxBoundary}
@@ -346,6 +367,7 @@ export function ChatComposerRegion({
         {activeForm && (
           <FormInteractionPrompt
             request={activeForm}
+            modelChoices={composerRest.modelChoices}
             onRespond={respondToUserForm}
           />
         )}
@@ -356,10 +378,10 @@ export function ChatComposerRegion({
           model={composerRest.activeModel}
           providerType={composerRest.activeProviderType}
         >
-          {renderComposer}
+          {(usage, gitBranch) => renderComposer(usage, gitBranch)}
         </LiveContextUsageProbe>
       ) : (
-        renderComposer(undefined)
+        renderComposer(undefined, undefined)
       )}
     </>
   );

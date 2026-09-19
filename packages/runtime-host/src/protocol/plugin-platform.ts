@@ -56,8 +56,20 @@ const MUTATE_ERRORS = [
   'operation_conflict',
   'commit_outcome_unknown',
 ] as const;
+const CLIENT_REMOTE_ERRORS = [
+  'host_not_ready',
+  'host_draining',
+  'operation_unavailable',
+  'invalid_request',
+  'not_found',
+  'operation_conflict',
+  'internal_failure',
+] as const;
 const MAX_FRAME_BYTES = 512 * 1024;
 export const PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES = 480 * 1024;
+export const PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES = 192 * 1024;
+export const PLUGIN_CLIENT_BUNDLE_MAX_BYTES = 8 * 1024 * 1024;
+export const PLUGIN_CLIENT_REMOTE_VALUE_MAX_BYTES = 256 * 1024;
 
 export type PluginPlatformPhase =
   | 'new'
@@ -152,6 +164,86 @@ export interface PluginPlatformFailureProjection {
   readonly diagnostic: string;
 }
 
+export interface PluginClientCompositionEntry {
+  readonly entryId: string;
+  readonly extensionId: string;
+  readonly generation: number;
+  readonly contentDigest: string;
+  readonly clientDigest: string;
+  readonly totalBytes: number;
+  readonly dependencies: readonly string[];
+  readonly config?: Readonly<Record<string, string | number | boolean>>;
+}
+
+export type PluginClientQueryInput =
+  | { readonly kind: 'snapshot' }
+  | {
+      readonly kind: 'bundle';
+      readonly extensionId: string;
+      readonly contentDigest: string;
+      readonly clientDigest: string;
+      readonly offset: number;
+    };
+
+export type PluginClientQueryResult =
+  | {
+      readonly kind: 'snapshot';
+      readonly authorityEpoch: number;
+      readonly revision: string;
+      readonly entries: readonly PluginClientCompositionEntry[];
+      readonly failures: readonly PluginPlatformFailureProjection[];
+    }
+  | {
+      readonly kind: 'bundle';
+      readonly extensionId: string;
+      readonly contentDigest: string;
+      readonly clientDigest: string;
+      readonly offset: number;
+      readonly totalBytes: number;
+      readonly content: string;
+      readonly nextOffset: number | null;
+    };
+
+export interface PluginClientRemoteFence {
+  readonly authorityEpoch: number;
+  readonly revision: string;
+  readonly entryId: string;
+  readonly extensionId: string;
+  readonly generation: number;
+  readonly contentDigest: string;
+  readonly clientDigest: string;
+  readonly sessionId?: string;
+}
+
+export interface PluginClientRemoteCallInput extends PluginClientRemoteFence {
+  readonly method: string;
+  readonly input: unknown;
+}
+
+export interface PluginClientRemoteCallResult {
+  readonly value: unknown;
+}
+
+export type PluginClientRemoteStreamOpenInput = PluginClientRemoteCallInput;
+
+export interface PluginClientRemoteStreamOpenResult {
+  readonly streamId: string;
+}
+
+export interface PluginClientRemoteStreamNextInput {
+  readonly streamId: string;
+}
+
+export type PluginClientRemoteStreamNextResult =
+  | { readonly done: false; readonly value: unknown }
+  | { readonly done: true };
+
+export type PluginClientRemoteStreamCloseInput = PluginClientRemoteStreamNextInput;
+
+export interface PluginClientRemoteStreamCloseResult {
+  readonly streamId: string;
+}
+
 export interface PluginPackageInstallInput {
   readonly sourcePath: string;
 }
@@ -176,6 +268,61 @@ export type PluginPackageMutationResult = PluginMutationReceipt;
 export type PluginCompositionApplyResult = PluginMutationReceipt;
 
 export const PLUGIN_PLATFORM_OPERATION_SPECS = {
+  'plugin.client.query': defineOperation<
+    PluginClientQueryInput,
+    PluginClientQueryResult,
+    (typeof QUERY_ERRORS)[number] | 'not_found'
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: [...QUERY_ERRORS, 'not_found'],
+    decodeInput: decodePluginClientQueryInput,
+    decodeOutput: decodePluginClientQueryResult,
+  }),
+  'plugin.client.remote.call': defineOperation<
+    PluginClientRemoteCallInput,
+    PluginClientRemoteCallResult,
+    (typeof CLIENT_REMOTE_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: CLIENT_REMOTE_ERRORS,
+    decodeInput: decodePluginClientRemoteCallInput,
+    decodeOutput: decodePluginClientRemoteCallResult,
+  }),
+  'plugin.client.remote.stream.open': defineOperation<
+    PluginClientRemoteStreamOpenInput,
+    PluginClientRemoteStreamOpenResult,
+    (typeof CLIENT_REMOTE_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: CLIENT_REMOTE_ERRORS,
+    decodeInput: decodePluginClientRemoteCallInput,
+    decodeOutput: decodePluginClientRemoteStreamOpenResult,
+  }),
+  'plugin.client.remote.stream.next': defineOperation<
+    PluginClientRemoteStreamNextInput,
+    PluginClientRemoteStreamNextResult,
+    (typeof CLIENT_REMOTE_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: CLIENT_REMOTE_ERRORS,
+    decodeInput: decodePluginClientRemoteStreamCursorInput,
+    decodeOutput: decodePluginClientRemoteStreamNextResult,
+  }),
+  'plugin.client.remote.stream.close': defineOperation<
+    PluginClientRemoteStreamCloseInput,
+    PluginClientRemoteStreamCloseResult,
+    (typeof CLIENT_REMOTE_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: CLIENT_REMOTE_ERRORS,
+    decodeInput: decodePluginClientRemoteStreamCursorInput,
+    decodeOutput: decodePluginClientRemoteStreamCloseResult,
+  }),
   'plugin.platform.query': defineOperation<
     PluginPlatformQueryInput,
     PluginPlatformQueryResult,
@@ -272,6 +419,248 @@ export const PLUGIN_PLATFORM_OPERATION_SPECS = {
     decodeOutput: decodePluginMutationReceipt,
   }),
 } as const;
+
+function decodePluginClientRemoteCallInput(value: unknown): PluginClientRemoteCallInput {
+  const input = requireShapedRecord(
+    value,
+    'Plugin Client Remote call input',
+    [
+      'authorityEpoch',
+      'revision',
+      'entryId',
+      'extensionId',
+      'generation',
+      'contentDigest',
+      'clientDigest',
+      'method',
+      'input',
+    ],
+    ['sessionId'],
+  );
+  const remoteInput = requireJsonValue(input.input, 'Plugin Client Remote input');
+  requireEncodedByteLimit(
+    remoteInput,
+    'Plugin Client Remote input',
+    PLUGIN_CLIENT_REMOTE_VALUE_MAX_BYTES,
+  );
+  const decoded: PluginClientRemoteCallInput = {
+    authorityEpoch: requireCount(input.authorityEpoch, 'Plugin authority epoch'),
+    revision: requireDigest(input.revision, 'Plugin Client composition revision'),
+    entryId: requireId(input.entryId, 'Plugin Client Entry identity'),
+    extensionId: requireId(input.extensionId, 'Plugin package identity'),
+    generation: requireCount(input.generation, 'Plugin Client generation'),
+    contentDigest: requireDigest(input.contentDigest, 'Plugin package content digest'),
+    clientDigest: requireDigest(input.clientDigest, 'Plugin Client bundle digest'),
+    method: requireRemoteMethod(input.method),
+    input: remoteInput,
+    ...(input.sessionId === undefined
+      ? {}
+      : { sessionId: requireId(input.sessionId, 'Plugin Client Remote Session identity') }),
+  };
+  requireEncodedByteLimit(decoded, 'Plugin Client Remote call input', MAX_FRAME_BYTES);
+  return decoded;
+}
+
+function decodePluginClientRemoteCallResult(value: unknown): PluginClientRemoteCallResult {
+  const result = requireExactRecord(value, 'Plugin Client Remote call result', ['value']);
+  const decoded = { value: requireJsonValue(result.value, 'Plugin Client Remote result') };
+  requireEncodedByteLimit(
+    decoded,
+    'Plugin Client Remote call result',
+    PLUGIN_CLIENT_REMOTE_VALUE_MAX_BYTES,
+  );
+  return decoded;
+}
+
+function decodePluginClientRemoteStreamOpenResult(
+  value: unknown,
+): PluginClientRemoteStreamOpenResult {
+  const result = requireExactRecord(value, 'Plugin Client Remote stream open result', ['streamId']);
+  return { streamId: requireId(result.streamId, 'Plugin Client Remote stream identity') };
+}
+
+function decodePluginClientRemoteStreamCursorInput(
+  value: unknown,
+): PluginClientRemoteStreamNextInput {
+  const input = requireExactRecord(value, 'Plugin Client Remote stream input', ['streamId']);
+  return { streamId: requireId(input.streamId, 'Plugin Client Remote stream identity') };
+}
+
+function decodePluginClientRemoteStreamNextResult(
+  value: unknown,
+): PluginClientRemoteStreamNextResult {
+  const result = requireRecord(value, 'Plugin Client Remote stream next result');
+  if (result.done === true) {
+    requireExactRecord(result, 'Plugin Client Remote completed stream result', ['done']);
+    return { done: true };
+  }
+  const item = requireExactRecord(result, 'Plugin Client Remote stream item result', [
+    'done',
+    'value',
+  ]);
+  if (item.done !== false) throw invalidProtocolFrame('Invalid Plugin Client Remote stream state');
+  const decoded = {
+    done: false as const,
+    value: requireJsonValue(item.value, 'Plugin Client Remote stream item'),
+  };
+  requireEncodedByteLimit(
+    decoded,
+    'Plugin Client Remote stream item',
+    PLUGIN_CLIENT_REMOTE_VALUE_MAX_BYTES,
+  );
+  return decoded;
+}
+
+function decodePluginClientRemoteStreamCloseResult(
+  value: unknown,
+): PluginClientRemoteStreamCloseResult {
+  const result = requireExactRecord(value, 'Plugin Client Remote stream close result', [
+    'streamId',
+  ]);
+  return { streamId: requireId(result.streamId, 'Plugin Client Remote stream identity') };
+}
+
+function decodePluginClientQueryInput(value: unknown): PluginClientQueryInput {
+  const input = requireRecord(value, 'Plugin Client query input');
+  if (input.kind === 'snapshot') {
+    requireExactRecord(input, 'Plugin Client snapshot input', ['kind']);
+    return { kind: 'snapshot' };
+  }
+  if (input.kind === 'bundle') {
+    const bundle = requireExactRecord(input, 'Plugin Client bundle input', [
+      'kind',
+      'extensionId',
+      'contentDigest',
+      'clientDigest',
+      'offset',
+    ]);
+    return {
+      kind: 'bundle',
+      extensionId: requireId(bundle.extensionId, 'Plugin package identity'),
+      contentDigest: requireDigest(bundle.contentDigest, 'Plugin package content digest'),
+      clientDigest: requireDigest(bundle.clientDigest, 'Plugin Client bundle digest'),
+      offset: requireCount(bundle.offset, 'Plugin Client bundle offset'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid Plugin Client query kind');
+}
+
+function decodePluginClientQueryResult(value: unknown): PluginClientQueryResult {
+  const result = requireRecord(value, 'Plugin Client query result');
+  if (result.kind === 'snapshot') {
+    const snapshot = requireExactRecord(result, 'Plugin Client snapshot result', [
+      'kind',
+      'authorityEpoch',
+      'revision',
+      'entries',
+      'failures',
+    ]);
+    if (!Array.isArray(snapshot.entries) || snapshot.entries.length > 1024) {
+      throw invalidProtocolFrame('Invalid Plugin Client composition entries');
+    }
+    if (!Array.isArray(snapshot.failures) || snapshot.failures.length > 1024) {
+      throw invalidProtocolFrame('Invalid Plugin Client failures');
+    }
+    const decoded: PluginClientQueryResult = {
+      kind: 'snapshot',
+      authorityEpoch: requireCount(snapshot.authorityEpoch, 'Plugin authority epoch'),
+      revision: requireDigest(snapshot.revision, 'Plugin Client composition revision'),
+      entries: snapshot.entries.map(decodePluginClientCompositionEntry),
+      failures: snapshot.failures.map(decodePlatformFailure),
+    };
+    requireEncodedByteLimit(
+      decoded,
+      'Plugin Client snapshot result',
+      PLUGIN_PLATFORM_QUERY_RESULT_MAX_BYTES,
+    );
+    return decoded;
+  }
+  if (result.kind === 'bundle') {
+    const bundle = requireExactRecord(result, 'Plugin Client bundle result', [
+      'kind',
+      'extensionId',
+      'contentDigest',
+      'clientDigest',
+      'offset',
+      'totalBytes',
+      'content',
+      'nextOffset',
+    ]);
+    const offset = requireCount(bundle.offset, 'Plugin Client bundle offset');
+    const totalBytes = requireCount(bundle.totalBytes, 'Plugin Client bundle size');
+    const content = requireString(
+      bundle.content,
+      'Plugin Client bundle content',
+      Math.ceil((PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES * 4) / 3) + 4,
+    );
+    const decodedBytes = Buffer.from(content, 'base64');
+    if (
+      decodedBytes.byteLength === 0 ||
+      decodedBytes.byteLength > PLUGIN_CLIENT_BUNDLE_CHUNK_MAX_BYTES ||
+      decodedBytes.toString('base64') !== content
+    ) {
+      throw invalidProtocolFrame('Invalid Plugin Client bundle content');
+    }
+    const nextOffset =
+      bundle.nextOffset === null
+        ? null
+        : requireCount(bundle.nextOffset, 'Plugin Client next bundle offset');
+    if (
+      offset >= totalBytes ||
+      offset + decodedBytes.byteLength > totalBytes ||
+      (nextOffset === null
+        ? offset + decodedBytes.byteLength !== totalBytes
+        : nextOffset !== offset + decodedBytes.byteLength || nextOffset >= totalBytes)
+    ) {
+      throw invalidProtocolFrame('Invalid Plugin Client bundle range');
+    }
+    return {
+      kind: 'bundle',
+      extensionId: requireId(bundle.extensionId, 'Plugin package identity'),
+      contentDigest: requireDigest(bundle.contentDigest, 'Plugin package content digest'),
+      clientDigest: requireDigest(bundle.clientDigest, 'Plugin Client bundle digest'),
+      offset,
+      totalBytes,
+      content,
+      nextOffset,
+    };
+  }
+  throw invalidProtocolFrame('Invalid Plugin Client query result kind');
+}
+
+function decodePluginClientCompositionEntry(value: unknown): PluginClientCompositionEntry {
+  const entry = requireShapedRecord(
+    value,
+    'Plugin Client composition entry',
+    [
+      'entryId',
+      'extensionId',
+      'generation',
+      'contentDigest',
+      'clientDigest',
+      'totalBytes',
+      'dependencies',
+    ],
+    ['config'],
+  );
+  if (!Array.isArray(entry.dependencies) || entry.dependencies.length > 64) {
+    throw invalidProtocolFrame('Invalid Plugin Client dependencies');
+  }
+  return {
+    entryId: requireId(entry.entryId, 'Plugin Client Entry identity'),
+    extensionId: requireId(entry.extensionId, 'Plugin package identity'),
+    generation: requireCount(entry.generation, 'Plugin Client generation'),
+    contentDigest: requireDigest(entry.contentDigest, 'Plugin package content digest'),
+    clientDigest: requireDigest(entry.clientDigest, 'Plugin Client bundle digest'),
+    totalBytes: requireCount(entry.totalBytes, 'Plugin Client bundle size'),
+    dependencies: entry.dependencies.map((dependency) =>
+      requireId(dependency, 'Plugin Client dependency identity'),
+    ),
+    ...(entry.config === undefined
+      ? {}
+      : { config: decodeScalarRecord(entry.config, 'Client config') }),
+  };
+}
 
 function decodePluginPlatformQueryInput(value: unknown): PluginPlatformQueryInput {
   const input = requireShapedRecord(
@@ -854,6 +1243,42 @@ function decodeScalarRecord(
     else throw invalidProtocolFrame(`Invalid Plugin Entry ${label} value`);
   }
   return Object.fromEntries(output);
+}
+
+function requireRemoteMethod(value: unknown): string {
+  const method = requireString(value, 'Plugin Client Remote method', 128);
+  if (!/^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$/u.test(method)) {
+    throw invalidProtocolFrame('Invalid Plugin Client Remote method');
+  }
+  return method;
+}
+
+function requireJsonValue(value: unknown, label: string, depth = 0): unknown {
+  if (depth > 32) throw invalidProtocolFrame(`${label} is too deeply nested`);
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 16_384) throw invalidProtocolFrame(`${label} has too many items`);
+    return value.map((item) => requireJsonValue(item, label, depth + 1));
+  }
+  if (!value || typeof value !== 'object') throw invalidProtocolFrame(`Invalid ${label}`);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length > 16_384) {
+    throw invalidProtocolFrame(`${label} has too many fields`);
+  }
+  return Object.fromEntries(
+    Object.entries(record).map(([key, item]) => [key, requireJsonValue(item, label, depth + 1)]),
+  );
 }
 
 function requireBoolean(value: unknown): boolean {

@@ -644,11 +644,14 @@ export const RunningStatusDuringToolRun: Story = {
   ),
   play: async ({ canvasElement }) => {
     const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
-    const activity = process.querySelector('.maka-turn-processing')!;
     await expect(process.open).toBe(true);
+    // The running cue lives on the turn's footer row, not inside the process
+    // disclosure: the disclosure scrolls away as the answer grows, and the cue
+    // is the one thing that has to stay visible while work is happening.
+    const activity = canvasElement.querySelector('.maka-turn-footer-meta .maka-turn-processing')!;
     await expect(activity).toHaveTextContent('正在琢磨…');
     await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
-    await expect(canvasElement.querySelector('.maka-turn-footer .maka-turn-processing')).toBeNull();
+    await expect(process.querySelector('.maka-turn-processing')).toBeNull();
     // Live work is not a disclosure action. Even pointer activation cannot
     // hide it; the tool keeps ownership of its visible spinner.
     const summary = process.querySelector('summary')!;
@@ -1499,6 +1502,55 @@ const scheduledTaskTurn: StoredMessage[] = [
   },
   assistant('msg-assistant-scheduled-task', 'turn-scheduled-task', 5, '今日项目回顾已生成。'),
 ];
+
+// Real path: open a conversation whose runtime recorded context diagnostics.
+// Use stored records so ChatView materializes the current localized copy.
+export const LongSystemNotes: Story = {
+  render: () => <ComposedShell frameHeight="100vh" chat={{
+    scrollBehavior: 'auto',
+    messages: [
+      user('diagnostic-user', 'diagnostic-turn', 2, 'Please continue reviewing the conversation.'),
+      { type: 'system_note', id: 'dropping', turnId: 'diagnostic-turn', ts: NOW - 90_000,
+        kind: 'context_provider_dropping', data: { inputTokens: 98_247, priorInputTokens: 124_832 } },
+      { type: 'system_note', id: 'overrun', turnId: 'diagnostic-turn', ts: NOW - 80_000,
+        kind: 'context_window_overrun', data: { usedTokens: 129_127, declaredContextWindow: 128_000 } },
+      { type: 'system_note', id: 'short', turnId: 'diagnostic-turn', ts: NOW - 70_000,
+        kind: 'step_limit' },
+      { type: 'system_note', id: 'failed', turnId: 'diagnostic-turn', ts: NOW - 65_000,
+        kind: 'context_compaction_failed_open' },
+      { type: 'system_note', id: 'compacted', turnId: 'diagnostic-turn', ts: NOW - 60_000,
+        kind: 'context_compacted' },
+      assistant('diagnostic-answer', 'diagnostic-turn', 0, 'Ready to continue.'),
+    ],
+  }} />,
+  play: async ({ canvasElement }) => {
+    await document.fonts.ready;
+    await waitFor(() => {
+      expect(canvasElement.querySelectorAll('.maka-chat-system-message').length).toBe(5);
+    });
+    const notes = canvasElement.querySelectorAll<HTMLElement>('.maka-chat-system-message');
+    for (const note of notes) {
+      const bounds = note.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(note);
+      // Check every rendered text fragment, including the prefix and suffix.
+      // scrollWidth alone misses the negative overflow of a centered line.
+      for (const rect of range.getClientRects()) {
+        expect(rect.left).toBeGreaterThanOrEqual(bounds.left - 1);
+        expect(rect.right).toBeLessThanOrEqual(bounds.right + 1);
+      }
+      expect(note.scrollWidth).toBeLessThanOrEqual(note.clientWidth + 1);
+    }
+    if (window.innerWidth === 1280) {
+      const shortNote = notes[2];
+      const shortText = shortNote.querySelector('span')?.firstChild;
+      if (!shortText) throw new Error('The short system note did not render text');
+      const shortRange = document.createRange();
+      shortRange.selectNodeContents(shortText);
+      expect(shortRange.getClientRects()).toHaveLength(1);
+    }
+  },
+};
 
 // Real path: a long session that has accumulated reasoning, several native
 // Astryx tool calls and long prose, a ScheduledTask-triggered turn, with an image
@@ -2613,14 +2665,15 @@ export const VirtualHistoryContinuity: Story = {
 
 // #4256: one Turn taller than several viewports, its reasoning / answer / tool
 // blocks each carrying a `data-maka-transcript-boundary` marker so sub-turn
-// content-visibility bounds them. Reasoning stays mounted while folded, so it is
-// real layout, not free collapsed bytes.
+// content-visibility bounds them. The process box now caps and scrolls, so the
+// height comes from the accumulated answers; reasoning stays mounted while
+// folded, so it is real layout, not free collapsed bytes.
 function oversizedTurnMessages(steps = 24): StoredMessage[] {
   const turnId = 'turn-oversized';
   const out: StoredMessage[] = [
     user('msg-oversized-user', turnId, 30, '逐项检查一组独立的合成步骤，并给出简短结果。'),
   ];
-  const prose = '这一段只包含确定性的合成文本，用于测量长对话的滚动渲染。'.repeat(8);
+  const prose = '这一段只包含确定性的合成文本，用于测量长对话的滚动渲染。'.repeat(16);
   const reasoning = '先确认输入边界（空 / 超长 / 并发），再对合成输出做一次去抖动检查，确保占位高度不随展开态漂移。'.repeat(4);
   for (let step = 1; step <= steps; step += 1) {
     const ts = NOW - (25 - step) * 20_000;
@@ -2657,6 +2710,17 @@ function oversizedTurnMessages(steps = 24): StoredMessage[] {
       durationMs: 100 + step,
       content: { kind: 'text', text: `第 ${step} 组：确定性、可重放，无回归。` },
     });
+    // The last step stays OUTSIDE the process box (only the trailing answer is):
+    // the box now caps and scrolls, so this reply alone gives the Turn its
+    // multi-viewport height for the cold-scroll story.
+    if (step === steps) {
+      out.push(assistant(
+        `msg-oversized-a-${step}-final`,
+        turnId,
+        1,
+        ['### 最终结论', ...Array.from({ length: 28 }, (_, p) => `第 ${p + 1} 段。${prose}`)].join('\n\n'),
+      ));
+    }
   }
   return out;
 }
@@ -2712,12 +2776,14 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       process.querySelector('summary')!.click();
       await waitFor(() => expect(process.open).toBe(true));
       await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
-      // Start cold scrolling only once the expanding clip exposes its full body.
+      // Start cold scrolling only once the expanding body has its content laid
+      // out. The body caps and scrolls, so it is the scroller, not the whole
+      // content, that the reader traverses.
       await waitFor(() => {
-        const clip = process.querySelector('.maka-processing-clip')!.getBoundingClientRect();
-        const content = process.querySelector('.maka-processing-content')!.getBoundingClientRect();
-        expect(content.height).toBeGreaterThan(0);
-        expect(Math.abs(clip.height - content.height)).toBeLessThanOrEqual(1);
+        const body = process.querySelector('.maka-processing-body')!.getBoundingClientRect();
+        expect(body.height).toBeGreaterThan(0);
+        expect(process.querySelector<HTMLElement>('.maka-processing-body')!.scrollHeight)
+          .toBeGreaterThanOrEqual(body.height);
       });
       scrollAsReader(root, root.scrollHeight);
       await painted(4);
@@ -3805,7 +3871,8 @@ export const ProcessReplyLifecycleComplete: Story = {
     const answerBubble = answer.closest('.maka-chat-message-bubble-assistant')!;
     await expect(answerBubble).toHaveAttribute('data-live-streaming', 'true');
     await waitFor(() => expect(process.open).toBe(false), { timeout: 3000 });
-    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(process.querySelector('summary')!.getBoundingClientRect().height + 1));
+    // Collapsed: header row + the frame's two hairlines.
+    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(process.querySelector('summary')!.getBoundingClientRect().height + 2));
     await expect(canvasElement.querySelector('.maka-processing-sequence')).toBe(process);
     // Streaming Markdown can replace its temporary text spans. The answer
     // surface itself must survive the live-to-durable handoff and folding.
@@ -3813,7 +3880,9 @@ export const ProcessReplyLifecycleComplete: Story = {
     await expect(finalAnswer.closest('.maka-chat-message-bubble-assistant')).toBe(answerBubble);
     await expect(answerBubble).not.toHaveAttribute('data-live-streaming');
     await expect(finalAnswer).toBeVisible();
-    await expect(finalAnswer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process.getBoundingClientRect().bottom);
+    // Folding leaves the framed header row above the answer, so the answer
+    // starts below the process frame's bottom edge (border included).
+    await expect(finalAnswer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process.getBoundingClientRect().bottom - 1);
     await expect(await canvas.findByText('我先检查登录状态的存储和恢复逻辑。')).not.toBeVisible();
     // The completed scene is the landing state; reviewers can replay it.
     await expect(canvas.getByRole('button', { name: '重新播放' })).toBeVisible();
@@ -3835,10 +3904,11 @@ export const CompletedProcessCollapsed: Story = {
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
     await expect(answer).toBeVisible();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).not.toBeVisible();
-    // Real geometry: process consumes only its single summary row.
+    // Real geometry: process consumes only its single header row (plus the
+    // frame's bottom hairline); the answer starts below the whole frame.
     const summary = process!.querySelector('summary')!;
-    await expect(process!.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 1);
-    await expect(answer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process!.getBoundingClientRect().bottom);
+    await expect(process!.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 2);
+    await expect(answer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process!.getBoundingClientRect().bottom - 1);
   },
 };
 
@@ -3869,7 +3939,9 @@ export const CompletedProcessExpanded: Story = {
     summary.focus();
     summary.click();
     await waitFor(() => expect(process.open).toBe(true));
-    await waitFor(() => expect(process.getBoundingClientRect().height).toBeGreaterThanOrEqual(summary.getBoundingClientRect().height + process.querySelector<HTMLElement>('.maka-processing-content')!.offsetHeight - 1));
+    // The body grows with its content up to a cap and scrolls past it; the
+    // open frame therefore equals header + (capped) body.
+    await waitFor(() => expect(process.getBoundingClientRect().height).toBeGreaterThanOrEqual(summary.getBoundingClientRect().height + process.querySelector<HTMLElement>('.maka-processing-body')!.clientHeight - 1));
     await expect(summary).toHaveFocus();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
@@ -3885,11 +3957,78 @@ export const CompletedProcessExpanded: Story = {
     // this checks React/layout identity, rather than browser mouse semantics.
     summary.click();
     await waitFor(() => expect(process.open).toBe(false));
-    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 1));
+    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 2));
     await expect(selection.toString()).toBe(selected);
     await expect(answer.isConnected).toBe(true);
     summary.click();
     await waitFor(() => expect(process.open).toBe(true));
     selection.removeAllRanges();
+  },
+};
+
+// Real path: the reader zooms the process out to its full, uncapped height and
+// then folds it. Folding is the priority action — it must collapse the whole
+// frame even while unclamped, and reopening must keep the zoom they chose. The
+// overflow fixture is what reaches the state (a body past the 360px cap) where
+// the switch must exist at all; the capped reading also pins the switch to the
+// VISIBLE bottom edge as the rows scroll under it (the [P2] the review caught:
+// an absolutely positioned control drifted up and out with the content).
+export const CompletedProcessZoomThenFold: Story = {
+  render: () => <ComposedShell motionEnabled sidebarCollapsed chat={{ messages: oversizedTurn, scrollBehavior: 'auto' }} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.querySelector('.maka-processing-sequence')).not.toBeNull();
+    });
+    const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
+    const body = process.querySelector<HTMLElement>('.maka-processing-body')!;
+    if (!process.open) process.querySelector('summary')!.click();
+    await waitFor(() => expect(process.open).toBe(true));
+    const corner = body.querySelector<HTMLElement>('.maka-processing-zoom')!;
+    await expect(corner).toBeVisible();
+    const toggle = corner.querySelector<HTMLButtonElement>('button')!;
+    // Where the switch sits relative to the body's own box. This is independent
+    // of where the transcript happens to be scrolled: a switch that has drifted
+    // into the scrolled content reports ~contentHeight (the [P2] bug), while a
+    // switch that stays with the reading edge reports at most the visible box.
+    const switchOffsetInBody = () =>
+      toggle.getBoundingClientRect().top - body.getBoundingClientRect().top;
+    // Scroll the body to its end: the switch must ride the visible bottom edge,
+    // not travel up and out with the content.
+    body.scrollTop = body.scrollHeight;
+    await waitFor(() => {
+      expect(body.scrollTop).toBeGreaterThan(0);
+      expect(switchOffsetInBody()).toBeGreaterThanOrEqual(-1);
+      expect(switchOffsetInBody()).toBeLessThanOrEqual(body.clientHeight);
+    });
+    const cappedHeight = body.clientHeight;
+    toggle.click();
+    await waitFor(() => expect(body.getAttribute('data-unclamped')).toBe('true'));
+    await expect(toggle).toHaveAttribute('aria-label', '恢复固定高度');
+    // Taking the cap off gives the body a taller frame (not an unbounded one):
+    // it stays a scroller so the corner switch keeps a scrollport to stick to.
+    await expect(body.clientHeight).toBeGreaterThan(cappedHeight);
+    await expect(getComputedStyle(body).overflowY).toBe('auto');
+    // Unclamped the switch must not be stranded at the end of the ~8000px list;
+    // it stays within a viewport of the frame's top. (If the box is on screen,
+    // also assert it is actually on screen — the reader's real condition.)
+    await waitFor(() => {
+      expect(switchOffsetInBody()).toBeLessThan(window.innerHeight);
+    });
+    const scroll = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
+    const viewport = scroll.getBoundingClientRect();
+    const frame = process.getBoundingClientRect();
+    if (frame.bottom > viewport.top && frame.top < viewport.bottom) {
+      const rect = toggle.getBoundingClientRect();
+      expect(rect.bottom).toBeGreaterThan(viewport.top);
+      expect(rect.top).toBeLessThan(viewport.bottom);
+    }
+    // Fold still collapses everything while unclamped — the regression guard.
+    const summary = process.querySelector('summary')!;
+    summary.click();
+    await waitFor(() => expect(process.open).toBe(false));
+    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 2));
+    summary.click();
+    await waitFor(() => expect(process.open).toBe(true));
+    await expect(body.getAttribute('data-unclamped')).toBe('true');
   },
 };

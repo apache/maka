@@ -384,6 +384,43 @@ test('credential probing does not flash a page-level loading warning', async () 
   });
 });
 
+test('model rows retain named parameter actions without mounting a tooltip layer per row', async () => {
+  const harness = installRenderer();
+  const base = relayConnection();
+  const models = Array.from({ length: 32 }, (_, index) => ({
+    id: `fixture/model-${index + 1}`,
+    displayName: `Fixture model ${index + 1}`,
+  }));
+  const connection: ProjectedLlmConnection = {
+    ...base,
+    defaultModel: models[0]!.id,
+    enabledModelIds: [models[0]!.id],
+    models,
+    catalogEntries: models.map((model, index) => ({
+      ...base.catalogEntries[0]!,
+      ...model,
+      isDefault: index === 0,
+    })),
+  };
+  await harness.render('zh-CN', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => false }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+
+  const actions = [...harness.document.querySelectorAll<HTMLButtonElement>('span[title="配置参数"] > button')];
+  assert.equal(actions.length, models.length);
+  for (const [index, action] of actions.entries()) {
+    assert.equal(action.getAttribute('aria-label'), `配置模型参数：${models[index]!.displayName}`);
+    assert.equal(action.hasAttribute('aria-describedby'), false);
+  }
+});
+
 test('credential read failures still render the persistent warning', async () => {
   const harness = installRenderer();
   const credential = deferred<boolean>();

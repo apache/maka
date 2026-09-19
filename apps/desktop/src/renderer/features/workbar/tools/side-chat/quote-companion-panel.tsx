@@ -292,6 +292,7 @@ export function QuoteCompanionPanel(props: {
                 {companion.activeForm && (
                   <FormInteractionPrompt
                     request={companion.activeForm}
+                    modelChoices={props.modelChoices}
                     onRespond={companion.respondToUserForm}
                   />
                 )}
