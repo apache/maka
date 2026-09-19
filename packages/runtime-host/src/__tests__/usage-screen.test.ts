@@ -296,6 +296,15 @@ test('real Host returns bounded failures, stays usable, and fences a replacement
     assert.ok(loaded.ok && loaded.result.kind === 'screen');
     assert.doesNotThrow(() => decodeUsageScreenResult(loaded.result));
     const value = loaded.result.screen;
+    assert.ok(Object.isFrozen(value.byTool[0]));
+    const filtered = await host.handlers['usage.query'](
+      { kind: 'screen', query: { ...query, search: 'tool' } },
+      context,
+    );
+    assert.ok(filtered.ok && filtered.result.kind === 'screen');
+    assert.deepEqual(filtered.result.screen.byTool, value.byTool);
+    assert.notEqual(filtered.result.screen.byTool[0], value.byTool[0]);
+    assert.equal(filtered.result.screen.revision, value.revision);
     assert.ok(value.nextCursor);
     const input = {
       kind: 'activity' as const,
@@ -310,6 +319,13 @@ test('real Host returns bounded failures, stays usable, and fences a replacement
       ok: true,
       result: { kind: 'revision_changed' },
     });
+    const replacement = await coordinator().handlers['usage.query'](
+      { kind: 'screen', query },
+      context,
+    );
+    assert.ok(replacement.ok && replacement.result.kind === 'screen');
+    assert.notEqual(replacement.result.screen.revision, value.revision);
+    assert.deepEqual(replacement.result.screen.byTool, value.byTool);
   } finally {
     lease.close();
     await stores.close();
