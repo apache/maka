@@ -122,6 +122,11 @@ export interface ConversationCopy {
     placeholder: string;
     textareaAriaLabel: string;
     pastedQuoteLabel: string;
+    /** Opens the annotation editor on a staged quote. */
+    /** Title of the annotation editor opened from a staged quote. */
+    quoteCommentTitle: string;
+    quoteCommentSave: string;
+    quoteCommentCancel: string;
     selectedSkillsAriaLabel: string;
     removeSkillAriaLabel(name: string): string;
     awaitingPermission: string;
@@ -344,13 +349,15 @@ export interface ConversationCopy {
     thinkingTruncatedTitle: string;
     outputTruncatedTitle: string;
     removeAttachmentAriaLabel: (name: string) => string;
-    quoteLabel: string;
     sessionSnapshotLabel(name: string): string;
     sessionSnapshotPending: string;
     sessionSnapshotCaptured(iso: string, truncated: boolean): string;
+    quoteSelectedTextLabel: string;
+    quoteCommentLabel: string;
+    quoteCommentPlaceholder: string;
     quoteExpandAriaLabel: string;
     quoteCollapseAriaLabel: string;
-    removeQuoteAriaLabel: string;
+
     aborted: string;
     abortedByStop: string;
     systemNotes: {
@@ -418,6 +425,10 @@ export interface ConversationCopy {
     loadEarlierHistory: string;
     quoteSelection: string;
     askInSidePanel: string;
+    /** Title of the annotation panel that gates a freshly quoted excerpt. */
+    quoteCommentTitle: string;
+    /** Stages the quote as-is, with no annotation. */
+    quoteCommentSkip: string;
     noMessages: string;
     branchBeforeInterrupt: string;
     sessionContextAriaLabel: string;
@@ -510,7 +521,7 @@ const CONVERSATION_COPY = {
       startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
     },
     composer: {
-      placeholder: '描述任务，@ 引用文件或会话，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
+      placeholder: '描述任务，@ 引用文件或会话，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', quoteCommentTitle: '引用注释', quoteCommentSave: '保存', quoteCommentCancel: '取消', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
       steeringPending: '调整方向 · 等待整批生效',
@@ -583,7 +594,7 @@ const CONVERSATION_COPY = {
       you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], processDetails: '执行过程', processExpandAll: '放大查看完整过程', processRestore: '恢复固定高度', processDuration: (minutes, seconds) => `用时 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusRunning: (elapsed: string) => `进行中 · 已用 ${elapsed}`, turnStatusCompleted: (elapsed: string, at: string) => `完成 · ${elapsed} · ${at}`, turnStatusCompletedAlone: '已完成', turnStatusCompletedAloneWithDuration: (elapsed: string) => `完成 · ${elapsed}`, turnStatusAborted: (elapsed: string) => `已中止 · ${elapsed}`, turnStatusFailed: (elapsed: string) => `失败 · ${elapsed}`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小时', minute: '分', second: '秒' })}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '响应中途断开', network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, failureDetailsUnavailable: '无可用诊断详情。', safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
       editMessageDisabledDirectoryReferences: '包含文件夹引用的历史消息暂不支持编辑并重发',
       userAriaLabel: '你发送的消息', systemAriaLabel: '系统消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}消息${context ? `：${context}` : ''}`, sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', scheduledTaskTriggered: '定时任务触发', scheduledTaskTitle: (id) => `由定时任务触发 · ${id}`, legacyAutomationTriggered: '旧版自动化（仅历史）', legacyAutomationTitle: (id) => `由旧版自动化触发 · ${id} · 仅保留历史，不会再次执行`, goalContinued: 'Goal 自动继续', goalTitle: (id) => `由 Goal 继续执行 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
-      thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `会话：${name}`, sessionSnapshotPending: '发送时截取快照', sessionSnapshotCaptured: (iso, truncated) => `快照时间 ${iso}${truncated ? ' · 内容已截断' : ''}`, quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '已中断', abortedByStop: '已中断 · 由停止按钮触发',
+      thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, sessionSnapshotLabel: (name) => `会话：${name}`, sessionSnapshotPending: '发送时截取快照', sessionSnapshotCaptured: (iso, truncated) => `快照时间 ${iso}${truncated ? ' · 内容已截断' : ''}`, quoteSelectedTextLabel: '所选文本', quoteCommentLabel: '用户评论', quoteCommentPlaceholder: '添加可选评论…', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', aborted: '已中断', abortedByStop: '已中断 · 由停止按钮触发',
       systemNotes: {
         contextCompacting: '正在压缩上下文…',
         contextCompactionUnobserved: '上下文压缩状态暂不可用',
@@ -641,7 +652,7 @@ const CONVERSATION_COPY = {
       },
       clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalProgress: (iteration, max) => `目标 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目标正在运行', goalWaitingAriaLabel: '自主目标正在等待条件变化',
       goalPausedAriaLabel: '自主目标已暂停', pauseGoalAriaLabel: (iteration, max) => `暂停自主执行目标（已进行 ${iteration}/${max} 轮）`, resumeGoalAriaLabel: (iteration, max) => `恢复自主执行目标（已进行 ${iteration}/${max} 轮）`, pauseGoal: (condition, iteration, max, status) => `暂停自主执行目标：「${condition}」（第 ${iteration}/${max} 轮，${status}）。暂停后立即停止自动续行，不再消耗令牌；可随时恢复。`, resumeGoal: (condition, iteration, max) => `恢复自主执行目标：「${condition}」（第 ${iteration}/${max} 轮）。恢复后立即继续自动续行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分钟', hour: ' 小时', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
-      loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', loadEarlierHistory: '载入更早的记录', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
+      loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', loadEarlierHistory: '载入更早的记录', quoteSelection: '引用', askInSidePanel: '在侧栏追问', quoteCommentTitle: '为这段引用添加注释', quoteCommentSkip: '直接引用', noMessages: '暂无消息',
       branchBeforeInterrupt: '从中断前分支', sessionContextAriaLabel: '任务上下文', sessionLineageAriaLabel: '任务来源', sessionContextMore: (count) => `更多任务上下文（${count}）`,
       titlebarIdentityAriaLabel: '当前任务', openProjectFolderAction: '打开项目文件夹', projectInfo: '项目信息', copyProjectPath: '复制路径',
       openParentSession: (name) => `返回父任务「${name}」`,
@@ -671,7 +682,7 @@ const CONVERSATION_COPY = {
       startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
     },
     composer: {
-      placeholder: '描述任務，@ 引用檔案，/ 選擇技能…', textareaAriaLabel: '訊息輸入框', pastedQuoteLabel: '貼上的文本', selectedSkillsAriaLabel: '已選擇的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你確認權限…',
+      placeholder: '描述任務，@ 引用檔案，/ 選擇技能…', textareaAriaLabel: '訊息輸入框', pastedQuoteLabel: '貼上的文本', quoteCommentTitle: '引用註解', quoteCommentSave: '儲存', quoteCommentCancel: '取消', selectedSkillsAriaLabel: '已選擇的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你確認權限…',
       sending: '正在傳送…', importing: '正在匯入…', sendLabel: '傳送',
       queuedMessagesAriaLabel: (count) => `${count} 條待發送訊息`,
       steeringPending: '調整方向 · 等待整批生效',
@@ -744,7 +755,7 @@ const CONVERSATION_COPY = {
       you: '你', assistant: 'Maka', processing: '正在處理…', continuing: '繼續中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盤算…', '正在鑽研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓搗…', '正在醞釀…', '正在攻堅…', '正在權衡…', '正在拾掇…'], processDetails: '執行過程', processExpandAll: '放大檢視完整過程', processRestore: '恢復固定高度', processDuration: (minutes, seconds) => `用時 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusRunning: (elapsed: string) => `進行中 · 已用 ${elapsed}`, turnStatusCompleted: (elapsed: string, at: string) => `完成 · ${elapsed} · ${at}`, turnStatusCompletedAlone: '已完成', turnStatusCompletedAloneWithDuration: (elapsed: string) => `完成 · ${elapsed}`, turnStatusAborted: (elapsed: string) => `已中止 · ${elapsed}`, turnStatusFailed: (elapsed: string) => `失敗 · ${elapsed}`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小時', minute: '分', second: '秒' })}後重試（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重試（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重試（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '回應中途斷開', network: '網路中斷', provider_capacity: '模型服務暫時滿載', provider_unavailable: '模型服務暫時不可用', rate_limit: '觸發模型速率限制', timeout: '請求超時', unknown: '模型請求失敗' }, failureDetailsUnavailable: '無可用診斷詳情。', safeResumePending: '正在檢查…', safeResume: '繼續這一輪', thinking: '深度思考', truncated: '已截斷', copied: '已複製', copying: '複製中', copyFailed: '複製失敗', copy: '複製', editMessage: '編輯並重發', editMessageDisabledRunning: '目前回答仍在進行中，結束後再編輯', editMessageDisabledAttachments: '包含附件的歷史訊息暫不支援編輯並重發', editMessageDisabledQuotes: '包含引用的歷史訊息暫不支援編輯並重發', editMessageDisabledTransformedText: '包含已展開上下文的歷史訊息暫不支援編輯並重發',
       editMessageDisabledDirectoryReferences: '包含資料夾引用的歷史訊息暫不支援編輯並重發',
       userAriaLabel: '你傳送的訊息', systemAriaLabel: '系統訊息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}訊息${context ? `：${context}` : ''}`, sourceAriaLabel: '本輪迴答的來源', derivativesAriaLabel: '本輪迴答的衍生', scheduledTaskTriggered: '定時任務觸發', scheduledTaskTitle: (id) => `由定時任務觸發 · ${id}`, legacyAutomationTriggered: '舊版自動化（僅歷史）', legacyAutomationTitle: (id) => `由舊版自動化觸發 · ${id} · 僅保留歷史，不會再次執行`, goalContinued: 'Goal 自動繼續', goalTitle: (id) => `由 Goal 繼續執行 · ${id}`, agentGraphTriggered: 'Agent Graph 自動繼續', agentGraphTitle: (graphId) => `由 Agent Graph 排程器觸發 · ${graphId}`,
-      thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `作業階段：${name}`, sessionSnapshotPending: '傳送時擷取快照', sessionSnapshotCaptured: (iso, truncated) => `快照時間 ${iso}${truncated ? ' · 內容已截斷' : ''}`, quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中斷)', abortedByStop: '(已中斷 · 由停止按鈕觸發)',
+      thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, sessionSnapshotLabel: (name) => `作業階段：${name}`, sessionSnapshotPending: '傳送時擷取快照', sessionSnapshotCaptured: (iso, truncated) => `快照時間 ${iso}${truncated ? ' · 內容已截斷' : ''}`, quoteSelectedTextLabel: '所選文字', quoteCommentLabel: '使用者評論', quoteCommentPlaceholder: '新增可選評論…', quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', aborted: '(已中斷)', abortedByStop: '(已中斷 · 由停止按鈕觸發)',
       systemNotes: {
         contextCompacting: '正在壓縮上下文…',
         contextCompactionUnobserved: '上下文壓縮狀態暫不可用',
@@ -802,7 +813,7 @@ const CONVERSATION_COPY = {
       },
       clearGoal: (condition, iteration, max, status) => `自主執行目標進行中：「${condition}」（第 ${iteration}/${max} 輪，${status}）。系統每輪後自動續行；點選可清除目標、停止續行。`, clearGoalAriaLabel: (iteration, max) => `清除自主執行目標（已進行 ${iteration}/${max} 輪）`, goalProgress: (iteration, max) => `目標 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目標正在執行', goalWaitingAriaLabel: '自主目標正在等待條件變化',
       goalPausedAriaLabel: '自主目標已暫停', pauseGoalAriaLabel: (iteration, max) => `暫停自主執行目標（已進行 ${iteration}/${max} 輪）`, resumeGoalAriaLabel: (iteration, max) => `恢復自主執行目標（已進行 ${iteration}/${max} 輪）`, pauseGoal: (condition, iteration, max, status) => `暫停自主執行目標：「${condition}」（第 ${iteration}/${max} 輪，${status}）。暫停後立即停止自動續行，不再消耗權杖；可隨時恢復。`, resumeGoal: (condition, iteration, max) => `恢復自主執行目標：「${condition}」（第 ${iteration}/${max} 輪）。恢復後立即繼續自動續行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分鐘', hour: ' 小時', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
-      loadFailed: '任務載入失敗', loading: '載入中…', retryLoad: '重試載入', loadEarlierHistory: '載入更早的記錄', quoteSelection: '引用', askInSidePanel: '在側欄追問', noMessages: '暫無訊息',
+      loadFailed: '任務載入失敗', loading: '載入中…', retryLoad: '重試載入', loadEarlierHistory: '載入更早的記錄', quoteSelection: '引用', askInSidePanel: '在側欄追問', quoteCommentTitle: '為這段引用新增註解', quoteCommentSkip: '直接引用', noMessages: '暫無訊息',
       branchBeforeInterrupt: '從中斷前分支', sessionContextAriaLabel: '任務上下文', sessionLineageAriaLabel: '任務來源', sessionContextMore: (count) => `更多工上下文（${count}）`,
       titlebarIdentityAriaLabel: '目前任務', openProjectFolderAction: '開啟專案資料夾', projectInfo: '專案資訊', copyProjectPath: '複製路徑',
       openParentSession: (name) => `返回父任務「${name}」`,
@@ -861,7 +872,7 @@ const CONVERSATION_COPY = {
       ],
     },
     composer: {
-      placeholder: 'Describe a task, @ to reference files or sessions, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
+      placeholder: 'Describe a task, @ to reference files or sessions, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', quoteCommentTitle: 'Quote annotation', quoteCommentSave: 'Save', quoteCommentCancel: 'Cancel', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
       steeringPending: 'Steering · Applied together',
@@ -931,7 +942,7 @@ const CONVERSATION_COPY = {
       you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], processDetails: 'Execution process', processExpandAll: 'Show the full process', processRestore: 'Restore the capped view', processDuration: (minutes, seconds) => `Worked for ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`, turnStatusRunning: (elapsed: string) => `Running · ${elapsed} elapsed`, turnStatusCompleted: (elapsed: string, at: string) => `Done · ${elapsed} · ${at}`, turnStatusCompletedAlone: 'Done', turnStatusCompletedAloneWithDuration: (elapsed: string) => `Done · ${elapsed}`, turnStatusAborted: (elapsed: string) => `Stopped · ${elapsed}`, turnStatusFailed: (elapsed: string) => `Failed · ${elapsed}`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, { day: 'd', hour: 'h', minute: 'm', second: 's' })} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { stream_truncated: 'Response stream ended before completion', network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, failureDetailsUnavailable: 'No diagnostic details are available.', safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
       editMessageDisabledDirectoryReferences: 'Edit & resend does not yet support messages with folder references',
       userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: (context) => `Response actions${context ? `: ${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action} response${context ? `: ${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action} message${context ? `: ${context}` : ''}`, sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', scheduledTaskTriggered: 'Triggered by scheduled task', scheduledTaskTitle: (id) => `Triggered by scheduled task · ${id}`, legacyAutomationTriggered: 'Legacy Automation (history only)', legacyAutomationTitle: (id) => `Triggered by legacy Automation · ${id} · Historical only; it will not run again`, goalContinued: 'Continued by Goal', goalTitle: (id) => `Continued by Goal · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
-      thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', sessionSnapshotLabel: (name) => `Session: ${name}`, sessionSnapshotPending: 'snapshot captured when sent', sessionSnapshotCaptured: (iso, truncated) => `captured ${iso}${truncated ? ' · truncated' : ''}`, quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
+      thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, sessionSnapshotLabel: (name) => `Session: ${name}`, sessionSnapshotPending: 'snapshot captured when sent', sessionSnapshotCaptured: (iso, truncated) => `captured ${iso}${truncated ? ' · truncated' : ''}`, quoteSelectedTextLabel: 'Selected text', quoteCommentLabel: 'Your comment', quoteCommentPlaceholder: 'Add an optional comment…', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
       systemNotes: {
         contextCompacting: 'Compacting context…',
         contextCompactionUnobserved: 'Context compaction status unavailable',
@@ -989,7 +1000,7 @@ const CONVERSATION_COPY = {
       },
       clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running', goalWaitingAriaLabel: 'Autonomous goal waiting for conditions to change',
       goalPausedAriaLabel: 'Autonomous goal paused', pauseGoalAriaLabel: (iteration, max) => `Pause autonomous goal after ${iteration}/${max} iterations`, resumeGoalAriaLabel: (iteration, max) => `Resume autonomous goal after ${iteration}/${max} iterations`, pauseGoal: (condition, iteration, max, status) => `Pause autonomous goal: “${condition}” (iteration ${iteration}/${max}, ${status}). Pausing stops autonomous continuation immediately — no more tokens burn; resume any time.`, resumeGoal: (condition, iteration, max) => `Resume autonomous goal: “${condition}” (iteration ${iteration}/${max}). Resuming continues autonomous iteration immediately.`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: 's', minute: 'm', hour: 'h', day: 'd' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
-      loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', loadEarlierHistory: 'Load earlier history', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
+      loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', loadEarlierHistory: 'Load earlier history', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', quoteCommentTitle: 'Annotate this quote', quoteCommentSkip: 'Quote as-is', noMessages: 'No messages yet',
       branchBeforeInterrupt: 'Branched before interruption', sessionContextAriaLabel: 'Task context', sessionLineageAriaLabel: 'Task origin', sessionContextMore: (count) => `More task context (${count})`,
       titlebarIdentityAriaLabel: 'Current task', openProjectFolderAction: 'Open project folder', projectInfo: 'Project information', copyProjectPath: 'Copy path',
       openParentSession: (name) => `Return to parent task “${name}”`,

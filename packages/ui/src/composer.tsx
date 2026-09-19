@@ -41,6 +41,7 @@ import {
   FileText,
   GitBranch,
   ListTodo,
+  MessageSquareQuote,
   MessagesSquare,
   Network,
   Pencil,
@@ -66,7 +67,11 @@ import {
   isReferenceSizedPaste,
   type ComposerModelSwitchAvailability,
 } from './composer-helpers.js';
-import { stripQuoteHeadingMarkers } from './quote-ref-chip.js';
+import {
+  QuoteHoverCardContent,
+  stripQuoteHeadingMarkers,
+} from './quote-ref-chip.js';
+import { QuoteCommentPanel } from './quote-comment-panel.js';
 import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { FolderOpen } from './icons.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
@@ -101,6 +106,7 @@ import {
   ChatComposer as AstryxChatComposer,
   ChatComposerDrawer,
   ChatComposerInput,
+  HoverCard,
   IconButton,
   Lightbox,
   Token,
@@ -121,6 +127,7 @@ import {
   DropdownMenuRadioItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { useIndicator } from '@astryxdesign/core/Indicator';
+import { Popover } from '@astryxdesign/core/Popover';
 import { PermissionModeSelect } from './permission-mode-menu.js';
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { formatPreviewSize } from './artifact-preview-registry.js';
@@ -356,6 +363,15 @@ export const Composer = forwardRef<
     /** Quoted excerpts staged for the next send; rendered as removable chips. */
     pendingQuotes?: readonly QuoteRef[];
     onRemoveQuote?(index: number): void;
+    /** Save the annotation written for one staged quote. Omitted by hosts that
+     *  only remove quotes, in which case the token stays read-only. */
+    onEditQuoteComment?(index: number, comment: string): void;
+    /**
+     * Open the note editor over the quote's own excerpt in the transcript.
+     * Returning false means the excerpt is not on screen and the token falls
+     * back to its own editor popover.
+     */
+    onAnnotateQuote?(index: number): boolean;
     /** Start staged context collapsed on compact secondary composer surfaces. */
     contextDrawerDefaultCollapsed?: boolean;
     /** Hide the unavailable dot when an inherited model is intentionally read-only. */
@@ -1652,6 +1668,23 @@ export const Composer = forwardRef<
     caption: string;
   } | null>(null);
   const [attachmentLightboxOpen, setAttachmentLightboxOpen] = useState(false);
+  /** Which staged quote has its annotation panel open, by staging index. */
+  const [editingQuoteIndex, setEditingQuoteIndex] = useState<number | null>(null);
+  /** The staged quote whose note is being edited over the transcript excerpt —
+   *  its hover card stays down until the pointer leaves, or the token and the
+   *  panel would both describe the same quote at once. */
+  const [annotatedQuoteIndex, setAnnotatedQuoteIndex] = useState<number | null>(null);
+  // The pendingQuotes bucket is mutated in place, so its identity cannot
+  // signal a splice — the staged quotes' own identities can. Either index
+  // state left pointing past a removal or a send would reopen a panel or a
+  // hover suppression onto whatever now occupies that slot.
+  const stagedQuoteKey = props.pendingQuotes
+    ?.map((quote) => `${quote.sourceTurnId ?? ''}${quote.text}`)
+    .join('');
+  useEffect(() => {
+    setEditingQuoteIndex(null);
+    setAnnotatedQuoteIndex(null);
+  }, [stagedQuoteKey]);
   useEffect(() => {
     if (attachmentLightboxOpen || !attachmentLightbox) return;
     // Unmount one commit AFTER the closed render, never in it: child effects
@@ -1896,14 +1929,114 @@ export const Composer = forwardRef<
                     onRemove={props.onRemoveDirectory ? () => props.onRemoveDirectory?.(index) : undefined}
                   />
                 ))}
-                {props.pendingQuotes?.map((quote, index) => quote.sourceSessionId ? null : (
-                  <Token
-                    key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
-                    size="sm"
-                    label={quote.label?.trim() || stripQuoteHeadingMarkers(quote.text.slice(0, 48)) || copy.pastedQuoteLabel}
-                    onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
-                  />
-                ))}
+                {props.pendingQuotes?.map((quote, index) => {
+                  // Snapshot quotes stage in the session-references row
+                  // below, not as excerpt tokens.
+                  if (quote.sourceSessionId) return null;
+                  const label =
+                    quote.label?.trim() ||
+                    stripQuoteHeadingMarkers(quote.text.slice(0, 48)) ||
+                    copy.pastedQuoteLabel;
+                  // Without an annotation seam the token is display-only, so it
+                  // stays the plain removable chip it has always been.
+                  if (!props.onEditQuoteComment) {
+                    return (
+                      <Token
+                        key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
+                        size="sm"
+                        label={label}
+                        onRemove={
+                          props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined
+                        }
+                      />
+                    );
+                  }
+                  const editing = editingQuoteIndex === index;
+                  return (
+                    <Popover
+                      key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
+                      isOpen={editing}
+                      onOpenChange={(open) => setEditingQuoteIndex(open ? index : null)}
+                      label={copy.quoteCommentTitle}
+                      placement="above"
+                      // Same rule as the transcript's layer: only the panel's
+                      // own two buttons close it, so a stray click or Escape
+                      // cannot drop a half-written note.
+                      hasLightDismiss={false}
+                      hasEscapeDismiss={false}
+                      content={
+                        <QuoteCommentPanel
+                          index={index}
+                          comment={quote.comment}
+                          title={copy.quoteCommentTitle}
+                          submitLabel={copy.quoteCommentSave}
+                          skipLabel={copy.quoteCommentCancel}
+                          onSubmit={(comment) => {
+                            props.onEditQuoteComment?.(index, comment);
+                            setEditingQuoteIndex(null);
+                          }}
+                          onSkip={() => setEditingQuoteIndex(null)}
+                        />
+                      }
+                    >
+                      {(trigger) => (
+                        <HoverCard
+                          content={<QuoteHoverCardContent quote={quote} />}
+                          focusTrigger="always"
+                          // isEnabled only gates new triggers: a click that
+                          // opens the panel would still let a pending hover
+                          // delay fire the card over it. The controlled
+                          // isOpen=false cancels that show and any card
+                          // already up, then hands control back on close.
+                          isEnabled={!editing && annotatedQuoteIndex !== index}
+                          isOpen={editing || annotatedQuoteIndex === index ? false : undefined}
+                        >
+                          <Token
+                            ref={trigger.ref}
+                            size="sm"
+                            className="maka-composer-quote-token"
+                            label={label}
+                            endContent={
+                              quote.comment ? (
+                                <MessageSquareQuote
+                                  className="maka-composer-quote-comment-icon"
+                                  aria-hidden="true"
+                                />
+                              ) : undefined
+                            }
+                            onRemove={
+                              props.onRemoveQuote
+                                ? () => {
+                                    // The panel is anchored to this token's
+                                    // position; removing it closes the panel
+                                    // rather than leaving it open over a quote
+                                    // that shifted into this index.
+                                    setEditingQuoteIndex(null);
+                                    props.onRemoveQuote?.(index);
+                                  }
+                                : undefined
+                            }
+                            onPointerLeave={() => setAnnotatedQuoteIndex(null)}
+                            onClick={(event) => {
+                              // The transcript owns the edit when it can still
+                              // point at the excerpt; its panel anchors to the
+                              // quote's own text, not this token.
+                              if (props.onAnnotateQuote?.(index)) {
+                                setAnnotatedQuoteIndex(index);
+                                setEditingQuoteIndex(null);
+                                return;
+                              }
+                              trigger.onClick?.(event);
+                            }}
+                            aria-haspopup={trigger['aria-haspopup']}
+                            aria-expanded={trigger['aria-expanded']}
+                            aria-controls={trigger['aria-controls']}
+                          />
+                        </HoverCard>
+                      )}
+                    </Popover>
+                  );
+                })}
                 {props.pendingAttachments?.map((attachment, index) => {
                   const onRemove = props.onRemoveAttachment
                     ? () => props.onRemoveAttachment?.(index)

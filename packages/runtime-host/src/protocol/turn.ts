@@ -23,6 +23,7 @@ import {
   DIRECTORY_REFERENCE_MAX_COUNT,
   hasMeaningfulMessageContent,
   isCanonicalAttachmentRef,
+  QUOTE_COMMENT_MAX_LENGTH,
   type ContextCompactionOutcome,
   type MessageContent,
   type ProviderRetryReason,
@@ -459,6 +460,9 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     requireString(quote.text, 'QuoteRef text', TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH);
     if (quote.label !== undefined) {
       requireString(quote.label, 'QuoteRef label', TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH);
+    }
+    if (quote.comment !== undefined) {
+      requireString(quote.comment, 'QuoteRef comment', QUOTE_COMMENT_MAX_LENGTH);
     }
     if (quote.sourceTurnId !== undefined) {
       requireEntityId(quote.sourceTurnId, 'QuoteRef sourceTurnId');

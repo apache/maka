@@ -26,6 +26,7 @@ import type {
 import {
   isDirectoryReference,
   DIRECTORY_REFERENCE_MAX_COUNT,
+  QUOTE_COMMENT_MAX_LENGTH,
   type DirectoryReference,
   type QuoteRef,
 } from '@maka/core/events';
@@ -363,6 +364,14 @@ function normalizeOptionalQuotes(input: unknown): { quotes?: QuoteRef[] } {
       value.label === undefined
         ? undefined
         : normalizeOptionalString(value.label, 'Invalid send quote label', MAX_QUOTE_LABEL_LENGTH);
+    const comment =
+      value.comment === undefined
+        ? undefined
+        : normalizeOptionalString(
+            value.comment,
+            'Invalid send quote comment',
+            QUOTE_COMMENT_MAX_LENGTH,
+          );
     const sourceTurnId =
       value.sourceTurnId === undefined
         ? undefined
@@ -409,6 +418,7 @@ function normalizeOptionalQuotes(input: unknown): { quotes?: QuoteRef[] } {
     return {
       text: normalizeRequiredString(value.text, 'Invalid send quote text', MAX_QUOTE_TEXT_LENGTH),
       ...(label ? { label } : {}),
+      ...(comment ? { comment } : {}),
       ...(sourceTurnId ? { sourceTurnId } : {}),
       ...(sourceSessionId ? { sourceSessionId } : {}),
       ...(sourceSessionName ? { sourceSessionName } : {}),

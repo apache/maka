@@ -43,6 +43,7 @@ import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
   ChatSurfaceLayout,
+  type ChatViewHandle,
   type ComposerHandle,
   type ComposerSendMetadata,
   type ComposerSlashCommandOption,
@@ -180,8 +181,8 @@ import { useTurnActionRegistry } from './use-turn-action-registry';
 import {
   desktopSlashCommandPresentation,
   useComposerAttachments,
+  useComposerQuotes,
 } from './features/conversation/index.js';
-import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import {
   type ComposerMentionsSurfaceInput,
   renderComposerMentionsProvider,
@@ -403,11 +404,11 @@ function AppShellContent({
   });
   const {
     pendingQuotes,
-    addQuote: onAddQuote,
+    addQuote,
+    updateQuoteComment,
     removeQuote,
     clearQuotes,
-    restoreQuotes,
-  } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
+  } = useComposerQuotes({ draftKey: attachmentDraftKey });
 
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
@@ -605,6 +606,7 @@ function AppShellContent({
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
   const composerRef = useRef<ComposerHandle>(null);
+  const chatViewRef = useRef<ChatViewHandle>(null);
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
@@ -1285,7 +1287,7 @@ function AppShellContent({
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
     newSessionPermissionMode,
-    onAddQuote,
+    onAddQuote: addQuote,
     pendingQuotes,
   };
 
@@ -2490,9 +2492,29 @@ function AppShellContent({
                   slashCommands={desktopSlashCommands}
                   pendingAttachments={pendingAttachments}
                   allowAttachmentOnlySend={canStageComposerContext}
-                  onRemoveAttachment={removeAttachment}                  pendingQuotes={pendingQuotes}
+                  onRemoveAttachment={removeAttachment}
+                  pendingQuotes={pendingQuotes}
                   onRemoveQuote={removeQuote}
-                  onPasteAsQuote={canStageComposerContext ? onAddQuote : undefined}
+                  onEditQuoteComment={
+                    canStageComposerContext ? updateQuoteComment : undefined
+                  }
+                  onAnnotateQuote={
+                    canStageComposerContext
+                      ? (index) => {
+                          const quote = pendingQuotes[index];
+                          return (
+                            quote !== undefined &&
+                            (chatViewRef.current?.openQuoteAnnotation({
+                              index,
+                              text: quote.text,
+                              turnId: quote.sourceTurnId,
+                              comment: quote.comment,
+                            }) ?? false)
+                          );
+                        }
+                      : undefined
+                  }
+                  onPasteAsQuote={canStageComposerContext ? addQuote : undefined}
                   onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
                   onAttachFilePaths={contextPickEnabled ? attachFilePaths : undefined}
                   modelLabel={activeModelLabel ?? newChatModelLabel}
@@ -2583,6 +2605,9 @@ function AppShellContent({
                   >
                     {(turnActions) => (
                   <ChatMessageSurface
+                handleRef={chatViewRef}
+                onQuoteAnnotationSubmit={updateQuoteComment}
+                pendingQuotes={pendingQuotes}
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
@@ -2650,7 +2675,7 @@ function AppShellContent({
                   sharedSessionActive
                     ? undefined
                     : (selection) => {
-                        onAddQuote(selection);
+                        addQuote(selection);
                         composerRef.current?.focus();
                       }
                 }
