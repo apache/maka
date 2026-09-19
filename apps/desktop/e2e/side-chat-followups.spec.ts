@@ -115,6 +115,9 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await expect(queued.locator('.maka-composer-queue-text')).toHaveText([
       'first follow-up', 'second follow-up', 'retract this follow-up',
     ]);
+    // The final row can still be optimistic. Wait for its Host queue revision
+    // before opening an edit whose CAS base that admission would invalidate.
+    await expect(queued.getByRole('button', { name: '编辑', exact: true }).last()).toBeEnabled();
     await queued.getByRole('button', { name: '编辑', exact: true }).first().click();
     const edit = queued.getByRole('textbox', { name: '编辑', exact: true });
     await edit.fill('edited first follow-up');
