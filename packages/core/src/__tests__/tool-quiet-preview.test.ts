@@ -79,6 +79,16 @@ describe('formatToolInvocationLine', () => {
       ),
       '選哪個方案？ 等 2 問',
     );
+    assert.equal(
+      formatToolInvocationLine(
+        {
+          toolName: 'AskUserQuestion',
+          args: { questions: [{ question: '어느 방안을 고를까요?' }, { question: '계속할까요?' }] },
+        },
+        'ko',
+      ),
+      '어느 방안을 고를까요? 외 1개',
+    );
   });
 
   it('keeps the ScheduledTask title headline', () => {
@@ -184,6 +194,11 @@ describe('projectToolArgsPreview', () => {
     assert.ok(line !== undefined);
     assert.match(line, /后台终端交互/);
     assert.match(line, /80x24/);
+
+    const koLine = formatToolInvocationLine({ toolName: 'WriteStdin', args: preview }, 'ko');
+    assert.ok(koLine !== undefined);
+    assert.match(koLine, /백그라운드 터미널 상호작용/);
+    assert.match(koLine, /80x24/);
   });
 
   it('returns undefined when nothing displayable exists', () => {
