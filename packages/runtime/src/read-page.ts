@@ -119,10 +119,34 @@ export function readPage(
       'Invalid Read continuation position. Copy the complete next object from the preceding result.',
     );
   }
-  const starts = [0];
-  for (let at = content.indexOf('\n'); at >= 0; at = content.indexOf('\n', at + 1))
+  // 总行数仍需扫描全文，但只为本页可能返回的字符保留行索引，避免短行日志
+  // 为一个小响应分配与整个文件行数成正比的临时数组。
+  let totalLines = 1;
+  let offset = resolved.position === undefined ? (input.offset ?? 0) : 0;
+  let start = resolved.position ?? (offset === 0 ? 0 : content.length);
+  let lineStart = 0;
+  let end = content.length;
+  for (let at = content.indexOf('\n'); at >= 0; at = content.indexOf('\n', at + 1)) {
+    const line = totalLines++;
+    if (resolved.position !== undefined && at < resolved.position) {
+      offset = line;
+      lineStart = at + 1;
+    } else if (resolved.position === undefined && line === offset) {
+      start = at + 1;
+      lineStart = start;
+    }
+    if (input.limit !== undefined && line === offset + input.limit && at >= start) end = at;
+  }
+  const lastLine = Math.min(totalLines, offset + (input.limit ?? totalLines));
+  const starts = [lineStart];
+  const indexEnd = Math.min(end, start + maxChars);
+  for (
+    let at = content.indexOf('\n', start);
+    at >= 0 && at < indexEnd;
+    at = content.indexOf('\n', at + 1)
+  ) {
     starts.push(at + 1);
-  const totalLines = starts.length;
+  }
   const lineAt = (position: number): number => {
     let low = 0;
     let high = starts.length - 1;
@@ -131,17 +155,13 @@ export function readPage(
       if (starts[middle]! <= position) low = middle;
       else high = middle - 1;
     }
-    return low;
+    return offset + low;
   };
-  const offset = resolved.position === undefined ? (input.offset ?? 0) : lineAt(resolved.position);
-  const start = resolved.position ?? starts[Math.min(offset, totalLines)] ?? content.length;
-  const lastLine = Math.min(totalLines, offset + (input.limit ?? totalLines));
-  const end = lastLine < totalLines ? starts[lastLine]! - 1 : content.length;
   let digest = resolved.digest;
   const makePage = (stop: number): ReadPage => {
     const complete = stop >= end;
     const nextLine = Math.max(offset, lineAt(stop));
-    const boundary = stop === (starts[nextLine + 1] ?? content.length + 1) - 1;
+    const boundary = content[stop] === '\n';
     const partialLine = !complete && !boundary;
     const returnedLines =
       offset >= totalLines
@@ -163,7 +183,7 @@ export function readPage(
       offset,
       returnedLines,
       totalLines,
-      ...(partialLine || (offset < totalLines && start > starts[offset]!)
+      ...(partialLine || (offset < totalLines && start > lineStart)
         ? { partialLine: true as const }
         : {}),
       next,
