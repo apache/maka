@@ -113,6 +113,8 @@ on:
       - 'packages/runtime/src/sandbox/windows-sandbox.ts'
       - 'packages/runtime/src/shell-detect.ts'
       - 'packages/runtime/src/shell-exec.ts'
+      - 'packages/runtime/src/trae/public-authorization.ts'
+      - 'packages/runtime/src/trae/public-protocol.ts'
       - 'packages/storage/src/__tests__/managed-dependency-environment.test.ts'
       - 'packages/storage/src/__tests__/root-authority.test.ts'
       - 'packages/storage/src/artifact-store.ts'

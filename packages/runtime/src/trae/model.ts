@@ -31,7 +31,7 @@ import {
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { TRAE, traeHeaders, record } from './protocol.js';
 import { traeMessages, traeToolSchema } from './messages.js';
-import { traeSse } from './sse.js';
+import { traeSse, TraeStreamTruncatedError } from './sse.js';
 
 export function createTraeModel(input: {
   connection: RuntimeExecutionConnection;
@@ -185,7 +185,8 @@ export function createTraeModel(input: {
         else if (part.type === 'finish') finish = part;
         else if (part.type === 'error') throw part.error;
       }
-      if (!finish) throw new Error('Trae stream ended without a completion event');
+      if (!finish)
+        throw new TraeStreamTruncatedError('Trae stream ended without a completion event');
       return { content, finishReason: finish.finishReason, usage: finish.usage, warnings: [] };
     },
   };
@@ -290,6 +291,10 @@ async function* streamParts(
             throw new Error('Invalid Trae tool call');
           const index = Number(candidate);
           const call = calls.get(index) ?? { name: '', arguments: '' };
+          // A fragment may repeat its tool name, but cannot rebind accumulated
+          // arguments to another tool, even when the wire omits identity.
+          if (typeof fn.name === 'string' && fn.name && call.name && fn.name !== call.name)
+            throw new Error('Trae tool call changed its name');
           if (typeof raw.id === 'string' && raw.id) call.id = raw.id;
           if (typeof fn.name === 'string' && fn.name) call.name = fn.name;
           if (typeof fn.arguments === 'string') call.arguments += fn.arguments;
@@ -341,7 +346,7 @@ async function* streamParts(
       yield { type: 'raw', rawValue: { type: 'trae-heartbeat' } };
     }
   }
-  throw new Error('Trae stream disconnected before completion');
+  throw new TraeStreamTruncatedError('Trae stream disconnected before completion');
 }
 function usageFrom(data: Record<string, unknown>): LanguageModelV4Usage {
   const number = (key: string) =>

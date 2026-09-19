@@ -37,6 +37,8 @@ import {
   serializeOAuthSubscriptionTokens,
 } from '../subscription-credentials.js';
 import { createTraeModel } from '../trae/model.js';
+import { parseTraeCatalog } from '../trae/catalog.js';
+import { providerModelFailure, providerRetryReason } from '../provider-error-classification.js';
 import { traeToolSchema } from '../trae/messages.js';
 import {
   fetchTraeModels,
@@ -594,7 +596,6 @@ test('Trae rejects untrusted guidance, region mismatch, invalid tokens and redir
 });
 
 test('Trae public streams keep separate tool IDs when chunks omit indexes and finish with DONE', async () => {
-  const { parseTraeCatalog } = await import('../trae/catalog.js');
   const models = parseTraeCatalog(traeCatalogFixture, 'chat_v3');
   const model = createTraeModel({
     connection: { ...traeConnection(), traeAccount: 'cn', models },
@@ -623,3 +624,101 @@ test('Trae public streams keep separate tool IDs when chunks omit indexes and fi
     ],
   );
 });
+
+function publicStreamModel(response: () => Response) {
+  const models = parseTraeCatalog(traeCatalogFixture, 'chat_v3');
+  return createTraeModel({
+    connection: { ...traeConnection(), traeAccount: 'cn', models },
+    modelId: models[0]!.id,
+    apiKey: 'access',
+    fetch: async () => response(),
+  });
+}
+
+for (const identity of [{}, { id: 'a' }, { index: 0 }]) {
+  test(`Trae rejects rebinding a tool's arguments to another name (${JSON.stringify(identity)})`, async () => {
+    const model = publicStreamModel(() =>
+      traeResponse([
+        [
+          'output',
+          {
+            tool_calls: [
+              { ...identity, function: { name: 'read_file', arguments: '{"path":"README.md"}' } },
+            ],
+          },
+        ],
+        ['output', { tool_calls: [{ ...identity, function: { name: 'delete_file' } }] }],
+        ['done', { finish_reason: 'tool_calls' }],
+      ]),
+    );
+    const result = await model.doStream({
+      prompt: [],
+      tools: ['read_file', 'delete_file'].map((name) => ({
+        type: 'function',
+        name,
+        inputSchema: { type: 'object' },
+      })),
+    });
+    const emittedTools: unknown[] = [];
+    await assert.rejects(async () => {
+      for await (const part of result.stream) {
+        if (part.type === 'tool-call') emittedTools.push(part);
+      }
+    }, /Trae tool call changed its name/);
+    assert.deepEqual(emittedTools, []);
+  });
+}
+
+for (const continuationName of [undefined, 'read_file']) {
+  test(`Trae keeps unindexed argument fragments with ${continuationName ?? 'no'} name`, async () => {
+    const model = publicStreamModel(() =>
+      traeResponse([
+        ['output', { tool_calls: [{ function: { name: 'read_file', arguments: '{"path":' } }] }],
+        [
+          'output',
+          { tool_calls: [{ function: { name: continuationName, arguments: '"README.md"}' } }] },
+        ],
+        ['done', { finish_reason: 'tool_calls' }],
+      ]),
+    );
+    const result = await model.doGenerate({
+      prompt: [],
+      tools: [{ type: 'function', name: 'read_file', inputSchema: { type: 'object' } }],
+    });
+    assert.deepEqual(
+      result.content
+        .filter((part) => part.type === 'tool-call')
+        .map((part) => [part.toolName, JSON.parse(part.input)]),
+      [['read_file', { path: 'README.md' }]],
+    );
+  });
+}
+
+for (const [ending, tail] of [
+  ['clean EOF', ''],
+  ['partial frame', 'event: output\ndata: {"response":"unfinished"'],
+] as const) {
+  test(`Trae ${ending} remains a retryable truncated stream after producing output`, async () => {
+    const model = publicStreamModel(
+      () => new Response('event: output\ndata: {"response":"partial answer"}\n\n' + tail),
+    );
+    const result = await model.doStream({ prompt: [] });
+    const text: string[] = [];
+    await assert.rejects(
+      async () => {
+        for await (const part of result.stream) {
+          if (part.type === 'text-delta') text.push(part.delta);
+          assert.notEqual(part.type, 'finish');
+        }
+      },
+      (error: unknown) => {
+        const failure = providerModelFailure(error);
+        assert.equal(failure.kind, 'stream_truncated');
+        assert.equal(failure.retryable, true);
+        assert.equal(providerRetryReason(failure.kind), 'stream_truncated');
+        return true;
+      },
+    );
+    assert.deepEqual(text, ['partial answer']);
+  });
+}

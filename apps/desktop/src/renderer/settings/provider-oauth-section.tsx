@@ -221,7 +221,7 @@ function SubscriptionLoginPanel(props: {
       <Text type="body">{display.detail}</Text>
       {flow.authRequestId && (
         <Text type="supporting" color="secondary" role="status" aria-live="polite">
-          {props.service === 'codex' && flow.stateHint
+          {(props.service === 'codex' || props.service === 'trae') && flow.stateHint
             ? <>{copy.deviceCode} {flow.stateHint}</>
             : copy.waitingAuthorization}
         </Text>
