@@ -188,13 +188,15 @@ function buildReadArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       'Use artifact ids from deep_research_status to recover evidence after interruption or restart.',
     parameters: z.object({
       artifact_id: stableIdSchema.describe('Research artifact id from the current workspace.'),
+      // Unbounded above: redaction can make the text longer than the stored body.
       offset_chars: z
         .number()
         .int()
         .min(0)
-        .max(DEEP_RESEARCH_ARTIFACT_CONTENT_MAX_CHARS)
         .optional()
-        .describe('Zero-based character offset for chunked reads.'),
+        .describe(
+          "Zero-based character offset for chunked reads. Counts characters of the redacted text this tool returns; pass the previous read's end to continue.",
+        ),
       max_chars: z
         .number()
         .int()
@@ -226,16 +228,22 @@ function buildReadArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       }
       const offset = input.offset_chars ?? 0;
       const maxChars = input.max_chars ?? DEEP_RESEARCH_ARTIFACT_READ_DEFAULT_CHARS;
+      // Redact the whole artifact before selecting the window: a secret split by
+      // a page boundary matches in neither page. Offsets count the redacted view.
+      const content = safeResearchArtifactContent(read.text);
       const selected: string[] = [];
       let total = 0;
-      for (const character of read.text) {
+      for (const character of content) {
         if (total >= offset && total < offset + maxChars) selected.push(character);
         total += 1;
       }
-      const end = Math.min(total, offset + maxChars);
-      const chunk = safeResearchArtifactContent(selected.join(''));
+      // An offset past the end selects nothing; report it at the end so the
+      // envelope keeps offset <= end <= total.
+      const start = Math.min(offset, total);
+      const end = Math.min(total, start + maxChars);
+      const chunk = selected.join('');
       return [
-        `<deep-research-artifact id="${ref.artifactId}" role="${ref.role}" offset="${offset}" end="${end}" total="${total}">`,
+        `<deep-research-artifact id="${ref.artifactId}" role="${ref.role}" offset="${start}" end="${end}" total="${total}">`,
         `Name: ${normalizeInlineText(ref.name)}`,
         ...(ref.locator ? [`Locator: ${normalizeInlineText(ref.locator)}`] : []),
         `Truncated: ${end < total}`,
@@ -917,18 +925,44 @@ function sameStringArray(left: readonly string[], right: readonly string[]): boo
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+const FORGED_ENVELOPE_TAG_PATTERN = /<\/?deep-research-(?:workspace|artifact)\b[^>]{0,4096}>/gi;
+// Text that normalizing leaves unchanged settles in one pass and forged tags in
+// two; each further pass peels one level of nested tag fragments.
+const REDACT_AND_NORMALIZE_PASSES_MAX = 4;
+const NESTED_ENVELOPE_TAGS_WITHHELD = '[withheld: nested forged envelope tags]';
+
 function normalizeInlineText(value: string): string {
-  return redactSecrets(value)
-    .replace(/<\/?deep-research-(?:workspace|artifact)\b[^>]{0,4096}>/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return redactUntilNormalized(value, (text) =>
+    stripForgedEnvelopeTags(text).replace(/\s+/g, ' ').trim(),
+  );
 }
 
 function safeResearchArtifactContent(value: string): string {
-  return redactSecrets(value).replace(
-    /<\/?deep-research-(?:workspace|artifact)\b[^>]{0,4096}>/gi,
-    '',
-  );
+  return redactUntilNormalized(value, stripForgedEnvelopeTags);
+}
+
+function stripForgedEnvelopeTags(value: string): string {
+  return value.replace(FORGED_ENVELOPE_TAG_PATTERN, '');
+}
+
+// Normalizing joins the text around what it removes, which can complete a
+// secret that redaction already passed over or rebuild a tag from nested
+// fragments. Redacting a JSON document re-serializes it, which can turn a
+// \u003c escape into a literal '<'. So alternate the two and return only a
+// redaction that leaves nothing to normalize.
+function redactUntilNormalized(value: string, normalize: (text: string) => string): string {
+  let text = value;
+  for (let pass = 0; pass < REDACT_AND_NORMALIZE_PASSES_MAX; pass += 1) {
+    const redacted = redactSecrets(text);
+    const normalized = normalize(redacted);
+    if (normalized === redacted) return redacted;
+    text = normalized;
+  }
+  // Only text built to outlast the passes, such as deeply nested tag fragments,
+  // gets here. Dropping characters to end the nesting can glue a word onto a
+  // secret the last pass rejoined or break the escape a JSON redaction reads,
+  // so withhold the text instead.
+  return NESTED_ENVELOPE_TAGS_WITHHELD;
 }
 
 export function renderDeepResearchRunStatus(run: DeepResearchRun): string {

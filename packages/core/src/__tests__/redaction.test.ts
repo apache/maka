@@ -170,6 +170,25 @@ describe('redactSecrets', () => {
     assert.equal(text.includes('nested-token-value'), false);
   });
 
+  test('masks credentials held in serialized JSON object keys', () => {
+    const text = redactSecrets(
+      JSON.stringify({
+        repos: { ghp_FAKEjsonKeyFAKEjsonKeyFAKE: 'repo-a' },
+        seen: { 'Authorization: Bearer FAKE-bearer-key-0000': 3 },
+        mirrors: { 'https://user:FAKE-pass-0000@example.com/': 'ok' },
+        keep: { visible: 'visible' },
+      }),
+    );
+
+    assert.doesNotMatch(text, /FAKE/);
+    assert.deepEqual(JSON.parse(text), {
+      repos: { '[redacted]': 'repo-a' },
+      seen: { 'Authorization: Bearer [redacted]': 3 },
+      mirrors: { 'https://[redacted]@example.com/': 'ok' },
+      keep: { visible: 'visible' },
+    });
+  });
+
   test('redacts original string leaves without crossing serialized JSON boundaries', () => {
     const text = redactSecrets(
       JSON.stringify({

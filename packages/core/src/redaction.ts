@@ -149,8 +149,13 @@ function redactJsonValue(value: unknown): { value: unknown; changed: boolean } {
   let changed = false;
   const next: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(value)) {
+    // A key can hold a credential too (a token used as a map key, a header
+    // line). Keys that redact to the same text collapse into one entry, which
+    // keeps only the last of their values.
+    const nextKey = redactTextSecrets(key);
+    changed = changed || nextKey !== key;
     if (isSensitiveKey(key)) {
-      Object.defineProperty(next, key, {
+      Object.defineProperty(next, nextKey, {
         value: '[redacted]',
         enumerable: true,
         configurable: true,
@@ -160,7 +165,7 @@ function redactJsonValue(value: unknown): { value: unknown; changed: boolean } {
       continue;
     }
     const redacted = redactJsonValue(raw);
-    Object.defineProperty(next, key, {
+    Object.defineProperty(next, nextKey, {
       value: redacted.value,
       enumerable: true,
       configurable: true,
