@@ -945,7 +945,7 @@ test('backend creation admits an enabled model a snapshot never listed', async (
   await backend.dispose();
 });
 
-test('Host reopens one projected image from its ArtifactStore authority', async () => {
+test('Host keeps OpenAI Chat projected image results bounded across replay', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-projection-image-'));
   const capability = await resolveStorageRoot({
     path: join(base, 'interactive'),
@@ -976,16 +976,15 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   if (!owner) return;
   const provider = await startProvider();
   provider.configureProjectionImageFlow('ProjectedImage');
-  const assertProjectedImage = (body: Record<string, unknown> | undefined) => {
+  const assertProjectedImageFallback = (body: Record<string, unknown> | undefined) => {
     assert.ok(body);
-    assert.doesNotMatch(JSON.stringify(body), /raw execution fact/u);
-    assert.deepEqual(JSON.parse(latestToolResultText(body) ?? 'null'), [
-      {
-        type: 'file',
-        mediaType: 'image/png',
-        data: { type: 'data', data: pngBytes.toString('base64') },
-      },
-    ]);
+    const serializedBody = JSON.stringify(body);
+    assert.doesNotMatch(serializedBody, /raw execution fact/u);
+    assert.doesNotMatch(serializedBody, new RegExp(pngBytes.toString('base64'), 'u'));
+    assert.equal(
+      latestToolResultText(body),
+      'Image was read successfully, but this provider protocol cannot represent image content in a tool result. The binary image was omitted.',
+    );
   };
   let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
   let artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
@@ -1037,7 +1036,7 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     }
     const liveRequests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(liveRequests.length, 2);
-    assertProjectedImage(liveRequests[1]?.body);
+    assertProjectedImageFallback(liveRequests[1]?.body);
 
     const nextRunId = 'projection-image-next-run';
     const nextText = 'Continue in the same process.';
@@ -1068,7 +1067,7 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     }
     const nextTurnRequests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(nextTurnRequests.length, 3);
-    assertProjectedImage(nextTurnRequests[2]?.body);
+    assertProjectedImageFallback(nextTurnRequests[2]?.body);
 
     await backend.dispose();
     backend = undefined;
@@ -1104,7 +1103,7 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     }
     const streamRequests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(streamRequests.length, 4);
-    assertProjectedImage(streamRequests[3]?.body);
+    assertProjectedImageFallback(streamRequests[3]?.body);
   } finally {
     await backend?.dispose();
     artifacts?.close();

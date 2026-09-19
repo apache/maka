@@ -2805,6 +2805,117 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('OpenAI-compatible Chat omits image bytes from string-valued tool content', async () => {
+    const imageBytes = new TextEncoder().encode('MAKA_IMAGE_TOOL_RESULT');
+    const imageBase64 = Buffer.from(imageBytes).toString('base64');
+    let readCount = 0;
+    let requestBody: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const chunks = [
+        {
+          id: 'chatcmpl-image-tool-result',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'relay-model',
+          choices: [{ index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: null }],
+        },
+        {
+          id: 'chatcmpl-image-tool-result',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'relay-model',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 12, completion_tokens: 1, total_tokens: 13 },
+        },
+      ];
+      return new Response(
+        `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const backend = createBackend({
+      connection: {
+        slug: 'relay',
+        providerType: 'openai-compatible',
+        baseUrl: 'https://relay.example/v1',
+        defaultModel: 'relay-model',
+      },
+      apiKey: 'relay-token',
+      modelId: 'relay-model',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [],
+      supportsVision: true,
+      readAttachmentBytes: async () => {
+        readCount += 1;
+        return { ok: true, bytes: imageBytes };
+      },
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        ...sameRouteReplayProvenance('relay-model'),
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-user',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'read the image',
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'tool-image',
+              name: 'Read',
+              args: { path: 'chart.png' },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'tool-image',
+              name: 'Read',
+              isError: false,
+              result: {
+                kind: 'image',
+                mimeType: 'image/png',
+                ref: {
+                  kind: 'session_file',
+                  sessionId: 'session-1',
+                  relativePath: 'chart.png',
+                },
+              },
+            },
+          }),
+        ],
+      }),
+    );
+
+    const messages = requestBody?.messages;
+    assert.ok(Array.isArray(messages));
+    const assistant = messages.find((message) => message?.role === 'assistant');
+    const tool = messages.find((message) => message?.role === 'tool');
+    assert.ok(assistant && Array.isArray(assistant.tool_calls));
+    assert.equal(assistant.tool_calls[0]?.id, 'tool-image');
+    assert.equal(tool?.tool_call_id, 'tool-image');
+    assert.equal(typeof tool?.content, 'string');
+    assert.match(tool.content, /cannot represent image content in a tool result/);
+    assert.equal(JSON.stringify(requestBody).includes(imageBase64), false);
+    assert.equal(readCount, 0, 'unsupported tool-result media must not load image bytes');
+  });
+
   test('budgets replayed image tool results by durable occurrence instead of reused tool-call ids', async () => {
     const bytes = new Uint8Array(10);
     const model = completionModel();
