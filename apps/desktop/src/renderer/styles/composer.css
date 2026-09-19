@@ -49,6 +49,12 @@
   text-align: center;
 }
 
+/* The expanded sidebar already exposes WorkHub. Keep this fallback only
+   when that navigation is collapsed, using the shell's sidebar authority. */
+.appFrame[data-sidebar-state='expanded'] .maka-return-workhub {
+  display: none;
+}
+
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
    composer below it stays still. Both otherwise share the dock's filtered
    compositing surface, so Chromium may re-raster the thin context-gauge paths
