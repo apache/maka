@@ -31,34 +31,24 @@ function loadElectron(): typeof import('electron') {
 
 const declarations = {
   'permission-overlay': {
-    parent: 'none',
-    size: { width: 530, height: 109 },
-    keepAlive: false,
+    size: {},
     reveal: showWindowInactive,
   },
   'startup-progress': {
-    parent: 'none',
     size: { width: 520, height: 350, useContentSize: true },
-    keepAlive: false,
     reveal: showWindowInactive,
     theme: { light: '#ffffff', dark: '#1c1d21' },
   },
   workhub: {
-    parent: 'none',
-    size: { width: 520, height: 96 },
-    keepAlive: true,
+    size: {},
     reveal: showWindowInactive,
   },
   'cursor-overlay': {
-    parent: 'none',
     size: {},
-    keepAlive: false,
     reveal: showWindowInactive,
   },
   pip: {
-    parent: 'optional',
     size: {},
-    keepAlive: true,
     reveal: showWindowInactive,
   },
 } as const;
