@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { HostedFormSettlement } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { PluginExecutorBackend } from '../plugin-executor-backend.js';
 import { Context } from '../plugin-kernel.js';
@@ -91,7 +92,11 @@ test('executor backend projects optional thinking and external tool activity', a
         activityKind: 'search',
       });
       context.emit({ type: 'tool_progress', toolCallId: 'external-1', text: 'working' });
-      context.emit({ type: 'tool_result', toolCallId: 'external-1', text: 'found' });
+      context.emit({
+        type: 'tool_result',
+        toolCallId: 'external-1',
+        content: { kind: 'file_diff', paths: ['README.md'], diff: '--- a/README.md' },
+      });
       return { status: 'completed', text: 'done' };
     },
     { thinking: true, toolActivity: true },
@@ -118,6 +123,11 @@ test('executor backend projects optional thinking and external tool activity', a
     ],
   );
   assert.equal(events[1]?.type === 'tool_start' ? events[1].providerExecuted : undefined, true);
+  assert.deepEqual(events[3]?.type === 'tool_result' ? events[3].content : undefined, {
+    kind: 'file_diff',
+    paths: ['README.md'],
+    diff: '--- a/README.md',
+  });
   const stepId = events[0]?.type === 'thinking_delta' ? events[0].messageId : undefined;
   assert.equal(events[1]?.type === 'tool_start' ? events[1].stepId : undefined, stepId);
   assert.equal(events[4]?.type === 'thinking_complete' ? events[4].messageId : undefined, stepId);
@@ -176,6 +186,57 @@ test('executor failure closes rich output before publishing its terminal error',
   );
   assert.equal(events[3]?.type === 'tool_result' ? events[3].isError : undefined, true);
   assert.equal(events[4]?.type === 'error' ? events[4].message : undefined, 'provider crashed');
+  await root.fiber.dispose();
+});
+
+test('executor permission requests use the hosted form authority', async () => {
+  const { root, binding } = fixture(async (_request, context) => {
+    const result = await context.requestPermission({
+      toolCallId: 'external-1',
+      title: 'Allow Antigravity to edit?',
+      options: [
+        { optionId: 'allow_once', name: 'Allow once' },
+        { optionId: 'reject_once', name: 'Reject once' },
+      ],
+    });
+    assert.deepEqual(result, { outcome: 'selected', optionId: 'allow_once' });
+    return { status: 'completed', text: 'approved' };
+  });
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding,
+    newId: ids(),
+    now: () => 42,
+  });
+  let settlement: HostedFormSettlement | undefined;
+  const events: SessionEvent[] = [];
+  for await (const event of backend.send({
+    turnId: 'turn-a',
+    text: 'task',
+    hostedInteraction: {
+      sessionId: 'session-a',
+      turnId: 'turn-a',
+      runId: 'run-a',
+      admitUserQuestionRequest: async () => undefined,
+      admitSandboxBoundaryRequest: async () => undefined,
+      admitFormRequest: async (input) => {
+        settlement = input.settlement;
+      },
+      withdrawFormRequest: async () => undefined,
+    },
+  })) {
+    events.push(event);
+    if (event.type === 'form_request') {
+      assert.equal(event.requester.name, 'remote');
+      assert.equal(event.fields[0]?.kind, 'single_select');
+      await settlement?.applyAnswer({ action: 'accept', values: { optionId: 'allow_once' } });
+    }
+  }
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['form_request', 'text_complete', 'complete'],
+  );
   await root.fiber.dispose();
 });
 

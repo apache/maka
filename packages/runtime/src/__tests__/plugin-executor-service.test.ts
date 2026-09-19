@@ -199,6 +199,42 @@ test('executor rich events require an explicitly declared capability', async () 
   await root.fiber.dispose();
 });
 
+test('executor permission choices cross the service boundary with validation', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  plugin(root, 'profile', 'provider', 1).executors.register({
+    id: 'remote',
+    execute: async (_request, context) => {
+      const result = await context.requestPermission({
+        toolCallId: 'external-tool',
+        title: 'Allow external edit?',
+        options: [
+          { optionId: 'allow', name: 'Allow' },
+          { optionId: 'deny', name: 'Deny' },
+        ],
+      });
+      return { status: 'completed', text: result.outcome };
+    },
+  });
+
+  const result = await service.execute('remote', request('session-a'), {
+    onPermissionRequest: async (permission) => {
+      assert.equal(Object.isFrozen(permission), true);
+      assert.equal(Object.isFrozen(permission.options), true);
+      return { outcome: 'selected', optionId: 'allow' };
+    },
+  });
+  assert.deepEqual(result, { status: 'completed', text: 'selected' });
+  await assert.rejects(
+    () =>
+      service.execute('remote', request('session-a'), {
+        onPermissionRequest: async () => ({ outcome: 'selected', optionId: 'unknown' }),
+      }),
+    /permission result is invalid/u,
+  );
+  await root.fiber.dispose();
+});
+
 function plugin(
   root: Context,
   rootId: 'profile' | `session:${string}`,

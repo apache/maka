@@ -78,11 +78,31 @@ export type PluginExecutorOutputEvent =
   | {
       readonly type: 'tool_result';
       readonly toolCallId: string;
-      readonly text: string;
+      readonly content: PluginExecutorToolResultContent;
       readonly isError?: boolean;
     };
 
+/** Durable tool-result shapes that an external executor may publish directly. */
+export type PluginExecutorToolResultContent =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'file_diff'; readonly paths: readonly string[]; readonly diff: string };
+
 export type PluginExecutorCancellationSource = 'provider' | 'caller' | 'executor_retired';
+
+export interface PluginExecutorPermissionOption {
+  readonly optionId: string;
+  readonly name: string;
+}
+
+export interface PluginExecutorPermissionRequest {
+  readonly toolCallId: string;
+  readonly title: string;
+  readonly options: readonly PluginExecutorPermissionOption[];
+}
+
+export type PluginExecutorPermissionResult =
+  | { readonly outcome: 'cancelled' }
+  | { readonly outcome: 'selected'; readonly optionId: string };
 
 export type PluginExecutorResult =
   | { readonly status: 'completed'; readonly text: string }
@@ -102,6 +122,10 @@ export type PluginExecutorResult =
 export interface PluginExecutorContext {
   readonly signal: AbortSignal;
   emit(event: PluginExecutorOutputEvent): void;
+  /** Request one provider-defined permission choice through Maka's hosted form authority. */
+  requestPermission(
+    request: PluginExecutorPermissionRequest,
+  ): Promise<PluginExecutorPermissionResult>;
 }
 
 /** A black-box executor contributed by one Host plugin. */
@@ -118,6 +142,9 @@ export interface PluginExecutorProvider {
 export interface PluginExecutorExecutionOptions {
   readonly signal?: AbortSignal;
   readonly onEvent?: (event: PluginExecutorOutputEvent) => void;
+  readonly onPermissionRequest?: (
+    request: PluginExecutorPermissionRequest,
+  ) => Promise<PluginExecutorPermissionResult>;
 }
 
 export interface PluginExecutorInspection extends MakaContributionIdentity {
@@ -306,6 +333,15 @@ export class PluginExecutorService extends Service {
               // A presentation observer must not change external execution.
             }
           },
+          requestPermission: async (request) => {
+            if (signal.aborted || entry.retired) return Object.freeze({ outcome: 'cancelled' });
+            const normalized = normalizePermissionRequest(request);
+            const result = options.onPermissionRequest
+              ? await options.onPermissionRequest(normalized)
+              : ({ outcome: 'cancelled' } as const);
+            if (signal.aborted || entry.retired) return Object.freeze({ outcome: 'cancelled' });
+            return normalizePermissionResult(result, normalized);
+          },
         });
         if (signal.aborted) return cancelledResult(signal.reason);
         return normalizeResult(result);
@@ -448,17 +484,39 @@ function normalizeOutputEvent(
     event.type === 'tool_result' &&
     capabilities?.toolActivity === true &&
     isSafeEventId(event.toolCallId) &&
-    isSafeEventText(event.text) &&
+    isPluginToolResultContent(event.content) &&
     (event.isError === undefined || typeof event.isError === 'boolean')
   ) {
     return Object.freeze({
       type: event.type,
       toolCallId: event.toolCallId,
-      text: event.text,
+      content:
+        event.content.kind === 'text'
+          ? Object.freeze({ kind: 'text' as const, text: event.content.text })
+          : Object.freeze({
+              kind: 'file_diff' as const,
+              paths: Object.freeze([...event.content.paths]),
+              diff: event.content.diff,
+            }),
       ...(event.isError === undefined ? {} : { isError: event.isError }),
     });
   }
   throw new TypeError('Executor output event is invalid or undeclared');
+}
+
+function isPluginToolResultContent(value: PluginExecutorToolResultContent): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (value.kind === 'text') return isSafeEventText(value.text);
+  return (
+    value.kind === 'file_diff' &&
+    Array.isArray(value.paths) &&
+    value.paths.length > 0 &&
+    value.paths.length <= 64 &&
+    value.paths.every((path) => isSafeEventText(path) && path.trim().length > 0) &&
+    typeof value.diff === 'string' &&
+    value.diff.length <= 1024 * 1024 &&
+    !/[\0\r]/u.test(value.diff)
+  );
 }
 
 function normalizeResult(result: PluginExecutorResult): PluginExecutorResult {
@@ -490,6 +548,57 @@ function normalizeResult(result: PluginExecutorResult): PluginExecutorResult {
     });
   }
   throw new TypeError('Executor result is invalid');
+}
+
+function normalizePermissionRequest(
+  request: PluginExecutorPermissionRequest,
+): PluginExecutorPermissionRequest {
+  if (
+    !request ||
+    typeof request !== 'object' ||
+    !isSafeEventId(request.toolCallId) ||
+    !isSafeEventText(request.title) ||
+    !request.title.trim() ||
+    !Array.isArray(request.options) ||
+    request.options.length === 0 ||
+    request.options.length > 64
+  ) {
+    throw new TypeError('Executor permission request is invalid');
+  }
+  const seen = new Set<string>();
+  const options = request.options.map((option) => {
+    if (
+      !option ||
+      typeof option !== 'object' ||
+      !isSafeEventId(option.optionId) ||
+      !isSafeEventText(option.name) ||
+      !option.name.trim() ||
+      seen.has(option.optionId)
+    ) {
+      throw new TypeError('Executor permission option is invalid');
+    }
+    seen.add(option.optionId);
+    return Object.freeze({ optionId: option.optionId, name: option.name });
+  });
+  return Object.freeze({
+    toolCallId: request.toolCallId,
+    title: request.title,
+    options: Object.freeze(options),
+  });
+}
+
+function normalizePermissionResult(
+  result: PluginExecutorPermissionResult,
+  request: PluginExecutorPermissionRequest,
+): PluginExecutorPermissionResult {
+  if (result?.outcome === 'cancelled') return Object.freeze({ outcome: 'cancelled' });
+  if (
+    result?.outcome === 'selected' &&
+    request.options.some((option) => option.optionId === result.optionId)
+  ) {
+    return Object.freeze({ outcome: 'selected', optionId: result.optionId });
+  }
+  throw new TypeError('Executor permission result is invalid');
 }
 
 function providerStateIdentity(identity: PluginExecutorInspection): `sha256:${string}` {
