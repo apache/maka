@@ -17,7 +17,10 @@
  * under the License.
  */
 
+import { loginTraePublicAccount } from '@maka/runtime/trae/public-authorization';
+import { traePublicDeviceIdentity } from '@maka/runtime/trae/public-protocol';
 import { OAuthTokenEndpointError } from '@maka/runtime/oauth-login';
+import { redactSecrets } from '@maka/core/redaction';
 import { createProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import {
   exchangeCodexDeviceAuthorizationCode,
@@ -66,6 +69,11 @@ import type { OAuthOperationHandlerMap } from './operation-dispatcher.js';
 import type { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
+import {
+  startTraeDeviceAuthorization,
+  pollTraeDeviceAuthorization,
+} from '@maka/runtime/trae/authorization';
+
 const MAX_TERMINAL_ATTEMPTS = 256;
 
 export class HostOAuthFatalError extends Error {
@@ -88,6 +96,16 @@ export interface HostOAuthCoordinatorInput {
   readonly invalidateBackends: () => Promise<void>;
   readonly onFatal: (error: HostOAuthFatalError) => void;
   readonly now?: () => number;
+  readonly loginTraePublic?: typeof loginTraePublicAccount;
+  /**
+   * Seed of the device identity Trae public logins present, one per Host
+   * root: every Trae Connection and re-login of this install then counts as
+   * the same device against the account's device limit. Absent, each login
+   * invents a device and spends a slot.
+   */
+  readonly traeDeviceSeed?: string;
+  readonly startTraeAuthorization?: typeof startTraeDeviceAuthorization;
+  readonly pollTraeAuthorization?: typeof pollTraeDeviceAuthorization;
   readonly startXaiAuthorization?: typeof startXaiDeviceAuthorization;
   readonly pollXaiAuthorization?: typeof pollXaiDeviceAuthorization;
   readonly startGitHubCopilotAuthorization?: typeof startGitHubCopilotDeviceAuthorization;
@@ -147,6 +165,10 @@ export class HostOAuthCoordinator {
   readonly #invalidateBackends: () => Promise<void>;
   readonly #onFatal: (error: HostOAuthFatalError) => void;
   readonly #now: () => number;
+  readonly #loginTraePublic: typeof loginTraePublicAccount;
+  readonly #traeDevice: ReturnType<typeof traePublicDeviceIdentity> | undefined;
+  readonly #startTraeAuthorization: typeof startTraeDeviceAuthorization;
+  readonly #pollTraeAuthorization: typeof pollTraeDeviceAuthorization;
   readonly #startXaiAuthorization: typeof startXaiDeviceAuthorization;
   readonly #pollXaiAuthorization: typeof pollXaiDeviceAuthorization;
   readonly #startGitHubCopilotAuthorization: typeof startGitHubCopilotDeviceAuthorization;
@@ -168,6 +190,11 @@ export class HostOAuthCoordinator {
 
   constructor(input: HostOAuthCoordinatorInput) {
     this.#runtimePolicy = input.runtimePolicy;
+    this.#loginTraePublic = input.loginTraePublic ?? loginTraePublicAccount;
+    this.#traeDevice =
+      input.traeDeviceSeed === undefined
+        ? undefined
+        : traePublicDeviceIdentity(input.traeDeviceSeed);
     this.#oauthCredentials =
       input.oauthCredentials ?? new HostOAuthExecutionAuthority(input.runtimePolicy);
     this.#activation = input.activation;
@@ -177,6 +204,8 @@ export class HostOAuthCoordinator {
     this.#invalidateBackends = input.invalidateBackends;
     this.#onFatal = input.onFatal;
     this.#now = input.now ?? Date.now;
+    this.#startTraeAuthorization = input.startTraeAuthorization ?? startTraeDeviceAuthorization;
+    this.#pollTraeAuthorization = input.pollTraeAuthorization ?? pollTraeDeviceAuthorization;
     this.#startXaiAuthorization = input.startXaiAuthorization ?? startXaiDeviceAuthorization;
     this.#pollXaiAuthorization = input.pollXaiAuthorization ?? pollXaiDeviceAuthorization;
     this.#startGitHubCopilotAuthorization =
@@ -425,6 +454,11 @@ export class HostOAuthCoordinator {
       } else {
         attempt.phase = 'failed';
         attempt.failure = loginFailureCode(error);
+        // Clients only ever see the failure code; the reason lives here so a
+        // diagnostic report can explain a rejected login.
+        console.warn(
+          `[oauth] ${attempt.provider} login attempt failed (account=${attempt.ticket.connection.traeAccount ?? '-'}): ${attempt.failure} — ${describeLoginError(error)}`,
+        );
         if (isCommitOutcomeUnknown(error)) {
           this.#onFatal(new HostOAuthFatalError('OAuth login commit outcome is unknown', error));
         }
@@ -483,6 +517,30 @@ export class HostOAuthCoordinator {
     fetchFn: typeof fetch,
   ): Promise<OAuthSubscriptionTokens> {
     switch (attempt.provider) {
+      case 'trae': {
+        const account = attempt.ticket.connection.traeAccount;
+        if (account && account !== 'employee')
+          return this.#loginTraePublic({
+            account,
+            ...(this.#traeDevice ? { device: this.#traeDevice } : {}),
+            fetchFn,
+            signal: attempt.abort.signal,
+            now: this.#now,
+            present: async (url) => {
+              await this.#present(attempt, { method: 'open_external', url });
+            },
+            onExchange: () => {
+              attempt.phase = 'exchanging';
+              attempt.cancellationDeferred = true;
+            },
+          });
+        return this.#runDeviceLogin(
+          attempt,
+          fetchFn,
+          this.#startTraeAuthorization,
+          this.#pollTraeAuthorization,
+        );
+      }
       case 'xai-oauth':
         return this.#runXaiLogin(attempt, fetchFn);
       case 'openai-codex':
@@ -542,6 +600,50 @@ export class HostOAuthCoordinator {
     });
     attempt.phase = 'exchanging';
     return this.#pollXaiAuthorization({
+      authorization,
+      fetchFn,
+      signal: attempt.abort.signal,
+      now: this.#now,
+      onPollAdmission: () => {
+        attempt.cancellationDeferred = true;
+      },
+      onPollRetry: () => {
+        attempt.cancellationDeferred = false;
+        if (attempt.cancelRequested) {
+          this.#requestCancellation(
+            attempt,
+            new DOMException('OAuth login cancelled', 'AbortError'),
+          );
+        }
+      },
+    });
+  }
+
+  async #runDeviceLogin<T extends { verificationUrl: string; userCode: string }>(
+    attempt: ActiveLoginAttempt,
+    fetchFn: typeof fetch,
+    start: (input: { fetchFn: typeof fetch; signal: AbortSignal; now: () => number }) => Promise<T>,
+    poll: (input: {
+      authorization: T;
+      fetchFn: typeof fetch;
+      signal: AbortSignal;
+      now: () => number;
+      onPollAdmission: () => void;
+      onPollRetry: () => void;
+    }) => Promise<OAuthSubscriptionTokens>,
+  ) {
+    const authorization = await start({
+      fetchFn,
+      signal: attempt.abort.signal,
+      now: this.#now,
+    });
+    await this.#present(attempt, {
+      method: 'open_external',
+      url: authorization.verificationUrl,
+      ...(authorization.userCode ? { stateHint: authorization.userCode } : {}),
+    });
+    attempt.phase = 'exchanging';
+    return poll({
       authorization,
       fetchFn,
       signal: attempt.abort.signal,
@@ -665,9 +767,19 @@ function sameOAuthLoginTarget(actual: OAuthLoginTarget, expected: OAuthLoginTarg
       ? expected.kind === 'create' &&
         actual.providerType === expected.providerType &&
         actual.slug === expected.slug &&
-        actual.name === expected.name
+        actual.name === expected.name &&
+        actual.traeAccount === expected.traeAccount
       : expected.kind === 'existing' && actual.connectionId === expected.connectionId)
   );
+}
+
+function describeLoginError(error: unknown): string {
+  const base = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  const cause =
+    error instanceof Error && error.cause instanceof Error
+      ? ` (${error.cause.name}: ${error.cause.message})`
+      : '';
+  return redactSecrets(`${base}${cause}`).slice(0, 400);
 }
 
 function loginFailureCode(error: unknown): OAuthLoginFailureCode {

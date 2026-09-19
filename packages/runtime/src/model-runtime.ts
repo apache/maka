@@ -44,7 +44,8 @@ export type ModelRuntimeWire =
   | 'openai-responses'
   | 'google-generate'
   | 'cohere-v2'
-  | 'commandcode-cli';
+  | 'commandcode-cli'
+  | 'trae-raw-chat';
 
 export type ReasoningReplayContract =
   | { kind: 'none' }
@@ -88,6 +89,11 @@ type ModelRuntimeCall =
       // DeepSeek thinking mode rejects a tool loop whose history lacks its
       // reasoning, so assistant reasoning is replayed as a `reasoning` block.
       reasoningReplay: { kind: 'openai-chat-plaintext'; requestField: 'reasoning' };
+    }
+  | {
+      wire: 'trae-raw-chat';
+      adapter: Extract<ProviderRuntimeAdapter, { kind: 'trae' }>;
+      reasoningReplay: { kind: 'none' };
     };
 
 export type ResolvedModelRuntime = ModelRuntimeCall & {
@@ -221,6 +227,8 @@ export function modelUsesNativeOpenAiResponses(
 
 function adapterCalls(adapter: ProviderRuntimeAdapter): ModelRuntimeCall[] {
   switch (adapter.kind) {
+    case 'trae':
+      return [{ adapter, wire: 'trae-raw-chat', reasoningReplay: { kind: 'none' } }];
     case 'anthropic':
       return [
         { adapter, wire: 'anthropic-messages', reasoningReplay: { kind: 'anthropic-signed' } },

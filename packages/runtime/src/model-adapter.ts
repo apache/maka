@@ -202,6 +202,7 @@ export class ModelAdapter {
       sessionId: this.input.sessionId,
       connection: this.input.connection,
       apiKey: this.input.apiKey,
+      ...(this.input.sessionId ? { sessionId: this.input.sessionId } : {}),
       modelId: this.input.modelId,
       resolvedRuntime: this.runtime,
       ...(this.runtime.reasoningReplay.kind === 'openai-chat-plaintext'
@@ -289,6 +290,7 @@ export class ModelAdapter {
       : this.input.providerOptions;
     const sdkResult = streamText({
       model: trackedModel,
+      includeRawChunks: this.input.connection.providerType === 'trae',
       messages: providerMessages,
       tools: sdkTools,
       activeTools: input.activeTools.map(providerToolName),
@@ -660,7 +662,13 @@ function selectedModelMaxOutputTokens(
   const kimiOpenAiChat =
     connection.providerType === 'kimi-coding-plan' && runtime.wire === 'openai-chat';
   const requestedBudget = connection.modelOverrides?.[modelId]?.maxOutputTokens;
-  if (requestedBudget === undefined && !anthropicMessages && !kimiOpenAiChat) return undefined;
+  if (
+    requestedBudget === undefined &&
+    !anthropicMessages &&
+    !kimiOpenAiChat &&
+    runtime.wire !== 'trae-raw-chat'
+  )
+    return undefined;
   const capacity =
     connection.models?.find((model) => model.id === modelId)?.maxOutputTokens ??
     lookupModelMetadata(connection.providerType, modelId).maxOutputTokens;
@@ -746,6 +754,7 @@ function requireResponsesReplayProfile(runtime: ResolvedModelRuntime): string {
  * SDK chunk union just enough to read the fields Maka cares about.
  */
 interface AiSdkStreamChunk {
+  rawValue?: unknown;
   type: string;
   id?: unknown;
   text?: string;
@@ -995,6 +1004,21 @@ function translateChunk(
   runtimeToolName?: (name: string) => string,
 ): ModelStreamEvent[] {
   switch (chunk.type) {
+    case 'raw': {
+      if (runtime?.adapter.kind !== 'trae' || !chunk.rawValue || typeof chunk.rawValue !== 'object')
+        return [];
+      const value = chunk.rawValue as Record<string, unknown>;
+      if (value.type !== 'trae-queue' || typeof value.queued !== 'boolean') return [];
+      return [
+        {
+          kind: 'provider-queue',
+          queued: value.queued,
+          ...(Number.isSafeInteger(value.position) && Number(value.position) >= 0
+            ? { position: Number(value.position) }
+            : {}),
+        },
+      ];
+    }
     case 'reasoning-start': {
       const reasoningPartId = reasoningPartIdFromChunk(chunk);
       const redactedThinkingProviderOptions =

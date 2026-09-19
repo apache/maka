@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { traeAccountFields } from '@maka/core/llm-connections';
 import {
   decodeConnectionName,
   decodeConnectionSlug,
@@ -36,7 +37,12 @@ export const OAUTH_PRESENTATION_SERVICE_ID = 'oauth_presentation';
 export const OAUTH_PRESENTATION_SERVICE_VERSION = '1';
 export const OAUTH_PRESENTATION_URL_MAX_LENGTH = 8_192;
 export const OAUTH_PRESENTATION_STATE_HINT_MAX_LENGTH = 1_024;
-export const OAUTH_LOGIN_PROVIDERS = ['openai-codex', 'xai-oauth', 'github-copilot'] as const;
+export const OAUTH_LOGIN_PROVIDERS = [
+  'openai-codex',
+  'xai-oauth',
+  'github-copilot',
+  'trae',
+] as const;
 export const OAUTH_LOGIN_PHASES = [
   'awaiting_authorization',
   'exchanging',
@@ -76,7 +82,7 @@ const ATTEMPT_ERRORS = [...COMMON_ERRORS, 'not_found', 'persistence_failed'] as 
 export type OAuthLoginProvider = (typeof OAUTH_LOGIN_PROVIDERS)[number];
 export type OAuthLoginPhase = (typeof OAUTH_LOGIN_PHASES)[number];
 export type OAuthLoginFailureCode = (typeof OAUTH_LOGIN_FAILURE_CODES)[number];
-// One member today: every live enrolment is a device flow that opens a browser.
+// Device authorization and loopback PKCE both present through the browser.
 // The method still travels on the wire and is still validated on arrival, so a
 // peer that offers anything else is refused rather than silently presented.
 export type OAuthPresentationMethod = 'open_external';
@@ -118,12 +124,14 @@ export type OAuthLoginTarget =
       readonly providerType: 'openai-codex';
       readonly slug?: string;
       readonly name?: string;
+      readonly traeAccount?: never;
     }
   | {
       readonly kind: 'create';
       readonly providerType: Exclude<OAuthLoginProvider, 'openai-codex'>;
       readonly slug?: never;
       readonly name?: never;
+      readonly traeAccount?: import('@maka/core/llm-connections').TraeAccount;
     }
   | { readonly kind: 'existing'; readonly connectionId: string };
 
@@ -244,16 +252,18 @@ function decodeOAuthLoginTarget(value: unknown): OAuthLoginTarget {
       target,
       'OAuth create target',
       ['kind', 'providerType'],
-      ['slug', 'name'],
+      ['slug', 'name', 'traeAccount'],
     );
     const providerType = oauthLoginProvider(exact.providerType);
+    // The account variant is Trae's alone; the decoder refuses it elsewhere.
+    const account = decodeDomain(() => traeAccountFields(exact.traeAccount, providerType));
     if (providerType !== 'openai-codex') {
       if (exact.slug !== undefined || exact.name !== undefined) {
         throw invalidProtocolFrame(
           'Custom OAuth Connection identity is only supported for openai-codex',
         );
       }
-      return { kind: 'create', providerType };
+      return { kind: 'create', providerType, ...account };
     }
     return {
       kind: 'create',

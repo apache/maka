@@ -32,11 +32,16 @@ import type { ProjectedLlmConnection, ProviderType } from '@maka/core/llm-connec
 import type { PeerMeshQueryResult } from '@maka/runtime-host/protocol';
 import type { RuntimeHostPeerConnectionPath } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostProfileSnapshot } from '../../preload/bridge-contract.js';
-import type { ConnectionsBridge } from '../../renderer/features/connection-settings/index.js';
+import type { ConnectionOAuthLoginTarget, ConnectionsBridge } from '../../renderer/features/connection-settings/index.js';
 import type { RuntimeHostManagementServices } from '../../renderer/features/runtime-host-management/index.js';
 
 // Keep renderer implementations and their asset imports out of the main compilation graph.
 interface RenderModules {
+  OAuthLoginPanel: ComponentType<{
+    bridge: ConnectionsBridge;
+    cardId: 'trae';
+    onLoginSuccess(): void;
+  }>;
   ConnectionDetail: ComponentType<{
     bridge: ConnectionsBridge;
     connection: ProjectedLlmConnection;
@@ -97,6 +102,7 @@ before(async () => {
   await build({
     stdin: {
       contents: [
+        "export { OAuthLoginPanel } from './settings/provider-oauth-section';",
         "export { ConnectionDetail } from './settings/provider-connection-detail';",
         "export { RuntimeHostSettingsTarget } from './settings/runtime-host-settings-target';",
         "export { AddProviderForm } from './settings/provider-add-form';",
@@ -450,6 +456,134 @@ test('credential read failures still render the persistent warning', async () =>
     '模型凭据状态暂时没刷新成功，已避免把未知状态显示成未登录或未配置。',
   ));
 });
+
+
+test('Trae enrollment keeps the selected account through login and resets it on Host replacement', async () => {
+  const harness = installRenderer();
+  const targets: ConnectionOAuthLoginTarget[] = [];
+  const cancelled: string[] = [];
+  const completion = deferred<Awaited<ReturnType<ConnectionsBridge['oauth']['traeOAuth']['completeAuthorization']>>>();
+  const bridge = connectionDetailBridge({
+    oauth: {
+      ...connectionDetailBridge({}).oauth,
+      traeOAuth: {
+        getEnrollmentState: async () => ({ enabled: true }),
+        getAuthUrl: async (target: ConnectionOAuthLoginTarget) => {
+          targets.push(target);
+          return {
+            authRequestId: 'trae-login', stateHint: '',
+            connection: { connectionId: 'trae-connection', slug: 'trae', providerType: 'trae' },
+          };
+        },
+        openAuthUrl: async () => ({ ok: true }),
+        completeAuthorization: () => completion.promise,
+        cancelAuthorization: async (id) => { if (id) cancelled.push(id); return { ok: true }; },
+        getAccountState: unexpectedCall,
+        logout: unexpectedCall,
+      },
+    },
+  });
+  const renderPanel = (generation: string) => harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    generation,
+    children: createElement(components.OAuthLoginPanel, {
+      bridge, cardId: 'trae', onLoginSuccess: unexpectedCall,
+    }),
+  }));
+  await renderPanel('first');
+  const selector = harness.document.querySelector<HTMLButtonElement>('[role="combobox"]');
+  assert.ok(selector);
+  assert.match(selector.textContent ?? '', /CN · IDE/);
+  await act(async () => selector.click());
+  const option = [...harness.document.querySelectorAll<HTMLElement>('[role="option"]')]
+    .find((element) => element.textContent?.includes('SG · SOLO'));
+  assert.ok(option);
+  await act(async () => option.click());
+  const login = [...harness.document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('Sign in and add'));
+  assert.ok(login);
+  await act(async () => login.click());
+  assert.deepEqual(targets, [{ kind: 'create', traeAccount: 'sg-solo' }]);
+  assert.equal(selector.disabled, true);
+  assert.match(selector.textContent ?? '', /SG · SOLO/);
+
+  await renderPanel('second');
+  assert.deepEqual(cancelled, ['trae-login']);
+  const replacement = harness.document.querySelector<HTMLButtonElement>('[role="combobox"]');
+  assert.ok(replacement);
+  assert.equal(replacement.disabled, false);
+  assert.match(replacement.textContent ?? '', /CN · IDE/);
+  await act(async () => { completion.resolve({ ok: false, reason: 'authorization_cancelled' }); });
+  assert.deepEqual(targets, [{ kind: 'create', traeAccount: 'sg-solo' }]);
+});
+
+
+for (const mode of ['create', 'existing'] as const) {
+  for (const stateHint of ['BYTEDANCE-1234', '']) {
+    test(`Trae ${mode} login ${stateHint ? 'shows the employee device code' : 'does not show an empty public device code'}`, async () => {
+      const harness = installRenderer();
+      const targets: ConnectionOAuthLoginTarget[] = [];
+      const completion = deferred<Awaited<ReturnType<ConnectionsBridge['oauth']['traeOAuth']['completeAuthorization']>>>();
+      const bridge = connectionDetailBridge({
+        hasSecret: async () => true,
+        oauth: {
+          ...connectionDetailBridge({}).oauth,
+          traeOAuth: {
+            getEnrollmentState: async () => ({ enabled: true }),
+            getAccountState: async () => ({ runtimeState: 'authenticated' }),
+            getAuthUrl: async (target) => {
+              targets.push(target);
+              return {
+                authRequestId: 'trae-code-login', stateHint,
+                connection: { connectionId: 'trae-connection', slug: 'trae', providerType: 'trae' },
+              };
+            },
+            openAuthUrl: async () => ({ ok: true }),
+            completeAuthorization: () => completion.promise,
+            cancelAuthorization: async () => ({ ok: true }),
+            logout: unexpectedCall,
+          },
+        },
+      });
+      const account = stateHint ? 'employee' : 'cn';
+      const panel = mode === 'create'
+        ? createElement(components.OAuthLoginPanel, { bridge, cardId: 'trae', onLoginSuccess: unexpectedCall })
+        : createElement(components.ConnectionDetail, {
+            bridge,
+            connection: { ...relayConnection(), connectionId: 'trae-connection', slug: 'trae', providerType: 'trae', traeAccount: account },
+            isDefault: true, onChanged: async () => {}, onDeleted: async () => {},
+          });
+      await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+        host: { profileId: 'local', hostId: 'host-local' }, children: panel,
+      }));
+      if (mode === 'create' && stateHint) {
+        const selector = harness.document.querySelector<HTMLButtonElement>('[role="combobox"]');
+        assert.ok(selector);
+        await act(async () => selector.click());
+        const employee = [...harness.document.querySelectorAll<HTMLElement>('[role="option"]')]
+          .find((element) => element.textContent?.includes('ByteDance'));
+        assert.ok(employee);
+        await act(async () => employee.click());
+      }
+      const login = [...harness.document.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent === (mode === 'create' ? 'Sign in and add' : 'Sign in again'));
+      assert.ok(login);
+      await act(async () => login.click());
+      assert.deepEqual(targets, [mode === 'create'
+        ? { kind: 'create', traeAccount: account }
+        : { kind: 'existing', connectionId: 'trae-connection' }]);
+      const text = harness.document.body.textContent;
+      if (stateHint) {
+        assert.ok(text.includes(stateHint));
+        assert.ok(text.includes('Sign-in code:'));
+      } else {
+        assert.ok(!text.includes('Sign-in code:'));
+      }
+      await act(async () => completion.resolve({ ok: false, reason: 'authorization_cancelled' }));
+      assert.ok(!harness.document.body.textContent.includes('BYTEDANCE-1234'));
+    });
+  }
+}
 
 function unexpectedCall(): never {
   assert.fail('unexpected service call');

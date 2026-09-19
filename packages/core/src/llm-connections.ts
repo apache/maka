@@ -29,6 +29,7 @@
 // one rather than in the module that computes entries.
 import type { ModelCatalogEntry } from './model-catalog.js';
 import type { ModelOverride, ModelOverrides } from './model-thinking.js';
+import { RuntimePolicyDomainDecodeError } from './runtime-policy/domain-codec.js';
 import type {
   JsonObject,
   RequestHeaderUpdate,
@@ -100,7 +101,35 @@ export function isModelModality(value: unknown): value is ModelModality {
   return MODEL_MODALITIES.includes(value as ModelModality);
 }
 
+/** Omitted on existing connections: ByteDance employee SSO. */
+export const TRAE_ACCOUNTS = ['employee', 'cn', 'cn-solo', 'sg', 'sg-solo'] as const;
+export type TraeAccount = (typeof TRAE_ACCOUNTS)[number];
+export function traeAccountFields(
+  value: unknown,
+  providerType: string,
+): { traeAccount?: TraeAccount } {
+  if (value === undefined) return {};
+  if (providerType !== 'trae' || !TRAE_ACCOUNTS.includes(value as TraeAccount)) {
+    throw new RuntimePolicyDomainDecodeError('Invalid Trae account type');
+  }
+  return { traeAccount: value as TraeAccount };
+}
+
+/** Account-owned routing and capabilities returned by the Trae catalog. */
+export interface TraeModelConfig {
+  /** Public API directory function, absent for employee SSO. */
+  function?: string;
+  configName: string;
+  modelName: string;
+  mode: 'standard' | 'max';
+  reasoningEfforts: string[];
+  toolResponseImages: boolean;
+  /** Trae catalog load percentage; may exceed 100. Absent means not reported. */
+  loadPercent?: number;
+}
+
 export interface ModelInfo {
+  trae?: TraeModelConfig;
   id: string;
   displayName?: string;
   /** Short upstream description, when the provider advertises one. */
@@ -157,6 +186,7 @@ export function connectionModelChoiceValue(
 
 /** Non-secret provider/model configuration required by runtime execution. */
 export interface RuntimeExecutionConnection {
+  traeAccount?: TraeAccount;
   slug: string;
   providerType: ProviderType;
   baseUrl?: string;
@@ -429,6 +459,7 @@ export function reconcileConnectionAfterModelFetch(
     enabledModelIds?: unknown;
     /** Whether this connection already had a non-empty inventory before this fetch. */
     hasModelInventory?: boolean;
+    providerType?: ProviderType;
   },
   models: readonly { id?: unknown }[],
   options?: {
@@ -497,7 +528,10 @@ export function reconcileConnectionAfterModelFetch(
     !connection.hasModelInventory &&
     liveIds.length > 0
   ) {
-    return { defaultModel: liveIds[0]!, enabledModelIds: [liveIds[0]!] };
+    return {
+      defaultModel: liveIds[0]!,
+      enabledModelIds: connection.providerType === 'trae' ? liveIds : [liveIds[0]!],
+    };
   }
 
   // Everything the user chose survives the fetch. A response that omits a
@@ -590,7 +624,7 @@ export function deriveConnectionSlug(
 
 export type InteractiveOAuthProviderType = Extract<
   ProviderType,
-  'openai-codex' | 'xai-oauth' | 'github-copilot'
+  'openai-codex' | 'xai-oauth' | 'github-copilot' | 'trae'
 >;
 
 /** Stable human-facing slug base for one interactive OAuth Connection. */
@@ -598,6 +632,8 @@ function interactiveOAuthConnectionSlugBase(providerType: InteractiveOAuthProvid
   switch (providerType) {
     case 'openai-codex':
       return 'codex-subscription';
+    case 'trae':
+      return 'trae';
     case 'xai-oauth':
       return 'xai-oauth';
     // Shared with the local `gh` credential import so both routes to a Copilot

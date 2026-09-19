@@ -110,16 +110,28 @@ test('MingCute license pointer resolves in both source and packaged layouts', as
 });
 
 test('every vendored provider mark is bound to its reviewed inventory and digest', async () => {
-  const assetDirectory = join(root, 'apps/desktop/src/renderer/assets/provider-brands');
+  const assetDirectories = [
+    'apps/desktop/src/renderer/assets/provider-brands',
+    'apps/desktop/src/renderer/features/connection-settings/assets',
+  ];
   const inventory = await readFile(
     join(root, 'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt'),
     'utf8',
   );
-  const assetNames = (await readdir(assetDirectory)).filter((name) => name.endsWith('.svg'));
-  for (const assetName of assetNames) {
-    const relativePath = `apps/desktop/src/renderer/assets/provider-brands/${assetName}`;
+  const assetPaths = (
+    await Promise.all(
+      assetDirectories.map(async (directory) =>
+        (
+          await readdir(join(root, directory))
+        )
+          .filter((name) => name.endsWith('.svg'))
+          .map((name) => `${directory}/${name}`),
+      ),
+    )
+  ).flat();
+  for (const relativePath of assetPaths) {
     const digest = createHash('sha256')
-      .update(await readFile(join(assetDirectory, assetName)))
+      .update(await readFile(join(root, relativePath)))
       .digest('hex');
     const marker = `\`${relativePath}\``;
     const entryStart = inventory.indexOf(marker);

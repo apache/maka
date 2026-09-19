@@ -180,6 +180,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       high: '高',
       xhigh: '超高',
       max: '最大',
+      ultra: 'Ultra',
     },
   },
   'zh-TW': {
@@ -262,6 +263,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       high: '高',
       xhigh: '超高',
       max: '最大',
+      ultra: 'Ultra',
     },
   },
   en: {
@@ -343,7 +345,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       medium: 'Medium',
       high: 'High',
       xhigh: 'Extra high',
-      max: 'Maximum',
+      max: 'Maximum', ultra: 'Ultra',
     },
   },
 } satisfies UiCatalog<SubagentSettingsCopy>;

@@ -19,8 +19,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Banner, HStack, Text, VStack } from '@astryxdesign/core';
-import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
-import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import {
   Badge,
   Button,
@@ -28,9 +27,12 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import {
+  TraeAccountSetup,
+  type TraeAccountSelection,
   getProviderSettingsCopy,
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
+  type ConnectionOAuthLoginTarget,
   type ConnectionOAuthProviderBridge,
   type ConnectionsBridge,
   type ProviderSettingsCopy,
@@ -46,7 +48,7 @@ import {
   useRuntimeHostSettingsGenerationKey,
 } from './runtime-host-settings-target.js';
 
-export type OAuthCardId = 'codex' | 'github-copilot' | 'xai';
+export type OAuthCardId = 'codex' | 'github-copilot' | 'xai' | 'trae';
 
 export interface OAuthCard {
   id: OAuthCardId;
@@ -138,6 +140,20 @@ function OAuthLoginPanelForCurrentGeneration(props: {
       />
     );
   }
+  if (props.cardId === 'trae') {
+    return (
+      <TraeAccountSetup>
+        {(traeAccount) => (
+          <SubscriptionLoginPanel
+            bridge={props.bridge}
+            service="trae"
+            traeAccount={traeAccount}
+            onLoginSuccess={props.onLoginSuccess}
+          />
+        )}
+      </TraeAccountSetup>
+    );
+  }
   return (
     <SubscriptionLoginPanel
       bridge={props.bridge}
@@ -150,6 +166,7 @@ function OAuthLoginPanelForCurrentGeneration(props: {
 /** The subtitle the setup level's header shows above each login panel. */
 export function oauthPanelSubtitle(cardId: OAuthCardId, copy: ProviderSettingsCopy['oauthSection']): string {
   if (cardId === 'github-copilot') return copy.copilotSubtitle;
+  if (cardId === 'trae') return copy.traeDetail;
   if (cardId === 'xai') return copy.xaiDetail;
   return copy.codexDetail;
 }
@@ -163,20 +180,27 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
   return [
     { id: 'codex', providerType: 'openai-codex', name: 'OpenAI Codex', description: copy.codexDescription },
     { id: 'github-copilot', providerType: 'github-copilot', name: 'GitHub Copilot', description: copy.copilotDescription },
+    { id: 'trae', providerType: 'trae', name: 'Trae', description: copy.traeDescription },
     { id: 'xai', providerType: 'xai-oauth', name: 'xAI Grok', description: copy.xaiDescription },
   ];
 }
 
 function SubscriptionLoginPanel(props: {
   bridge: ConnectionsBridge;
-  service: 'codex' | 'xai';
   onLoginSuccess(connection: OAuthConnectionIdentity): void | Promise<void>;
-}) {
-  const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
+} & (
+  | { service: 'codex' | 'xai'; traeAccount?: never }
+  | { service: 'trae'; traeAccount: TraeAccountSelection }
+)) {
+  const locale = useUiLocale();
+  const copy = getProviderSettingsCopy(locale).oauthSection;
   const isXai = props.service === 'xai';
-  const display: SubscriptionDisplay = isXai
-    ? { name: 'xAI Grok', shortName: 'SuperGrok / X Premium', detail: copy.xaiDetail }
-    : { name: 'OpenAI Codex', shortName: 'Codex', detail: copy.codexDetail };
+  const isTrae = props.service === 'trae';
+  const display: SubscriptionDisplay = isTrae
+    ? { name: 'Trae', shortName: props.traeAccount.shortName, detail: copy.traeDetail }
+    : isXai
+      ? { name: 'xAI Grok', shortName: 'SuperGrok / X Premium', detail: copy.xaiDetail }
+      : { name: 'OpenAI Codex', shortName: 'Codex', detail: copy.codexDetail };
   // The whole browser-assisted login/logout controller (getAuthUrl ->
   // openAuthUrl -> refresh -> completeAuthorization, one authRequestId
   // lifecycle, synchronous pending-action guard, cancellation on unmount,
@@ -185,19 +209,19 @@ function SubscriptionLoginPanel(props: {
   const flow = useOAuthLoginFlow({
     mode: 'create',
     authorizationBridge: authorizationBridge(
-      oauthProviderBridge(props.bridge, isXai ? 'xaiOAuth' : 'openAiCodex'),
-      { kind: 'create' },
+      oauthProviderBridge(props.bridge, isTrae ? 'traeOAuth' : isXai ? 'xaiOAuth' : 'openAiCodex'),
+      isTrae ? props.traeAccount.loginTarget : { kind: 'create' },
     ),
     display: { name: display.name, shortName: display.shortName },
     onLoginSuccess: props.onLoginSuccess,
   });
-
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
+      {props.traeAccount?.renderSelector(flow.actionBusy)}
       <Text type="body">{display.detail}</Text>
       {flow.authRequestId && (
         <Text type="supporting" color="secondary" role="status" aria-live="polite">
-          {!isXai && flow.stateHint
+          {(props.service === 'codex' || props.service === 'trae') && flow.stateHint
             ? <>{copy.deviceCode} {flow.stateHint}</>
             : copy.waitingAuthorization}
         </Text>
@@ -306,17 +330,17 @@ function requiredOAuthBridge(bridge: ConnectionsBridge) {
 
 function oauthProviderBridge(
   bridge: ConnectionsBridge,
-  provider: 'openAiCodex' | 'xaiOAuth' | 'githubCopilotSubscription',
+  provider: 'openAiCodex' | 'xaiOAuth' | 'traeOAuth' | 'githubCopilotSubscription',
 ): ConnectionOAuthProviderBridge {
   return requiredOAuthBridge(bridge)[provider];
 }
 
 function authorizationBridge(
   provider: ConnectionOAuthProviderBridge,
-  target: { readonly kind: 'create' } | { readonly kind: 'existing'; readonly connectionId: string },
+  target: ConnectionOAuthLoginTarget | (() => ConnectionOAuthLoginTarget),
 ): OAuthAuthorizationFlowBridge {
   return {
-    getAuthUrl: () => provider.getAuthUrl(target),
+    getAuthUrl: () => provider.getAuthUrl(typeof target === 'function' ? target() : target),
     openAuthUrl: (authRequestId) => provider.openAuthUrl(authRequestId),
     completeAuthorization: (authRequestId) => provider.completeAuthorization(authRequestId),
     cancelAuthorization: (authRequestId) => provider.cancelAuthorization(authRequestId),

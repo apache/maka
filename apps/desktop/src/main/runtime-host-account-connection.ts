@@ -61,7 +61,10 @@ export async function synchronizeRuntimeHostAccountConnectionById(
   // models, and leaving `defaultTarget` empty makes every later operation that
   // needs a default — new Session, send, external Session import — fail with a
   // reason the user cannot see from the error it produces.
-  await client.fetchConnectionModels(connection.connectionId).catch(() => undefined);
+  if (connection.providerType === 'trae') {
+    const fetched = await client.fetchConnectionModels(connection.connectionId);
+    if (fetched.kind !== 'committed') throw new Error('Trae model sync failed. Refresh the model list to retry.');
+  } else await client.fetchConnectionModels(connection.connectionId).catch(() => undefined);
   const catalog = await client.loadConnectionCatalog();
   if (catalog.defaultTarget !== null) return;
   const updated = findRuntimeHostAccountConnectionById(catalog, connectionId);

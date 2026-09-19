@@ -108,6 +108,10 @@ This file records notices for third-party source assets vendored into the Maka d
     - Upstream commit: `e4302041fbb3039608d25f9f618bd462783b875e`
     - Upstream path: `packages/static-svg/icons/opencode.svg`
     - SHA-256: `7cfa6e9d6726f7c9fa26c7d9aef0dfec52d20a137380454340f30f12ccbfd302`
+  - `apps/desktop/src/renderer/features/connection-settings/assets/trae-color.svg`
+    - Upstream commit: `e4302041fbb3039608d25f9f618bd462783b875e`
+    - Upstream path: `packages/static-svg/icons/trae-color.svg`
+    - SHA-256: `e7aca314ce71b8fa0a7aece005d585772bac24266fc6688cf398e622d4acaf02`
 
 The OpenCode name and logo remain trademarks of their owner and are used here only to identify the provider. The MIT license above covers the vendored Lobe Icons SVG source, not any trademark rights.
 

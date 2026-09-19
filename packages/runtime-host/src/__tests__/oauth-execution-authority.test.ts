@@ -690,7 +690,7 @@ async function withCopilotCredential(
 }
 
 async function withSeededOAuthCredential(
-  providerType: 'openai-codex' | 'github-copilot',
+  providerType: 'openai-codex' | 'github-copilot' | 'trae',
   tokens: OAuthSubscriptionTokens,
   run: (fixture: CopilotCredentialFixture) => Promise<void>,
 ): Promise<void> {
@@ -909,4 +909,148 @@ async function waitFor(
     if (Date.now() >= deadline) throw new Error('Timed out waiting for OAuth execution state');
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+test('Trae 401 refresh rotates the canonical device credential and replays x-jwt-token once', async () => {
+  await withSeededOAuthCredential(
+    'trae',
+    { ...currentTokens('stale'), device_code: 'device-code' },
+    async (fixture) => {
+      let refreshes = 0;
+      const headers: Headers[] = [];
+      const fetchFn: typeof fetch = async (url, init) => {
+        if (String(url).endsWith('/get_user_access_token')) {
+          refreshes++;
+          assert.equal(new Headers(init?.headers).get('x-real-psm'), 'bytecloud.auth.device-code');
+          return Response.json({
+            code: 0,
+            data: { access_token: 'fresh', refresh_token: 'rotated', expires_in: 3600 },
+          });
+        }
+        headers.push(new Headers(init?.headers));
+        return headers.length === 1
+          ? new Response(null, { status: 401 })
+          : Response.json({ ok: true });
+      };
+      const binding = fixture.authority.bind({
+        providerType: 'trae',
+        connectionId: connectionId(fixture.material),
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(fetchFn),
+      });
+      const modelFetch = createHostOAuthModelFetch({
+        binding,
+        initialTokens: await binding.resolve(),
+        connection: {
+          slug: CONNECTION_SLUG,
+          providerType: 'trae',
+          defaultModel: 'sample:standard',
+        },
+        sessionId: 'session',
+        modelId: 'sample:standard',
+        fetchFn,
+      });
+      assert.equal(
+        (
+          await modelFetch('https://copilot-cn.bytedance.net/api/ide/v2/llm_raw_chat', {
+            method: 'POST',
+            body: '{}',
+          })
+        ).ok,
+        true,
+      );
+      assert.equal(refreshes, 1);
+      assert.deepEqual(
+        headers.map((header) => header.get('x-jwt-token')),
+        ['stale', 'fresh'],
+      );
+      assert.ok(headers.every((header) => !header.has('authorization')));
+      const stored = JSON.parse((await readMaterial(fixture.stores)).secret);
+      assert.equal(stored.device_code, 'device-code');
+      assert.equal(stored.refresh_token, 'rotated');
+    },
+  );
+});
+
+for (const account of ['cn', 'cn-solo', 'sg', 'sg-solo'] as const) {
+  test(`Trae ${account} refresh retains the full identity and replays only at its region`, async () => {
+    const { traePublicProfile } = await import('@maka/runtime/trae/public-protocol');
+    const profile = traePublicProfile(account);
+    const identity = { account, machineId: '1'.repeat(32), deviceId: '2'.repeat(32) };
+    await withSeededOAuthCredential(
+      'trae',
+      { ...currentTokens('stale'), trae: identity },
+      async (fixture) => {
+        let refreshes = 0;
+        const sent: Headers[] = [];
+        const fetchFn: typeof fetch = async (url, init) => {
+          if (String(url).endsWith('/ExchangeToken')) {
+            refreshes++;
+            assert.equal(
+              String(url),
+              `${profile.authOrigin}/cloudide/api/v3/trae/oauth/ExchangeToken`,
+            );
+            return Response.json({
+              Result: { Token: 'fresh', RefreshToken: 'rotated', TokenExpireDuration: 3600 },
+            });
+          }
+          assert.equal(new URL(String(url)).origin, profile.baseUrl);
+          sent.push(new Headers(init?.headers));
+          return new Response(null, { status: sent.length === 1 ? 401 : 200 });
+        };
+        const binding = fixture.authority.bind({
+          providerType: 'trae',
+          connectionId: connectionId(fixture.material),
+          connectionSlug: CONNECTION_SLUG,
+          material: fixture.material,
+          createRefreshTransport: () => testRefreshTransport(fetchFn),
+        });
+        const input = {
+          binding,
+          initialTokens: await binding.resolve(),
+          connection: {
+            slug: CONNECTION_SLUG,
+            providerType: 'trae' as const,
+            traeAccount: account,
+            defaultModel: 'sample:standard',
+          },
+          sessionId: 'session',
+          modelId: 'sample:standard',
+          fetchFn,
+        };
+        assert.equal(
+          (
+            await createHostOAuthModelFetch(input)(
+              `${profile.baseUrl}/api/agent/v3/llm_utils_chat`,
+              { method: 'POST', body: '{}' },
+            )
+          ).ok,
+          true,
+        );
+        assert.equal(refreshes, 1);
+        assert.deepEqual(
+          sent.map((h) => h.get('authorization')),
+          ['Cloud-IDE-JWT stale', 'Cloud-IDE-JWT fresh'],
+        );
+        assert.ok(
+          sent.every((h) => h.get('x-device-id') === identity.deviceId && !h.has('x-jwt-token')),
+        );
+        const stored = JSON.parse((await readMaterial(fixture.stores)).secret);
+        assert.deepEqual(stored.trae, identity);
+        assert.equal(stored.refresh_token, 'rotated');
+        await assert.rejects(
+          createHostOAuthModelFetch({
+            ...input,
+            connection: { ...input.connection, traeAccount: 'employee' },
+          })(profile.baseUrl),
+          /match/,
+        );
+        await assert.rejects(
+          createHostOAuthModelFetch(input)('https://untrusted.example'),
+          /region/,
+        );
+      },
+    );
+  });
 }

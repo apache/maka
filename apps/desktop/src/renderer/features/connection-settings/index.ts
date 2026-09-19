@@ -29,6 +29,7 @@ export type {
   CommandCodeBrowserLoginResult,
   CommandCodeBrowserLoginStartResult,
   ConnectionOAuthBridge,
+  ConnectionOAuthLoginTarget,
   ConnectionOAuthProviderBridge,
   ConnectionSettingsServices,
   ConnectionsBridge,
@@ -54,3 +55,5 @@ export { parseContextWindowInput } from './context-window-input.js';
 export { CapabilityEditor } from './provider-capability-editor.js';
 export { AddModelDialog, ModelParametersDialog } from './provider-add-model-dialog.js';
 export { ConnectionUsageSection } from './connection-usage-card.js';
+export { TraeAccountSetup, type TraeAccountSelection } from './trae-account-setup.js';
+export { TraeProviderMark } from './trae-provider-mark.js';

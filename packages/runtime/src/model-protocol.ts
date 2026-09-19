@@ -365,6 +365,7 @@ export interface ModelFailure {
  *   recovery and terminal error emission.
  */
 export type ModelStreamEvent =
+  | { kind: 'provider-queue'; queued: boolean; position?: number }
   | {
       kind: 'text-start';
       /** Native Responses output item boundary; internal to adapter/backend replay. */

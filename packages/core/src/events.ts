@@ -663,6 +663,7 @@ export type SessionEvent =
   | SteeringMessageEvent
   | MessageAdmissionEvent
   | QueueUpdateEvent
+  | ProviderQueueEvent
   | ProviderRetryEvent
   | ErrorEvent
   | CompleteEvent
@@ -1311,6 +1312,12 @@ export type ProviderRetryReason =
  * names the next/current physical request (2–10), while `maxAttempts`
  * includes the first request.
  */
+export interface ProviderQueueEvent extends BaseEvent {
+  type: 'provider_queue';
+  queued: boolean;
+  position?: number;
+}
+
 export type ProviderRetryEvent = ProviderRetryScheduledEvent | ProviderRetryStartedEvent;
 
 export interface ProviderRetryScheduledEvent extends BaseEvent {

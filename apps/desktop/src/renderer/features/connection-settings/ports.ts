@@ -26,6 +26,7 @@ import type {
   RequestHeaderUpdate,
   SavedRequestHeaders,
   UpdateConnectionInput,
+  TraeAccount,
 } from '@maka/core/llm-connections';
 import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
 import type { ConnectionUsageReadResult } from '@maka/runtime-host/protocol';
@@ -51,7 +52,7 @@ export type DesktopConnectionOnboardingIdentity = Extract<
 >['connection'];
 
 export type ConnectionOAuthLoginTarget =
-  | { readonly kind: 'create' }
+  | { readonly kind: 'create'; readonly traeAccount?: TraeAccount }
   | { readonly kind: 'existing'; readonly connectionId: string };
 
 export type ConnectionOAuthAuthorizationStartResult =
@@ -79,6 +80,7 @@ export interface ConnectionOAuthProviderBridge {
 export interface ConnectionOAuthBridge {
   readonly openAiCodex: ConnectionOAuthProviderBridge;
   readonly xaiOAuth: ConnectionOAuthProviderBridge;
+  readonly traeOAuth: ConnectionOAuthProviderBridge;
   readonly githubCopilotSubscription: ConnectionOAuthProviderBridge & {
     connectExistingLogin(): Promise<SubscriptionActionResult>;
   };

@@ -74,6 +74,8 @@ const PROVIDER_BILLING_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'quota_exceeded', // OpenAI-compatible variants: error.code
   'freeusagelimiterror', // OpenCode Zen free tier exhausted (HTTP 429): error.type
   'upgrade_required', // Command Code: the plan has no Provider API access (HTTP 403): error.code
+  'trae_1005', // Trae: model outside the account's plan (stream error, extra.plan)
+  'trae_4008', // Trae: account quota exhausted (stream error)
 ]);
 
 /**
@@ -682,6 +684,7 @@ function classifyProviderFacts(facts: ProviderErrorFacts): ModelFailureKind {
   const normalizedCode = code.toLowerCase();
   if (OPENAI_RESPONSES_TRANSPORT_CODES.has(code)) return 'network';
   if (code === 'MODEL_STREAM_TIMEOUT') return 'timeout';
+  if (code === 'TRAE_STREAM_TRUNCATED') return 'stream_truncated';
   if (structuredCodes.includes('gateway_stream_terminated')) return 'stream_truncated';
   if (
     PROVIDER_CAPACITY_CODES.has(normalizedCode) ||

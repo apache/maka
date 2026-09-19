@@ -696,6 +696,11 @@ async function invokeActiveRuntimeHost<T>(channel: string, ...args: unknown[]): 
   return ipcRenderer.invoke(channel, await activeRuntimeHostRef(), ...args) as Promise<T>;
 }
 
+async function scopedConnectionSnapshot(scope: DesktopTargetScope): Promise<import('../shared/desktop-connection-snapshot.js').DesktopConnectionSnapshot> {
+  const snapshot = await ipcRenderer.invoke('connections:getSnapshot', scope) as import('../shared/desktop-connection-snapshot.js').DesktopConnectionSnapshot;
+  return snapshot;
+}
+
 async function invokeSelectedRuntimeHost<T>(
   host: DesktopRuntimeHostRef | undefined,
   channel: string,
@@ -1874,10 +1879,7 @@ const makaBridge = {
       );
     },
     async getConnections(host: DesktopNewTaskHostRef) {
-      return ipcRenderer.invoke(
-        'connections:getSnapshot',
-        await runtimeHostScope(host),
-      );
+      return scopedConnectionSnapshot(await runtimeHostScope(host));
     },
     async listInvocableSkills(
       target: DesktopNewTaskTarget,
@@ -3007,10 +3009,9 @@ const makaBridge = {
     },
   },
   connections: {
-    getSnapshot(sessionId?: string, host?: DesktopRuntimeHostRef) {
-      return sessionId
-        ? invokeRuntimeHostForSession('connections:getSnapshot', sessionId)
-        : invokeSelectedRuntimeHost(host, 'connections:getSnapshot');
+    async getSnapshot(sessionId?: string, host?: DesktopRuntimeHostRef) {
+      const scope = sessionId ? (await runtimeHostSessionRef(sessionId)).scope : await selectedRuntimeHostScope(host);
+      return scopedConnectionSnapshot(scope);
     },
     setDefault(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef): Promise<void> {
       return invokeSelectedRuntimeHost(
@@ -3340,6 +3341,42 @@ const makaBridge = {
     },
     cancel(attemptId: string): Promise<void> {
       return ipcRenderer.invoke('commandcode-login:cancel', attemptId);
+    },
+  },
+  traeOAuth: {
+    getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget) {
+      return invokeSelectedRuntimeHost(host, 'trae:get-auth-url', target);
+    },
+    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'trae:open-auth-url', authRequestId);
+    },
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult> {
+      return invokeSelectedRuntimeHost(host, 'trae:complete-authorization', authRequestId);
+    },
+    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
+      return invokeSelectedRuntimeHost(host, 'trae:cancel-authorization', authRequestId);
+    },
+    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
+      provider: 'trae';
+      runtimeState:
+        | 'not_logged_in'
+        | 'authorizing'
+        | 'authenticated'
+        | 'refreshing'
+        | 'refresh_failed'
+        | 'storage_failed';
+      errorMessage?: string;
+    }> {
+      return invokeSelectedRuntimeHost(host, 'trae:get-account-state', connectionId);
+    },
+    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'trae:refresh-tokens', connectionId);
+    },
+    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'trae:logout', connectionId);
+    },
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
+      return invokeSelectedRuntimeHost(host, 'trae:get-enrollment-state');
     },
   },
   githubCopilotSubscription: {

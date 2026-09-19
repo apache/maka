@@ -31,7 +31,7 @@
 // legible in both light and dark themes; viewBox is the upstream 24×24.
 
 import type { ProviderType } from '@maka/core/llm-connections';
-import { GenericProviderMark } from '../features/connection-settings';
+import { GenericProviderMark, TraeProviderMark } from '../features/connection-settings';
 import type { ReactElement } from 'react';
 import { siMinimax } from 'simple-icons';
 import alibabaBrandMark from '../assets/provider-brands/alibabacloud.svg';
@@ -376,6 +376,8 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
       return <ProviderAssetMask src={groqBrandMark} />;
     case 'openrouter':
       return <img src={openrouterBrandMark} alt="" />;
+    case 'trae':
+      return <TraeProviderMark />;
     case 'alibaba':
     case 'alibaba-cn':
     case 'alibaba-coding-plan-cn':

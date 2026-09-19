@@ -36,6 +36,9 @@ import {
   type LlmConnection,
 } from '@maka/core/llm-connections';
 import { openResponsesUrl } from './provider-urls.js';
+import { APICallError } from '@ai-sdk/provider';
+import { createTraeModel } from './trae/model.js';
+import { proxiedFetch } from './bots/proxied-fetch.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
@@ -255,6 +258,42 @@ async function testConnectionModel(
   const requestHeaders = withOpenCodeSessionHeader(connection.providerType, sessionId);
 
   switch (adapter.kind) {
+    case 'trae': {
+      const model = createTraeModel({
+        connection: {
+          slug: 'trae',
+          providerType: 'trae',
+          ...(connection.traeAccount === undefined ? {} : { traeAccount: connection.traeAccount }),
+          defaultModel: testModel,
+          models: [...(connection.models ?? [])],
+        },
+        modelId: testModel,
+        apiKey: secret,
+        fetch: fetchFn ?? ((url, init) => proxiedFetch(String(url), { ...init, timeoutMs: 0 })),
+      });
+      try {
+        await model.doGenerate({
+          prompt: [{ role: 'user', content: [{ type: 'text', text: 'Reply OK.' }] }],
+          maxOutputTokens: 16,
+          abortSignal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (error) {
+        if (APICallError.isInstance(error) && error.statusCode !== undefined) {
+          return {
+            ok: false,
+            modelTested: testModel,
+            latencyMs: Date.now() - t0,
+            statusCode: error.statusCode,
+            errorClass: classifyHttpStatus(error.statusCode),
+            errorMessage: error.message,
+          };
+        }
+        if (error instanceof Error && error.name === 'TimeoutError')
+          throw new ConnectionEffectFetchError('timeout');
+        throw error;
+      }
+      return { ok: true, latencyMs: Date.now() - t0, modelTested: testModel };
+    }
     case 'anthropic':
       return await probeAnthropic(adapter, baseUrl, secret, testModel, t0, fetchFn, requestHeaders);
     case 'openai':

@@ -141,6 +141,10 @@
     "./tool-runtime": "./dist/tool-runtime.js",
     "./web-fetch-tool": "./dist/web-fetch-tool.js",
     "./web-search-tool": "./dist/web-search-tool.js",
+    "./trae/public-authorization": "./dist/trae/public-authorization.js",
+    "./trae/public-protocol": "./dist/trae/public-protocol.js",
+    "./trae/authorization": "./dist/trae/authorization.js",
+    "./trae/protocol": "./dist/trae/protocol.js",
     "./xai-oauth-enrollment": "./dist/xai-oauth-enrollment.js",
     "./session-import": "./dist/session-import.js",
     "./recall-candidates": "./dist/recall-candidates.js"

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createTraePublicFetch } from '@maka/runtime/trae/public-protocol';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { CredentialLocator } from '@maka/core/runtime-policy';
 import { buildSubscriptionModelFetch } from '@maka/runtime/subscription-model-fetch';
@@ -415,15 +416,34 @@ async function waitForCaller<T>(pending: Promise<T>, signal?: AbortSignal | null
 }
 
 function authenticatedOAuthFetch(
-  input: Pick<Parameters<typeof createHostOAuthModelFetch>[0], 'binding' | 'fetchFn'>,
+  input: Pick<
+    Parameters<typeof createHostOAuthModelFetch>[0],
+    'binding' | 'fetchFn' | 'connection'
+  >,
   readTokens: () => OAuthSubscriptionTokens,
 ): typeof fetch {
   return async (url, init) => {
     const tokens = readTokens();
+    if (
+      input.binding.providerType === 'trae' &&
+      (input.connection.traeAccount ?? 'employee') !== (tokens.trae?.account ?? 'employee')
+    ) {
+      throw new Error('Trae credential does not match this account');
+    }
     const headers = mergedHeaders(url, init?.headers);
     headers.delete('api-key');
     headers.delete('x-api-key');
-    headers.set('Authorization', `Bearer ${tokens.access_token}`);
+    if (input.binding.providerType === 'trae' && tokens.trae) {
+      return createTraePublicFetch(
+        input.fetchFn,
+        tokens.access_token,
+        tokens.trae,
+      )(url, { ...init, headers });
+    }
+    if (input.binding.providerType === 'trae') {
+      headers.delete('Authorization');
+      headers.set('x-jwt-token', tokens.access_token);
+    } else headers.set('Authorization', `Bearer ${tokens.access_token}`);
     if (input.binding.providerType === 'openai-codex') {
       headers.delete('ChatGPT-Account-Id');
       for (const [name, value] of Object.entries(openAiCodexHeaders(tokens.access_token))) {

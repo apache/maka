@@ -50,6 +50,7 @@ const THINKING_NAMES: Readonly<Record<ThinkingLevel | 'default', string>> = {
   high: 'High',
   xhigh: 'Extra high',
   max: 'Max',
+  ultra: 'Ultra',
 };
 
 const COLLABORATION_NAMES: Readonly<Record<CollaborationMode, string>> = {

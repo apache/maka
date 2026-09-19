@@ -109,6 +109,26 @@ test('user input and provider retry suppress playful process activity', () => {
   }
 });
 
+test('a provider queue suppresses the running cue and shows the queue position instead', () => {
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'running', tools: [], notes: [], startedAt: 1,
+    timeline: [{ kind: 'thinking', text: 'reasoning', messageId: 'thought' }],
+  };
+  const { document } = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <TurnView turn={turn} liveStreaming={{ runningStatus: true, providerQueue: { position: 3 } }} />
+    </LocaleProvider>,
+  ));
+  // Nothing arrives while the provider holds the request: the queue indicator
+  // is the only processing cue, and the footer's running cue stays silent.
+  // (Compared as counts and strings: inspecting a linkedom node on failure
+  // never returns.)
+  const cues = document.querySelectorAll('.maka-turn-processing');
+  assert.equal(cues.length, 1);
+  assert.equal(cues[0]?.getAttribute('aria-label'), 'Queued by Trae · Position 3');
+  assert.equal(document.querySelectorAll('.maka-turn-footer-meta .maka-turn-processing').length, 0);
+});
+
 test('only the latest assistant segment owns live activity after a user instruction', () => {
   const tool = { toolUseId: 'read', toolName: 'Read', status: 'completed' as const, args: {} };
   const instruction = { id: 'steer', role: 'user' as const, text: 'Also check the keyboard', ts: 2 };

@@ -410,6 +410,16 @@ type ProjectionSamples = {
 };
 
 const PROJECTION_SAMPLES: ProjectionSamples = {
+  provider_queue: {
+    subject: {
+      type: 'provider_queue',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      queued: true,
+      position: 2,
+    },
+  },
   text_delta: {
     subject: { type: 'text_delta', id: 'e', turnId: 'turn-1', ts: 1, messageId: 'm1', text: 'h' },
   },

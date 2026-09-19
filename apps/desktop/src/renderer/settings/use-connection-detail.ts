@@ -103,6 +103,13 @@ export function oauthLoginServiceFor(
         { name: connectionLabel ?? 'GitHub Copilot', shortName: 'GitHub Copilot' },
         true,
       );
+    case 'trae':
+      return oauthLoginService(
+        oauth.traeOAuth,
+        connectionId,
+        { name: connectionLabel ?? 'Trae', shortName: 'Trae' },
+        true,
+      );
     default:
       return null;
   }
