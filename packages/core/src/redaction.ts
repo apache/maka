@@ -42,10 +42,13 @@ const AWS_SECRET_ACCESS_KEY_FLAG_SOURCE = posixContinuedTokenSource('--secret-ac
 const AWS_SECRET_ACCESS_KEY_ENV_SOURCE = posixContinuedTokenSource('AWS_SECRET_ACCESS_KEY');
 
 const QUOTED_SECRET_KEY_VALUE_PATTERN = /((?:"([^"\\]+)"\s*:\s*"))(?:\\.|[^"\\])*/g;
+const QUOTED_SECRET_ASSIGNMENT_PATTERN =
+  /\b(([A-Za-z][A-Za-z0-9_-]*)(?:[ \t]|\\\r?\n)*[:=](?:[ \t]|\\\r?\n)*)("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')/g;
 const ASSIGNED_SECRET_KEY_VALUE_PATTERN =
   /\b(([A-Za-z][A-Za-z0-9_-]*)(?:[ \t]|\\\r?\n)*[:=](?:[ \t]|\\\r?\n)*['"]?)(?:\\\r?\n|[^\s"'&<>])+/g;
 const AUTHORIZATION_HEADER_PATTERN =
   /(^|[^A-Za-z0-9_])(['"]?(?:proxy[-_]?authorization|authorization)['"]?\s*:\s*['"]?(?:bearer|basic|token)\s+)[^\s"'<>]+/gim;
+const STANDALONE_BEARER_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi;
 const AWS_CLI_SPACE_SECRET_PATTERN = new RegExp(
   `(^|[\\s;&|()])((?:aws${SHELL_SEPARATOR_SOURCE}configure${SHELL_SEPARATOR_SOURCE}set${SHELL_SEPARATOR_SOURCE}${AWS_CONFIG_SECRET_KEY_SOURCE}|${AWS_SECRET_ACCESS_KEY_FLAG_SOURCE})${SHELL_SEPARATOR_SOURCE})${SHELL_SECRET_TOKEN_SOURCE}`,
   'gm',
@@ -78,6 +81,13 @@ function redactTextSecrets(value: string): string {
   next = next.replace(
     AUTHORIZATION_HEADER_PATTERN,
     (_match, boundary: string, prefix: string) => `${boundary}${prefix}[redacted]`,
+  );
+  next = next.replace(STANDALONE_BEARER_PATTERN, (_match, prefix: string) => `${prefix}[redacted]`);
+  // 带引号的诊断值可以包含空格；先完整遮蔽，再应用裸值和 AWS 规则，避免只遮蔽首词。
+  next = next.replace(
+    QUOTED_SECRET_ASSIGNMENT_PATTERN,
+    (match, prefix: string, key: string, token: string) =>
+      isAssignmentSensitiveKey(key) ? `${prefix}${redactShellToken(token)}` : match,
   );
   next = next.replace(
     AWS_CLI_SPACE_SECRET_PATTERN,
