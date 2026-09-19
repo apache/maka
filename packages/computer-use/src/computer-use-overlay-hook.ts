@@ -72,15 +72,38 @@ const RESOLVED_PRESENTATION_FENCE: CuPresentationFence = {
 };
 
 function kindOf(action: CuPresentationAction): CursorActionKind | undefined {
+  // Every presentation type has to decide here. The original omission of
+  // set_value and press_key was this switch being an allow-list with a silent
+  // default; `never` makes the next new type fail to compile instead.
   switch (action.type) {
     case 'click_element':
     case 'select_text':
     case 'secondary_action':
+    case 'set_value':
+    case 'press_key':
       return 'click';
     case 'scroll_element':
       return 'scroll';
-    default:
+    case 'type':
+      // Typed at whatever currently has focus; flying would invent a target.
       return undefined;
+    case 'key':
+      // Posted at whatever currently has focus; flying would invent a target.
+      return undefined;
+    case 'screenshot':
+      // A capture does not aim at a control; moving the cursor would lie about where work happened.
+      return undefined;
+    case 'wait':
+      // A pause does not aim at a control; moving the cursor would lie about where work happened.
+      return undefined;
+    case 'window_action':
+      // The window itself often has no element frame, and #5049 left flying to it out of scope.
+      return undefined;
+    default: {
+      const unhandled: never = action;
+      void unhandled;
+      return undefined;
+    }
   }
 }
 
