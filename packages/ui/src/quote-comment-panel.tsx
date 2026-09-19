@@ -27,7 +27,6 @@ import {
   type ChatComposerInputHandle,
 } from '@astryxdesign/core';
 import { QUOTE_COMMENT_MAX_LENGTH } from '@maka/core/events';
-import { cn } from './utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -45,7 +44,6 @@ export interface QuoteCommentPanelProps {
   skipLabel: string;
   onSubmit(comment: string): void;
   onSkip(): void;
-  className?: string;
 }
 
 /**
@@ -70,13 +68,13 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
   }, []);
 
   function submit(): void {
-    props.onSubmit(draft.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim());
+    props.onSubmit(draft.trim());
   }
 
   return (
     <VStack
       gap={2}
-      className={cn('maka-quote-comment-panel', props.className)}
+      className="maka-quote-comment-panel"
       role="group"
       aria-label={props.title}
     >

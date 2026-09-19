@@ -56,7 +56,7 @@ import type {
   ShellRunUpdate,
 } from '@maka/core/events';
 import { createPortal } from 'react-dom';
-import { Badge, Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
+import { Badge, Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { finalAssistantReplyText } from './materialize.js';
@@ -125,6 +125,37 @@ const MEASURE_AHEAD_MARGIN = 4000;
  * window when the excerpt it hangs from sits near the bottom edge.
  */
 const QUOTE_ANNOTATION_PANEL_HEIGHT = 280;
+
+interface QuoteMark {
+  index: number;
+  x: number;
+  y: number;
+}
+
+const sameQuoteMarks = (a: QuoteMark[], b: QuoteMark[]): boolean =>
+  a.length === b.length &&
+  a.every((mark, i) => mark.index === b[i].index && mark.x === b[i].x && mark.y === b[i].y);
+
+/**
+ * Viewport position of each excerpt's last line, or nothing when the excerpt
+ * has left the transcript's scrollport — a pin parked there would float over
+ * the composer or header it does not belong to.
+ */
+const quoteMarksAt = (
+  root: HTMLElement | null,
+  found: readonly { index: number; range: Range }[],
+): QuoteMark[] => {
+  const band = root?.getBoundingClientRect();
+  const marks: QuoteMark[] = [];
+  for (const { index, range } of found) {
+    const rects = range.getClientRects();
+    const last = rects[rects.length - 1];
+    if (!last) continue;
+    if (band && (last.bottom < band.top || last.top > band.bottom)) continue;
+    marks.push({ index, x: last.right, y: last.top });
+  }
+  return marks;
+};
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -671,6 +702,14 @@ export function ChatView(props: {
     comment?: string;
     anchor: { x: number; y: number };
   } | null>(null);
+  // The turn a note is being written on must survive virtualization: once
+  // the note input takes the DOM selection, selectionEnds no longer keeps
+  // that turn mounted, and unmounting it drops the mark and the panel's
+  // excerpt mid-write.
+  for (const turnId of [annotatingSelection?.turnId, editingQuote?.turnId]) {
+    const index = turnId ? orderedTurnIds.indexOf(turnId) : -1;
+    if (index !== -1) keepMountedIndexes.add(index);
+  }
   // Every staged quote keeps a numbered pin at its own excerpt's end — the
   // ordinal the composer list shows for it — plus the excerpt a fresh
   // annotation is about to take.
@@ -741,6 +780,12 @@ export function ChatView(props: {
       const band = root.getBoundingClientRect();
       if (before.top < band.top || before.bottom > band.bottom) {
         turn.scrollIntoView({ block: 'center' });
+        // A turn taller than the scrollport can leave the excerpt outside the
+        // band even centered — finish the last stretch against the range.
+        const drift = range.getBoundingClientRect();
+        if (drift.top < band.top || drift.bottom > band.bottom) {
+          root.scrollBy({ top: drift.top + drift.height / 2 - (band.top + band.height / 2) });
+        }
       }
       const box = range.getBoundingClientRect();
       if (box.width === 0 && box.height === 0) return false;
@@ -750,6 +795,9 @@ export function ChatView(props: {
       const selection = window.getSelection();
       selection?.removeAllRanges();
       selection?.addRange(range);
+      // A fresh annotation and an edit never coexist: the token click takes
+      // over whichever excerpt the panel was writing on.
+      setAnnotatingSelection(null);
       setEditingQuote({
         ...request,
         anchor: { x: box.left + box.width / 2, y: box.top },
@@ -767,64 +815,90 @@ export function ChatView(props: {
   // re-found after every commit because the virtualizer remounts turns
   // underneath us, and positions re-measure on capture-phase scroll because
   // a scroll that swaps nothing produces no commit.
-  const measureQuoteMarks = useCallback(() => {
-    const marks: { index: number; x: number; y: number }[] = [];
-    const ranges: Range[] = [];
+  const measureQuoteMarks = useCallback((): { index: number; range: Range }[] => {
+    const found: { index: number; range: Range }[] = [];
     const root = scrollRef.current;
     const collect = (index: number, turnId: string | undefined, text: string) => {
       if (!root || !turnId || typeof CSS === 'undefined' || !CSS.escape) return;
       const turn = root.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
       const range = turn ? findQuoteTextRange(turn, text) : null;
-      const rects = range?.getClientRects();
-      const last = rects?.[rects.length - 1];
-      if (!range || !last) return;
-      ranges.push(range);
-      marks.push({ index, x: last.right, y: last.top });
+      if (range) found.push({ index, range });
     };
-    props.pendingQuotes?.forEach((quote, index) =>
-      collect(index, quote.sourceTurnId, quote.text),
-    );
-    if (annotatingSelection && editingQuote === null) {
+    props.pendingQuotes?.forEach((quote, index) => {
+      // Cross-session snapshots stage in the references row, not on this
+      // transcript — a colliding turn id must not pin them here.
+      if (!quote.sourceSessionId) collect(index, quote.sourceTurnId, quote.text);
+    });
+    if (annotatingSelection) {
       collect(props.pendingQuotes?.length ?? 0, annotatingSelection.turnId, annotatingSelection.text);
     }
-    return { marks, ranges };
-  }, [props.pendingQuotes, annotatingSelection, editingQuote, scrollRef]);
+    return found;
+  }, [props.pendingQuotes, annotatingSelection, scrollRef]);
 
+  const quoteMarkRangesRef = useRef<{ index: number; range: Range }[]>([]);
+  const quoteHighlightRef = useRef<Highlight | null>(null);
   useLayoutEffect(() => {
-    const { marks, ranges } = measureQuoteMarks();
+    const found = measureQuoteMarks();
+    quoteMarkRangesRef.current = found;
     const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
-    if (ranges.length > 0) highlights?.set('maka-quote-mark', new Highlight(...ranges));
-    else highlights?.delete('maka-quote-mark');
-    setQuoteMarks((current) =>
-      current.length === marks.length &&
-      current.every(
-        (mark, i) =>
-          mark.index === marks[i].index && mark.x === marks[i].x && mark.y === marks[i].y,
-      )
-        ? current
-        : marks,
-    );
+    if (found.length > 0 && typeof Highlight !== 'undefined' && highlights) {
+      const highlight = new Highlight(...found.map(({ range }) => range));
+      highlights.set('maka-quote-mark', highlight);
+      quoteHighlightRef.current = highlight;
+    } else {
+      quoteHighlightRef.current = null;
+    }
+    const marks = quoteMarksAt(scrollRef.current, found);
+    setQuoteMarks((current) => (sameQuoteMarks(current, marks) ? current : marks));
+    // The registry is document-global: only remove an entry this ChatView
+    // still owns, never one a co-mounted transcript painted over it.
     return () => {
-      highlights?.delete('maka-quote-mark');
+      const mine = quoteHighlightRef.current;
+      if (mine && highlights?.get('maka-quote-mark') === mine) {
+        highlights.delete('maka-quote-mark');
+        quoteHighlightRef.current = null;
+      }
     };
   });
 
   useEffect(() => {
     const onScroll = () => {
-      const { marks } = measureQuoteMarks();
-      setQuoteMarks((current) =>
-        current.length === marks.length &&
-        current.every(
-          (mark, i) =>
-            mark.index === marks[i].index && mark.x === marks[i].x && mark.y === marks[i].y,
-        )
-          ? current
-          : marks,
-      );
+      const marks = quoteMarksAt(scrollRef.current, quoteMarkRangesRef.current);
+      setQuoteMarks((current) => (sameQuoteMarks(current, marks) ? current : marks));
     };
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
-    return () => document.removeEventListener('scroll', onScroll, { capture: true });
-  }, [measureQuoteMarks]);
+    window.addEventListener('resize', onScroll);
+    return () => {
+      document.removeEventListener('scroll', onScroll, { capture: true });
+      window.removeEventListener('resize', onScroll);
+    };
+  }, [scrollRef]);
+
+  // A staged quote's note can outlive its slot in the composer list: removing
+  // another token splices the bucket, and sending clears it. Re-resolve the
+  // edited quote by identity so submit cannot write onto a different quote —
+  // or keep the panel alive for one that is gone.
+  useLayoutEffect(() => {
+    if (!editingQuote || !props.pendingQuotes) return;
+    const staged = props.pendingQuotes[editingQuote.index];
+    if (
+      staged &&
+      staged.text === editingQuote.text &&
+      staged.sourceTurnId === editingQuote.turnId
+    ) {
+      return;
+    }
+    const relocated = props.pendingQuotes.findIndex(
+      (quote) =>
+        !quote.sourceSessionId &&
+        quote.text === editingQuote.text &&
+        quote.sourceTurnId === editingQuote.turnId,
+    );
+    if (relocated === -1) setEditingQuote(null);
+    else if (relocated !== editingQuote.index) {
+      setEditingQuote({ ...editingQuote, index: relocated });
+    }
+  });
 
   // The panel hangs from the live quote once the restored selection settles
   // into one; until then the anchor measured at open time holds it. A
@@ -836,7 +910,11 @@ export function ChatView(props: {
       ? selectionQuote.anchor
       : editingQuote.anchor
     : annotatingSelection
-      ? (selectionQuote?.anchor ?? annotatingSelection.anchor)
+      ? selectionQuote &&
+        selectionQuote.turnId === annotatingSelection.turnId &&
+        selectionQuote.text === annotatingSelection.text
+        ? selectionQuote.anchor
+        : annotatingSelection.anchor
       : null;
 
   if (!props.activeSession) {
@@ -1144,7 +1222,7 @@ export function ChatView(props: {
                   onMouseDown={(event) => event.preventDefault()}
                 >
                   <QuoteCommentPanel
-                    key={editingQuote.index}
+                    key={editingQuote.text}
                     comment={editingQuote.comment}
                     title={conversationCopy.composer.quoteCommentTitle}
                     submitLabel={conversationCopy.composer.quoteCommentSave}
@@ -1167,7 +1245,11 @@ export function ChatView(props: {
                     submitLabel={copy.quoteSelection}
                     skipLabel={copy.quoteCommentSkip}
                     onSubmit={(comment) => {
-                      props.onQuoteSelection?.({ ...annotatingSelection, comment });
+                      props.onQuoteSelection?.({
+                        text: annotatingSelection.text,
+                        turnId: annotatingSelection.turnId,
+                        comment,
+                      });
                       dismissSelectionActions();
                     }}
                     onSkip={() => {
@@ -1189,9 +1271,9 @@ export function ChatView(props: {
               },
             )
           : null}
-        {quoteMarks.length > 0 && typeof document !== 'undefined'
+        {quoteMarks.length > 0
           ? createPortal(
-              <div className="maka-quote-marks">
+              <>
                 {quoteMarks.map((mark) => (
                   <Badge
                     key={mark.index}
@@ -1201,7 +1283,7 @@ export function ChatView(props: {
                     style={{ left: mark.x, top: mark.y }}
                   />
                 ))}
-              </div>,
+              </>,
               document.body,
             )
           : null}
