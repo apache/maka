@@ -434,6 +434,7 @@ export function useComposerAttachments(options: {
     stagedAttachments: readonly { name: string; mimeType: string; content: Uint8Array }[];
     directoryReferences: readonly DirectoryReference[];
   }): void {
+    if (!lifecycle.mounted) return;
     const staged = [
       ...input.attachments.map(retainedToPending),
       ...input.stagedAttachments.map((item): PendingAttachment => {
@@ -450,7 +451,7 @@ export function useComposerAttachments(options: {
         ? { ...current.directories, [`${ownerKey}:${hostId ?? 'unresolved'}`]: [...input.directoryReferences] }
         : current.directories,
     }));
-    for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
+    for (const item of staged) lifecycle.stagedKeys.add(item.stagingKey);
     void loadPreviewsSequentially(staged);
   }
 

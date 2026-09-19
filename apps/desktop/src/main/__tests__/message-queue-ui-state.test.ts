@@ -36,11 +36,12 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   let messages: DesktopLocalMessage[] = ['steering', 'followup', 'root'].map((messageId) => ({
     sessionId: 'session-1', messageId, createdAt: 1, state: 'unknown', canCancel: false,
     text: messageId, attachments: [], inlineReferences: [],
-    placement: messageId === 'steering' ? 'current_turn' : 'next_turn',
+    placement: messageId === 'followup' ? 'next_turn' : 'current_turn',
   }));
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(ConversationServicesProvider, { services: {
       listMessages: async () => messages,
+      readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in this test'); },
       subscribeChanges: (handler) => { changed = handler; return () => {}; },
       cancelMessage: async () => {}, reconcileMessage: async () => {},
       sessions: { readSnapshot: async () => { throw new Error('unexpected snapshot read'); } },
@@ -51,11 +52,15 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     }, children: createElement(SessionLocalMessages, {
       sessionId: 'session-1',
       publish: (_id, message) => { transient.set(message.id, message); },
+      update: (_id, message) => { if (transient.has(message.id)) transient.set(message.id, message); },
       retire: (_id, messageId) => { transient.delete(messageId); },
-      reportError: (message) => { throw new Error(message); },
+      canRestoreDraft: () => true,
+      restoreDraft: () => { throw new Error('Failed-message drafts are not used in this test'); },
     }) }),
   })));
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
+  transient.delete('steering');
+  transient.delete('followup');
   messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn' } : {}) }));
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root']);

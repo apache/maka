@@ -146,7 +146,10 @@ export interface TransientUserMessageProjection {
   pendingSteering?: boolean;
   deliveryStatus?: string;
   deliveryDetail?: string;
-  deliveryActions?: readonly { label: string; onClick(): void }[];
+  deliveryTone?: 'neutral' | 'warning' | 'danger';
+  deliveryDiagnostic?: string;
+  deliveryDiagnosticLabel?: string;
+  deliveryActions?: readonly { label: string; disabled?: boolean; onClick(): void }[];
   id: string;
   text: string;
   ts: number;

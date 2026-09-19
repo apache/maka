@@ -1089,7 +1089,7 @@ test('cancellation cleanup preserves an already scheduled canonical transcript c
     service.cacheTranscript(target.scope, {
       sessionId: 'session-1', generation: 'generation', hostEpoch: 'epoch', durableThrough: 1,
       durable: [{ sequence: 1, message: { type: 'user', id: 'completed', turnId: 'turn-1', ts: 1, text: 'keep history' } }],
-      overlay: [], hasOlder: false, hasNewer: false,
+      hasOlder: false, beginsAtTurnBoundary: true,
     });
     if (durable) service.retireCancelledMessages(target.scope, 'session-1', ['cancelled']);
     else service.retireRetractedMessages(target.scope, 'epoch', 'session-1', ['cancelled']);
