@@ -164,6 +164,7 @@ function TranscriptQuoteLoop(props: { initialQuotes?: QuoteRef[] }) {
       <ChatView
         {...baseChat}
         handleRef={chatViewRef}
+        pendingQuoteCount={quotes.length}
         messages={[
           {
             type: 'assistant',
