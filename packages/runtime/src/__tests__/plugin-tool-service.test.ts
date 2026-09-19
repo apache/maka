@@ -164,14 +164,14 @@ test('retirement rejects stale starts and waits for an active call to drain', as
   await loader.close();
 });
 
-test('desktop-ui and Host-owned Tool conflicts fail closed', async () => {
+test('desktop-ui rejects Host-only packages and Host-owned Tool conflicts fail closed', async () => {
   const root = new Context();
   const tools = new PluginToolService(root);
   const loader = new MakaCompositionLoader({ root });
   await loader.install(toolPackage('plugin-package', tool('Read', 'plugin')));
   await assert.rejects(
     () => loader.create('desktop-ui', { id: 'ui-entry', packageId: 'plugin-package' }),
-    /desktop-ui plugins cannot register Host tools/u,
+    /Plugin package has no Client plugin/u,
   );
   await loader.create('profile', { id: 'host-conflict-entry', packageId: 'plugin-package' });
   assert.throws(() => tools.resolve('alpha', [tool('Read', 'host')]), /Host-owned Tool/u);

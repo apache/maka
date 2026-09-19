@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createClientPluginRouting } from './client-plugin-routing.js';
 import type {
   SessionBundleExportIpcResult,
   SessionBundleImportIpcResult,
@@ -182,6 +183,7 @@ import type {
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
+  GitBranchReadResult,
   GitReviewReadResult,
   GitReviewSource,
 } from '@maka/core/git-review';
@@ -1425,6 +1427,11 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
+  clientPlugins: createClientPluginRouting({
+    activeScope: activeRuntimeHostRef,
+    sessionRef: runtimeHostSessionRef,
+    invoke: (channel, scope, input) => ipcRenderer.invoke(channel, scope, ...(input === undefined ? [] : [input])),
+  }),
   workHubControl: workHubControlBridge,
   workHubPresentation: workHubPresentationBridge,
   runtimeHost,
@@ -2102,7 +2109,7 @@ const makaBridge = {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
       return ipcRenderer.invoke('workhub:configureModel', scope, input) as Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     },
-    resolveCoordinationSession(): Promise<string> {
+    resolveCoordinationSession(): Promise<string | { readonly kind: 'model_required' }> {
       return resolveDesktopWorkHubCoordinationSession(
         activeRuntimeHostRef,
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
@@ -2977,6 +2984,9 @@ const makaBridge = {
       baseBranch?: string;
     }): Promise<GitReviewReadResult> {
       return invokeSessionInput('git-review:read', input);
+    },
+    branch(input: { sessionId: string }): Promise<GitBranchReadResult> {
+      return invokeSessionInput('git:branch', input);
     },
   },
   goal: {

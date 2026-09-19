@@ -55,6 +55,7 @@ import {
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { buildRecallTools } from '@maka/runtime/recall-tools';
 import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
+import { createRecallMaterialFetch } from './recall-material-fetch.js';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
@@ -101,6 +102,7 @@ import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-service';
 import { PluginCommandService } from '@maka/runtime/plugin-command-service';
+import { PluginClientBridgeService } from '@maka/runtime/plugin-client-bridge-service';
 import {
   PluginAuthorizationService,
   PluginCredentialService,
@@ -184,6 +186,7 @@ import {
   type RuntimeHostDomainModule,
 } from './host-composition.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
+import { HostWorkHubTargetExecutionAuthority } from './workhub-target-execution-authority.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
 import { SessionTurnAccessRequestCoordinator } from './session-turn-access-request-coordinator.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
@@ -371,6 +374,7 @@ export async function createExecutionRuntimeHostComposition(
     const pluginGoals = new PluginGoalService(pluginRoot, pluginAgents);
     const pluginSkills = new PluginSkillService(pluginRoot);
     const pluginCommands = new PluginCommandService(pluginRoot);
+    const pluginClientBridge = new PluginClientBridgeService(pluginRoot);
     new PluginLspService(pluginRoot);
     const pluginSettings = new PluginSettingsService(pluginRoot);
     const pluginStorage = new PluginStorageService(pluginRoot);
@@ -388,6 +392,7 @@ export async function createExecutionRuntimeHostComposition(
       systemPrompt: pluginSystemPrompt,
       commands: pluginCommands,
       executors: pluginExecutors,
+      clientBridge: pluginClientBridge,
     });
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
@@ -526,12 +531,15 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       sessions: stores.sessionStore,
     });
+    // Shared with recall's material fetch, so a file brought in from another
+    // Session is answered by the same reader that answers one stored here.
+    const attachmentResources = createArtifactAttachmentResourceReader({
+      artifactStore: openedArtifactStore,
+    });
     const builtinTools = {
       shellRuns: runtimeResources,
       runtimeResources,
-      attachmentResources: createArtifactAttachmentResourceReader({
-        artifactStore: openedArtifactStore,
-      }),
+      attachmentResources,
       backgroundTasks: runtimeResources,
       ptyControls: runtimeResources,
       ...(openedContextOffloadStore
@@ -708,6 +716,10 @@ export async function createExecutionRuntimeHostComposition(
           .countRecallSearchableMessages(sessionIds)
           .catch(() => undefined)) ?? null,
       syntheticTextPatterns: RECALL_SYNTHETIC_TEXT_PATTERNS,
+      fetchMaterial: createRecallMaterialFetch({
+        artifacts: openedArtifactStore,
+        attachments: attachmentResources,
+      }),
       searchFacts: async ({ sessionId, terms, limit }) => {
         const workspaceKey = sessionId
           ? await stores.sessionStore
@@ -2047,9 +2059,36 @@ export async function createExecutionRuntimeHostComposition(
         ? { sessionAccessAuthority: context.sessionAccessAuthority }
         : {}),
     });
+    const workHubTargetExecution = new HostWorkHubTargetExecutionAuthority({
+      readSession: (sessionId) => stores.sessionStore.readHeaderRecordSnapshot(sessionId),
+      runtimePolicy: {
+        resolveExecutionConnection: (locator) =>
+          runtimePolicyStores.operations.resolveExecutionConnection(locator),
+        connectionCatalog: runtimePolicyStores.connectionCatalog,
+      },
+      requestForm: (input) => interactions.requestForm(input),
+      updateModel: async (input, operationContext) => {
+        const outcome = await sessionCatalog.handlers['session.configuration.update'](
+          {
+            sessionId: input.sessionId,
+            expectedRevision: input.expectedRevision,
+            patch: { modelTarget: input.modelTarget },
+          },
+          operationContext,
+        );
+        if (!outcome.ok) {
+          throw new WorkHubActionEffectFailure(
+            outcome.error.code === 'invalid_request' ? 'operation_conflict' : outcome.error.code,
+            outcome.error.message,
+          );
+        }
+        return outcome.result.kind === 'committed' ? 'committed' : 'revision_conflict';
+      },
+    });
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
       routingModel: dependencies.workHubRoutingModel,
       requestForm: (input) => interactions.requestForm(input),
+      targetExecution: workHubTargetExecution,
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),
       transitionConfiguration: (input) =>
         requireSessionManager(manager).transitionSessionConfiguration(
@@ -2093,7 +2132,14 @@ export async function createExecutionRuntimeHostComposition(
         // Resolve and resume only the execution lineage owned by this
         // delegation. A Session-wide latest-failure query could otherwise
         // continue unrelated work started directly in the same Session.
-        resumeDelegation: async (assignment, context, actionId, validateFreshTarget) => {
+        resumeDelegation: async (
+          assignment,
+          context,
+          actionId,
+          validateFreshTarget,
+          prepareTargetExecution,
+          assertTargetExecutionReady,
+        ) => {
           const targetTurnId = workHubResumedTurnId(actionId);
           const admitted = await stores.agentRunStore.readRootTurnAdmission(
             assignment.targetSessionId,
@@ -2108,6 +2154,11 @@ export async function createExecutionRuntimeHostComposition(
             }
             return { outcome: 'resume_started' as const, targetTurnId };
           }
+          await validateFreshTarget();
+          await prepareTargetExecution?.();
+          // A model-repair form can remain open while another action changes
+          // the delegated target. Recheck freshness before reading its
+          // terminal lineage so the resumed action never uses a stale target.
           await validateFreshTarget();
           const disposition = await messages.readMessageExecutionDisposition(
             assignment.targetSessionId,
@@ -2169,7 +2220,7 @@ export async function createExecutionRuntimeHostComposition(
               'WorkHub resume source lineage changed during planning',
             );
           }
-          const started = await coordinator.handlers['turn.resume.start'](
+          const started = await coordinator.startTurnResumeWithValidation(
             {
               sessionId: assignment.targetSessionId,
               turnId: targetTurnId,
@@ -2177,6 +2228,7 @@ export async function createExecutionRuntimeHostComposition(
               sourceRuntimeEventHighWater: plan.result.sourceRuntimeEventHighWater,
             },
             context,
+            assertTargetExecutionReady,
           );
           if (!started.ok) {
             throw new WorkHubActionEffectFailure(started.error.code, started.error.message);
@@ -2557,6 +2609,9 @@ export async function createExecutionRuntimeHostComposition(
         recovery: { state: () => pluginPlatform!.recover() },
         drain: [() => pluginPlatform!.beginDrain()],
         close: [() => pluginPlatform!.close()],
+        releaseConnection: [
+          (connectionId) => pluginPlatformCoordinator.releaseConnection(connectionId),
+        ],
       }),
       createRuntimeHostDomainModule({
         id: 'memory',

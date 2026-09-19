@@ -80,6 +80,11 @@ import {
   SessionAttachmentProvider,
   type ReadAttachmentBytes,
 } from './attachment-image.js';
+import {
+  MakaClientSessionScope,
+  MakaClientSlotOutlet,
+  useMakaClientSlotOccupied,
+} from './client-plugin-slots.js';
 
 /**
  * How far outside the viewport, in pixels, rows are mounted.
@@ -603,6 +608,9 @@ export function ChatView(props: {
     props.onQuoteSelection ? copy.quoteSelection : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
   ].filter((label): label is string => label !== null).join(' / ');
+  const hasConversationHeaderActions = useMakaClientSlotOccupied(
+    'conversation.header.actions',
+  );
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -744,10 +752,11 @@ export function ChatView(props: {
   ) : null;
 
   return (
-    <SessionAttachmentProvider
-      sessionId={props.activeSession.id}
-      readBytes={props.onReadAttachmentBytes}
-    >
+    <MakaClientSessionScope sessionId={props.activeSession.id}>
+      <SessionAttachmentProvider
+        sessionId={props.activeSession.id}
+        readBytes={props.onReadAttachmentBytes}
+      >
       <section
         className="maka-main agents-chat-panel agents-chat-view-root"
         role="region"
@@ -763,6 +772,12 @@ export function ChatView(props: {
         onOpenMemorySettings={props.onOpenMemorySettings}
         deepResearchActive={deepResearchActive}
         goal={props.goalIndicator}
+        actions={hasConversationHeaderActions ? (
+          <MakaClientSlotOutlet
+            name="conversation.header.actions"
+            owner={{ sessionName: props.activeSession.name }}
+          />
+        ) : undefined}
       />
       {deepResearchActive && props.deepResearchRun && (
         <DeepResearchProgressPanel
@@ -979,7 +994,8 @@ export function ChatView(props: {
         ) : null}
       </div>
       </section>
-    </SessionAttachmentProvider>
+      </SessionAttachmentProvider>
+    </MakaClientSessionScope>
   );
 }
 
