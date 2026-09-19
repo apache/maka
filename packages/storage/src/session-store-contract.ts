@@ -200,6 +200,7 @@ export interface WorkHubMessageAssignmentResult {
 }
 
 export type StableSessionCreateInput = CreateSessionInput & {
+  readonly branchNameOrigin?: SessionHeader['branchNameOrigin'];
   readonly conversationCopy?: SessionConversationCopy;
   readonly role?: SessionRole;
 };

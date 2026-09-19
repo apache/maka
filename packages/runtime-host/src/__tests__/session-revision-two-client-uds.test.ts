@@ -444,6 +444,7 @@ async function verifyConcurrentRevisionAuthority(
     assert.equal(desktopBranch.kind, 'committed');
     if (desktopBranch.kind !== 'committed') assert.fail('Branch must commit');
     const branch = requireSessionProjection(desktopBranch.session);
+    assert.equal(branch.name, 'Source Session (1)');
     assert.equal(branch.parentSessionId, sourceSessionId);
     assert.equal(branch.branchOfTurnId, 'turn-1');
     assert.equal(branch.isFlagged, true);
@@ -504,6 +505,7 @@ async function verifyConcurrentRevisionAuthority(
     assert.equal(revised.kind, 'committed');
     if (revised.kind !== 'committed') assert.fail('Revision must commit');
     const revision = requireSessionProjection(revised.session);
+    assert.equal(revision.name, renamedSource.name);
     assert.equal(revision.revisionRootSessionId, sourceSessionId);
     assert.equal(revision.revisionParentSessionId, sourceSessionId);
     assert.equal(revision.revisionOfTurnId, 'turn-2');
@@ -632,6 +634,7 @@ async function verifyConcurrentRevisionAuthority(
       if (sideConversation.kind !== 'committed') {
         assert.fail('Side Conversation must fork a settled Turn while the source keeps running');
       }
+      assert.equal(requireSessionProjection(sideConversation.session).name, activeSource.name);
       assert.ok(
         requireSessionProjection(sideConversation.session).labels.includes(
           'mode:side_conversation',
