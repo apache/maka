@@ -637,6 +637,90 @@ describe('PricingEditor', () => {
     await act(async () => harness.root.unmount());
   });
 
+  it('keeps a reset cancelled while its recovery read is pending closed', async () => {
+    const recovery = deferred<DesktopPricingSnapshot>();
+    const latest = { ...SNAPSHOT, revision: 6 };
+    let reads = 0;
+    const harness = await renderEditor({
+      load: async () => ++reads === 1 ? SNAPSHOT : recovery.promise,
+      mutate: async () => ({ kind: 'reconciliation_unavailable', reason: 'outcome_unknown' }),
+    });
+    try {
+      await click(buttonByLabel(harness.doc, copy.resetAria('anthropic:claude')));
+      await click(buttonByText(openDialog(harness.doc)!, copy.confirmReset));
+      await clickWithoutSettling(buttonByText(openDialog(harness.doc)!, copy.refresh));
+      await click(buttonByText(openDialog(harness.doc)!, copy.cancel));
+      assert.equal(openDialog(harness.doc), undefined);
+      assertButtonDisabled(buttonByText(harness.doc, copy.add));
+
+      await act(async () => recovery.resolve(latest));
+
+      assert.equal(Boolean(openDialog(harness.doc)), false, 'a recovery result cannot undo Cancel');
+      assertButtonEnabled(buttonByText(harness.doc, copy.add));
+      assert.equal(harness.mutations.length, 1, 'the cancelled reset is still reconciled, never replayed');
+      await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+      assert.doesNotMatch(openDialog(harness.doc)?.textContent ?? '', new RegExp(copy.conflictTitleUnknown));
+      assert.ok(buttonByText(openDialog(harness.doc)!, copy.save));
+    } finally {
+      await act(async () => harness.root.unmount());
+    }
+  });
+
+  it('does not carry a cancelled Add recovery into another model editor', async () => {
+    const latest = { ...SNAPSHOT, revision: 6 };
+    let reads = 0;
+    const harness = await renderEditor({
+      load: async () => ++reads === 1 ? SNAPSHOT : latest,
+      mutate: async () => ({ kind: 'reconciliation_unavailable', reason: 'outcome_unknown' }),
+    });
+    try {
+      await selectCatalogModel(harness.doc, 'openai:gpt-4o');
+      await click(buttonByText(openDialog(harness.doc)!, copy.save));
+      await click(buttonByText(openDialog(harness.doc)!, copy.cancel));
+      assertButtonDisabled(buttonByText(harness.doc, copy.add));
+      await click(buttonByLabel(harness.doc, copy.refresh));
+      assert.equal(harness.mutations.length, 1, 'refresh must not replay the cancelled Add');
+      await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+
+      const dialog = openDialog(harness.doc)!;
+      assert.equal(inputByLabel(harness.doc, copy.modelKeyLabel)?.value, 'anthropic:claude');
+      assert.doesNotMatch(dialog.textContent ?? '', new RegExp(copy.conflictTitleUnknown));
+      await click(buttonByText(dialog, copy.save));
+      assert.deepEqual(harness.mutations[1]?.base, latest);
+      assert.equal(harness.mutations[1]?.mutation.kind, 'upsert');
+    } finally {
+      await act(async () => harness.root.unmount());
+    }
+  });
+
+  it('does not apply an earlier model conflict after the pending Add changes keys', async () => {
+    const pending = deferred<DesktopPricingMutationOutcome>();
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => pending.promise,
+    });
+    try {
+      await click(buttonByText(harness.doc, copy.add));
+      await click(buttonByText(harness.doc, copy.manualEntryToggle));
+      await setInput(inputByLabel(harness.doc, copy.modelKeyLabel), 'acme:first');
+      await setInput(inputByLabel(harness.doc, copy.inputLabel), '1');
+      await setInput(inputByLabel(harness.doc, copy.outputLabel), '2');
+      await clickWithoutSettling(buttonByText(harness.doc, copy.save));
+      await typeInput(inputByLabel(harness.doc, copy.modelKeyLabel), 'acme:second');
+      await act(async () => pending.resolve({
+        kind: 'review_required', reason: 'revision_conflict', snapshot: { ...SNAPSHOT, revision: 6 },
+      }));
+
+      const dialog = openDialog(harness.doc)!;
+      assert.equal(inputByLabel(harness.doc, copy.modelKeyLabel)?.value, 'acme:second');
+      assert.doesNotMatch(dialog.textContent ?? '', new RegExp(copy.conflictTitle));
+      assert.ok(buttonByText(dialog, copy.save), 'the new key does not review the earlier key conflict');
+      assert.equal(harness.mutations.length, 1);
+    } finally {
+      await act(async () => harness.root.unmount());
+    }
+  });
+
   it('finishes an unavailable upsert when the refreshed authority matches exactly', async () => {
     const committed: DesktopPricingSnapshot = {
       ...SNAPSHOT,

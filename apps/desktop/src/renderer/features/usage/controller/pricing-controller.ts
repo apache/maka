@@ -48,6 +48,8 @@ type PricingOverride = Extract<EffectivePricingEntry, { source: 'custom' }>;
 
 interface PricingWriteAttempt {
   readonly intent: PricingReconciliationTarget;
+  /** A cancelled dialog or a different model draft no longer owns this result. */
+  readonly dialogGeneration: number;
   /** Immutable input actually submitted, distinct from subsequent user edits. */
   readonly draft: PricingDraft | null;
 }
@@ -134,6 +136,7 @@ export function usePricingController(props: {
   const draft = editor?.draft ?? EMPTY_DRAFT;
   const cacheOpen = editor?.cacheOpen ?? false;
   const [writeState, setWriteState] = useState<PricingWriteState>({ kind: 'idle' });
+  const dialogGenerationRef = useRef(0);
   // A remounted view may recover a draft, but never its former mutation base.
   const [needsReview, setNeedsReview] = useState(editor !== null);
   const [pendingMutation, setPendingMutation] = useState<PricingMutation['kind'] | null>(null);
@@ -193,6 +196,12 @@ export function usePricingController(props: {
 
   function setEditor(update: SetStateAction<PricingEditorDraft | null>) {
     const next = typeof update === 'function' ? update(editorRef.current) : update;
+    if (next?.draft.modelKey.trim() !== editorRef.current?.draft.modelKey.trim()) {
+      dialogGenerationRef.current += 1;
+      // Retain unresolved writes for reconciliation, but a settled conflict
+      // belongs only to the model/dialog that submitted it.
+      setWriteState((current) => current.kind === 'conflict' ? { kind: 'idle' } : current);
+    }
     // Record input synchronously, even if a pending write settles before React
     // commits the input event. Async completions must see this newer draft.
     editorRef.current = next;
@@ -445,18 +454,25 @@ export function usePricingController(props: {
       setSnapshot(outcome.snapshot);
       setLoadError(null);
     }
+    // Reconciliation still updates authority after Cancel. Only its original
+    // dialog may be closed, reopened for review, or given a conflict notice.
+    const ownsDialog = attempt.dialogGeneration === dialogGenerationRef.current;
     switch (outcome.kind) {
       case 'saved':
         setWriteState({ kind: 'idle' });
-        finishReconciledIntent(attempt, outcome.snapshot);
+        if (ownsDialog) finishReconciledIntent(attempt, outcome.snapshot);
         toast.success(copy.saved, outcome.disposition === 'unchanged' ? copy.synchronized : undefined);
         return;
       case 'synchronized':
         setWriteState({ kind: 'idle' });
-        finishReconciledIntent(attempt, outcome.snapshot);
+        if (ownsDialog) finishReconciledIntent(attempt, outcome.snapshot);
         toast.success(copy.synchronized);
         return;
       case 'review_required':
+        if (!ownsDialog) {
+          setWriteState({ kind: 'idle' });
+          return;
+        }
         // Adopt fresh authority into the list so it is no longer speculative,
         // keep the draft, and require an explicit second save against `latest`.
         setWriteState({ kind: 'conflict', reason: outcome.reason, attempt });
@@ -490,6 +506,7 @@ export function usePricingController(props: {
     const lifecycle = lifecycleRef.current;
     const attempt: PricingWriteAttempt = {
       intent: createPricingReconciliationTarget(base.entries, mutation),
+      dialogGeneration: dialogGenerationRef.current,
       draft: mutation.kind === 'upsert' ? editorRef.current?.draft ?? null : null,
     };
     setPendingMutation(mutation.kind);
@@ -521,6 +538,7 @@ export function usePricingController(props: {
     trigger: HTMLElement | null,
   ) {
     if (writesBlocked || guard.current || snapshot === null) return;
+    dialogGenerationRef.current += 1;
     triggerRef.current = trigger;
     setMutationBase(snapshot);
     setResetTarget(row);
@@ -528,6 +546,7 @@ export function usePricingController(props: {
 
   function cancelReset() {
     if (guard.current) return;
+    dialogGenerationRef.current += 1;
     setResetTarget(null);
     setMutationBase(null);
     if (writeState.kind === 'conflict') setWriteState({ kind: 'idle' });

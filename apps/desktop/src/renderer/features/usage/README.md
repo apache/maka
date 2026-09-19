@@ -54,6 +54,9 @@ to a thin wrapper).
   If reconciliation was temporarily unavailable, it retains that same attempt
   and compares its exact intent with the next successful snapshot via the shared
   pure reconciliation rules in `@maka/runtime-host/protocol`, without replaying it.
+  Each attempt also belongs to its dialog generation: cancellation or a different
+  model key detaches the dialog while authority reconciliation continues. A late
+  result cannot reopen a cancelled dialog or carry its conflict into another edit.
 - `services-context.tsx` — `UsageFeatureScope`, the persistent state owner
   (single complete snapshot with range/query labels, screen/page request tickets,
   fixed filter time bounds, Host invalidation, and visible stale/capacity failures), plus `useUsageServices()`
