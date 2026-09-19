@@ -39,12 +39,6 @@ import {
   type StorageRootLease,
 } from '../root-authority.js';
 import { CONTEXT_OFFLOAD_DATABASE_NAME } from '../sqlite-context-offload-store.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
-
-after(removeTrackedControlDirectories);
 
 test('requires authentic Storage Root leases and writer facades', async () => {
   await assert.rejects(
@@ -192,9 +186,7 @@ test('close drains admitted work, revokes the facade, and permits a clean reopen
 
 test('root-owner close revokes new context-offload operations', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-offload-authority-revoke-'));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: root, kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;
@@ -230,9 +222,7 @@ async function withInteractiveOwner(
   run: (owner: InteractiveRootOwner, root: string) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-offload-authority-'));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: root, kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;

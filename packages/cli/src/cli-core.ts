@@ -245,6 +245,10 @@ export async function runMakaCli(
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
       if (command.managedDeployment) {
+        const { recoverRuntimeHostManagedDeploymentState } = await import(
+          './runtime-host-activation-command.js'
+        );
+        await recoverRuntimeHostManagedDeploymentState(command.managedDeployment.rootId);
         const {
           resolveRuntimeHostManagedDeployment,
           resolveRuntimeHostNpmDeploymentLayout,
@@ -293,6 +297,15 @@ export async function runMakaCli(
         const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
           await import('./runtime-host-service-manager.js');
         const config = await readRuntimeHostManagedServiceConfig(command.managedServiceConfigPath);
+        const { resolveStorageRootIdentity } = await import('@maka/storage/root-authority');
+        const { recoverRuntimeHostManagedDeploymentState } = await import(
+          './runtime-host-activation-command.js'
+        );
+        const { rootId } = await resolveStorageRootIdentity({
+          path: config.rootPath,
+          kind: 'interactive',
+        });
+        await recoverRuntimeHostManagedDeploymentState(rootId);
         return runRuntimeHostServiceCli({
           rootPath: config.rootPath,
           json: command.json,

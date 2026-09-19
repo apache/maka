@@ -53,6 +53,17 @@
   persisted, and a transcript that opens on an assistant reply keeps that turn.
 - Reading a Claude Code transcript for the Session catalog is bounded to a head
   and tail window instead of reading each transcript to its end.
+- Made the Runtime Host State Root self-contained. The root marker is now schema version 2:
+  owner election, the Artifact-writer lock, Host registrations, startup diagnostics, plugin data
+  and credentials, and the managed deployment record all live under `<root>/.maka-host` instead of
+  the account's cache and data directories. Roots written by `v0.1.x`, `cli-v0.1.0-beta.1`,
+  `v0.2.0-incubating-rc1`, or `v0.2.0-dev` builds carry schema version 1 and migrate automatically
+  the first time a Runtime Host startup, activation, update, or service recovery resolves them;
+  an interrupted migration resumes forward on the next attempt and needs no manual repair.
+  **Earlier releases cannot open a migrated root** — downgrading requires restoring a pre-upgrade
+  copy of the root directory. Schema version 1 support is limited to the 0.2.x line: starting with
+  0.3, Maka rejects unmigrated roots, so a root that skips every 0.2.x release must be opened once
+  by a 0.2.x build or recovered from backup.
 - Made typed `request()` the sole direct Runtime Host operation API; removed the 17 forwarding
   aliases from direct and reconnecting connections while preserving status validation,
   subscriptions, capabilities, listeners, lifecycle, and close behavior.

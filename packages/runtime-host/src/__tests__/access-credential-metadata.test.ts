@@ -95,9 +95,10 @@ test('credential metadata exposes only usable public access state', async (t) =>
     principalKind: 'session_guest' as const,
   };
   await writeAccessCredentialFile(
-    join(owner.controlDirectory, ACCESS_FILE_NAME),
+    join(owner.hostDataDirectory, ACCESS_FILE_NAME),
     createAccessCredentialFile([active, pending, expired, revoked, guest]),
   );
+  await rm(owner.controlDirectory, { recursive: true, force: true });
 
   const metadata = await readRuntimeHostAccessCredentialMetadata(root, capability.rootId);
 

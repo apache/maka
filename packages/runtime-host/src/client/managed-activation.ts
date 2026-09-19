@@ -24,6 +24,7 @@ import {
 } from '../protocol/index.js';
 import {
   resolveRuntimeHostManagedDeployment,
+  prepareRuntimeHostManagedRoot,
   resolveRuntimeHostNpmDeploymentLayout,
   runtimeHostManagedLaunchClaim,
   type RuntimeHostActivationResult,
@@ -70,7 +71,10 @@ interface ActivateRuntimeHostManagedDeploymentDependencies {
 }
 
 const DEFAULT_DEPENDENCIES: ActivateRuntimeHostManagedDeploymentDependencies = {
-  resolveDeployment: resolveRuntimeHostManagedDeployment,
+  async resolveDeployment(rootId, authority) {
+    await prepareRuntimeHostManagedRoot(rootId, authority);
+    return resolveRuntimeHostManagedDeployment(rootId, authority);
+  },
   connectOrSpawn: connectOrSpawnRuntimeHost,
 };
 

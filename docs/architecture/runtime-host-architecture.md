@@ -98,7 +98,41 @@ Implementation: [Root authority](../../packages/storage/src/root-authority.ts), 
 
 Root capability acquisition canonicalizes the real path, then validates the root marker's random `rootId` against filesystem object identity. Aliases cannot create another logical owner; copying an initialized directory does not automatically acquire the original root's identity. Import, remount, and repair have separate explicit validation paths. Process-local registration authenticates capabilities and leases; TypeScript types alone are insufficient.
 
-Write authority comes from an OS lock on a stable file. A durable account-local ownership namespace arbitrates by `rootId`, retaining a compatibility lock boundary. Registration files, PIDs, sockets, health probes, and cache directories are discovery or observation data. Removing discovery caches cannot legitimately create a second writer.
+Write authority comes from an OS lock on a stable file inside the canonical physical root's `.maka-host` directory. All Clients of that root share one Host; independent physical roots have independent ownership. `rootId` remains protocol identity, not an account-wide or distributed mutex. Registration files, PIDs, sockets, health probes, and cache directories are discovery or observation data. Removing discovery caches cannot legitimately create a second writer. Because the lock file lives inside the root, Windows cannot rename the directory while an owner holds it; moving a live root requires releasing the owner first.
+
+The root owns its complete persistent state. `.maka-host/state/data` contains plugin packages, composition, plugin state/secrets and access credentials. `.maka-host/state/deployment/runtime-host-deployment.json` is the sole managed deployment transaction record. `.maka-host/runtime` contains disposable registration, startup diagnostics and one-time credential deliveries. Owner and Artifact locks remain outside `runtime`. Short local socket paths can live in the system temporary directory. Ordinary fresh-root startup does not require an account home directory. Co-location does not make credentials or machine-specific deployment artifacts safe to export; backups must preserve their access restrictions.
+
+`prepareRuntimeHostRoot` is the single format upgrade entry. Ordinary Storage resolution and deployment lookup do not migrate. Storage owns marker validation, physical identity, locks and atomic publication; the Host owns legacy layout interpretation, snapshot validation and completion. Explicit identity repair preserves both legacy and in-progress formats and grants no business capability.
+
+Early Desktop boot uses `resolveStorageRootIdentity` to obtain the path and identity before constructing management facilities; it does not require upgrade completion. `inspectRuntimeHostManagedDeployment` reads metadata for the observed format. During upgrade it reports the format without presenting the old record as an activatable deployment. An ordinary connection to a legacy managed root returns the existing operator-required result. WSL environment reuse may recover an already recorded lifecycle transaction, but cannot select or install a new version.
+
+The managed lifecycle's `prepareRuntimeHostRootForDeployment` owns upgrade admission: recover the old transaction with the installed source, prepare the target, retire the old Host, then invoke format migration. Migration accepts a settled source deployment and never chooses a recovery direction from `from` / `to`. Unavailable live activity remains unknown; source retirement still enforces the existing interruption policy.
+
+Upgrade runs under the original root owner's account. Before takeover, the installed source package owns v1 lifecycle operations, including status and retirement. The successor CLI can therefore inspect the old deployment and prepare a compatible target before upgrading. A compatible package already selected by an interrupted installer resumes its upgrade without selecting another registry target. Active work follows the existing interruption policy. The new root lock and legacy owner/Artifact locks exclude writers. Missing writable legacy lock directories are created only for initial admission. Source absence is recorded under these locks; unrelated root files remain intact and do not imply missing Host data. Once a source was recorded present, losing it before its snapshot completes cannot be interpreted as empty state.
+
+The release update compatibility epoch is 2. Older updaters must not perform this format change unattended; an explicit successor-CLI update uses the transaction above. Interrupted upgrades resume automatically through the existing startup and activation paths.
+
+The first atomic marker publication changes schema 1 to schema 2 with an `upgrade` record binding a transaction ID and source plan. Both old binaries and new business readers reject this state. The Host copies the complete `state` container, validates its data and deployment, synchronizes files through Storage's cross-platform primitives, writes a completion receipt bound to that transaction, then atomically publishes the container. The second marker publication removes `upgrade`. A completed snapshot is reused after interruption even if the old cache has disappeared; incomplete staging is retried only from its recorded source and never silently replaced with empty data. Under the fence, `.maka-host` contents belong to the transaction: a committed snapshot that fails verification or lacks its completion receipt is restaged once from the recorded sources, and the receipt attests whether a deployment authority record must survive. Recovery does not rediscover the account home. Legacy files are retained but have no authority after completion; steady-state ownership holds no compatibility locks.
+
+The imported deployment uses the existing `complete_to` transaction when its target package changes. Normal managed activation resumes that transaction and invokes the exact package selected by the root record, even before the stable operator launcher has been updated. A failed new Host startup cannot roll back the data format to an incompatible binary. Downgrading requires restoring the complete pre-upgrade state, not editing the marker version.
+
+```mermaid
+flowchart TD
+  A[Startup: read root identity and construct management] --> B{Root identity and format}
+  B -->|Identity mismatch| C[Explicit identity repair]
+  C --> B
+  B -->|Current| H[Acquire owner and recover deployment]
+  B -->|Legacy| L[If managed: lifecycle recovers old transaction]
+  L --> D[Prepare compatible package and retire old Host]
+  D --> E[Acquire old and new locks; publish upgrade marker]
+  B -->|Upgrading| F[Resume recorded transaction]
+  E --> F
+  F --> G[Validate, sync and publish complete snapshot]
+  G --> I[Publish current-format marker]
+  I --> H
+  H --> J[Recover composition; publish ready]
+  J --> K[Drain work, close resources, release owner]
+```
 
 Closing a lease rejects new operations, waits for admitted operations, then releases the OS handles. Store facades receive that owner/lease; business code cannot bypass it by opening another database connection. The lock does not prove that every external descendant process exits with the Host.
 
@@ -335,7 +369,7 @@ Implementation: [Client handoff](../../packages/runtime-host/src/client/host-han
 
 Remote directory browsing uses Host-published opaque root IDs and validated path segments with realpath containment. Symlinks and Client-local pickers cannot expand that boundary.
 
-Installation and write authority are also separate. An account-local deployment owner coordinates Desktop, CLI, managed service, or development ownership by root identity and CAS revision. The managed deployment document describes configuration and `active`/`transition`/`blocked` recovery states. Service artifacts are projections of that configuration rather than a competing deployment journal.
+Installation and write authority are also separate. The root-local managed deployment document describes configuration and `active`/`transition`/`blocked` recovery states; changes require the root writer lease and CAS revision. The account-side `root-location.json` only locates a root for commands addressed by `rootId`. Missing lookup prevents resolution, but cannot erase the root's managed launch restrictions. Every launch reads the root-local record under its owner lease. Service artifacts are projections of that configuration rather than a competing deployment journal.
 
 Updates verify package version/integrity, prepare the target, confirm actual target readiness, and then commit installation state. Retries must recognize an already-successful successor rather than terminating it again from old process information. Ordinary remote credentials do not grant machine operator installation rights; SSH operator activation is a separate explicit boundary.
 

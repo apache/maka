@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { mkdir, open, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   isCanonicalExtensionId,
@@ -58,18 +58,24 @@ export class HostPluginCompositionStore {
 
   async read(): Promise<PersistedPluginComposition | undefined> {
     let encoded: Buffer;
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
     try {
-      encoded = await readFile(this.path);
+      handle = await open(this.path, 'r');
+      const buffer = Buffer.alloc(MAX_BYTES + 1);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+      encoded = buffer.subarray(0, bytesRead);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       throw persistence('Unable to read Plugin Composition', error);
+    } finally {
+      await handle?.close();
     }
     if (encoded.byteLength > MAX_BYTES) throw invalid('Plugin Composition exceeds its size limit');
     try {
       return decode(JSON.parse(encoded.toString('utf8')));
     } catch (error) {
       if (error instanceof HostPluginCompositionStoreError) throw error;
-      throw invalid('Plugin Composition is invalid JSON', error);
+      throw invalid(`Plugin Composition is invalid JSON: ${this.path}`, error);
     }
   }
 

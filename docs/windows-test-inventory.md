@@ -15,8 +15,8 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 27 |
-| portable-candidate | 35 |
+| windows-backend-gap | 29 |
+| portable-candidate | 33 |
 | platform-contract | 36 |
 
 Total Windows-excluded declarations: **98**
@@ -38,8 +38,8 @@ Total Windows-excluded declarations: **98**
 | platform-contract | `packages/cli/src/__tests__/acp-prompt-content.test.ts` rejects a FIFO without blocking the process | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` shortens POSIX paths under the home directory | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` keeps POSIX paths outside the home directory absolute | `process.platform === 'win32'` |
-| portable-candidate | `packages/cli/src/__tests__/runtime-host-local-managed-activation.test.ts` local CLI cold-starts through the installed ${legacy ? 'legacy' : 'Node'} operator | `process.platform === 'win32'` |
-| portable-candidate | `packages/cli/src/__tests__/runtime-host-setup.test.ts` managed operator binds its Client Data Root and routes deployment cleanup | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/cli/src/__tests__/runtime-host-local-managed-activation.test.ts` local CLI cold-starts the exact package ${interrupted ? 'after format upgrade before deployment activation' : 'with active deployment authority'} | `process.platform === 'win32' ? 'requires a POSIX package-entrypoint symlink' : false` |
+| windows-backend-gap | `packages/cli/src/__tests__/runtime-host-setup.test.ts` managed operator binds its Client Data Root and routes deployment cleanup | `process.platform === 'win32' ? 'requires a POSIX package-entrypoint symlink' : false` |
 | portable-candidate | `packages/cli/src/__tests__/tui-mcp-control.test.ts` TUI MCP reconciles an already-published write through execute: ${scenario} | `process.platform === 'win32'` |
 | portable-candidate | `packages/eval/src/__tests__/install-preflight.test.ts` rejects an unusable trials root before invoking external prerequisites | `process.platform === 'win32' \|\| process.geteuid?.() === 0` |
 | platform-contract | `packages/runtime-host/src/__tests__/antigravity-install.test.ts` <dynamic test title> | `process.platform !== 'darwin'` |

@@ -714,7 +714,12 @@ test('the recovery lane leaves the suites it executes to the required test lane'
       [...workflow.matchAll(/packages[/\\]([^/\\]+)[/\\]dist[/\\]/gu)].map((match) => match[1]),
     ),
   ].sort();
-  assert.deepEqual(executed, ['runtime', 'runtime-host', 'storage']);
+  // Every suite in this lane exercises code that branches on win32 — the
+  // criterion the filter is generated from — so a Linux run of the same suite
+  // in `test` is not redundant coverage. The cli upgrade suite earns its place
+  // the same way: it drives the managed migration through the Windows task
+  // launcher gate and the in-root owner lock, which `test` can never reach.
+  assert.deepEqual(executed, ['cli', 'runtime', 'runtime-host', 'storage']);
 
   // None of that closure belongs in the filter. These suites are ordinary
   // TypeScript, so `test` runs them on Linux on every pull request and fails

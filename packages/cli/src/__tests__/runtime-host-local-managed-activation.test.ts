@@ -18,16 +18,18 @@
  */
 
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+import { resolveStorageRoot, STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root-authority';
 import {
   claimRuntimeHostManagedDeployment,
-  resolveRuntimeHostManagedDeploymentConfigPath,
+  prepareRuntimeHostRoot,
+  readRuntimeHostManagedDeploymentAuthorityRecord,
+  resolveRuntimeHostManagedDeploymentAuthorityRoot,
   resolveRuntimeHostNpmDeploymentLayout,
   type RuntimeHostManagedDeploymentConfig,
 } from '@maka/runtime-host/operator';
@@ -45,9 +47,9 @@ import {
   type HostIncompatible,
 } from '@maka/runtime-host/protocol';
 
-for (const legacy of [false, true]) {
-  test(`local CLI cold-starts through the installed ${legacy ? 'legacy' : 'Node'} operator`, {
-    skip: process.platform === 'win32',
+for (const interrupted of [false, true]) {
+  test(`local CLI cold-starts the exact package ${interrupted ? 'after format upgrade before deployment activation' : 'with active deployment authority'}`, {
+    skip: process.platform === 'win32' ? 'requires a POSIX package-entrypoint symlink' : false,
     timeout: 30_000,
   }, async (t) => {
     const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-'));
@@ -86,23 +88,67 @@ for (const legacy of [false, true]) {
       layout.candidateEntrypoint,
     );
     await claimRuntimeHostManagedDeployment(capability, config);
-    const modulePath = join(config.deploymentRoot, legacy ? 'legacy-entry.mjs' : 'operator.mjs');
+    const modulePath = layout.cliPath;
+    await mkdir(dirname(modulePath), { recursive: true });
     await writeFile(
       modulePath,
       `
-      import { activateRuntimeHostManagedDeployment } from ${JSON.stringify(import.meta.resolve('@maka/runtime-host/client'))};
+      import { activateRuntimeHostManagedDeploymentWithReconciliation } from ${JSON.stringify(new URL('../runtime-host-activation-command.js', import.meta.url).href)};
       import { encodeRuntimeHostActivationFrame } from ${JSON.stringify(import.meta.resolve('@maka/runtime-host/operator'))};
-      const result = await activateRuntimeHostManagedDeployment({ rootId: process.argv.at(-1) });
+      const result = await activateRuntimeHostManagedDeploymentWithReconciliation({ rootId: process.argv.at(-1) });
       process.stdout.write(encodeRuntimeHostActivationFrame(result));
     `,
     );
-    if (legacy) {
-      const launcher = join(config.deploymentRoot, 'operator');
-      await writeFile(
-        launcher,
-        '#!/bin/sh\nexec ' + "'" + process.execPath + "' '" + modulePath + '\' "$@"\n',
+    if (interrupted) {
+      const legacy = join(resolveRuntimeHostManagedDeploymentAuthorityRoot(), capability.rootId);
+      const home = userInfo().homedir;
+      const cache =
+        process.platform === 'darwin'
+          ? join(home, 'Library', 'Caches', 'Maka')
+          : join(home, '.cache', 'maka');
+      const durable = dirname(resolveRuntimeHostManagedDeploymentAuthorityRoot());
+      const identity = await stat(capability.canonicalPath, { bigint: true });
+      const bootstrap = createHash('sha256')
+        .update(`${identity.dev}:${identity.ino}`)
+        .digest('hex');
+      t.after(async () => {
+        await rm(join(cache, 'runtime-hosts', capability.rootId), { recursive: true, force: true });
+        await rm(join(cache, 'runtime-hosts', 'artifact-writer-bootstrap', `${bootstrap}.lock`), {
+          force: true,
+        });
+        await rm(join(durable, 'state-root-owners', `${capability.rootId}.lock`), { force: true });
+      });
+      await writeFile(join(legacy, 'runtime-host-deployment.json'), JSON.stringify(config));
+      await rm(join(capability.canonicalPath, '.maka-host', 'state'), {
+        recursive: true,
+        force: true,
+      });
+      const markerPath = join(capability.canonicalPath, STORAGE_ROOT_MARKER_FILE);
+      const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+      await writeFile(markerPath, JSON.stringify({ ...marker, schemaVersion: 1 }));
+      const authorityModule = join(
+        layout.packageRoot,
+        'node_modules',
+        '@maka',
+        'storage',
+        'dist',
+        'root-authority.js',
       );
-      await chmod(launcher, 0o700);
+      await mkdir(dirname(authorityModule), { recursive: true });
+      await writeFile(authorityModule, 'export const STORAGE_ROOT_MARKER_SCHEMA_VERSION = 1;');
+      await assert.rejects(
+        prepareRuntimeHostRoot(capability.canonicalPath),
+        /cannot open the upgraded/,
+      );
+      assert.equal(JSON.parse(await readFile(markerPath, 'utf8')).schemaVersion, 1);
+      await writeFile(authorityModule, 'export const STORAGE_ROOT_MARKER_SCHEMA_VERSION = 2;');
+      const upgraded = await prepareRuntimeHostRoot(capability.canonicalPath, {
+        prepareDeployment: async (current) => ({ ...current, configRevision: 2 }),
+      });
+      assert.equal(
+        (await readRuntimeHostManagedDeploymentAuthorityRecord(upgraded))?.state,
+        'transition',
+      );
     }
     let first: Awaited<ReturnType<typeof connectRuntimeHostCliConnection>> | undefined;
     let second: typeof first;
@@ -115,8 +161,8 @@ for (const legacy of [false, true]) {
           process.kill(diagnostics.pid, 'SIGTERM');
         } catch {}
       }
-      await rm(base, { recursive: true, force: true });
-      await rm(dirname(resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId)), {
+      await rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      await rm(join(resolveRuntimeHostManagedDeploymentAuthorityRoot(), capability.rootId), {
         recursive: true,
         force: true,
       });

@@ -23,14 +23,15 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   compareProductReleaseVersions,
   encodeRuntimeHostServiceManagementFrame,
-  RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
+  type RuntimeHostServiceErrorCode,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  runtimeHostServiceWireErrorCode,
   withRuntimeHostManagedServiceDeploymentLock,
   type RuntimeHostManagedServiceTarget,
 } from './runtime-host-service-manager.js';
@@ -92,11 +93,7 @@ export async function runManagedRuntimeHostUpdateCheckCli(
     writeSuccess(frame, options);
     return 0;
   } catch (error) {
-    const code =
-      error instanceof RuntimeHostUpdateDiscoveryError ||
-      error instanceof RuntimeHostServiceManagerError
-        ? error.code
-        : 'update_check_failed';
+    const code = runtimeHostServiceWireErrorCode(error);
     const message = error instanceof Error ? error.message : String(error);
     writeFailure(code, message, options);
     return 1;
@@ -300,12 +297,12 @@ export function formatRuntimeHostUpdateCheck(frame: RuntimeHostUpdateCheckFrame)
 }
 
 function writeFailure(
-  code: string,
+  code: RuntimeHostServiceErrorCode,
   message: string,
   options: RuntimeHostUpdateCheckCliOptions,
 ): void {
   const error = {
-    code: truncateUtf8(code, RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES) || 'update_check_failed',
+    code,
     message:
       truncateUtf8(message, RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES) ||
       'Runtime Host update check failed',

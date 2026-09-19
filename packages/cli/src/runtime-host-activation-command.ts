@@ -27,18 +27,59 @@ import {
 import {
   RUNTIME_HOST_ACTIVATION_ERROR_MESSAGE_MAX_BYTES,
   encodeRuntimeHostActivationFrame,
+  prepareRuntimeHostManagedRoot,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
 } from '@maka/runtime-host/operator';
 import { reconcileRuntimeHostUpdateOnActivation } from './runtime-host-update-reconciliation.js';
+import { resolveRecoverableRuntimeHostManagedDeployment } from './runtime-host-lifecycle-transaction.js';
+import {
+  convergeRuntimeHostManagedOperator,
+  verifyRuntimeHostManagedOperator,
+  resolveRuntimeHostManagedControlRoot,
+} from './runtime-host-managed-deployment.js';
+import { resolveRuntimeHostLifecycleProvider } from './runtime-host-service-management-command.js';
+import {
+  storageRootErrorDetail,
+  withRuntimeHostManagedServiceDeploymentLock,
+} from './runtime-host-service-manager.js';
 
 export interface RuntimeHostManagedActivationCliOptions {
   readonly rootId: string;
   readonly repairRootAfterRemount?: true;
 }
 
-export function activateRuntimeHostManagedDeploymentWithReconciliation(
+export async function recoverRuntimeHostManagedDeploymentState(
+  rootId: string,
+  options: {
+    readonly authority?: RuntimeHostManagedDeploymentAuthorityOptions;
+    readonly deploymentLockHeld?: boolean;
+  } = {},
+): Promise<void> {
+  const recover = async () => {
+    // Settle the source transaction first: a pending legacy transition is
+    // resolved by its installed package before the root format can migrate.
+    await resolveRecoverableRuntimeHostManagedDeployment(rootId, {
+      convergeOperator: convergeRuntimeHostManagedOperator,
+      verifyOperator: verifyRuntimeHostManagedOperator,
+      resolveProvider: resolveRuntimeHostLifecycleProvider,
+    });
+    await prepareRuntimeHostManagedRoot(rootId, options.authority);
+  };
+  if (options.deploymentLockHeld) return recover();
+  await withRuntimeHostManagedServiceDeploymentLock(
+    resolveRuntimeHostManagedControlRoot(rootId),
+    recover,
+  );
+}
+
+export async function activateRuntimeHostManagedDeploymentWithReconciliation(
   input: ActivateRuntimeHostManagedDeploymentInput,
   options: { readonly deploymentLockHeld?: boolean } = {},
 ) {
+  await recoverRuntimeHostManagedDeploymentState(input.rootId, {
+    ...(input.authority ? { authority: input.authority } : {}),
+    ...(options.deploymentLockHeld ? { deploymentLockHeld: true } : {}),
+  });
   return activateRuntimeHostManagedDeployment(input, {
     reconcileActivation: (config) => reconcileRuntimeHostUpdateOnActivation(config, options),
   });
@@ -64,10 +105,13 @@ export async function runRuntimeHostManagedActivationCli(
     writeOutput(encodeRuntimeHostActivationFrame(result));
     return 0;
   } catch (error) {
+    const authority = storageRootErrorDetail(error);
     const code =
-      error instanceof RuntimeHostManagedActivationError ? error.code : 'activation_failed';
+      error instanceof RuntimeHostManagedActivationError
+        ? error.code
+        : (authority?.code ?? 'activation_failed');
     const message = truncateUtf8(
-      generalizedErrorMessage(error, 'Runtime Host activation failed'),
+      authority?.message ?? generalizedErrorMessage(error, 'Runtime Host activation failed'),
       RUNTIME_HOST_ACTIVATION_ERROR_MESSAGE_MAX_BYTES,
     );
     writeOutput(

@@ -43,7 +43,6 @@ import {
   type InteractiveRootOwner,
   type StorageRootCapability,
 } from '../root-authority.js';
-import { removeControlDirectory } from './fixtures/control-directory-hygiene.js';
 
 const MEMORY_DIRECTORY = 'memory';
 const TRANSACTION_DIRECTORY = '.memory-bundle-transaction';
@@ -756,7 +755,6 @@ async function withInteractiveRoot(
     try {
       await run({ root, capability });
     } finally {
-      await removeControlDirectory(capability.rootId);
     }
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -314,7 +314,7 @@ test('real Host returns bounded failures, stays usable, and fences a replacement
     lease.close();
     await stores.close();
     await owner.close();
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });
@@ -413,7 +413,7 @@ test('real Host keeps Session titles in the screen revision across rename and pa
     await sessions.close?.();
     await stores.close();
     await owner.close();
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });

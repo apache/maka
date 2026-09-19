@@ -29,6 +29,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   utimes,
   writeFile,
@@ -57,6 +58,7 @@ import {
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
   tryAcquireInteractiveRootReader,
+  withStorageRootUpgrade,
   type StorageRootCapability,
   type StorageRootLease,
 } from '../root-authority.js';
@@ -144,22 +146,69 @@ describe('storage root authority', () => {
       const throughAlias = await prepareArtifactWriterBootstrapAuthority(alias);
       assert.equal(throughAlias.lockPath, direct.lockPath);
       assert.equal(throughAlias.canonicalPath, direct.canonicalPath);
-      assert.deepEqual(await readdir(root), []);
+      assert.deepEqual(await readdir(root), ['.maka-host']);
 
       await rename(root, movedRoot);
       await assert.rejects(() => direct.assertCurrentRoot());
       const moved = await prepareArtifactWriterBootstrapAuthority(movedRoot);
-      assert.equal(moved.lockPath, direct.lockPath);
+      assert.equal(moved.lockPath, direct.lockPath.replace(root, movedRoot));
 
+      // The lock path follows the canonical path, not the filesystem identity;
+      // a replacement root at the same path is distinguished by identity checks.
       await mkdir(root);
       const replacement = await prepareArtifactWriterBootstrapAuthority(root);
-      assert.notEqual(replacement.lockPath, direct.lockPath);
-      assert.deepEqual(await readdir(root), []);
+      assert.equal(replacement.lockPath, direct.lockPath);
+      await assert.rejects(() => direct.assertCurrentRoot());
+      await replacement.assertCurrentRoot();
+      assert.deepEqual(await readdir(root), ['.maka-host']);
 
       await Promise.all([
         rm(direct.lockPath, { force: true }),
         rm(replacement.lockPath, { force: true }),
       ]);
+    });
+  });
+
+  test('refuses to silently re-mark a root that lost its marker', async () => {
+    await withRoots(async ({ root }) => {
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+      // Committed state proves the root was marked before; losing the marker
+      // then must not mint a fresh identity over the durable state. A bare
+      // .maka-host (e.g. bootstrap-lock debris) still marks normally.
+      await mkdir(join(root, '.maka-host', 'state'), { recursive: true });
+      await rm(join(root, STORAGE_ROOT_MARKER_FILE));
+      await assert.rejects(
+        () => resolveStorageRoot({ path: root, kind: 'interactive' }),
+        (error: unknown) =>
+          error instanceof StorageRootAuthorityError && error.code === 'invalid_marker',
+      );
+      await rm(join(root, '.maka-host'), { recursive: true, force: true });
+      await mkdir(join(root, '.maka-host'));
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+    });
+  });
+
+  test('refuses to migrate a re-marked root that still holds committed state', async () => {
+    await withRoots(async ({ root }) => {
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+      // An old binary re-marks a marker-lost root at schema 1; the committed
+      // state directory must stop the upgrade from wiping it.
+      await mkdir(join(root, '.maka-host', 'state'), { recursive: true });
+      const rootStat = await stat(root);
+      await writeFile(
+        join(root, STORAGE_ROOT_MARKER_FILE),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          kind: 'interactive',
+          rootId: '0'.repeat(64),
+          rootIdentity: { dev: rootStat.dev.toString(), ino: rootStat.ino.toString() },
+        })}\n`,
+      );
+      await assert.rejects(
+        () => withStorageRootUpgrade(root, async () => undefined),
+        (error: unknown) =>
+          error instanceof StorageRootAuthorityError && error.code === 'invalid_marker',
+      );
     });
   });
 
@@ -181,40 +230,54 @@ describe('storage root authority', () => {
     });
   });
 
-  test('explicitly repairs a stale root identity without changing its root id', async () => {
-    await withRoots(async ({ root }) => {
-      const initialized = await resolveStorageRoot({ path: root, kind: 'interactive' });
-      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
-      const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
-        rootIdentity: { dev: string; ino: string };
-      };
-      marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
-      await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+  for (const format of ['legacy', 'upgrading', 'current']) {
+    test(`explicitly repairs identity while preserving the ${format} format boundary`, async () => {
+      await withRoots(async ({ root }) => {
+        const initialized = await resolveStorageRoot({ path: root, kind: 'interactive' });
+        const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+        const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+          schemaVersion: number;
+          upgrade?: { id: string };
+          rootIdentity: { dev: string; ino: string };
+        };
+        if (format === 'legacy') marker.schemaVersion = 1;
+        if (format === 'upgrading') marker.upgrade = { id: '00000000-0000-4000-8000-000000000001' };
+        marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+        await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
 
-      const candidate = await prepareStorageRootIdentityRepair({
-        path: root,
-        kind: 'interactive',
-      });
-      assert.ok(candidate);
-      const repaired = await repairStorageRootIdentity(candidate);
-      const rootStat = await lstat(root, { bigint: true });
-      const repairedMarker = JSON.parse(await readFile(markerPath, 'utf8')) as {
-        rootId: string;
-        rootIdentity: { dev: string; ino: string };
-      };
+        const candidate = await prepareStorageRootIdentityRepair({
+          path: root,
+          kind: 'interactive',
+        });
+        assert.ok(candidate);
+        await repairStorageRootIdentity(candidate);
+        const rootStat = await lstat(root, { bigint: true });
+        const repairedMarker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+          schemaVersion: number;
+          upgrade?: unknown;
+          rootId: string;
+          rootIdentity: { dev: string; ino: string };
+        };
 
-      assert.equal(repaired.rootId, initialized.rootId);
-      assert.equal(repairedMarker.rootId, initialized.rootId);
-      assert.deepEqual(repairedMarker.rootIdentity, {
-        dev: rootStat.dev.toString(),
-        ino: rootStat.ino.toString(),
+        assert.equal(repairedMarker.rootId, initialized.rootId);
+        assert.equal(repairedMarker.schemaVersion, marker.schemaVersion);
+        assert.deepEqual(repairedMarker.upgrade, marker.upgrade);
+        assert.deepEqual(repairedMarker.rootIdentity, {
+          dev: rootStat.dev.toString(),
+          ino: rootStat.ino.toString(),
+        });
+        if (format !== 'current') {
+          await assert.rejects(resolveStorageRoot({ path: root, kind: 'interactive' }), {
+            code: 'legacy_root_requires_migration',
+          });
+        } else
+          assert.equal(
+            (await resolveStorageRoot({ path: root, kind: 'interactive' })).rootId,
+            initialized.rootId,
+          );
       });
-      assert.equal(
-        (await resolveStorageRoot({ path: root, kind: 'interactive' })).rootId,
-        initialized.rootId,
-      );
     });
-  });
+  }
 
   test('repairs a remounted device but refuses a different directory inode', async () => {
     await withRoots(async ({ base, root }) => {
@@ -576,10 +639,19 @@ describe('storage root authority', () => {
       assert.ok(firstOwner);
 
       const movedRoot = join(base, 'moved-root');
-      await rename(root, movedRoot);
-      await symlink(movedRoot, root, process.platform === 'win32' ? 'junction' : 'dir');
+      // The owner lock lives inside the root, so Windows cannot rename the
+      // directory while it is held; the alias stands beside the live root
+      // there instead of behind a move.
+      let aliasPath = root;
+      if (process.platform === 'win32') {
+        await symlink(root, movedRoot, 'junction');
+        aliasPath = movedRoot;
+      } else {
+        await rename(root, movedRoot);
+        await symlink(movedRoot, root, 'dir');
+      }
 
-      const movedCapability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const movedCapability = await resolveStorageRoot({ path: aliasPath, kind: 'interactive' });
       assert.equal(movedCapability.rootId, firstCapability.rootId);
       assert.equal(await tryAcquireInteractiveRootOwner(movedCapability), undefined);
 
@@ -603,9 +675,14 @@ describe('storage root authority', () => {
     );
   });
 
-  test('rejects an unbounded root marker before parsing it', async () => {
+  test('rejects an oversized root marker before parsing it', async () => {
     await withRoots(async ({ root }) => {
-      await writeFile(join(root, STORAGE_ROOT_MARKER_FILE), Buffer.alloc(1_025, 0x20));
+      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const marker = await readFile(markerPath, 'utf8');
+      // Trailing whitespace keeps the marker parseable, so only the size bound
+      // can reject this file.
+      await writeFile(markerPath, `${marker}${' '.repeat(33 * 1_024)}`);
       await assert.rejects(
         () => resolveStorageRoot({ path: root, kind: 'interactive' }),
         (error: unknown) =>
@@ -756,10 +833,13 @@ describe('storage root authority', () => {
   }, async () => {
     await withRoots(async ({ base, root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      await prepareStorageRootControlDirectory(capability);
       const foreignLock = join(base, 'foreign.lock');
       await writeFile(foreignLock, 'not an authority\n');
-      await symlink(foreignLock, join(controlDirectory, 'owner.lock'));
+      await symlink(
+        foreignLock,
+        join(resolveRootOwnershipNamespace(root), `${capability.rootId}.lock`),
+      );
 
       await assert.rejects(
         () => tryAcquireInteractiveRootOwner(capability),
@@ -772,8 +852,8 @@ describe('storage root authority', () => {
   test('rejects a directory at the owner lock path', async () => {
     await withRoots(async ({ root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
-      await mkdir(join(controlDirectory, 'owner.lock'));
+      await prepareStorageRootControlDirectory(capability);
+      await mkdir(join(resolveRootOwnershipNamespace(root), `${capability.rootId}.lock`));
 
       await assert.rejects(
         () => tryAcquireInteractiveRootOwner(capability),
@@ -786,7 +866,7 @@ describe('storage root authority', () => {
   test('does not create a missing control directory while resolving an existing Host', async () => {
     await withRoots(async ({ root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-      const controlDirectory = join(resolveRootControlNamespace(), capability.rootId);
+      const controlDirectory = resolveRootControlNamespace(root);
       await rm(controlDirectory, { recursive: true, force: true });
 
       await assert.rejects(
@@ -886,7 +966,15 @@ describe('storage root authority', () => {
     await withRoots(async ({ base, root }) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
       await rename(root, join(base, 'old-root'));
+      await assert.rejects(tryAcquireInteractiveRootOwner(capability), {
+        code: 'root_identity_changed',
+      });
+      await assert.rejects(lstat(root), { code: 'ENOENT' });
       await mkdir(root);
+      await assert.rejects(tryAcquireInteractiveRootOwner(capability), {
+        code: 'root_identity_changed',
+      });
+      assert.deepEqual(await readdir(root), []);
       await assert.rejects(
         () => assertStorageRootCapability(capability, 'interactive'),
         (error: unknown) =>
@@ -926,7 +1014,6 @@ async function withRoots(
   try {
     await run({ base, root });
   } finally {
-    await removeControlDirectoriesForRootsUnder(base);
     await rm(base, { recursive: true, force: true });
   }
 }
@@ -1161,37 +1248,4 @@ async function retryAcquire(
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   return undefined;
-}
-
-async function removeControlDirectoriesForRootsUnder(base: string): Promise<void> {
-  const rootIds = new Set<string>();
-  await collectRootIds(base, rootIds);
-  await Promise.all(
-    [...rootIds].flatMap((rootId) => [
-      rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true }),
-      rm(join(resolveRootOwnershipNamespace(), `${rootId}.lock`), { force: true }),
-    ]),
-  );
-}
-
-async function collectRootIds(directory: string, rootIds: Set<string>): Promise<void> {
-  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const path = join(directory, entry.name);
-    const markerPath = join(path, STORAGE_ROOT_MARKER_FILE);
-    const markerStat = await lstat(markerPath).catch(() => undefined);
-    const marker = markerStat?.isFile()
-      ? await readFile(markerPath, 'utf8').catch(() => undefined)
-      : undefined;
-    if (marker) {
-      try {
-        const rootId = (JSON.parse(marker) as { rootId?: unknown }).rootId;
-        if (typeof rootId === 'string' && /^[a-f0-9]{64}$/.test(rootId)) rootIds.add(rootId);
-      } catch {
-        // Invalid marker tests never create a control directory.
-      }
-    }
-    await collectRootIds(path, rootIds);
-  }
 }

@@ -69,6 +69,8 @@ export function createDesktopRuntimeHostLocalManagement(input: {
             {
               setupPackage,
               target,
+              // This provider method is the user's explicit Settings update.
+              allowManualUpdate: true,
               ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
             },
             onProgress,

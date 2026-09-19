@@ -27,18 +27,11 @@ import { TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES } from '@maka/core/tool-result-a
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { openToolResultArchiveEvidenceReader } from '../tool-result-archive-evidence.js';
 import { MODEL_PROJECTION_TARGET_SQL } from '../sqlite-core-execution-schema.js';
-import {
-  trackControlDirectory,
-  removeTrackedControlDirectories,
-} from './fixtures/control-directory-hygiene.js';
 
-after(removeTrackedControlDirectories);
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'maka-archive-evidence-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: root, kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   const reader = await openToolResultArchiveEvidenceReader(owner.lease);

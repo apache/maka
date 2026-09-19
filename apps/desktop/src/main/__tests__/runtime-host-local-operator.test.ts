@@ -38,6 +38,7 @@ import {
   createDesktopRuntimeHostLocalOperator,
   runtimeHostLocalSetupCommand,
 } from '../runtime-host-local-operator.js';
+import { createDesktopRuntimeHostLocalManagement } from '../runtime-host-local-management.js';
 
 const OPERATOR = {
   kind: 'node' as const,
@@ -385,6 +386,24 @@ test('local update runs the selected package against the exact managed deploymen
     '1',
   );
   assert.deepEqual(phases, ['staging']);
+
+  const settings = createDesktopRuntimeHostLocalManagement({
+    remoteAccess: {
+      changeManaged: async (operation) => operation({
+        serviceId: 'a'.repeat(64), rootPath: '/tmp/maka/root', rootId: 'a'.repeat(64),
+        deploymentId, operator: OPERATOR,
+      }),
+    } as Parameters<typeof createDesktopRuntimeHostLocalManagement>[0]['remoteAccess'],
+    operator,
+    rootPath: '/tmp/maka/root',
+    resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@0.3.0' }),
+    currentHostEpoch: () => undefined,
+    awaitUpdatedConnection: async () => {},
+  });
+  await settings.update(false, () => {});
+  assert.ok(operatorArgs()?.includes('--allow-manual-update'));
+  assert.ok(!operatorArgs()?.includes('--expected-host-json'));
+  assert.ok(!operatorArgs()?.includes('--allow-interrupt-active-tasks'));
 
   const developmentIntegrity = `sha512-${Buffer.alloc(64, 9).toString('base64')}`;
   await operator.runUpdate(

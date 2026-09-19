@@ -34,14 +34,9 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootLease,
 } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
 
 // The control directory of each resolved root lives outside that root, so a
 // temporary root's removal leaves it behind; reclaim the recorded rootIds here.
-after(removeTrackedControlDirectories);
 
 describe('interactive ShellRun authority', () => {
   test('single-flights one authentic writer and preserves durable lifecycle state', async () => {
@@ -164,9 +159,10 @@ async function withInteractiveRoot(
   }) => Promise<void>,
 ): Promise<void> {
   await withTempDir(async (base) => {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: join(base, 'interactive'), kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive'),
+      kind: 'interactive',
+    });
     await run({ capability });
   });
 }

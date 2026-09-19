@@ -18,17 +18,14 @@
  */
 
 import { execFile } from 'node:child_process';
-import { access } from 'node:fs/promises';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { runtimeHostStartupError } from '@maka/runtime-host/client';
 import {
+  prepareRuntimeHostRoot,
   decodeRuntimeHostActivationFrame,
-  readRuntimeHostManagedDeploymentConfig,
+  readRuntimeHostManagedDeploymentAuthorityRecord,
   RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES,
-  runtimeHostManagedOperatorCommand,
-  runtimeHostOperatorInvocation,
+  resolveRuntimeHostNpmDeploymentLayout,
 } from '@maka/runtime-host/operator';
 
 const run = promisify(execFile);
@@ -39,40 +36,34 @@ export async function activateLocalManagedRuntimeHost(input: {
   readonly signal?: AbortSignal;
 }): Promise<void> {
   input.signal?.throwIfAborted();
-  const capability = await resolveStorageRoot({ path: input.rootPath, kind: 'interactive' });
-  const config = await readRuntimeHostManagedDeploymentConfig(capability);
+  const capability = await prepareRuntimeHostRoot(input.rootPath);
+  const record = await readRuntimeHostManagedDeploymentAuthorityRecord(capability);
+  const config =
+    record?.state === 'active'
+      ? record
+      : record?.recovery === 'complete_to'
+        ? record.to
+        : record?.from;
   if (!config || config.lifecycle.mode !== 'on_demand') {
     throw runtimeHostStartupError('managed_root_requires_operator');
   }
-  const operator = runtimeHostManagedOperatorCommand(
-    config,
-    process.platform === 'win32' ? 'win32' : 'posix',
+  // The root's deployment record selects the exact operator package, including
+  // recovery before its stable launcher projection has been updated.
+  const layout = resolveRuntimeHostNpmDeploymentLayout(
+    config.deploymentRoot,
+    config.launch.package.integrity,
   );
-  let invocation = runtimeHostOperatorInvocation(operator, [
-    'activate',
-    '--framed',
-    '--root-id',
-    capability.rootId,
-  ]);
-  // Older installations have only the stable POSIX operator executable.
-  try {
-    await access(operator.modulePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || process.platform === 'win32') {
-      throw error;
-    }
-    invocation = {
-      executable: join(config.deploymentRoot, 'operator'),
-      args: invocation.args.slice(1),
-    };
-  }
-  const result = await run(invocation.executable, [...invocation.args], {
-    encoding: 'utf8',
-    timeout: 120_000,
-    killSignal: 'SIGKILL',
-    maxBuffer: RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES + 256,
-    ...(input.signal ? { signal: input.signal } : {}),
-  }).catch((error: unknown) => {
+  const result = await run(
+    config.launch.nodePath,
+    [layout.cliPath, 'runtime-host', 'activate', '--framed', '--root-id', capability.rootId],
+    {
+      encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
+      maxBuffer: RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES + 256,
+      ...(input.signal ? { signal: input.signal } : {}),
+    },
+  ).catch((error: unknown) => {
     input.signal?.throwIfAborted();
     // Operators report a framed diagnostic and exit nonzero on expected failures.
     if (error instanceof Error && 'stdout' in error && typeof error.stdout === 'string') {

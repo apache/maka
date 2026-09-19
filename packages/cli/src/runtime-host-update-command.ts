@@ -26,7 +26,6 @@ import {
   createRuntimeHostLegacyPosixOperatorCommand,
   decodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
-  RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
@@ -34,9 +33,9 @@ import {
   runtimeHostOperatorInvocation,
   type RuntimeHostOperatorCapability,
   type RuntimeHostOperatorCommand,
+  type RuntimeHostServiceErrorCode,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
-  RuntimeHostManagedDeploymentError as RuntimeHostDeploymentAuthorityError,
 } from '@maka/runtime-host/operator';
 import {
   isRuntimeHostDevelopmentPackageVersion,
@@ -58,6 +57,7 @@ import {
   replaceRuntimeHostManagedService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  runtimeHostServiceWireErrorCode,
   verifyRuntimeHostManagedServiceReady,
   withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLegacyOperatorLeases,
@@ -73,20 +73,15 @@ import {
 } from './runtime-host-service-management-command.js';
 import {
   resolveManagedRuntimeHostUpdateSelection,
-  RuntimeHostUpdateDiscoveryError,
   type RuntimeHostUpdateSelection,
 } from './runtime-host-update-discovery.js';
-import {
-  RuntimeHostUpdatePackageError,
-  withRuntimeHostRegistryUpdatePackage,
-} from './runtime-host-update-package.js';
+import { withRuntimeHostRegistryUpdatePackage } from './runtime-host-update-package.js';
 import type { RuntimeHostExpectedHost, RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 import {
   canDiscardRuntimeHostLifecycleDesiredArtifacts,
   convergeRuntimeHostLifecycleControlProjection,
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
-  RuntimeHostLifecycleTransactionError,
   verifyRuntimeHostLifecycleProjection,
   type RuntimeHostLifecycleTransactionDeps,
 } from './runtime-host-lifecycle-transaction.js';
@@ -200,13 +195,13 @@ interface RuntimeHostOperatorInvocation {
 }
 
 interface RuntimeHostUpdateSelectionRejection {
-  readonly code: string;
+  readonly code: RuntimeHostServiceErrorCode;
   readonly message: string;
 }
 
 class RuntimeHostUpdateSelectionError extends Error {
   constructor(
-    readonly code: string,
+    readonly code: RuntimeHostServiceErrorCode,
     message: string,
   ) {
     super(message);
@@ -603,19 +598,16 @@ export async function runManagedRuntimeHostUpdateCli(
         )
       : error;
     const code =
-      reportedError instanceof RuntimeHostServiceManagerError ||
-      reportedError instanceof RuntimeHostManagedDeploymentError ||
       reportedError instanceof RuntimeHostUpdateSelectionError
         ? reportedError.code
-        : 'internal_service_error';
+        : runtimeHostServiceWireErrorCode(reportedError);
     const message = reportedError instanceof Error ? reportedError.message : String(reportedError);
     emit({
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
       error: {
-        code:
-          truncateUtf8(code, RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES) || 'internal_service_error',
+        code,
         message:
           truncateUtf8(message, RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES) ||
           'Runtime Host update failed',
@@ -894,22 +886,13 @@ async function runCanonicalRuntimeHostUpdate(
     if (staged && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
       await staged.rollback().catch(() => undefined);
     }
-    const code =
-      error instanceof RuntimeHostServiceManagerError ||
-      error instanceof RuntimeHostManagedDeploymentError ||
-      error instanceof RuntimeHostDeploymentAuthorityError
-        ? error.code
-        : error instanceof RuntimeHostLifecycleTransactionError && error.code === 'owner_changed'
-          ? 'target_mismatch'
-          : error instanceof RuntimeHostLifecycleTransactionError && error.code === 'active_tasks'
-            ? 'active_tasks'
-            : 'update_incomplete';
+    const code = runtimeHostServiceWireErrorCode(error, 'update_incomplete');
     emit({
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
       error: {
-        code: truncateUtf8(code, RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES),
+        code,
         message: truncateUtf8(
           error instanceof Error ? error.message : String(error),
           RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
@@ -951,23 +934,14 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
     });
     return await runManagedRuntimeHostResolvedUpdateCli(options, selection, deps, emit);
   } catch (error) {
-    const code =
-      error instanceof RuntimeHostUpdateDiscoveryError ||
-      error instanceof RuntimeHostServiceManagerError ||
-      error instanceof RuntimeHostUpdatePackageError
-        ? error.code
-        : error instanceof RuntimeHostLifecycleTransactionError && error.code === 'active_tasks'
-          ? 'active_tasks'
-          : 'update_resolution_failed';
+    const code = runtimeHostServiceWireErrorCode(error);
     const message = error instanceof Error ? error.message : String(error);
     emit({
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
       error: {
-        code:
-          truncateUtf8(code, RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES) ||
-          'update_resolution_failed',
+        code,
         message:
           truncateUtf8(message, RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES) ||
           'Unable to prepare the Runtime Host update',
@@ -1043,21 +1017,14 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
       ? await apply(dirname(dirname(selection.currentCliPath)))
       : await deps.withPackage(selection.candidate, apply);
   } catch (error) {
-    const code =
-      error instanceof RuntimeHostUpdateDiscoveryError ||
-      error instanceof RuntimeHostServiceManagerError ||
-      error instanceof RuntimeHostUpdatePackageError
-        ? error.code
-        : 'update_resolution_failed';
+    const code = runtimeHostServiceWireErrorCode(error);
     const message = error instanceof Error ? error.message : String(error);
     frameSink({
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
       error: {
-        code:
-          truncateUtf8(code, RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES) ||
-          'update_resolution_failed',
+        code,
         message:
           truncateUtf8(message, RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES) ||
           'Unable to prepare the Runtime Host update',

@@ -98,7 +98,41 @@ flowchart TD
 
 Root capability 先规范化真实路径，再验证根标记中的随机 `rootId` 与文件系统对象身份。别名不能产生另一个逻辑 owner；复制一个已初始化目录也不能自动获得原根身份。导入、remount 或 repair 通过各自的显式验证路径处理。Capability 和 lease 的真实性由进程内登记验证，不只依赖 TypeScript 类型。
 
-写入 authority 来自稳定文件上的 OS lock。持久的 account-local ownership namespace 按 `rootId` 仲裁，并保留兼容锁边界；registration 文件、PID、socket、health probe 和缓存目录都只是发现或观察信息。删除发现缓存不能合法地产生第二个 writer。
+写入 authority 来自 canonical 物理 root 内 `.maka-host` 中稳定文件上的 OS lock。同一 root 的所有 Client 共享一个 Host，独立物理 root 分别持有自己的所有权。`rootId` 仍是协议身份，不承担账户全局或分布式互斥；registration 文件、PID、socket、health probe 和缓存目录都只是发现或观察信息。删除发现缓存不能合法地产生第二个 writer。锁文件位于 root 内，因此 Windows 在 owner 持锁期间无法重命名该目录；移动存活中的 root 必须先释放 owner。
+
+root 拥有完整的持久状态：`.maka-host/state/data` 保存插件包、composition、插件数据及密钥、访问凭据；`.maka-host/state/deployment/runtime-host-deployment.json` 是唯一的 managed deployment 事务记录；`.maka-host/runtime` 保存可丢弃的 registration、启动诊断和一次性凭据交付文件。Owner 与 Artifact 锁都在 `runtime` 外。短路径本地 socket 可放在系统临时目录。普通新 root 启动不依赖账户 home。物理放在一起不代表凭据和机器部署信息可以直接导出，备份仍须保留访问限制。
+
+`prepareRuntimeHostRoot` 是唯一的格式升级入口，普通 Storage 解析和 deployment 查找不迁移。Storage 负责 marker 校验、物理身份、锁和原子发布；Host 负责解释旧布局、验证完整快照并完成升级。显式身份修复保留旧格式或升级中状态，不发放业务 capability。
+
+Desktop 早期启动只通过 `resolveStorageRootIdentity` 取得路径与身份，先建立管理能力；不要求先完成升级。`inspectRuntimeHostManagedDeployment` 读取对应格式的部署元数据，升级中只报告格式状态，不把旧记录当成可激活部署。普通连接遇到旧托管 root，返回已有的 operator-required 结果，交给管理流程。WSL 环境复用可以恢复已记录的生命周期事务，但不能选择或安装一个新版本。
+
+托管生命周期的 `prepareRuntimeHostRootForDeployment` 统一负责升级准入：先由旧包恢复旧事务，再准备目标、退休旧 Host，最后调用格式迁移。迁移只接受已稳定的旧部署，不自行从 `from` / `to` 中选择恢复方向。活动信息无法读取时保持未知；现有中断策略仍由旧 Host 退休操作执行。
+
+升级使用原 root 所有者的账户。接管前，由已安装旧包负责 v1 生命周期操作，包括状态读取与退休；新 CLI 因而可以先检查旧部署、准备兼容目标，再接管升级。若中断的安装已经选中了兼容包，则直接续完该次升级，不重新选择 registry 目标。活跃任务沿用已有的中断策略。新 root 锁与旧 owner/Artifact 锁共同排除写入者，仅首次接管时创建可写的旧锁目录。在锁内记录源是否存在；root 中的其他文件原样保留，不能用它们推断 Host 数据丢失。已经记录为存在的源，在快照完成前消失时不能被解释为空状态。
+
+发布包的自动更新兼容号提升到 2，防止旧更新器自行跨越格式边界；显式更新由新 CLI 执行上述事务。普通升级中断由已有启动与激活路径自动续完。
+
+第一次原子发布将 schema 1 改为带 `upgrade` 记录的 schema 2，绑定事务 ID 和来源计划。旧程序和新业务读取者都不能打开这个状态。Host 复制完整 `state` 容器，验证数据与部署，通过 Storage 的跨平台原语同步文件，最后写入绑定事务的完成凭据，再原子发布整个容器。第二次 marker 发布移除 `upgrade`。中断后复用已完成快照，即使旧缓存已经消失；未完成暂存只能从记录的来源重试，不把源丢失解释成空数据。fence 之下 `.maka-host` 的内容都属于该事务：校验失败或缺少完成凭据的已提交快照从记录的来源重暂存一次，凭据同时见证部署权威记录是否必须存活。恢复不重新发现账户 home。旧文件保留，但完成后不再提供 authority，正常运行不持兼容锁。
+
+目标包改变时，导入的 deployment 使用现有 `complete_to` 事务。正常托管激活会自动完成该事务，并直接调用 root 记录选定的精确程序，因此稳定 operator 启动器尚未更新也能恢复。新 Host 启动失败不能退回不兼容数据格式的旧程序。降级须恢复升级前的完整状态，不能只改 marker 版本号。
+
+```mermaid
+flowchart TD
+  A[启动：只读取 root 身份并建立管理能力] --> B{root 身份与格式}
+  B -->|身份不匹配| C[显式身份修复]
+  C --> B
+  B -->|当前格式| H[获取 owner 并恢复部署]
+  B -->|旧格式| L[若为托管：生命周期恢复旧事务]
+  L --> D[准备兼容程序并退休旧 Host]
+  D --> E[获取新旧锁并发布接管 marker]
+  B -->|升级中| F[继续已记录的事务]
+  E --> F
+  F --> G[验证、同步并发布完整快照]
+  G --> I[发布当前格式 marker]
+  I --> H
+  H --> J[恢复组合并发布 ready]
+  J --> K[排空工作、关闭资源、释放 owner]
+```
 
 Lease 关闭先拒绝新操作，等待已进入的操作结束，再释放 OS handle。Store facade 接收这个 owner/lease，业务代码不能通过直接打开另一份数据库绕过它。锁不意味着已证明任意外部子孙进程都随 Host 退出。
 
@@ -335,7 +369,7 @@ Goal、Scheduled Task 和 Daily Review 各自持久化业务意图，恢复时�
 
 Remote 目录浏览使用 Host 发布的 opaque root ID 与验证过的 path segments，并检查 realpath containment，不能通过 symlink 或 Client 本地 picker 扩大范围。
 
-安装 authority 与 writer authority 同样分开：account-local deployment owner 按 root identity 和 CAS revision 协调 Desktop、CLI、managed service 或 development 的安装归属；managed deployment 文档描述当前配置及 `active`/`transition`/`blocked` 恢复状态。Service artifacts 是该配置的投影，不另设一份互相竞争的部署日志。
+安装 authority 与 writer authority 同样分开：root 内的 managed deployment 文档描述当前配置及 `active`/`transition`/`blocked` 恢复状态，修改须持有 root writer lease 并验证 CAS revision。账户侧 `root-location.json` 只供按 `rootId` 发起的命令定位 root；定位信息丢失会导致查找失败，但不能消除 root 的 managed 启动限制。每次启动都在持有 owner lease 时读取 root 内记录。Service artifacts 是该配置的投影，不另设一份互相竞争的部署日志。
 
 更新需要验证包版本/integrity、准备目标、确认实际 target Ready，再提交安装状态。重试要识别已经成功的 successor，不能因旧进程信息再次终止新进程。普通 remote credential 不授予机器上的 operator 安装管理能力；SSH operator activation 是另一个显式边界。
 

@@ -39,7 +39,7 @@ import { activateRuntimeHostManagedDeployment } from '../client/managed-activati
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
 import {
   claimRuntimeHostManagedDeployment,
-  resolveRuntimeHostManagedDeploymentConfigPath,
+  resolveRuntimeHostManagedDeploymentAuthorityRoot,
   type RuntimeHostManagedDeploymentConfig,
 } from '../operator/managed-deployment.js';
 import { resolveRuntimeHostNpmDeploymentLayout } from '../operator/update-package-evidence.js';
@@ -119,15 +119,18 @@ test('two real managed activations converge on one Host and exit at true idle', 
     await waitUntil(() => pid === undefined || !processExists(pid), 5_000).catch(() => undefined);
     await Promise.all([
       rm(base, { recursive: true, force: true }),
-      rm(dirname(resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId)), {
+      rm(join(resolveRuntimeHostManagedDeploymentAuthorityRoot(), capability.rootId), {
         recursive: true,
         force: true,
       }),
-      rm(join(resolveRootControlNamespace(), capability.rootId), {
+      rm(resolveRootControlNamespace(capability.canonicalPath), {
         recursive: true,
         force: true,
       }),
-      rm(join(resolveRootOwnershipNamespace(), `${capability.rootId}.lock`), { force: true }),
+      rm(
+        join(resolveRootOwnershipNamespace(capability.canonicalPath), `${capability.rootId}.lock`),
+        { force: true },
+      ),
     ]);
   });
 

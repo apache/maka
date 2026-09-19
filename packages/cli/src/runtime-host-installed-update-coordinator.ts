@@ -29,6 +29,7 @@ import {
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
 import {
+  prepareRuntimeHostRoot,
   resolveRuntimeHostManagedDeploymentAuthority,
   type LocalHostDeploymentAuthorityOptions,
 } from '@maka/runtime-host/operator';
@@ -37,7 +38,7 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostRegistration,
 } from '@maka/runtime-host/protocol';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+import type { ResolveStorageRootInput, StorageRootCapability } from '@maka/storage/root-authority';
 import {
   prepareRuntimeHostNpmGlobalStagedDeployment,
   reconcilePreparedRuntimeHostNpmGlobalDeployment,
@@ -63,7 +64,9 @@ const OFFLINE_REGISTRY = 'http://127.0.0.1:9/';
 
 interface RuntimeHostInstalledUpdateCoordinatorDeps {
   readonly resolveInstallation: typeof resolveRuntimeHostNpmGlobalInstallation;
-  readonly resolveRoot: typeof resolveStorageRoot;
+  readonly resolveRoot: (
+    input: ResolveStorageRootInput<'interactive'>,
+  ) => Promise<StorageRootCapability<'interactive'>>;
   readonly resolveManagedAuthority: typeof resolveRuntimeHostManagedDeploymentAuthority;
   readonly connectExisting: typeof connectExistingRuntimeHost;
   readonly waitForReady: typeof waitForRuntimeHostReady;
@@ -103,7 +106,7 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
 ): Promise<number> {
   const deps: RuntimeHostInstalledUpdateCoordinatorDeps = {
     resolveInstallation: resolveRuntimeHostNpmGlobalInstallation,
-    resolveRoot: resolveStorageRoot,
+    resolveRoot: (root) => prepareRuntimeHostRoot(root.path),
     resolveManagedAuthority: resolveRuntimeHostManagedDeploymentAuthority,
     connectExisting: connectExistingRuntimeHost,
     waitForReady: waitForRuntimeHostReady,

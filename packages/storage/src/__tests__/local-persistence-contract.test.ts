@@ -50,13 +50,7 @@ import {
   StorageRootAuthorityError,
   type InteractiveRootOwner,
 } from '../root-authority.js';
-import {
-  trackControlDirectory,
-  removeTrackedControlDirectories,
-} from './fixtures/control-directory-hygiene.js';
 import { assignmentRequest, createCoordinationSession } from './fixtures/workhub-assignment.js';
-
-after(removeTrackedControlDirectories);
 
 test('contract errors retain instanceof identity through existing package seams', () => {
   assert.equal(SqliteConflict, SessionMetadataConflictError);
@@ -246,9 +240,7 @@ async function withComposition(
   ) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-local-persistence-contract-'));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: root, kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   let storage: StorageWriterComposition | undefined;

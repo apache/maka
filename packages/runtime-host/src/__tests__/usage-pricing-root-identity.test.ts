@@ -78,7 +78,7 @@ test('a deleted live root marker requests poison drain exactly once', async () =
     assert.equal(drainRequests, 1);
   } finally {
     await owner.close();
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });

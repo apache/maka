@@ -93,7 +93,7 @@ test('a live Host serves Interactive inspection over its real endpoint while ret
     await offlineReader?.close();
   } finally {
     await terminateHost(host);
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });

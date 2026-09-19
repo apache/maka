@@ -18,6 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   ELECTION_DEADLINE_MS_ENV_VAR,
@@ -68,6 +71,52 @@ test('an invalid environment override fails the election before touching storage
     ),
     (error: unknown) =>
       error instanceof RangeError && /MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS/u.test(error.message),
+  );
+});
+
+test('a failing root prelude returns a bounded startup failure instead of throwing', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-prelude-failure-'));
+  try {
+    const blocker = join(base, 'file');
+    await writeFile(blocker, '');
+    const result = await connectOrSpawnRuntimeHostWithDependencies(
+      {
+        rootPath: join(blocker, 'state-root'),
+        protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        candidateEntrypoint: 'candidate-entry.js',
+      },
+      {
+        launchCandidate: () => ({ spawned: Promise.reject(new Error('must not spawn')) }),
+        random: Math.random,
+      },
+    );
+    if (result.kind !== 'failed' || result.reason !== 'startup_failed')
+      assert.fail(`expected a bounded startup_failed result, got ${JSON.stringify(result)}`);
+    assert.match(result.detail, /^[a-z_]+/u);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('an aborted signal propagates instead of being folded into a startup failure', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    connectOrSpawnRuntimeHostWithDependencies(
+      {
+        rootPath: '/nonexistent-maka-abort-root',
+        protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        candidateEntrypoint: 'candidate-entry.js',
+        signal: controller.signal,
+      },
+      {
+        launchCandidate: () => ({ spawned: Promise.reject(new Error('must not spawn')) }),
+        random: Math.random,
+      },
+    ),
+    (error: unknown) => error instanceof Error && error.name === 'AbortError',
   );
 });
 

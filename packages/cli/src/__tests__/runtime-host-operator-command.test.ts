@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
+import { Readable } from 'node:stream';
 import { describe, test } from 'node:test';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
 import { decodeRuntimeHostActivationFrame } from '@maka/runtime-host/operator';
@@ -28,7 +29,9 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
+import { StorageRootAuthorityError } from '@maka/storage/root-authority';
 import { runRuntimeHostManagedActivationCli } from '../runtime-host-activation-command.js';
+import { runRuntimeHostManagedConnectCli } from '../runtime-host-connect-command.js';
 import {
   resolveRuntimeHostAccessIssue,
   type RuntimeHostAccessIssueOptions,
@@ -143,6 +146,52 @@ describe('Runtime Host operator commands', () => {
       0,
     );
     assert.equal(decodeRuntimeHostActivationFrame(output)?.kind, 'result');
+  });
+
+  test('activation and connect surfaces keep storage-root error detail', async () => {
+    const rootId = 'a'.repeat(64);
+    const failure = new StorageRootAuthorityError(
+      'root_unmarked',
+      'Storage root is not marked: /srv/maka',
+    );
+    let output = '';
+    assert.equal(
+      await runRuntimeHostManagedActivationCli(
+        { rootId },
+        {
+          activate: async () => {
+            throw failure;
+          },
+          writeOutput: (value) => {
+            output += value;
+          },
+        },
+      ),
+      1,
+    );
+    const frame = decodeRuntimeHostActivationFrame(output);
+    assert.equal(frame?.kind, 'error');
+    if (frame?.kind !== 'error') throw new Error('expected an error frame');
+    assert.equal(frame.error.code, 'root_unavailable');
+    assert.equal(frame.error.message, 'Storage root is not marked: /srv/maka');
+
+    let stderr = '';
+    assert.equal(
+      await runRuntimeHostManagedConnectCli(
+        { rootId },
+        {
+          openBridge: async () => {
+            throw failure;
+          },
+          stdin: Readable.from([]),
+          writeError: (value) => {
+            stderr += value;
+          },
+        },
+      ),
+      1,
+    );
+    assert.match(stderr, /Storage root is not marked/u);
   });
   test('parses project management and machine-readable service readiness', () => {
     assert.deepEqual(parseRuntimeHostCommand(['project', 'list', '--root', '/srv/maka']), {

@@ -380,13 +380,13 @@ export async function createExecutionRuntimeHostComposition(
     const pluginStorage = new PluginStorageService(pluginRoot);
     const pluginCredentials = new PluginCredentialService(pluginRoot);
     new PluginAuthorizationService(pluginRoot, pluginCredentials);
-    const pluginData = new HostPluginDataRuntime(context.owner.controlDirectory);
+    const pluginData = new HostPluginDataRuntime(context.owner.hostDataDirectory);
     pluginSettings.bindRuntime(pluginData);
     pluginStorage.bindRuntime(pluginData);
     pluginCredentials.bindRuntime(pluginData);
     const pluginTools = new PluginToolService(pluginRoot, { agents: pluginAgents });
     const pluginSystemPrompt = new PluginSystemPromptService(pluginRoot);
-    pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
+    pluginPlatform = new HostPluginPlatform(context.owner.hostDataDirectory, {
       composition: new MakaCompositionLoader({ root: pluginRoot }),
       tools: pluginTools,
       systemPrompt: pluginSystemPrompt,

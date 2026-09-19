@@ -161,6 +161,7 @@ export interface DesktopRuntimeHostSshUpdateInput {
   readonly setupPackage: DesktopRuntimeHostSetupPackage;
   readonly operator: RuntimeHostOperatorCommand;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
+  readonly allowManualUpdate?: boolean;
   readonly allowInterruptActiveTasks?: boolean;
   readonly signal?: AbortSignal;
 }
@@ -1285,6 +1286,7 @@ function runtimeHostUpdateRemoteCommand(
       '--managed-root-id',
       input.expectedTarget.rootId,
       ...managedServiceTargetArgs(input.expectedTarget),
+      ...(input.allowManualUpdate && targetVersion ? ['--allow-manual-update'] : []),
       ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
     ],
     {

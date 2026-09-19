@@ -66,9 +66,20 @@ on:
       # `scripts/windows-package-source-closure.test.mjs` recomputes this set
       # from the dist tests the steps run and fails on any difference in either
       # direction.
+      - 'packages/cli/src/__tests__/runtime-host-root-upgrade.test.ts'
+      - 'packages/cli/src/runtime-host-cli-installation.ts'
+      - 'packages/cli/src/runtime-host-lifecycle-transaction.ts'
+      - 'packages/cli/src/runtime-host-managed-deployment.ts'
+      - 'packages/cli/src/runtime-host-package-deployment.ts'
+      - 'packages/cli/src/runtime-host-peer-artifact.ts'
+      - 'packages/cli/src/runtime-host-service-management-command.ts'
+      - 'packages/cli/src/runtime-host-setup-command.ts'
+      - 'packages/cli/src/runtime-host-update-command.ts'
+      - 'packages/cli/src/runtime-host-windows-task-launcher-artifact.ts'
       - 'packages/core/src/diagnostic-log.ts'
       - 'packages/runtime-host/src/__tests__/control-endpoint.test.ts'
       - 'packages/runtime-host/src/__tests__/fixtures/endpoint-hygiene.ts'
+      - 'packages/runtime-host/src/__tests__/root-upgrade.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-protocol.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-repository.test.ts'
       - 'packages/runtime-host/src/__tests__/skill-catalog-transaction.test.ts'
@@ -90,6 +101,7 @@ on:
       - 'packages/runtime-host/src/peer-reachability/publisher.ts'
       - 'packages/runtime-host/src/protocol/host-status.ts'
       - 'packages/runtime-host/src/protocol/skill-catalog.ts'
+      - 'packages/runtime-host/src/root-upgrade.ts'
       - 'packages/runtime-host/src/server/access-credential-store.ts'
       - 'packages/runtime-host/src/server/host-resource-probe.ts'
       - 'packages/runtime-host/src/server/skill-catalog-repository.ts'
@@ -129,6 +141,7 @@ on:
       - 'packages/storage/src/session-bundle-file-service.ts'
       - 'packages/storage/src/sqlite-long-term-memory-store.ts'
       - 'packages/storage/src/stable-storage.ts'
+      - 'packages/storage/src/workspace-root.ts'
       - '.github/workflows/windows-recovery.yml'
   # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
   # request goes green against a stale base and only the merged result proves
@@ -247,6 +260,14 @@ jobs:
           node.exe --test --test-concurrency=1 `
             packages/runtime/dist/__tests__/runtime-resume-crash.test.js `
             packages/runtime/dist/__tests__/runtime-continuation-crash.test.js
+
+      - name: Verify Runtime Host root format upgrade
+        shell: pwsh
+        run: |
+          node.exe --test --test-concurrency=1 `
+            packages/storage/dist/__tests__/root-migration.test.js `
+            packages/runtime-host/dist/__tests__/root-upgrade.test.js `
+            packages/cli/dist/__tests__/runtime-host-root-upgrade.test.js
 
       - name: Verify Runtime Host owner-death recovery
         shell: pwsh

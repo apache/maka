@@ -136,7 +136,11 @@ export async function runRuntimeHostInstalledUpdateActivator(
   }
   await retireOwnedCandidates(launchBarrier).catch(() => undefined);
   if (result.kind === 'failed') {
-    throw runtimeHostStartupError(result.reason, result.diagnostic);
+    throw runtimeHostStartupError(
+      result.reason,
+      result.diagnostic,
+      'detail' in result ? result.detail : undefined,
+    );
   }
   if (result.registration.lifecycleMode !== 'ephemeral') return 4;
   return 3;

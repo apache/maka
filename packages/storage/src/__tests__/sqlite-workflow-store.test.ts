@@ -33,14 +33,9 @@ import { createSqlitePlanStore } from '../plan-store.js';
 import { createSqliteSessionTodoStore } from '../session-todo-store.js';
 import { SQLITE_WORKFLOW_SCHEMA_VERSION } from '../sqlite-workflow-schema.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
 
 // The control directory of each resolved root lives outside that root, so a
 // temporary root's removal leaves it behind; reclaim the recorded rootIds here.
-after(removeTrackedControlDirectories);
 
 const SESSION_ID = 'session-workflow';
 
@@ -925,9 +920,7 @@ describe('SQLite workflow stores', () => {
 });
 
 async function scheduledTaskStoreRoot(root: string) {
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: root, kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) throw new Error('Unable to acquire the ScheduledTask test root');

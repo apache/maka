@@ -420,7 +420,11 @@ export async function connectRuntimeHostCliConnection(
         };
       }
       if (connected.kind === 'failed') {
-        throw runtimeHostStartupError(connected.reason, connected.diagnostic);
+        throw runtimeHostStartupError(
+          connected.reason,
+          connected.diagnostic,
+          'detail' in connected ? connected.detail : undefined,
+        );
       }
       if (connected.registration.generation?.startsWith('npm-global-handoff:')) {
         const record = await deps.readDeploymentRecord(connected.registration.rootId);

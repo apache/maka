@@ -111,7 +111,7 @@ test('two UDS clients converge on one Host-owned Project Catalog', {
     if (!host && !owner.closed) {
       await owner.close().catch((error: unknown) => cleanupErrors.push(error));
     }
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     }).catch((error: unknown) => cleanupErrors.push(error));

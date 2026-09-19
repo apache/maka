@@ -45,14 +45,9 @@ import {
   SqliteMemoryItemStore,
   type SqliteMemoryItemStoreFailpoint,
 } from '../sqlite-long-term-memory-store.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
 
 // The control directory of each resolved root lives outside that root, so a
 // temporary root's removal leaves it behind; reclaim the recorded rootIds here.
-after(removeTrackedControlDirectories);
 
 const require = createRequire(import.meta.url);
 
@@ -1848,9 +1843,7 @@ describe('long-term memory Storage Root authority', () => {
 
   test('snapshots mutation input before crossing the authority boundary', async () => {
     await withTempRoot(async (root) => {
-      const capability = trackControlDirectory(
-        await resolveStorageRoot({ path: root, kind: 'interactive' }),
-      );
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;
@@ -1889,9 +1882,7 @@ describe('long-term memory Storage Root authority', () => {
 
   test('rejects operations after the durable root identity changes', async () => {
     await withTempRoot(async (root) => {
-      const capability = trackControlDirectory(
-        await resolveStorageRoot({ path: root, kind: 'interactive' }),
-      );
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;
@@ -1913,9 +1904,7 @@ describe('long-term memory Storage Root authority', () => {
 
   test('single-flights an Interactive writer and closes it explicitly', async () => {
     await withTempRoot(async (root) => {
-      const capability = trackControlDirectory(
-        await resolveStorageRoot({ path: root, kind: 'interactive' }),
-      );
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;

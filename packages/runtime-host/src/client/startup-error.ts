@@ -27,6 +27,7 @@ import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 export type RuntimeHostStartupFailureReason =
   | CandidateStartupFailureReason
   | 'composition_mismatch'
+  | 'startup_failed'
   | 'startup_timeout'
   | 'host_unresponsive';
 
@@ -44,8 +45,13 @@ export class RuntimeHostStartupError extends RuntimeHostPermanentReconnectError 
 export function runtimeHostStartupError(
   reason: RuntimeHostStartupFailureReason,
   diagnostic?: RuntimeHostElectionDiagnostic,
+  detail?: string,
 ): Error {
   switch (reason) {
+    case 'startup_failed':
+      return new Error(
+        `Runtime Host failed while preparing this workspace. Try again; if the problem persists, report diagnostic code ${detail ?? 'STARTUP_FAILED'}.`,
+      );
     case 'stored_data_incompatible':
       return new RuntimeHostStartupError(
         reason,

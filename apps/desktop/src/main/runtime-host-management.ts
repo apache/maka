@@ -671,6 +671,7 @@ export function createDesktopRuntimeHostManagement(input: {
           setupPackage,
           operator: managed.control.operator,
           expectedTarget,
+          allowManualUpdate: true,
           ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
         },
         (phase) => input.sendProgress({ profileId, phase }),

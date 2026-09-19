@@ -9,7 +9,7 @@
     "maka": "./dist/cli.js"
   },
   "maka": {
-    "managedRuntimeHostUpdateCompatibility": 1
+    "managedRuntimeHostUpdateCompatibility": 2
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",

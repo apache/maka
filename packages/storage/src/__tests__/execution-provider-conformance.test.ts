@@ -67,12 +67,7 @@ import {
   type UpdateSessionConfigurationRequest,
 } from '../session-store-contract.js';
 import { assignmentRequest, createCoordinationSession } from './fixtures/workhub-assignment.js';
-import {
-  trackControlDirectory,
-  removeTrackedControlDirectories,
-} from './fixtures/control-directory-hygiene.js';
 
-after(removeTrackedControlDirectories);
 type Stores = Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>;
 for (const backend of ['Local', 'Memory'] as const) {
   const make = () =>
@@ -2451,9 +2446,7 @@ async function withProvider(
   run: (stores: Stores, root: string, owner: InteractiveRootOwner) => Promise<void>,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'maka-provider-contract-'));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: root, kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   let stores: Stores | undefined;

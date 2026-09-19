@@ -235,7 +235,7 @@ test('two UDS clients share one recoverable Memory authority across Host death',
     successor = undefined;
   } finally {
     await Promise.allSettled([terminateHost(firstHost), terminateHost(successor)]);
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });

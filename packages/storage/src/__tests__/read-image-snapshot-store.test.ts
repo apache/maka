@@ -38,12 +38,6 @@ import {
   tryAcquireInteractiveRootOwner,
   type InteractiveRootOwner,
 } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
-
-after(removeTrackedControlDirectories);
 
 test('derives Read image storage only from an authentic context writer', () => {
   assert.throws(
@@ -227,9 +221,7 @@ async function withReadImageStore(
 
 async function withInteractiveOwner(run: (owner: InteractiveRootOwner) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'maka-read-image-context-store-'));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: root, kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;

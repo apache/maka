@@ -19,6 +19,7 @@
 
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { access, readFile } from 'node:fs/promises';
 
 const SESSION_NAME = 'Released State Root qualification';
 const MESSAGE_ID = 'released-state-root-message';
@@ -31,10 +32,11 @@ const storageRootAuthority = await loadInstalled(
   input.packageRoot,
   'node_modules/@maka/storage/dist/root-authority.js',
 );
-const capability = await storageRootAuthority.resolveStorageRoot({
-  path: input.rootPath,
-  kind: 'interactive',
-});
+const capability = await prepareFixtureRoot(
+  input.packageRoot,
+  input.rootPath,
+  storageRootAuthority,
+);
 const owner = await storageRootAuthority.tryAcquireInteractiveRootOwner(capability);
 
 if (!owner) {
@@ -114,7 +116,10 @@ async function seedFixture(packageRoot, rootPath, rootOwner, rootId) {
         schedule: task.schedule,
         effect: task.effect,
       },
-      access: await seedAccessCredential(packageRoot, rootOwner.controlDirectory),
+      access: await seedAccessCredential(
+        packageRoot,
+        rootOwner.hostDataDirectory ?? rootOwner.controlDirectory,
+      ),
     };
   } finally {
     scheduledTasks.close();
@@ -122,10 +127,11 @@ async function seedFixture(packageRoot, rootPath, rootOwner, rootId) {
   }
 }
 
-// The access file lives in the account-local control namespace rather than the
-// State Root, and the Host opens it before the Kernel starts. A credential
-// issued by the released build is therefore the one durable record that decides
-// whether the current build can start at all.
+// The access file lives in the Host's durable data directory (`hostDataDirectory`
+// on schema 2, the account-local control namespace on released builds), and the
+// Host opens it before the Kernel starts. A credential issued by the released
+// build is therefore the one durable record that decides whether the current
+// build can start at all.
 async function seedAccessCredential(packageRoot, controlDirectory) {
   const accessAuthority = await loadInstalled(
     packageRoot,
@@ -231,7 +237,10 @@ async function inspectFixture(packageRoot, rootPath, rootOwner, rootId) {
         schedule: task.schedule,
         effect: task.effect,
       },
-      access: await inspectAccessCredential(packageRoot, rootOwner.controlDirectory),
+      access: await inspectAccessCredential(
+        packageRoot,
+        rootOwner.hostDataDirectory ?? rootOwner.controlDirectory,
+      ),
     };
   } finally {
     scheduledTasks.close();
@@ -284,14 +293,35 @@ async function probeWriterFence(targetPackageRoot, rootPath, rootId) {
     targetPackageRoot,
     'node_modules/@maka/storage/dist/root-authority.js',
   );
-  const targetCapability = await targetAuthority.resolveStorageRoot({
-    path: rootPath,
-    kind: 'interactive',
-  });
+  const markerPath = join(rootPath, targetAuthority.STORAGE_ROOT_MARKER_FILE);
+  const markerBefore = await readFile(markerPath, 'utf8');
+  let targetCapability;
+  try {
+    targetCapability = await prepareFixtureRoot(targetPackageRoot, rootPath, targetAuthority);
+  } catch (error) {
+    if (error?.code !== 'root_migration_busy') throw error;
+    if ((await readFile(markerPath, 'utf8')) !== markerBefore)
+      throw new Error('Blocked upgrade changed the old writer marker');
+    return { kind: 'writer_fenced', rootId };
+  }
   const targetOwner = await targetAuthority.tryAcquireInteractiveRootOwner(targetCapability);
   if (targetOwner) {
     await targetOwner.close();
     return { kind: 'writer_acquired', rootId };
   }
   return { kind: 'writer_fenced', rootId };
+}
+
+async function prepareFixtureRoot(packageRoot, rootPath, storage) {
+  // The qualification fixture spans released layouts; production startup owns
+  // migration only in packages that ship the explicit Host upgrade entry.
+  const entry = 'node_modules/@maka/runtime-host/dist/root-upgrade.js';
+  try {
+    await access(join(packageRoot, entry));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    return storage.resolveStorageRoot({ path: rootPath, kind: 'interactive' });
+  }
+  const host = await loadInstalled(packageRoot, entry);
+  return host.prepareRuntimeHostRoot(rootPath);
 }

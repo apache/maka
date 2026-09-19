@@ -779,7 +779,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
     transport?.abort();
     host ??= await hostTask.catch(() => undefined);
     await host?.close().catch(() => undefined);
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });
@@ -1446,7 +1446,7 @@ async function withRuntimeHost(
   } finally {
     await Promise.allSettled([...connections].map((connection) => connection.close()));
     await host.close();
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });

@@ -29,6 +29,7 @@ import {
   claimRuntimeHostManagedDeployment,
   readRuntimeHostManagedDeploymentAuthorityRecord,
   resolveRuntimeHostManagedDeploymentConfigPath,
+  resolveRuntimeHostManagedDeploymentAuthorityRoot,
   resolveRuntimeHostNpmDeploymentLayout,
   type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostSupervisorProvider,
@@ -408,7 +409,7 @@ test('replacement reactivates a proven previous authority after a pre-commit fai
     const stateRoot = await mkdtemp(join(tmpdir(), `maka-lifecycle-${previous}-`));
     const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
     const authorityDirectory = dirname(
-      resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId),
+      resolveRuntimeHostManagedDeploymentConfigPath(capability.canonicalPath),
     );
     t.after(() => rm(stateRoot, { recursive: true, force: true }));
     t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -469,7 +470,7 @@ test('failed on-demand candidate activation retains the successor authority', as
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-on-demand-update-'));
   const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const authorityDirectory = dirname(
-    resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId),
+    resolveRuntimeHostManagedDeploymentConfigPath(capability.canonicalPath),
   );
   t.after(() => rm(stateRoot, { recursive: true, force: true }));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -522,7 +523,7 @@ test('revalidates product invariants after Host retirement and restores the prio
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-retired-validation-'));
   const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const authorityDirectory = dirname(
-    resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId),
+    resolveRuntimeHostManagedDeploymentConfigPath(capability.canonicalPath),
   );
   t.after(() => rm(stateRoot, { recursive: true, force: true }));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -718,7 +719,7 @@ test('requires explicit interruption authority to recover an unreachable supervi
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-recovery-consent-'));
   const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const authorityDirectory = dirname(
-    resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId),
+    resolveRuntimeHostManagedDeploymentConfigPath(capability.canonicalPath),
   );
   t.after(() => rm(stateRoot, { recursive: true, force: true }));
   t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
@@ -1002,7 +1003,7 @@ test('failed on-demand update activation retains the committed package without r
   const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   t.after(() => rm(stateRoot, { recursive: true, force: true }));
   t.after(() =>
-    rm(dirname(resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId)), {
+    rm(join(resolveRuntimeHostManagedDeploymentAuthorityRoot(), capability.rootId), {
       recursive: true,
       force: true,
     }),

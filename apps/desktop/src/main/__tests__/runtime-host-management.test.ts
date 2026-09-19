@@ -752,6 +752,7 @@ test('publishes update progress and waits for the managed profile to reconnect',
   assert.equal((response as { accessManagementAvailable: boolean }).accessManagementAvailable, true);
   assert.deepEqual(updates, [{
     destination: profile.transport.destination,
+    allowManualUpdate: true,
     setupPackage: { kind: 'npm', specifier: 'maka-agent@1.3.0' },
     operator: service.operator,
     expectedTarget: {

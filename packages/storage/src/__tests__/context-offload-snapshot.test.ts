@@ -37,13 +37,8 @@ import {
 } from '../operational-state-backup.js';
 import { exportSessionBundleState } from '../session-bundle-policy.js';
 import { withOfflineContextSnapshot } from '../context-offload-snapshot.js';
-import {
-  trackControlDirectory,
-  removeTrackedControlDirectories,
-} from './fixtures/control-directory-hygiene.js';
 import { after } from 'node:test';
 
-after(removeTrackedControlDirectories);
 const limits = {
   ownerMaxBytes: { read_image_snapshot: 5 * 1024 * 1024, tool_result_archive: 4 * 1024 * 1024 },
   sessionLogicalBytes: 1024 * 1024 * 1024,
@@ -54,9 +49,7 @@ async function fixture(t: TestContext) {
   const base = await mkdtemp(join(tmpdir(), 'maka-context-snapshot-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const root = join(base, 'source');
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: root, kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   t.after(() => owner.close());

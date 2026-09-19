@@ -34,7 +34,6 @@ import {
   encodeRuntimeHostSetupFrame,
   isSha512PackageIntegrity,
   resolveRuntimeHostManagedDeployment,
-  resolveRuntimeHostManagedDeploymentAuthority,
   runtimeHostManagedOperatorCommand,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
@@ -81,7 +80,11 @@ import {
   RuntimeHostUpdateDiscoveryError,
   type RuntimeHostUpdateCandidate,
 } from './runtime-host-update-discovery.js';
-import { repairStorageRootAfterRemount, resolveStorageRoot } from '@maka/storage/root-authority';
+import {
+  repairStorageRootAfterRemount,
+  resolveStorageRoot,
+  resolveStorageRootIdentity,
+} from '@maka/storage/root-authority';
 import {
   createPlatformRuntimeHostServiceBackend,
   discoverRuntimeHostLifecycleProvider,
@@ -98,6 +101,7 @@ import {
   resolveRuntimeHostManagedServiceId,
   resolveRuntimeHostManagedProjectDirectoryRoots,
   RuntimeHostServiceManagerError,
+  storageRootErrorDetail,
   withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceResult,
@@ -109,6 +113,7 @@ import { expandWildcardListenAddresses } from './runtime-host-peer-management-co
 import {
   canDiscardRuntimeHostLifecycleDesiredArtifacts,
   replaceRuntimeHostLifecycle,
+  prepareRuntimeHostRootForDeployment,
   resolveRecoverableRuntimeHostManagedDeployment,
   RUNTIME_HOST_READY_TIMEOUT_MS,
   RuntimeHostLifecycleTransactionError,
@@ -314,7 +319,52 @@ async function resolveRuntimeHostSetupRootId(options: RuntimeHostSetupCliOptions
   if (options.repairRootAfterRemount) {
     await repairStorageRootAfterRemount({ path, kind: 'interactive' });
   }
-  return (await resolveStorageRoot({ path, kind: 'interactive' })).rootId;
+  return (await resolveStorageRootIdentity({ path, kind: 'interactive' })).rootId;
+}
+
+async function prepareSetupStorageRoot(
+  options: RuntimeHostSetupCliOptions,
+  deps: RuntimeHostSetupDeps,
+  path: string,
+) {
+  return prepareRuntimeHostRootForDeployment(path, {
+    deps: {
+      resolveProvider: deps.resolveLifecycleProvider,
+      convergeOperator: deps.convergeOperator,
+      verifyOperator: deps.verifyOperator,
+    },
+    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    allowInterruptActiveTasks: options.allowInterruptActiveTasks === true,
+    async prepareDeployment(current) {
+      assertExpectedDeploymentGeneration(options.expectedTarget, current);
+      if (!options.updateExisting) return current;
+      const resolvedPackage = await resolveRuntimeHostSetupPackage(options, deps);
+      return resolvedPackage.use(async (packageRoot) => {
+        await deps.prepareDeployment({
+          serviceId: current.root.id,
+          clientDataRoot: options.clientDataRoot,
+          sourcePackageRoot: packageRoot,
+          version: resolvedPackage.candidate.version,
+          packageIntegrity: resolvedPackage.candidate.integrity,
+          deploymentRoot: current.deploymentRoot,
+        });
+        // Keep the package across interruption: the upgrading marker will bind
+        // it, and the existing deployment transaction completes its projections.
+        return {
+          ...current,
+          configRevision: current.configRevision + 1,
+          launch: {
+            ...current.launch,
+            package: {
+              kind: 'npm_registry' as const,
+              version: resolvedPackage.candidate.version,
+              integrity: resolvedPackage.candidate.integrity,
+            },
+          },
+        };
+      });
+    },
+  });
 }
 
 async function readOptionalLegacyServiceConfig(
@@ -345,10 +395,18 @@ async function runRuntimeHostSetupLocked(
         'Environment discovery cannot replace a deployment',
       );
     }
-    const existing = await resolveRuntimeHostManagedDeploymentAuthority(rootId);
-    if (existing) {
-      const { config, capability } = await resolveRuntimeHostManagedDeployment(rootId);
-      assertCanonicalSetupTarget(options.expectedTarget, rootId, capability.canonicalPath);
+    const existing = await resolveRecoverableRuntimeHostManagedDeployment(
+      rootId,
+      {
+        resolveProvider: deps.resolveLifecycleProvider,
+        convergeOperator: deps.convergeOperator,
+        verifyOperator: deps.verifyOperator,
+      },
+      { ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}) },
+    );
+    if (existing.kind === 'active') {
+      const config = existing.config;
+      assertCanonicalSetupTarget(options.expectedTarget, rootId, config.root.path);
       assertExpectedDeploymentGeneration(options.expectedTarget, config);
       // The binding comes from canonical authority. The installed operator validates
       // its own projection when connected; discovery must not rewrite an older launcher.
@@ -358,7 +416,7 @@ async function runRuntimeHostSetupLocked(
         serviceId: rootId,
         deploymentId: config.deploymentId,
         rootId,
-        rootPath: capability.canonicalPath,
+        rootPath: config.root.path,
         operator: runtimeHostManagedOperatorCommand(
           config,
           process.platform === 'win32' ? 'win32' : 'posix',
@@ -409,15 +467,16 @@ async function runRuntimeHostSupervisedSetupLocked(
   const legacyStatus = legacyBackend
     ? await deps.manageService({ ...legacyCommon, action: 'status' }, legacyBackend)
     : undefined;
-  const capability = await resolveStorageRoot({
-    path: resolve(
+  const capability = await prepareSetupStorageRoot(
+    options,
+    deps,
+    resolve(
       options.rootPath ??
         legacyConfig?.rootPath ??
         options.expectedTarget?.rootPath ??
         options.defaultRootPath,
     ),
-    kind: 'interactive',
-  });
+  );
   assertCanonicalSetupTarget(options.expectedTarget, capability.rootId, capability.canonicalPath);
   const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
     convergeOperator: (currentConfig, desiredConfig) =>
@@ -759,15 +818,16 @@ async function runRuntimeHostOnDemandSetupLocked(
       legacyBackend,
     );
   }
-  const capability = await resolveStorageRoot({
-    path: resolve(
+  const capability = await prepareSetupStorageRoot(
+    options,
+    deps,
+    resolve(
       options.rootPath ??
         legacyConfig?.rootPath ??
         options.expectedTarget?.rootPath ??
         options.defaultRootPath,
     ),
-    kind: 'interactive',
-  });
+  );
   assertCanonicalSetupTarget(options.expectedTarget, capability.rootId, capability.canonicalPath);
   const recoveryDeps: RuntimeHostLifecycleTransactionDeps = {
     convergeOperator: (currentConfig, desiredConfig) =>
@@ -1324,7 +1384,11 @@ function createEmitter(json: boolean, deps: RuntimeHostSetupDeps): SetupEmitter 
 function setupFailure(error: unknown): { code: string; message: string } {
   let code = 'internal_setup_failure';
   let message = 'Runtime Host setup failed';
-  if (
+  const detail = storageRootErrorDetail(error);
+  if (detail) {
+    code = detail.code;
+    message = detail.message;
+  } else if (
     error instanceof RuntimeHostSetupError ||
     error instanceof RuntimeHostServiceManagerError ||
     error instanceof RuntimeHostManagedDeploymentError ||

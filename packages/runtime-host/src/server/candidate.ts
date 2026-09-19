@@ -85,7 +85,9 @@ export async function startInteractiveRuntimeHostCandidate(
     const composition = await createComposition(managedConfig);
     const websocket = managedConfig?.listeners.websocket;
     const accessAuthority = websocket
-      ? await openRuntimeHostAccessAuthority(owner.controlDirectory)
+      ? await openRuntimeHostAccessAuthority(owner.hostDataDirectory, {
+          deliveryDirectory: owner.controlDirectory,
+        })
       : undefined;
     const host = await RuntimeHostKernel.start({
       owner,

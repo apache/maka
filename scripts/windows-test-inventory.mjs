@@ -229,6 +229,7 @@ function classifySkip(path, title, expression) {
   }
   if (
     path.includes('/runtime-host/') ||
+    value.includes('package-entrypoint symlink') ||
     value.includes('process death') ||
     value.includes('real-process crash') ||
     value.includes('sqlite-runtime-crash') ||

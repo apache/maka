@@ -263,13 +263,19 @@ for (const disposition of ['create_new', 'delegate_existing'] as const) {
         for (const client of clients) await client.close().catch(() => undefined);
         for (const child of children) await child.stop('SIGKILL');
         await removePosixEndpointDirectories(capability.rootId);
-        await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        await rm(resolveRootControlNamespace(capability.canonicalPath), {
           recursive: true,
           force: true,
         });
-        await rm(join(resolveRootOwnershipNamespace(), `${capability.rootId}.lock`), {
-          force: true,
-        });
+        await rm(
+          join(
+            resolveRootOwnershipNamespace(capability.canonicalPath),
+            `${capability.rootId}.lock`,
+          ),
+          {
+            force: true,
+          },
+        );
         await rm(base, { recursive: true, force: true });
       }
     });
@@ -382,11 +388,14 @@ for (const failAssignment of [false, true]) {
       await client?.close().catch(() => undefined);
       await host?.stop('SIGKILL');
       await removePosixEndpointDirectories(capability.rootId);
-      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      await rm(resolveRootControlNamespace(capability.canonicalPath), {
         recursive: true,
         force: true,
       });
-      await rm(join(resolveRootOwnershipNamespace(), `${capability.rootId}.lock`), { force: true });
+      await rm(
+        join(resolveRootOwnershipNamespace(capability.canonicalPath), `${capability.rootId}.lock`),
+        { force: true },
+      );
       await rm(base, { recursive: true, force: true });
     }
   });
@@ -491,11 +500,14 @@ test('real Host uses the independent Memory provider for messages, history and W
     await client?.close().catch(() => undefined);
     await host?.stop('SIGKILL');
     await removePosixEndpointDirectories(capability.rootId);
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });
-    await rm(join(resolveRootOwnershipNamespace(), capability.rootId + '.lock'), { force: true });
+    await rm(
+      join(resolveRootOwnershipNamespace(capability.canonicalPath), capability.rootId + '.lock'),
+      { force: true },
+    );
     await rm(base, { recursive: true, force: true });
   }
 });

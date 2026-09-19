@@ -32,10 +32,15 @@ import {
   type RuntimeHostPackageDeployment,
 } from './runtime-host-package-deployment.js';
 import { readStableBoundedFile, syncDirectory } from '@maka/storage/stable-storage';
-import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import {
+  resolveExistingStorageRoot,
+  StorageRootAuthorityError,
+  tryAcquireStateRootOwner,
+} from '@maka/storage/root-authority';
 import {
   resolveRuntimeHostManagedDeploymentAuthorityRoot,
   resolveRuntimeHostManagedDeploymentAuthority,
+  inspectRuntimeHostManagedDeployment,
   resolveRuntimeHostNpmDeploymentLayout,
   runtimeHostManagedOperatorModulePath,
   type RuntimeHostManagedDeploymentAuthorityOptions,
@@ -129,33 +134,48 @@ async function reapRuntimeHostManagedDeploymentRetirement(
   }
   const cleanup = await readRuntimeHostManagedDeploymentCleanupReceipt(serviceId);
   if (cleanup) {
-    const authority = await resolveRuntimeHostManagedDeploymentAuthority(serviceId);
-    if (authority) {
-      await clearRuntimeHostManagedDeploymentCleanupReceipt(serviceId);
-    } else {
-      const capability = await resolveExistingStorageRoot({
-        path: cleanup.stateRootPath,
-        kind: 'interactive',
-        expectedRootId: serviceId,
-      });
-      const owner = await tryAcquireStateRootOwner(capability);
-      if (!owner) {
-        throw new RuntimeHostManagedDeploymentError(
-          'deployment_failed',
-          'The Runtime Host still owns the State Root pending deployment cleanup',
-        );
-      }
-      try {
-        const fencedAuthority = await resolveRuntimeHostManagedDeploymentAuthority(serviceId);
-        if (!fencedAuthority) {
-          await removeRuntimeHostManagedDeployment(cleanup.deploymentRoot, serviceId);
-        }
+    try {
+      const authority = await resolveRuntimeHostManagedDeploymentAuthority(serviceId);
+      if (authority) {
         await clearRuntimeHostManagedDeploymentCleanupReceipt(serviceId);
-      } finally {
-        await owner.close();
+      } else {
+        const capability = await resolveExistingStorageRoot({
+          path: cleanup.stateRootPath,
+          kind: 'interactive',
+          expectedRootId: serviceId,
+        });
+        const owner = await tryAcquireStateRootOwner(capability);
+        if (!owner) {
+          throw new RuntimeHostManagedDeploymentError(
+            'deployment_failed',
+            'The Runtime Host still owns the State Root pending deployment cleanup',
+          );
+        }
+        try {
+          const fencedAuthority = await resolveRuntimeHostManagedDeploymentAuthority(serviceId);
+          if (!fencedAuthority) {
+            await removeRuntimeHostManagedDeployment(cleanup.deploymentRoot, serviceId);
+          }
+          await clearRuntimeHostManagedDeploymentCleanupReceipt(serviceId);
+        } finally {
+          await owner.close();
+        }
       }
+    } catch (error) {
+      // A legacy or upgrading root cannot expose its authority record or
+      // current-format owner lock; post-migration staging retries the receipt.
+      if (
+        error instanceof StorageRootAuthorityError &&
+        error.code === 'legacy_root_requires_migration'
+      )
+        return finishRetiredDeployment(root, serviceId);
+      throw error;
     }
   }
+  await finishRetiredDeployment(root, serviceId);
+}
+
+async function finishRetiredDeployment(root: string, serviceId: string): Promise<void> {
   const parent = await resolveExistingRuntimeHostManagedDeploymentParent(root, serviceId);
   if (!parent) return;
   await rm(join(parent, `.${serviceId}.retired`), {
@@ -460,12 +480,8 @@ export async function assertRuntimeHostManagedOperatorDeployment(
   } = {},
 ): Promise<void> {
   if (!deploymentId) return;
-  const authority = await resolveRuntimeHostManagedDeploymentAuthority(
-    serviceId,
-    options.authority,
-  );
-  if (!authority && options.allowAbsent) return;
-  const record = authority?.record;
+  const record = (await inspectRuntimeHostManagedDeployment(serviceId, options.authority))?.record;
+  if (!record && options.allowAbsent) return;
   const endpoints = record?.state === 'active' ? [record] : record ? [record.from, record.to] : [];
   if (
     !endpoints.some(

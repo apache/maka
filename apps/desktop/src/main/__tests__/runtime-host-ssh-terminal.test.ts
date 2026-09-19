@@ -544,6 +544,7 @@ test('runs an exact update package and reports progress before an active-work re
       destination: 'operator@example.com',
       setupPackage: { kind: 'npm', specifier: 'maka-agent@1.3.0' },
       operator: OPERATOR,
+      allowManualUpdate: true,
       expectedTarget: {
         serviceId: 'b'.repeat(64),
         rootPath: '/srv/maka',
@@ -558,6 +559,7 @@ test('runs an exact update package and reports progress before an active-work re
   assert.match(remoteCommand, /--package.*maka-agent@1\.3\.0/u);
   assert.match(remoteCommand, /runtime-host.*service.*update/u);
   assert.match(remoteCommand, /--target.*1\.3\.0/u);
+  assert.match(remoteCommand, /--allow-manual-update/u);
   assert.match(remoteCommand, /--managed-root-id.*a{64}/u);
   assert.doesNotMatch(remoteCommand, /--operator-deployment-id/u);
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);

@@ -31,14 +31,9 @@ import {
   runWithStorageRootLease,
   tryAcquireInteractiveRootOwner,
 } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
 
 // The control directory of each resolved root lives outside that root, so a
 // temporary root's removal leaves it behind; reclaim the recorded rootIds here.
-after(removeTrackedControlDirectories);
 
 const contextOffloadLimits: ContextOffloadLimits = Object.freeze({
   ownerMaxBytes: Object.freeze({ read_image_snapshot: 1024, tool_result_archive: 1024 }),
@@ -49,9 +44,7 @@ const contextOffloadLimits: ContextOffloadLimits = Object.freeze({
 test('storage writer composition rejects reuse until close completes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-composition-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
@@ -76,9 +69,7 @@ test('storage writer composition rejects reuse until close completes', async () 
 test('opening a second storage writer composition creates a usable lifecycle', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-composition-failure-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
@@ -99,9 +90,7 @@ test('opening a second storage writer composition creates a usable lifecycle', a
 test('context-offload authority is optional and participates in composition close', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-context-composition-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
@@ -140,9 +129,7 @@ test('an unavailable context-offload authority does not fail the storage composi
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-context-unavailable-'));
   try {
     await mkdir(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
@@ -166,9 +153,7 @@ test('an unavailable context-offload authority does not fail the storage composi
 test('a failed close keeps the lease unavailable', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-composition-close-failure-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
@@ -197,9 +182,7 @@ test('a failed close keeps the lease unavailable', async () => {
 test('a failed runtime-policy hook rolls back before reopening', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-composition-hook-failure-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {

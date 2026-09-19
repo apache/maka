@@ -1163,7 +1163,9 @@ export class RuntimeHostKernel {
     const listenerClosed = this.#listeners
       ?.closeAdmission()
       .catch((error: unknown) => errors.push(error));
-    await this.#publishRegistration().catch((error: unknown) => errors.push(error));
+    // Discovery is disposable: a moved root or removed cache must not prevent
+    // draining and releasing the owner. Admission is already closed above.
+    await this.#publishRegistration().catch(() => undefined);
     this.#assertShutdownCanContinue();
     const accepted = [...this.#acceptedTransports];
     const handshaking = [...this.#handshakingTransports];

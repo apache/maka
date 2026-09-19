@@ -115,6 +115,14 @@ async function recoverSupervisedLegacyLock(
   lockPath: string,
   supervisionPath: string,
 ): Promise<void> {
+  const lock = await lstat(lockPath).catch((error: unknown) => {
+    if (isNodeError(error, 'ENOENT')) return undefined;
+    throw error;
+  });
+  // Current writers publish the regular marker only inside the lease, so
+  // holding the lease proves a remaining file is stale — the same proof
+  // acquireLegacyMarker applies on the write path.
+  if (lock?.isFile() && !lock.isSymbolicLink()) await unlink(lockPath);
   const supervision = await lstat(supervisionPath).catch((error: unknown) => {
     if (isNodeError(error, 'ENOENT')) return undefined;
     throw error;
@@ -123,10 +131,6 @@ async function recoverSupervisedLegacyLock(
   if (!supervision.isFile() || supervision.isSymbolicLink()) {
     throw new Error(`File update supervision marker is not a regular file: ${supervisionPath}`);
   }
-  const lock = await lstat(lockPath).catch((error: unknown) => {
-    if (isNodeError(error, 'ENOENT')) return undefined;
-    throw error;
-  });
   if (lock?.isDirectory() && !lock.isSymbolicLink()) await rmdir(lockPath);
   await unlink(supervisionPath);
 }

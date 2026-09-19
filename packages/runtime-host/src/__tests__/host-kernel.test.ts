@@ -669,6 +669,7 @@ describe('non-serving Runtime Host kernel', () => {
                 : ('internal_startup_failure' as const);
             return {
               spawned: writeCandidateStartupDiagnostic({
+                rootPath: capability.canonicalPath,
                 rootId: capability.rootId,
                 startupAttemptId,
                 failure: { reason },
@@ -684,11 +685,16 @@ describe('non-serving Runtime Host kernel', () => {
 
       assert.deepEqual(result, { kind: 'failed', reason: 'local_ipc_security_failed' });
       assert.equal(
-        (await readCandidateStartupDiagnostic(capability.rootId))?.startupAttemptId,
+        (await readCandidateStartupDiagnostic(capability.canonicalPath, capability.rootId))
+          ?.startupAttemptId,
         STARTUP_ATTEMPT_A,
       );
       assert.equal(
-        await readCandidateStartupDiagnostic(capability.rootId, STARTUP_ATTEMPT_B),
+        await readCandidateStartupDiagnostic(
+          capability.canonicalPath,
+          capability.rootId,
+          STARTUP_ATTEMPT_B,
+        ),
         undefined,
       );
     });
@@ -3750,6 +3756,7 @@ describe('non-serving Runtime Host kernel', () => {
       await assert.rejects(() => connected.connection.status());
       await candidate.host.closed;
       assert.equal(candidate.host.state, 'draining');
+      await assert.rejects(stat(paths.root), { code: 'ENOENT' });
 
       const replacement = await startTestRuntimeHostCandidate(paths, {
         rootPath: movedRoot,
@@ -4354,7 +4361,6 @@ async function removeControlDirectoriesForRootsUnder(base: string): Promise<void
   await collectRootIds(base, rootIds);
   await Promise.all(
     [...rootIds].map(async (rootId) => {
-      await rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true });
       await removePosixEndpointDirectories(rootId);
     }),
   );

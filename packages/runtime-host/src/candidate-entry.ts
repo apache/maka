@@ -61,9 +61,11 @@ export async function runExecutionCandidateEntry(
 
   let result: Awaited<ReturnType<typeof startExecutionRuntimeHostCandidate>>;
   let rootId: string | undefined;
+  let rootPath: string | undefined;
   let startupAttemptId: string | undefined;
   try {
     const parsed = parseInteractiveRuntimeHostCandidateArguments(argv);
+    rootPath = parsed.rootPath;
     rootId = parsed.expectedRootId;
     const { startupAttemptId: parsedStartupAttemptId, ...options } = parsed;
     startupAttemptId = parsedStartupAttemptId;
@@ -86,8 +88,9 @@ export async function runExecutionCandidateEntry(
     const failure = classifyCandidateStartupFailure(error);
     const logs = runtimeHostLogBuffer.snapshot();
     console.error('[runtime-host] startup failed:', error);
-    if (rootId && startupAttemptId) {
+    if (rootPath && rootId && startupAttemptId) {
       await writeCandidateStartupDiagnostic({
+        rootPath,
         rootId,
         startupAttemptId,
         failure,

@@ -32,14 +32,9 @@ import {
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
 } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
 
 // The control directory of each resolved root lives outside that root, so a
 // temporary root's removal leaves it behind; reclaim the recorded rootIds here.
-after(removeTrackedControlDirectories);
 
 test('Daily Review authority serializes config revisions and preserves archives', async () => {
   await withInteractiveRoot(async ({ capability }) => {
@@ -187,9 +182,10 @@ async function withInteractiveRoot(
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-daily-review-authority-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: join(base, 'interactive'), kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive'),
+      kind: 'interactive',
+    });
     await run({ capability });
   } finally {
     await rm(base, { recursive: true, force: true });

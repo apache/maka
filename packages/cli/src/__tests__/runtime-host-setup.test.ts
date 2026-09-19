@@ -27,6 +27,7 @@ import {
   realpath,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from 'node:fs/promises';
@@ -39,6 +40,7 @@ import {
   decodeRuntimeHostSetupFrame,
   encodeRuntimeHostSetupFrame,
   resolveRuntimeHostManagedDeploymentConfigPath,
+  resolveRuntimeHostManagedDeploymentAuthorityRoot,
   runtimeHostManagedOperatorCommand,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostManagedDeploymentConfig,
@@ -48,6 +50,7 @@ import {
   resolveRootControlNamespace,
   resolveRootOwnershipNamespace,
   resolveStorageRoot,
+  STORAGE_ROOT_MARKER_FILE,
   tryAcquireStateRootOwner,
 } from '@maka/storage/root-authority';
 import {
@@ -101,19 +104,19 @@ test('on-demand setup installs one exact deployment without a service backend', 
     await Promise.all([
       rm(base, { recursive: true, force: true }),
       rootId
-        ? rm(dirname(resolveRuntimeHostManagedDeploymentConfigPath(rootId)), {
+        ? rm(join(resolveRuntimeHostManagedDeploymentAuthorityRoot(), rootId), {
             recursive: true,
             force: true,
           })
         : Promise.resolve(),
       rootId
-        ? rm(join(resolveRootControlNamespace(), rootId), {
+        ? rm(resolveRootControlNamespace(stateRoot), {
             recursive: true,
             force: true,
           })
         : Promise.resolve(),
       rootId
-        ? rm(join(resolveRootOwnershipNamespace(), `${rootId}.lock`), {
+        ? rm(join(resolveRootOwnershipNamespace(stateRoot), `${rootId}.lock`), {
             force: true,
           })
         : Promise.resolve(),
@@ -214,7 +217,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   if (complete.operator.kind !== 'node') assert.fail('Setup returned a legacy operator');
   assert.equal(complete.operator.nodePath, process.execPath);
   const persisted = JSON.parse(
-    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8'),
+    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(stateRoot), 'utf8'),
   ) as {
     deploymentRoot: string;
     launch: { nodePath: string };
@@ -236,7 +239,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   persisted.launch.nodePath =
     process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/opt/maka/node';
   await writeFile(
-    resolveRuntimeHostManagedDeploymentConfigPath(rootId),
+    resolveRuntimeHostManagedDeploymentConfigPath(stateRoot),
     `${JSON.stringify(persisted)}\n`,
   );
   projectedOperatorDeploymentRoot = '/stale/operator/projection';
@@ -262,7 +265,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
     persisted.launch.nodePath,
   );
   assert.deepEqual(
-    JSON.parse(await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8')),
+    JSON.parse(await readFile(resolveRuntimeHostManagedDeploymentConfigPath(stateRoot), 'utf8')),
     persisted,
   );
   assert.equal(projectedOperatorDeploymentRoot, persisted.deploymentRoot);
@@ -316,7 +319,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
       complete.deploymentId,
     );
     assert.deepEqual(
-      JSON.parse(await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8')),
+      JSON.parse(await readFile(resolveRuntimeHostManagedDeploymentConfigPath(stateRoot), 'utf8')),
       persisted,
     );
   }
@@ -350,7 +353,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   );
 
   const beforeBusyUpdate = await readFile(
-    resolveRuntimeHostManagedDeploymentConfigPath(rootId),
+    resolveRuntimeHostManagedDeploymentConfigPath(stateRoot),
     'utf8',
   );
   const busyOutputs: string[] = [];
@@ -370,7 +373,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
     1,
   );
   assert.equal(
-    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8'),
+    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(stateRoot), 'utf8'),
     beforeBusyUpdate,
   );
   assert.ok(
@@ -398,7 +401,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
     0,
   );
   const replaced = JSON.parse(
-    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8'),
+    await readFile(resolveRuntimeHostManagedDeploymentConfigPath(stateRoot), 'utf8'),
   ) as RuntimeHostManagedDeploymentConfig;
   assert.equal(replaced.launch.package.version, '1.2.4');
   assert.equal(replaced.launch.package.integrity, replacementIntegrity);
@@ -440,10 +443,10 @@ test('fresh supervised setup discovers its provider before constructing a legacy
     await Promise.all([
       rm(base, { recursive: true, force: true }),
       rootId
-        ? rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true })
+        ? rm(resolveRootControlNamespace(stateRoot), { recursive: true, force: true })
         : Promise.resolve(),
       rootId
-        ? rm(join(resolveRootOwnershipNamespace(), `${rootId}.lock`), { force: true })
+        ? rm(join(resolveRootOwnershipNamespace(stateRoot), `${rootId}.lock`), { force: true })
         : Promise.resolve(),
     ]);
   });
@@ -781,15 +784,15 @@ test('registry package identity avoids local content and recovers an interrupted
   const authorityServiceId = capability.rootId;
   t.after(() =>
     Promise.all([
-      rm(dirname(resolveRuntimeHostManagedDeploymentConfigPath(authorityServiceId)), {
+      rm(join(resolveRuntimeHostManagedDeploymentAuthorityRoot(), authorityServiceId), {
         recursive: true,
         force: true,
       }),
-      rm(join(resolveRootControlNamespace(), authorityServiceId), {
+      rm(resolveRootControlNamespace(authorityStateRoot), {
         recursive: true,
         force: true,
       }),
-      rm(join(resolveRootOwnershipNamespace(), `${authorityServiceId}.lock`), {
+      rm(join(resolveRootOwnershipNamespace(authorityStateRoot), `${authorityServiceId}.lock`), {
         force: true,
       }),
     ]),
@@ -871,8 +874,55 @@ test('registry package identity avoids local content and recovers an interrupted
   await assert.rejects(readdir(join(base, 'drifted-data')), { code: 'ENOENT' });
 });
 
+test('staging defers a cleanup receipt while its root predates the current format', async (t) => {
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-')));
+  t.after(() => rm(base, { recursive: true, force: true, maxRetries: 10 }));
+  const version = '2.3.4';
+  const registryPackage = await createReleasePackage(join(base, 'registry'), version);
+  const pathOptions = {
+    env: { XDG_DATA_HOME: join(base, 'data') },
+    homeDir: join(base, 'home'),
+    platform: 'linux' as const,
+  };
+  const capability = await resolveStorageRoot({ path: join(base, 'state'), kind: 'interactive' });
+  const serviceId = capability.rootId;
+  t.after(async () => {
+    await rm(join(resolveRuntimeHostManagedDeploymentAuthorityRoot(), serviceId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(resolveRuntimeHostManagedControlRoot(serviceId), { recursive: true, force: true });
+  });
+  const markerPath = join(capability.canonicalPath, STORAGE_ROOT_MARKER_FILE);
+  const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+  await writeFile(markerPath, JSON.stringify({ ...marker, schemaVersion: 1 }));
+  const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(serviceId, pathOptions);
+  await acknowledgeRuntimeHostManagedDeploymentCleanup({
+    serviceId,
+    deploymentId: '00000000-0000-4000-8000-000000000009',
+    deploymentRoot,
+    stateRootPath: capability.canonicalPath,
+  });
+  const retiredSibling = join(dirname(deploymentRoot), `.${serviceId}.retired`);
+  await mkdir(retiredSibling, { recursive: true });
+  const staged = await prepareRuntimeHostManagedPackageDeployment(
+    {
+      serviceId,
+      clientDataRoot: join(base, 'client'),
+      sourcePackageRoot: registryPackage,
+      version,
+      packageIntegrity: PACKAGE_INTEGRITY,
+      deploymentRoot,
+    },
+    pathOptions,
+  );
+  assert.equal(staged.root, deploymentRoot);
+  assert.ok(await readRuntimeHostManagedDeploymentCleanupReceipt(serviceId));
+  await assert.rejects(stat(retiredSibling), { code: 'ENOENT' });
+});
+
 test('managed operator binds its Client Data Root and routes deployment cleanup', {
-  skip: process.platform === 'win32',
+  skip: process.platform === 'win32' ? 'requires a POSIX package-entrypoint symlink' : false,
 }, async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-operator-'));
   t.after(() => rm(base, { recursive: true, force: true }));
@@ -1124,6 +1174,41 @@ test('managed Windows task launcher is projected to a stable deployment path', a
     runtimeHostManagedWindowsTaskLauncherPath(deployment.root, Buffer.from('launcher-v2')),
     projected,
   );
+});
+
+test('setup surfaces a State Root authority error instead of an internal failure', async (t) => {
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-root-')));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const stateRoot = join(base, 'state');
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  const markerPath = join(capability.canonicalPath, STORAGE_ROOT_MARKER_FILE);
+  const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+  await writeFile(markerPath, JSON.stringify({ ...marker, rootIdentity: { dev: '0', ino: '0' } }));
+  const outputs: string[] = [];
+  const exitCode = await runRuntimeHostSetupCli(
+    {
+      json: true,
+      lifecycle: 'on_demand',
+      clientDataRoot: join(base, 'client'),
+      defaultRootPath: stateRoot,
+      sourcePackageRoot: base,
+      version: '1.2.3',
+      principalId: 'desktop:client-1',
+      preset: 'desktop-client',
+    },
+    {
+      createBackend: () => assert.fail('setup must not create a service backend'),
+      manageService: async () => assert.fail('setup must not manage a service'),
+      resolveRegistryCandidate: async () => assert.fail('setup must not resolve a package'),
+      withRegistryPackage: async () => assert.fail('setup must not stage a package'),
+      prepareDeployment: async () => assert.fail('setup must not stage a deployment'),
+      openDeployment: async () => assert.fail('setup must not open a deployment'),
+      writeOutput: (value) => outputs.push(value),
+    },
+  );
+  assert.equal(exitCode, 1);
+  const failure = outputs.map(decodeRuntimeHostSetupFrame).find((frame) => frame?.kind === 'error');
+  assert.equal(failure?.kind === 'error' ? failure.error.code : undefined, 'root_unavailable');
 });
 
 async function createReleasePackage(base: string, version: string): Promise<string> {

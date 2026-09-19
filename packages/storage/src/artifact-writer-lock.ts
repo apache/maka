@@ -67,7 +67,7 @@ async function withAuthorityArtifactWriterLock<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   return withArtifactWriterLockPath(
-    join(authority.controlDirectory, ARTIFACT_WRITER_LOCK_FILE),
+    join(authority.lockDirectory, ARTIFACT_WRITER_LOCK_FILE),
     async () => {
       await authority.assertCurrentRoot();
       return operation();

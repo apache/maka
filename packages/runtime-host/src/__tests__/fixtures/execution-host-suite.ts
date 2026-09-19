@@ -1276,7 +1276,7 @@ export class ExecutionFixture {
         () => undefined,
       );
     }
-    await rm(join(resolveRootControlNamespace(), this.capability.rootId), {
+    await rm(resolveRootControlNamespace(this.capability.canonicalPath), {
       recursive: true,
       force: true,
     });

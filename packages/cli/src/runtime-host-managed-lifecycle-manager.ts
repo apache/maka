@@ -23,11 +23,14 @@ import {
 } from '@maka/runtime-host/operator';
 import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   applyRetiredRuntimeHostLifecycleTransition,
   activateRuntimeHostLifecycle,
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
+  resolveLegacyRuntimeHostPackage,
   retireRuntimeHostLifecycleOwner,
   runtimeHostReconciliationTriggerDefinition,
   runtimeHostSupervisorDefinition,
@@ -68,6 +71,16 @@ export async function manageRuntimeHostManagedLifecycle(
   input: RuntimeHostManagedServiceInput,
   dependencies: RuntimeHostManagedLifecycleManagerDeps,
 ): Promise<RuntimeHostManagedServiceResult> {
+  const legacy = await resolveLegacyRuntimeHostPackage(rootId);
+  if (legacy) {
+    // Until takeover, the installed source owns all v1 lifecycle operations.
+    // Once the marker is current, no old package or account lock is consulted.
+    const source: typeof import('./runtime-host-managed-lifecycle-manager.js') = await import(
+      pathToFileURL(join(legacy.packageRoot, 'dist', 'runtime-host-managed-lifecycle-manager.js'))
+        .href
+    );
+    return source.manageRuntimeHostManagedLifecycle(rootId, input, dependencies);
+  }
   const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
     convergeOperator: (currentConfig, desiredConfig) =>
       convergeRuntimeHostManagedOperator(currentConfig, desiredConfig),

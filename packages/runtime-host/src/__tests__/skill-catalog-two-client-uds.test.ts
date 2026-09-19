@@ -202,11 +202,6 @@ Keep ${privateMarker} inside the lazy-loaded body.
       await assert.rejects(lstat(endpoint), { code: 'ENOENT' }).catch((error: unknown) => {
         cleanupErrors.push(error);
       });
-    if (rootId)
-      await rm(join(resolveRootControlNamespace(), rootId), {
-        recursive: true,
-        force: true,
-      }).catch((error: unknown) => cleanupErrors.push(error));
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
     await rm(base, { recursive: true, force: true }).catch((error: unknown) =>

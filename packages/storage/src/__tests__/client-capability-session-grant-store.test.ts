@@ -28,19 +28,11 @@ import {
   openSqliteInteractiveInteractionStoreForWrite,
 } from '../interaction-store.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
-
-after(removeTrackedControlDirectories);
 
 test('persists Client Capability grants for one Session and purges them with it', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-client-capability-grant-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     if (!owner) return;

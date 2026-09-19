@@ -58,7 +58,6 @@ import {
   writeConnectionOnboardingIntent,
 } from '../runtime-policy/onboarding-transaction.js';
 import { upsertInteractiveOAuthLoginReceipt } from '../runtime-policy/oauth-login-receipt-document.js';
-import { removeControlDirectory } from './fixtures/control-directory-hygiene.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -4961,7 +4960,6 @@ async function withInteractiveRoot(
     try {
       await run({ root, capability });
     } finally {
-      await removeControlDirectory(capability.rootId);
     }
   });
 }

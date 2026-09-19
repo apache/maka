@@ -176,13 +176,15 @@ export interface RuntimeHostAccessAuthority {
 }
 
 export async function openRuntimeHostAccessAuthority(
-  controlDirectory: string,
+  dataDirectory: string,
   input: {
+    readonly deliveryDirectory?: string;
     readonly writeFile?: typeof writeAccessCredentialFile;
   } = {},
 ): Promise<RuntimeHostAccessAuthority> {
+  const controlDirectory = input.deliveryDirectory ?? dataDirectory;
   await purgeAccessCredentialDeliveries(controlDirectory);
-  const path = join(controlDirectory, ACCESS_FILE_NAME);
+  const path = join(dataDirectory, ACCESS_FILE_NAME);
   return new FileRuntimeHostAccessAuthority(
     controlDirectory,
     path,

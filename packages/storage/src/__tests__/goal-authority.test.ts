@@ -26,20 +26,16 @@ import type { GoalAuthorityRecord } from '@maka/core/goal';
 import { openInteractiveExecutionStoresForWrite } from '../execution-stores.js';
 import { openInteractiveGoalAuthorityForWrite } from '../goal-authority.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
 
 // The control directory of each resolved root lives outside that root, so a
 // temporary root's removal leaves it behind; reclaim the recorded rootIds here.
-after(removeTrackedControlDirectories);
 
 test('Goal authority commits one revisioned record and preserves its execution reference', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-goal-authority-'));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: join(base, 'interactive'), kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;
@@ -91,9 +87,10 @@ test('Goal authority commits one revisioned record and preserves its execution r
 
 test('Goal authority close lets an admitted commit finish before releasing storage', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-goal-authority-close-'));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: join(base, 'interactive'), kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;
@@ -128,9 +125,10 @@ test('Goal authority close lets an admitted commit finish before releasing stora
 
 test('Session retirement atomically removes its Goal authority', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-goal-authority-retirement-'));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: join(base, 'interactive'), kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;

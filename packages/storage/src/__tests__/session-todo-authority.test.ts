@@ -33,12 +33,6 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootLease,
 } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
-
-after(removeTrackedControlDirectories);
 
 describe('interactive SessionTodo authority', () => {
   test('single-flights opens and invalidates the facade when closed', async () => {
@@ -83,9 +77,10 @@ async function withInteractiveRoot(
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-session-todo-authority-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: join(base, 'interactive'), kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive'),
+      kind: 'interactive',
+    });
     await run(capability);
   } finally {
     await rm(base, { recursive: true, force: true });

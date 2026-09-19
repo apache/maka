@@ -471,7 +471,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
   } finally {
     await Promise.allSettled([guest?.close(), remote?.close(), local?.close()]);
     await host.close().catch(() => undefined);
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });
@@ -588,7 +588,7 @@ test('an authenticated WebSocket Client reconnects after service restart to cano
   } finally {
     await Promise.allSettled([remote?.close(), local?.close()]);
     await host?.close().catch(() => undefined);
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });
@@ -889,7 +889,7 @@ test('an unbound WebSocket credential cannot claim an existing bound Client iden
   } finally {
     await Promise.allSettled([provider?.close(), owner?.close(), local?.close()]);
     await host.close().catch(() => undefined);
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });
@@ -980,7 +980,7 @@ test('a Client-bound pairing candidate can be claimed by exactly one Client iden
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-client-claim-'));
   const root = join(directory, 'root');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-  const controlDirectory = join(resolveRootControlNamespace(), capability.rootId);
+  const controlDirectory = resolveRootControlNamespace(capability.canonicalPath);
   await mkdir(controlDirectory, { recursive: true, mode: 0o700 });
   const authority = await openRuntimeHostAccessAuthority(controlDirectory);
   try {
@@ -1497,7 +1497,7 @@ test('a rejected required WebSocket listener releases Local IPC and root ownersh
     const successor = await startExecutionRuntimeHostService({ rootPath: root });
     await successor.close();
   } finally {
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });

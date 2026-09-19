@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { runtimeHostAccessCredentialFingerprintFromHash } from '../access-credential-identity.js';
 import {
   discoverMarkedStorageRoot,
-  resolveExistingStorageRootControlDirectory,
+  resolveRootHostDataDirectory,
   resolveExistingStorageRoot,
 } from '@maka/storage/root-authority';
 import type { OperationKey } from '../protocol/index.js';
@@ -55,8 +55,9 @@ export async function readRuntimeHostAccessCredentialMetadata(
         expectedRootId,
       })
     : await discoverMarkedStorageRoot({ path: rootPath });
-  const { controlDirectory } = await resolveExistingStorageRootControlDirectory(capability);
-  const file = await readAccessCredentialFile(join(controlDirectory, ACCESS_FILE_NAME));
+  const file = await readAccessCredentialFile(
+    join(resolveRootHostDataDirectory(capability.canonicalPath), ACCESS_FILE_NAME),
+  );
   const now = Date.now();
   return {
     credentials: file.credentials.flatMap((credential) => {

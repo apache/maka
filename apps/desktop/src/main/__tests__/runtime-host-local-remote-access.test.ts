@@ -20,13 +20,20 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import os from 'node:os';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import test from 'node:test';
-import { decodeRuntimeHostOwnerConnectionCode } from '@maka/runtime-host/client';
+import { decodeRuntimeHostOwnerConnectionCode, connectOrSpawnRuntimeHost, runtimeHostStartupError } from '@maka/runtime-host/client';
+import { resolveStorageRootIdentity, STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root-authority';
+import { resolveRuntimeHostManagedDeploymentAuthorityRoot } from '@maka/runtime-host/operator';
+import { resolveDesktopStorageRoot } from '../storage-root-startup.js';
+import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+  RUNTIME_HOST_PROTOCOL_VERSION,
   type HostRegistration,
 } from '@maka/runtime-host/protocol';
 import type { RuntimeHostDesktopManager } from '../runtime-host-desktop-manager.js';
@@ -329,8 +336,27 @@ test('repairs an existing managed Host with the current setup package and restar
   const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-repair-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
-  const rootPath = join(clientDataRoot, 'workspaces', 'default');
-  const rootId = 'a'.repeat(64);
+  const identity = await resolveStorageRootIdentity({ path: join(clientDataRoot, 'workspaces', 'default'), kind: 'interactive' });
+  const rootPath = identity.canonicalPath;
+  const rootId = identity.rootId;
+  const account = os.userInfo();
+  t.mock.method(os, 'userInfo', () => ({ ...account, homedir: base }));
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const markerPath = join(rootPath, STORAGE_ROOT_MARKER_FILE);
+  const marker = JSON.parse(await readFile(markerPath, 'utf8'));
+  await writeFile(markerPath, JSON.stringify({ ...marker, schemaVersion: 1 }));
+  const metadata = join(resolveRuntimeHostManagedDeploymentAuthorityRoot(), rootId);
+  await mkdir(metadata, { recursive: true });
+  await writeFile(join(metadata, 'runtime-host-deployment.json'), JSON.stringify({
+    schemaVersion: 1, state: 'active', deploymentId: RECOVERY_DEPLOYMENT_ID, configRevision: 1,
+    deploymentRoot: join(base, 'deployment'), root: { id: rootId, path: identity.canonicalPath },
+    projectDirectoryRoots: [],
+    launch: { kind: 'exact_package', nodePath: process.execPath,
+      package: { kind: 'npm_registry', version: '0.1.0', integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}` } },
+    listeners: { localIpc: true, websocket: { host: '127.0.0.1', port: 7400, path: '/runtime-host' } },
+    lifecycle: { mode: 'supervised', provider: 'systemd_user', availability: 'session' }, reconciliation: { trigger: 'manual' },
+  }));
   const setupPackage = { kind: 'npm' as const, specifier: 'maka-agent@0.2.0' };
   await mkdir(rootPath, { recursive: true });
   await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
@@ -382,9 +408,20 @@ test('repairs an existing managed Host with the current setup package and restar
   });
   t.after(() => service.close());
 
-  assert.deepEqual(await service.repairManagedStartup({ allowManualUpdate: true }), {
-    kind: 'repaired',
+  assert.deepEqual(await resolveDesktopStorageRoot(rootPath, { confirmRepair: async () => false }), identity);
+  const connection = await connectOrSpawnRuntimeHost({
+    rootPath, protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID, candidateEntrypoint: 'must-not-launch.js',
   });
+  assert.equal(connection.kind, 'failed');
+  if (connection.kind !== 'failed') assert.fail('expected management admission');
+  assert.equal(connection.reason, 'managed_root_requires_operator');
+  const error = runtimeHostStartupError(connection.reason);
+  assert.equal(canRepairManagedRuntimeHostStartup(error), true);
+  const blocker = await service.resolveStartupRepair(error, new AbortController().signal);
+  assert.ok(blocker?.replacement);
+  assert.equal(blocker.activity, undefined);
+  assert.deepEqual(await blocker.replacement.execute('refuse_active_work', () => {}, 'explicit'), { kind: 'completed' });
   assert.deepEqual(actions, ['update', 'restart']);
   assert.deepEqual(phases, ['checking', 'staging', 'restart']);
 });

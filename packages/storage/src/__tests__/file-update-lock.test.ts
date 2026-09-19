@@ -18,7 +18,7 @@
  */
 
 import { fork } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -31,6 +31,28 @@ test('releases a file update lock when its process is killed', async (t) => {
 
 test('recovers a supervised legacy directory lock when its process is killed', async (t) => {
   await assertKilledHolderCanBeRecovered(t, ['legacy']);
+});
+
+test('recovers a stale regular lock marker left beside a supervision marker', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-file-update-lock-stale-'));
+  const targetPath = join(root, 'state');
+  t.after(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  // A killed writer can leave its regular marker next to the supervision
+  // marker. Once the advisory lease is free, both are provably stale.
+  await writeFile(`${targetPath}.lock`, '');
+  await writeFile(`${targetPath}.supervised`, '');
+  let entered = false;
+  await withProcessLifetimeFileUpdateLock(
+    targetPath,
+    async () => {
+      entered = true;
+    },
+    2_000,
+  );
+  assert.equal(entered, true);
+  assert.deepEqual(await readdir(root), ['state.lease']);
 });
 
 test('keeps the authority lease held by an inherited package-switch descriptor', async (t) => {

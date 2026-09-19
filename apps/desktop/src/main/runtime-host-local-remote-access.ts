@@ -32,7 +32,7 @@ import {
   createRuntimeHostLegacyPosixOperatorCommand,
   runtimeHostManagedOperatorCommand,
   decodeRuntimeHostOperatorCommand,
-  resolveRuntimeHostManagedDeploymentAuthority,
+  inspectRuntimeHostManagedDeployment,
   type RuntimeHostOperatorCommand,
   type RuntimeHostServiceUpdatePhase,
 } from '@maka/runtime-host/operator';
@@ -212,8 +212,10 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   const resolveManagedDeploymentAuthority =
     input.resolveManagedDeploymentAuthority ??
     (async (rootId: string): Promise<LocalManagedDeploymentAuthority | undefined> => {
-      const authority = await resolveRuntimeHostManagedDeploymentAuthority(rootId);
+      const authority = await inspectRuntimeHostManagedDeployment(rootId);
       if (!authority) return undefined;
+      if (authority.format === 'upgrading') return { kind: 'transition' };
+      if (!authority.record) return undefined;
       if (authority.record.state !== 'active') return { kind: 'transition' };
       return {
         kind: 'active',
@@ -814,10 +816,12 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       const observed = await (input.inspectHost ?? connectExistingRuntimeHost)({
         rootPath: input.rootPath,
         protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
-      });
-      const registration = 'registration' in observed ? observed.registration : undefined;
+      }).catch(() => undefined);
+      // Persisted deployment identity admits repair; unavailable live activity
+      // stays unknown and never authorizes automatic interruption.
+      const registration = observed && 'registration' in observed ? observed.registration : undefined;
       let activity: HostActivitySnapshot | undefined;
-      if (observed.kind === 'connected') {
+      if (observed?.kind === 'connected') {
         try {
           const facts = await observed.connection.request('host.diagnostics.query', {});
           if (facts.hostEpoch === observed.connection.hostEpoch && facts.pid === observed.registration.pid &&
@@ -830,7 +834,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           }
         } catch { /* Missing activity evidence never authorizes automatic interruption. */ }
         finally { await observed.connection.close(); }
-      } else if (observed.kind === 'incompatible' || observed.kind === 'upgrade_required') {
+      } else if (observed?.kind === 'incompatible' || observed?.kind === 'upgrade_required') {
         if (observed.handshake?.state === 'ready') activity = observed.handshake.activity;
       }
       signal.throwIfAborted();

@@ -1285,7 +1285,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         } };
       }
       if (await tryRecoverLocalHost()) continue;
-      const failure = runtimeHostStartupError(result.reason, result.diagnostic);
+      const failure = runtimeHostStartupError(
+        result.reason,
+        result.diagnostic,
+        'detail' in result ? result.detail : undefined,
+      );
       const repair = await resolveRepair(failure);
       if (repair) return repair;
       throw failure;

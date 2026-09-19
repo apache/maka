@@ -198,14 +198,9 @@ export async function qualifyReleasedCliStateRoot(input) {
   }
 }
 
-// The State Root is not the whole durable surface. The Runtime Host access file
-// and the rest of the control records live in the account-local control
-// namespace, and the Host opens them before the Kernel starts — so a golden
-// copy that captured only the State Root could not restore, or observe, the
-// state that decides whether the Host starts at all. The control path mirrors
-// resolveRootControlNamespace in @maka/storage; this harness runs on Linux
-// only, so it names the Linux location rather than importing across the
-// installed artifacts it is here to compare.
+// Schema-2 roots include their durable Host state. Historical schema-1 artifacts
+// keep access credentials and plugins in the account cache, so release-to-release
+// qualification must capture that legacy surface as well. This harness is Linux-only.
 export function durableStateLocations(scope) {
   return [
     { live: join(scope, 'state-root'), golden: join(scope, 'golden-root') },

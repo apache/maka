@@ -49,6 +49,7 @@ import {
 import {
   resolveRuntimeHostManagedServiceId,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
+  RuntimeHostManagedDeploymentError as RuntimeHostDeploymentAuthorityError,
   type RuntimeHostReconciliationProvider,
   type RuntimeHostServiceErrorCode,
   type RuntimeHostSupervisorProvider,
@@ -59,7 +60,9 @@ import {
 } from '@maka/storage/process-lifetime-file-update-lock';
 import {
   discoverMarkedStorageRoot,
+  inspectStorageRootFormat,
   resolveExistingStorageRoot,
+  StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
   type InteractiveRootOwner,
   type StorageRootCapability,
@@ -70,8 +73,15 @@ import {
   resolveExistingRuntimeHostManagedDeploymentRoot,
   resolveRuntimeHostManagedDeploymentForCli,
   resolveRuntimeHostManagedDeploymentRoot,
+  RuntimeHostManagedDeploymentError,
 } from './runtime-host-managed-deployment.js';
-import { writeRuntimeHostManagedUpdatePolicy } from './runtime-host-update-policy-store.js';
+import { RuntimeHostLifecycleTransactionError } from './runtime-host-lifecycle-transaction.js';
+import { RuntimeHostUpdateDiscoveryError } from './runtime-host-registry-update.js';
+import { RuntimeHostUpdatePackageError } from './runtime-host-update-package.js';
+import {
+  RuntimeHostUpdatePolicyError,
+  writeRuntimeHostManagedUpdatePolicy,
+} from './runtime-host-update-policy-store.js';
 import { isTemporaryNpxInstallation } from './runtime-host-cli-installation.js';
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
@@ -285,8 +295,6 @@ interface RuntimeHostServiceManagerDeps {
   readonly platform: NodeJS.Platform;
 }
 
-export type RuntimeHostServiceManagerOverrides = Partial<RuntimeHostServiceManagerDeps>;
-
 export class RuntimeHostServiceManagerError extends Error {
   constructor(
     readonly code: Extract<
@@ -298,6 +306,8 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'invalid_config'
       | 'invalid_launch'
       | 'target_mismatch'
+      | 'root_requires_migration'
+      | 'root_migration_busy'
       | 'configuration_changed'
       | 'configuration_incomplete'
       | 'active_tasks'
@@ -509,7 +519,7 @@ async function manageRuntimeHostServiceLocked(
         ? undefined
         : await resolveExpectedServiceRoot(before, input);
     const retainedStateRoot =
-      before === null && !invalidConfig && input.expectedTarget
+      before === null && !invalidConfig
         ? input.expectedTarget.rootPath
         : retirementRoot?.canonicalPath;
     let retirement: RuntimeHostRetirementResult = { kind: 'stopped' };
@@ -521,7 +531,7 @@ async function manageRuntimeHostServiceLocked(
     if (beforeStatus.installed && before && retirementRoot) {
       const retired = await retireManagedRuntimeHostService(
         { ...beforeStatus, config: before },
-        retirementRoot,
+        await requireExpectedServiceRoot(retirementRoot),
         backend,
         deps,
         input.allowInterruptActiveTasks ?? false,
@@ -619,13 +629,14 @@ async function manageRuntimeHostServiceLocked(
     }
     const service = await readServiceStatus(configPath, backend);
     const currentConfig = service.config;
-    const root = await resolveExpectedServiceRoot(currentConfig, input);
-    if (!service.installed || !currentConfig || !root) {
+    const identity = await resolveExpectedServiceRoot(currentConfig, input);
+    if (!service.installed || !currentConfig || !identity) {
       throw new RuntimeHostServiceManagerError(
         'not_installed',
         'Runtime Host service is not installed',
       );
     }
+    const root = await requireExpectedServiceRoot(identity);
     if (
       runtimeHostManagedServiceConfigFingerprint(currentConfig) !== input.expectedConfigFingerprint
     ) {
@@ -684,8 +695,8 @@ async function manageRuntimeHostServiceLocked(
     }
     const service = await readServiceStatus(configPath, backend);
     const currentConfig = service.config;
-    const root = await resolveExpectedServiceRoot(currentConfig, input);
-    if (!service.installed || !currentConfig || !root) {
+    const identity = await resolveExpectedServiceRoot(currentConfig, input);
+    if (!service.installed || !currentConfig || !identity) {
       throw new RuntimeHostServiceManagerError(
         'not_installed',
         'Runtime Host service is not installed',
@@ -693,7 +704,7 @@ async function manageRuntimeHostServiceLocked(
     }
     const retired = await retireManagedRuntimeHostService(
       { ...service, config: currentConfig },
-      root,
+      await requireExpectedServiceRoot(identity),
       backend,
       deps,
       input.allowInterruptActiveTasks ?? false,
@@ -707,11 +718,26 @@ async function manageRuntimeHostServiceLocked(
       'Runtime Host service is not installed',
     );
   }
-  const expectedRoot = await resolveExpectedServiceRoot(config, input);
+  const expectedIdentity = await resolveExpectedServiceRoot(config, input);
   if (input.action === 'start' || input.action === 'restart') {
     if (config.schemaVersion === 2) await backend.verifyDeployment(config);
+    // Starting a legacy or fenced root would only spawn a daemon the
+    // readiness poll then kills — possibly mid self-migration. Fail before
+    // spawn with the action that actually helps.
+    if (expectedIdentity?.format === 'legacy')
+      throw new RuntimeHostServiceManagerError(
+        'root_requires_migration',
+        'The managed Runtime Host State Root predates this version; run the update or activation workflow to migrate it',
+      );
+    if (expectedIdentity?.format === 'upgrading')
+      throw new RuntimeHostServiceManagerError(
+        'root_migration_busy',
+        'The managed Runtime Host State Root is being migrated; retry once the upgrade completes',
+      );
     if (input.action === 'restart') {
-      const root = expectedRoot ?? (await discoverMarkedStorageRoot({ path: config.rootPath }));
+      const root = expectedIdentity
+        ? await requireExpectedServiceRoot(expectedIdentity)
+        : await discoverMarkedStorageRoot({ path: config.rootPath });
       const service = await readServiceStatus(configPath, backend);
       const retired = await retireManagedRuntimeHostService(
         { ...service, config },
@@ -757,8 +783,8 @@ async function replaceRuntimeHostManagedServiceLocked(
   const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
   assertExpectedServiceIdentity(serviceId, input.expectedTarget);
   const service = await readServiceStatus(configPath, backend);
-  const root = await resolveExpectedServiceRoot(service.config, input);
-  if (!service.installed || !service.config || !root) {
+  const identity = await resolveExpectedServiceRoot(service.config, input);
+  if (!service.installed || !service.config || !identity) {
     throw new RuntimeHostServiceManagerError(
       'not_installed',
       'Runtime Host service is not installed',
@@ -776,8 +802,9 @@ async function replaceRuntimeHostManagedServiceLocked(
   }
   await backend.preflightDeployment();
   const config = await prepareServiceConfig(input, service.config, deps);
-  let rootFence: InteractiveRootOwner | undefined =
-    await acquireRuntimeHostRootRetirementFence(root);
+  let rootFence: InteractiveRootOwner | undefined = await acquireRuntimeHostRootRetirementFence(
+    await requireExpectedServiceRoot(identity),
+  );
   try {
     await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
     await releaseRuntimeHostRootRetirementFence(rootFence);
@@ -848,19 +875,126 @@ function assertExpectedServiceIdentity(
 async function resolveExpectedServiceRoot(
   config: RuntimeHostManagedServiceConfig | null,
   input: Pick<RuntimeHostManagedServiceInput, 'expectedTarget'>,
-): Promise<StorageRootCapability<'interactive'> | undefined> {
+): Promise<Awaited<ReturnType<typeof inspectStorageRootFormat>> | undefined> {
   if (!input.expectedTarget) return undefined;
   try {
-    const root = await resolveExistingStorageRoot({
-      path: input.expectedTarget.rootPath,
-      kind: 'interactive',
-      expectedRootId: input.expectedTarget.rootId,
-    });
-    if (config && resolve(config.rootPath) !== root.canonicalPath) {
+    // Identity only: verifying that the service belongs to its expected root
+    // must not require business access to a legacy or upgrading root.
+    const identity = await inspectStorageRootFormat(input.expectedTarget.rootPath);
+    if (identity.rootId !== input.expectedTarget.rootId)
+      throw new Error('The expected State Root belongs to a different installation');
+    if (config && resolve(config.rootPath) !== identity.canonicalPath) {
       throw new Error('The service config points to a different State Root path');
     }
-    return root;
+    return identity;
   } catch (error) {
+    // A damaged or missing root is not a mismatch with the expected one.
+    if (error instanceof StorageRootAuthorityError) throw error;
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      'The managed Runtime Host service does not match the expected State Root',
+      { cause: error },
+    );
+  }
+}
+
+/** Storage authority errors fold onto the wire member whose guidance applies. */
+export function storageRootErrorDetail(
+  error: unknown,
+): { readonly code: RuntimeHostServiceErrorCode; readonly message: string } | undefined {
+  if (!(error instanceof StorageRootAuthorityError)) return undefined;
+  const code: RuntimeHostServiceErrorCode =
+    error.code === 'legacy_root_requires_migration'
+      ? 'root_requires_migration'
+      : error.code === 'root_migration_busy'
+        ? 'root_migration_busy'
+        : 'root_unavailable';
+  return { code, message: error.message };
+}
+
+/**
+ * The committed wire code for a managed-domain error, or undefined for
+ * errors outside the managed domain.
+ */
+// Deployment-authority codes outside the committed wire union fold into the
+// member whose guidance still applies; the precise code stays in the message.
+const DEPLOYMENT_RETRY_CODES = new Set(['deployment_transition_in_progress']);
+const DEPLOYMENT_OWNERSHIP_CODES = new Set([
+  'state_root_owned',
+  'lifecycle_owner_exists',
+  'deployment_transaction_mismatch',
+  'deployment_claim_mismatch',
+  'deployment_lifecycle_mismatch',
+  'deployment_launch_mismatch',
+]);
+
+export function managedRuntimeHostErrorCode(
+  error: unknown,
+): RuntimeHostServiceErrorCode | undefined {
+  if (error instanceof RuntimeHostServiceManagerError) return error.code;
+  if (
+    error instanceof RuntimeHostManagedDeploymentError ||
+    error instanceof RuntimeHostDeploymentAuthorityError
+  ) {
+    if (DEPLOYMENT_RETRY_CODES.has(error.code)) return 'active_tasks';
+    if (DEPLOYMENT_OWNERSHIP_CODES.has(error.code)) return 'target_mismatch';
+    return error.code === 'invalid_config' ||
+      error.code === 'invalid_package' ||
+      error.code === 'deployment_io_failed' ||
+      error.code === 'deployment_commit_unknown'
+      ? error.code
+      : 'service_manager_operation_failed';
+  }
+  if (error instanceof RuntimeHostLifecycleTransactionError) {
+    if (error.code === 'owner_changed') return 'target_mismatch';
+    if (error.code === 'active_tasks') return 'active_tasks';
+    return undefined;
+  }
+  return storageRootErrorDetail(error)?.code;
+}
+
+/**
+ * The committed wire code for any error reaching a service-management frame
+ * boundary. Returning the union type keeps classification compiler-checked:
+ * a boundary cannot emit a code that is not part of the wire contract.
+ */
+export function runtimeHostServiceWireErrorCode(
+  error: unknown,
+  fallback: RuntimeHostServiceErrorCode = 'service_manager_operation_failed',
+): RuntimeHostServiceErrorCode {
+  if (
+    error instanceof RuntimeHostUpdateDiscoveryError ||
+    error instanceof RuntimeHostUpdatePackageError ||
+    error instanceof RuntimeHostUpdatePolicyError
+  ) {
+    return error.code;
+  }
+  return managedRuntimeHostErrorCode(error) ?? fallback;
+}
+
+async function requireExpectedServiceRoot(identity: {
+  readonly canonicalPath: string;
+  readonly rootId: string;
+}): Promise<StorageRootCapability<'interactive'>> {
+  try {
+    return await resolveExistingStorageRoot({
+      path: identity.canonicalPath,
+      kind: 'interactive',
+      expectedRootId: identity.rootId,
+    });
+  } catch (error) {
+    if (
+      error instanceof StorageRootAuthorityError &&
+      error.code === 'legacy_root_requires_migration'
+    )
+      throw new RuntimeHostServiceManagerError(
+        'root_requires_migration',
+        'The managed Runtime Host State Root predates this version; run the update or activation workflow to migrate it',
+        { cause: error },
+      );
+    // Other authority errors describe a damaged or lost root, not a target
+    // mismatch; pass them through so boundaries keep the actionable code.
+    if (error instanceof StorageRootAuthorityError) throw error;
     throw new RuntimeHostServiceManagerError(
       'target_mismatch',
       'The managed Runtime Host service does not match the expected State Root',
@@ -1307,6 +1441,22 @@ export async function verifyRuntimeHostManagedServiceReady(
       connectTimeoutMs: Math.max(1, Math.min(500, remaining)),
       handshakeTimeoutMs: Math.max(1, Math.min(500, remaining)),
     }).catch((error: unknown) => {
+      // A permanently unreachable root (pre-migration, corrupt marker,
+      // foreign identity) can never become ready; polling it out only hides
+      // the cause. root_unmarked/root_not_found stay transient: the Host we
+      // just spawned publishes the marker itself, so a fresh install starts
+      // unmarked until its first checkpoint.
+      if (
+        error instanceof StorageRootAuthorityError &&
+        [
+          'legacy_root_requires_migration',
+          'invalid_marker',
+          'invalid_root',
+          'root_identity_collision',
+          'root_identity_changed',
+        ].includes(error.code)
+      )
+        throw error;
       lastFailure = error instanceof Error ? error.message : String(error);
       return undefined;
     });

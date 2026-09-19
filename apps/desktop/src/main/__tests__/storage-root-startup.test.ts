@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +29,31 @@ import {
   StorageRootAuthorityError,
 } from '@maka/storage/root-authority';
 import { resolveDesktopStorageRoot } from '../storage-root-startup.js';
+
+test('Desktop startup reads identity without upgrading or granting business access', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-identity-'));
+  try {
+    const initialized = await resolveDesktopStorageRoot(root, { confirmRepair: async () => false });
+    assert.ok(initialized);
+    const path = join(root, STORAGE_ROOT_MARKER_FILE);
+    const marker = JSON.parse(await readFile(path, 'utf8'));
+    for (const format of [
+      { schemaVersion: 1 },
+      { schemaVersion: 2, upgrade: { id: randomUUID() } },
+    ]) {
+      const persisted = JSON.stringify({ ...marker, ...format });
+      await writeFile(path, persisted);
+      const identity = await resolveDesktopStorageRoot(root, {
+        confirmRepair: async () => assert.fail('valid identity needs no repair'),
+      });
+      assert.deepEqual(identity, initialized);
+      assert.equal(await readFile(path, 'utf8'), persisted);
+      await assert.rejects(resolveStorageRoot({ path: root, kind: 'interactive' }), {
+        code: 'legacy_root_requires_migration',
+      });
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test('asks before adopting a root whose device number moved on its own', async () => {
   // A device number changes on its own whenever a volume is mounted again, so

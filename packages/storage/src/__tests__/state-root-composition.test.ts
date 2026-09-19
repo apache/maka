@@ -28,21 +28,14 @@ import {
   STATE_ROOT_COMPOSITION_FILE,
   StateRootCompositionError,
 } from '../state-root-composition.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
 
 // The control directory of each resolved root lives outside that root, so a
 // temporary root's removal leaves it behind; reclaim the recorded rootIds here.
-after(removeTrackedControlDirectories);
 
 test('State Root composition binding is durable, idempotent, and exclusive', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-state-root-composition-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireStateRootOwner(capability);
     assert.ok(owner);
     try {
@@ -66,9 +59,7 @@ test('State Root composition binding is durable, idempotent, and exclusive', asy
 test('State Root composition binding rejects a corrupt existing authority record', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-state-root-composition-corrupt-'));
   try {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireStateRootOwner(capability);
     assert.ok(owner);
     try {

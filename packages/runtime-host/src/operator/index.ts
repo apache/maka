@@ -19,6 +19,11 @@
 
 export { RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV } from './retirement-cancellation.js';
 export {
+  prepareRuntimeHostRoot,
+  prepareRuntimeHostManagedRoot,
+  type RuntimeHostRootUpgradeOptions,
+} from '../root-upgrade.js';
+export {
   RUNTIME_HOST_ACTIVATION_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_ACTIVATION_ERROR_MESSAGE_MAX_BYTES,
   RUNTIME_HOST_ACTIVATION_FRAME_MAX_BYTES,
@@ -163,6 +168,7 @@ export {
   readRuntimeHostManagedDeploymentConfig,
   resolveRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentAuthority,
+  inspectRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentAuthorityRoot,
   resolveRuntimeHostManagedDeploymentConfigPath,
   rollbackRuntimeHostManagedDeploymentTransition,

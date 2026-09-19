@@ -241,6 +241,7 @@ function rootAuthorityFailureNeedsDrain(code: StorageRootAuthorityErrorCode): bo
   switch (code) {
     case 'root_unmarked':
     case 'invalid_marker':
+    case 'legacy_root_requires_migration':
     case 'root_identity_collision':
     case 'root_identity_changed':
       return true;
@@ -256,6 +257,7 @@ function rootAuthorityFailureNeedsDrain(code: StorageRootAuthorityErrorCode): bo
     case 'root_io_failed':
     case 'control_io_failed':
     case 'lock_failed':
+    case 'root_migration_busy':
       return false;
   }
 }

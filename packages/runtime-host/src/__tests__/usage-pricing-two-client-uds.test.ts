@@ -117,7 +117,7 @@ test('usage authority drain rejects a new pricing mutation with typed lifecycle 
     await stores.close();
   } finally {
     await owner.close();
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });
@@ -850,7 +850,7 @@ describe('production Usage/Pricing UDS', () => {
       }
       await firstOwner?.close().catch((error: unknown) => cleanupErrors.push(error));
       await successorOwner?.close().catch((error: unknown) => cleanupErrors.push(error));
-      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      await rm(resolveRootControlNamespace(capability.canonicalPath), {
         recursive: true,
         force: true,
       }).catch((error: unknown) => cleanupErrors.push(error));
@@ -1069,7 +1069,7 @@ async function withUsageAuthority(
   } finally {
     await stores.close().catch(() => undefined);
     await owner.close();
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });

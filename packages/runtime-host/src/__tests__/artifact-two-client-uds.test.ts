@@ -247,7 +247,7 @@ test('production Host ignores Artifact publication residue and preserves deletes
     successor = undefined;
   } finally {
     await Promise.allSettled([terminateHost(firstHost), terminateHost(successor)]);
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });

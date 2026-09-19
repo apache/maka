@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+import { prepareRuntimeHostRoot } from '../root-upgrade.js';
 import {
   createExecutionRuntimeHostCompositionSource,
   type ExecutionRuntimeHostCompositionDependencies,
@@ -84,10 +84,7 @@ export async function startExecutionRuntimeHostService(
   dependencies: ExecutionRuntimeHostServiceDependencies = {},
 ): Promise<RuntimeHostKernel> {
   const composition = await createExecutionRuntimeHostCompositionSource(options, dependencies);
-  const capability = await resolveStorageRoot({
-    path: options.rootPath,
-    kind: 'interactive',
-  });
+  const capability = await prepareRuntimeHostRoot(options.rootPath);
   const ownership = await tryAcquireRuntimeHostLaunch(
     capability,
     {
@@ -144,7 +141,9 @@ export async function startExecutionRuntimeHostService(
         console.error('[runtime-host] Peer Mesh stopped; Direct peer remains available:', error);
       });
     }
-    const accessAuthority = await openRuntimeHostAccessAuthority(owner.controlDirectory);
+    const accessAuthority = await openRuntimeHostAccessAuthority(owner.hostDataDirectory, {
+      deliveryDirectory: owner.controlDirectory,
+    });
     host = await RuntimeHostKernel.start({
       owner,
       lifecycleMode: 'service',

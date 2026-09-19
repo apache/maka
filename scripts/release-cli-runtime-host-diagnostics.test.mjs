@@ -57,8 +57,12 @@ test('collects canonical Runtime Host evidence without invoking mutating storage
         if (relativePath.endsWith('/root-authority.js')) {
           return {
             STORAGE_ROOT_MARKER_FILE: '.maka-storage-root.json',
+            STORAGE_ROOT_MARKER_SCHEMA_VERSION: 2,
             discoverMarkedStorageRoot: async () => ({ rootId: ROOT_ID }),
-            resolveRootControlNamespace: () => fixture.controlRoot,
+            resolveRootControlNamespace: (rootPath) => {
+              assert.equal(rootPath, fixture.root);
+              return fixture.controlRoot;
+            },
           };
         }
         if (relativePath.endsWith('/registration.js')) {
@@ -78,7 +82,11 @@ test('collects canonical Runtime Host evidence without invoking mutating storage
         if (relativePath.endsWith('/startup-diagnostic.js')) {
           return {
             RUNTIME_HOST_STARTUP_DIAGNOSTIC_FILE: 'startup-diagnostic.json',
-            readCandidateStartupDiagnostic: async () => startupDiagnostic,
+            readCandidateStartupDiagnostic: async (rootPath, rootId) => {
+              assert.equal(rootPath, fixture.root);
+              assert.equal(rootId, ROOT_ID);
+              return startupDiagnostic;
+            },
           };
         }
         throw new Error(`Unexpected installed module: ${relativePath}`);
@@ -104,9 +112,7 @@ test('collects canonical Runtime Host evidence without invoking mutating storage
         'startup_diagnostic',
       ],
     );
-    assert.deepEqual(securityCalls, [
-      [fixture.root, fixture.controlRoot, fixture.controlDirectory],
-    ]);
+    assert.deepEqual(securityCalls, [[fixture.root, fixture.controlRoot, fixture.controlRoot]]);
     assert.equal(diagnostic.paths[0].security.owner, 'runner\\user');
     assert.equal(diagnostic.storageAuthority.state, 'valid');
     assert.equal(diagnostic.registration.rootIdMatches, true);
@@ -119,7 +125,8 @@ test('collects canonical Runtime Host evidence without invoking mutating storage
         loadInstalled: async (_packageRoot, relativePath) => {
           assert.match(relativePath, /startup-diagnostic\.js$/u);
           return {
-            clearSelectedCandidateStartupDiagnostic: async (rootId, startupAttemptId) => {
+            clearSelectedCandidateStartupDiagnostic: async (rootPath, rootId, startupAttemptId) => {
+              assert.equal(rootPath, fixture.root);
               retired = { rootId, startupAttemptId };
               return true;
             },
@@ -129,6 +136,61 @@ test('collects canonical Runtime Host evidence without invoking mutating storage
       true,
     );
     assert.deepEqual(retired, { rootId: ROOT_ID, startupAttemptId: STARTUP_ATTEMPT_ID });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('collects schema-1 evidence from the per-root control leaf', async () => {
+  const fixture = createFixture({ controlLayout: 'nested' });
+  try {
+    const securityCalls = [];
+    const startupCalls = [];
+    const diagnostic = await collectRuntimeHostFailureDiagnostic('/installed', fixture.root, {
+      platform: 'win32',
+      architecture: 'x64',
+      environment: {},
+      loadInstalled: async (_packageRoot, relativePath) => {
+        if (relativePath.endsWith('/root-authority.js')) {
+          return {
+            STORAGE_ROOT_MARKER_FILE: '.maka-storage-root.json',
+            STORAGE_ROOT_MARKER_SCHEMA_VERSION: 1,
+            discoverMarkedStorageRoot: async () => ({ rootId: ROOT_ID }),
+            resolveRootControlNamespace: () => fixture.controlRoot,
+          };
+        }
+        if (relativePath.endsWith('/registration.js')) {
+          return {
+            RUNTIME_HOST_REGISTRATION_FILE: 'registration.json',
+            readHostRegistration: async (controlDirectory) => {
+              assert.equal(controlDirectory, fixture.controlDirectory);
+              return null;
+            },
+          };
+        }
+        if (relativePath.endsWith('/startup-diagnostic.js')) {
+          return {
+            RUNTIME_HOST_STARTUP_DIAGNOSTIC_FILE: 'startup-diagnostic.json',
+            readCandidateStartupDiagnostic: async (...args) => {
+              startupCalls.push(args);
+              return null;
+            },
+          };
+        }
+        throw new Error(`Unexpected installed module: ${relativePath}`);
+      },
+      readPathSecurityBatch: async (paths) => {
+        securityCalls.push(paths);
+        return paths.map(() => ({ state: 'present' }));
+      },
+    });
+
+    assert.equal(diagnostic.storageAuthority.state, 'valid');
+    assert.equal(diagnostic.storageAuthority.markerSchemaVersion, 1);
+    assert.deepEqual(securityCalls, [
+      [fixture.root, fixture.controlRoot, fixture.controlDirectory],
+    ]);
+    assert.deepEqual(startupCalls, [[ROOT_ID]]);
   } finally {
     fixture.cleanup();
   }
@@ -179,15 +241,16 @@ test('keeps read-only path evidence when root authority validation fails', async
   }
 });
 
-function createFixture({ createControlDirectory = true } = {}) {
+function createFixture({ createControlDirectory = true, controlLayout = 'flat' } = {}) {
   const base = mkdtempSync(join(tmpdir(), 'maka-runtime-host-diagnostic-test-'));
   const root = join(base, 'root');
   const controlRoot = join(base, 'control');
-  const controlDirectory = join(controlRoot, ROOT_ID);
+  // Schema 2 flattens the control directory into the namespace root itself;
+  // schema 1 kept a per-root leaf under it.
+  const controlDirectory = controlLayout === 'flat' ? controlRoot : join(controlRoot, ROOT_ID);
   const registrationPath = join(controlDirectory, 'registration.json');
   const startupPath = join(controlDirectory, 'startup-diagnostic.json');
   mkdirSync(root, { recursive: true });
-  mkdirSync(controlRoot, { recursive: true });
   writeFileSync(join(root, '.maka-storage-root.json'), '{}\n');
   if (createControlDirectory) {
     mkdirSync(controlDirectory, { recursive: true });

@@ -188,7 +188,7 @@ test('a Host-owned PTY survives Desktop disconnect and transfers control to TUI'
     await Promise.allSettled([desktop?.close(), tui?.close()]);
     await host?.close().catch(() => undefined);
     await owner?.close().catch(() => undefined);
-    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+    await rm(resolveRootControlNamespace(capability.canonicalPath), {
       recursive: true,
       force: true,
     });

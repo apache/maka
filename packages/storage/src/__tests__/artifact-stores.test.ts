@@ -35,14 +35,6 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootLease,
 } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
-
-// The control directory of each resolved root lives outside that root, so a
-// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
-after(removeTrackedControlDirectories);
 
 describe('interactive artifact store authority', () => {
   for (const unrelated of [0, 1_000, 12_000]) {
@@ -505,9 +497,7 @@ describe('interactive artifact store authority', () => {
 
   test('root close revokes new facade operations after draining an in-flight write', async () => {
     await withTemporaryRoot('interactive', async (root, track) => {
-      const capability = trackControlDirectory(
-        await resolveStorageRoot({ path: root, kind: 'interactive' }),
-      );
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       const writer = track(await openInteractiveArtifactStoreForWrite(owner.lease));
@@ -578,9 +568,7 @@ async function withInteractiveOwner(
   ) => Promise<void>,
 ): Promise<void> {
   await withTemporaryRoot('interactive', async (root, track) => {
-    const capability = trackControlDirectory(
-      await resolveStorageRoot({ path: root, kind: 'interactive' }),
-    );
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {

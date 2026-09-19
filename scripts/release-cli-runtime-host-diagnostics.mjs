@@ -113,14 +113,18 @@ export async function collectRuntimeHostFailureDiagnostic(packageRoot, rootPath,
   let capability;
   try {
     capability = await authority.discoverMarkedStorageRoot({ path: rootPath });
-    diagnostic.storageAuthority = { state: 'valid', rootId: capability.rootId };
+    diagnostic.storageAuthority = {
+      state: 'valid',
+      rootId: capability.rootId,
+      markerSchemaVersion: authority.STORAGE_ROOT_MARKER_SCHEMA_VERSION,
+    };
   } catch (error) {
     diagnostic.storageAuthority = { state: 'invalid', error: summarizeDiagnosticError(error) };
   }
 
   let controlRoot;
   try {
-    controlRoot = authority.resolveRootControlNamespace();
+    controlRoot = authority.resolveRootControlNamespace(capability?.canonicalPath ?? rootPath);
     addPathEvidence(diagnostic.paths, 'control_root', controlRoot);
   } catch (error) {
     diagnostic.controlNamespace = {
@@ -130,7 +134,13 @@ export async function collectRuntimeHostFailureDiagnostic(packageRoot, rootPath,
   }
   if (!capability || !controlRoot) return finish();
 
-  const controlDirectory = join(controlRoot, capability.rootId);
+  // This release harness also diagnoses historical installed artifacts: schema
+  // 1 kept a per-root leaf under the account-side namespace; schema 2 flattens
+  // the control directory inside the root itself.
+  const controlDirectory =
+    authority.STORAGE_ROOT_MARKER_SCHEMA_VERSION >= 2
+      ? controlRoot
+      : join(controlRoot, capability.rootId);
   addPathEvidence(diagnostic.paths, 'control_directory', controlDirectory);
 
   try {
@@ -155,7 +165,12 @@ export async function collectRuntimeHostFailureDiagnostic(packageRoot, rootPath,
       startupAuthority.RUNTIME_HOST_STARTUP_DIAGNOSTIC_FILE,
     );
     addPathEvidence(diagnostic.paths, 'startup_diagnostic', startupPath);
-    const startup = await startupAuthority.readCandidateStartupDiagnostic(capability.rootId);
+    // This release harness also diagnoses historical installed artifacts.
+    const startup = await startupAuthority.readCandidateStartupDiagnostic(
+      ...(authority.STORAGE_ROOT_MARKER_SCHEMA_VERSION >= 2
+        ? [capability.canonicalPath ?? rootPath, capability.rootId]
+        : [capability.rootId]),
+    );
     diagnostic.startup = startup ? { state: 'present', diagnostic: startup } : { state: 'absent' };
   } catch (error) {
     diagnostic.startup = { state: 'unavailable', error: summarizeDiagnosticError(error) };
@@ -182,7 +197,11 @@ export async function retireCollectedRuntimeHostStartupDiagnostic(
   if (typeof rootId !== 'string' || typeof startupAttemptId !== 'string') return false;
   const loadInstalled = options.loadInstalled ?? importInstalled;
   const startupAuthority = await loadInstalled(packageRoot, STARTUP_DIAGNOSTIC_MODULE);
-  return startupAuthority.clearSelectedCandidateStartupDiagnostic(rootId, startupAttemptId);
+  return startupAuthority.clearSelectedCandidateStartupDiagnostic(
+    ...(diagnostic.storageAuthority.markerSchemaVersion >= 2
+      ? [diagnostic.paths.find(({ role }) => role === 'root').path, rootId, startupAttemptId]
+      : [rootId, startupAttemptId]),
+  );
 }
 
 function addPathEvidence(paths, role, path) {

@@ -37,12 +37,6 @@ import {
   runWithStorageRootLease,
   tryAcquireInteractiveRootOwner,
 } from '../root-authority.js';
-import {
-  removeTrackedControlDirectories,
-  trackControlDirectory,
-} from './fixtures/control-directory-hygiene.js';
-
-after(removeTrackedControlDirectories);
 
 const NOW = 1_000_000;
 const EXECUTION = {
@@ -618,9 +612,7 @@ interface Fixture {
 
 async function withStore(t: TestContext, run: (fixture: Fixture) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-scheduled-task-rows-'));
-  const capability = trackControlDirectory(
-    await resolveStorageRoot({ path: root, kind: 'interactive' }),
-  );
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   let owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   let lease: OperationalStateDatabaseLease = await runWithStorageRootLease(
