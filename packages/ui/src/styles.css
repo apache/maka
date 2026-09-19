@@ -208,14 +208,18 @@
 /* The quote's ordinal sits on the panel's corner like a margin marker, the
    same way the staged list numbers it. */
 .maka-quote-comment-index { position: absolute; top: -8px; right: -8px; }
-/* The ordinal pinned at the excerpt's end is a marker only; it must never
-   catch a click or steal the selection under it. */
-.maka-quote-ordinal { pointer-events: none; }
+/* Ordinals are pinned at their excerpt's end inside a viewport-fixed overlay
+   so they ride above the transcript; the whole overlay is display-only and
+   must never catch a click or steal the selection under it. */
+.maka-quote-marks { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+.maka-quote-ordinal { position: absolute; transform: translate(-30%, -50%); pointer-events: none; }
 
 /* While a note is written the input owns the DOM selection; the excerpt's
-   mark is painted through this named highlight instead, which focus cannot
-   collapse. */
-::highlight(maka-quote-annotate) { background-color: var(--selection); }
+   mark is painted through named highlights instead, which focus cannot
+   collapse — annotate for the excerpt being written, staged for the quotes
+   already resting on their excerpts. */
+::highlight(maka-quote-annotate),
+::highlight(maka-quote-staged) { background-color: var(--selection); }
 
 .maka-session-todo-empty {
   margin: 0;

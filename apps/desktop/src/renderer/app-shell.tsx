@@ -2608,7 +2608,7 @@ function AppShellContent({
                   <ChatMessageSurface
                 handleRef={chatViewRef}
                 onQuoteAnnotationSubmit={updateQuoteComment}
-                pendingQuoteCount={pendingQuotes.length}
+                pendingQuotes={pendingQuotes}
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
