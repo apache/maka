@@ -47,6 +47,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
 import { parseHTML } from 'linkedom';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
@@ -200,6 +201,17 @@ function harness() {
         );
       });
     },
+    async renderSync(props: Parameters<typeof Composer>[0]) {
+      await act(() => {
+        flushSync(() => {
+          root.render(
+            <LocaleProvider locale="en">
+              <Composer {...props} />
+            </LocaleProvider>,
+          );
+        });
+      });
+    },
   };
 }
 
@@ -272,4 +284,14 @@ test('a session swap leaves focus on the row that caused it', async () => {
     dom.outside(),
     'the restored caret took focus out from under the row the user activated',
   );
+});
+
+test('a session swap paints the incoming draft before passive effects run', async () => {
+  const dom = harness();
+  await dom.render({ ...withDraft('session-a', 'first draft'), draftKey: 'session-a' });
+  await dom.focus(dom.outside());
+
+  await dom.renderSync({ ...withDraft('session-b', 'second draft'), draftKey: 'session-b' });
+  assert.equal(dom.editable().textContent, 'second draft');
+  assert.equal(dom.focused(), dom.outside(), 'restoring the incoming draft must not steal focus');
 });

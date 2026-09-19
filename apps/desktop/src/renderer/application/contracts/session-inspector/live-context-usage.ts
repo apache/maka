@@ -135,6 +135,7 @@ export function createLiveContextUsageTracker(input: {
   schedule: (callback: () => void, delayMs: number) => unknown;
   cancel: (handle: unknown) => void;
   onChange: (usage: LiveContextUsage | undefined) => void;
+  onReadFailure?: () => void;
 }): LiveContextUsageTracker {
   let target: LiveContextUsageTarget | undefined;
   let revision = 0;
@@ -155,6 +156,8 @@ export function createLiveContextUsageTracker(input: {
         input.onChange(liveContextUsageFromDiagnostics(diagnostics, current.route));
       },
       () => {
+        if (readRevision !== revision) return;
+        input.onReadFailure?.();
         // A failed read leaves the last value standing: it is still the newest
         // answer anyone has, and blanking it would report "no usage" for a
         // read that simply failed.

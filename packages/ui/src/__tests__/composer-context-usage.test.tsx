@@ -78,6 +78,68 @@ test('the context usage action opens its host trace surface', async () => {
   }
 });
 
+test('the context usage action keeps one control while its reading resolves', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({
+    direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          contextUsage={{ pending: true, onOpen: () => undefined }}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    const pendingAction = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open usage trace"]',
+    );
+    assert.ok(pendingAction);
+    assert.equal(pendingAction.getAttribute('aria-busy'), 'true');
+    assert.equal(pendingAction.textContent?.trim(), '--%');
+    assert.ok(pendingAction.querySelector('.maka-context-usage-value'));
+
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          contextUsage={{
+            usageTokens: 40_000,
+            metadataContextWindow: 100_000,
+            onOpen: () => undefined,
+          }}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    const resolvedAction = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open usage trace"]',
+    );
+    assert.equal(resolvedAction, pendingAction);
+    assert.equal(resolvedAction?.getAttribute('aria-busy'), null);
+    assert.equal(resolvedAction?.textContent?.trim(), '40%');
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
 test('the context usage share resolves declared, then metered, then metadata window', async () => {
   const original = {
     document: globalThis.document,

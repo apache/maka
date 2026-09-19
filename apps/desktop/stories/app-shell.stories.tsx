@@ -3443,7 +3443,13 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
   { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
 );
 
-function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number; withConversation?: boolean } = {}) {
+function WorkbarInShell(props: {
+  longTitle?: boolean;
+  onShare?: () => void;
+  workbarWidth?: number;
+  withConversation?: boolean;
+  composer?: Partial<ComposerProps>;
+} = {}) {
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const resizable = useResizable({
     defaultSize: props.workbarWidth ?? layout.rightWidth,
@@ -3465,7 +3471,13 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; work
           detailChildren={
             <div className="maka-detail-with-artifacts">
               <div className="mainColumn">
-                {props.withConversation && <ChatSurfaceLayout composer={<Composer {...baseComposerProps} activeSession={activeSession} />}>
+                {props.withConversation && <ChatSurfaceLayout composer={(
+                  <Composer
+                    {...baseComposerProps}
+                    activeSession={activeSession}
+                    {...props.composer}
+                  />
+                )}>
                   <ChatView {...baseChatProps} messages={promptRailMessages} />
                 </ChatSurfaceLayout>}
               </div>
@@ -3622,66 +3634,54 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
   },
 };
 
-
-const narrowWorkbarShare = fn();
-
-export const NarrowWorkbarClearsTitlebarReserve: Story = {
+// Real path: a session with the right workbar open while the conversation
+// column is narrow enough for long model and Git branch labels to exercise the
+// composer's footer shrink contract.
+export const NarrowComposerFooter: Story = {
+  parameters: {
+    viewport: {
+      options: {
+        composerNarrow: {
+          name: 'Maka desktop with a narrow conversation column',
+          styles: { width: '1200px', height: '800px' },
+          type: 'desktop' as const,
+        },
+      },
+    },
+  },
+  globals: { viewport: { value: 'composerNarrow', isRotated: false } },
   render: () => (
     <WorkbarInShell
-      longTitle
-      onShare={narrowWorkbarShare}
+      withConversation
       workbarWidth={600}
+      composer={{
+        activeModelLabel: 'provider/very-long-model-name-that-must-stay-inside-the-card',
+        gitBranch: {
+          name: 'feature/very-long-branch-name-that-must-stay-inside-the-card',
+        },
+      }}
     />
   ),
   play: async ({ canvasElement }) => {
-    narrowWorkbarShare.mockClear();
-    const canvas = within(canvasElement);
-    const titlebar = canvasElement.querySelector<HTMLElement>('.maka-window-titlebar');
-    const identity = canvasElement.querySelector<HTMLElement>(
-      '[data-maka-contract="titlebar-identity"]',
-    );
-    const detail = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts');
-    const workbar = canvasElement.querySelector<HTMLElement>(
-      '.maka-session-workbar[data-placement="right"]:not([data-collapsed])',
-    );
-    if (!titlebar || !identity || !detail || !workbar) {
-      throw new Error('the titlebar, identity, detail area, or right workbar is missing');
-    }
+    const mainColumn = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts > .mainColumn');
+    const card = mainColumn?.querySelector<HTMLElement>('.maka-composer-astryx');
+    if (!mainColumn || !card) throw new Error('the narrow conversation composer is missing');
 
-    // A bottom Workbar must not take width from the title. Share can remain
-    // clickable even when a stale right-side reserve squeezes the title away.
-    await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
-    const restore = await canvas.findByRole('button', { name: '展开任务工作栏' });
-    await waitFor(() => expect(workbar).not.toBeVisible());
-    const collapsedIdentityWidth = identity.getBoundingClientRect().width;
-    expect(collapsedIdentityWidth).toBeGreaterThan(0);
+    const leftControls = card.querySelector<HTMLElement>('.maka-composer-left-controls');
+    if (!leftControls) throw new Error('composer footer controls are missing');
+    expect(getComputedStyle(leftControls).flexWrap).toBe('nowrap');
 
-    await userEvent.click(restore);
+    const send = within(card).getByRole('button', { name: '发送' });
+    const branch = card.querySelector<HTMLElement>('.maka-composer-git-branch');
+    if (!branch) throw new Error('composer branch readout is missing');
     await waitFor(() => {
-      expect(workbar).toBeVisible();
-      // The edge control never takes space from the titlebar.
-      expect(identity.getBoundingClientRect().width).toBeGreaterThanOrEqual(
-        collapsedIdentityWidth - 1,
-      );
+      const cardBox = card.getBoundingClientRect();
+      const sendBox = send.getBoundingClientRect();
+      const branchBox = branch.getBoundingClientRect();
+      expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(sendBox.right).toBeLessThanOrEqual(cardBox.right + 1);
+      expect(branchBox.right).toBeLessThanOrEqual(cardBox.right + 1);
     });
-
-    const share = identity.querySelector<HTMLButtonElement>('[aria-label$="任务操作"]')!;
-    await waitFor(() =>
-      expect(share.getBoundingClientRect().left).toBeGreaterThanOrEqual(
-        titlebar.getBoundingClientRect().left,
-      ),
-    );
-    expect(workbar.getBoundingClientRect().width).toBeCloseTo(
-      detail.getBoundingClientRect().width,
-      0,
-    );
-    expect(share.getBoundingClientRect().right).toBeLessThanOrEqual(
-      titlebar.getBoundingClientRect().right,
-    );
-
-    await userEvent.click(share);
-    await userEvent.click(await within(canvasElement.ownerDocument.body).findByRole('menuitem', { name: '分享任务' }));
-    expect(narrowWorkbarShare).toHaveBeenCalledOnce();
   },
 };
 

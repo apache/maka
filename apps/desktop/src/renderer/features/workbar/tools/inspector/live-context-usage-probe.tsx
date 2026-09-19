@@ -20,7 +20,7 @@
 import { useWorkbarServices } from '../../services-context.js';
 import type { ReactElement, ReactNode } from 'react';
 import type { LiveContextUsage } from '../../../../application/contracts/session-inspector/live-context-usage.js';
-import { useLiveContextUsage } from '../../../../application/contracts/session-inspector/use-live-context-usage.js';
+import { useLiveContextUsageState } from '../../../../application/contracts/session-inspector/use-live-context-usage.js';
 import {
   useComposerGitBranch,
   type ComposerGitBranch,
@@ -34,9 +34,9 @@ export type { ComposerGitBranch } from '../composer-git-branch.js';
  * The live reading needs a subscription and state, and both live here — in
  * the feature that owns the inspector's context snapshot — so the shell only
  * renders the reading, the same division of labour as the goal projection's
- * render-prop consumer around the same composer. `undefined` means the
- * snapshot cannot vouch for the composer's active route; the caller falls
- * back to the per-turn anchor.
+ * render-prop consumer around the same composer. The pending bit lets the
+ * caller distinguish a new target's first read from a settled refusal;
+ * `undefined` usage still makes the caller try the per-turn anchor.
  */
 export function LiveContextUsageProbe(props: {
   readonly sessionId: string | undefined;
@@ -45,10 +45,11 @@ export function LiveContextUsageProbe(props: {
   readonly children: (
     usage: LiveContextUsage | undefined,
     gitBranch: ComposerGitBranch | undefined,
+    usagePending: boolean,
   ) => ReactNode;
 }): ReactElement {
   const { inspector } = useWorkbarServices();
-  const usage = useLiveContextUsage({
+  const usageState = useLiveContextUsageState({
     inspector,
     sessionId: props.sessionId,
     model: props.model,
@@ -62,5 +63,9 @@ export function LiveContextUsageProbe(props: {
   // `useComposerGitBranch` is standalone and tested on its own; only the carrier
   // is shared.
   const gitBranch = useComposerGitBranch(props.sessionId);
-  return <>{props.children(usage, gitBranch)}</>;
+  return <>{props.children(
+    usageState.status === 'available' ? usageState.usage : undefined,
+    gitBranch,
+    usageState.status === 'pending',
+  )}</>;
 }

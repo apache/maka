@@ -149,12 +149,9 @@ export function ChatModelSwitcher(props: {
   hasConversationHistory?: boolean;
   availability?: ComposerModelSwitchAvailability;
   disabledReason?: string;
-  /**
-   * Selector has no controlled open prop, so recovery bumps this instead: the
+  /** Selector has no controlled open prop, so recovery bumps this instead: the
    * remount keyed on it opens the panel via `isDefaultOpen`, an entirely
-   * documented surface. Session changes share the key so a switch always lands
-   * closed.
-   */
+   * documented surface. */
   openNonce?: number;
   /** Force any open surface closed while an interaction prompt occludes the composer. */
   isReadOnly?: boolean;
@@ -275,7 +272,12 @@ export function ChatModelSwitcher(props: {
 
   return (
     <Selector
-      key={`${props.activeSession.id}:${props.openNonce ?? 0}`}
+      // The nonce is an imperative popup-open request. Keeping the session out
+      // of this key preserves the trigger and its layout across session
+      // changes. A sidebar selection is already a light-dismiss interaction
+      // for an open popover, so the display control needs no intermediate
+      // session-change state of its own.
+      key={props.openNonce ?? 0}
       label={`${copy.switchAriaLabel}: ${displayLabel}`}
       isLabelHidden
       options={options}

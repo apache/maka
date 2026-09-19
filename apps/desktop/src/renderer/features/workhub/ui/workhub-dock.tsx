@@ -65,7 +65,7 @@ export function WorkHubDock({ enabled, visible = true, workbarCollapsed }: { ena
       const host = {
         visible: enabled && visible && rect.width > 0 && rect.height > 0,
         occluded,
-        workbar: { collapsed: collapsed.current, placement: window.matchMedia('(max-width: 990px)').matches ? 'bottom' as const : 'right' as const },
+        workbar: { collapsed: collapsed.current, placement: 'right' as const },
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
       const key = JSON.stringify(host);

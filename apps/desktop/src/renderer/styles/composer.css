@@ -264,6 +264,7 @@
 .maka-composer-left-controls {
   display: flex;
   align-items: center;
+  min-width: 0;
   /* PR-REFERENCE-PIXEL-8 (WAWQAQ msg `f79de85f` round 8): reference implementation's
      bundle uses gap values centered on 4-8px (extracted from
      `globals-UfMzAdiO.css` — 4px is the most common gap, 12px never
@@ -272,19 +273,22 @@
      individual controls separable while pulling them into one
      coherent toolbar group. */
   gap: var(--space-1-5);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
-/* Shrinkable so the `flex-wrap: wrap` above can actually engage. At
-   `flex: 0 0 auto` this box sizes to max-content, which means it never has a
-   width to wrap inside — it just overflows, and the overflow runs under the
-   send button and past the card's right edge. That stayed invisible while the
-   row held four controls; the project picker adds to it and a 480px window has
-   nowhere to put the overflow. `min-width: 0` because the default
-   `auto` floor would keep the same overflow for a long model name. */
+/* The footer stays one control row. Text-bearing controls below absorb the
+   shrink while icon actions and the send slot retain their fixed geometry. */
 .maka-composer-left-controls {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* Release Astryx's footer-left wrapper's intrinsic minimum. Its own default
+   flex sizing keeps the footer compact; assigning flex-grow here would also
+   change the slot's size instead of only allowing horizontal shrink. */
+.maka-composer-astryx div:has(> .maka-composer-left-controls) {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */
@@ -292,6 +296,15 @@
 .maka-composer-left-controls .maka-composer-plus-menu {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
+}
+
+/* Boundary reads briefly disable the permission action on every session
+   switch. Keep the quiet toolbar icon visually stable while Astryx continues
+   to enforce aria-disabled, block activation, and expose the reason tooltip. */
+.maka-composer-left-controls .permissionModeIcon [aria-disabled='true'],
+.maka-composer-left-controls .permissionModeIcon button:disabled {
+  opacity: 1;
 }
 
 /* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
@@ -356,7 +369,13 @@
   background: transparent;
   color: var(--muted-foreground);
   white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: calc(var(--icon-meta) + var(--space-1));
   max-width: min(360px, 40vw);
+}
+
+.maka-composer-git-branch > svg {
+  flex: 0 0 auto;
 }
 
 .maka-composer-git-branch-text {
@@ -420,13 +439,15 @@
 }
 /* Model + thinking pair lives in left-controls (after permission), not send. */
 .maka-composer-left-controls .maka-model-selection-controls {
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: min(420px, 52vw);
+  max-width: 100%;
 }
 .maka-composer-left-controls .maka-model-switcher-trigger,
 .maka-composer-left-controls .maka-new-chat-model-selector {
+  flex: 0 1 auto;
   min-width: 100px;
-  max-width: min(220px, 28vw);
+  max-width: 220px;
 }
 .maka-composer-model-chip-text {
   min-width: 0;
