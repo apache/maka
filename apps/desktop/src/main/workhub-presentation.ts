@@ -23,7 +23,8 @@ import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
 import { isExternalUrl } from './external-link-guard.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
-import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
+import { focusWindow, type WindowRevealMode } from './window-reveal.js';
+import { auxiliaryWindowRegistry } from './auxiliary-window-registry.js';
 
 const COMMAND = 'workhub-presentation:command';
 const SHORTCUT = 'CommandOrControl+Shift+K';
@@ -130,7 +131,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed()) return;
     // A cold summon stays hidden until the renderer has mounted its composer.
     // Reuse focusPending so hide/disable can cancel it before ready arrives.
-    if (placement === 'floating' && progressRequest === undefined) focusWindow(parent, deps.revealMode);
+    if (placement === 'floating' && progressRequest === undefined) {
+      auxiliaryWindowRegistry.focus(parent, deps.revealMode);
+    }
     if (!parent.isVisible()) return;
     if (placement === 'docked' && (!host.visible || host.occluded)) return;
     view.webContents.focus();
@@ -325,8 +328,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(520, area.width);
     const height = Math.min(conversationExpanded ? expandedHeight : compactHeight, area.height);
-    floating = new BrowserWindow({
-      title: 'WorkHub', show: false, width, height,
+    floating = auxiliaryWindowRegistry.create('workhub', {
+      title: 'WorkHub', width, height,
       type: process.platform === 'darwin' ? 'panel' : undefined,
       x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96),
       minWidth: floatingMinWidth(width), minHeight: Math.min(80, height),
@@ -461,7 +464,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
     }, true);
     // Expansion may beat progress-ready and unmount its paint callback.
-    showWindowInactive(floating, deps.revealMode);
+    auxiliaryWindowRegistry.show('workhub', floating, deps.revealMode);
     // A send acknowledgement can arrive after the user has switched
     // apps. Growing the conversation must not steal focus back.
     if (floating.isFocused()) focusComposer();
@@ -652,7 +655,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (isMain) throw new Error('Only the WorkHub view can present its progress');
             if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
             if (payload === progressRequest && payload === presentationRevision && deps.isEnabled()) {
-              showWindowInactive(floating ?? null, deps.revealMode);
+              auxiliaryWindowRegistry.show('workhub', floating, deps.revealMode);
               view?.webContents.setBackgroundThrottling(true);
               changed();
             }
@@ -803,7 +806,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (ipcRegistered) ipcMain.removeHandler(COMMAND);
     for (const cleanup of mainListeners.values()) cleanup();
     disposeView();
-    if (floating && !floating.isDestroyed()) floating.destroy();
+    auxiliaryWindowRegistry.destroy(floating);
     floating = undefined;
   }
 
