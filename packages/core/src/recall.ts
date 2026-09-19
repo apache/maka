@@ -134,12 +134,23 @@ const JSON_ESCAPED_PRINTABLE_PATTERN = /["\\]/u;
 const FIRST_UNESCAPED_CODE_POINT = 0x20;
 
 /**
+ * A surrogate without its partner. `JSON.stringify` writes one as a `\u`
+ * escape, and a store binding the term as UTF-8 cannot represent it at all, so
+ * not even a stored pair it is half of is offered. Under the `u` flag a
+ * well-formed pair is one code point, so an emoji does not match.
+ */
+const UNPAIRED_SURROGATE_PATTERN = /\p{Cs}/u;
+
+/**
  * A term containing a character that `JSON.stringify` escapes is stored in a
  * different literal form than it was typed, so a candidate source scanning
- * serialized records would under-select it. Such terms force a full scan.
+ * serialized records would under-select it. A lone surrogate also cannot be
+ * bound as UTF-8, so such a scan misses it even where it is stored literally,
+ * as half of a pair. Such terms force a full scan.
  */
 function hasJsonEscapedCharacter(term: string): boolean {
   if (JSON_ESCAPED_PRINTABLE_PATTERN.test(term)) return true;
+  if (UNPAIRED_SURROGATE_PATTERN.test(term)) return true;
   for (const character of term) {
     if ((character.codePointAt(0) ?? 0) < FIRST_UNESCAPED_CODE_POINT) return true;
   }
