@@ -198,7 +198,7 @@ export interface ConversationCopy {
     model: string;
     switchAriaLabel: string;
     switchWarning: string;
-    /** Secondary line on the warning row: activating the row dismisses it for the Session. */
+    /** Secondary line on the cache warning row: activating the row dismisses it. */
     switchWarningDismiss: string;
     newChatAriaLabel: (label: string) => string;
     newChatTitle: (label: string) => string;

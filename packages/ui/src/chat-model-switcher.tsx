@@ -61,8 +61,8 @@ import type { ComposerModelSwitchAvailability } from './composer-helpers.js';
 const DEFAULT_THINKING_LEVEL = '__default__';
 /**
  * Sentinel option value for the switch-warning row. Selecting it acknowledges
- * the notice for the Session instead of switching anything; it never reaches
- * the pending selection or `onChange`.
+ * the notice for the Session while the switcher remains mounted; it never
+ * reaches the pending selection or `onChange`.
  */
 const SWITCH_WARNING_VALUE = '__maka_model_switch_warning__';
 
@@ -156,8 +156,9 @@ export function ChatModelSwitcher(props: {
   /**
    * Selector has no controlled open prop, so recovery bumps this instead: the
    * remount keyed on it opens the panel via `isDefaultOpen`, an entirely
-   * documented surface. Session changes share the key so a switch always lands
-   * closed.
+   * documented surface. The key combines the Session id, this recovery nonce,
+   * and the notice acknowledgement nonce. The Composer resets recovery on
+   * Session changes so the new Session lands closed.
    */
   openNonce?: number;
   /** Force any open surface closed while an interaction prompt occludes the composer. */
@@ -201,9 +202,9 @@ export function ChatModelSwitcher(props: {
   );
   // Switching can abandon a provider prompt cache — a property of the pending
   // action, so the notice leads the list whenever the panel opens, until the
-  // user acknowledges it. Acknowledgement is per Session and lives here for
-  // the life of the switcher (the Composer outlives session switches), so
-  // returning to a Session does not re-raise a notice already dismissed.
+  // user acknowledges it. Acknowledgements survive direct Session switches
+  // while this switcher remains mounted. Home / new-task replaces it with
+  // NewChatModelPicker, so returning from there starts with fresh notices.
   const [acknowledgedSessions, setAcknowledgedSessions] = useState<ReadonlySet<string>>(
     () => new Set(),
   );

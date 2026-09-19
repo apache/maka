@@ -117,7 +117,7 @@ test('the prompt-cache notice is acknowledged per Session without closing the li
     assert.deepEqual(switches, [], 'acknowledging is not a model switch');
 
     await render('session-a', 2);
-    assert.equal(noticeRow(), undefined, 'a later remount in the same Session stays acknowledged');
+    assert.equal(noticeRow(), undefined, 'a Selector remount keeps the mounted switcher acknowledgement');
 
     await render('session-b', 0);
     assert.equal(expanded(), 'false', 'a fresh Session mounts closed');
@@ -125,7 +125,7 @@ test('the prompt-cache notice is acknowledged per Session without closing the li
     assert.ok(noticeRow(), 'another Session raises its own notice');
 
     await render('session-a', 3);
-    assert.equal(noticeRow(), undefined, 'returning to an acknowledged Session does not re-raise it');
+    assert.equal(noticeRow(), undefined, 'direct Session switches preserve the mounted switcher acknowledgement');
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);
