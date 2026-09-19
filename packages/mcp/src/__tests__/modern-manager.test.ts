@@ -148,6 +148,33 @@ describe('McpClientManager modern Streamable HTTP E2E', () => {
     assert.notEqual(fixture.toolCallProgressTokens[0], undefined);
   });
 
+  test('forwards numeric tools/call progress from emitProgress', async () => {
+    const fixture = await createModernRemoteFixture();
+    const manager = createManager();
+    await manager.sync(modernConfig(fixture.url, 'auto'));
+    const seen: Array<[number, number]> = [];
+
+    const result = await manager.callTool(
+      bindingFor(manager, 'echo'),
+      { value: 'go' },
+      {
+        emitProgress: (current, total) => seen.push([current, total]),
+      },
+    );
+
+    assert.deepEqual(seen, [
+      [1, 3],
+      [3, 3],
+    ]);
+    assert.deepEqual(result, {
+      content: [{ type: 'text', text: 'go' }],
+      structuredContent: undefined,
+    });
+    assert.equal(fixture.toolCalls.get('echo'), 1);
+    assert.equal(fixture.toolCallProgressTokens.length, 1);
+    assert.notEqual(fixture.toolCallProgressTokens[0], undefined);
+  });
+
   test('a throwing onProgress listener does not fail the tool call', async () => {
     const fixture = await createModernRemoteFixture();
     const manager = createManager();

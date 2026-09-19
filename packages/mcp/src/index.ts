@@ -806,6 +806,8 @@ export class McpClientManager {
       signal?: AbortSignal;
       timeoutMs?: number;
       onProgress?: (current: number, total: number) => void;
+      /** McpToolProvider name; Desktop in-process tools pass this instead of onProgress. */
+      emitProgress?: (current: number, total: number) => void;
       requestInteraction?: (
         form: InteractionFormInput,
         options?: { cancellationSignal?: AbortSignal },
@@ -903,6 +905,7 @@ export class McpClientManager {
       )
         throw new McpToolCallError(serverId, toolName, 'tool binding is stale');
     };
+    const progressListener = options.onProgress ?? options.emitProgress;
     let forwardedProgressTotal: number | undefined;
     let forwardedProgressCurrent = -1;
     const forwardProgress = (progress: unknown): void => {
@@ -917,7 +920,7 @@ export class McpClientManager {
       forwardedProgressTotal ??= mapped.total;
       forwardedProgressCurrent = mapped.current;
       try {
-        options.onProgress?.(mapped.current, mapped.total);
+        progressListener?.(mapped.current, mapped.total);
       } catch {
         // Progress is advisory: a listener failure must not fail the tool.
       }
@@ -945,7 +948,7 @@ export class McpClientManager {
             signal,
             timeout: options.timeoutMs ?? this.timeouts.callToolMs,
             toolDefinition: structuredClone(preparation.value.definitionForSdk),
-            ...(options.onProgress ? { onprogress: forwardProgress } : {}),
+            ...(progressListener ? { onprogress: forwardProgress } : {}),
             ...(requestInteraction ? { allowInputRequired: true } : {}),
           },
         );
