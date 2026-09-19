@@ -19,20 +19,16 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Banner, HStack, Text, VStack } from '@astryxdesign/core';
-import {
-  TRAE_ACCOUNTS,
-  type LlmConnection,
-  type ProviderType,
-  type TraeAccount,
-} from '@maka/core/llm-connections';
+import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import {
   Badge,
-  Selector,
   Button,
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
 import {
+  TraeAccountSetup,
+  type TraeAccountSelection,
   getProviderSettingsCopy,
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
@@ -144,6 +140,20 @@ function OAuthLoginPanelForCurrentGeneration(props: {
       />
     );
   }
+  if (props.cardId === 'trae') {
+    return (
+      <TraeAccountSetup>
+        {(traeAccount) => (
+          <SubscriptionLoginPanel
+            bridge={props.bridge}
+            service="trae"
+            traeAccount={traeAccount}
+            onLoginSuccess={props.onLoginSuccess}
+          />
+        )}
+      </TraeAccountSetup>
+    );
+  }
   return (
     <SubscriptionLoginPanel
       bridge={props.bridge}
@@ -177,20 +187,17 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
 
 function SubscriptionLoginPanel(props: {
   bridge: ConnectionsBridge;
-  service: 'codex' | 'xai' | 'trae';
   onLoginSuccess(connection: OAuthConnectionIdentity): void | Promise<void>;
-}) {
+} & (
+  | { service: 'codex' | 'xai'; traeAccount?: never }
+  | { service: 'trae'; traeAccount: TraeAccountSelection }
+)) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
   const isXai = props.service === 'xai';
   const isTrae = props.service === 'trae';
-  // Trae accounts are region- and product-scoped; the variant rides on the
-  // create target so the Host allocates the Connection with it.
-  const [traeAccount, setTraeAccount] = useState<TraeAccount>('cn');
-  const traeAccountRef = useRef(traeAccount);
-  traeAccountRef.current = traeAccount;
   const display: SubscriptionDisplay = isTrae
-    ? { name: 'Trae', shortName: `Trae ${traeAccountLabel(traeAccount, copy)}`, detail: copy.traeDetail }
+    ? { name: 'Trae', shortName: props.traeAccount.shortName, detail: copy.traeDetail }
     : isXai
       ? { name: 'xAI Grok', shortName: 'SuperGrok / X Premium', detail: copy.xaiDetail }
       : { name: 'OpenAI Codex', shortName: 'Codex', detail: copy.codexDetail };
@@ -203,22 +210,14 @@ function SubscriptionLoginPanel(props: {
     mode: 'create',
     authorizationBridge: authorizationBridge(
       oauthProviderBridge(props.bridge, isTrae ? 'traeOAuth' : isXai ? 'xaiOAuth' : 'openAiCodex'),
-      isTrae ? () => ({ kind: 'create', traeAccount: traeAccountRef.current }) : { kind: 'create' },
+      isTrae ? props.traeAccount.loginTarget : { kind: 'create' },
     ),
     display: { name: display.name, shortName: display.shortName },
     onLoginSuccess: props.onLoginSuccess,
   });
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
-      {isTrae && (
-        <Selector
-          label={copy.traeAccountField}
-          value={traeAccount}
-          options={TRAE_ACCOUNTS.map((value) => ({ value, label: traeAccountLabel(value, copy) }))}
-          onChange={(value) => setTraeAccount(value as TraeAccount)}
-          isDisabled={flow.actionBusy}
-        />
-      )}
+      {props.traeAccount?.renderSelector(flow.actionBusy)}
       <Text type="body">{display.detail}</Text>
       {flow.authRequestId && (
         <Text type="supporting" color="secondary" role="status" aria-live="polite">
@@ -242,14 +241,6 @@ function SubscriptionLoginPanel(props: {
       </HStack>
     </VStack>
   );
-}
-
-function traeAccountLabel(
-  value: TraeAccount,
-  copy: { readonly traeEmployeeAccount: string },
-): string {
-  if (value === 'employee') return copy.traeEmployeeAccount;
-  return `${value.slice(0, 2).toUpperCase()} · ${value.endsWith('-solo') ? 'SOLO' : 'IDE'}`;
 }
 
 function GitHubCopilotLoginPanel(props: {

@@ -2919,7 +2919,6 @@
           "../assets/provider-brands/stepfun.svg": 1,
           "../assets/provider-brands/tencentcloud.svg": 1,
           "../assets/provider-brands/together.svg": 1,
-          "../assets/provider-brands/trae-color.svg": 1,
           "../assets/provider-brands/vercel.svg": 1,
           "../assets/provider-brands/volcengine.svg": 1,
           "../assets/provider-brands/xai.svg": 1,
@@ -3038,9 +3037,8 @@
         "hookCalls": {
           "useMountedRef": 1,
           "useOAuthLoginFlow": 2,
-          "useRef": 1,
           "useRuntimeHostSettingsGenerationKey": 1,
-          "useState": 2,
+          "useState": 1,
           "useUiLocale": 3
         },
         "lifecycleMethods": {},
@@ -3051,7 +3049,6 @@
           "./runtime-host-settings-target.js": 1,
           "./use-oauth-login-flow": 1,
           "@astryxdesign/core": 1,
-          "@maka/core/llm-connections": 1,
           "@maka/ui": 1,
           "react": 1
         }
