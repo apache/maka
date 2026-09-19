@@ -20,7 +20,11 @@
 import { useId, useRef, useState } from 'react';
 import type { FormRequestEvent } from '@maka/core/events';
 import type { InteractionFormField, InteractionFormResponse } from '@maka/core/interaction';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { Button, CheckboxInput, RadioList, RadioListItem, Text, TextInput } from '@astryxdesign/core';
+import { Selector } from '@astryxdesign/core/Selector';
+import type { ChatModelChoice } from './chat-model-helpers.js';
+import { exactModelChoiceValue, modelMenuGroups } from './chat-model-helpers.js';
 import { getConversationCopy } from './conversation-copy.js';
 import {
   buildInteractionFormResponse,
@@ -30,10 +34,16 @@ import {
 } from './form-interaction-prompt-state.js';
 import { useUiLocale } from './locale-context.js';
 import { ChoicePanel } from './choice-panel.js';
+import {
+  buildModelPickerOptions,
+  renderModelPickerOption,
+  renderModelPickerValue,
+} from './model-picker-internals.js';
 import { useMountedRef } from './use-mounted-ref.js';
 
 export function FormInteractionPrompt(props: {
   request: FormRequestEvent;
+  modelChoices?: readonly ChatModelChoice[];
   onStop?(): void | Promise<void>;
   stopPending?: boolean;
   onRespond(response: InteractionFormResponse): void | Promise<void>;
@@ -43,11 +53,13 @@ export function FormInteractionPrompt(props: {
 
 function ActiveFormInteractionPrompt(props: {
   request: FormRequestEvent;
+  modelChoices?: readonly ChatModelChoice[];
   onStop?(): void | Promise<void>;
   stopPending?: boolean;
   onRespond(response: InteractionFormResponse): void | Promise<void>;
 }) {
-  const conversationCopy = getConversationCopy(useUiLocale());
+  const locale = useUiLocale();
+  const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.forms;
   const titleId = useId();
   const [drafts, setDrafts] = useState<InteractionFormFieldDraft[]>(
@@ -87,7 +99,10 @@ function ActiveFormInteractionPrompt(props: {
     void respond(response);
   }
 
-  const singleChoice = props.request.fields.length === 1 && props.request.fields[0]?.kind === 'single_select' && props.request.fields[0].required;
+  const onlyRequiredChoice = props.request.fields.length === 1 &&
+    props.request.fields[0]?.required === true &&
+    (props.request.fields[0].kind === 'single_select' ||
+      (props.request.fields[0].kind === 'string' && props.request.fields[0].presentation === 'model_picker'));
   const requester = props.request.requester.source
     ? copy.requesterWithSource(props.request.requester.name, props.request.requester.source)
     : copy.requester(props.request.requester.name);
@@ -120,7 +135,7 @@ function ActiveFormInteractionPrompt(props: {
                 aria-label={field.label}
                 aria-describedby={constraintId}
               >
-                {!singleChoice && <div className="maka-form-interaction-field-heading">
+                {!onlyRequiredChoice && <div className="maka-form-interaction-field-heading">
                   <span>{field.label}</span>
                   <span>{field.required ? copy.required : copy.optional}</span>
                 </div>}
@@ -138,7 +153,22 @@ function ActiveFormInteractionPrompt(props: {
                     onChange={(included) => updateDraft(index, { ...draft, included })}
                   />
                 ) : null}
-                {props.request.fields.length === 1 && field.kind === 'single_select' && field.required ? (
+                {field.kind === 'string' && field.presentation === 'model_picker' ? (
+                  <Selector
+                    label={field.label}
+                    isLabelHidden
+                    options={modelPickerOptions(props.modelChoices ?? [], locale)}
+                    value={typeof draft.value === 'string' ? draft.value : ''}
+                    hasSearch
+                    size="md"
+                    placement="above"
+                    isDisabled={responsePending || props.stopPending || !props.modelChoices?.length}
+                    className="maka-form-model-picker"
+                    onChange={(value) => updateDraft(index, { ...draft, value })}
+                    renderOption={renderModelPickerOption}
+                    renderValue={renderModelPickerValue}
+                  />
+                ) : props.request.fields.length === 1 && field.kind === 'single_select' && field.required ? (
                   <>
                     <ChoicePanel label={field.label} options={field.options}
                       value={typeof draft.value === 'string' ? draft.value : ''}
@@ -174,7 +204,7 @@ function ActiveFormInteractionPrompt(props: {
             />
           </div>
           <div className="maka-form-interaction-primary-actions">
-            {!singleChoice && <Button
+            {!onlyRequiredChoice && <Button
               variant="ghost"
               isDisabled={responsePending || props.stopPending}
               onClick={() => void respond({ requestId: props.request.requestId, action: 'decline' })}
@@ -190,6 +220,18 @@ function ActiveFormInteractionPrompt(props: {
         </footer>
       </div>
     </section>
+  );
+}
+
+function modelPickerOptions(
+  choices: readonly ChatModelChoice[],
+  locale: UiLocale,
+) {
+  return buildModelPickerOptions(
+    modelMenuGroups([...choices], locale),
+    undefined,
+    (choice) => exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model),
+    { locale },
   );
 }
 

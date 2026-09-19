@@ -49,6 +49,10 @@ import type {
   WorkHubCoordinationConfigureModelInput,
 } from '../protocol/index.js';
 import { WORKHUB_COORDINATION_TEXT_MAX_BYTES } from '../protocol/index.js';
+import {
+  WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE,
+  type WorkHubCoordinationSelectAndDelegateInput,
+} from '../protocol/workhub-coordination.js';
 import type {
   ConnectionContext,
   WorkHubCoordinationOperationHandlerMap,
@@ -61,6 +65,7 @@ import type { HostWorkHubRoutingModel } from './execution-model-authority.js';
 import { SessionAdmissionGate, type SessionAdmissionLease } from './session-admission-gate.js';
 import {
   SessionOperationFailure,
+  WorkHubDefaultModelRequiredError,
   projectSessionCatalogRecord,
 } from './session-catalog-coordinator.js';
 import {
@@ -68,8 +73,8 @@ import {
   RuntimeInteractionFailStopError,
 } from '@maka/runtime/interaction-authority';
 import type { HostInteractionCoordinator } from './interaction-coordinator.js';
-import type { WorkHubCoordinationSelectAndDelegateInput } from '../protocol/workhub-coordination.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import type { WorkHubTargetExecutionAuthority } from './workhub-target-execution-authority.js';
 import {
   WorkHubActionEffectFailure,
   WorkHubActionGateFailure,
@@ -143,6 +148,8 @@ type CoordinationSessionActions = Pick<
     context: ConnectionContext,
     actionId: string,
     validateFreshTarget: () => Promise<void>,
+    prepareTargetExecution?: () => Promise<void>,
+    assertTargetExecutionReady?: () => Promise<void>,
   ): Promise<WorkHubResumeResult>;
 };
 
@@ -165,6 +172,7 @@ export interface HostWorkHubCoordinationCoordinatorOptions {
   ) => Promise<OperationOutcome<'workhub.coordination.configureModel'>>;
   readonly routingModel?: HostWorkHubRoutingModel;
   readonly requestForm?: HostInteractionCoordinator['requestForm'];
+  readonly targetExecution?: WorkHubTargetExecutionAuthority;
 }
 
 /** Resolves the one durable Coordination Session owned by this Runtime Host. */
@@ -211,6 +219,7 @@ export class HostWorkHubCoordinationCoordinator {
     this.#requestDrain = options.requestDrain;
     this.#actionGate = new WorkHubCoordinationActionGate({
       listSessions: () => this.#stores.listHeaders(),
+      ...(options.targetExecution ? { targetExecution: options.targetExecution } : {}),
       // The global action owner is committed under the same Coordination
       // admission that serializes every durable Coordination fact, so a
       // concurrent action cannot slip between the claim and the fact it owns.
@@ -250,6 +259,8 @@ export class HostWorkHubCoordinationCoordinator {
           context,
           input.actionId,
           input.validateFreshTarget,
+          input.prepareTargetExecution,
+          input.assertTargetExecutionReady,
         )),
       }),
     });
@@ -756,6 +767,7 @@ export class HostWorkHubCoordinationCoordinator {
           {
             ...action,
             ...(selectedTarget ? { selectedTarget } : {}),
+            coordinationRunId: request.runId,
             userText: request.content.text,
             ...(carriesAttachments && request.content.attachments
               ? { attachments: request.content.attachments }
@@ -1093,13 +1105,13 @@ export class HostWorkHubCoordinationCoordinator {
 
 /** Keeps a model-authority gap distinguishable from a failed authority read. */
 function createTargetFailure(error: unknown): OperationOutcome<'workhub.coordination.resolve'> {
+  if (error instanceof WorkHubDefaultModelRequiredError) {
+    return failure('model_required', WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE);
+  }
   if (error instanceof SessionOperationFailure && error.code === 'persistence_failed') {
     return failure('persistence_failed', error.message);
   }
-  return failure(
-    'operation_conflict',
-    'WorkHub Coordination Session requires an available default model',
-  );
+  return failure('operation_conflict', 'WorkHub Coordination Session target is unavailable');
 }
 
 function validCoordinationIdentityHeader(header: SessionHeader): boolean {

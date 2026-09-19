@@ -20,7 +20,7 @@
 import { stat } from 'node:fs/promises';
 import type { GitReviewSource } from '@maka/core/git-review';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
-import { readGitReview } from './git-review-main.js';
+import { readGitBranch, readGitReview } from './git-review-main.js';
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
@@ -44,6 +44,21 @@ export function registerRuntimeHostWorkspaceIpc(
     if (!cwd) return { ok: false as const, reason: 'workspace_unavailable' as const };
     return readGitReview(cwd, request.source, undefined, request.baseBranch);
   });
+
+  // The composer's branch chip: the same session → workspace resolution as the
+  // review read above, but only the branch the chip prints.
+  handleReconnectableRead(input.ipcMain, 'git:branch', async (_event, raw: unknown) => {
+    const sessionId = readBranchRequest(raw);
+    const cwd =
+      input.allowLocalWorkspace === false ? null : await sessionWorkspace(input.client, sessionId);
+    // An unavailable workspace is not a repository either: the chip stays off.
+    if (!cwd) return { ok: false as const, isGitRepo: false };
+    return readGitBranch(cwd);
+  });
+}
+
+function readBranchRequest(value: unknown): string {
+  return requiredString(requiredRecord(value, 'Git branch').sessionId, 'Session id');
 }
 
 async function sessionWorkspace(client: WorkspaceClient, sessionId: string): Promise<string | null> {

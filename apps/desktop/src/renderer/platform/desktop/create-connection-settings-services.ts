@@ -74,6 +74,7 @@ export function createDesktopConnectionSettingsServices(
           test: (connection, options) => bridge().connections.test(connection, options, host),
           fetchModels: (connection) => bridge().connections.fetchModels(connection, host),
           hasSecret: (connection) => bridge().connections.hasSecret(connection, host),
+          usage: (connection) => bridge().connections.usage(connection, host),
           getRequestHeaders: (connection) => bridge().connections.getRequestHeaders(connection, host),
           setRequestHeaders: (connection, headers) =>
             bridge().connections.setRequestHeaders(connection, headers, host),

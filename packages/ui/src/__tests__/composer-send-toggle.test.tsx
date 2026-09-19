@@ -61,6 +61,21 @@ test('an idle composer offers Send alone', () => {
   assert.deepEqual(controls, ['aria-label="Send"']);
 });
 
+test('a host-owned send gate disables Send without an inline notice', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        sendBlocked
+        sendBlockedReason="Choose a model before sending."
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  assert.equal(sendButtonAriaDisabled(markup), 'true');
+  assert.doesNotMatch(markup, /maka-composer-no-model-hint/);
+});
+
 test('a turn in flight turns the same single control into Stop', () => {
   const controls = sendSlotControls(renderComposer(true));
   assert.deepEqual(controls, ['aria-label="Stop"']);

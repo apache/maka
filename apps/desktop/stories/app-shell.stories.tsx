@@ -644,11 +644,14 @@ export const RunningStatusDuringToolRun: Story = {
   ),
   play: async ({ canvasElement }) => {
     const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
-    const activity = process.querySelector('.maka-turn-processing')!;
     await expect(process.open).toBe(true);
+    // The running cue lives on the turn's footer row, not inside the process
+    // disclosure: the disclosure scrolls away as the answer grows, and the cue
+    // is the one thing that has to stay visible while work is happening.
+    const activity = canvasElement.querySelector('.maka-turn-footer-meta .maka-turn-processing')!;
     await expect(activity).toHaveTextContent('正在琢磨…');
     await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
-    await expect(canvasElement.querySelector('.maka-turn-footer .maka-turn-processing')).toBeNull();
+    await expect(process.querySelector('.maka-turn-processing')).toBeNull();
     // Live work is not a disclosure action. Even pointer activation cannot
     // hide it; the tool keeps ownership of its visible spinner.
     const summary = process.querySelector('summary')!;

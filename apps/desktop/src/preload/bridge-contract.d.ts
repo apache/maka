@@ -86,6 +86,7 @@ import type {
   AppUpdateStatus,
 } from '../shared/app-update.js';
 import type {
+  GitBranchReadResult,
   GitReviewReadResult,
   GitReviewSource,
 } from '@maka/core/git-review';
@@ -132,6 +133,7 @@ import type {
   OperationOutcome,
   OperationOutput,
 } from '@maka/runtime-host/protocol';
+import type { MakaClientPluginSnapshot } from '@maka/ui/client-plugin-runtime';
 import type {
   CollaborationAccessQueryResult,
   CollaborationGrantRevokeResult,
@@ -797,6 +799,22 @@ export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
 }
 
 export interface MakaBridge {
+  clientPlugins: {
+    snapshot(): Promise<MakaClientPluginSnapshot>;
+    remoteCall(
+      input: OperationInput<'plugin.client.remote.call'>,
+    ): Promise<OperationOutput<'plugin.client.remote.call'>>;
+    remoteStreamOpen(
+      input: OperationInput<'plugin.client.remote.stream.open'>,
+    ): Promise<OperationOutput<'plugin.client.remote.stream.open'>>;
+    remoteStreamNext(
+      input: OperationInput<'plugin.client.remote.stream.next'>,
+    ): Promise<OperationOutput<'plugin.client.remote.stream.next'>>;
+    remoteStreamClose(
+      input: OperationInput<'plugin.client.remote.stream.close'>,
+    ): Promise<OperationOutput<'plugin.client.remote.stream.close'>>;
+  };
+
   sessionLocal: import('../shared/session-local-contract.js').DesktopSessionLocalBridge;
   workHubControl: import('../shared/workhub-control.js').WorkHubControlBridge;
   workHubPresentation: import('../shared/workhub-presentation.js').WorkHubPresentationBridge;
@@ -1106,7 +1124,7 @@ export interface MakaBridge {
     answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
     configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
-    resolveCoordinationSession(): Promise<string>;
+    resolveCoordinationSession(): Promise<string | { readonly kind: 'model_required' }>;
 
   };
   sessions: {
@@ -1467,6 +1485,8 @@ export interface MakaBridge {
       source: GitReviewSource;
       baseBranch?: string;
     }): Promise<GitReviewReadResult>;
+    /** The working tree's branch (or short sha on a detached HEAD). */
+    branch(input: { sessionId: string }): Promise<GitBranchReadResult>;
   };
   goal: {
     /** The session's current goal (null when none is set). */
@@ -1505,6 +1525,8 @@ export interface MakaBridge {
     test(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
     fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
     hasSecret(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean>;
+    /** Read-only account usage for a connection, Host-fetched. */
+    usage(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/runtime-host/protocol').ConnectionUsageReadResult>;
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
       connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity,
