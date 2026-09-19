@@ -957,6 +957,19 @@ export class AiSdkTurn {
     // fails the whole fallback closed (#972: incomplete usage is no usage).
     let completedStepUsage: NormalizedAiSdkUsage | undefined;
     let sawUnusableStepUsage = false;
+    const recordAccountedStepUsage = async (stepUsage: NormalizedAiSdkUsage): Promise<void> => {
+      completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
+      this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
+        this.deps.session.cumulativeUsageCheckpoint,
+        stepUsage,
+      );
+      await this.deps.backend.recordUsageCheckpoint?.({
+        ...this.deps.session.cumulativeUsageCheckpoint,
+        costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
+          this.deps.session.cumulativeUsageCheckpoint,
+        ),
+      });
+    };
     // Input tokens from the last completed step — the actual prompt token count
     // of the final API request. Used to compute contextRemaining for the TUI
     // statusline ctx segment (#1067): contextRemaining = contextWindow - this.
@@ -1804,6 +1817,15 @@ export class AiSdkTurn {
             // must not be reported as the already-handled watchdog timeout.
             consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
+            const meteredFailedRequest =
+              providerOutcome.kind === 'failed' &&
+              (providerOutcome.failure.kind === 'stream_truncated' ||
+                (providerOutcome.failure.kind === 'network' &&
+                  providerOutcome.failure.code === 'network_error'));
+            if (meteredFailedRequest) {
+              if (providerOutcome.usage) await recordAccountedStepUsage(providerOutcome.usage);
+              else sawUnusableStepUsage = true;
+            }
             if (providerOutcome.kind === 'completed') {
               runtimeSteps += 1;
               const stepUsage = providerOutcome.usage;
@@ -1947,19 +1969,7 @@ export class AiSdkTurn {
               // from outside, and an indistinguishable signal must not
               // drive an action; the cut reply is visible to the user
               // either way (#4559).
-              if (stepUsage) {
-                completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
-                this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
-                  this.deps.session.cumulativeUsageCheckpoint,
-                  stepUsage,
-                );
-                await this.deps.backend.recordUsageCheckpoint?.({
-                  ...this.deps.session.cumulativeUsageCheckpoint,
-                  costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
-                    this.deps.session.cumulativeUsageCheckpoint,
-                  ),
-                });
-              }
+              if (stepUsage) await recordAccountedStepUsage(stepUsage);
               await flushStep();
               if (midTurnState) {
                 // Durability clock: step N's thinking/text completion events
@@ -2087,7 +2097,7 @@ export class AiSdkTurn {
                 currentStepMessageId = this.deps.newId();
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
-                sawUnusableStepUsage = true;
+                if (!meteredFailedRequest || !providerOutcome.usage) sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts = MAX_PROVIDER_ATTEMPTS_PER_STEP;
