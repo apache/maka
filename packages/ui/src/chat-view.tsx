@@ -800,7 +800,7 @@ export function ChatView(props: {
       const last = rects?.[rects.length - 1];
       if (!range || !last) return;
       ranges.push(range);
-      marks.push({ index, x: last.right, y: last.top + last.height / 2 });
+      marks.push({ index, x: last.right, y: last.top });
     };
     props.pendingQuotes?.forEach((quote, index) =>
       collect(index, quote.sourceTurnId, quote.text),
