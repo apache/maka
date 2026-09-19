@@ -79,6 +79,10 @@ remounted when the active session changes.
   lost; completion does not promise a final output snapshot or replay.
 - Removing a Session from the authoritative catalog retires its Terminal views.
   Host owns admission of Session retirement while processes are live.
+- The task terminal loads FitAddon and WebLinksAddon on the same Terminal
+  instance the panel owns. Web links are filtered to explicit HTTP(S) URLs in
+  the renderer (`terminalWebUrl`); main's external-link guard stays the final
+  boundary behind `window.open`.
 - Side Chat survives panel collapse and is cleaned only when its tab closes or
   when navigation leaves its source session.
 - Fork creation hides the internal Session until cleanup succeeds. Catalog
