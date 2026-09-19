@@ -561,6 +561,28 @@ test('ordinary changes do not pay for the released forward roll', () => {
 // Which files select the app icon gate is derived in `ci-workflow-policy.test.mjs`
 // from the suites the step runs. What stays here is the complement: regenerating
 // the artwork costs about a minute, and ordinary product code must stop paying it.
+test('the renderer architecture check runs only on what it parses', () => {
+  for (const path of [
+    'apps/desktop/src/renderer/app-shell.tsx',
+    'apps/desktop/src/main/main.ts',
+    'apps/desktop/stories/app-shell.stories.tsx',
+    'apps/desktop/e2e/workhub-layout.spec.ts',
+    'apps/desktop/renderer-architecture.json',
+    'apps/desktop/scripts/check-renderer-architecture.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).rendererArchitecture, true, path);
+  }
+  for (const path of [
+    'packages/ui/src/composer.tsx',
+    'packages/runtime/src/edit-replace.ts',
+    'apps/desktop/package.json',
+    'apps/desktop/scripts/check-e2e-budget.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).rendererArchitecture, false, path);
+  }
+  assert.equal(planTests(['package.json'], { graph }).rendererArchitecture, true, 'full suite');
+});
+
 test('ordinary product code does not pay for app icon drift', () => {
   for (const path of [
     'apps/desktop/src/renderer/app-shell.tsx',
