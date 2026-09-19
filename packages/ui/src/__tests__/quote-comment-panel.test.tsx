@@ -71,6 +71,7 @@ function domRoot() {
 }
 
 interface PanelProps {
+  index?: number;
   comment?: string;
   onSubmit?: (comment: string) => void;
   onSkip?: () => void;
@@ -84,6 +85,7 @@ async function renderPanel(props: PanelProps = {}) {
     root.render(
       <LocaleProvider locale="en">
         <QuoteCommentPanel
+          index={props.index ?? 0}
           comment={props.comment}
           title="Annotate this quote"
           submitLabel="Quote"
@@ -195,6 +197,14 @@ test('an empty note submits as no annotation at all', async () => {
   await act(async () => {});
 
   assert.deepEqual(view.submitted, ['']);
+});
+
+test('the quote ordinal marks the panel', async () => {
+  const view = await renderPanel({ index: 2 });
+  assert.equal(
+    view.container.querySelector('.maka-quote-comment-index')?.textContent?.trim(),
+    '3',
+  );
 });
 
 test('an existing note is editable in place', async () => {
