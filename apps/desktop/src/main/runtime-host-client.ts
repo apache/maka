@@ -211,6 +211,10 @@ export interface DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
+  readonly transcriptWatermark: number | null;
+  /** The subscription's own death certificate. Read this before trusting a
+   * `connection_closed` mask thrown by a racing transcript read. */
+  readonly deathCause: Error | undefined;
   readonly events: AsyncIterable<SubscriptionFrame>;
   /** Frames are held by the Host until this resolves. */
   ready(): Promise<void>;
@@ -1857,6 +1861,14 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     this.activeAssistantStreams = subscription.activeAssistantStreams;
     this.transcriptBootstrap = subscription.transcriptBootstrap;
     this.events = subscription;
+  }
+
+  get transcriptWatermark(): number | null {
+    return this.subscription.transcriptWatermark;
+  }
+
+  get deathCause(): Error | undefined {
+    return this.subscription.deathCause;
   }
 
   ready(): Promise<void> {

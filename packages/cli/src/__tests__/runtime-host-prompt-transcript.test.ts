@@ -383,6 +383,7 @@ class TranscriptSubscription
     interactions: { pending: [] },
   };
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
+  #transcriptWatermark: number | null;
   readonly pages: Omit<SessionTranscriptPageInput, 'subscriptionId'>[] = [];
   readonly #decoded = new WeakMap<
     SessionTranscriptPage,
@@ -417,6 +418,10 @@ class TranscriptSubscription
       [],
     );
     this.transcriptBootstrap = { durable };
+    this.#transcriptWatermark = durable.throughSequence;
+  }
+  get transcriptWatermark(): number | null {
+    return this.#transcriptWatermark;
   }
   subscribePtyData(): () => void {
     return () => {};
@@ -437,6 +442,7 @@ class TranscriptSubscription
     });
   }
   advance(throughSequence: number): void {
+    this.#transcriptWatermark = throughSequence;
     const frame: SubscriptionFrame = {
       kind: 'subscription.transcript_advanced',
       sessionId: 'session',
