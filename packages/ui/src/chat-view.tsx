@@ -750,8 +750,16 @@ export function ChatView(props: {
     if (panelVisible) annotationLayer.show();
     else annotationLayer.hide();
   }, [panelVisible, annotationLayer.show, annotationLayer.hide]);
+  // A note being written belongs to the session its excerpt came from: the
+  // staged list is per-draft, and ChatView survives a session switch unkeyed,
+  // so an annotation left open would submit into the wrong session's bucket.
+  useEffect(() => {
+    setAnnotatingSelection(null);
+    setEditingQuote(null);
+  }, [props.activeSession?.id]);
   const selectionActionsLabel = [
     props.onQuoteSelection ? copy.quoteSelection : null,
+    props.onQuoteSelection ? copy.quoteCommentSkip : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
   ].filter((label): label is string => label !== null).join(' / ');
   const hasConversationHeaderActions = useMakaClientSlotOccupied(
@@ -1260,8 +1268,15 @@ export function ChatView(props: {
               editingQuote ? (
                 <div
                   className="maka-quote-annotation-layer"
-                  // Keep the restored selection alive while the note is edited.
-                  onMouseDown={(event) => event.preventDefault()}
+                  // Keep the restored selection alive while the note is edited
+                  // — but not inside the note input itself, where cancelling
+                  // the default would also cancel caret placement and
+                  // drag-selection.
+                  onMouseDown={(event) => {
+                    if (!(event.target as HTMLElement).closest('[contenteditable]')) {
+                      event.preventDefault();
+                    }
+                  }}
                 >
                   <QuoteCommentPanel
                     key={editingQuote.text}
@@ -1279,13 +1294,20 @@ export function ChatView(props: {
               ) : annotatingSelection ? (
                 <div
                   className="maka-quote-annotation-layer"
-                  // Keep the live selection alive while the note is written.
-                  onMouseDown={(event) => event.preventDefault()}
+                  // Keep the live selection alive while the note is written —
+                  // except inside the note input, where the default is what
+                  // places the caret.
+                  onMouseDown={(event) => {
+                    if (!(event.target as HTMLElement).closest('[contenteditable]')) {
+                      event.preventDefault();
+                    }
+                  }}
                 >
                   <QuoteCommentPanel
                     title={copy.quoteCommentTitle}
                     submitLabel={copy.quoteSelection}
                     skipLabel={copy.quoteCommentSkip}
+                    cancelLabel={conversationCopy.composer.quoteCommentCancel}
                     onSubmit={(comment) => {
                       props.onQuoteSelection?.({
                         text: annotatingSelection.text,
@@ -1298,6 +1320,7 @@ export function ChatView(props: {
                       props.onQuoteSelection?.(annotatingSelection);
                       dismissSelectionActions();
                     }}
+                    onCancel={dismissSelectionActions}
                   />
                 </div>
               ) : null,
@@ -1345,17 +1368,30 @@ export function ChatView(props: {
                   elevation="med"
                 >
                   {props.onQuoteSelection ? (
-                    <Button
-                      type="button"
-                      label={copy.quoteSelection}
-                      onClick={() =>
-                        setAnnotatingSelection({
-                          text: selectionQuote.text,
-                          turnId: selectionQuote.turnId,
-                          anchor: selectionQuote.anchor,
-                        })
-                      }
-                    />
+                    <>
+                      <Button
+                        type="button"
+                        label={copy.quoteSelection}
+                        onClick={() =>
+                          setAnnotatingSelection({
+                            text: selectionQuote.text,
+                            turnId: selectionQuote.turnId,
+                            anchor: selectionQuote.anchor,
+                          })
+                        }
+                      />
+                      <Button
+                        type="button"
+                        label={copy.quoteCommentSkip}
+                        onClick={() => {
+                          props.onQuoteSelection?.({
+                            text: selectionQuote.text,
+                            turnId: selectionQuote.turnId,
+                          });
+                          dismissSelectionActions();
+                        }}
+                      />
+                    </>
                   ) : null}
                   {props.onAskAboutSelection ? (
                     <Button
