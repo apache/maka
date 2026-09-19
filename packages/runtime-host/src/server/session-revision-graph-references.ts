@@ -180,6 +180,9 @@ export async function prepareAgentGraphRevisionReferences(
 
   const references = new Map<string, MutableExternalChildReferences>();
   const runsByChildSession = new Map<string, ReadonlyMap<string, RuntimeInvocationRecord>>();
+  const terminalResults = new Set(
+    requests.filter((request) => isTerminalRunStatus(request.status)).map(linkedRunKey),
+  );
   for (const request of requests) {
     const childSessionId = request.childSessionId;
     const child = headersById.get(childSessionId);
@@ -189,6 +192,10 @@ export async function prepareAgentGraphRevisionReferences(
       !parent ||
       !familySessionIds.has(parent.parentSessionId) ||
       (input.kind === 'revision' && !parent.graph) ||
+      (request.graph !== undefined &&
+        (request.graph.graphId !== parent.graph?.graphId ||
+          request.graph.workId !== parent.graph?.workId ||
+          request.graph.operatorId !== parent.graph?.operatorId)) ||
       (parent.graph !== undefined &&
         !referencedGraphs.get(parent.parentSessionId)?.has(parent.graph.graphId)) ||
       !retainedTurnIds.has(parent.spawnedBy.parentTurnId)
@@ -201,7 +208,11 @@ export async function prepareAgentGraphRevisionReferences(
     if (dependencies.isSessionActive(childSessionId)) {
       return failure('session_busy', 'A retained Agent Graph child is still active');
     }
-    if (!isTerminalRunStatus(request.status)) {
+    // A poll describes the run at read time. It may precede a retained terminal
+    // result for that exact run, but cannot borrow one from another execution.
+    // Keep validating every observation, including its Artifact references.
+    const terminalResult = isTerminalRunStatus(request.status);
+    if (!terminalResult && !terminalResults.has(linkedRunKey(request))) {
       return failure('session_busy', 'A retained Agent Graph result is not terminal');
     }
 
@@ -230,7 +241,9 @@ export async function prepareAgentGraphRevisionReferences(
       !currentRun ||
       currentRun.sessionId !== childSessionId ||
       currentRun.turnId !== request.turnId ||
-      !linkedResultStatusMatchesRun(request, currentRun)
+      (request.terminalEventId !== undefined &&
+        request.terminalEventId !== currentRun.terminalEvent?.id) ||
+      (terminalResult && !linkedResultStatusMatchesRun(request, currentRun))
     ) {
       return failure('operation_unavailable', 'Retained Agent Graph run reference is unavailable');
     }
@@ -270,6 +283,10 @@ export async function prepareAgentGraphRevisionReferences(
     references.set(childSessionId, accepted);
   }
   return { ok: true, references };
+}
+
+function linkedRunKey(reference: ConversationCopyLinkedChildReference): string {
+  return JSON.stringify([reference.childSessionId, reference.runId, reference.turnId]);
 }
 
 export function agentGraphRevisionAdmissionSessionIds(input: {

@@ -25,6 +25,7 @@ type ScenarioPhase =
   | 'await_checkpoint'
   | 'await_view_result'
   | 'await_agent_output'
+  | 'await_agent_diagnostics'
   | 'await_finish_result'
   | 'completed';
 
@@ -41,6 +42,14 @@ export class AgentGraphProviderScenario {
   constructor(private readonly childResultText: string) {}
 
   respond(body: Record<string, unknown>, reply: AgentGraphProviderReply): void {
+    if (this.#phase === 'completed' && latestUserText(body).startsWith('Graph follow-up:')) {
+      assert.ok(
+        JSON.stringify(body).includes(this.childResultText),
+        'Follow-up lost the child result',
+      );
+      reply.text(`Answered ${latestUserText(body)}`);
+      return;
+    }
     const names = toolNames(body);
     // Read covers both files and the child's Session-scoped tool results.
     if (names.join(',') === 'Glob,Grep,Read') {
@@ -148,6 +157,21 @@ export class AgentGraphProviderScenario {
         assert.equal(result.status, 'completed');
         assert.equal(result.text, this.childResultText);
         this.#resultRecordId = requireString(result.resultRecordId, 'Graph result record id');
+        this.#phase = 'await_agent_diagnostics';
+        reply.toolCall('agent_output', {
+          locator: 'child_session_run',
+          child_session_id: requireString(invocation.sessionId, 'child Session id'),
+          run_id: requireString(invocation.runId, 'child Run id'),
+          view: 'all',
+          max_events: 2,
+          max_bytes: 4096,
+        });
+        return;
+      }
+      case 'await_agent_diagnostics': {
+        const output = requireRecord(toolResult, 'agent diagnostics');
+        assert.equal(requireRecord(output.budget, 'agent diagnostics budget').view, 'all');
+        assert.ok(requireArray(output.runtimeEvents, 'child RuntimeEvents').length > 0);
         this.#phase = 'await_finish_result';
         reply.toolCall('update_agent_graph', {
           operation: 'finish',
