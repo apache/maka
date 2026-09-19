@@ -260,6 +260,17 @@ export const Validation: Story = {
     await expect(cacheRead).toHaveAttribute('aria-invalid', 'true');
     await expect(cacheRead).toBeVisible();
     await waitFor(() => expect(cacheRead).toHaveFocus());
+    await userEvent.click(dialog.getByRole('button', { name: '保存' }));
+    await expect(cacheRead).toHaveFocus();
+    const output = dialog.getByRole('textbox', { name: /输出价格/ });
+    await userEvent.clear(output);
+    await userEvent.type(output, '23');
+    await expect(output).toHaveValue('23');
+    await expect(output).toHaveFocus();
+    await expect(cacheRead).toHaveValue('invalid');
+    // Leave the visual state at the error, as another explicit Save would.
+    await userEvent.click(dialog.getByRole('button', { name: '保存' }));
+    await expect(cacheRead).toHaveFocus();
   },
 };
 

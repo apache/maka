@@ -292,13 +292,10 @@ function PricingEditorDialog(props: {
   const isEdit = editor?.mode === 'edit';
   const title = isEdit ? copy.editTitle : copy.addTitle;
   // Show field errors only after a save attempt so a fresh Add form is quiet.
-  const [attempted, setAttempted] = useState(false);
-  const focusInvalidRef = useRef(false);
+  const [submitAttempts, setSubmitAttempts] = useState(0);
   useLayoutEffect(() => {
-    if (!focusInvalidRef.current) return;
-    focusInvalidRef.current = false;
-    dialogRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
-  });
+    if (submitAttempts > 0) dialogRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [submitAttempts, dialogRef]);
   // Selection is the draft's identity, including while a Host reload has no
   // catalog yet. Keeping a second selected-item state lets the two drift.
   const picked = useMemo<CatalogItem | null>(
@@ -317,18 +314,14 @@ function PricingEditorDialog(props: {
     if (!c.saving) c.closeEditor();
   }
   function submit() {
-    setAttempted(true);
-    if (validation.hasErrors) {
-      if (validation.errors.cacheRead || validation.errors.cacheWrite) c.setCacheOpen(true);
-      focusInvalidRef.current = true;
-      // On repeated submissions the error DOM may already be current; the
-      // layout effect handles the first reveal and any just-expanded fields.
-      dialogRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
-    }
+    // Count each explicit submission so repeated Save clicks focus the error
+    // immediately; later typing must never consume a deferred focus request.
+    setSubmitAttempts((count) => count + 1);
+    if (validation.errors.cacheRead || validation.errors.cacheWrite) c.setCacheOpen(true);
     void c.save();
   }
   const fieldStatus = (message: string | undefined) =>
-    attempted && message ? ({ type: 'error' as const, message }) : undefined;
+    submitAttempts > 0 && message ? ({ type: 'error' as const, message }) : undefined;
   const errorMessage = (code: PricingDraftErrors[keyof PricingDraftErrors]): string | undefined =>
     code === undefined
       ? undefined
