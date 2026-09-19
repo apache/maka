@@ -274,21 +274,22 @@ async function expectOrdinal(label: string, total: number) {
   });
   const badge = badges.find((candidate) => candidate.textContent?.trim() === label);
   expect(badge).toBeTruthy();
-  // A pin belongs at its own excerpt's end: it must sit where one of the
-  // painted ranges — the note in flight or a staged quote's — finishes.
+  // A pin belongs at its own excerpt's end: it must hover just above where
+  // one of the painted ranges — the note in flight or a staged quote's —
+  // finishes, so it never covers the text it marks.
   const ends: { x: number; y: number }[] = [];
   for (const name of ['maka-quote-annotate', 'maka-quote-staged'] as const) {
     const highlight = CSS.highlights?.get(name);
     for (const range of highlight ? [...highlight] : []) {
       const rects = (range as Range).getClientRects();
       const last = rects[rects.length - 1];
-      if (last) ends.push({ x: last.right, y: last.top + last.height / 2 });
+      if (last) ends.push({ x: last.right, y: last.top });
     }
   }
   const box = (badge as HTMLElement).getBoundingClientRect();
-  const center = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  const centerX = box.left + box.width / 2;
   expect(
-    ends.some((end) => Math.abs(center.x - end.x) < 24 && Math.abs(center.y - end.y) < 16),
+    ends.some((end) => Math.abs(centerX - end.x) < 26 && Math.abs(box.bottom - end.y) < 14),
   ).toBe(true);
 }
 

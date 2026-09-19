@@ -212,7 +212,7 @@
    so they ride above the transcript; the whole overlay is display-only and
    must never catch a click or steal the selection under it. */
 .maka-quote-marks { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
-.maka-quote-ordinal { position: absolute; transform: translate(-30%, -50%); pointer-events: none; }
+.maka-quote-ordinal { position: absolute; transform: translate(-50%, -110%); pointer-events: none; }
 
 /* While a note is written the input owns the DOM selection; the excerpt's
    mark is painted through named highlights instead, which focus cannot
