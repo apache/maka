@@ -586,6 +586,18 @@ index b56c9d5..463f665 100644
        id: `${id}-children`,
        role: "group",
        "aria-labelledby": `${id}-label`,
+diff --git a/node_modules/@astryxdesign/core/dist/Typeahead/Typeahead.js b/node_modules/@astryxdesign/core/dist/Typeahead/Typeahead.js
+--- a/node_modules/@astryxdesign/core/dist/Typeahead/Typeahead.js
++++ b/node_modules/@astryxdesign/core/dist/Typeahead/Typeahead.js
+@@ -357,6 +357,8 @@
+             inputId: inputId,
+             ariaDescribedBy: ariaDescribedBy,
+             ariaLabelledBy: ariaLabelledBy,
++            "aria-invalid": status?.type === 'error' ? 'true' : undefined,
++            "aria-required": isRequired && !isOptional ? 'true' : undefined,
+             onChangeQuery: onChangeQuery,
+             onOpenChange: onOpenChange,
+             debounceMs: debounceMs,
 diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
 index f7c1792..0180bb3 100644
 --- a/node_modules/@astryxdesign/core/dist/astryx.css
@@ -1365,6 +1377,18 @@ index 6c581d4..d3a9857 100644
        {hasChildren && !isCollapsed && (
          <div
            id={`${id}-children`}
+diff --git a/node_modules/@astryxdesign/core/src/Typeahead/Typeahead.tsx b/node_modules/@astryxdesign/core/src/Typeahead/Typeahead.tsx
+--- a/node_modules/@astryxdesign/core/src/Typeahead/Typeahead.tsx
++++ b/node_modules/@astryxdesign/core/src/Typeahead/Typeahead.tsx
+@@ -594,6 +594,8 @@
+               inputId={inputId}
+               ariaDescribedBy={ariaDescribedBy}
+               ariaLabelledBy={ariaLabelledBy}
++              aria-invalid={status?.type === 'error' ? 'true' : undefined}
++              aria-required={isRequired && !isOptional ? 'true' : undefined}
+               onChangeQuery={onChangeQuery}
+               onOpenChange={onOpenChange}
+               debounceMs={debounceMs}
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 index 55b441e..7aa4174 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts

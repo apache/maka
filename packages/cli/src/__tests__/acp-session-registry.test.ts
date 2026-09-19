@@ -1049,6 +1049,208 @@ describe('ACP Session registry', () => {
     }
   });
 
+  for (const scenario of [
+    'closure',
+    'approved',
+    'query-failed',
+    'cancel',
+    'cancel-signal',
+    'slow-notification',
+    'failed-notification',
+    'cancel-stalled-notification',
+  ] as const) {
+    test(`Turn settlement waits for interaction readback (${scenario})`, async () => {
+      const sessionId = `session-interaction-readback-${scenario}`;
+      const turn = runningTurn(sessionId, 'turn-readback');
+      const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+      const readback = deferred<InteractionSnapshot>();
+      const permission = deferred<never>();
+      const delivery = deferred<void>();
+      const abort = new AbortController();
+      const pending: InteractionPendingSnapshot = {
+        schemaVersion: 1,
+        interactionId: 'sandbox-readback',
+        sessionId,
+        turnId: turn.turnId,
+        runId: turn.runId,
+        revision: 1,
+        status: 'pending',
+        outcome: null,
+        request: {
+          kind: 'sandbox_boundary',
+          justification: 'Fetch dependencies',
+          expansion: { network: { enabled: true } },
+        },
+      };
+      const closed: InteractionSnapshot = {
+        ...pending,
+        revision: 2,
+        status: 'closed',
+        outcome: { kind: 'closure', reason: 'turn_terminal', committedAt: 2 },
+      };
+      let queries = 0;
+      let permissionOpened = false;
+      let resolutionDeliveryStarted = false;
+      const notifications: SessionNotification[] = [];
+      const registry = new AcpSessionRegistry({
+        connect: async () =>
+          fakeConnection({
+            request: async (operation) => {
+              if (operation === 'session.create') return catalogSession(sessionId);
+              if (operation === 'turn.start') {
+                subscription.setRoot(turn);
+                return {
+                  kind: 'started',
+                  turn,
+                  skillInvocation: { loaded: [], failed: [], receipts: [] },
+                };
+              }
+              if (operation === 'interaction.query')
+                return ++queries === 1 ? pending : readback.promise;
+              throw new Error(`Unexpected operation ${operation}`);
+            },
+            openSessionSubscriptionOnce: async () => subscription,
+          }),
+        newSessionId: () => sessionId,
+        newTurnId: () => turn.turnId,
+      });
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      const prompt = registry.prompt(
+        { sessionId, prompt: [{ type: 'text', text: 'fetch dependencies' }] },
+        {
+          ...promptContext(notifications),
+          signal: abort.signal,
+          notify: async (notification) => {
+            if (notification.update.sessionUpdate === 'tool_call_update') {
+              resolutionDeliveryStarted = true;
+              if (scenario === 'failed-notification') throw new Error('Resolution delivery failed');
+              if (scenario === 'slow-notification' || scenario === 'cancel-stalled-notification')
+                await delivery.promise;
+            }
+            notifications.push(notification);
+          },
+          interactions: {
+            capabilities: {},
+            createElicitation: async () => {
+              throw new Error('Unexpected elicitation');
+            },
+            requestPermission: async () => {
+              permissionOpened = true;
+              return permission.promise;
+            },
+          },
+        },
+      );
+      let settled = false;
+      void prompt.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        await waitFor(() => subscription.snapshot.rootTurn?.turnId === turn.turnId);
+        subscription.project({ interactions: { pending: [pending] } });
+        await waitFor(() => permissionOpened);
+        // One authoritative projection both removes the interaction and ends
+        // its Turn. The canonical outcome query is intentionally still pending.
+        subscription.project({
+          rootTurn: completedTurn(sessionId, turn.turnId),
+          interactions: { pending: [] },
+        });
+        await waitFor(() => queries === 2);
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(settled, false, 'end_turn must wait for canonical interaction readback');
+
+        if (scenario === 'cancel' || scenario === 'cancel-signal') {
+          if (scenario === 'cancel-signal') abort.abort();
+          else await registry.cancel({ sessionId });
+          await waitFor(() => settled);
+          assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+          const count = notifications.length;
+          readback.reject(new Error('Readback failed after cancellation'));
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(notifications.length, count, 'cancelled prompts suppress late readback');
+        } else if (scenario === 'query-failed') {
+          readback.reject(new Error('Interaction readback unavailable'));
+          await assert.rejects(prompt, (error: unknown) => {
+            assert.ok(error instanceof RequestError);
+            assert.deepEqual(error.data, {
+              source: 'adapter',
+              code: 'interaction_failed',
+              kind: 'sandbox_boundary',
+              interactionId: pending.interactionId,
+            });
+            return true;
+          });
+        } else {
+          readback.resolve(
+            scenario === 'approved'
+              ? {
+                  ...pending,
+                  revision: 2,
+                  status: 'answered',
+                  outcome: {
+                    kind: 'sandbox_boundary_decision',
+                    decision: 'allow',
+                    status: 'approved',
+                    committedAt: 2,
+                  },
+                }
+              : closed,
+          );
+          if (scenario === 'failed-notification') {
+            await assert.rejects(prompt, (error: unknown) => {
+              assert.ok(error instanceof RequestError);
+              assert.deepEqual(error.data, {
+                source: 'adapter',
+                code: 'interaction_failed',
+                kind: 'sandbox_boundary',
+                interactionId: pending.interactionId,
+              });
+              return true;
+            });
+            return;
+          }
+          if (scenario === 'slow-notification' || scenario === 'cancel-stalled-notification') {
+            await waitFor(() => resolutionDeliveryStarted);
+            assert.equal(settled, false, 'readback must be delivered before end_turn');
+            if (scenario === 'cancel-stalled-notification') {
+              await registry.cancel({ sessionId });
+              await waitFor(() => settled);
+              assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+              delivery.reject(new Error('Delivery failed after cancellation'));
+              return;
+            }
+            delivery.resolve();
+          }
+          assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+          const update = notifications.at(-1)?.update;
+          assert.equal(update?.sessionUpdate, 'tool_call_update');
+          if (update?.sessionUpdate !== 'tool_call_update') return;
+          assert.equal(update.status, scenario === 'approved' ? 'completed' : 'failed');
+          const meta = update._meta?.maka as {
+            hostStatus?: string;
+            interaction: { status: string; reason?: string };
+          };
+          assert.equal(meta.hostStatus, undefined, 'a resolved sandbox card is not interrupted');
+          assert.equal(meta.interaction.status, scenario === 'approved' ? 'answered' : 'closed');
+          if (scenario === 'closure') {
+            assert.equal(meta.interaction.reason, 'turn_terminal');
+            assert.match(JSON.stringify(update.content), /turn_terminal/);
+          }
+        }
+      } finally {
+        readback.resolve(closed);
+        delivery.resolve();
+        await registry.dispose();
+        await prompt.catch(() => undefined);
+      }
+    });
+  }
+
   test('an externally resolved interaction cannot clear a cancelled Turn fence before settlement', async () => {
     const sessionId = 'session-same-turn-interaction-cancel';
     const subscription = new FakeSubscription(continuitySnapshot(sessionId));

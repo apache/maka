@@ -551,6 +551,51 @@ describe('ACP Session event mapper', () => {
     assert.equal(notifications.length, 1);
   });
 
+  for (const status of ['approved', 'conflict', 'denied'] as const) {
+    test(`sandbox cards preserve the ${status} application outcome`, async () => {
+      const notifications: SessionNotification[] = [];
+      const mapper = eventMapper(notifications);
+      const pending: InteractionPendingSnapshot = {
+        schemaVersion: 1,
+        interactionId: 'sandbox',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run',
+        revision: 1,
+        status: 'pending',
+        outcome: null,
+        request: {
+          kind: 'sandbox_boundary',
+          justification: 'Fetch dependencies',
+          expansion: { network: { enabled: true } },
+        },
+      };
+      const decision = status === 'denied' ? 'deny' : 'allow';
+      await mapper.pendingInteraction(pending);
+      await mapper.resolvedInteraction(
+        {
+          ...pending,
+          revision: 2,
+          status: 'answered',
+          outcome: { kind: 'sandbox_boundary_decision', decision, status, committedAt: 2 },
+        },
+        pending,
+      );
+      const update = toolUpdate(notifications.at(-1)!);
+      assert.equal(update.status, status === 'approved' ? 'completed' : 'failed');
+      assert.deepEqual((update._meta?.maka as { interaction: unknown } | undefined)?.interaction, {
+        id: pending.interactionId,
+        kind: 'sandbox_boundary',
+        status: 'answered',
+        decision,
+        outcomeStatus: status,
+      });
+      const count = notifications.length;
+      await mapper.finishTools(pending.turnId);
+      assert.equal(notifications.length, count, 'settlement must preserve the applied outcome');
+    });
+  }
+
   test('interaction updates preserve Host closure reasons without reopening terminal tools', async () => {
     const notifications: SessionNotification[] = [];
     const mapper = eventMapper(notifications);

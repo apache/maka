@@ -73,6 +73,7 @@ import {
 import { AcpSessionEventMapper } from './session-event-mapper.js';
 import { mapAcpPromptContent, publishAcpPromptAttachments } from './prompt-content.js';
 import { AcpSessionInteractions, type AcpInteractionClient } from './session-interactions.js';
+import { whileActive } from './active-promise.js';
 
 const ACP_SESSION_CURSOR_MAX_BYTES = 8 * 1024;
 const ADMISSION_QUERY_MAX_ATTEMPTS = 5;
@@ -124,6 +125,7 @@ interface ActiveAcpPrompt {
   readonly turnId: string;
   readonly mapper: AcpSessionEventMapper;
   readonly waiters: Set<() => void>;
+  readonly interactionReconciliations: Set<Promise<void>>;
   attachment?: RuntimeHostSessionChannel;
   transcript?: ReturnType<RuntimeHostSessionChannel['trackPromptTranscript']>;
   readonly projectionAbort: AbortController;
@@ -270,6 +272,7 @@ export class AcpSessionRegistry {
         signal: projectionAbort.signal,
       }),
       waiters: new Set(),
+      interactionReconciliations: new Set(),
       projectionAbort,
       reconciliationAbort,
       dispatchStarted: false,
@@ -413,6 +416,16 @@ export class AcpSessionRegistry {
       if (active.cancelled) return this.#cancelledStopReason(active);
       if (terminalStatus === 'completed') await this.#reconcilePrompt(active, true);
       else active.reconciliationAbort.abort();
+      // A terminal snapshot can remove pending interactions before their
+      // canonical outcomes have been queried. Keep this prompt and its tool
+      // mapper alive until those Turn-scoped reads and deliveries settle.
+      while (!active.projectionAbort.signal.aborted && active.interactionReconciliations.size > 0) {
+        await whileActive(
+          Promise.all([...active.interactionReconciliations]),
+          active.projectionAbort.signal,
+        );
+      }
+      if (active.cancelled) return this.#cancelledStopReason(active);
       if (active.projectionFailure) throw active.projectionFailure;
       await active.mapper.finishTools(active.turnId, terminalStatus);
       await active.mapper.flush();
@@ -731,14 +744,18 @@ export class AcpSessionRegistry {
         void interactions.pending(pending);
       },
       onInteractionResolved: (pending) => {
-        if (
-          !interactions.fencesTurn(pending.turnId) &&
-          ![...(this.#activePrompts.get(sessionId) ?? [])].some(
-            (active) => active.turnId === pending.turnId && active.dispatchStarted,
-          )
-        )
-          return;
-        void interactions.resolved(pending);
+        const prompts = [...(this.#activePrompts.get(sessionId) ?? [])].filter(
+          (active) =>
+            active.turnId === pending.turnId && active.dispatchStarted && !active.finished,
+        );
+        if (!interactions.fencesTurn(pending.turnId) && prompts.length === 0) return;
+        const reconciliation = interactions.resolved(pending);
+        for (const active of prompts) {
+          active.interactionReconciliations.add(reconciliation);
+          void reconciliation.finally(() =>
+            active.interactionReconciliations.delete(reconciliation),
+          );
+        }
       },
       onTranscriptSettlement: (turnId) => {
         for (const active of this.#activePrompts.get(sessionId) ?? []) {

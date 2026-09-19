@@ -264,6 +264,7 @@ import {
 } from "./runtime-host-settings-ipc-main.js";
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
+import { registerRuntimeHostPricingIpc } from "./runtime-host-pricing-ipc-main.js";
 import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
 import { resolveShellEnv } from "./shell-env.js";
 import {
@@ -1800,8 +1801,8 @@ function registerHostClientIpc(
   registerRuntimeHostUsageIpc({
     ipcMain: scopedIpc,
     client,
-    sendToRenderer,
   });
+  registerRuntimeHostPricingIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostWorkspaceIpc({
     ipcMain: scopedIpc,
     client,

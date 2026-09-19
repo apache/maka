@@ -78,7 +78,6 @@ function handlers(queryUsage: (input: UsageQueryInput) => Promise<UsageQueryResu
         throw new Error('Independent pricing read');
       },
     } as unknown as DesktopRuntimeHostClient,
-    sendToRenderer: () => {},
   });
   return handlers;
 }
