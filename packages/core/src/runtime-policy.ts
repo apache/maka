@@ -282,6 +282,7 @@ export interface ConnectionTestSummary {
 }
 
 export interface ConnectionConfiguration {
+  readonly traeAccount?: import('./llm-connections.js').TraeAccount;
   readonly slug: string;
   readonly name: string;
   readonly providerType: ProviderType;

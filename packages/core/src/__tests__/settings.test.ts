@@ -173,7 +173,7 @@ test('shell settings default, normalize, and merge through their shared boundary
 
 test('an unrecognized legacy chat thinking field drops to no preference', () => {
   const normalized = normalizeSettings({
-    chatDefaults: { thinkingLevel: 'ultra' as unknown as undefined },
+    chatDefaults: { thinkingLevel: 'future-unknown' as unknown as undefined },
   });
   assert.strictEqual(normalized.chatDefaults.thinkingLevel, undefined);
 });

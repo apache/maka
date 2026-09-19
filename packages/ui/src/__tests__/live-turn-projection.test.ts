@@ -1214,3 +1214,11 @@ describe('context-compaction live row', () => {
     );
   });
 });
+
+it('shows provider queue positions and clears the queue on completion, cancellation or output', () => {
+  const queued = applyLiveTurnEvent(undefined, { type: 'provider_queue', id: 'q', turnId: 'turn', ts: 1, queued: true, position: 0 });
+  assert.deepEqual(queued?.providerQueue, { position: 0 });
+  assert.equal(applyLiveTurnEvent(queued, { type: 'provider_queue', id: 'q2', turnId: 'turn', ts: 2, queued: false })?.providerQueue, undefined);
+  assert.equal(applyLiveTurnEvent(queued, { type: 'abort', id: 'a', turnId: 'turn', ts: 3, reason: 'user_stop' })?.providerQueue, undefined);
+  assert.equal(applyLiveTurnEvent(queued, { type: 'text_delta', id: 't', turnId: 'turn', ts: 4, messageId: 'm', text: 'hello' })?.providerQueue, undefined);
+});

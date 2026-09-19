@@ -361,3 +361,20 @@ test('OAuth operations correlate attempt and Connection identity', () => {
     RuntimeHostProtocolError,
   );
 });
+
+test('Trae public account selection is typed while legacy SSO create targets stay valid', async () => {
+  const { decodeOAuthLoginStartInput } = await import('../protocol/oauth.js');
+  for (const traeAccount of [undefined, 'employee', 'cn', 'cn-solo', 'sg', 'sg-solo']) {
+    const input = {
+      attemptId: 'attempt-public',
+      target: { kind: 'create', providerType: 'trae', ...(traeAccount ? { traeAccount } : {}) },
+    };
+    assert.deepEqual(decodeOAuthLoginStartInput(input), input);
+  }
+  for (const target of [
+    { kind: 'create', providerType: 'trae', traeAccount: 'other' },
+    { kind: 'create', providerType: 'openai-codex', traeAccount: 'cn' },
+    { kind: 'existing', connectionId: '00000000-0000-4000-8000-000000000001', traeAccount: 'cn' },
+  ])
+    assert.throws(() => decodeOAuthLoginStartInput({ attemptId: 'attempt-public', target }));
+});

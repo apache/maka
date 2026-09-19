@@ -3760,6 +3760,7 @@ function isRuntimeSessionForwardedEvent(
     event.type === 'tool_result_preview' ||
     event.type === 'tool_result' ||
     event.type === 'steering_message' ||
+    event.type === 'provider_queue' ||
     event.type === 'provider_retry'
   );
 }

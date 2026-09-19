@@ -82,6 +82,7 @@ const DEFAULT_CONFIG_OPTIONS: Array<Extract<SessionConfigOption, { type: 'select
       { value: 'high', name: 'High' },
       { value: 'xhigh', name: 'Extra high' },
       { value: 'max', name: 'Max' },
+      { value: 'ultra', name: 'Ultra' },
     ],
   },
   {

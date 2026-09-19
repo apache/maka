@@ -346,6 +346,7 @@ export class ConnectionCatalogDocumentOwner {
       slug: previous.slug,
       name: changes.name,
       providerType: previous.providerType,
+      ...(previous.traeAccount === undefined ? {} : { traeAccount: previous.traeAccount }),
       ...(changes.baseUrl === undefined ? {} : { baseUrl: changes.baseUrl }),
       enabled: changes.enabled,
       enabledModelIds: changes.enabledModelIds,
@@ -469,6 +470,7 @@ export class ConnectionCatalogDocumentOwner {
         // to be read off its contents: empty means this connection has never
         // had a list to pick from and discovery may seed one. A non-empty one
         // means an empty selection is the user's answer.
+        providerType: previous.providerType,
         hasModelInventory: previous.models.length > 0,
       },
       result.models,

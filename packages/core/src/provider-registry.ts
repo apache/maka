@@ -86,6 +86,7 @@ type ProviderRuntimeAdapterDefinition =
       responses: ProviderResponsesContract;
     }
   | { kind: 'openai-codex'; responses: ProviderResponsesContract }
+  | { kind: 'trae' }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
   | { kind: 'cohere' }
   /** The Command Code CLI's `/alpha/generate` wire, used by the GO plan. */
@@ -115,6 +116,7 @@ export type ProviderModelDiscovery =
     }
   | { kind: 'cloudflare' }
   | { kind: 'fallback'; reason: string }
+  | { kind: 'trae' }
   | { kind: 'ollama' }
   | { kind: 'cohere' };
 
@@ -1618,6 +1620,16 @@ const providerRegistry = {
     category: 'custom',
     catalogGroup: 'aggregators',
     catalogOrder: 18.2,
+  },
+  trae: {
+    label: 'Trae',
+    baseUrl: 'https://copilot-cn.bytedance.net',
+    authKind: 'oauth_token',
+    fallbackModels: [],
+    status: 'ready',
+    runtimeAdapter: { kind: 'trae' },
+    modelDiscovery: { kind: 'trae' },
+    category: 'oauth',
   },
   'github-copilot': {
     label: githubCopilot.name,

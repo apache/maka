@@ -41,7 +41,7 @@
 
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 
-import type { ProviderType } from '@maka/core/llm-connections';
+import type { ProviderType, TraeAccount } from '@maka/core/llm-connections';
 import { connectionModelChoiceValue } from '@maka/core/llm-connections';
 
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -68,7 +68,8 @@ export interface ModelMenuGroup {
   /**
    * De-duplicated heading. The user's own connection name when one was
    * safely supplied (see `ChatModelChoice.connectionName`); otherwise the
-   * short provider label, plus the slug when the same provider has multiple
+   * short provider label, plus the Trae account variant (`Trae · US`) or,
+   * for other providers, the slug when the same provider has multiple
    * connections. Never derived from an OAuth connection's `connection.name`.
    */
   heading: string;
@@ -84,7 +85,9 @@ export interface ModelMenuGroup {
  * the SAME provider are present and neither supplied a name (e.g. two OpenAI
  * keys) — the slug is a safe `[a-z0-9-]` identifier, never the OAuth
  * account email `connection.name` carries for `claude-subscription` /
- * `openai-codex`.
+ * `openai-codex`. Trae accounts are named by their variant instead
+ * (`Trae · US`, `Trae · CN SOLO`), and only a repeated variant gets a
+ * running number (`Trae · US · 2`), never the slug.
  */
 export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale): ModelMenuGroup[] {
   const copy = getSharedUiCopy(locale).providers;
@@ -93,7 +96,7 @@ export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale): M
     'openai-compatible': copy.custom,
     'claude-subscription': copy.claudeSubscription,
   };
-  const bySlug = new Map<string, { connectionSlug: string; providerType: ProviderType; providerLabel: string; connectionName?: string; choices: ChatModelChoice[] }>();
+  const bySlug = new Map<string, { connectionSlug: string; providerType: ProviderType; providerLabel: string; connectionName?: string; traeAccount?: TraeAccount; choices: ChatModelChoice[] }>();
   for (const choice of choices) {
     const group = bySlug.get(choice.connectionSlug);
     if (group) {
@@ -104,6 +107,7 @@ export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale): M
         providerType: choice.providerType,
         providerLabel: choice.providerLabel,
         connectionName: choice.connectionName,
+        traeAccount: choice.traeAccount,
         choices: [choice],
       });
     }
@@ -111,12 +115,33 @@ export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale): M
   const groups = [...bySlug.values()];
   const connectionsPerType = new Map<ProviderType, number>();
   const connectionsPerName = new Map<string, number>();
+  const connectionsPerVariant = new Map<string, number>();
+  const seenVariant = new Map<string, number>();
+  const variantHeading = (group: (typeof groups)[number]): string | undefined => {
+    if (group.providerType !== 'trae' || !group.traeAccount) return undefined;
+    const label = localizedLabels[group.providerType] ?? group.providerLabel;
+    return `${label} · ${traeAccountLabel(group.traeAccount, copy.traeEmployee)}`;
+  };
   for (const group of groups) {
     connectionsPerType.set(group.providerType, (connectionsPerType.get(group.providerType) ?? 0) + 1);
     const ownName = group.connectionName?.trim();
     if (ownName) connectionsPerName.set(ownName, (connectionsPerName.get(ownName) ?? 0) + 1);
+    const variant = variantHeading(group);
+    if (variant) connectionsPerVariant.set(variant, (connectionsPerVariant.get(variant) ?? 0) + 1);
   }
   return groups.map((group) => {
+    const variant = variantHeading(group);
+    if (variant && !group.connectionName?.trim()) {
+      const ordinal = (seenVariant.get(variant) ?? 0) + 1;
+      seenVariant.set(variant, ordinal);
+      const repeated = (connectionsPerVariant.get(variant) ?? 0) > 1 && ordinal > 1;
+      return {
+        connectionSlug: group.connectionSlug,
+        providerType: group.providerType,
+        heading: repeated ? `${variant} · ${ordinal}` : variant,
+        choices: group.choices,
+      };
+    }
     const ownName = group.connectionName?.trim();
     if (ownName) {
       // Two connections can carry the same user-chosen name (the add form
@@ -139,6 +164,13 @@ export function modelMenuGroups(choices: ChatModelChoice[], locale: UiLocale): M
       choices: group.choices,
     };
   });
+}
+
+/** `CN`, `US SOLO`, or the localized employee SSO label. */
+export function traeAccountLabel(account: TraeAccount, employeeLabel: string): string {
+  if (account === 'employee') return employeeLabel;
+  const [region, solo] = account.split('-');
+  return `${region!.toUpperCase()}${solo ? ' SOLO' : ''}`;
 }
 
 export function modelChoiceValue(connectionSlug: string, model: string): string {
@@ -164,4 +196,30 @@ export function parseModelChoiceValue(value: string): { llmConnectionSlug: strin
   } catch {
     return undefined;
   }
+}
+
+/** Combine only account-advertised Trae variants; selection retains the exact route. */
+export function modelMenuRows(choices: readonly ChatModelChoice[], currentValue?: string) {
+  const families = new Map<string, ChatModelChoice[]>();
+  for (const choice of choices) {
+    const key = choice.providerType === 'trae' && choice.trae
+      ? JSON.stringify([choice.connectionId, choice.trae.configName])
+      : exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model);
+    const family = families.get(key) ?? [];
+    family.push(choice);
+    families.set(key, family);
+  }
+  return [...families.entries()].map(([key, variants]) => {
+    const standard = variants.find((choice) => choice.trae?.mode === 'standard');
+    const max = variants.find((choice) => choice.trae?.mode === 'max');
+    const choice = variants.find((item) =>
+      exactModelChoiceValue(item.connectionId, item.connectionSlug, item.model) === currentValue,
+    ) ?? standard ?? variants[0]!;
+    return {
+      key,
+      choice,
+      label: standard && max ? choice.label.replace(/ · (Standard|Max)$/, '') : choice.label,
+      ...(standard && max ? { standard, max } : {}),
+    };
+  });
 }

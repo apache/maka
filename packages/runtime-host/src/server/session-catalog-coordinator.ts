@@ -1178,7 +1178,8 @@ export class HostSessionCatalogCoordinator {
     // reach this gate. A level outside the resolved variants is still
     // rejected — execution-model-authority rebuilds the runtime connection
     // from the same table, so whatever passes here is exactly what the wire
-    // can send.
+    // can send. Trae reads its per-variant reasoning capabilities from the
+    // same inventory the picker uses.
     const resolvedThinkingLevel =
       thinkingLevel ??
       (applyConfiguredDefault
@@ -1196,6 +1197,7 @@ export class HostSessionCatalogCoordinator {
         {
           providerType: connection.providerType,
           modelOverrides: connection.modelOverrides,
+          models: connection.models,
         },
         selected.modelId,
       ).includes(resolvedThinkingLevel)

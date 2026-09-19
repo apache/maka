@@ -31,6 +31,9 @@ import {
   CONNECTION_MODEL_ID_MAX_LENGTH,
   decodeConnectionModels,
 } from '@maka/core/runtime-policy';
+import { traePublicProfile } from './trae/public-protocol.js';
+import { parseTraeCatalog } from './trae/catalog.js';
+import { TRAE, traeHeaders } from './trae/protocol.js';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import {
@@ -167,6 +170,35 @@ async function fetchProviderModelsStrict(
   }
   const discovery = definition.modelDiscovery;
 
+  if (discovery.kind === 'trae') {
+    const account = connection.traeAccount;
+    const profile = account && account !== 'employee' ? traePublicProfile(account) : undefined;
+    const models = new Map<string, ModelInfo>();
+    // A function owns its model route. Never call a model through a different directory.
+    for (const fn of profile?.functions ?? [TRAE.function]) {
+      const response = await fetchForConnectionEffect(
+        fetchFn,
+        `${profile?.baseUrl ?? TRAE.baseUrl}${TRAE.catalogPath}`,
+        {
+          method: 'POST',
+          headers: profile ? { 'content-type': 'application/json' } : traeHeaders(apiKey),
+          timeoutMs: MODEL_FETCH_TIMEOUT_MS,
+          body: JSON.stringify({ function: fn, need_prompt: false, poly_prompt: !!profile }),
+        },
+      );
+      if (!response.ok) {
+        await response.cancel();
+        // SOLO directories vary by region. An absent directory is not an auth failure.
+        if (profile && (response.status === 404 || response.status === 400)) continue;
+        throw new ConnectionEffectHttpError(response.status);
+      }
+      for (const model of parseTraeCatalog(await response.readJson(), profile ? fn : undefined)) {
+        if (!models.has(model.id)) models.set(model.id, model);
+      }
+    }
+    if (!models.size) throw new Error('Trae returned no available models for this account');
+    return [...models.values()];
+  }
   if (discovery.kind === 'fallback') {
     return providerFallbackModelIds(definition).map((id) => ({ id }));
   }
@@ -203,6 +235,8 @@ async function fetchProviderModelsStrict(
   // adapter kinds reach here: every other one returned above on its own
   // discovery branch, and both OpenAI-shaped kinds speak the same /models wire.
   switch (definition.runtimeAdapter.kind) {
+    case 'trae':
+      throw new Error('Trae requires native catalog discovery');
     case 'anthropic': {
       const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
         headers: anthropicModelHeaders(apiKey),

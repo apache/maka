@@ -429,3 +429,56 @@ test('stored OpenCode Free models cannot be selected', () => {
   };
   assert.deepEqual(chatModelChoicesFor([connection]), []);
 });
+
+test('chat model choices carry the Trae account variant of their connection', () => {
+  const choices = chatModelChoicesFor([
+    {
+      connectionId: 'connection-trae-us',
+      slug: 'trae-2',
+      name: 'Trae · SG',
+      providerType: 'trae',
+      traeAccount: 'sg',
+      enabled: true,
+      defaultModel: 'gpt:standard',
+      enabledModelIds: ['gpt:standard'],
+      models: [
+        {
+          id: 'gpt:standard',
+          trae: {
+            function: 'chat_v3',
+            configName: 'gpt',
+            modelName: 'gpt__dev',
+            mode: 'standard',
+            reasoningEfforts: [],
+            toolResponseImages: false,
+          },
+        },
+      ],
+      modelSource: 'fetched',
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ]);
+  assert.equal(choices.length, 1);
+  assert.equal(choices[0]?.traeAccount, 'sg');
+  // Non-Trae connections never carry the field, so menus cannot mislabel them.
+  assert.equal(
+    'traeAccount' in
+      chatModelChoicesFor([
+        {
+          connectionId: 'connection-ark',
+          slug: 'ark-plan',
+          name: 'Ark Agent Plan',
+          providerType: 'volcengine-agent-plan',
+          enabled: true,
+          defaultModel: 'doubao-seed-2.1-turbo',
+          enabledModelIds: ['doubao-seed-2.1-turbo'],
+          models: [{ id: 'doubao-seed-2.1-turbo' }],
+          modelSource: 'fetched',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ])[0]!,
+    false,
+  );
+});

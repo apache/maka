@@ -513,6 +513,21 @@ function mapBackendSessionEvent(
     // excluded from this function's input vocabulary.)
 
     // ── Transient provider retry progress ────────────────────────────────
+    case 'provider_queue':
+      return {
+        ...base,
+        partial: true,
+        role: 'system',
+        author: 'system',
+        actions: {
+          stateDelta: {
+            providerQueue: {
+              queued: event.queued,
+              ...(event.position === undefined ? {} : { position: event.position }),
+            },
+          },
+        },
+      };
     case 'provider_retry':
       return {
         ...base,

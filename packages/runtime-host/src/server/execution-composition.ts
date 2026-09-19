@@ -1555,6 +1555,7 @@ export async function createExecutionRuntimeHostComposition(
     oauth = new HostOAuthCoordinator({
       runtimePolicy: runtimePolicyStores,
       oauthCredentials,
+      traeDeviceSeed: context.owner.capability.rootId,
       activation: runtimePolicyActivation,
       clientCapabilities,
       isProviderEnabled: isOAuthEnrollmentProviderEnabled,

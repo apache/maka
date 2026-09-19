@@ -124,3 +124,12 @@ describe('synchronizeRuntimeHostAccountConnection', () => {
     assert.equal(selectCalls(), 0);
   });
 });
+
+
+it('does not report Trae model import success when the catalog fetch fails', async () => {
+  const initial = catalogWithoutDefault();
+  const trae = { ...initial, connections: initial.connections.map(connection => ({ ...connection, providerType: 'trae' as const, enabledModelIds: [], models: [] })) };
+  const { client, selectCalls } = accountClient(async () => ({ kind: 'failed', errorClass: 'network' }), trae);
+  await assert.rejects(synchronizeRuntimeHostAccountConnection(client, 'trae'), /model sync failed/);
+  assert.equal(selectCalls(), 0);
+});

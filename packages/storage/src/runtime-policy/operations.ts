@@ -171,7 +171,7 @@ export interface InteractiveOAuthLoginTicket {
 
 export type InteractiveOAuthLoginProvider = Extract<
   ConnectionCatalogEntry['providerType'],
-  'openai-codex' | 'xai-oauth' | 'github-copilot'
+  'openai-codex' | 'xai-oauth' | 'github-copilot' | 'trae'
 >;
 
 export type InteractiveOAuthLoginTarget =
@@ -180,12 +180,14 @@ export type InteractiveOAuthLoginTarget =
       readonly providerType: 'openai-codex';
       readonly slug?: string;
       readonly name?: string;
+      readonly traeAccount?: never;
     }
   | {
       readonly kind: 'create';
       readonly providerType: Exclude<InteractiveOAuthLoginProvider, 'openai-codex'>;
       readonly slug?: never;
       readonly name?: never;
+      readonly traeAccount?: import('@maka/core/llm-connections').TraeAccount;
     }
   | { readonly kind: 'existing'; readonly connectionId: string };
 

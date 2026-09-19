@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { traeAccountFields, type TraeAccount } from '@maka/core/llm-connections';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -642,6 +643,7 @@ export class RuntimePolicyCoordinator {
             ),
           input.target.providerType,
           input.target.name,
+          input.target.traeAccount,
         );
       } else {
         const existing = findConnection(catalog, { connectionId: input.target.connectionId });
@@ -2492,7 +2494,8 @@ function isInteractiveOAuthLoginProvider(
   return (
     providerType === 'openai-codex' ||
     providerType === 'xai-oauth' ||
-    providerType === 'github-copilot'
+    providerType === 'github-copilot' ||
+    providerType === 'trae'
   );
 }
 
@@ -2506,17 +2509,18 @@ function normalizeInteractiveOAuthLoginInput(
     if (!isInteractiveOAuthLoginProvider(providerType)) {
       throw codecError('invalid_connection_input', 'OAuth create target provider is unsupported');
     }
-    if (
-      providerType !== 'openai-codex' &&
-      (target.slug !== undefined || target.name !== undefined)
-    ) {
-      throw codecError(
-        'invalid_connection_input',
-        'Custom OAuth Connection identity is only supported for openai-codex',
-      );
-    }
+    // The account variant is Trae's alone; the decoder refuses it elsewhere.
+    const account = decodeConnectionInput(() =>
+      traeAccountFields(target.traeAccount, providerType),
+    );
     if (providerType !== 'openai-codex') {
-      return { attemptId, target: { kind: 'create', providerType } };
+      if (target.slug !== undefined || target.name !== undefined) {
+        throw codecError(
+          'invalid_connection_input',
+          'Custom OAuth Connection identity is only supported for openai-codex',
+        );
+      }
+      return { attemptId, target: { kind: 'create', providerType, ...account } };
     }
     return {
       attemptId,
@@ -2549,14 +2553,20 @@ function newInteractiveOAuthConnection(
   slug: string,
   providerType: InteractiveOAuthLoginProvider,
   name?: string,
+  traeAccount?: TraeAccount,
 ): ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider } {
   const defaults = PROVIDER_REGISTRY[providerType];
   return {
     connectionId,
     revision: 1,
     slug,
-    name: name ?? defaults.label,
+    name:
+      name ??
+      (traeAccount
+        ? `${defaults.label} · ${traeAccount === 'employee' ? 'ByteDance SSO' : traeAccount.toUpperCase().replace('-SOLO', ' SOLO')}`
+        : defaults.label),
     providerType,
+    ...traeAccountFields(traeAccount, providerType),
     enabled: true,
     enabledModelIds: providerFallbackModelIds(defaults),
     models: [],

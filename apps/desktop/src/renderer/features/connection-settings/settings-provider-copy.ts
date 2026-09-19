@@ -25,7 +25,7 @@ type SubscriptionResultCode =
   | SubscriptionActionCode
   | Extract<
       SubscriptionActionFailureReason,
-      'experimental_disabled' | 'login_in_progress' | 'presentation_failed'
+      'authorization_denied' | 'experimental_disabled' | 'login_in_progress' | 'presentation_failed'
     >;
 
 type WidenCopy<T> = T extends string
@@ -336,15 +336,17 @@ const zhCopy = {
       experimental_disabled: '本机未启用该账号登录方式；可改用导入兼容凭据，或由管理员启用后重试。',
       login_in_progress: '上一轮登录仍在进行，等它结束后再点登录。',
       presentation_failed: '无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。',
+      authorization_denied: '服务商拒绝了这次登录，常见原因是账号的设备数或套餐限制。请到服务商网站检查该账号后重试；诊断报告中的 Host 日志会给出服务商返回的错误码。',
     } satisfies Record<SubscriptionResultCode, string>,
   },
   oauthSection: {
-    signedIn: '已登录', codexDescription: '使用 ChatGPT Plus / Pro 账号添加连接。', xaiDescription: '使用 SuperGrok / X Premium 账号添加连接。',
+    traeAccountField: '账号地区与产品', traeEmployeeAccount: '字节员工 SSO',
+    signedIn: '已登录', codexDescription: '使用 ChatGPT Plus / Pro 账号添加连接。', xaiDescription: '使用 SuperGrok / X Premium 账号添加连接。', traeDescription: '接入中国区、SG、SOLO 或字节员工账号。',
     configuredConnections: (count: number) => `已有 ${count} 个连接 · 添加另一个账号`,
     copilotDescription: '使用 GitHub 登录连接 Copilot 订阅，或导入兼容凭据。', serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。',
     aria: 'OAuth 登录',
     staleState: 'OAuth 登录状态暂时没刷新成功，已保留上一次状态。',
-    codexDetail: '点击下方按钮打开设备授权页，并在页面中输入这里显示的登录码。', xaiDetail: '点击下方按钮打开浏览器登录，授权完成后会自动回写。', deviceCode: '登录码：',
+    codexDetail: '点击下方按钮打开设备授权页，并在页面中输入这里显示的登录码。', xaiDetail: '点击下方按钮打开浏览器登录，授权完成后会自动回写。', traeDetail: '选择账号地区与产品，在浏览器中授权后同步并启用可用模型。', deviceCode: '登录码：',
     openingBrowser: '打开浏览器…', waitingAuthorization: '等待浏览器授权…', logout: '退出登录', loggingOut: '退出中…',
     copilotSubtitle: '使用 GitHub 登录，或导入兼容凭据；token 不会暴露给渲染进程。', copilotImported: '已导入 GitHub Copilot 订阅账号。',
     copilotSetup: '使用 GitHub 登录以连接 Copilot，或导入已有的 gh 凭据。', importing: '导入中…',
@@ -559,16 +561,18 @@ const zhTwCopy = {
       experimental_disabled: '本機未啟用該帳號登入方式；可改用匯入相容憑據，或由管理員啟用後重試。',
       login_in_progress: '上一輪登入仍在進行，等它結束後再按登入。',
       presentation_failed: '無法開啟系統瀏覽器完成登入，請檢查是否封鎖了彈出式視窗後再試。',
+      authorization_denied: '服務商拒絕了這次登入，常見原因是帳號的裝置數或方案限制。請到服務商網站檢查該帳號後再試；診斷報告中的 Host 記錄會列出服務商回傳的錯誤碼。',
     },
     logoutTitle: (name: string) => `退出 ${name} 登入？`,
   },
   oauthSection: {
-    signedIn: '已登入', codexDescription: 'ChatGPT Plus / Pro 訂閱帳號登入。', xaiDescription: 'SuperGrok / X Premium 帳號登入。',
+    traeAccountField: '帳號地區與產品', traeEmployeeAccount: '字節員工 SSO',
+    signedIn: '已登入', codexDescription: 'ChatGPT Plus / Pro 訂閱帳號登入。', xaiDescription: 'SuperGrok / X Premium 帳號登入。', traeDescription: '接入中國區、SG、SOLO 或字節員工帳號。',
     configuredConnections: (count: number) => `已有 ${count} 個連線 · 新增另一個帳號`,
     copilotDescription: '匯入相容 GitHub 憑據連線 Copilot 訂閱。', serviceUnavailable: '登入服務暫時不可用，請檢查網路後重試。',
     aria: 'OAuth 登入',
     staleState: 'OAuth 登入狀態暫時沒重新整理成功，已保留上一次狀態。',
-    codexDetail: '點選下方按鈕開啟裝置授權頁，並在頁面中輸入這裡顯示的登入碼。', xaiDetail: '點選下方按鈕開啟瀏覽器登入，授權完成後會自動回寫。', deviceCode: '登入碼：',
+    codexDetail: '點選下方按鈕開啟裝置授權頁，並在頁面中輸入這裡顯示的登入碼。', xaiDetail: '點選下方按鈕開啟瀏覽器登入，授權完成後會自動回寫。', traeDetail: '選擇帳號地區與產品，在瀏覽器中授權後同步並啟用可用模型。', deviceCode: '登入碼：',
     openingBrowser: '開啟瀏覽器…', waitingAuthorization: '等待瀏覽器授權…', logout: '退出登入', loggingOut: '退出中…',
     copilotSubtitle: '匯入相容的 GitHub 登入；token 不會暴露給渲染程序。', copilotImported: '已匯入 GitHub Copilot 訂閱帳號。',
     copilotSetup: '請設定具有 Copilot Requests 權限的 fine-grained PAT；普通 gh auth login 可能不包含該權限。', importing: '匯入中…',
@@ -785,15 +789,17 @@ const enCopy: ProviderSettingsCopy = {
       experimental_disabled: 'This sign-in is not enabled on this install. Import a compatible credential instead, or ask an operator to enable it.',
       login_in_progress: 'A previous login is still running. Start again after it settles.',
       presentation_failed: 'Could not open the system browser for login. Check popup blockers and try again.',
+      authorization_denied: 'The provider refused this sign-in, usually a device or plan limit on the account. Check the account on the provider site and try again; the Host log in the diagnostic report carries the provider error code.',
     },
   },
   oauthSection: {
-    signedIn: 'Signed in', codexDescription: 'Use a ChatGPT Plus / Pro account to add a connection.', xaiDescription: 'Use a SuperGrok or X Premium account to add a connection.',
+    traeAccountField: 'Account region and product', traeEmployeeAccount: 'ByteDance SSO',
+    signedIn: 'Signed in', codexDescription: 'Use a ChatGPT Plus / Pro account to add a connection.', xaiDescription: 'Use a SuperGrok or X Premium account to add a connection.', traeDescription: 'Connect Trae CN, SG, SOLO, or ByteDance employee accounts.',
     configuredConnections: (count: number) => `${count} ${count === 1 ? 'connection' : 'connections'} configured · Add another account`,
     copilotDescription: 'Sign in with GitHub to connect a Copilot subscription, or import compatible credentials.', serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.',
     aria: 'OAuth sign-in',
     staleState: 'OAuth sign-in status could not be refreshed. The last known state is preserved. ',
-    codexDetail: 'Open the device page below and enter the sign-in code shown here.', xaiDetail: 'Open the browser below to sign in. Authorization is written back automatically.', deviceCode: 'Sign-in code:',
+    codexDetail: 'Open the device page below and enter the sign-in code shown here.', xaiDetail: 'Open the browser below to sign in. Authorization is written back automatically.', traeDetail: 'Choose your account region and product, then authorize in your browser to import available models.', deviceCode: 'Sign-in code:',
     openingBrowser: 'Opening browser…', waitingAuthorization: 'Waiting for browser authorization…', logout: 'Sign out', loggingOut: 'Signing out…',
     copilotSubtitle: 'Sign in with GitHub, or import compatible credentials. The token is never exposed to the renderer.', copilotImported: 'GitHub Copilot subscription account imported.',
     copilotSetup: 'Sign in with GitHub to connect Copilot, or import an existing gh credential.', importing: 'Importing…',

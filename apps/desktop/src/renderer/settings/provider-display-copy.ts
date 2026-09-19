@@ -54,6 +54,11 @@ export const UNKNOWN_PROVIDER_DESCRIPTION = {
 } satisfies UiCatalog<string>;
 
 export const PROVIDER_DISPLAY_COPY = {
+  trae: {
+    'zh-CN': { name: 'Trae', description: 'CN / SG / SOLO / 字节 SSO', badge: 'Trae' },
+    'zh-TW': { name: 'Trae', description: 'CN / SG / SOLO / 字節 SSO', badge: 'Trae' },
+    en: { name: 'Trae', description: 'CN / SG / SOLO / ByteDance SSO', badge: 'Trae' },
+  },
   'kimi-coding-plan': {
     'zh-CN': { name: 'Kimi Coding Plan', description: '月之暗面 · Anthropic 兼容', badge: 'Coding' },
     'zh-TW': { name: 'Kimi Coding Plan', description: '月之暗面 · Anthropic 相容', badge: 'Coding' },

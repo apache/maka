@@ -58,7 +58,7 @@ export interface SubscriptionSnapshot {
 export interface OAuthConnectionIdentity {
   connectionId: string;
   slug: string;
-  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot';
+  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot' | 'trae';
 }
 
 export interface OAuthAuthorizationFlowBridge {

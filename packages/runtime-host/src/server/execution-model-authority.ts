@@ -1008,6 +1008,9 @@ export async function resolveExecutionTarget(
   const connection: RuntimeExecutionConnection = {
     slug: resolved.connection.slug,
     providerType: resolved.connection.providerType,
+    ...(resolved.connection.traeAccount === undefined
+      ? {}
+      : { traeAccount: resolved.connection.traeAccount }),
     ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
     defaultModel: model,
     models: discovered

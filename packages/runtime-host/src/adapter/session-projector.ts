@@ -202,6 +202,7 @@ export class RuntimeHostSessionProjector {
         });
       }
     }
+    if (root.providerQueue) events.push(providerQueueEvent(root, this.#now()));
     if (root.providerRetry && !seededAssistantText) {
       events.push(providerRetryEvent(root, this.#now()));
     }
@@ -462,6 +463,16 @@ export class RuntimeHostSessionProjector {
     if (root && rootIsCompaction && !previousWasCompaction) {
       events.push(contextCompactionStartedEvent(root, this.#now()));
     }
+    if (
+      root &&
+      !isRuntimeHostTerminalTurn(root) &&
+      ((root.providerQueue !== undefined &&
+        (!previousRoot || isRuntimeHostTerminalTurn(previousRoot))) ||
+        (previousRoot &&
+          !isRuntimeHostTerminalTurn(previousRoot) &&
+          !isDeepStrictEqual(previousRoot.providerQueue, root.providerQueue)))
+    )
+      events.push(providerQueueEvent(root, this.#now()));
     const retry = liveProviderRetryEvent(previousRoot, root, this.#now());
     if (retry) events.push(retry);
     const terminalTurn =
@@ -890,4 +901,20 @@ function abortReason(source: string): Extract<SessionEvent, { type: 'abort' }>['
   if (source.includes('crash') || source.includes('restart')) return 'crash';
   if (source.includes('redirect')) return 'redirect';
   return 'user_stop';
+}
+
+function providerQueueEvent(
+  root: import('../protocol/index.js').LiveTurnSnapshot,
+  ts: number,
+): Extract<SessionEvent, { type: 'provider_queue' }> {
+  return {
+    type: 'provider_queue',
+    id: `host-queue:${root.runId}:${ts}`,
+    turnId: root.turnId,
+    ts,
+    queued: root.providerQueue !== undefined,
+    ...(root.providerQueue?.position === undefined
+      ? {}
+      : { position: root.providerQueue.position }),
+  };
 }

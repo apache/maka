@@ -552,6 +552,7 @@ function storyOAuthBridge(onOAuthComplete?: () => void): ConnectionOAuthBridge {
     ),
     githubCopilotSubscription,
     xaiOAuth: xaiDeviceSubscriptionFixture(),
+    traeOAuth: browserSubscriptionFixture({ runtimeState: 'not_logged_in' }, undefined, 'trae'),
   };
 }
 
@@ -580,7 +581,7 @@ function browserSubscriptionFixture(
     errorMessage?: string;
   },
   onComplete?: () => void,
-  providerType: 'openai-codex' | 'github-copilot' = 'openai-codex',
+  providerType: 'openai-codex' | 'github-copilot' | 'trae' = 'openai-codex',
 ) {
   const connection = {
     connectionId: `connection-${providerType}-4`,

@@ -129,6 +129,7 @@ export interface LiveTurnProjection {
    */
   unconfirmed?: true;
   providerRetry?: LiveProviderRetry;
+  providerQueue?: { position?: number };
   steps: LiveTurnStepProjection[];
 }
 
@@ -249,17 +250,23 @@ function projectLiveTurnEvent(
       ],
     };
   }
+  if (event.type === 'provider_queue') {
+    const prior = current?.turnId === event.turnId ? current : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
+    const { providerQueue: _queue, ...rest } = confirmed(prior);
+    return event.queued ? { ...rest, providerQueue: { ...(event.position === undefined ? {} : { position: event.position }) } } : rest;
+  }
   if (event.type === 'provider_retry') {
     const prior = current?.turnId === event.turnId
       ? current
       : { turnId: event.turnId, steps: [] };
-    return { ...confirmed(prior), providerRetry: { event, receivedAtMs: Date.now() } };
+    const { providerQueue: _queue, ...rest } = confirmed(prior);
+    return { ...rest, providerRetry: { event, receivedAtMs: Date.now() } };
   }
   if (event.type === 'error' || event.type === 'abort') {
     if (!current || current.turnId !== event.turnId) return current;
     const steps = terminalizeLiveSteps(current.steps);
     if (steps.length === 0 && liveSteeringMessages(current).length === 0) return undefined;
-    const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
+    const { providerRetry: _providerRetry, providerQueue: _providerQueue, ...withoutRetry } = confirmed(current);
     return { ...withoutRetry, terminal: true, steps };
   }
   if (event.type === 'complete') {
@@ -267,7 +274,7 @@ function projectLiveTurnEvent(
     if (current.steps.length === 0 && liveSteeringMessages(current).length === 0) {
       return undefined;
     }
-    const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
+    const { providerRetry: _providerRetry, providerQueue: _providerQueue, ...withoutRetry } = confirmed(current);
     return {
       ...withoutRetry,
       terminal: true,
@@ -297,7 +304,7 @@ function projectLiveTurnEvent(
   const prior = current?.turnId === event.turnId
     ? current
     : { turnId: event.turnId, steps: [] };
-  const { providerRetry: _providerRetry, ...priorWithoutRetry } = confirmed(prior);
+  const { providerRetry: _providerRetry, providerQueue: _providerQueue, ...priorWithoutRetry } = confirmed(prior);
   const messageEvent = event.type === 'thinking_delta'
     || event.type === 'thinking_complete'
     || event.type === 'text_delta'
@@ -710,7 +717,7 @@ export function reconcileTerminalLiveTurn(
   );
   let projection = current;
   if (transcriptReachedTerminal && current.terminal !== true) {
-    const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
+    const { providerRetry: _providerRetry, providerQueue: _providerQueue, ...withoutRetry } = confirmed(current);
     projection = {
       ...withoutRetry,
       terminal: true,

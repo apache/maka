@@ -71,6 +71,7 @@ export type ProviderContractWire =
 export const SUBSCRIPTION_WIRE_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set([
   'openai-codex',
   'github-copilot',
+  'trae',
   // Not a subscription, but the same shape of exception: a provider-specific
   // wire (the CLI's `/alpha/generate`) no generated executor can drive.
   'commandcode-go',
@@ -249,6 +250,11 @@ const EDGE_WIRE_SAMPLES: Partial<Record<ProviderType, readonly ProviderContractE
 function discoveryCell(providerType: ProviderType, def: ProviderDefaults): ProviderContractCell {
   const discovery = def.modelDiscovery;
   switch (discovery.kind) {
+    case 'trae':
+      return {
+        state: 'override',
+        overrideKey: overrideKeyFor(providerType, 'discovery'),
+      };
     case 'fallback':
       return {
         state: 'not-applicable',

@@ -44,7 +44,15 @@ import { lookupModelMetadata } from './model-metadata.js';
  * Not every model supports every level — call `thinkingVariantsForModel` for
  * the model-specific subset.
  */
-export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
 
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'off',
@@ -54,12 +62,13 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'high',
   'xhigh',
   'max',
+  'ultra',
 ];
 
 /**
  * The levels a generic-relay declaration may hold — the vocabulary the
- * settings surfaces offer and the one the data layer admits. `off` is the
- * sole exclusion: it is not an intensity tier but a *disable* wire
+ * settings surfaces offer and the one the data layer admits. `ultra` is a
+ * Trae alias, not a portable effort. `off` is also excluded: it is not an intensity tier but a *disable* wire
  * (`reasoning_effort: 'none'`), and no generic relay is presumed to honor
  * that encoding; built-in providers that support it get `off` from their own
  * metadata instead. `minimal` and every effort tier above are pure
@@ -67,7 +76,7 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
  * relay accepts.
  */
 export const DECLARABLE_RELAY_THINKING_LEVELS: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
-  (level) => level !== 'off',
+  (level) => level !== 'off' && level !== 'ultra',
 );
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
@@ -251,6 +260,7 @@ export function pruneModelOverrides(
  * pass it through without widening runtime connection types.
  */
 export interface ConnectionThinkingContext {
+  readonly models?: readonly ModelInfo[];
   readonly providerType: ProviderType;
   readonly modelOverrides?: ModelOverrides;
 }
@@ -308,6 +318,11 @@ export function thinkingVariantsForConnection(
   connection: ConnectionThinkingContext,
   modelId: string,
 ): readonly ThinkingLevel[] {
+  if (connection.providerType === 'trae') {
+    return (
+      connection.models?.find((model) => model.id === modelId)?.trae?.reasoningEfforts ?? []
+    ).filter((effort): effort is ThinkingLevel => isThinkingLevel(effort) && effort !== 'off');
+  }
   const declared = modelOverride(connection, modelId)?.thinkingLevels;
   if (declared) return declared;
   return thinkingVariantsForModel(connection.providerType, modelId);

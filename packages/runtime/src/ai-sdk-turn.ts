@@ -1619,6 +1619,7 @@ export class AiSdkTurn {
               continuationKey: this.turnId,
             });
 
+            let waitingInProviderQueue = false;
             for await (const event of result.events) {
               if (this.aborted) break;
               if (event.kind === 'error') {
@@ -1626,7 +1627,23 @@ export class AiSdkTurn {
                 // trailer and consume the one authoritative outcome below.
                 break;
               }
-              if (event.kind === 'text-start') {
+              if (event.kind === 'provider-queue') {
+                // Trae parks requests in a server-side queue; the idle watchdog
+                // must not count that wait against the stream.
+                if (event.queued !== waitingInProviderQueue) {
+                  if (event.queued) requestWatchdog?.pause();
+                  else requestWatchdog?.resume();
+                  waitingInProviderQueue = event.queued;
+                }
+                queue.push({
+                  type: 'provider_queue',
+                  id: this.deps.newId(),
+                  turnId,
+                  ts: this.deps.now(),
+                  queued: event.queued,
+                  ...(event.position === undefined ? {} : { position: event.position }),
+                });
+              } else if (event.kind === 'text-start') {
                 if (stepText.length > 0 && event.providerItemBoundary === true) {
                   attemptSawReplayBarrier = true;
                   await flushStep();

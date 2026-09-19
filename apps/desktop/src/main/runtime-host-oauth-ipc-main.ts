@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { traeAccountFields } from '@maka/core/llm-connections';
 import { randomUUID } from 'node:crypto';
 import {
   decodeRuntimePolicyEntityId,
@@ -96,6 +97,16 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
     deps.ipcMain.handle(channel('get-auth-url'), async (_event, rawTarget: unknown) => {
       const selection = decodeOAuthLoginSelection(rawTarget);
       if (selection.kind === 'invalid') return invalidConnectionIdentity();
+      // The account variant rides on a create target; only Trae declares one.
+      let accountFields: ReturnType<typeof traeAccountFields>;
+      try {
+        accountFields = traeAccountFields(
+          selection.kind === 'create' ? selection.traeAccount : undefined,
+          provider,
+        );
+      } catch {
+        return actionFailure('Invalid Trae account type');
+      }
       const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
       if (connectionId) {
         const existing = findRuntimeHostAccountConnectionById(
@@ -115,7 +126,9 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
           attemptId,
           connectionId
             ? { kind: 'existing', connectionId }
-            : { kind: 'create', providerType: provider },
+            : provider === 'trae'
+              ? { kind: 'create', providerType: provider, ...accountFields }
+              : { kind: 'create', providerType: provider },
         );
         startedOnHost = true;
         if (started.connection.providerType !== provider) {
@@ -177,13 +190,15 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
           if (!sameOAuthConnectionIdentity(activeAttempt.connection, terminal.connection)) {
             return actionFailure('OAuth authorization changed Connection identity');
           }
-          // Authentication is authoritative once the Host commits the credential.
-          // Catalog discovery is useful follow-up work, but a transient discovery
-          // failure must not turn a committed login into a false UI failure.
-          await synchronizeRuntimeHostAccountConnectionById(
-            deps.client,
-            terminal.connection.connectionId,
-          ).catch(() => undefined);
+          // Login is already committed; expose an import failure without losing that account.
+          try {
+            await synchronizeRuntimeHostAccountConnectionById(deps.client, terminal.connection.connectionId);
+          } catch {
+            if (provider === 'trae') {
+              deps.emitConnectionListChanged();
+              return actionFailure('Trae is signed in, but model sync failed. Open the connection and refresh its model list.', 'refresh_failed');
+            }
+          }
           deps.emitConnectionListChanged();
           return { ok: true as const, connection: terminal.connection };
         } catch {
@@ -376,16 +391,27 @@ function oauthAccountCandidates(
 }
 
 type OAuthLoginSelection =
-  | { readonly kind: 'create' }
+  | { readonly kind: 'create'; readonly traeAccount?: string }
   | { readonly kind: 'exact'; readonly connectionId: string }
   | { readonly kind: 'invalid' };
 
 function decodeOAuthLoginSelection(value: unknown): OAuthLoginSelection {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { kind: 'invalid' };
-  const candidate = value as { readonly kind?: unknown; readonly connectionId?: unknown };
+  const candidate = value as {
+    readonly kind?: unknown;
+    readonly connectionId?: unknown;
+    readonly traeAccount?: unknown;
+  };
   const keys = Object.keys(value).sort();
   if (candidate.kind === 'create') {
-    return keys.length === 1 && keys[0] === 'kind' ? { kind: 'create' } : { kind: 'invalid' };
+    if (keys.length === 1 && keys[0] === 'kind') return { kind: 'create' };
+    // The provider handler validates the variant against its own provider.
+    return keys.length === 2 &&
+      keys[0] === 'kind' &&
+      keys[1] === 'traeAccount' &&
+      typeof candidate.traeAccount === 'string'
+      ? { kind: 'create', traeAccount: candidate.traeAccount }
+      : { kind: 'invalid' };
   }
   if (candidate.kind !== 'existing' || typeof candidate.connectionId !== 'string') {
     return { kind: 'invalid' };

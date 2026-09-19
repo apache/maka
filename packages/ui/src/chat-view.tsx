@@ -62,6 +62,7 @@ import { useTranscriptProjection } from './use-transcript-projection.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
   ModelProviderRetryIndicator,
+  ModelProviderQueueIndicator,
   LocalizedChatMessage,
   ProcessingBlock,
   TurnFooter,
@@ -887,6 +888,7 @@ export function ChatView(props: {
                                   onStreamingSettled: props.onStreamingSettled,
                                   runningStatus,
                                   providerRetry: activeContent?.turnId === tailTurnId ? activeContent.providerRetry : undefined,
+                                  providerQueue: activeContent?.turnId === tailTurnId ? activeContent.providerQueue : undefined,
                                   initialLiveContent: activeContent?.turnId
                                     === props.initialLiveContentSnapshot?.turnId
                                     ? props.initialLiveContentSnapshot?.entries
@@ -923,7 +925,9 @@ export function ChatView(props: {
                   that same TurnView can take over. */}
               {streamingActive && !hasRenderedLiveTurn && (
                 <section className="maka-turn" data-live-streaming="true">
-                  {activeContent && activeContent.turnId === tailTurnId && activeContent.providerRetry ? (
+                  {activeContent && activeContent.turnId === tailTurnId && activeContent.providerQueue ? (
+                    <ModelProviderQueueIndicator queue={activeContent.providerQueue} />
+                  ) : activeContent && activeContent.turnId === tailTurnId && activeContent.providerRetry ? (
                     <LocalizedChatMessage
                       accessibleLabel={conversationCopy.messages.assistantAriaLabel}
                       sender="assistant"

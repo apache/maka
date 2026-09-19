@@ -52,6 +52,7 @@ import nvidiaMarkUrl from '../assets/provider-brands/nvidia.svg';
 import opencodeBrandMark from '../assets/provider-brands/opencode.svg';
 import openrouterBrandMark from '../assets/provider-brands/openrouter.svg';
 import stepfunBrandMark from '../assets/provider-brands/stepfun.svg';
+import traeBrandMark from '../assets/provider-brands/trae-color.svg';
 import vercelBrandMark from '../assets/provider-brands/vercel.svg';
 import volcengineBrandMark from '../assets/provider-brands/volcengine.svg';
 import xaiMarkUrl from '../assets/provider-brands/xai.svg';
@@ -376,6 +377,8 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
       return <ProviderAssetMask src={groqBrandMark} />;
     case 'openrouter':
       return <img src={openrouterBrandMark} alt="" />;
+    case 'trae':
+      return <img src={traeBrandMark} alt="" />;
     case 'alibaba':
     case 'alibaba-cn':
     case 'alibaba-coding-plan-cn':
