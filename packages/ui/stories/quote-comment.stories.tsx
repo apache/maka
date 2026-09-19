@@ -176,7 +176,7 @@ function TranscriptQuoteLoop(props: {
       <ChatView
         {...baseChat}
         handleRef={chatViewRef}
-        pendingQuoteCount={quotes.length}
+        pendingQuotes={quotes}
         messages={props.messages ?? [REPLY_TURN]}
         onQuoteSelection={(selection) =>
           setQuotes((current) => [
@@ -260,23 +260,36 @@ function typeNote(panel: HTMLElement, note: string) {
   field!.dispatchEvent(new InputEvent('input', { bubbles: true }));
 }
 
-/** The ordinal pinned at the excerpt's end while a note is being written:
- *  the staged slot's number, on the text itself rather than on the card. */
-async function expectOrdinal(label: string) {
-  const badge = await waitFor(() => {
-    const el = document.querySelector<HTMLElement>('.maka-quote-ordinal');
-    expect(el?.checkVisibility()).toBe(true);
-    return el as HTMLElement;
+/** Ordinals pinned at their excerpts' ends: every staged quote keeps one, and
+ *  the note being written borrows the next slot's number. `total` is the count
+ *  of pins that should be on the transcript, so a pin quietly dropping is as
+ *  much a failure as a wrong label. */
+async function expectOrdinal(label: string, total: number) {
+  const badges = await waitFor(() => {
+    const all = [...document.querySelectorAll<HTMLElement>('.maka-quote-ordinal')].filter(
+      (candidate) => candidate.checkVisibility(),
+    );
+    expect(all.length).toBe(total);
+    return all;
   });
-  expect(badge.textContent?.trim()).toBe(label);
-  const highlight = CSS.highlights?.get('maka-quote-annotate');
-  const range = highlight ? ([...highlight][0] as Range | undefined) : undefined;
-  const rects = range?.getClientRects();
-  const last = rects?.[rects.length - 1];
-  expect(last).toBeTruthy();
-  const box = badge.getBoundingClientRect();
-  expect(Math.abs(box.top + box.height / 2 - (last!.top + last!.height / 2))).toBeLessThan(16);
-  expect(Math.abs(box.left + box.width / 2 - last!.right)).toBeLessThan(24);
+  const badge = badges.find((candidate) => candidate.textContent?.trim() === label);
+  expect(badge).toBeTruthy();
+  // A pin belongs at its own excerpt's end: it must sit where one of the
+  // painted ranges — the note in flight or a staged quote's — finishes.
+  const ends: { x: number; y: number }[] = [];
+  for (const name of ['maka-quote-annotate', 'maka-quote-staged'] as const) {
+    const highlight = CSS.highlights?.get(name);
+    for (const range of highlight ? [...highlight] : []) {
+      const rects = (range as Range).getClientRects();
+      const last = rects[rects.length - 1];
+      if (last) ends.push({ x: last.right, y: last.top + last.height / 2 });
+    }
+  }
+  const box = (badge as HTMLElement).getBoundingClientRect();
+  const center = { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  expect(
+    ends.some((end) => Math.abs(center.x - end.x) < 24 && Math.abs(center.y - end.y) < 16),
+  ).toBe(true);
 }
 
 async function visiblePanel(): Promise<HTMLElement> {
@@ -393,6 +406,10 @@ export const TranscriptQuoteGesture: Story = {
       expect(el).toBeTruthy();
       return el as HTMLElement;
     });
+    // Submitting keeps the mark: the staged excerpt stays highlighted with
+    // its ordinal pinned at the end, so the transcript still shows what was
+    // quoted.
+    await expectOrdinal('1', 1);
     // The token's editor anchors back at the excerpt, with the note prefilled.
     await userEvent.click(token);
     const reopened = await visiblePanel();
@@ -430,39 +447,45 @@ export const TranscriptTwoAnnotations: Story = {
     await selectExcerpt('turn-3', '第 6 次被 Vercel 的免费层限流拦截');
     await userEvent.click(await quoteActionButton());
     const firstPanel = await visiblePanel();
-    await expectOrdinal('1');
+    await expectOrdinal('1', 1);
     typeNote(firstPanel, '限流这段先核');
     await userEvent.click(panelButton(firstPanel, '引用'));
-    // Staging the first token re-renders the transcript (pendingQuoteCount);
-    // select the next excerpt only once that churn has landed, or the new
-    // range collapses on the text nodes it replaces.
+    // Staging the first token re-renders the transcript (pendingQuotes); the
+    // submitted excerpt keeps its highlight and pin instead of losing the
+    // mark with the panel. Select the next excerpt only once that churn has
+    // landed, or the new range collapses on the text nodes it replaces.
     await waitFor(() =>
       expect(document.querySelectorAll('.maka-composer-quote-token').length).toBe(1),
     );
+    await expectOrdinal('1', 1);
 
-    // The second annotation is numbered by what is already staged.
+    // The second annotation is numbered by what is already staged, and the
+    // first pin stays put while it is written.
     await selectExcerpt('turn-4', '核对限流规则，再判断是否能降速继续');
     await userEvent.click(await quoteActionButton());
     const secondPanel = await visiblePanel();
-    await expectOrdinal('2');
+    await expectOrdinal('2', 2);
     await userEvent.click(panelButton(secondPanel, '引用'));
 
-    // Both staged; each token's editor anchors back at its own excerpt with
-    // its own ordinal, so which staged quote it is never ambiguous.
-    const tokens = await waitFor(() => {
+    // Both staged; each excerpt keeps its own pin and each token's editor
+    // anchors back at its own excerpt, so which staged quote it is never
+    // ambiguous.
+    await waitFor(() => {
       const all = document.querySelectorAll<HTMLElement>('.maka-composer-quote-token');
       expect(all.length).toBe(2);
-      return [...all] as HTMLElement[];
     });
+    await expectOrdinal('1', 2);
+    await expectOrdinal('2', 2);
+    const tokens = [...document.querySelectorAll<HTMLElement>('.maka-composer-quote-token')];
     await userEvent.click(tokens[0]);
     const firstEdit = await visiblePanel();
-    await expectOrdinal('1');
+    await expectOrdinal('1', 2);
     expect(firstEdit.closest('.maka-quote-annotation-layer')).toBeTruthy();
     expect(firstEdit.querySelector('[contenteditable="true"]')?.textContent).toBe('限流这段先核');
     await userEvent.click(panelButton(firstEdit, '取消'));
     await userEvent.click(tokens[1]);
     const secondEdit = await visiblePanel();
-    await expectOrdinal('2');
+    await expectOrdinal('2', 2);
     expect(secondEdit.closest('.maka-quote-annotation-layer')).toBeTruthy();
   },
 };

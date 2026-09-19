@@ -55,6 +55,7 @@ import type {
   QuoteRef,
   ShellRunUpdate,
 } from '@maka/core/events';
+import { createPortal } from 'react-dom';
 import { Badge, Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
@@ -385,11 +386,12 @@ export function ChatView(props: {
    */
   onQuoteAnnotationSubmit?(index: number, comment: string): void;
   /**
-   * How many quotes the host already stages. The note panel numbers a fresh
-   * annotation with the slot it will take, matching the ordinal the staged
-   * list will show for it. Defaults to 0.
+   * The host's staged quotes. Each one whose excerpt still lives in this
+   * transcript keeps a painted highlight and a numbered marker at the
+   * excerpt's end, so several annotations stay distinguishable by position;
+   * a fresh annotation is numbered with the slot it will take.
    */
-  pendingQuoteCount?: number;
+  pendingQuotes?: readonly QuoteRef[];
 } & ChatViewGoalIndicatorProps) {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
@@ -669,7 +671,10 @@ export function ChatView(props: {
     comment?: string;
     anchor: { x: number; y: number };
   } | null>(null);
-  const [ordinalAnchor, setOrdinalAnchor] = useState<{ x: number; y: number } | null>(null);
+  // Every staged quote keeps a numbered pin at its own excerpt's end — the
+  // ordinal the composer list shows for it — plus the excerpt a fresh
+  // annotation is about to take.
+  const [quoteMarks, setQuoteMarks] = useState<{ index: number; x: number; y: number }[]>([]);
   const barVisible =
     selectionQuote !== null && annotatingSelection === null && editingQuote === null;
   const panelVisible = annotatingSelection !== null || editingQuote !== null;
@@ -694,9 +699,6 @@ export function ChatView(props: {
       clearSelectionQuote();
     },
   });
-  // The staged ordinal rides on the excerpt's end, not on the panel, so the
-  // number says where the quote lives rather than decorating the card.
-  const ordinalLayer = useLayer({ mode: 'fixed', lightDismiss: false });
   useEffect(() => {
     if (barVisible) selectionActionsLayer.show();
     else selectionActionsLayer.hide();
@@ -705,11 +707,6 @@ export function ChatView(props: {
     if (panelVisible) annotationLayer.show();
     else annotationLayer.hide();
   }, [panelVisible, annotationLayer.show, annotationLayer.hide]);
-  const ordinalVisible = panelVisible && ordinalAnchor !== null;
-  useEffect(() => {
-    if (ordinalVisible) ordinalLayer.show();
-    else ordinalLayer.hide();
-  }, [ordinalVisible, ordinalLayer.show, ordinalLayer.hide]);
   const selectionActionsLabel = [
     props.onQuoteSelection ? copy.quoteSelection : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
@@ -769,29 +766,82 @@ export function ChatView(props: {
   const annotationTarget = editingQuote ?? annotatingSelection;
   useEffect(() => {
     const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
-    if (!annotationTarget?.turnId || !highlights) {
-      setOrdinalAnchor(null);
-      return undefined;
-    }
+    if (!annotationTarget?.turnId || !highlights) return undefined;
     const turn = scrollRef.current?.querySelector(
       `[data-turn-id="${CSS.escape(annotationTarget.turnId)}"]`,
     );
     const range = turn ? findQuoteTextRange(turn, annotationTarget.text) : null;
-    if (!range) {
-      setOrdinalAnchor(null);
-      return undefined;
-    }
+    if (!range) return undefined;
     highlights.set('maka-quote-annotate', new Highlight(range));
-    // The ordinal marks where the excerpt ends, the way the staged list
-    // numbers the quote: last line's right edge, centered on the line.
-    const rects = range.getClientRects();
-    const last = rects[rects.length - 1];
-    setOrdinalAnchor(last ? { x: last.right, y: last.top + last.height / 2 } : null);
     return () => {
       highlights.delete('maka-quote-annotate');
-      setOrdinalAnchor(null);
     };
   }, [annotationTarget, selectionQuote, scrollRef]);
+
+  // Every excerpt a staged quote still points at keeps a painted highlight
+  // and a numbered pin at its end after the panel closes; the fresh
+  // annotation borrows the next slot's number while it is written. Ranges
+  // are re-found after every commit because the virtualizer remounts turns
+  // underneath us, and positions re-measure on capture-phase scroll because
+  // a scroll that swaps nothing produces no commit.
+  const measureQuoteMarks = useCallback(() => {
+    const marks: { index: number; x: number; y: number }[] = [];
+    const ranges: Range[] = [];
+    const root = scrollRef.current;
+    const collect = (index: number, turnId: string | undefined, text: string) => {
+      if (!root || !turnId || typeof CSS === 'undefined' || !CSS.escape) return;
+      const turn = root.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
+      const range = turn ? findQuoteTextRange(turn, text) : null;
+      const rects = range?.getClientRects();
+      const last = rects?.[rects.length - 1];
+      if (!range || !last) return;
+      ranges.push(range);
+      marks.push({ index, x: last.right, y: last.top + last.height / 2 });
+    };
+    props.pendingQuotes?.forEach((quote, index) =>
+      collect(index, quote.sourceTurnId, quote.text),
+    );
+    if (annotatingSelection && editingQuote === null) {
+      collect(props.pendingQuotes?.length ?? 0, annotatingSelection.turnId, annotatingSelection.text);
+    }
+    return { marks, ranges };
+  }, [props.pendingQuotes, annotatingSelection, editingQuote, scrollRef]);
+
+  useLayoutEffect(() => {
+    const { marks, ranges } = measureQuoteMarks();
+    const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
+    if (ranges.length > 0) highlights?.set('maka-quote-staged', new Highlight(...ranges));
+    else highlights?.delete('maka-quote-staged');
+    setQuoteMarks((current) =>
+      current.length === marks.length &&
+      current.every(
+        (mark, i) =>
+          mark.index === marks[i].index && mark.x === marks[i].x && mark.y === marks[i].y,
+      )
+        ? current
+        : marks,
+    );
+    return () => {
+      highlights?.delete('maka-quote-staged');
+    };
+  });
+
+  useEffect(() => {
+    const onScroll = () => {
+      const { marks } = measureQuoteMarks();
+      setQuoteMarks((current) =>
+        current.length === marks.length &&
+        current.every(
+          (mark, i) =>
+            mark.index === marks[i].index && mark.x === marks[i].x && mark.y === marks[i].y,
+        )
+          ? current
+          : marks,
+      );
+    };
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    return () => document.removeEventListener('scroll', onScroll, { capture: true });
+  }, [measureQuoteMarks]);
 
   // The panel hangs from the live quote once the restored selection settles
   // into one; until then the anchor measured at open time holds it. A
@@ -1156,18 +1206,20 @@ export function ChatView(props: {
               },
             )
           : null}
-        {ordinalAnchor && ordinalVisible
-          ? ordinalLayer.render(
-              <Badge
-                variant="info"
-                label={(editingQuote?.index ?? props.pendingQuoteCount ?? 0) + 1}
-                className="maka-quote-ordinal"
-              />,
-              {
-                x: ordinalAnchor.x,
-                y: ordinalAnchor.y,
-                style: { transform: 'translate(-30%, -50%)' },
-              },
+        {quoteMarks.length > 0 && typeof document !== 'undefined'
+          ? createPortal(
+              <div className="maka-quote-marks">
+                {quoteMarks.map((mark) => (
+                  <Badge
+                    key={mark.index}
+                    variant="info"
+                    label={mark.index + 1}
+                    className="maka-quote-ordinal"
+                    style={{ left: mark.x, top: mark.y }}
+                  />
+                ))}
+              </div>,
+              document.body,
             )
           : null}
         {barVisible
