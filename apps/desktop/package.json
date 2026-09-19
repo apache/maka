@@ -75,7 +75,7 @@
     "@ant-design/icons-svg": "4.6.0",
     "@astryxdesign/core": "0.6.1",
     "@astryxdesign/theme-neutral": "0.6.1",
-    "@babel/parser": "7.29.7",
+    "@babel/parser": "8.0.5",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@maka/ui": "0.1.0",
