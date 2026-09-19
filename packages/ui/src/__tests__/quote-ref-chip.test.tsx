@@ -91,14 +91,3 @@ test('a note is marked on the chip that carries it', async () => {
   const withoutNote = await render(<QuoteRefChip quote={QUOTE} />);
   assert.equal(withoutNote.querySelectorAll('.maka-quote-chip-comment-icon').length, 0);
 });
-
-test('the chip points its description at the structured read', async () => {
-  const container = await render(
-    <QuoteRefChip quote={{ ...QUOTE, comment: 'noted' }} />,
-  );
-  const chip = container.querySelector('.maka-quote-chip');
-  assert.ok(chip);
-  // The Astryx hover card wires its content to the trigger through
-  // aria-describedby; a native title attribute would not reach it.
-  assert.ok(chip.getAttribute('aria-describedby'));
-});

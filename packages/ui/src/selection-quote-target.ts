@@ -98,20 +98,26 @@ export function resolveQuoteTarget(
  * Rebuilds a DOM Range covering a stored excerpt inside a turn element, so a
  * staged quote's note can be edited where the excerpt lives rather than over
  * the composer's token. The match folds whitespace the way
- * {@link normalizeQuoteText} does: a selection spanning element boundaries
- * stores newlines the raw text nodes never carried, so a literal search would
- * miss every multi-block quote.
+ * {@link normalizeQuoteText} does — and one step further: a selection
+ * spanning element boundaries stores newlines the raw text nodes never
+ * carried, so a needle space also matches a bare transition between two
+ * text nodes. Without that, a quote covering two paragraphs could never be
+ * re-anchored on its own excerpt.
  */
 export function findQuoteTextRange(turn: Element, excerpt: string): Range | null {
   const document = turn.ownerDocument;
   const walker = document.createTreeWalker(turn, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
   let raw = '';
+  const nodeStart: number[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     nodes.push(node as Text);
+    nodeStart.push(raw.length);
     raw += node.nodeValue ?? '';
   }
+  const starts = new Set(nodeStart);
   const boundary: number[] = [];
+  const isNodeStart: boolean[] = [];
   let haystack = '';
   let pendingSpace = false;
   for (let i = 0; i < raw.length; i += 1) {
@@ -122,18 +128,47 @@ export function findQuoteTextRange(turn: Element, excerpt: string): Range | null
     if (pendingSpace) {
       haystack += ' ';
       boundary.push(i);
+      isNodeStart.push(false);
       pendingSpace = false;
     }
     haystack += raw[i];
     boundary.push(i);
+    isNodeStart.push(starts.has(i));
   }
   const needle = normalizeQuoteText(excerpt);
   if (needle === null) return null;
-  const at = haystack.indexOf(needle);
+  let at = haystack.indexOf(needle);
+  let end = at === -1 ? -1 : at + needle.length;
+  if (at === -1 && needle.includes(' ')) {
+    // The needle's first word is all literal characters, so a boundary-tolerant
+    // match can only start where it appears contiguously.
+    const firstWord = needle.slice(0, needle.indexOf(' '));
+    for (let s = haystack.indexOf(firstWord); s !== -1; s = haystack.indexOf(firstWord, s + 1)) {
+      let i = s;
+      let j = 0;
+      while (j < needle.length) {
+        if (needle[j] === ' ') {
+          if (haystack[i] === ' ') i += 1;
+          else if (i >= haystack.length || !isNodeStart[i]) break;
+          j += 1;
+        } else if (haystack[i] === needle[j]) {
+          i += 1;
+          j += 1;
+        } else {
+          break;
+        }
+      }
+      if (j === needle.length) {
+        at = s;
+        end = i;
+        break;
+      }
+    }
+  }
   if (at === -1) return null;
   // The needle is trimmed, so both ends resolve to real text-node characters.
   const startRaw = boundary[at];
-  const endRaw = boundary[at + needle.length - 1] + 1;
+  const endRaw = boundary[end - 1] + 1;
   const range = document.createRange();
   let offset = 0;
   let started = false;

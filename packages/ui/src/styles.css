@@ -100,9 +100,7 @@
   }
 }
 
-.maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
-.maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
-.maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--state-hover-bg); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
+
 
 
 /* One shape. The tone and emphasis modifiers that used to sit here — a filled
@@ -153,9 +151,7 @@
    the next time a leading moves. The chip's type lives on
    `.maka-quote-chip-text`, which is why the derived scan needed two arms
    rather than three to see it at all. */
-.maka-quote-chip { display: inline-flex; gap: 4px; height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; padding-left: 8px; border-radius: var(--radius-pill); background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
-.maka-quote-chip-removable { padding-right: 2px; }
-.maka-quote-chip-readonly { padding-right: 8px; }
+.maka-quote-chip { display: inline-flex; gap: 4px; height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; padding-inline: 8px; border-radius: var(--radius-pill); background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
 .maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
 .maka-quote-chip-text {
   font: var(--maka-text-supporting);
@@ -179,16 +175,6 @@
   white-space: nowrap;
 }
 .maka-quote-chip-label { color: var(--muted-foreground); }
-.maka-quote-chip-remove {
-  width: 16px;
-  height: 16px;
-  min-width: 16px;
-  min-height: 16px;
-  border-radius: 50%;
-  padding: 0;
-}
-.maka-quote-chip-remove > svg,
-.maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
 
 /* Marks that the excerpt carries a note. The note itself lives in the
    hover card and in the model-facing content, not in the chip line. */
@@ -199,7 +185,6 @@
    message so neither surface can drift from the other. Layout and type come
    from the Astryx components inside; this class only caps the card's width. */
 .maka-quote-hover-card { max-width: 360px; }
-.maka-quote-hover-card blockquote { white-space: pre-wrap; }
 
 /* The annotation panel is content only: each host owns the surface it floats
    on (the composer's Popover, the transcript's annotation layer), so the same
@@ -208,11 +193,10 @@
 /* The quote's ordinal sits on the panel's corner like a margin marker, the
    same way the staged list numbers it. */
 .maka-quote-comment-index { position: absolute; top: -8px; right: -8px; }
-/* Ordinals are pinned at their excerpt's end inside a viewport-fixed overlay
-   so they ride above the transcript; the whole overlay is display-only and
-   must never catch a click or steal the selection under it. */
-.maka-quote-marks { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
-.maka-quote-ordinal { position: absolute; transform: translate(-50%, -110%); pointer-events: none; }
+/* Ordinals pin just above their excerpt's end, ported to the viewport so a
+   transformed ancestor cannot move the containing block; each is display-only
+   and must never catch a click or steal the selection under it. */
+.maka-quote-ordinal { position: fixed; z-index: var(--z-sticky, 20); transform: translate(-50%, -110%); pointer-events: none; }
 
 /* Excerpts carrying a quote are painted through this named highlight rather
    than a live selection, so the mark survives both the note input taking the

@@ -1674,6 +1674,17 @@ export const Composer = forwardRef<
    *  its hover card stays down until the pointer leaves, or the token and the
    *  panel would both describe the same quote at once. */
   const [annotatedQuoteIndex, setAnnotatedQuoteIndex] = useState<number | null>(null);
+  // The pendingQuotes bucket is mutated in place, so its identity cannot
+  // signal a splice — the staged quotes' own identities can. Either index
+  // state left pointing past a removal or a send would reopen a panel or a
+  // hover suppression onto whatever now occupies that slot.
+  const stagedQuoteKey = props.pendingQuotes
+    ?.map((quote) => `${quote.sourceTurnId ?? ''}${quote.text}`)
+    .join('');
+  useEffect(() => {
+    setEditingQuoteIndex(null);
+    setAnnotatedQuoteIndex(null);
+  }, [stagedQuoteKey]);
   useEffect(() => {
     if (attachmentLightboxOpen || !attachmentLightbox) return;
     // Unmount one commit AFTER the closed render, never in it: child effects

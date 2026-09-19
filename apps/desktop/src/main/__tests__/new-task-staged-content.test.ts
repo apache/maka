@@ -29,9 +29,9 @@ import { NEW_TASK_PENDING_KEY } from '../../renderer/pending-items.js';
 import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 import {
   useComposerAttachments,
+  useComposerQuotes,
   type ComposerAttachmentService,
 } from '../../renderer/features/conversation/index.js';
-import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer-quotes.js';
 import {
   composerModelSupportsVision,
   type NewChatModel,
@@ -194,7 +194,7 @@ function modelChoice(model: string, supportsVision: boolean): ChatModelChoice {
 }
 
 test('a Session keeps its own staged quotes, and the new-task bucket keeps its own', async () => {
-  const probe = await mountProbe(useAppShellComposerQuotes);
+  const probe = await mountProbe(useComposerQuotes);
 
   await probe.render(NEW_TASK_PENDING_KEY);
   await act(() => probe.latest().addQuote({ text: 'quoted for a new task' }));
@@ -232,7 +232,7 @@ test('a Session keeps its own staged quotes, and the new-task bucket keeps its o
 });
 
 test('a staged quote carries its note, and editing the note leaves the quote in place', async () => {
-  const probe = await mountProbe(useAppShellComposerQuotes);
+  const probe = await mountProbe(useComposerQuotes);
   await probe.render('session-1');
   await act(() => probe.latest().addQuote({ text: 'first excerpt' }));
   await act(() => probe.latest().addQuote({ text: 'second excerpt', comment: '  why this one  ' }));
