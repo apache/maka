@@ -153,7 +153,7 @@ const largeConnection = makeConnection({
 const alibabaTokenPlanConnections = [
   makeConnection({
     slug: 'alibaba-token-plan-cn',
-    name: 'Alibaba Token Plan（团队版）',
+    name: 'Alibaba Token Plan 中国站',
     providerType: 'alibaba-token-plan-cn',
     defaultModel: 'qwen3.8-max',
     lastTestStatus: 'verified',
