@@ -204,7 +204,10 @@
 /* The annotation panel is content only: each host owns the surface it floats
    on (the composer's Popover, the transcript's annotation layer), so the same
    note reads the same wherever it is written. */
-.maka-quote-comment-panel { width: 320px; max-width: 100%; }
+.maka-quote-comment-panel { width: 320px; max-width: 100%; position: relative; }
+/* The quote's ordinal sits on the panel's corner like a margin marker, the
+   same way the staged list numbers it. */
+.maka-quote-comment-index { position: absolute; top: -8px; right: -8px; }
 
 /* While a note is written the input owns the DOM selection; the excerpt's
    mark is painted through this named highlight instead, which focus cannot

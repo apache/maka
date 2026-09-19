@@ -384,6 +384,12 @@ export function ChatView(props: {
    * {@link ChatViewHandle.openQuoteAnnotation}.
    */
   onQuoteAnnotationSubmit?(index: number, comment: string): void;
+  /**
+   * How many quotes the host already stages. The note panel numbers a fresh
+   * annotation with the slot it will take, matching the ordinal the staged
+   * list will show for it. Defaults to 0.
+   */
+  pendingQuoteCount?: number;
 } & ChatViewGoalIndicatorProps) {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
@@ -1085,6 +1091,7 @@ export function ChatView(props: {
                 >
                   <QuoteCommentPanel
                     key={editingQuote.index}
+                    index={editingQuote.index}
                     comment={editingQuote.comment}
                     title={conversationCopy.composer.quoteCommentTitle}
                     submitLabel={conversationCopy.composer.quoteCommentSave}
@@ -1103,6 +1110,7 @@ export function ChatView(props: {
                   onMouseDown={(event) => event.preventDefault()}
                 >
                   <QuoteCommentPanel
+                    index={props.pendingQuoteCount ?? 0}
                     title={copy.quoteCommentTitle}
                     submitLabel={copy.quoteSelection}
                     skipLabel={copy.quoteCommentSkip}

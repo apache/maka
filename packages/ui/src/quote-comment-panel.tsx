@@ -19,6 +19,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
+  Badge,
   Button as UiButton,
   ChatComposerInput,
   HStack,
@@ -31,6 +32,9 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
 export interface QuoteCommentPanelProps {
+  /** The quote's position in the host's staged list, shown as a 1-based
+   *  ordinal so several annotations stay distinguishable. */
+  index: number;
   /** Note already staged. Empty when the panel gates a fresh quote. */
   comment?: string;
   title: string;
@@ -75,6 +79,11 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
       role="group"
       aria-label={props.title}
     >
+      <Badge
+        variant="info"
+        label={props.index + 1}
+        className="maka-quote-comment-index"
+      />
       <ChatComposerInput
         handleRef={inputRef}
         label={copy.quoteCommentLabel}

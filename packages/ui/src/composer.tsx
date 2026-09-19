@@ -1984,6 +1984,7 @@ export const Composer = forwardRef<
                       hasEscapeDismiss={false}
                       content={
                         <QuoteCommentPanel
+                          index={index}
                           comment={quote.comment}
                           title={copy.quoteCommentTitle}
                           submitLabel={copy.quoteCommentSave}
