@@ -134,6 +134,8 @@ export const ALLOWED = {
     // facade on this fiber.
     useSessionNavigationReads: 1,
     useSessionCollaborationDialog: 1,
+    // A selected-Session overlay read only; SessionSettingsProvider owns the
+    // write controller. The shell still derives its model and mode controls.
     useSessionSettingIntent: 1,
     useShellAppearance: 1,
     useShellChatModel: 1,
