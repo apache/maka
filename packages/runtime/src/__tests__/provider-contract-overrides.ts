@@ -54,7 +54,14 @@ export interface ProviderContractOverrideBinding {
   run(): Promise<void>;
 }
 
+import { runTraeContract } from './trae-provider-fixture.js';
+
 export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverrideBinding[] = [
+  {
+    keys: ['trae:discovery', 'trae:exact-model-id', 'trae:tool-loop', 'trae:reasoning-replay'],
+    title: 'Trae native catalog, mode routes, tools and reasoning isolation',
+    run: runTraeContract,
+  },
   {
     keys: ['github-copilot:discovery'],
     title:

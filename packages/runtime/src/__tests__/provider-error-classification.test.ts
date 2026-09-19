@@ -760,3 +760,23 @@ test('auth classification matches authentication without matching authority', ()
     'unknown',
   );
 });
+
+test('Trae stream refusals for plan and quota classify as billing, not credentials', () => {
+  // 1005 is a model outside the account's plan (extra.plan); 4008 is an
+  // exhausted quota. Both arrive inside the stream with a Trae code, and a
+  // signed-in user must not be sent to re-authenticate for either.
+  for (const [error, expected] of [
+    [
+      Object.assign(new Error('Trae subscription does not include this model (requires plan 5)'), {
+        code: 'trae_1005',
+      }),
+      'provider_billing',
+    ],
+    [
+      Object.assign(new Error('Trae account quota exhausted'), { code: 'trae_4008' }),
+      'provider_billing',
+    ],
+  ] as const) {
+    assert.equal(providerFailureDiagnostic(error).errorClass, expected);
+  }
+});

@@ -29,6 +29,7 @@ export type {
   CommandCodeBrowserLoginResult,
   CommandCodeBrowserLoginStartResult,
   ConnectionOAuthBridge,
+  ConnectionOAuthLoginTarget,
   ConnectionOAuthProviderBridge,
   ConnectionSettingsServices,
   ConnectionsBridge,

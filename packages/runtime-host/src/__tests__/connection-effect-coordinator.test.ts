@@ -1388,6 +1388,40 @@ test('rejects an oversized final catalog before publishing a recovery intent', a
   });
 });
 
+test('model status preview discovers through the Host without mutating its catalog', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(stores, 0, connectionDraft('preview', 'ollama'));
+    const before = await stores.connectionCatalog.getSnapshot();
+    let changed = 0;
+    let closes = 0;
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () =>
+        recordingTransport(() => {
+          closes += 1;
+        }),
+      runModelDiscovery: async () => ({ ok: true, models: [{ id: 'fresh-model' }] }),
+      now: () => 1234,
+      onCommittedMutation: () => {
+        changed += 1;
+      },
+    });
+    const result = await coordinator.handlers['connection.models.fetch'](
+      { connectionId: connection.connectionId, preview: true },
+      context,
+    );
+    assert.deepEqual(result, {
+      ok: true,
+      result: { kind: 'preview', models: [{ id: 'fresh-model' }], fetchedAt: 1234 },
+    });
+    assert.deepEqual(await stores.connectionCatalog.getSnapshot(), before);
+    assert.equal(changed, 0);
+    assert.equal(closes, 1);
+  });
+});
+
 test('serializes one connection, runs different connections concurrently, and continues after provider failure', async () => {
   await withFixture(async ({ stores }) => {
     const first = await createConnection(stores, 0, connectionDraft('queue-first', 'ollama'));
@@ -1928,4 +1962,89 @@ function assertSaved(value: OperationOutcome<'connection.onboarding.save'>): ass
   assert.equal(value.ok, true);
   if (!value.ok) return;
   assert.equal(value.result.kind, 'saved');
+}
+
+for (const traeAccount of ['cn', 'cn-solo', 'sg', 'sg-solo'] as const) {
+  test(`Trae ${traeAccount} discovery and connection probe use the stored public identity`, async () => {
+    const { traePublicProfile } = await import('@maka/runtime/trae/public-protocol');
+    const profile = traePublicProfile(traeAccount);
+    await withFixture(async ({ stores }) => {
+      const enrollment = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'public-effects',
+        target: { kind: 'create', providerType: 'trae', traeAccount },
+      });
+      assert.equal(enrollment.kind, 'ready');
+      if (enrollment.kind !== 'ready') return;
+      const saved = await stores.operations.completeInteractiveOAuthLogin(
+        enrollment.ticket,
+        serializeOAuthSubscriptionTokens({
+          access_token: 'public-token',
+          refresh_token: 'public-refresh',
+          expires_at: Date.now() + 3600000,
+          trae: { account: traeAccount, machineId: '1'.repeat(32), deviceId: '2'.repeat(32) },
+        }),
+      );
+      assert.equal(saved.kind, 'committed');
+      const connectionId = enrollment.connection.connectionId;
+      const requests: string[] = [];
+      const coordinator = new HostConnectionEffectCoordinator({
+        stores,
+        activation: new RuntimePolicyActivationGate(),
+        oauthCredentials: new HostOAuthExecutionAuthority(stores),
+        createTransport: () => ({
+          close: async () => {},
+          fetch: async (url, init) => {
+            const endpoint = new URL(String(url));
+            requests.push(endpoint.pathname);
+            assert.equal(endpoint.origin, profile.baseUrl);
+            assert.equal(
+              new Headers(init?.headers).get('authorization'),
+              'Cloud-IDE-JWT public-token',
+            );
+            assert.equal(new Headers(init?.headers).get('x-device-id'), '2'.repeat(32));
+            assert.equal(new Headers(init?.headers).get('x-jwt-token'), null);
+            if (endpoint.pathname.endsWith('/get_detail_param'))
+              return Response.json({
+                config_info_list: [
+                  {
+                    config_name: 'model',
+                    usage: 'chat_completion',
+                    config_switch: true,
+                    display_config: { display_name: 'Model', hot_info: { hot: 135 } },
+                    model_detail_list: [
+                      { model_name: 'model__dev', prompt_max_tokens: 100000, max_tokens: 8000 },
+                    ],
+                  },
+                ],
+              });
+            assert.equal(JSON.parse(String(init?.body)).function, profile.functions[0]);
+            return new Response(
+              'event: output\ndata: {"response":"ready"}\n\nevent: done\ndata: {"finish_reason":"stop"}\n\n',
+            );
+          },
+        }),
+      });
+      const discovery = await coordinator.handlers['connection.models.fetch'](
+        { connectionId },
+        context,
+      );
+      assert.ok(discovery.ok && discovery.result.kind === 'committed');
+      const connection = (await stores.connectionCatalog.getSnapshot()).connections[0]!;
+      assert.deepEqual(connection.enabledModelIds, ['model:standard']);
+      assert.equal(connection.models[0]?.trae?.function, profile.functions[0]);
+      assert.equal(connection.models[0]?.trae?.loadPercent, 135);
+      const tested = await coordinator.handlers['connection.test.run'](
+        { connectionId, modelId: 'model:standard' },
+        context,
+      );
+      assert.ok(tested.ok && tested.result.kind === 'committed');
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+      assert.equal(requests.length, profile.functions.length + 1);
+      assertRedacted(discovery, ['public-token', 'public-refresh']);
+      assertRedacted(tested, ['public-token', 'public-refresh']);
+    });
+  });
 }

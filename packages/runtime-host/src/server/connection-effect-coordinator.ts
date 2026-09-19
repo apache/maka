@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { createTraePublicFetch } from '@maka/runtime/trae/public-protocol';
+import type { OAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
 import type {
   ConnectionCatalogEntry,
   ConnectionModelDiscoveryResult,
@@ -175,6 +177,8 @@ export class HostConnectionEffectCoordinator {
         source: 'fetched',
         fetchedAt: this.#now(),
       };
+      if (input.preview)
+        return { kind: 'preview', models: result.models, fetchedAt: result.fetchedAt };
       const completion = await this.#complete(() =>
         this.#stores.operations.completeModelFetch(prepared.ticket, result),
       );
@@ -460,17 +464,30 @@ export class HostConnectionEffectCoordinator {
       prepared.networkProxy,
       prepared.secretMaterial.networkProxy?.secret,
     );
-    const secret = await this.#connectionSecret(prepared, proxy);
+    const credential = await this.#connectionSecret(prepared, proxy);
+    const secret = typeof credential === 'string' ? credential : credential.access_token;
+    if (
+      prepared.connection.providerType === 'trae' &&
+      (prepared.connection.traeAccount ?? 'employee') !==
+        (typeof credential === 'string' ? 'employee' : (credential.trae?.account ?? 'employee'))
+    ) {
+      throw new Error('Trae credential does not match this account');
+    }
     const transport = this.#createTransport(proxy);
     try {
       const requestHeaders = prepared.secretMaterial.requestHeaders
         ? parseRequestHeaders(prepared.secretMaterial.requestHeaders.secret)
         : {};
       return await run(
-        createRequestCustomizationFetch(transport.fetch, {
-          headers: requestHeaders,
-          bodyOverlay: prepared.connection.requestBodyOverlay,
-        }),
+        createRequestCustomizationFetch(
+          typeof credential !== 'string' && credential.trae
+            ? createTraePublicFetch(transport.fetch, credential.access_token, credential.trae)
+            : transport.fetch,
+          {
+            headers: requestHeaders,
+            bodyOverlay: prepared.connection.requestBodyOverlay,
+          },
+        ),
         secret,
       );
     } finally {
@@ -484,7 +501,7 @@ export class HostConnectionEffectCoordinator {
       'connection' | 'secretMaterial'
     >,
     proxy: ConnectionEffectProxySnapshot | null,
-  ): Promise<string> {
+  ): Promise<string | OAuthSubscriptionTokens> {
     const material = prepared.secretMaterial.connection;
     if (!material) return '';
     if (!isOAuthSubscriptionProvider(prepared.connection.providerType)) return material.secret;
@@ -495,7 +512,7 @@ export class HostConnectionEffectCoordinator {
       material,
       createRefreshTransport: () => this.#createTransport(proxy),
     });
-    return (await binding.resolve()).access_token;
+    return binding.resolve();
   }
 
   async #complete(

@@ -407,7 +407,7 @@ export type DesktopOAuthLoginTarget =
 export interface DesktopOAuthConnectionIdentity {
   readonly connectionId: string;
   readonly slug: string;
-  readonly providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot';
+  readonly providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot' | 'trae';
 }
 
 export type DesktopOAuthAuthorizationStartResult =
@@ -1727,6 +1727,26 @@ export interface MakaBridge {
     start(input: DesktopCommandCodeLoginStartInput): Promise<DesktopCommandCodeLoginStartResult>;
     complete(attemptId: string): Promise<DesktopCommandCodeLoginResult>;
     cancel(attemptId: string): Promise<void>;
+  };
+  traeOAuth: {
+    getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;
+    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult>;
+    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
+    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
+      provider: 'trae';
+      runtimeState:
+        | 'not_logged_in'
+        | 'authorizing'
+        | 'authenticated'
+        | 'refreshing'
+        | 'refresh_failed'
+        | 'storage_failed';
+      errorMessage?: string;
+    }>;
+    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;

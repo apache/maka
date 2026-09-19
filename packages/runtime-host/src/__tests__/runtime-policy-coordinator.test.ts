@@ -1171,6 +1171,42 @@ test('catalog protocol preserves an extra request body after a committed update'
   });
 });
 
+test('catalog protocol preserves the Trae account variant on a connection header', async () => {
+  await withCoordinator(async ({ coordinator, stores }) => {
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'trae-cn',
+        name: 'Trae CN',
+        providerType: 'trae',
+        traeAccount: 'cn',
+        enabled: true,
+        enabledModelIds: [],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+
+    const queried = await coordinator.handlers['connection.catalog.query'](
+      { kind: 'start' },
+      context,
+    );
+    assert.equal(queried.ok, true);
+    if (!queried.ok || queried.result.kind !== 'page') return;
+
+    // Desktop reads every catalog page through this decoder, so a header it
+    // rejects takes the whole catalog down, not just the Trae connection.
+    const decoded = RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.query'].decodeOutput(
+      queried.result,
+    );
+    assert.deepEqual(decoded, queried.result);
+    const header =
+      decoded.kind === 'page'
+        ? decoded.items.find((item) => item.kind === 'connection')
+        : undefined;
+    assert.equal(header?.traeAccount, 'cn');
+  });
+});
+
 test('projects a corrupted runtime policy document as persistence_failed on query', async () => {
   await withCoordinator(async ({ coordinator, root }) => {
     await writeFile(join(root, 'runtime-policy.json'), '{not-json', 'utf8');

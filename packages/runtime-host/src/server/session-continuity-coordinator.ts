@@ -102,6 +102,7 @@ export type RuntimeSessionForwardedEvent = Extract<
       | 'tool_result_preview'
       | 'tool_result'
       | 'steering_message'
+      | 'provider_queue'
       | 'provider_retry';
   }
 >;
@@ -730,11 +731,33 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       ) {
         throw new Error('Runtime event does not belong to the canonical active root Turn');
       }
-      if (event.type === 'provider_retry') {
-        this.#publishCanonical(state, withProviderRetry(state.canonical, event));
+      if (event.type === 'provider_queue') {
+        const clean = withoutProviderProgress(state.canonical);
+        const root = clean.rootTurn;
+        this.#publishCanonical(
+          state,
+          event.queued && root && isLiveTurn(root)
+            ? {
+                ...clean,
+                rootTurn: {
+                  ...root,
+                  providerQueue: {
+                    ...(event.position === undefined ? {} : { position: event.position }),
+                  },
+                },
+              }
+            : clean,
+        );
         return;
       }
-      this.#publishCanonical(state, withoutProviderRetry(state.canonical));
+      if (event.type === 'provider_retry') {
+        this.#publishCanonical(
+          state,
+          withProviderRetry(withoutProviderProgress(state.canonical), event),
+        );
+        return;
+      }
+      this.#publishCanonical(state, withoutProviderProgress(state.canonical));
       if (event.type === 'text_delta' || event.type === 'thinking_delta') {
         const kind: SessionAssistantDelta['kind'] =
           event.type === 'text_delta' ? 'text' : 'thinking';
@@ -1672,7 +1695,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       this.#sessions.set(sessionId, state);
       return { changed: true, state, value };
     }
-    canonical = preserveProviderRetry(state.canonical, canonical);
+    canonical = preserveProviderProgress(state.canonical, canonical);
     const changed = !isDeepStrictEqual(state.canonical, canonical);
     if (changed) {
       if (state.canonical.rootTurn?.runId !== canonical.rootTurn?.runId) {
@@ -1871,16 +1894,22 @@ function withProviderRetry(
   return { ...canonical, rootTurn: { ...rootTurn, providerRetry } };
 }
 
-function withoutProviderRetry(canonical: CanonicalSessionProjection): CanonicalSessionProjection {
+function withoutProviderProgress(
+  canonical: CanonicalSessionProjection,
+): CanonicalSessionProjection {
   const rootTurn = canonical.rootTurn;
-  if (!rootTurn || !isLiveTurn(rootTurn) || rootTurn.providerRetry === undefined) {
+  if (
+    !rootTurn ||
+    !isLiveTurn(rootTurn) ||
+    (rootTurn.providerRetry === undefined && rootTurn.providerQueue === undefined)
+  ) {
     return canonical;
   }
-  const { providerRetry: _providerRetry, ...cleared } = rootTurn;
+  const { providerRetry: _providerRetry, providerQueue: _queue, ...cleared } = rootTurn;
   return { ...canonical, rootTurn: cleared };
 }
 
-function preserveProviderRetry(
+function preserveProviderProgress(
   current: CanonicalSessionProjection,
   next: CanonicalSessionProjection,
 ): CanonicalSessionProjection {
@@ -1893,12 +1922,19 @@ function preserveProviderRetry(
     !isLiveTurn(nextTurn) ||
     currentTurn.runId !== nextTurn.runId ||
     currentTurn.turnId !== nextTurn.turnId ||
-    currentTurn.providerRetry === undefined
+    (currentTurn.providerRetry === undefined && currentTurn.providerQueue === undefined)
   ) {
     return next;
   }
-  if (nextTurn.providerRetry !== undefined) return next;
-  return { ...next, rootTurn: { ...nextTurn, providerRetry: currentTurn.providerRetry } };
+  if (nextTurn.providerRetry !== undefined || nextTurn.providerQueue !== undefined) return next;
+  return {
+    ...next,
+    rootTurn: {
+      ...nextTurn,
+      ...(currentTurn.providerRetry ? { providerRetry: currentTurn.providerRetry } : {}),
+      ...(currentTurn.providerQueue ? { providerQueue: currentTurn.providerQueue } : {}),
+    },
+  };
 }
 
 function wireTextByteLimit(frame: SessionDeltaFrame): number {
@@ -1957,6 +1993,7 @@ function projectSessionEvent(
         | 'thinking_delta'
         | 'text_complete'
         | 'thinking_complete'
+        | 'provider_queue'
         | 'provider_retry';
     }
   >,

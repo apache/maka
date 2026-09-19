@@ -197,6 +197,7 @@ export type LiveTurnSnapshot = TurnSnapshotBase & {
    * Host re-projects the live snapshot.
    */
   rootExecutionKind?: 'context_compact';
+  providerQueue?: { position?: number };
 };
 
 export type TurnSnapshot =
@@ -749,11 +750,14 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     record,
     'non-terminal Turn snapshot',
     ['sessionId', 'turnId', 'runId', 'status'],
-    ['providerRetry', 'rootExecutionKind'],
+    ['providerRetry', 'rootExecutionKind', 'providerQueue'],
   );
   return {
     ...base,
     status,
+    ...(record.providerQueue !== undefined
+      ? { providerQueue: decodeTurnProviderQueue(record.providerQueue) }
+      : {}),
     ...(record.providerRetry !== undefined
       ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
       : {}),
@@ -840,4 +844,11 @@ function requireTurnRunStatus(value: unknown): TurnRunStatus {
     return value;
   }
   throw invalidProtocolFrame('Invalid Turn run status');
+}
+
+function decodeTurnProviderQueue(value: unknown): { position?: number } {
+  const record = requireShapedRecord(value, 'Turn provider queue', [], ['position']);
+  return record.position === undefined
+    ? {}
+    : { position: requireCount(record.position, 'position') };
 }

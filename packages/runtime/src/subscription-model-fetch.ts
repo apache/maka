@@ -57,8 +57,15 @@ export function buildSubscriptionModelFetch(
       ? buildOAuth401ReplayFetch(copilotFetch, input.refreshOAuthAccessToken)
       : copilotFetch;
   }
-  if (input.connection.providerType === 'xai-oauth' && input.refreshOAuthAccessToken) {
-    return buildOAuth401ReplayFetch(input.fetchFn ?? fetch, input.refreshOAuthAccessToken);
+  if (
+    (input.connection.providerType === 'xai-oauth' || input.connection.providerType === 'trae') &&
+    input.refreshOAuthAccessToken
+  ) {
+    return buildOAuth401ReplayFetch(
+      input.fetchFn ?? fetch,
+      input.refreshOAuthAccessToken,
+      input.connection.providerType === 'trae',
+    );
   }
   return undefined;
 }
@@ -243,6 +250,7 @@ async function checkedOpenAiCodexFetch(
 function buildOAuth401ReplayFetch(
   fetchFn: typeof fetch,
   refreshOAuthAccessToken: (signal?: AbortSignal | null) => Promise<string | null>,
+  trae = false,
 ): typeof fetch {
   return async (url, init) => {
     const response = await fetchFn(url, init);
@@ -262,7 +270,14 @@ function buildOAuth401ReplayFetch(
     if (signal?.aborted) await abandonForCaller(response, signal);
     if (!accessToken) return response;
     await response.body?.cancel().catch(() => undefined);
-    return fetchFn(url, withRefreshedOAuthAuthorization(init, accessToken, false));
+    const replay = withRefreshedOAuthAuthorization(init, accessToken, false);
+    if (trae) {
+      const headers = new Headers(replay.headers);
+      headers.delete('Authorization');
+      headers.set('x-jwt-token', accessToken);
+      replay.headers = headers;
+    }
+    return fetchFn(url, replay);
   };
 }
 

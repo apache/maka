@@ -2396,3 +2396,41 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     message: 'Timed out waiting for continuity state',
   });
 }
+
+test('preserves Trae queue across remount and clears it on queue end', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const connection = attachTestConnection(coordinator, 'queue-live', new RecordingSink());
+  const initial = await open(coordinator, 'queue-live');
+  connection.activate(initial.subscriptionId);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'provider_queue',
+    id: 'q',
+    turnId: 'turn-1',
+    ts: 1,
+    queued: true,
+    position: 3,
+  });
+  attachTestConnection(coordinator, 'queue-remount', new RecordingSink());
+  const remounted = await open(coordinator, 'queue-remount');
+  assert.deepEqual(
+    remounted.snapshot.rootTurn && 'providerQueue' in remounted.snapshot.rootTurn
+      ? remounted.snapshot.rootTurn.providerQueue
+      : undefined,
+    { position: 3 },
+  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'provider_queue',
+    id: 'q2',
+    turnId: 'turn-1',
+    ts: 2,
+    queued: false,
+  });
+  attachTestConnection(coordinator, 'queue-ended', new RecordingSink());
+  const ended = await open(coordinator, 'queue-ended');
+  assert.equal(ended.snapshot.rootTurn && 'providerQueue' in ended.snapshot.rootTurn, false);
+  coordinator.close();
+});

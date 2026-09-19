@@ -1146,3 +1146,23 @@ test('projects the typed context-compaction outcome onto the completed Turn even
     { kind: 'compacted', checkpointId: 'checkpoint-1' },
   );
 });
+
+test('reseeds Trae queue position after reconnecting to a live Turn', () => {
+  const current = snapshot({
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'running',
+      providerQueue: { position: 5 },
+    },
+  });
+  const projector = new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed([], current),
+    () => 10,
+  );
+  const queue = projector.seedActive(true).find((event) => event.type === 'provider_queue');
+  assert.equal(queue?.queued, true);
+  assert.equal(queue?.position, 5);
+});

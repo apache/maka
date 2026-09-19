@@ -918,6 +918,7 @@ function projectClientSessionEvent(
     case 'tool_progress':
     case 'tool_result_preview':
     case 'queue_update':
+    case 'provider_queue':
     case 'provider_retry':
       return undefined;
     case 'text_complete':

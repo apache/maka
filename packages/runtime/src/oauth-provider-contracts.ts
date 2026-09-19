@@ -17,7 +17,7 @@
  * under the License.
  */
 
-export type OAuthEnrollmentProvider = 'openai-codex' | 'xai-oauth' | 'github-copilot';
+export type OAuthEnrollmentProvider = 'openai-codex' | 'xai-oauth' | 'github-copilot' | 'trae';
 
 export type OAuthTokenEndpointErrorCategory =
   | 'invalid_grant'
@@ -108,7 +108,7 @@ export function isOAuthEnrollmentProviderEnabled(
   provider: OAuthEnrollmentProvider,
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
-  if (provider === 'xai-oauth') return true;
+  if (provider === 'xai-oauth' || provider === 'trae') return true;
   const flag = environment[OAUTH_PROVIDER_CONTRACTS[provider].experimentalEnvironmentVariable];
   // GitHub Copilot is opt-in, not kill-switched: the device grant presents an
   // OAuth identity Maka has no published authorization to use, so the sign-in

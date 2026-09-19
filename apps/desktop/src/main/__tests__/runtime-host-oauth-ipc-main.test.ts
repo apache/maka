@@ -53,6 +53,66 @@ test('presents the Host OAuth handoff without exposing the authorization URL', a
   assert.deepEqual(opened, ['https://auth.example/device']);
 });
 
+test('presents a loopback PKCE handoff that carries no state hint', async () => {
+  // Trae public accounts authorize through a loopback callback: the URL is the
+  // whole handoff and there is no device code for the user to recognise.
+  const opened: string[] = [];
+  const presentation = new RuntimeHostOAuthPresentation(async (url) => {
+    opened.push(url);
+  });
+  const external = presentation.expect('loopback-attempt');
+  await presentation.openExternal(
+    'https://www.trae.cn/authorization',
+    undefined,
+    new AbortController().signal,
+  );
+  assert.deepEqual(await external.presented, { stateHint: '' });
+
+  assert.deepEqual(opened, ['https://www.trae.cn/authorization']);
+});
+
+test('Trae public enrollment opens the browser without a state hint', async () => {
+  const opened: string[] = [];
+  const presentation = new RuntimeHostOAuthPresentation(async (url) => {
+    opened.push(url);
+  });
+  const connectionId = '00000000-0000-4000-8000-000000000031';
+  let attemptId = '';
+  const clientOverrides = {
+    startOAuthLogin: async (nextAttemptId, target) => {
+      attemptId = nextAttemptId;
+      assert.deepEqual(target, { kind: 'create', providerType: 'trae', traeAccount: 'cn' });
+      void presentation.openExternal(
+        'https://www.trae.cn/authorization',
+        undefined,
+        new AbortController().signal,
+      );
+      return {
+        attemptId: nextAttemptId,
+        connection: { connectionId, slug: 'trae', providerType: 'trae' as const },
+        phase: 'awaiting_authorization' as const,
+      };
+    },
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
+    presentation,
+    emitConnectionListChanged: () => undefined,
+  });
+
+  assert.deepEqual(
+    await invoke(handlers, 'trae:get-auth-url', { kind: 'create', traeAccount: 'cn' }),
+    {
+      authRequestId: attemptId,
+      stateHint: '',
+      connection: { connectionId, slug: 'trae', providerType: 'trae' },
+    },
+  );
+  assert.deepEqual(opened, ['https://www.trae.cn/authorization']);
+  assert.deepEqual(await invoke(handlers, 'trae:open-auth-url', attemptId), { ok: true });
+  assertNoUnexpectedClientCalls();
+});
+
 test('adapts every Host OAuth provider through one Desktop flow', async () => {
   const provider = 'openai-codex' as const;
   const opened: string[] = [];

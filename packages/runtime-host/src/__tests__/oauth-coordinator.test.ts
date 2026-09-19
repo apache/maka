@@ -46,6 +46,7 @@ import {
 } from '../protocol/index.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import { HostOAuthCoordinator } from '../server/oauth-coordinator.js';
+import { traePublicDeviceIdentity } from '@maka/runtime/trae/public-protocol';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import {
   clientCapabilityConnectionIdentity,
@@ -94,6 +95,63 @@ test('xAI enrollment keeps device polling and credential material in the Host', 
     const terminal = await waitForTerminal(coordinator, 'attempt-xai');
     assert.equal(terminal.phase, 'authenticated');
     assert.deepEqual(presentationCalls, ['client-xai']);
+    assert.equal(polls, 1);
+    assert.equal(fixture.invalidations, 1);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('Trae enrollment keeps device polling and credential material in the Host', async () => {
+  await withFixture('trae', async (fixture) => {
+    const presentationCalls: string[] = [];
+    const presentationInputs: Array<{ connectionId: string; input: Record<string, unknown> }> = [];
+    const client = await attachPresentation(
+      fixture.capabilities,
+      'client-trae',
+      presentationCalls,
+      {},
+      presentationInputs,
+    );
+    const tokens = { ...tokenFixture('trae-access'), device_code: 'host-only-device-code' };
+    let polls = 0;
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startTraeAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: '',
+        verificationUrl: 'https://cloud.bytedance.net/device',
+        expiresAt: NOW + 60_000,
+        ticket: 'host-only-ticket',
+      }),
+      pollTraeAuthorization: async () => {
+        polls += 1;
+        return tokens;
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      oauthStart('attempt-trae', fixture.connection.connectionId),
+      operationContext('client-trae', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-trae');
+    assert.equal(terminal.phase, 'authenticated');
+    assert.deepEqual(presentationCalls, ['client-trae']);
+    assert.deepEqual(presentationInputs, [
+      { connectionId: 'client-trae', input: { url: 'https://cloud.bytedance.net/device' } },
+    ]);
     assert.equal(polls, 1);
     assert.equal(fixture.invalidations, 1);
     await coordinator.close();
@@ -1258,7 +1316,7 @@ function operationContext(connectionId: string, acquireResidency: () => { releas
 }
 
 async function withFixture(
-  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot',
+  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot' | 'trae',
   run: (fixture: {
     root: string;
     stores: RuntimePolicyStoresWriter;
@@ -1327,4 +1385,109 @@ async function withFixture(
 
 function oauthStart(attemptId: string, connectionId: string) {
   return { attemptId, target: { kind: 'existing' as const, connectionId } };
+}
+
+for (const account of ['cn', 'cn-solo', 'sg', 'sg-solo'] as const) {
+  test(`Trae ${account} enrollment persists the variant and rejects conflicting retries`, async () => {
+    await withFixture('trae', async (fixture) => {
+      const client = await attachPresentation(fixture.capabilities, 'client-public', []);
+      const identity = { account, machineId: '1'.repeat(32), deviceId: '2'.repeat(32) };
+      const coordinator = new HostOAuthCoordinator({
+        runtimePolicy: fixture.stores,
+        activation: fixture.activation,
+        clientCapabilities: fixture.capabilities,
+        isProviderEnabled: () => true,
+        acquireResidency: fixture.acquireResidency,
+        invalidateBackends: async () => {},
+        onFatal: (error) => {
+          throw error;
+        },
+        now: () => NOW,
+        startTraeAuthorization: async () => {
+          throw new Error('Employee SSO must not be used');
+        },
+        traeDeviceSeed: 'root-seed',
+        loginTraePublic: async (input) => {
+          assert.equal(input.account, account);
+          // One device per Host root: the seed, not the attempt, decides it.
+          assert.deepEqual(input.device, traePublicDeviceIdentity('root-seed'));
+          await input.present('https://www.trae.ai/authorization');
+          input.onExchange?.();
+          return { ...tokenFixture('public-access'), trae: identity };
+        },
+      });
+      try {
+        const target = {
+          kind: 'create' as const,
+          providerType: 'trae' as const,
+          traeAccount: account,
+        };
+        const context = operationContext('client-public', fixture.acquireResidency);
+        assert.equal(
+          (
+            await coordinator.handlers['oauth.login.start'](
+              { attemptId: 'public-create', target },
+              context,
+            )
+          ).ok,
+          true,
+        );
+        const terminal = await waitForTerminal(coordinator, 'public-create');
+        assert.equal(terminal.phase, 'authenticated');
+        const snapshot = await fixture.stores.connectionCatalog.getSnapshot();
+        const created = snapshot.connections.find(
+          (c) => c.connectionId === terminal.connection.connectionId,
+        )!;
+        assert.equal(created.traeAccount, account);
+        assert.ok(created.name.includes(account.slice(0, 2).toUpperCase()));
+        const changed = await fixture.stores.connectionCatalog.update({
+          expected: { connectionId: created.connectionId, revision: created.revision },
+          changes: {
+            name: 'Renamed',
+            enabled: true,
+            enabledModelIds: [],
+          },
+        });
+        assert.equal(changed.kind, 'committed');
+        assert.equal(
+          (await fixture.stores.connectionCatalog.getSnapshot()).connections.find(
+            (c) => c.connectionId === created.connectionId,
+          )?.traeAccount,
+          account,
+        );
+        const conflict = await coordinator.handlers['oauth.login.start'](
+          { attemptId: 'public-create', target: { ...target, traeAccount: 'employee' } },
+          context,
+        );
+        assert.equal(conflict.ok, false);
+        const durable = await fixture.stores.operations.beginInteractiveOAuthLogin({
+          attemptId: 'public-create',
+          target,
+        });
+        assert.equal(durable.kind, 'authenticated');
+        assert.equal(
+          (
+            await fixture.stores.operations.beginInteractiveOAuthLogin({
+              attemptId: 'public-create',
+              target: { ...target, traeAccount: 'employee' },
+            })
+          ).kind,
+          'attempt_conflict',
+        );
+        assert.equal(
+          (
+            await coordinator.handlers['oauth.login.start'](
+              oauthStart('public-relogin', created.connectionId),
+              context,
+            )
+          ).ok,
+          true,
+        );
+        assert.equal((await waitForTerminal(coordinator, 'public-relogin')).phase, 'authenticated');
+      } finally {
+        await coordinator.close();
+        client.close();
+      }
+    });
+  });
 }

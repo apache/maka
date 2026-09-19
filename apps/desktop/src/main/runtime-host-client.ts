@@ -527,8 +527,9 @@ export class DesktopRuntimeHostClient {
 
   fetchConnectionModels(
     connectionId: string,
+    preview?: true,
   ): Promise<OperationOutput<"connection.models.fetch">> {
-    return this.request("connection.models.fetch", { connectionId });
+    return this.request("connection.models.fetch", { connectionId, ...(preview ? { preview } : {}) });
   }
 
   testConnection(

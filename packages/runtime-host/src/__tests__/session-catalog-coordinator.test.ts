@@ -742,6 +742,59 @@ test('ordinary metadata and configuration reject a corrupt Coordination role on 
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('Trae creation and thinking updates use the exact variant capabilities shown in the picker', async () => {
+  const models = (['standard', 'max'] as const).map((mode) => ({
+    id: `sol:${mode}`,
+    capabilities: { reasoning: true },
+    trae: {
+      configName: 'sol',
+      modelName: `sol__${mode}`,
+      mode,
+      reasoningEfforts: mode === 'max' ? ['high', 'xhigh'] : ['high'],
+      toolResponseImages: false,
+    },
+  }));
+  const fixture = createFixture({
+    connection: { providerType: 'trae', models, enabledModelIds: models.map((model) => model.id) },
+  });
+  const modelTarget = {
+    kind: 'explicit' as const,
+    connectionId: 'connection-1',
+    connectionSlug: 'test',
+    model: 'sol:max',
+  };
+  const created = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget,
+      thinkingLevel: 'xhigh',
+    },
+    context,
+  );
+  assert.equal(created.ok, true);
+  const updated = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      ...configurationInput(fixture.sessionId, fixture.revision()),
+      patch: { modelTarget, thinkingLevel: 'xhigh' },
+    },
+    context,
+  );
+  assert.equal(updated.ok, true);
+  assert.equal(fixture.header().thinkingLevel, 'xhigh');
+  assert.equal(fixture.header().model, 'sol:max');
+  const rejected = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      ...configurationInput(fixture.sessionId, fixture.revision()),
+      patch: { modelTarget: { ...modelTarget, model: 'sol:standard' }, thinkingLevel: 'xhigh' },
+    },
+    context,
+  );
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) assert.equal(rejected.error.code, 'invalid_request');
+  assert.equal(fixture.header().model, 'sol:max');
+});
+
 test('creation on a relay connection honours declared levels via the catalog projection', async () => {
   // The catalog entry carries the typed modelOverrides projection (never
   // the extras bag), so a declared relay level passes the gate — and what
@@ -2121,6 +2174,7 @@ function createFixture(
 
 type FixtureConnection = {
   readonly providerType?:
+    | 'trae'
     | 'claude-subscription'
     | 'deepseek'
     | 'openai'
@@ -2132,7 +2186,7 @@ type FixtureConnection = {
     ref: Parameters<RuntimePolicy['operations']['resolveExecutionConnection']>[0],
   ) => void;
   readonly enabledModelIds?: readonly string[];
-  readonly models?: readonly { id: string }[];
+  readonly models?: readonly import('@maka/core/llm-connections').ModelInfo[];
   // Mirrors what the codec allows: a non-empty inventory must carry a source,
   // an empty one carries none — that is the row a connection has before its
   // first discovery run.

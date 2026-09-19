@@ -49,6 +49,12 @@ test("renders the typed login_in_progress and presentation_failed reasons per lo
   assert.equal(subscriptionResultMessage(presentation, "fallback", "en"), "Could not open the system browser for login. Check popup blockers and try again.");
 });
 
+test("renders the typed authorization_denied reason per locale", () => {
+  const denied = { reason: "authorization_denied", message: "OAuth authorization failed: provider_rejected" };
+  assert.equal(subscriptionResultMessage(denied, "fallback", "zh-CN"), "服务商拒绝了这次登录，常见原因是账号的设备数或套餐限制。请到服务商网站检查该账号后重试；诊断报告中的 Host 日志会给出服务商返回的错误码。");
+  assert.equal(subscriptionResultMessage(denied, "fallback", "en"), "The provider refused this sign-in, usually a device or plan limit on the account. Check the account on the provider site and try again; the Host log in the diagnostic report carries the provider error code.");
+});
+
 test("presentation prose no longer hijacks the presenter after the regex removal", () => {
   const legacy = { message: "Runtime Host did not present OAuth authorization" };
   assert.notEqual(subscriptionResultMessage(legacy, "fallback", "en"), "Could not open the system browser for login. Check popup blockers and try again.");

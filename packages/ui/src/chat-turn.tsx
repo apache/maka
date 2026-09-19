@@ -465,6 +465,7 @@ export const TurnView = memo(function TurnView(props: {
      */
     runningStatus?: boolean;
     providerRetry?: LiveProviderRetry;
+    providerQueue?: { position?: number };
     initialLiveContent?: ReadonlyMap<string, string>;
   };
   /**
@@ -819,10 +820,13 @@ export const TurnView = memo(function TurnView(props: {
                         status={props.liveStreaming ? 'running' : turn.status}
                         running={props.liveStreaming?.runningStatus === true}
                         providerRetry={props.liveStreaming?.providerRetry !== undefined}
+                        providerQueue={props.liveStreaming?.providerQueue !== undefined}
                         startedAt={turn.startedAt}
                         durationMs={turn.durationMs}
                         activityLabel={
-                          props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                          props.liveStreaming?.runningStatus
+                            && !props.liveStreaming.providerRetry
+                            && !props.liveStreaming.providerQueue
                             ? runningToolLabel
                             : undefined
                         }
@@ -832,7 +836,9 @@ export const TurnView = memo(function TurnView(props: {
                   />
                 }
                 live={!!props.liveStreaming}
-                activity={props.liveStreaming?.providerRetry ? (
+                activity={props.liveStreaming?.providerQueue ? (
+                  <ModelProviderQueueIndicator queue={props.liveStreaming.providerQueue} />
+                ) : props.liveStreaming?.providerRetry ? (
                   <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
                 ) : undefined}
                 context={answerContext}
@@ -973,6 +979,8 @@ function TurnStatusLine(props: {
   running?: boolean;
   /** A scheduled retry is waiting, not working. */
   providerRetry?: boolean;
+  /** The provider queued the request: nothing arrives, and the queue indicator says so. */
+  providerQueue?: boolean;
 }): ReactNode {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
@@ -981,7 +989,7 @@ function TurnStatusLine(props: {
     // A retry is not progress: nothing is produced while the client waits, and
     // the retry indicator already says what is happening. A live turn whose
     // stream is not running has nothing to announce either.
-    if (props.providerRetry || props.running === false) return null;
+    if (props.providerRetry || props.providerQueue || props.running === false) return null;
     return <TurnRunningStatus startedAt={props.startedAt || undefined} activityLabel={props.activityLabel} />;
   }
 
@@ -1652,4 +1660,14 @@ function reasoningPreviewText(text: string): string {
     .replace(/\$\$/g, '')
     .replace(/[*_~`]+/g, '')
     .trim();
+}
+
+export function ModelProviderQueueIndicator({ queue }: { queue: { position?: number } }) {
+  const label = getConversationCopy(useUiLocale()).messages.providerQueue(queue.position);
+  return (
+    <div role="status" aria-label={label} className="maka-turn-processing">
+      <Spinner size="md" shade="subtle" aria-hidden="true" />
+      <span className="maka-turn-indicator-text" aria-hidden="true">{label}</span>
+    </div>
+  );
 }

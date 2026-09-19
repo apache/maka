@@ -20,6 +20,7 @@
 import type { ModelDiscoverySource, ModelInfo, ProviderType } from '@maka/core/llm-connections';
 
 export interface ConnectionEffectConnection {
+  readonly traeAccount?: import('@maka/core/llm-connections').TraeAccount;
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
   readonly defaultModel?: string;

@@ -89,6 +89,8 @@ export type ConnectionEffectFailureClass = (typeof CONNECTION_EFFECT_FAILURE_CLA
 
 export interface ConnectionModelFetchInput {
   readonly connectionId: string;
+  /** Discover without replacing the configured inventory (e.g. transient provider load). */
+  readonly preview?: true;
 }
 
 export interface ConnectionTestRunInput {
@@ -185,6 +187,7 @@ interface ConnectionEffectFailed {
 }
 
 export type ConnectionModelFetchResult =
+  | { readonly kind: 'preview'; readonly models: readonly ModelInfo[]; readonly fetchedAt: number }
   | (ConnectionEffectCommitted & {
       readonly modelCount: number;
       readonly source: ModelDiscoverySource;
@@ -508,8 +511,18 @@ export function decodeConnectionOnboardingVerifyResult(
 }
 
 export function decodeConnectionModelFetchInput(value: unknown): ConnectionModelFetchInput {
-  const input = requireExactRecord(value, 'connection model fetch input', ['connectionId']);
-  return { connectionId: requireEntityId(input.connectionId, 'connectionId') };
+  const raw = requireRecord(value, 'connection model fetch input');
+  const input = requireExactRecord(
+    raw,
+    'connection model fetch input',
+    Object.hasOwn(raw, 'preview') ? ['connectionId', 'preview'] : ['connectionId'],
+  );
+  if (Object.hasOwn(input, 'preview') && input.preview !== true)
+    throw invalidProtocolFrame('Invalid model preview');
+  return {
+    connectionId: requireEntityId(input.connectionId, 'connectionId'),
+    ...(input.preview === true ? { preview: true } : {}),
+  };
 }
 
 export function decodeConnectionTestRunInput(value: unknown): ConnectionTestRunInput {
@@ -523,6 +536,23 @@ export function decodeConnectionTestRunInput(value: unknown): ConnectionTestRunI
 
 export function decodeConnectionModelFetchResult(value: unknown): ConnectionModelFetchResult {
   const result = requireRecord(value, 'connection model fetch result');
+  if (result.kind === 'preview') {
+    const preview = requireExactRecord(result, 'connection model preview', [
+      'kind',
+      'models',
+      'fetchedAt',
+    ]);
+    if (
+      !Array.isArray(preview.models) ||
+      preview.models.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
+    )
+      throw invalidProtocolFrame('Invalid model preview inventory');
+    return {
+      kind: 'preview',
+      models: preview.models.map((model) => decodeDomain(() => decodeConnectionModel(model))),
+      fetchedAt: requireCount(preview.fetchedAt, 'models fetched at'),
+    };
+  }
   if (result.kind === 'committed') {
     const committed = requireExactRecord(result, 'connection model fetch committed result', [
       'kind',

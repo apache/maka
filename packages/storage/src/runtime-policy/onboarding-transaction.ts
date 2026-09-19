@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { traeAccountFields } from '@maka/core/llm-connections';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -348,6 +349,7 @@ function decodeInteractiveOAuthEnrollmentIntent(value: unknown): InteractiveOAut
     (target.kind === 'create' &&
       target.name !== undefined &&
       target.name !== connectionAfter.name) ||
+    (target.kind === 'create' && target.traeAccount !== connectionAfter.traeAccount) ||
     (target.kind === 'existing' &&
       (connectionBefore === null || connectionBefore.connectionId !== target.connectionId)) ||
     connectionAfter.connectionId !==
@@ -355,7 +357,8 @@ function decodeInteractiveOAuthEnrollmentIntent(value: unknown): InteractiveOAut
     (connectionBefore !== null &&
       (connectionBefore.connectionId !== connectionAfter.connectionId ||
         connectionBefore.slug !== connectionAfter.slug ||
-        connectionBefore.providerType !== connectionAfter.providerType))
+        connectionBefore.providerType !== connectionAfter.providerType ||
+        connectionBefore.traeAccount !== connectionAfter.traeAccount))
   ) {
     throw codecError('invalid_document', 'OAuth enrollment intent identity is inconsistent');
   }
@@ -379,7 +382,7 @@ function decodeOAuthTarget(
     value,
     'OAuth enrollment target',
     source,
-    ['kind', 'providerType', 'connectionId', 'slug', 'name'],
+    ['kind', 'providerType', 'connectionId', 'slug', 'name', 'traeAccount'],
     ['kind'],
   );
   if (base.kind === 'create') {
@@ -387,7 +390,7 @@ function decodeOAuthTarget(
       value,
       'OAuth create target',
       source,
-      ['kind', 'providerType', 'slug', 'name'],
+      ['kind', 'providerType', 'slug', 'name', 'traeAccount'],
       ['kind', 'providerType'],
     );
     const decode = source === 'invalid_document' ? decodePersistedDomain : decodeConnectionInput;
@@ -395,13 +398,16 @@ function decodeOAuthTarget(
     if (!isOAuthProvider(providerType)) {
       throw codecError(source, 'OAuth create target provider is invalid');
     }
-    if (providerType !== 'openai-codex' && (item.slug !== undefined || item.name !== undefined)) {
-      throw codecError(
-        source,
-        'Custom OAuth Connection identity is only supported for openai-codex',
-      );
+    const account = decode(() => traeAccountFields(item.traeAccount, providerType));
+    if (providerType !== 'openai-codex') {
+      if (item.slug !== undefined || item.name !== undefined) {
+        throw codecError(
+          source,
+          'Custom OAuth Connection identity is only supported for openai-codex',
+        );
+      }
+      return { kind: 'create', providerType, ...account };
     }
-    if (providerType !== 'openai-codex') return { kind: 'create', providerType };
     return {
       kind: 'create',
       providerType,
@@ -428,7 +434,8 @@ function isOAuthProvider(
   return (
     providerType === 'openai-codex' ||
     providerType === 'xai-oauth' ||
-    providerType === 'github-copilot'
+    providerType === 'github-copilot' ||
+    providerType === 'trae'
   );
 }
 

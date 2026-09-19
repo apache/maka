@@ -25,6 +25,7 @@ import {
   type ProjectedLlmConnection,
   type ProviderType,
 } from './llm-connections.js';
+import type { TraeAccount } from './llm-connections.js';
 
 export interface ChatModelChoice {
   connectionId: string;
@@ -36,6 +37,8 @@ export interface ChatModelChoice {
   description?: string;
   knowledgeCutoff?: string;
   connectionName?: string;
+  /** Trae account variant of the owning connection, so menus can name the group by it. */
+  traeAccount?: TraeAccount;
   isDefault: boolean;
   thinkingLevels: readonly ThinkingLevel[];
   /** Exact capability projection used by model-facing attachment composition. */
@@ -44,6 +47,12 @@ export interface ChatModelChoice {
   contextWindow?: number;
   /** User-declared context target, if this model has one. */
   declaredContextWindow?: number;
+  trae?: {
+    configName: string;
+    mode: 'standard' | 'max';
+    loadPercent?: number;
+    loadUpdatedAt?: number;
+  };
 }
 
 export function buildChatModelChoices(
@@ -53,8 +62,10 @@ export function buildChatModelChoices(
   for (const connection of connections) {
     const provider = providerDefaultsOf(connection.providerType);
     if (!provider) continue;
+    const inventory = new Map(connection.models?.map((model) => [model.id, model]));
     for (const entry of offerableCatalogEntries(connection)) {
       const declaredWindow = entry.compactionThreshold;
+      const trae = connection.providerType === 'trae' ? inventory.get(entry.id)?.trae : undefined;
       choices.push({
         connectionId: connection.connectionId,
         connectionSlug: connection.slug,
@@ -65,11 +76,23 @@ export function buildChatModelChoices(
         ...(entry.description !== undefined ? { description: entry.description } : {}),
         ...(entry.knowledgeCutoff !== undefined ? { knowledgeCutoff: entry.knowledgeCutoff } : {}),
         ...(provider.authKind === 'oauth_token' ? {} : { connectionName: connection.name }),
+        ...(connection.providerType === 'trae' && connection.traeAccount
+          ? { traeAccount: connection.traeAccount }
+          : {}),
         isDefault: entry.isDefault,
         thinkingLevels: entry.thinkingLevels,
         supportsVision: entry.supportsVision,
         ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
         ...(declaredWindow !== undefined ? { declaredContextWindow: declaredWindow } : {}),
+        ...(trae
+          ? {
+              trae: {
+                configName: trae.configName,
+                mode: trae.mode,
+                ...(trae.loadPercent === undefined ? {} : { loadPercent: trae.loadPercent }),
+              },
+            }
+          : {}),
       });
     }
   }

@@ -417,6 +417,7 @@ export function projectHostConnections(
       slug: connection.slug,
       name: connection.name,
       providerType: connection.providerType,
+    ...(connection.traeAccount === undefined ? {} : { traeAccount: connection.traeAccount }),
       ...(connection.baseUrl === undefined ? {} : { baseUrl: connection.baseUrl }),
       enabled: connection.enabled,
       defaultModel,

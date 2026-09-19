@@ -28,6 +28,47 @@ const EXPECTED = {
 };
 
 describe('Runtime Host connection effects protocol', () => {
+  test('read-only model previews have a bounded typed wire contract', () => {
+    const input = request('connection.models.fetch', {
+      connectionId: EXPECTED.connectionId,
+      preview: true,
+    });
+    assert.deepEqual(decodeClientFrame(input), input);
+    assertInvalidRequest('connection.models.fetch', {
+      connectionId: EXPECTED.connectionId,
+      preview: false,
+    });
+    const result = response('connection.models.fetch', {
+      kind: 'preview',
+      fetchedAt: 1234,
+      models: [
+        {
+          id: 'sol:max',
+          trae: {
+            configName: 'sol',
+            modelName: 'sol__max',
+            mode: 'max',
+            reasoningEfforts: ['xhigh'],
+            toolResponseImages: false,
+            loadPercent: 174,
+          },
+        },
+      ],
+    });
+    assert.deepEqual(decodeHostFrame(result), result);
+    assert.throws(
+      () =>
+        decodeHostFrame(
+          response('connection.models.fetch', {
+            kind: 'preview',
+            fetchedAt: 1234,
+            models: Array.from({ length: 2049 }, () => ({ id: 'model' })),
+          }),
+        ),
+      RuntimeHostProtocolError,
+    );
+  });
+
   test('bounds transient onboarding secrets, models, and save selections', () => {
     const verify = request('connection.onboarding.verify', {
       target: { kind: 'create', providerType: 'openrouter' },

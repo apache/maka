@@ -892,7 +892,7 @@ export class AgentRun {
       return;
     }
     await this.recordSessionEvent(sessionEvent, options);
-    if (sessionEvent.type === 'provider_retry') return;
+    if (sessionEvent.type === 'provider_retry' || sessionEvent.type === 'provider_queue') return;
     if (partialStreamKey) {
       await this.recordRuntimePartial(runtimeEvent, partialStreamKey);
       return;

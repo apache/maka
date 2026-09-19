@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { createTraeModel } from './trae/model.js';
+
 import { createAnthropic } from '@ai-sdk/anthropic';
 // Load-bearing until the public Anthropic API exposes model thinking mode:
 // replace this capability lookup when upgrading if the exported internal path disappears.
@@ -130,6 +132,14 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   };
 
   switch (adapter.kind) {
+    case 'trae':
+      return createTraeModel({
+        connection,
+        modelId,
+        apiKey,
+        fetch: requestFetch,
+        sessionId: input.sessionId,
+      });
     case 'anthropic':
       return createAnthropic({
         ...(adapter.auth === 'bearer' ? { authToken: apiKey } : { apiKey }),
@@ -489,6 +499,8 @@ function buildThinkingProviderOptions(
   const thinkingOptions = thinkingOptionsForModel(connection.providerType, modelId);
   const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
   switch (connection.providerType) {
+    case 'trae':
+      return level ? { trae: { reasoningEffort: level } } : {};
     case 'kimi-coding-plan': {
       // Kimi's coding route has no off wire. Check the raw argument, not the
       // normalized level: the entry gate above drops unsupported levels to

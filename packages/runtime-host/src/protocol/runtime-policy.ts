@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { traeAccountFields } from '@maka/core/llm-connections';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
@@ -734,6 +735,7 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'slug',
       'name',
       'providerType',
+      'traeAccount',
       'baseUrl',
       'enabled',
       'modelSource',
@@ -794,6 +796,10 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
     slug: decodeDomain(() => decodeConnectionSlug(header.slug)),
     name: decodeDomain(() => decodeConnectionName(header.name)),
     providerType: provider,
+    // Trae connections carry their account variant on the header: the
+    // paginator has no other place for it, and a rejected header takes
+    // every connection in the catalog down with it.
+    ...decodeDomain(() => traeAccountFields(header.traeAccount, provider)),
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: boolean(header.enabled, 'connection enabled'),
     ...(header.modelSource === undefined ? {} : { modelSource: modelSource(header.modelSource) }),

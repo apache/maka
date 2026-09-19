@@ -596,3 +596,44 @@ test('credential domain validation requires material but leaves capacity to call
     RuntimePolicyDomainDecodeError,
   );
 });
+
+test('Trae account and directory routing survive the canonical catalog boundary', async () => {
+  const { decodeCanonicalConnectionCatalogEntry } = await import('../runtime-policy.js');
+  for (const traeAccount of ['cn', 'cn-solo', 'sg', 'sg-solo'] as const) {
+    const entry = {
+      connectionId: '00000000-0000-4000-8000-000000000001',
+      revision: 1,
+      slug: 'trae-public',
+      name: 'Trae',
+      providerType: 'trae',
+      traeAccount,
+      enabled: true,
+      enabledModelIds: ['model:standard'],
+      modelSource: 'fetched',
+      modelsFetchedAt: 1,
+      models: [
+        {
+          id: 'model:standard',
+          trae: {
+            configName: 'model',
+            modelName: 'model__dev',
+            mode: 'standard',
+            function: 'solo_work_remote',
+            reasoningEfforts: ['high'],
+            toolResponseImages: false,
+            loadPercent: 151,
+          },
+        },
+      ],
+    };
+    assert.deepEqual(decodeCanonicalConnectionCatalogEntry(entry), entry);
+    assert.throws(
+      () => decodeCanonicalConnectionCatalogEntry({ ...entry, traeAccount: 'other' }),
+      RuntimePolicyDomainDecodeError,
+    );
+    assert.throws(
+      () => decodeCanonicalConnectionCatalogEntry({ ...entry, providerType: 'openai' }),
+      RuntimePolicyDomainDecodeError,
+    );
+  }
+});

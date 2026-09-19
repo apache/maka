@@ -22,6 +22,7 @@ import type { OAuthPresentationBackend } from '@maka/runtime-host/client';
 const PRESENTATION_TIMEOUT_MS = 30_000;
 
 export interface OAuthExternalPresentation {
+  /** Device code for the user to recognise; empty for loopback flows (Trae public accounts). */
   readonly stateHint: string;
 }
 
@@ -100,7 +101,7 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
   ): Promise<void> {
     signal.throwIfAborted();
     const pending = this.#pending;
-    if (!pending || !stateHint) {
+    if (!pending) {
       throw new OAuthPresentationError('Desktop has no matching OAuth presentation request');
     }
     if (pending.expectedStateHint !== undefined && pending.expectedStateHint !== stateHint) {
@@ -111,7 +112,9 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
       await this.openSystemBrowser(url);
       opened = true;
       signal.throwIfAborted();
-      pending.resolve({ stateHint });
+      // The wire contract leaves stateHint optional: loopback PKCE flows carry
+      // the whole handoff in the URL, so their absence is not a mismatch.
+      pending.resolve({ stateHint: stateHint ?? '' });
     } catch (error) {
       // A browser that will not open is a Desktop-owned presentation failure;
       // anything after it opened (an abort) keeps its own shape.

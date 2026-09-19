@@ -50,6 +50,7 @@ const PROTECTED_HEADERS = new Set([
   'proxy-authorization',
   'transfer-encoding',
   'x-api-key',
+  'x-jwt-token',
 ]);
 const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 

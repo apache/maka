@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { traeAccountFields } from '@maka/core/llm-connections';
 import {
   decodeConnectionName,
   decodeConnectionSlug,
@@ -193,7 +194,7 @@ function decodeTarget(value: unknown): InteractiveOAuthLoginTarget {
     value,
     'OAuth login receipt target',
     'invalid_document',
-    ['kind', 'providerType', 'connectionId', 'slug', 'name'],
+    ['kind', 'providerType', 'connectionId', 'slug', 'name', 'traeAccount'],
     ['kind'],
   );
   if (base.kind === 'create') {
@@ -201,17 +202,20 @@ function decodeTarget(value: unknown): InteractiveOAuthLoginTarget {
       value,
       'OAuth create target',
       'invalid_document',
-      ['kind', 'providerType', 'slug', 'name'],
+      ['kind', 'providerType', 'slug', 'name', 'traeAccount'],
       ['kind', 'providerType'],
     );
     const providerType = decodeOAuthProvider(item.providerType);
-    if (providerType !== 'openai-codex' && (item.slug !== undefined || item.name !== undefined)) {
-      throw codecError(
-        'invalid_document',
-        'Custom OAuth Connection identity is only supported for openai-codex',
-      );
+    const account = decodePersistedDomain(() => traeAccountFields(item.traeAccount, providerType));
+    if (providerType !== 'openai-codex') {
+      if (item.slug !== undefined || item.name !== undefined) {
+        throw codecError(
+          'invalid_document',
+          'Custom OAuth Connection identity is only supported for openai-codex',
+        );
+      }
+      return { kind: 'create', providerType, ...account };
     }
-    if (providerType !== 'openai-codex') return { kind: 'create', providerType };
     return {
       kind: 'create',
       providerType,
@@ -251,7 +255,8 @@ function decodeOAuthProvider(value: unknown): InteractiveOAuthLoginProvider {
   if (
     providerType !== 'openai-codex' &&
     providerType !== 'xai-oauth' &&
-    providerType !== 'github-copilot'
+    providerType !== 'github-copilot' &&
+    providerType !== 'trae'
   ) {
     throw codecError('invalid_document', 'OAuth login receipt provider is invalid');
   }
@@ -276,7 +281,8 @@ function sameTarget(actual: InteractiveOAuthLoginTarget, expected: InteractiveOA
       ? expected.kind === 'create' &&
         actual.providerType === expected.providerType &&
         actual.slug === expected.slug &&
-        actual.name === expected.name
+        actual.name === expected.name &&
+        actual.traeAccount === expected.traeAccount
       : expected.kind === 'existing' && actual.connectionId === expected.connectionId)
   );
 }

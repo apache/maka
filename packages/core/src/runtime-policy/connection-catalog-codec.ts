@@ -19,6 +19,7 @@
 
 import {
   isModelModality,
+  traeAccountFields,
   isRelayProviderType,
   effectiveBaseUrl,
   PROVIDER_REGISTRY,
@@ -151,6 +152,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
       'slug',
       'name',
       'providerType',
+      'traeAccount',
       'baseUrl',
       'enabled',
       'enabledModelIds',
@@ -173,6 +175,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
     slug: decodeConnectionSlug(item.slug),
     name: decodeConnectionName(item.name),
     providerType,
+    ...traeAccountFields(item.traeAccount, providerType),
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: booleanValue(item.enabled, 'connection enabled'),
     enabledModelIds,
@@ -398,6 +401,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'slug',
       'name',
       'providerType',
+      'traeAccount',
       'baseUrl',
       'enabled',
       'enabledModelIds',
@@ -423,6 +427,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     slug: item.slug,
     name: item.name,
     providerType: item.providerType,
+    ...traeAccountFields(item.traeAccount, String(item.providerType)),
     ...(item.baseUrl === undefined ? {} : { baseUrl: item.baseUrl }),
     enabled: item.enabled,
     enabledModelIds: item.enabledModelIds,
@@ -563,6 +568,7 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
       'lastUpdated',
       'capabilities',
       'modalities',
+      'trae',
     ],
     ['id'],
   );
@@ -602,6 +608,17 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
     item.modalities === undefined ? undefined : decodeModelModalities(item.modalities);
   return {
     id: decodeConnectionModelId(item.id),
+    ...(item.trae === undefined ? {} : { trae: decodeTraeModelConfig(item.trae) }),
+    ...(item.inputLimit === undefined
+      ? {}
+      : {
+          inputLimit: integerValue(
+            item.inputLimit,
+            'model input limit',
+            1,
+            Number.MAX_SAFE_INTEGER,
+          ),
+        }),
     ...(item.displayName === undefined
       ? {}
       : {
@@ -684,6 +701,47 @@ function decodeModelModality(value: unknown, direction: 'input' | 'output'): Mod
     throw domainError(`connection model ${direction} modality is invalid`);
   }
   return modality;
+}
+
+function decodeTraeModelConfig(value: unknown): NonNullable<ConnectionModel['trae']> {
+  const item = exactRecord(
+    value,
+    'Trae model config',
+    [
+      'function',
+      'configName',
+      'modelName',
+      'mode',
+      'reasoningEfforts',
+      'toolResponseImages',
+      'loadPercent',
+    ],
+    ['configName', 'modelName', 'mode', 'reasoningEfforts', 'toolResponseImages'],
+  );
+  if (
+    item.loadPercent !== undefined &&
+    (typeof item.loadPercent !== 'number' ||
+      !Number.isInteger(item.loadPercent) ||
+      item.loadPercent < 0)
+  )
+    throw domainError('Invalid Trae load percentage');
+  if (item.mode !== 'standard' && item.mode !== 'max') throw domainError('Invalid Trae mode');
+  if (!Array.isArray(item.reasoningEfforts) || item.reasoningEfforts.length > 16) {
+    throw domainError('Invalid Trae reasoning efforts');
+  }
+  return {
+    ...(item.function === undefined
+      ? {}
+      : { function: stringValue(item.function, 'Trae function', 64) }),
+    configName: stringValue(item.configName, 'Trae config name', 512),
+    modelName: stringValue(item.modelName, 'Trae model name', 512),
+    mode: item.mode,
+    reasoningEfforts: item.reasoningEfforts.map((value) =>
+      stringValue(value, 'Trae reasoning effort', 32),
+    ),
+    toolResponseImages: booleanValue(item.toolResponseImages, 'Trae tool response images'),
+    ...(item.loadPercent === undefined ? {} : { loadPercent: item.loadPercent as number }),
+  };
 }
 
 export function decodeConnectionTestSummary(value: unknown): ConnectionTestSummary {

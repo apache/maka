@@ -17,6 +17,10 @@
  * under the License.
  */
 
+import { refreshTraePublicTokens } from './trae/public-authorization.js';
+import { parseTraePublicIdentity, type TraePublicIdentity } from './trae/public-protocol.js';
+import { refreshTraeTokens } from './trae/authorization.js';
+
 import { randomUUID } from 'node:crypto';
 
 import type { ProviderType } from '@maka/core/llm-connections';
@@ -33,7 +37,7 @@ import {
 
 export type OAuthSubscriptionProvider = Extract<
   ProviderType,
-  'openai-codex' | 'github-copilot' | 'xai-oauth'
+  'openai-codex' | 'github-copilot' | 'xai-oauth' | 'trae'
 >;
 
 export interface OAuthSubscriptionTokens {
@@ -46,6 +50,8 @@ export interface OAuthSubscriptionTokens {
   id_token?: string;
   account_id?: string;
   base_url?: string;
+  device_code?: string;
+  trae?: TraePublicIdentity;
 }
 
 export function isOAuthSubscriptionProvider(
@@ -54,7 +60,8 @@ export function isOAuthSubscriptionProvider(
   return (
     providerType === 'openai-codex' ||
     providerType === 'github-copilot' ||
-    providerType === 'xai-oauth'
+    providerType === 'xai-oauth' ||
+    providerType === 'trae'
   );
 }
 
@@ -68,6 +75,8 @@ export function parseOAuthSubscriptionTokens(raw: string): OAuthSubscriptionToke
     if (typeof record.expires_at !== 'number' || !Number.isFinite(record.expires_at)) return null;
     return {
       access_token: record.access_token,
+      ...(record.trae === undefined ? {} : { trae: parseTraePublicIdentity(record.trae) }),
+      ...(typeof record.device_code === 'string' ? { device_code: record.device_code } : {}),
       refresh_token: record.refresh_token,
       expires_at: record.expires_at,
       ...(typeof record.token_type === 'string' ? { token_type: record.token_type } : {}),
@@ -466,6 +475,13 @@ export async function refreshOAuthSubscriptionTokens(input: {
       return refreshOpenAiCodexTokens(input.tokens, now, fetchFn, input.signal);
     case 'github-copilot':
       return refreshGitHubCopilotTokens(input.tokens, now, fetchFn, input.signal);
+    case 'trae':
+      return (input.tokens.trae ? refreshTraePublicTokens : refreshTraeTokens)({
+        tokens: input.tokens,
+        now,
+        fetchFn,
+        signal: input.signal,
+      });
     case 'xai-oauth':
       return refreshXaiOAuthTokens(input.tokens, now, fetchFn, input.signal);
   }

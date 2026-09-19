@@ -28,11 +28,17 @@ import type {
 
 type DesktopConnectionSettingsBridge = Pick<
   MakaBridge,
-  'connections' | 'openAiCodex' | 'xaiOAuth' | 'githubCopilotSubscription' | 'commandCodeLogin'
+  | 'connections'
+  | 'openAiCodex'
+  | 'xaiOAuth'
+  | 'traeOAuth'
+  | 'githubCopilotSubscription'
+  | 'commandCodeLogin'
 >;
 type DesktopOAuthProviderBridge =
   | MakaBridge['openAiCodex']
   | MakaBridge['xaiOAuth']
+  | MakaBridge['traeOAuth']
   | MakaBridge['githubCopilotSubscription'];
 
 export function createDesktopConnectionSettingsServices(
@@ -54,6 +60,7 @@ export function createDesktopConnectionSettingsServices(
           oauth: {
             openAiCodex: bindOAuthProvider(() => bridge().openAiCodex, host),
             xaiOAuth: bindOAuthProvider(() => bridge().xaiOAuth, host),
+            traeOAuth: bindOAuthProvider(() => bridge().traeOAuth, host),
             githubCopilotSubscription: {
               ...bindOAuthProvider(() => bridge().githubCopilotSubscription, host),
               connectExistingLogin: () =>
