@@ -113,7 +113,6 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
 const ROW_ACTIONS = {
   onToggleFlag: () => undefined,
   onArchive: () => undefined,
-  onUnarchive: () => undefined,
   onRename: () => undefined,
 };
 
