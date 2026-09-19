@@ -129,6 +129,9 @@ function admissionOutcomeForMessage(
 export interface UseQuoteCompanionInput {
   /** Stable owner for the currently mounted panel generation. */
   panelId: string;
+  /** Whether anyone can see the transcript. Observation follows this: hidden
+   *  releases the fork's observer; visible re-seeds and reconciles. */
+  active: boolean;
   /** Excerpts staged for the next send; accumulates as the user adds more from
    *  the main transcript. Attached to the next turn, then cleared by the host. */
   pendingQuotes: readonly StagedCompanionQuote[];
@@ -264,14 +267,17 @@ function transcriptRecordsTerminalTurn(
  * exchange never flickers away. Asking never writes back to the main conversation;
  * inherited history is hidden from the side transcript. The subscription is
  * established the moment the fork commits — before the run starts — so no
- * prompt/complete is missed. Explicit tab close removes the ephemeral fork;
- * navigation/layout remounts retain it while Workspace still owns the panel.
- * Workbar collapse and New Tab navigation keep the conversation alive.
+ * prompt/complete is missed, and it lives only while the panel is visible:
+ * hiding releases the observer and showing re-seeds it. Explicit tab close
+ * removes the ephemeral fork; navigation/layout remounts retain it while
+ * Workspace still owns the panel. Workbar collapse and New Tab navigation
+ * keep the conversation alive.
  */
 export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompanionResult {
   const { sideChat } = useWorkbarServices();
   const {
     panelId,
+    active,
     locale,
     sourceSession,
     modelChoices,
@@ -299,6 +305,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const sourceSessionId = sourceSession?.id;
   const sourceSessionIdRef = useRef(sourceSession?.id);
   sourceSessionIdRef.current = sourceSessionId;
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const forkSetupPromiseRef = useRef<Promise<EnsureCompanionForkResult> | null>(null);
   const stopRequestRef = useRef<{ promise: Promise<unknown>; turnId?: string } | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
@@ -881,10 +889,30 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       companionIdRef.current = session.id;
       companionRef.current = session;
       setCompanion(session);
-      subscriptionReadyRef.current = subscribeToFork(session.id);
+      // A send implies a visible panel, but a resolved promise — not a live
+      // observer — is all `send` needs from this either way.
+      subscriptionReadyRef.current = activeRef.current
+        ? subscribeToFork(session.id)
+        : Promise.resolve();
     },
     [subscribeToFork],
   );
+
+  // The fork's observation period is the panel's interest period: a hidden
+  // panel renders nothing, so its observer is released; returning re-seeds it
+  // through the same recovery path a lost subscription takes (seeded events
+  // replay, then readSettledMessages reconciles the durable transcript).
+  useEffect(() => {
+    if (!active) {
+      unsubscribeRef.current?.();
+      unsubscribeRef.current = null;
+      return;
+    }
+    const forkId = companionIdRef.current;
+    if (forkId && unsubscribeRef.current === null) {
+      subscriptionReadyRef.current = subscribeToFork(forkId);
+    }
+  }, [active, subscribeToFork]);
 
   const ensureFork = useCallback(
     (name: string): Promise<EnsureCompanionForkResult> => {
