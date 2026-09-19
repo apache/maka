@@ -76,6 +76,21 @@ test('preserves the authenticated shared Session revision', () => {
   );
 });
 
+test('preserves shared Session background activity through Host identity projection', () => {
+  for (const backgroundActivity of ['idle', 'running', 'waiting_for_user', 'blocked'] as const) {
+    const shared = projectDesktopSharedSessionSummary({
+      kind: 'shared_session', id: 'shared-session', revision: 7, createdAt: 1, activityAt: 2,
+      name: 'Shared', status: 'active', backgroundActivity,
+      liveRunState: { schemaVersion: 1, runningTurnIds: [] },
+    });
+    const projected = projectDesktopSessionSummary({
+      hostId: 'remote-root', profileId: 'guest', profileName: 'Guest', profileKind: 'remote',
+    }, shared);
+    assert.equal(projected.backgroundActivity, backgroundActivity);
+    assert.deepEqual(projected.runningTurnIds, []);
+  }
+});
+
 test('retires an active Session only after it leaves the refreshed catalog', () => {
   const owner = projectDesktopSessionSummary(
     {

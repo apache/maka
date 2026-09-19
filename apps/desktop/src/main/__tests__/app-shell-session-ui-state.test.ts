@@ -102,6 +102,21 @@ function seededState(): AppShellSessionUiState {
 }
 
 describe('session live run display state', () => {
+  it('keeps background authority separate from parent status and discards cached activity', () => {
+    for (const backgroundActivity of ['idle', 'running', 'waiting_for_user', 'blocked'] as const) {
+      const live = { id: 'root', status: 'running', runningTurnIds: [], backgroundActivity } as unknown as SessionSummary;
+      const normalized = normalizeSessionSummaryForDisplay(live);
+      assert.equal(normalized.status, 'active');
+      assert.equal(normalized.backgroundActivity, backgroundActivity);
+      const cached = normalizeSessionSummaryForDisplay({ ...live, localState: 'cached' as const });
+      assert.equal(cached.status, 'active');
+      assert.equal(Object.hasOwn(cached, 'backgroundActivity'), false);
+    }
+    assert.equal(Object.hasOwn(normalizeSessionSummaryForDisplay({
+      id: 'unknown', status: 'active',
+    } as SessionSummary), 'backgroundActivity'), false);
+  });
+
   it('keeps persisted running as a fallback only while live state is unknown', () => {
     const unknown = { id: 'unknown', status: 'running' } as SessionSummary;
     const knownEmpty = {

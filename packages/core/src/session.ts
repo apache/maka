@@ -363,6 +363,9 @@ export type BackendKind = 'ai-sdk' | 'plugin-executor';
  */
 export type PersistedBackendKind = BackendKind | 'fake';
 
+/** Host-owned activity of a Session's graph and linked child work, separate from its own turns. */
+export type SessionBackgroundActivity = 'idle' | 'running' | 'waiting_for_user' | 'blocked';
+
 export interface SessionSummary {
   id: string;
   cwd?: string;
@@ -399,6 +402,8 @@ export interface SessionSummary {
    * the header alone and omits it.
    */
   runningTurnIds?: string[];
+  /** Live Host projection; `idle` is known empty, omission is unknown. Cached values are not execution authority. */
+  backgroundActivity?: SessionBackgroundActivity;
   parentSessionId?: string;
   branchOfTurnId?: string;
   subagent?: SessionSubagentProjection;

@@ -182,9 +182,11 @@ test('closes as a retained background recovery instead of reporting a failed joi
   assert.doesNotMatch(document.body.textContent, /connectionFailed/u);
 });
 
-test('identifies a retained shared task and its selected peer transport', async () => {
+test('identifies retained shared tasks and retries cached state after the connection recovers', async () => {
   let retried: string | undefined;
   let opened: string | undefined;
+  let sessionState: 'live' | 'cached' = 'live';
+  let notifyMountsChanged: (() => void) | undefined;
   const services: SessionCollaborationServices = {
     importInvitation: async () => ({ kind: 'error', reason: 'incompatible_host', message: 'raw compatibility details' }),
     cancelImport: async () => 'settling',
@@ -194,6 +196,7 @@ test('identifies a retained shared task and its selected peer transport', async 
       name: 'Shared Host',
       hostId: 'a'.repeat(64),
       readiness: 'ready',
+      sessionState,
       peerPath: { kind: 'direct', transport: 'webrtc' },
       session: {
         kind: 'shared_session',
@@ -210,11 +213,15 @@ test('identifies a retained shared task and its selected peer transport', async 
     }, {
       mountId: 'revoked', name: 'Old access', hostId: 'a'.repeat(64),
       readiness: 'unavailable', failure: 'credential_rejected',
+      sessionState: 'cached',
     }, {
       mountId: 'incompatible', name: 'Old version', hostId: 'a'.repeat(64),
       readiness: 'unavailable', failure: 'incompatible_host',
     }],
-    subscribeMountChanges: () => () => undefined,
+    subscribeMountChanges: (listener) => {
+      notifyMountsChanged = listener;
+      return () => { notifyMountsChanged = undefined; };
+    },
     removeMount: async () => undefined,
     retryMount: async (mountId) => { retried = mountId; },
     renameMount: async () => undefined,
@@ -264,9 +271,23 @@ test('identifies a retained shared task and its selected peer transport', async 
   assert.match(document.body.textContent, /directPathUnavailable/u);
   assert.match(document.body.textContent, /accessRejected/u);
   assert.match(document.body.textContent, /incompatibleHost/u);
+  assert.doesNotMatch(document.body.textContent, /mountCached/u);
   assert.equal([...document.querySelectorAll('button')].filter((button) => button.textContent === 'retryConnection').length, 2);
   await clickButton(document, 'retryConnection');
   assert.equal(retried, 'offline');
+
+  await act(async () => { sessionState = 'cached'; notifyMountsChanged?.(); });
+  assert.match(document.body.textContent, /WebRTC/u, 'the connection remains usable');
+  assert.equal(document.body.textContent.split('mountCached').length - 1, 1, 'only valid cached access shows the stale-state hint');
+  assert.equal([...document.querySelectorAll('button')].filter((button) => button.textContent === 'retryConnection').length, 3);
+  await clickButton(document, 'retryConnection');
+  assert.equal(retried, 'shared-1', 'ready transport must not hide the cached task retry');
+  assert.match(document.body.textContent, /mountCached/u, 'clicking retry alone is not a fresh snapshot');
+
+  await act(async () => { sessionState = 'live'; notifyMountsChanged?.(); });
+  assert.doesNotMatch(document.body.textContent, /mountCached/u);
+  assert.equal([...document.querySelectorAll('button')].filter((button) => button.textContent === 'retryConnection').length, 2, 'fresh state retires the additional retry action');
+  assert.match(document.body.textContent, /WebRTC/u);
 
   await setTextArea(document, 'invitation');
   await clickButton(document, 'join');
