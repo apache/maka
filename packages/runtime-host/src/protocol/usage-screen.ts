@@ -17,11 +17,12 @@
  * under the License.
  */
 
-import type {
-  UsageScreenRequest,
-  UsageScreenResult,
-  UsageScreenQuery,
-  UsageScreenFailure,
+import {
+  isUsageScreenSearch,
+  type UsageScreenRequest,
+  type UsageScreenResult,
+  type UsageScreenQuery,
+  type UsageScreenFailure,
 } from '@maka/core/settings';
 import { requireExactRecord, requireRecord, requireShapedRecord, requireCount } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -53,9 +54,10 @@ function query(value: unknown): UsageScreenQuery {
   const to = requireCount(range.to, 'Usage to');
   if (from > to || !['all', 'success', 'error', 'aborted'].includes(String(v.status)))
     return fail();
+  if (!isUsageScreenSearch(v.search)) return fail();
   return {
     range: { from, to },
-    search: text(v.search),
+    search: v.search,
     status: v.status as UsageScreenQuery['status'],
   };
 }

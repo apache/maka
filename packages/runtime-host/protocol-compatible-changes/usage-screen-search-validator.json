@@ -1,0 +1,5 @@
+{
+  "epoch": 166,
+  "files": ["packages/runtime-host/src/protocol/usage-screen.ts"],
+  "reason": "Compatible validation refactor: the Usage screen query decoder now calls the shared core search validator, which preserves the existing 1,024 UTF-8-byte limit and rejection behavior. Wire shapes, limits, and outcomes are unchanged."
+}

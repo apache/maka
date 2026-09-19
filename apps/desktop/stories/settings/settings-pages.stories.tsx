@@ -2654,9 +2654,14 @@ export const UsageRetainedCapacityFailure: Story = {
     const details = canvas.queryByRole('button', {name: copy.showDetails});
     if (details) await userEvent.click(details);
     await canvas.findByRole('button', {name: /next page|下一页|下一頁/i});
+    await expect(await canvas.findByText('420')).toBeVisible();
+    const retainedRow = /^重构使用统计页请求日志的任务列，改为显示会话名称并处理超长标题的截断$/;
+    await expect(await canvas.findByText(retainedRow)).toBeVisible();
     await userEvent.type(await canvas.findByRole('textbox', {name: copy.filterAria}), 'new-filter');
     await expect(await canvas.findByText(new RegExp(copy.capacityBody))).toBeVisible();
     await expect(await canvas.findByText(new RegExp(copy.retainedBody))).toBeVisible();
+    await expect(await canvas.findByText('420')).toBeVisible();
+    await expect(await canvas.findByText(retainedRow)).toBeVisible();
     await expect(await canvas.findByRole('button', {name: /next page|下一页|下一頁/i})).toBeDisabled();
   },
 };

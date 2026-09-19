@@ -26,6 +26,7 @@ export type UsageSettingsCopy = {
   totalTokens: string; tokenDetail(input: number, output: number): string; cacheTokens: string; cacheDetail(miss: number, read: number, creation: number): string;
   viewAria: string; tabs: readonly [string, string, string, string, string]; filtersAria: string; filterPlaceholder: string; filterAria: string;
   statusAria: string; statuses: readonly [string, string, string, string]; details: string; detailsAria: string; recordCount(count: number): string; clearFilters: string;
+  paginationAria: string; previousPage: string; nextPage: string; goToPage(page: number): string; pageProgress(loadedPage: number, targetPage: number): string;
   summaryOnly: string; showDetails: string; filteredEmpty: string; filteredEmptyHelp: string; requestEmpty: string;
   costUnavailable: string; incompleteTitle: string; incompleteBody: string;
   tables: {
@@ -46,6 +47,7 @@ const SETTINGS_USAGE_COPY = {
     cacheDetail: (miss, read, creation) => `新 ${miss} / 命中 ${read} / 创建 ${creation}`, viewAria: '使用统计视图', tabs: ['活动记录', '供应商统计', '模型统计', '工具统计', '定价配置'],
     filtersAria: '活动记录筛选', filterPlaceholder: '按模型或工具筛选…', filterAria: '按模型或工具筛选活动记录', statusAria: '活动状态筛选',
     statuses: ['全部状态', '成功', '错误', '已中止'], details: '详情记录', detailsAria: '显示使用统计详情记录', recordCount: (count) => `共 ${count} 条记录`, clearFilters: '清除筛选',
+    paginationAria: '活动记录分页', previousPage: '上一页', nextPage: '下一页', goToPage: (page) => `转到第 ${page} 页`, pageProgress: (loadedPage, targetPage) => `正在加载第 ${loadedPage} / ${targetPage} 页`,
     summaryOnly: '当前仅显示汇总指标。打开详情记录后，可以查看逐条模型调用和工具调用，按模型、工具或状态筛选，并用于排查费用与失败调用。',
     showDetails: '显示明细', filteredEmpty: '没有符合筛选条件的活动记录', filteredEmptyHelp: '调整或清除筛选条件后可查看全部活动记录。', requestEmpty: '暂无活动记录',
     costUnavailable: '费用未知', incompleteTitle: '统计可能不完整',
@@ -69,6 +71,7 @@ const SETTINGS_USAGE_COPY = {
     cacheDetail: (miss, read, creation) => `新 ${miss} / 命中 ${read} / 建立 ${creation}`, viewAria: '使用統計檢視', tabs: ['請求記錄', '供應商統計', '模型統計', '工具統計', '定價設定'],
     filtersAria: '請求記錄篩選', filterPlaceholder: '按模型或工具篩選…', filterAria: '按模型或工具篩選請求記錄', statusAria: '請求狀態篩選',
     statuses: ['全部狀態', '成功', '錯誤', '已中止'], details: '詳情記錄', detailsAria: '顯示使用統計詳情記錄', recordCount: (count) => `共 ${count} 條記錄`, clearFilters: '清除篩選',
+    paginationAria: '請求記錄分頁', previousPage: '上一頁', nextPage: '下一頁', goToPage: (page) => `前往第 ${page} 頁`, pageProgress: (loadedPage, targetPage) => `正在載入第 ${loadedPage} / ${targetPage} 頁`,
     summaryOnly: '目前僅顯示彙總指標。開啟詳情記錄後，可以檢視逐條模型請求和工具呼叫，按模型、工具或狀態篩選，並用於排查費用與失敗請求。',
     costUnavailable: '費用未知', incompleteTitle: '統計可能不完整',
     incompleteBody: '部分記錄可能無法讀取、尚未納入統計或超出顯示上限，實際用量可能高於此處顯示。',
@@ -92,6 +95,7 @@ const SETTINGS_USAGE_COPY = {
     cacheDetail: (miss, read, creation) => `New ${miss} / hit ${read} / created ${creation}`, viewAria: 'Usage view', tabs: ['Activity log', 'Providers', 'Models', 'Tools', 'Pricing'],
     filtersAria: 'Activity filters', filterPlaceholder: 'Filter by model or tool…', filterAria: 'Filter activity by model or tool', statusAria: 'Filter by activity status',
     statuses: ['All statuses', 'Success', 'Error', 'Aborted'], details: 'Detailed records', detailsAria: 'Show detailed usage records', recordCount: (count) => `${count} ${count === 1 ? 'record' : 'records'}`, clearFilters: 'Clear filters',
+    paginationAria: 'Activity pages', previousPage: 'Go to previous page', nextPage: 'Go to next page', goToPage: (page) => `Go to page ${page}`, pageProgress: (loadedPage, targetPage) => `Loading page ${loadedPage} of ${targetPage}`,
     summaryOnly: 'Only summary metrics are shown. Enable detailed records to inspect individual model calls and tool calls, filter by model, tool, or status, and investigate costs or failures.',
     showDetails: 'Show details', filteredEmpty: 'No activity matches these filters', filteredEmptyHelp: 'Adjust or clear the filters to see all activity records.', requestEmpty: 'No activity records',
     costUnavailable: 'Cost unavailable', incompleteTitle: 'These numbers may be incomplete',

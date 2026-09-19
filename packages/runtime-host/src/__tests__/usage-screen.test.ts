@@ -89,10 +89,15 @@ const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 
 test('strict screen codecs reject malformed requests, unknown fields, wrong-query results and non-progressing pages', () => {
   assert.deepEqual(decodeUsageScreenRequest({ kind: 'screen', query }), { kind: 'screen', query });
+  const utf8Boundary = { ...query, search: '界'.repeat(341) + 'x' };
+  assert.deepEqual(decodeUsageScreenRequest({ kind: 'screen', query: utf8Boundary }), {
+    kind: 'screen',
+    query: utf8Boundary,
+  });
   for (const input of [
     { kind: 'screen', query: { ...query, extra: true } },
     { kind: 'screen', query: { ...query, range: { from: 2, to: 1 } } },
-    { kind: 'screen', query: { ...query, search: '界'.repeat(400) } },
+    { kind: 'screen', query: { ...query, search: '界'.repeat(342) } },
     { kind: 'activity', query, revision: 'r', queryIdentity: 'q', cursor: '' },
   ])
     assert.throws(() => decodeUsageScreenRequest(input));
