@@ -51,7 +51,7 @@
     },
     "settings-pricing.spec.ts": {
       "tests": 1,
-      "electron": "the effective pricing snapshot is a main-process round trip to the real embedded Runtime Host (no bridge stub -- an enabled Add proves it loaded), and closing the editor must return real Electron focus to its trigger, which a linkedom story cannot honestly exercise"
+      "electron": "the installed contextBridge, main IPC handlers and selected-Host adapter carry Pricing writes and return authoritative values through a fresh preload after renderer reload; injected services and handler fakes cannot detect missing registrations, incorrect Host scope or serialization loss. Picker, tabs and focus are covered by the existing Pricing and Settings Storybook plays"
     },
     "settings.spec.ts": {
       "tests": 2,

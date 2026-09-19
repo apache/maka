@@ -166,6 +166,7 @@ export const Populated: Story = {
   render: () => <EditablePricingPanel />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await expect(canvas.queryByText('内置', { exact: true })).not.toBeInTheDocument();
     await userEvent.click(await canvas.findByRole('button', { name: '编辑「zai:glm-4.7」定价' }));
     const dialogElement = await canvas.findByRole('dialog', { name: '编辑定价' });
     const dialog = within(dialogElement);
@@ -177,6 +178,15 @@ export const Populated: Story = {
     await userEvent.click(dialog.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(canvas.queryByRole('dialog')).not.toBeInTheDocument());
     await expect(canvas.getByText('$0.75', { exact: true })).toBeVisible();
+    await expect(canvas.getByRole('button', { name: '编辑「zai:glm-4.7」定价' })).toHaveFocus();
+
+    // Deletion removes the opening action, so focus must return to stable Add.
+    await userEvent.click(canvas.getByRole('button', { name: '删除「local:qwen3-coder」定价' }));
+    const deletion = within(await canvas.findByRole('alertdialog', { name: '删除定价' }));
+    await userEvent.click(deletion.getByRole('button', { name: '删除' }));
+    await waitFor(() => expect(canvas.queryByRole('alertdialog')).not.toBeInTheDocument());
+    await expect(canvas.queryByText('local:qwen3-coder', { exact: true })).not.toBeInTheDocument();
+    await expect(canvas.getByRole('button', { name: '添加定价' })).toHaveFocus();
   },
 };
 
@@ -216,8 +226,17 @@ export const ManualExactKey: Story = {
   render: () => <PricingTabPanel services={pricingServices(async () => MIXED_SNAPSHOT)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole('button', { name: '添加定价' }));
-    const dialog = within(await canvas.findByRole('dialog', { name: '添加定价' }));
+    const add = await canvas.findByRole('button', { name: '添加定价' });
+    await userEvent.click(add);
+    let dialog = within(await canvas.findByRole('dialog', { name: '添加定价' }));
+    await userEvent.type(dialog.getByRole('combobox'), 'openai:gpt-5');
+    await userEvent.click(await within(document.body).findByRole('option', { name: 'openai:gpt-5' }));
+    await expect(dialog.getByRole('textbox', { name: /输入价格/ })).toHaveValue('1.25');
+    await userEvent.click(dialog.getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(canvas.queryByRole('dialog')).not.toBeInTheDocument());
+    await expect(add).toHaveFocus();
+    await userEvent.click(add);
+    dialog = within(await canvas.findByRole('dialog', { name: '添加定价' }));
     await userEvent.click(dialog.getByRole('button', { name: '模型不在列表中？手动输入' }));
     await userEvent.type(dialog.getByRole('textbox', { name: /^模型键/ }), 'acme:coder-v3');
   },

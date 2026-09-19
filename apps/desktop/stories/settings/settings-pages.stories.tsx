@@ -2711,6 +2711,8 @@ export const UsagePricingHostSwitch: Story = {
     const canvas = within(canvasElement);
     const navigation = await canvas.findByRole('navigation', { name: '使用统计视图' });
     await userEvent.click(within(navigation).getByRole('button', { name: '定价配置' }));
+    await expect(canvas.queryByRole('group', { name: '使用统计范围与刷新' })).not.toBeInTheDocument();
+    await expect(canvas.queryByRole('group', { name: '使用统计汇总指标' })).not.toBeInTheDocument();
     const add = await canvas.findByRole('button', { name: '添加定价' });
     await waitFor(() => expect(add).not.toHaveAttribute('aria-disabled', 'true'));
     await userEvent.click(add);
