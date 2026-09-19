@@ -86,6 +86,7 @@ export type PricingSettingsCopy = {
     cacheRead: string,
     cacheWrite: string,
   ): string;
+  latestUnpriced: string;
   reviewSave: string;
   hostChangedTitle: string;
   hostChangedBody: string;
@@ -167,6 +168,7 @@ const SETTINGS_PRICING_COPY = {
     conflictBodyUnknown: '上次修改可能已生效、也可能未生效。请核对最新值后，再决定是否基于最新版本重新保存。',
     conflictLatest: (source, input, output, cacheRead, cacheWrite) =>
       `当前最新：${source}；输入 ${input} / 输出 ${output} / 缓存读 ${cacheRead} / 缓存写 ${cacheWrite}`,
+    latestUnpriced: '当前主机尚未设置该模型的价格。',
     reviewSave: '核对并保存',
     hostChangedTitle: '运行时主机已变化',
     hostChangedBody: '草稿已保留。请等待新主机的定价加载完成，核对后再继续保存。',
@@ -246,6 +248,7 @@ const SETTINGS_PRICING_COPY = {
     conflictBodyUnknown: '上次修改可能已生效，也可能未生效。請核對最新值後，再決定是否基於最新版本重新儲存。',
     conflictLatest: (source, input, output, cacheRead, cacheWrite) =>
       `目前最新：${source}；輸入 ${input} / 輸出 ${output} / 快取讀 ${cacheRead} / 快取寫 ${cacheWrite}`,
+    latestUnpriced: '目前主機尚未設定該模型的價格。',
     reviewSave: '核對並儲存',
     hostChangedTitle: '執行時主機已變更',
     hostChangedBody: '草稿已保留。請等待新主機的定價載入完成，核對後再繼續儲存。',
@@ -327,6 +330,7 @@ const SETTINGS_PRICING_COPY = {
     conflictBodyUnknown: 'The last change may or may not have applied. Review the latest value, then decide whether to save again against the latest revision.',
     conflictLatest: (source, input, output, cacheRead, cacheWrite) =>
       `Latest: ${source}; input ${input} / output ${output} / cache read ${cacheRead} / cache write ${cacheWrite}`,
+    latestUnpriced: 'This model has no price on the current Host.',
     reviewSave: 'Review & save',
     hostChangedTitle: 'Runtime Host changed',
     hostChangedBody: 'Your draft was preserved. Wait for pricing from the new Host, then review it before saving.',

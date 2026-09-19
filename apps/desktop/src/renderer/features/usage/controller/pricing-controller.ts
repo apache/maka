@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import { useToast, useUiLocale } from '@maka/ui';
+import { normalizePricingModelKey } from '@maka/core/usage-stats/pricing';
 import {
   createPricingReconciliationTarget,
   pricingReconciliationTargetMatches,
@@ -36,6 +37,7 @@ import {
   draftFromPricing,
   validatePricingDraft,
   type PricingDraft,
+  type PricingEditorDraft,
 } from '../pricing-view-model.js';
 
 // Derive the controller's authority/outcome types from its injected port so the
@@ -43,6 +45,12 @@ import {
 type DesktopPricingSnapshot = Awaited<ReturnType<UsagePricingServices['loadPricing']>>;
 type DesktopPricingMutationOutcome = Awaited<ReturnType<UsagePricingServices['mutatePricing']>>;
 type PricingOverride = Extract<EffectivePricingEntry, { source: 'custom' }>;
+
+interface PricingWriteAttempt {
+  readonly intent: PricingReconciliationTarget;
+  /** Immutable input actually submitted, distinct from subsequent user edits. */
+  readonly draft: PricingDraft | null;
+}
 
 /**
  * Write blockers from #2015: after a save whose post-commit reload failed, or an
@@ -55,25 +63,52 @@ export type PricingWriteState =
   | {
       readonly kind: 'conflict';
       readonly reason: 'revision_conflict' | 'outcome_unknown';
-      readonly intent: PricingReconciliationTarget;
+      readonly attempt: PricingWriteAttempt;
     }
   | {
       readonly kind: 'refresh_failed';
-      readonly intent: PricingReconciliationTarget;
+      readonly attempt: PricingWriteAttempt;
     }
   | {
       readonly kind: 'reconcile_unavailable';
       readonly reason: 'revision_conflict' | 'outcome_unknown';
-      readonly intent: PricingReconciliationTarget;
+      readonly attempt: PricingWriteAttempt;
     };
 
 const EMPTY_DRAFT: PricingDraft = {
   modelKey: '',
-  input: null,
-  output: null,
-  cacheRead: null,
-  cacheWrite: null,
+  input: '',
+  output: '',
+  cacheRead: '',
+  cacheWrite: '',
 };
+
+/** Reclassify against reviewed authority without replacing any rate input. */
+function reviewedEditorDraft(
+  current: PricingEditorDraft,
+  snapshot: DesktopPricingSnapshot,
+): PricingEditorDraft {
+  const key = normalizePricingModelKey(current.draft.modelKey);
+  if (!key.ok) return current;
+  const row = snapshot.entries.find(({ pricing }) => pricing.modelKey === key.value);
+  if (row?.source === 'custom') {
+    return { ...current, mode: 'edit', draft: { ...current.draft, modelKey: key.value } };
+  }
+  // An Edit whose override disappeared becomes Add; a catalog key that is no
+  // longer bundled stays visible as an exact manual key on the new Host.
+  return {
+    ...current,
+    mode: row?.source === 'builtin' && current.mode !== 'manual' ? 'catalog' : 'manual',
+  };
+}
+
+function validateEditorDraft(editor: PricingEditorDraft | null, existingKeys: readonly string[]) {
+  return validatePricingDraft(editor?.draft ?? EMPTY_DRAFT, {
+    mode: editor?.mode === 'edit' ? 'edit' : 'add',
+    existingKeys,
+    lockedModelKey: editor?.mode === 'edit' ? editor.draft.modelKey : undefined,
+  });
+}
 
 /** Owns disposable pricing authority and outcomes; the Usage scope keeps the draft. */
 export function usePricingController(props: {
@@ -90,7 +125,12 @@ export function usePricingController(props: {
   const [snapshot, setSnapshot] = useState<DesktopPricingSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [editor, setEditor] = usePricingEditorDraft();
+  const [editor, setScopeEditor] = usePricingEditorDraft();
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
+  // List refreshes never replace the snapshot the open dialog was based on.
+  // Only opening a dialog or explicitly reviewing an outcome adopts authority.
+  const [mutationBase, setMutationBase] = useState<DesktopPricingSnapshot | null>(null);
   const draft = editor?.draft ?? EMPTY_DRAFT;
   const cacheOpen = editor?.cacheOpen ?? false;
   const [writeState, setWriteState] = useState<PricingWriteState>({ kind: 'idle' });
@@ -126,6 +166,7 @@ export function usePricingController(props: {
     lifecycleRef.current += 1;
     reloadTicketRef.current += 1;
     setSnapshot(null);
+    setMutationBase(null);
     setLoading(true);
     setLoadError(null);
     setWriteState({ kind: 'idle' });
@@ -150,6 +191,14 @@ export function usePricingController(props: {
     );
   }
 
+  function setEditor(update: SetStateAction<PricingEditorDraft | null>) {
+    const next = typeof update === 'function' ? update(editorRef.current) : update;
+    // Record input synchronously, even if a pending write settles before React
+    // commits the input event. Async completions must see this newer draft.
+    editorRef.current = next;
+    setScopeEditor(next);
+  }
+
   async function reload(): Promise<void> {
     const host = props.target?.host;
     const pendingWrite =
@@ -159,6 +208,7 @@ export function usePricingController(props: {
     const lifecycle = lifecycleRef.current;
     const ticket = ++reloadTicketRef.current;
     setLoading(true);
+    setLoadError(null);
     // No selected Host: nothing Host-scoped to load. Resolve to an empty state
     // (like the usage stats loader's no-Host path) rather than letting the bridge
     // fall back to a *different* (active) Host than the settings page shows.
@@ -178,7 +228,7 @@ export function usePricingController(props: {
       if (pendingWrite) {
         applyOutcome(
           {
-            kind: pricingReconciliationTargetMatches(pendingWrite.intent, next.entries)
+            kind: pricingReconciliationTargetMatches(pendingWrite.attempt.intent, next.entries)
               ? 'synchronized'
               : 'review_required',
             snapshot: next,
@@ -187,11 +237,10 @@ export function usePricingController(props: {
                 ? pendingWrite.reason
                 : 'revision_conflict',
           },
-          pendingWrite.intent,
+          pendingWrite.attempt,
         );
       } else {
         setSnapshot(next);
-        setWriteState({ kind: 'idle' });
       }
     } catch (error) {
       if (!isCurrent(lifecycle) || ticket !== reloadTicketRef.current) return;
@@ -218,9 +267,10 @@ export function usePricingController(props: {
     () => snapshot?.entries.filter((row) => row.source === 'custom') ?? [],
     [snapshot],
   );
+  const editorSnapshot = mutationBase ?? snapshot;
   const catalogRows = useMemo(
-    () => snapshot?.entries.filter((row) => row.source === 'builtin') ?? [],
-    [snapshot],
+    () => editorSnapshot?.entries.filter((row) => row.source === 'builtin') ?? [],
+    [editorSnapshot],
   );
   // Duplicate detection is over the OVERRIDES only (the visible list): picking or
   // typing a built-in that is not yet overridden is a NEW override (an upsert),
@@ -228,15 +278,12 @@ export function usePricingController(props: {
   // ("edit its row instead"). Checking the full built-in ∪ overrides union here
   // would wrongly flag every catalog pick (all built-ins) as a duplicate and
   // block its save.
-  const overrideKeys = useMemo(() => overrideRows.map((row) => row.pricing.modelKey), [overrideRows]);
+  const overrideKeys = useMemo(() => editorSnapshot?.entries
+    .filter((row) => row.source === 'custom')
+    .map((row) => row.pricing.modelKey) ?? [], [editorSnapshot]);
   const validation = useMemo(
-    () =>
-      validatePricingDraft(draft, {
-        mode: editor?.mode === 'edit' ? 'edit' : 'add',
-        existingKeys: overrideKeys,
-        lockedModelKey: editor?.mode === 'edit' ? draft.modelKey : undefined,
-      }),
-    [draft, editor, overrideKeys],
+    () => validateEditorDraft(editor, overrideKeys),
+    [editor, overrideKeys],
   );
 
   const writesBlocked =
@@ -263,9 +310,13 @@ export function usePricingController(props: {
   // rather than only claiming one exists.
   const conflictLatestEntry = useMemo(() => {
     if (writeState.kind !== 'conflict') return null;
-    const key = pricingReconciliationTargetModelKey(writeState.intent);
-    return snapshot?.entries.find(({ pricing }) => pricing.modelKey === key) ?? null;
-  }, [writeState, snapshot]);
+    const key = pricingReconciliationTargetModelKey(writeState.attempt.intent);
+    return editorSnapshot?.entries.find(({ pricing }) => pricing.modelKey === key) ?? null;
+  }, [writeState, editorSnapshot]);
+
+  const hostReviewLatestEntry = needsReview
+    ? snapshot?.entries.find(({ pricing }) => pricing.modelKey === draft.modelKey.trim()) ?? null
+    : null;
 
   function restoreTriggerFocus() {
     focusRestorePendingRef.current = true;
@@ -275,14 +326,16 @@ export function usePricingController(props: {
     // No loaded authority (no selected Host, or a load still pending/failed)
     // means a save would have no CAS base and silently no-op — so the editor
     // must not open. The Add control is disabled for the same reason.
-    if (writesBlocked || snapshot === null) return;
+    if (writesBlocked || guard.current || snapshot === null) return;
     triggerRef.current = trigger;
+    setMutationBase(snapshot);
     setEditor({ mode: 'catalog', draft: EMPTY_DRAFT, cacheOpen: false });
   }
 
   function openEdit(row: PricingOverride, trigger: HTMLElement | null) {
-    if (writesBlocked) return;
+    if (writesBlocked || guard.current || snapshot === null) return;
     triggerRef.current = trigger;
+    setMutationBase(snapshot);
     setEditor({ mode: 'edit', ...draftFromPricing(row.pricing) });
   }
 
@@ -305,12 +358,16 @@ export function usePricingController(props: {
   }
 
   function reviewHostChange() {
-    if (needsReview && snapshot !== null) setNeedsReview(false);
+    if (!needsReview || loading || snapshot === null || !props.target?.isCurrent()) return;
+    setEditor((current) => current ? reviewedEditorDraft(current, snapshot) : null);
+    setMutationBase(snapshot);
+    setNeedsReview(false);
   }
 
   function closeEditor() {
-    if (saving) return;
+    if (guard.current) return;
     setEditor(null);
+    setMutationBase(null);
     setNeedsReview(false);
     if (writeState.kind === 'conflict') {
       setWriteState({ kind: 'idle' });
@@ -323,31 +380,60 @@ export function usePricingController(props: {
       ? { ...current, draft: { ...current.draft, [key]: value } }
       : current);
 
-  function finishReconciledIntent(intent: PricingReconciliationTarget): void {
-    if (intent.kind === 'upsert') setEditor(null);
-    else setResetTarget(null);
-    restoreTriggerFocus();
+  function finishReconciledIntent(
+    attempt: PricingWriteAttempt,
+    latest: DesktopPricingSnapshot,
+  ): void {
+    if (attempt.intent.kind === 'delete') {
+      setResetTarget(null);
+      setMutationBase(null);
+      restoreTriggerFocus();
+      return;
+    }
+    const current = editorRef.current;
+    if (!current) return;
+    if (current.draft === attempt.draft) {
+      setEditor(null);
+      setMutationBase(null);
+      restoreTriggerFocus();
+      return;
+    }
+    // The completed write owns only its submitted input. Keep later edits open
+    // and promote a saved Add to Edit so its next explicit save stays usable.
+    if (current.draft.modelKey.trim() === pricingReconciliationTargetModelKey(attempt.intent)) {
+      setEditor(reviewedEditorDraft(current, latest));
+      setMutationBase(latest);
+      // A different client can write again between our commit and its reload.
+      // The new draft must review that change before adopting it as its base.
+      if (!pricingReconciliationTargetMatches(attempt.intent, latest.entries)) {
+        setWriteState({ kind: 'conflict', reason: 'revision_conflict', attempt });
+      }
+    }
   }
 
   function restoreReconciledIntent(
-    intent: PricingReconciliationTarget,
+    attempt: PricingWriteAttempt,
     latest: DesktopPricingSnapshot,
   ): void {
+    const { intent } = attempt;
     const key = pricingReconciliationTargetModelKey(intent);
     const latestRow = latest.entries.find(({ pricing }) => pricing.modelKey === key);
     if (intent.kind === 'upsert') {
-      if (latestRow) setEditor((current) => current
-        ? { ...current, mode: 'edit', draft: { ...current.draft, modelKey: key } }
-        : null);
+      const current = editorRef.current;
+      if (current?.draft.modelKey.trim() === key) {
+        setEditor(reviewedEditorDraft(current, latest));
+        setMutationBase(latest);
+      }
       return;
     }
+    setMutationBase(latest);
     if (latestRow?.source === 'custom') setResetTarget(latestRow);
   }
 
   /** Adopt one settled outcome using the same authority and intent as a reload. */
   function applyOutcome(
     outcome: DesktopPricingMutationOutcome,
-    intent: PricingReconciliationTarget,
+    attempt: PricingWriteAttempt,
   ): void {
     // Fence any reload that was in flight when this mutation committed, so a
     // stale refresh can't overwrite the authority we're about to set (nor reset
@@ -362,24 +448,24 @@ export function usePricingController(props: {
     switch (outcome.kind) {
       case 'saved':
         setWriteState({ kind: 'idle' });
-        finishReconciledIntent(intent);
+        finishReconciledIntent(attempt, outcome.snapshot);
         toast.success(copy.saved, outcome.disposition === 'unchanged' ? copy.synchronized : undefined);
         return;
       case 'synchronized':
         setWriteState({ kind: 'idle' });
-        finishReconciledIntent(intent);
+        finishReconciledIntent(attempt, outcome.snapshot);
         toast.success(copy.synchronized);
         return;
       case 'review_required':
         // Adopt fresh authority into the list so it is no longer speculative,
         // keep the draft, and require an explicit second save against `latest`.
-        setWriteState({ kind: 'conflict', reason: outcome.reason, intent });
+        setWriteState({ kind: 'conflict', reason: outcome.reason, attempt });
         // If this was an Add and the fresh authority now already has that key
         // (added elsewhere), the duplicate check would leave `validation.config`
         // null and silently block the required second save. Convert the Add into
         // an Edit locked on that key so the explicit re-save upserts against the
         // latest revision (the draft's rates are preserved).
-        restoreReconciledIntent(intent, outcome.snapshot);
+        restoreReconciledIntent(attempt, outcome.snapshot);
         return;
       case 'saved_refresh_failed':
         // The write committed but the post-commit reload failed — the loaded list
@@ -387,27 +473,30 @@ export function usePricingController(props: {
         // list); retain both the draft and intended end state so an in-dialog
         // refresh can confirm the committed write without replaying it.
         setSnapshot(null);
-        setWriteState({ kind: 'refresh_failed', intent });
+        setWriteState({ kind: 'refresh_failed', attempt });
         return;
       case 'reconciliation_unavailable':
-        setWriteState({ kind: 'reconcile_unavailable', reason: outcome.reason, intent });
+        setWriteState({ kind: 'reconcile_unavailable', reason: outcome.reason, attempt });
         return;
     }
   }
 
   /** Every submit path shares the write blockers, CAS base, and lifecycle fence. */
   async function mutate(mutation: PricingMutation): Promise<void> {
-    const base = snapshot;
+    const base = mutationBase;
     const target = props.target;
     if (writesBlocked || !base || !target?.isCurrent()) return;
     if (!guard.begin('write')) return;
     const lifecycle = lifecycleRef.current;
-    const intent = createPricingReconciliationTarget(base.entries, mutation);
+    const attempt: PricingWriteAttempt = {
+      intent: createPricingReconciliationTarget(base.entries, mutation),
+      draft: mutation.kind === 'upsert' ? editorRef.current?.draft ?? null : null,
+    };
     setPendingMutation(mutation.kind);
     try {
       const outcome = await services.mutatePricing(target.host, base, mutation);
       if (!isCurrent(lifecycle, target)) return;
-      applyOutcome(outcome, intent);
+      applyOutcome(outcome, attempt);
     } catch (error) {
       if (isCurrent(lifecycle, target)) {
         toast.error(mutation.kind === 'upsert' ? copy.saveFailed : copy.resetFailed, describeError(error));
@@ -421,21 +510,26 @@ export function usePricingController(props: {
   }
 
   async function save(): Promise<void> {
-    if (validation.config) await mutate({ kind: 'upsert', pricing: validation.config });
+    const current = editorRef.current;
+    if (!current) return;
+    const { config } = validateEditorDraft(current, overrideKeys);
+    if (config) await mutate({ kind: 'upsert', pricing: config });
   }
 
   function openReset(
     row: PricingOverride,
     trigger: HTMLElement | null,
   ) {
-    if (writesBlocked) return;
+    if (writesBlocked || guard.current || snapshot === null) return;
     triggerRef.current = trigger;
+    setMutationBase(snapshot);
     setResetTarget(row);
   }
 
   function cancelReset() {
-    if (resetBusy) return;
+    if (guard.current) return;
     setResetTarget(null);
+    setMutationBase(null);
     if (writeState.kind === 'conflict') setWriteState({ kind: 'idle' });
     restoreTriggerFocus();
   }
@@ -469,6 +563,7 @@ export function usePricingController(props: {
     writesBlocked,
     reviewHostChange,
     conflictLatestEntry,
+    hostReviewLatestEntry,
     saving,
     resetTarget,
     resetBusy,

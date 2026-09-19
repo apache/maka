@@ -37,24 +37,35 @@ to a thin wrapper).
 ## Boundary
 
 - `ports.ts` — `UsageServices`: `loadUsageStats(range, query)`, revision-checked
-  `loadUsageActivity(input)`, and `updateUsageSettings(patch)`. All narrow — the feature consumes only
+  `loadUsageActivity(input)`, and `updateUsageSettings(patch)`. The feature consumes only
   `UsageSettings`/`UsageStats`, never the whole `AppSettings`.
 - `pricing-ports.ts` + `pricing-services-context.tsx` — the two Host-backed
   Pricing capabilities: load one complete effective snapshot and apply one CAS
   mutation against the settings-selected Host.
 - `controller/pricing-controller.ts` — disposable Pricing authority, conflict,
-  mutation execution, and Host-generation fencing. A Host change or view remount
-  recovers only the scope-owned draft, reloads authority, and requires explicit
-  review before the next save. If reconciliation was temporarily unavailable,
-  it retains the exact mutation intent and compares it with the next successful
-  snapshot via the shared pure reconciliation rules in `@maka/runtime-host/protocol`.
+  mutation execution, and Host-generation fencing. An open editor/reset dialog
+  pins its viewed CAS snapshot; a list refresh cannot advance that write base or
+  its catalog/duplicate validation. A Host change or view remount recovers only
+  the scope-owned draft, reloads authority, and requires explicit review of the
+  new Host's price before the next save. Recovery errors and Retry stay inside
+  the editor. Review reclassifies Add/Edit against the new Host without changing
+  rate input. A save retains its submitted draft identity, so its result only
+  closes that draft; input typed while saving remains open for a later submit.
+  If reconciliation was temporarily unavailable, it retains that same attempt
+  and compares its exact intent with the next successful snapshot via the shared
+  pure reconciliation rules in `@maka/runtime-host/protocol`, without replaying it.
 - `services-context.tsx` — `UsageFeatureScope`, the persistent state owner
   (single complete snapshot with range/query labels, screen/page request tickets,
   fixed filter time bounds, Host invalidation, and visible stale/capacity failures), plus `useUsageServices()`
   and `useUsageStats(range)`. It also keeps the Pricing editor's input (mode,
-  draft, and cache-section state) through `usePricingEditorDraft()`, so Settings'
-  Host-keyed content and loading gate cannot discard the user's work. Pricing
-  snapshots and in-flight operations never persist in this scope.
+  raw rate text, and cache-section state) through `usePricingEditorDraft()`, so
+  Settings' Host-keyed content and loading gate cannot discard the user's work.
+  Pricing snapshots and in-flight operations never persist in this scope.
+- `pricing-view-model.ts` — validates raw decimal/scientific rate text at the
+  submission boundary, preserving partial input through remounts. Invalid and
+  negative rates remain visible for correction; blank cache prices are omitted
+  and an explicit zero remains zero. Astryx `TextInput` reports every keystroke;
+  `NumberInput`'s private, blur-committed pending text cannot satisfy this lifetime.
 - `ui/usage-settings-view.tsx` — the surface (overview + tabs + per-tab panels).
   A disposable view: it unmounts on a section change and reads the snapshot from
   the scope via `useUsageStats`, so leaving/returning re-displays the last
@@ -99,8 +110,8 @@ shim, since `settings-error-copy` is not a copy catalog.
 ## Follow-up
 
 - The `UsagePricingHostSwitch` Settings story now exercises a real Host lifecycle
-  event, page unmount, profile selection, recovered draft, and save against the
-  replacement Host's CAS base. `usage-settings-view.test.ts` still drives the
+  event before input blur, page unmount, profile selection, recovered draft, and
+  save against the replacement Host's CAS base. `usage-settings-view.test.ts` still drives the
   stats scope's fence and target key directly; broader stats integration coverage
   remains a follow-up.
 - De-duplicate the controllers. `controller/action-guard.ts` and

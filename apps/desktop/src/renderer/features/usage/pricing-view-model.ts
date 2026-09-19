@@ -27,11 +27,11 @@ import type { PricingConfig } from '@maka/core/usage-stats/types';
 
 export interface PricingDraft {
   readonly modelKey: string;
-  /** `null` = the field is empty (a cleared NumberInput). */
-  readonly input: number | null;
-  readonly output: number | null;
-  readonly cacheRead: number | null;
-  readonly cacheWrite: number | null;
+  /** Raw input, including incomplete decimals; an empty string means not set. */
+  readonly input: string;
+  readonly output: string;
+  readonly cacheRead: string;
+  readonly cacheWrite: string;
 }
 
 /** In-memory user input survives the Settings Host/loading gates remounting the view. */
@@ -53,10 +53,10 @@ export function draftFromPricing(pricing: PricingConfig): {
   return {
     draft: {
       modelKey: pricing.modelKey,
-      input: pricing.inputUsdPer1M,
-      output: pricing.outputUsdPer1M,
-      cacheRead: pricing.cacheReadUsdPer1M ?? null,
-      cacheWrite: pricing.cacheWriteUsdPer1M ?? null,
+      input: String(pricing.inputUsdPer1M),
+      output: String(pricing.outputUsdPer1M),
+      cacheRead: pricing.cacheReadUsdPer1M === undefined ? '' : String(pricing.cacheReadUsdPer1M),
+      cacheWrite: pricing.cacheWriteUsdPer1M === undefined ? '' : String(pricing.cacheWriteUsdPer1M),
     },
     cacheOpen: pricing.cacheReadUsdPer1M !== undefined || pricing.cacheWriteUsdPer1M !== undefined,
   };
@@ -105,35 +105,42 @@ export function validatePricingDraft(
     }
   }
 
-  const input = validateRequiredRate(draft.input);
-  if (input !== 'ok') errors.input = input;
-  const output = validateRequiredRate(draft.output);
-  if (output !== 'ok') errors.output = output;
-  if (draft.cacheRead !== null && !isValidRate(draft.cacheRead)) {
-    errors.cacheRead = 'invalid_rate';
-  }
-  if (draft.cacheWrite !== null && !isValidRate(draft.cacheWrite)) {
-    errors.cacheWrite = 'invalid_rate';
-  }
+  const input = parseRate(draft.input);
+  const output = parseRate(draft.output);
+  const cacheRead = parseRate(draft.cacheRead);
+  const cacheWrite = parseRate(draft.cacheWrite);
+  if (input === null) errors.input = 'required';
+  else if (!isValidRate(input)) errors.input = 'invalid_rate';
+  if (output === null) errors.output = 'required';
+  else if (!isValidRate(output)) errors.output = 'invalid_rate';
+  if (cacheRead !== null && !isValidRate(cacheRead)) errors.cacheRead = 'invalid_rate';
+  if (cacheWrite !== null && !isValidRate(cacheWrite)) errors.cacheWrite = 'invalid_rate';
 
   const hasErrors = Object.keys(errors).length > 0;
   const config: PricingConfig | null =
-    !hasErrors && modelKey !== null && draft.input !== null && draft.output !== null
+    !hasErrors && modelKey !== null && input !== null && output !== null
       ? {
           modelKey,
-          inputUsdPer1M: draft.input,
-          outputUsdPer1M: draft.output,
-          ...(draft.cacheRead !== null ? { cacheReadUsdPer1M: draft.cacheRead } : {}),
-          ...(draft.cacheWrite !== null ? { cacheWriteUsdPer1M: draft.cacheWrite } : {}),
+          inputUsdPer1M: input,
+          outputUsdPer1M: output,
+          ...(cacheRead !== null ? { cacheReadUsdPer1M: cacheRead } : {}),
+          ...(cacheWrite !== null ? { cacheWriteUsdPer1M: cacheWrite } : {}),
         }
       : null;
 
   return { errors, hasErrors, config };
 }
 
-function validateRequiredRate(value: number | null): 'ok' | PricingRateErrorCode {
-  if (value === null) return 'required';
-  return isValidRate(value) ? 'ok' : 'invalid_rate';
+function parseRate(text: string): number | null {
+  const trimmed = text.trim();
+  if (trimmed === '') return null;
+  // Accept decimal/scientific notation (including String()'s tiny rates), but
+  // never coerce malformed text, hexadecimal, or a negative price to zero.
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(trimmed)) return NaN;
+  const value = Number(trimmed);
+  // A nonzero rate below Number's range must not silently become free.
+  if (value === 0 && /[1-9]/.test(trimmed.split(/e/i)[0]!)) return NaN;
+  return value;
 }
 
 function isValidRate(value: number): boolean {

@@ -23,7 +23,7 @@ import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Typeahead, createStaticSource, type SearchableItem } from '@astryxdesign/core/Typeahead';
-import { Banner, Button, HStack, NumberInput, TextInput, VStack } from '@maka/ui';
+import { Banner, Button, HStack, TextInput, VStack } from '@maka/ui';
 import { ICON_SIZE, BarChart3, Pencil, Plus, RefreshCcw, RotateCcw, Search, Trash2 } from '@maka/ui/icons';
 import type { PricingSettingsCopy } from '../../../locales/settings-pricing-copy.js';
 import type { EffectivePricingEntry } from '@maka/runtime-host/protocol';
@@ -80,12 +80,12 @@ export function PricingEditor(props: {
   ]);
 
   return (
-    <div className="settingsPricing">
-      <div className="settingsPricingHeader">
-        <div className="settingsPricingHeading">
+    <VStack gap={4} className="settingsPricing">
+      <HStack gap={3} align="start" justify="between">
+        <VStack gap={1} className="settingsPricingHeading">
           <Heading level={3}>{copy.title}</Heading>
           <Text type="body" color="secondary">{copy.subtitle}</Text>
-        </div>
+        </VStack>
         <HStack gap={2}>
           <Button
             variant="ghost"
@@ -114,7 +114,7 @@ export function PricingEditor(props: {
             onClick={(event) => c.openAdd(event.currentTarget)}
           />
         </HStack>
-      </div>
+      </HStack>
 
       {/* Keep notices inside whichever modal owns the pending intent. The panel
           notice is only for a blocked state with no open editor/reset dialog. */}
@@ -159,7 +159,7 @@ export function PricingEditor(props: {
       {c.editor !== null ? <PricingEditorDialog controller={c} /> : null}
 
       {c.resetTarget !== null ? <PricingResetDialog controller={c} /> : null}
-    </div>
+    </VStack>
   );
 }
 
@@ -420,24 +420,23 @@ function PricingEditorDialog(props: {
                   </HStack>
                 </VStack>
               )}
-              <NumberInput
+              {/* Keep raw text in the persistent draft on every keystroke.
+                  Blur-committed NumberInput loses its private pending value
+                  when Settings' Host/loading gate remounts this view. */}
+              <TextInput
                 value={draft.input}
                 onChange={(value) => c.setField('input', value)}
                 label={copy.inputLabel}
                 description={copy.rateHelp}
-                min={0}
-                step={0.01}
                 hasClear
                 isRequired
                 width="100%"
                 status={fieldStatus(errorMessage(validation.errors.input))}
               />
-              <NumberInput
+              <TextInput
                 value={draft.output}
                 onChange={(value) => c.setField('output', value)}
                 label={copy.outputLabel}
-                min={0}
-                step={0.01}
                 hasClear
                 isRequired
                 width="100%"
@@ -449,24 +448,20 @@ function PricingEditorDialog(props: {
                 onOpenChange={c.setCacheOpen}
               >
                 <VStack gap={3}>
-                  <NumberInput
+                  <TextInput
                     value={draft.cacheRead}
                     onChange={(value) => c.setField('cacheRead', value)}
                     label={copy.cacheReadLabel}
                     description={copy.cacheHelp}
-                    min={0}
-                    step={0.01}
                     hasClear
                     isOptional
                     width="100%"
                     status={fieldStatus(errorMessage(validation.errors.cacheRead))}
                   />
-                  <NumberInput
+                  <TextInput
                     value={draft.cacheWrite}
                     onChange={(value) => c.setField('cacheWrite', value)}
                     label={copy.cacheWriteLabel}
-                    min={0}
-                    step={0.01}
                     hasClear
                     isOptional
                     width="100%"
@@ -482,21 +477,35 @@ function PricingEditorDialog(props: {
                 refreshBusy={c.loading}
               />
               {c.needsReview ? (
-                <Banner
-                  status="warning"
-                  role="status"
-                  title={copy.hostChangedTitle}
-                  description={copy.hostChangedBody}
-                  endContent={
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      label={copy.reviewHostChange}
-                      isDisabled={!c.hasAuthority}
-                      onClick={c.reviewHostChange}
+                <VStack gap={3}>
+                  {c.loading ? (
+                    <Text role="status" type="body" color="secondary">{copy.loading}</Text>
+                  ) : c.loadError !== null ? (
+                    <Banner
+                      status="error"
+                      role="status"
+                      title={copy.loadFailedTitle}
+                      description={copy.loadFailedBody}
+                      endContent={<Button variant="secondary" size="sm" label={copy.retry} onClick={() => void c.reload()} />}
                     />
-                  }
-                />
+                  ) : null}
+                  <Banner
+                    status="warning"
+                    role="status"
+                    title={copy.hostChangedTitle}
+                    description={`${copy.hostChangedBody}${c.hasAuthority
+                      ? ` ${latestPricingDescription(c.hostReviewLatestEntry, copy)}` : ''}`}
+                    endContent={
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        label={copy.reviewHostChange}
+                        isDisabled={!c.hasAuthority || c.loading}
+                        onClick={c.reviewHostChange}
+                      />
+                    }
+                  />
+                </VStack>
               ) : null}
             </VStack>
           </LayoutContent>
@@ -547,15 +556,7 @@ function PricingWriteNotice(props: {
       // An `outcome_unknown` conflict is uncertain, not a confirmed external
       // change — it must not be described as one.
       const uncertain = writeState.reason === 'outcome_unknown';
-      const latest = latestEntry
-        ? ` ${copy.conflictLatest(
-            pricingSourceLabel(latestEntry, copy),
-            formatUsd(latestEntry.pricing.inputUsdPer1M),
-            formatUsd(latestEntry.pricing.outputUsdPer1M),
-            formatCache(latestEntry.pricing.cacheReadUsdPer1M, copy),
-            formatCache(latestEntry.pricing.cacheWriteUsdPer1M, copy),
-          )}`
-        : '';
+      const latest = ` ${latestPricingDescription(latestEntry, copy)}`;
       return (
         <Banner
           status="warning"
@@ -588,6 +589,16 @@ function PricingWriteNotice(props: {
     case 'idle':
       return null;
   }
+}
+
+function latestPricingDescription(entry: EffectivePricingEntry | null, copy: PricingSettingsCopy): string {
+  return entry ? copy.conflictLatest(
+    pricingSourceLabel(entry, copy),
+    formatUsd(entry.pricing.inputUsdPer1M),
+    formatUsd(entry.pricing.outputUsdPer1M),
+    formatCache(entry.pricing.cacheReadUsdPer1M, copy),
+    formatCache(entry.pricing.cacheWriteUsdPer1M, copy),
+  ) : copy.latestUnpriced;
 }
 
 /** Skeleton rows that mirror the real table's column count for a zero-shift load.

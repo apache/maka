@@ -82,8 +82,8 @@ test('pricing tab is overrides-only with a catalog-picker Add flow, is not time-
   const addEditor = page.getByRole('dialog', { name: '添加定价' });
   await addEditor.getByRole('button', { name: '模型不在列表中？手动输入' }).click();
   await addEditor.getByRole('textbox', { name: /模型键/ }).fill(focusModelKey);
-  await addEditor.getByRole('spinbutton', { name: /输入价格/ }).fill('1');
-  await addEditor.getByRole('spinbutton', { name: /输出价格/ }).fill('2');
+  await addEditor.getByRole('textbox', { name: /输入价格/ }).fill('1');
+  await addEditor.getByRole('textbox', { name: /输出价格/ }).fill('2');
   await addEditor.getByRole('button', { name: '保存' }).click();
   await expect(addEditor).toHaveCount(0);
   await expect(page.getByText(focusModelKey, { exact: true })).toBeVisible();

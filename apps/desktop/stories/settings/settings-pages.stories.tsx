@@ -2717,10 +2717,11 @@ export const UsagePricingHostSwitch: Story = {
     const dialog = within(await canvas.findByRole('dialog', { name: '添加定价' }));
     await userEvent.click(dialog.getByRole('button', { name: '模型不在列表中？手动输入' }));
     await userEvent.type(dialog.getByRole('textbox', { name: /^模型键/ }), 'acme:host-draft');
-    await userEvent.type(dialog.getByRole('spinbutton', { name: /输入价格/ }), '1.25');
-    await userEvent.type(dialog.getByRole('spinbutton', { name: /输出价格/ }), '2.75');
-    await userEvent.tab();
-    const oldInput = dialog.getByRole('textbox', { name: /^模型键/ });
+    await userEvent.type(dialog.getByRole('textbox', { name: /输入价格/ }), '1.25');
+    await userEvent.type(dialog.getByRole('textbox', { name: /输出价格/ }), '2.75');
+    // The lifecycle event arrives while output still has focus, before blur.
+    const oldInput = dialog.getByRole('textbox', { name: /输出价格/ });
+    await expect(oldInput).toHaveFocus();
 
     // An offline event removes the active Host and unmounts the entire page.
     // The Settings selector then allows switching to the still-ready Remote.
@@ -2736,8 +2737,8 @@ export const UsagePricingHostSwitch: Story = {
     const restoredDialog = await canvas.findByRole('dialog', { name: '添加定价' });
     const restored = within(restoredDialog);
     await expect(restored.getByRole('textbox', { name: /^模型键/ })).toHaveValue('acme:host-draft');
-    await expect(restored.getByRole('spinbutton', { name: /输入价格/ })).toHaveValue('1.25');
-    await expect(restored.getByRole('spinbutton', { name: /输出价格/ })).toHaveValue('2.75');
+    await expect(restored.getByRole('textbox', { name: /输入价格/ })).toHaveValue('1.25');
+    await expect(restored.getByRole('textbox', { name: /输出价格/ })).toHaveValue('2.75');
     const save = restored.getByRole('button', { name: '保存' });
     await expect(save).toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(save);

@@ -77,6 +77,197 @@ afterEach(() => {
 });
 
 describe('PricingEditor', () => {
+  for (const action of ['edit', 'reset', 'add'] as const) {
+    it(`keeps the viewed CAS base when a background refresh finishes during ${action}`, async () => {
+      const refresh = deferred<DesktopPricingSnapshot>();
+      const latest: DesktopPricingSnapshot = {
+        ...SNAPSHOT,
+        revision: 6,
+        entries: SNAPSHOT.entries.map((row) => ({
+          source: 'custom',
+          resetEffect: 'restore_builtin',
+          pricing: { ...row.pricing, inputUsdPer1M: 99 },
+        })),
+      };
+      let reads = 0;
+      const harness = await renderEditor({
+        load: async () => ++reads === 1 ? SNAPSHOT : refresh.promise,
+        mutate: async () => ({ kind: 'review_required', reason: 'revision_conflict', snapshot: latest }),
+      });
+      await clickWithoutSettling(buttonByLabel(harness.doc, copy.refresh));
+      if (action === 'add') await selectCatalogModel(harness.doc, 'openai:gpt-4o');
+      else await click(buttonByLabel(harness.doc, action === 'edit'
+        ? copy.editAria('anthropic:claude')
+        : copy.resetAria('anthropic:claude')));
+      await act(async () => refresh.resolve(latest));
+      await click(buttonByText(openDialog(harness.doc)!, action === 'reset' ? copy.confirmReset : copy.save));
+
+      assert.equal(harness.mutations.length, 1, 'a stale Add reaches CAS instead of getting stuck as a duplicate');
+      assert.deepEqual(harness.mutations[0]?.base, SNAPSHOT, 'refresh cannot silently authorize the newer revision');
+      assert.match(openDialog(harness.doc)?.textContent ?? '', new RegExp(copy.conflictTitle));
+      await act(async () => harness.root.unmount());
+    });
+  }
+
+  it('retains input typed during a pending save and saves it only on the next submit', async () => {
+    const pending = deferred<DesktopPricingMutationOutcome>();
+    const committed = { ...SNAPSHOT, revision: 6 };
+    let writes = 0;
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => ++writes === 1 ? pending.promise
+        : { kind: 'saved', disposition: 'committed', snapshot: committed },
+    });
+    await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+    await clickWithoutSettling(buttonByText(harness.doc, copy.save));
+    await typeInput(inputByLabel(harness.doc, copy.inputLabel), '123');
+    await act(async () => pending.resolve({ kind: 'saved', disposition: 'committed', snapshot: committed }));
+
+    assert.ok(openDialog(harness.doc), 'the earlier save must not dismiss later input');
+    assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '123');
+    assert.equal(harness.mutations.length, 1);
+    await click(buttonByText(harness.doc, copy.save));
+    assert.equal(harness.mutations.length, 2);
+    assert.deepEqual(harness.mutations[1]?.base, committed);
+    assert.deepEqual(harness.mutations[1]?.mutation, {
+      kind: 'upsert', pricing: { modelKey: 'anthropic:claude', inputUsdPer1M: 123, outputUsdPer1M: 12 },
+    });
+    await act(async () => harness.root.unmount());
+  });
+
+  it('submits the latest text when input and submit happen before a render', async () => {
+    const harness = await renderEditor({
+      load: async () => SNAPSHOT,
+      mutate: async () => ({ kind: 'saved_refresh_failed', disposition: 'committed' }),
+    });
+    await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+    const input = inputByLabel(harness.doc, copy.inputLabel)!;
+    const form = openDialog(harness.doc)!.querySelector('form')!;
+    await act(async () => {
+      input.value = '7.25';
+      reactProps(input).onChange?.({ target: input, defaultPrevented: false });
+      form.dispatchEvent(new harness.doc.defaultView!.Event('submit', { bubbles: true, cancelable: true }));
+    });
+    assert.deepEqual(harness.mutations[0]?.mutation, {
+      kind: 'upsert', pricing: { modelKey: 'anthropic:claude', inputUsdPer1M: 7.25, outputUsdPer1M: 12 },
+    });
+    await act(async () => harness.root.unmount());
+  });
+
+  for (const outcome of ['saved_refresh_failed', 'reconciliation_unavailable'] as const) {
+    it(`retains later input when ${outcome} reconciles the submitted Add`, async () => {
+      const committed: DesktopPricingSnapshot = {
+        ...SNAPSHOT,
+        revision: 6,
+        entries: SNAPSHOT.entries.map((row) => row.source === 'builtin'
+          ? { ...row, source: 'custom', resetEffect: 'restore_builtin' } : row),
+      };
+      let reads = 0;
+      const harness = await renderEditor({
+        load: async () => ++reads === 1 ? SNAPSHOT : committed,
+        mutate: async () => outcome === 'saved_refresh_failed'
+          ? { kind: outcome, disposition: 'committed' }
+          : { kind: outcome, reason: 'outcome_unknown' },
+      });
+      await selectCatalogModel(harness.doc, 'openai:gpt-4o');
+      await click(buttonByText(harness.doc, copy.save));
+      await typeInput(inputByLabel(harness.doc, copy.inputLabel), '123');
+      await click(buttonByText(openDialog(harness.doc)!, copy.refresh));
+
+      assert.ok(openDialog(harness.doc), 'matching the submitted intent cannot discard a newer draft');
+      assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '123');
+      assert.equal(openDialog(harness.doc)?.getAttribute('aria-label'), copy.editTitle, 'the saved Add becomes an Edit');
+      await typeInput(inputByLabel(harness.doc, copy.modelKeyLabel), 'another:model');
+      assert.equal(harness.mutations.length, 1, 'reconciliation does not replay a write');
+      await click(buttonByText(harness.doc, copy.save));
+      assert.equal(harness.mutations.length, 2, 'the retained draft can be submitted explicitly');
+      assert.deepEqual(harness.mutations[1]?.base, committed);
+      assert.deepEqual(harness.mutations[1]?.mutation, {
+        kind: 'upsert', pricing: { modelKey: 'openai:gpt-4o', inputUsdPer1M: 123, outputUsdPer1M: 10 },
+      });
+      await act(async () => harness.root.unmount());
+    });
+  }
+
+  it('retries a recovered draft load inside the modal without losing input', async () => {
+    const retry = deferred<DesktopPricingSnapshot>();
+    const replacement = { ...SNAPSHOT, hostEpoch: 'epoch-2', revision: 1 };
+    let reads = 0;
+    const harness = await renderEditor({ load: async () => {
+      reads += 1;
+      if (reads === 1) return SNAPSHOT;
+      if (reads === 2) throw new Error('Host temporarily unavailable');
+      return retry.promise;
+    } });
+    await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '7.25');
+    await harness.hideView();
+    await harness.rerender('replacement-host:epoch-2');
+    const dialog = openDialog(harness.doc)!;
+    assert.match(dialog.textContent ?? '', new RegExp(copy.loadFailedTitle));
+    assertButtonDisabled(buttonByText(dialog, copy.reviewHostChange));
+    await clickWithoutSettling(buttonByText(dialog, copy.retry));
+    assert.match(dialog.textContent ?? '', new RegExp(copy.loading));
+    await act(async () => retry.resolve(replacement));
+    assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '7.25');
+    assertButtonEnabled(buttonByText(dialog, copy.reviewHostChange));
+    assertButtonDisabled(buttonByText(dialog, copy.save));
+    await act(async () => harness.root.unmount());
+  });
+
+  for (const text of ['7.25', '7.']) {
+    it(`preserves unblurred rate text ${text} across a Host gate remount`, async () => {
+      const harness = await renderEditor({ load: async () => SNAPSHOT });
+      await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+      await typeInput(inputByLabel(harness.doc, copy.inputLabel), text);
+      await harness.hideView();
+      await harness.rerender('replacement-host:epoch-2');
+      assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, text);
+      assertButtonDisabled(buttonByText(harness.doc, copy.save));
+      await act(async () => harness.root.unmount());
+    });
+  }
+
+  it('reviews a recovered Add against an existing override and preserves its rates', async () => {
+    const latest: DesktopPricingSnapshot = {
+      ...SNAPSHOT,
+      hostEpoch: 'epoch-2',
+      revision: 1,
+      entries: SNAPSHOT.entries.map((row) => row.source === 'builtin'
+        ? { source: 'custom', resetEffect: 'restore_builtin', pricing: { ...row.pricing, inputUsdPer1M: 99 } }
+        : row),
+    };
+    let reads = 0;
+    const harness = await renderEditor({
+      load: async () => ++reads === 1 ? SNAPSHOT : latest,
+      mutate: async () => ({ kind: 'saved', disposition: 'committed', snapshot: latest }),
+    });
+    await selectCatalogModel(harness.doc, 'openai:gpt-4o');
+    await harness.hideView();
+    await harness.rerender('replacement-host:epoch-2');
+    assert.ok(openDialog(harness.doc)?.textContent?.includes('$99'), 'review shows the replacement Host price');
+    await click(buttonByText(harness.doc, copy.reviewHostChange));
+    assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '2.5');
+    await click(buttonByText(harness.doc, copy.save));
+    assert.equal(harness.mutations.length, 1, 'reviewed Add must not remain duplicate-blocked');
+    assert.deepEqual(harness.mutations[0]?.base, latest);
+    assert.deepEqual(harness.mutations[0]?.mutation, {
+      kind: 'upsert', pricing: { modelKey: 'openai:gpt-4o', inputUsdPer1M: 2.5, outputUsdPer1M: 10 },
+    });
+    await act(async () => harness.root.unmount());
+  });
+
+  it('rejects a negative rate without clamping it to a free price', async () => {
+    const harness = await renderEditor({ load: async () => SNAPSHOT });
+    await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '-5');
+    await click(buttonByText(harness.doc, copy.save));
+    assert.equal(harness.mutations.length, 0);
+    assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '-5');
+    assert.ok(openDialog(harness.doc)?.textContent?.includes(copy.errorInvalidRate));
+    await act(async () => harness.root.unmount());
+  });
+
   it('renders only the user overrides; built-ins are catalog-only', async () => {
     const harness = await renderEditor({ load: async () => SNAPSHOT });
     // The custom override is listed with its 自定义 source label.
@@ -161,11 +352,8 @@ describe('PricingEditor', () => {
     await click(buttonByText(harness.doc, copy.add));
     await click(buttonByText(harness.doc, copy.manualEntryToggle));
     await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:hidden');
-    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
-      (input) => !input.getAttribute('placeholder'),
-    );
-    await setInput(rateInputs[0], '1');
-    await setInput(rateInputs[1], '2');
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '1');
+    await setInput(inputByLabel(harness.doc, copy.outputLabel), '2');
     await click(buttonByText(harness.doc, copy.catalogToggle));
     await click(buttonByText(harness.doc, copy.save));
 
@@ -326,11 +514,8 @@ describe('PricingEditor', () => {
     await click(buttonByText(harness.doc, copy.add));
     await click(buttonByText(harness.doc, copy.manualEntryToggle));
     await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:draft');
-    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
-      (input) => !input.getAttribute('placeholder'),
-    );
-    await setInput(rateInputs[0], '1');
-    await setInput(rateInputs[1], '2');
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '1');
+    await setInput(inputByLabel(harness.doc, copy.outputLabel), '2');
     await click(buttonByText(harness.doc, copy.save));
 
     const dialog = openDialog(harness.doc);
@@ -560,11 +745,8 @@ describe('PricingEditor', () => {
     await click(buttonByText(harness.doc, copy.add));
     await click(buttonByText(harness.doc, copy.manualEntryToggle));
     await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:new');
-    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
-      (input) => !input.getAttribute('placeholder'),
-    );
-    await setInput(rateInputs[0], '1');
-    await setInput(rateInputs[1], '2');
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '1');
+    await setInput(inputByLabel(harness.doc, copy.outputLabel), '2');
     // A Host generation bump (new epoch) re-renders with a new generationKey.
     await harness.rerender(`${TEST_RUNTIME_HOST.profileId}:${TEST_RUNTIME_HOST.hostId}:e2`);
     // The draft remains visible, but the old mutation base is discarded. Even
@@ -628,9 +810,8 @@ describe('PricingEditor', () => {
     await click(buttonByText(harness.doc, copy.add));
     await click(buttonByText(harness.doc, copy.manualEntryToggle));
     await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:retained');
-    const rates = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('[role="spinbutton"]'));
-    await setInput(rates[0], '1.25');
-    await setInput(rates[1], '2.75');
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '1.25');
+    await setInput(inputByLabel(harness.doc, copy.outputLabel), '2.75');
     await clickWithoutSettling(buttonByText(harness.doc, copy.save));
     await harness.hideView();
     assert.equal(openDialog(harness.doc), undefined, 'the Settings gate actually unmounts the view');
@@ -638,9 +819,8 @@ describe('PricingEditor', () => {
     await act(async () => previousSave.resolve({ kind: 'saved', disposition: 'committed', snapshot: SNAPSHOT }));
 
     assert.equal(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder)?.value, 'acme:retained');
-    const restoredRates = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('[role="spinbutton"]'));
-    assert.equal(restoredRates[0]?.value, '1.25');
-    assert.equal(restoredRates[1]?.value, '2.75');
+    assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '1.25');
+    assert.equal(inputByLabel(harness.doc, copy.outputLabel)?.value, '2.75');
     assertButtonDisabled(buttonByText(harness.doc, copy.save));
     await click(buttonByText(harness.doc, copy.reviewHostChange));
     await click(buttonByText(harness.doc, copy.save));
@@ -662,10 +842,7 @@ describe('PricingEditor', () => {
       mutate: async () => pendingSave.promise,
     });
     await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
-    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
-      (input) => !input.getAttribute('placeholder'),
-    );
-    await setInput(rateInputs[0], '3');
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '3');
     await click(buttonByText(harness.doc, copy.save));
     await harness.rerender(`${TEST_RUNTIME_HOST.profileId}:${TEST_RUNTIME_HOST.hostId}:e2`);
     await act(async () => {
@@ -824,12 +1001,8 @@ describe('PricingEditor', () => {
     await click(buttonByText(harness.doc, copy.add));
     await click(buttonByText(harness.doc, copy.manualEntryToggle));
     await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'acme:new');
-    // Fill the two required rate NumberInputs (the placeholder-less inputs).
-    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
-      (input) => !input.getAttribute('placeholder'),
-    );
-    await setInput(rateInputs[0], '1');
-    await setInput(rateInputs[1], '2');
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '1');
+    await setInput(inputByLabel(harness.doc, copy.outputLabel), '2');
     // First save → conflict: the same key was added elsewhere.
     await click(buttonByText(harness.doc, copy.save));
     assert.match(harness.container.textContent ?? '', new RegExp(copy.conflictTitle));
@@ -869,11 +1042,8 @@ describe('PricingEditor', () => {
     await click(buttonByText(harness.doc, copy.add));
     await click(buttonByText(harness.doc, copy.manualEntryToggle));
     await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'openai:gpt-4o');
-    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
-      (input) => !input.getAttribute('placeholder'),
-    );
-    await setInput(rateInputs[0], '5');
-    await setInput(rateInputs[1], '15');
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '5');
+    await setInput(inputByLabel(harness.doc, copy.outputLabel), '15');
     await click(buttonByText(harness.doc, copy.save));
 
     assert.doesNotMatch(harness.container.textContent ?? '', new RegExp(copy.errorDuplicate));
@@ -891,11 +1061,8 @@ describe('PricingEditor', () => {
     // 'anthropic:claude' already has a custom override row — re-adding it is a
     // duplicate; the user is told to edit the existing row instead.
     await setInput(inputByPlaceholder(harness.doc, copy.modelKeyPlaceholder), 'anthropic:claude');
-    const rateInputs = Array.from(harness.doc.querySelectorAll<HTMLInputElement>('input')).filter(
-      (input) => !input.getAttribute('placeholder'),
-    );
-    await setInput(rateInputs[0], '1');
-    await setInput(rateInputs[1], '2');
+    await setInput(inputByLabel(harness.doc, copy.inputLabel), '1');
+    await setInput(inputByLabel(harness.doc, copy.outputLabel), '2');
     await click(buttonByText(harness.doc, copy.save));
 
     assert.match(harness.container.textContent ?? '', new RegExp(copy.errorDuplicate));
@@ -1128,6 +1295,15 @@ function inputByPlaceholder(doc: Document, placeholder: string): HTMLInputElemen
   return doc.querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`) ?? undefined;
 }
 
+function inputByLabel(doc: Document, label: string): HTMLInputElement | undefined {
+  const labelElement = Array.from(doc.querySelectorAll('label')).find((element) => element.textContent?.includes(label));
+  return Array.from(doc.querySelectorAll<HTMLInputElement>('input')).find((input) =>
+    (labelElement?.getAttribute('for') === input.id && input.id !== '') ||
+    input.getAttribute('aria-label') === label ||
+    input.getAttribute('aria-labelledby')?.split(' ').some((id) => doc.getElementById(id)?.textContent?.includes(label)),
+  );
+}
+
 function reactProps(input: HTMLInputElement): {
   onChange?: (event: { target: HTMLInputElement; defaultPrevented: boolean }) => void;
   onBlur?: (event: { target: HTMLInputElement }) => void;
@@ -1137,10 +1313,8 @@ function reactProps(input: HTMLInputElement): {
   return (input as unknown as Record<string, unknown>)[propsKey] as ReturnType<typeof reactProps>;
 }
 
-/** Set a controlled input's value and commit it. TextInput commits on change;
- *  NumberInput stages the text and only commits on blur — so fire both, with a
- *  render flush between so the blur handler sees the staged value. */
-async function setInput(input: HTMLInputElement | undefined, value: string): Promise<void> {
+/** Typing and blur are separate: Host events and writes can finish during input. */
+async function typeInput(input: HTMLInputElement | undefined, value: string): Promise<void> {
   assert.ok(input, 'expected an input to fill');
   await act(async () => {
     input.value = value;
@@ -1148,6 +1322,11 @@ async function setInput(input: HTMLInputElement | undefined, value: string): Pro
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+async function setInput(input: HTMLInputElement | undefined, value: string): Promise<void> {
+  await typeInput(input, value);
+  assert.ok(input);
   await act(async () => {
     reactProps(input).onBlur?.({ target: input });
     await Promise.resolve();
