@@ -83,6 +83,8 @@ export {
   type RuntimeHostProfileCatalog,
   type RuntimeHostConnectionPhase,
   type RuntimeHostRemoteProfileIncarnation,
+  type RuntimeHostCapabilityProviderCredentialMutationResult,
+  type RuntimeHostCapabilityProviderCredentialSnapshot,
   type RuntimeHostCapabilityProviderCredentialStore,
   RuntimeHostProfileConnectionError,
   type RuntimeHostProfileConnectionFailureReason,
@@ -167,7 +169,10 @@ export {
   createRuntimeHostCandidateLaunchBarrier,
   type RuntimeHostCandidateLaunchBarrier,
 } from './candidate-launch-barrier.js';
-export { runHostedExecution, type RunHostedExecutionInput } from './hosted-execution.js';
+export {
+  runHostedExecution,
+  type RunHostedExecutionInput,
+} from './hosted-execution.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
 export {
   readRuntimeHostAgentGraphEpochs,
@@ -188,7 +193,10 @@ export {
   type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
-export { ensureRuntimeHostPeerIdentity, RuntimeHostPeerError } from '../transport/peer-native.js';
+export {
+  ensureRuntimeHostPeerIdentity,
+  RuntimeHostPeerError,
+} from '../transport/peer-native.js';
 export {
   createRuntimeHostPeerClient,
   createRuntimeHostPeerClientFromEnvironment,

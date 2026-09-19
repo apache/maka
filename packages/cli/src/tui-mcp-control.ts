@@ -33,6 +33,7 @@ import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
 import {
   AtomicFileWriteCommitUnknownError,
+  McpConfigRevisionConflictError,
   createMcpConfigStore,
   assertMcpEndpointPolicyOnChanges,
   McpConfigSourceError,
@@ -48,6 +49,8 @@ import type {
 import { createMcpCapabilityProvider } from './mcp-capability-provider.js';
 
 const RUNTIME_HOST_CREDENTIAL_ENV = 'MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL';
+const MCP_ACTION_TIMEOUT_MS = 90_000;
+const MCP_ACTION_CLEANUP_RESERVE_MS = 5_000;
 
 export type TuiMcpPublicationState =
   | 'waiting'
@@ -77,7 +80,7 @@ export interface TuiMcpServerSnapshot {
 
 export interface TuiMcpSnapshot {
   readonly initialization: 'loading' | 'ready' | 'error';
-  readonly configuration: 'ready' | 'synchronizing' | 'out_of_sync';
+  readonly configuration: 'ready' | 'synchronizing' | 'committing' | 'out_of_sync';
   readonly publication: TuiMcpPublicationState;
   readonly canManagePublicationCredential?: boolean;
   readonly toolCount: number;
@@ -114,7 +117,11 @@ export type TuiMcpImportPreviewResult =
     };
 
 export type TuiMcpAction =
-  | { readonly kind: 'add'; readonly serverId: string; readonly config: McpServerConfig }
+  | {
+      readonly kind: 'add';
+      readonly serverId: string;
+      readonly config: McpServerConfig;
+    }
   | {
       readonly kind: 'edit';
       readonly serverId: string;
@@ -122,7 +129,11 @@ export type TuiMcpAction =
       readonly expectedRevision: string;
     }
   | { readonly kind: 'commit_import'; readonly previewId: string }
-  | { readonly kind: 'set_enabled'; readonly serverId: string; readonly enabled: boolean }
+  | {
+      readonly kind: 'set_enabled';
+      readonly serverId: string;
+      readonly enabled: boolean;
+    }
   | { readonly kind: 'remove'; readonly serverId: string }
   | { readonly kind: 'test'; readonly serverId: string }
   | { readonly kind: 'reconnect'; readonly serverId: string }
@@ -137,7 +148,16 @@ export type TuiMcpActionEffect =
 
 export type TuiMcpActionResult =
   | { readonly status: 'applied'; readonly effect: TuiMcpActionEffect }
-  | { readonly status: 'tested'; readonly test: McpTestResult; readonly effect: TuiMcpActionEffect }
+  | {
+      readonly status: 'pending';
+      readonly reason: 'commit-pending';
+      readonly completion: Promise<TuiMcpActionResult>;
+    }
+  | {
+      readonly status: 'tested';
+      readonly test: McpTestResult;
+      readonly effect: TuiMcpActionEffect;
+    }
   | {
       readonly status: 'failed';
       readonly reason: 'commit-unknown';
@@ -152,10 +172,13 @@ export type TuiMcpActionResult =
       readonly status: 'failed';
       readonly reason:
         | 'closed'
+        | 'cancelled'
         | 'invalid-config'
         | 'credential-cleanup-failed'
         | 'publication-credential-failed'
+        | 'commit-in-progress'
         | 'persist-failed'
+        | 'rollback-failed'
         | 'manager-failed';
     };
 
@@ -163,7 +186,10 @@ export interface TuiMcpManagement extends TuiMcpSurface {
   configForEdit(serverId: string): TuiMcpEditConfig | undefined;
   previewImport(source: string): TuiMcpImportPreviewResult;
   discardImportPreview(previewId: string): void;
-  execute(action: TuiMcpAction): Promise<TuiMcpActionResult>;
+  execute(
+    action: TuiMcpAction,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<TuiMcpActionResult>;
 }
 
 export interface TuiMcpController extends TuiMcpManagement {
@@ -172,16 +198,15 @@ export interface TuiMcpController extends TuiMcpManagement {
 
 type TuiMcpManager = Pick<
   McpClientManager,
-  | 'sync'
-  | 'statuses'
-  | 'toolSnapshot'
-  | 'callTool'
-  | 'onChange'
-  | 'test'
-  | 'reconnect'
-  | 'forgetServerCredentials'
-  | 'close'
->;
+  'sync' | 'statuses' | 'toolSnapshot' | 'callTool' | 'onChange' | 'test' | 'reconnect' | 'close'
+> &
+  Pick<McpClientManager, 'forgetServerCredentials'> & {
+    disconnect?(
+      serverId: string,
+      remove?: boolean,
+      options?: { signal?: AbortSignal },
+    ): Promise<void>;
+  };
 
 export type TuiMcpPublicationUnavailableReason =
   | 'host_unavailable'
@@ -205,8 +230,8 @@ export interface TuiMcpPublicationTarget
   subscribeConnectionAvailability(
     listener: (availability: TuiMcpPublicationAvailability) => void,
   ): () => void;
-  setCredential?(credential: string): Promise<void>;
-  removeCredential?(): Promise<void>;
+  setCredential?(credential: string, options?: { readonly signal?: AbortSignal }): Promise<void>;
+  removeCredential?(options?: { readonly signal?: AbortSignal }): Promise<void>;
   closePublication?(): Promise<void>;
 }
 
@@ -214,6 +239,7 @@ interface TuiMcpControllerDeps {
   readonly configStore: Pick<McpConfigStore, 'get' | 'transform'>;
   readonly manager: TuiMcpManager;
   readonly createProvider: (manager: TuiMcpManager) => ClientCapabilityProvider | undefined;
+  readonly actionTimeoutMs: number;
 }
 
 export function createTuiMcpController(
@@ -234,6 +260,7 @@ export function createTuiMcpController(
     configStore: overrides.configStore ?? createMcpConfigStore(input.workspaceRoot),
     manager,
     createProvider: overrides.createProvider ?? createMcpCapabilityProvider,
+    actionTimeoutMs: overrides.actionTimeoutMs ?? MCP_ACTION_TIMEOUT_MS,
   });
 }
 
@@ -255,6 +282,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
       }
     | undefined;
   #actionLane: Promise<void> = Promise.resolve();
+  #pendingCommit: Promise<TuiMcpActionResult> | undefined;
+  readonly #mutationVersions = new Map<string, symbol>();
+  readonly #lifetimeAbort = new AbortController();
   #publicationSuppressed = false;
   #publicationRequested = false;
   #publicationTask: Promise<void> | undefined;
@@ -325,7 +355,10 @@ class TuiMcpControllerImpl implements TuiMcpController {
   configForEdit(serverId: string): TuiMcpEditConfig | undefined {
     const config = this.#config?.mcpServers[serverId];
     if (!config) return undefined;
-    return { config: structuredClone(config), revision: configRevision(config) };
+    return {
+      config: structuredClone(config),
+      revision: configRevision(config),
+    };
   }
 
   previewImport(source: string): TuiMcpImportPreviewResult {
@@ -366,14 +399,40 @@ class TuiMcpControllerImpl implements TuiMcpController {
     if (this.#preparedImport?.previewId === previewId) this.#preparedImport = undefined;
   }
 
-  execute(action: TuiMcpAction): Promise<TuiMcpActionResult> {
+  execute(
+    action: TuiMcpAction,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<TuiMcpActionResult> {
     if (this.#closed) return Promise.resolve({ status: 'failed', reason: 'closed' });
-    return this.#serializeAction(() => this.#executeAction(action));
+    if (this.#pendingCommit)
+      return Promise.resolve({
+        status: 'failed',
+        reason: 'commit-in-progress',
+      });
+    return this.#serializeAction(async () => {
+      if (this.#pendingCommit)
+        return {
+          status: 'failed',
+          reason: 'commit-in-progress',
+        };
+      const cleanupReserveMs = Math.min(
+        MCP_ACTION_CLEANUP_RESERVE_MS,
+        Math.max(1, Math.floor(this.#deps.actionTimeoutMs / 10)),
+      );
+      const operationDeadline = AbortSignal.timeout(
+        Math.max(1, this.#deps.actionTimeoutMs - cleanupReserveMs),
+      );
+      const signals = [this.#lifetimeAbort.signal, operationDeadline];
+      if (options.signal) signals.push(options.signal);
+      const signal = AbortSignal.any(signals);
+      return this.#executeAction(action, signal, cleanupReserveMs);
+    });
   }
 
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#lifetimeAbort.abort(new Error('MCP controller closed'));
     this.#disposeManagerChange();
     this.#disposeConnectionAvailability();
     this.#listeners.clear();
@@ -381,6 +440,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#publicationRequested = false;
     const managerClosing = this.#deps.manager.close();
     await this.#actionLane.catch(() => undefined);
+    await this.#pendingCommit;
     this.#config = undefined;
     await this.#publicationTask?.catch(() => undefined);
     if (this.#availability.kind === 'connected') {
@@ -403,11 +463,14 @@ class TuiMcpControllerImpl implements TuiMcpController {
       this.#requestPublication();
     } catch {
       if (this.#closed) return;
-      this.#updateSnapshot({ initialization: 'error', publication: 'not_published' });
+      this.#updateSnapshot({
+        initialization: 'error',
+        publication: 'not_published',
+      });
     }
   }
 
-  #serializeAction(work: () => Promise<TuiMcpActionResult>): Promise<TuiMcpActionResult> {
+  #serializeAction<T>(work: () => Promise<T>): Promise<T> {
     const run = this.#actionLane.then(work, work);
     this.#actionLane = run.then(
       () => undefined,
@@ -416,16 +479,36 @@ class TuiMcpControllerImpl implements TuiMcpController {
     return run;
   }
 
-  async #executeAction(action: TuiMcpAction): Promise<TuiMcpActionResult> {
+  async #executeAction(
+    action: TuiMcpAction,
+    signal?: AbortSignal,
+    cleanupTimeoutMs?: number,
+  ): Promise<TuiMcpActionResult> {
     if (this.#closed) return { status: 'failed', reason: 'closed' };
+    if (signal?.aborted) return { status: 'failed', reason: 'cancelled' };
     if (action.kind === 'set_publication_credential') {
       if (!this.#connection.setCredential) {
         return { status: 'failed', reason: 'publication-credential-failed' };
       }
+      const operation = this.#connection.setCredential(action.credential, {
+        signal,
+      });
       try {
-        await this.#connection.setCredential(action.credential);
-        return { status: 'applied', effect: await this.#settlePublication() };
-      } catch {
+        await waitForAbort(operation, signal);
+        throwIfAborted(signal);
+        const effect = await this.#settlePublication(signal);
+        throwIfAborted(signal);
+        return { status: 'applied', effect };
+      } catch (error) {
+        if (signal?.aborted) {
+          return this.#settleCancelledCredentialOperation(
+            operation,
+            signal,
+            true,
+            cleanupTimeoutMs,
+          );
+        }
+        if (error === signal?.reason) return { status: 'failed', reason: 'cancelled' };
         return { status: 'failed', reason: 'publication-credential-failed' };
       }
     }
@@ -433,31 +516,79 @@ class TuiMcpControllerImpl implements TuiMcpController {
       if (!this.#connection.removeCredential) {
         return { status: 'failed', reason: 'publication-credential-failed' };
       }
+      const operation = this.#connection.removeCredential({ signal });
       try {
-        await this.#connection.removeCredential();
+        await waitForAbort(operation, signal);
+        throwIfAborted(signal);
         return { status: 'applied', effect: 'pending_host' };
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) {
+          return this.#settleCancelledCredentialOperation(
+            operation,
+            signal,
+            false,
+            cleanupTimeoutMs,
+          );
+        }
+        if (error === signal?.reason) return { status: 'failed', reason: 'cancelled' };
         return { status: 'failed', reason: 'publication-credential-failed' };
       }
     }
     if (action.kind === 'test') {
       try {
-        const test = await this.#deps.manager.test(action.serverId);
-        return { status: 'tested', test, effect: await this.#settlePublication() };
-      } catch {
+        const test = await waitForAbort(
+          this.#deps.manager.test(action.serverId, { signal }),
+          signal,
+        );
+        throwIfAborted(signal);
+        const effect = await this.#settlePublication(signal);
+        throwIfAborted(signal);
+        return { status: 'tested', test, effect };
+      } catch (error) {
+        if (signal?.aborted) {
+          const cleaned = await this.#settleCancelledConnection(
+            action.serverId,
+            cleanupSignal(cleanupTimeoutMs),
+          );
+          this.#refreshManagerSnapshot();
+          const publicationCleaned = cleaned
+            ? await this.#settleCancelledPublication(cleanupSignal(cleanupTimeoutMs))
+            : false;
+          return {
+            status: 'failed',
+            reason: cleaned && publicationCleaned ? 'cancelled' : 'manager-failed',
+          };
+        }
         return { status: 'failed', reason: 'manager-failed' };
       }
     }
     if (action.kind === 'reconnect') {
       try {
-        await this.#deps.manager.reconnect(action.serverId);
-        return { status: 'applied', effect: await this.#settlePublication() };
-      } catch {
+        await waitForAbort(this.#deps.manager.reconnect(action.serverId, { signal }), signal);
+        throwIfAborted(signal);
+        const effect = await this.#settlePublication(signal);
+        throwIfAborted(signal);
+        return { status: 'applied', effect };
+      } catch (error) {
+        if (signal?.aborted) {
+          const cleaned = await this.#settleCancelledConnection(
+            action.serverId,
+            cleanupSignal(cleanupTimeoutMs),
+          );
+          this.#refreshManagerSnapshot();
+          const publicationCleaned = cleaned
+            ? await this.#settleCancelledPublication(cleanupSignal(cleanupTimeoutMs))
+            : false;
+          return {
+            status: 'failed',
+            reason: cleaned && publicationCleaned ? 'cancelled' : 'manager-failed',
+          };
+        }
         this.#refreshManagerSnapshot();
         return { status: 'failed', reason: 'manager-failed' };
       }
     }
-    const result = await this.#commitMutation(action);
+    const result = await this.#commitMutation(action, signal, cleanupTimeoutMs);
     if (action.kind === 'commit_import') this.discardImportPreview(action.previewId);
     return result;
   }
@@ -468,102 +599,367 @@ class TuiMcpControllerImpl implements TuiMcpController {
       | { kind: 'test' | 'reconnect' }
       | { kind: 'set_publication_credential' | 'remove_publication_credential' }
     >,
+    signal?: AbortSignal,
+    cleanupTimeoutMs?: number,
   ): Promise<TuiMcpActionResult> {
+    let previous: McpConfigFile | undefined;
+    let changedIds: string[] = [];
     let committed: McpConfigFile;
-    try {
-      committed = await this.#deps.configStore.transform(async (current) => {
-        if (this.#closed) {
-          throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
+    let credentialRetirementStarted = false;
+    const mutationVersion = Symbol('MCP mutation');
+    let touchedIds: string[] = [];
+    let lateSettlement: Promise<unknown> | undefined;
+    const releaseOwnership = () => {
+      for (const serverId of touchedIds) {
+        if (this.#mutationVersions.get(serverId) === mutationVersion) {
+          this.#mutationVersions.delete(serverId);
         }
-        const prepared = this.#prepareMutation(current, action);
-        if ('status' in prepared) throw new TuiMcpMutationError(prepared);
-        const { next } = prepared;
-        try {
-          assertMcpEndpointPolicyOnChanges(current, next);
-        } catch {
-          throw new TuiMcpMutationError({ status: 'failed', reason: 'invalid-config' });
-        }
-        try {
-          for (const [serverId, previous] of Object.entries(current.mcpServers)) {
-            if (!mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId])) continue;
-            await this.#deps.manager.forgetServerCredentials(serverId, previous);
-            if (this.#closed) {
-              throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
-            }
-          }
-        } catch (error) {
-          if (error instanceof TuiMcpMutationError) throw error;
-          throw new TuiMcpMutationError({
-            status: 'failed',
-            reason: 'credential-cleanup-failed',
+      }
+    };
+    const commitReceipt: { revision?: string } = {};
+    const transaction = this.#deps.configStore.transform(async (current, transaction) => {
+      commitReceipt.revision = transaction?.writeRevision;
+      if (this.#closed) {
+        throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
+      }
+      if (signal?.aborted) {
+        throw new TuiMcpMutationError({
+          status: 'failed',
+          reason: 'cancelled',
+        });
+      }
+      const prepared = this.#prepareMutation(current, action);
+      if ('status' in prepared) throw new TuiMcpMutationError(prepared);
+      const { next } = prepared;
+      previous = cloneConfig(current);
+      changedIds = changedServerIds(current, next);
+      // Same-value retries still own their target. A content hash alone
+      // cannot distinguish them from the write an older action compensates.
+      touchedIds =
+        action.kind === 'commit_import'
+          ? Object.keys(this.#preparedImport!.imported.mcpServers)
+          : [action.serverId];
+      try {
+        assertMcpEndpointPolicyOnChanges(current, next);
+      } catch {
+        throw new TuiMcpMutationError({
+          status: 'failed',
+          reason: 'invalid-config',
+        });
+      }
+      for (const serverId of touchedIds) this.#mutationVersions.set(serverId, mutationVersion);
+      try {
+        for (const [serverId, previous] of Object.entries(current.mcpServers)) {
+          if (!mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId])) continue;
+          // The manager owns the erase fence. Once credential storage has
+          // entered its write phase, let that operation settle before this
+          // transaction reports cancellation; an outer abort race here could
+          // otherwise leave a tombstone landing after rollback has begun.
+          await this.#deps.manager.forgetServerCredentials(serverId, previous, {
+            signal: credentialRetirementStarted ? undefined : signal,
+            onCommitStarted: () => {
+              credentialRetirementStarted = true;
+            },
           });
         }
-        return next;
-      });
-    } catch (error) {
-      if (error instanceof TuiMcpMutationError) return error.result;
-      if (error instanceof AtomicFileWriteCommitUnknownError) {
-        // The transform has already published, including any credential
-        // retirement. Reload its authority; never replay those effects.
-        this.#preparedImport = undefined;
-        let reconciliationError: unknown;
-        if (!this.#closed) {
-          try {
-            ({ reconciliationError } = await this.#synchronizeCommittedConfig(
-              await this.#deps.configStore.get(),
-            ));
-          } catch (failure) {
-            reconciliationError = failure;
-            this.#publicationSuppressed = false;
-            this.#snapshot = freezeSnapshot({
-              ...this.#snapshot,
-              configuration: 'out_of_sync',
-              servers: this.#snapshot.servers.map((server) => ({
-                ...server,
-                synchronized: false,
-              })),
-            });
-            this.#notify();
-          }
+      } catch (error) {
+        if (error instanceof TuiMcpMutationError) throw error;
+        if (credentialRetirementStarted) {
+          // The erase may already be durable even when its promise rejects
+          // (or another endpoint in the same mutation may already have been
+          // retired). Keeping the old config is no longer a safe rollback.
+          // Commit the new config and let manager.sync retry retirement before
+          // it adopts or connects the new endpoint.
+          return next;
         }
-        // Reconciliation does not establish the missing durability fence,
-        // and its own failure must not replace the original write error.
-        return {
+        if (signal?.aborted && !credentialRetirementStarted) {
+          throw new TuiMcpMutationError({
+            status: 'failed',
+            reason: 'cancelled',
+          });
+        }
+        throw new TuiMcpMutationError({
           status: 'failed',
-          reason: 'commit-unknown',
-          cause: error,
-          ...(reconciliationError === undefined ? {} : { reconciliationError }),
-        };
+          reason: 'credential-cleanup-failed',
+        });
       }
-      return { status: 'failed', reason: 'persist-failed' };
+      return next;
+    });
+    try {
+      try {
+        committed = await waitForAbort(transaction, signal);
+      } catch (error) {
+        if (error instanceof TuiMcpMutationError) return error.result;
+        if (error instanceof AtomicFileWriteCommitUnknownError) {
+          return this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
+        }
+        if (this.#closed || signal?.aborted) {
+          const cleanup = cleanupSignal(cleanupTimeoutMs);
+          try {
+            committed = await waitForAbort(transaction, cleanup);
+          } catch (settlementError) {
+            if (settlementError instanceof TuiMcpMutationError) return settlementError.result;
+            if (settlementError instanceof AtomicFileWriteCommitUnknownError) {
+              return this.#reconcilePublishedMutation(settlementError, signal, cleanupTimeoutMs);
+            }
+            if (credentialRetirementStarted) {
+              if (settlementError !== cleanup?.reason) {
+                this.#publicationSuppressed = false;
+                this.#updateSnapshot({ configuration: 'out_of_sync' });
+                this.#refreshManagerSnapshot();
+                return { status: 'failed', reason: 'persist-failed' };
+              }
+              // Keep ownership of the irreversible write, but release the
+              // foreground wait with an honest pending result. New actions are
+              // refused until settlement and bounded reconciliation complete.
+              const completion = this.#settlePendingCommit(
+                transaction,
+                () => changedIds,
+                cleanupTimeoutMs,
+              );
+              lateSettlement = completion;
+              return { status: 'pending', reason: 'commit-pending', completion };
+            } else {
+              lateSettlement = this.#scheduleLateMutationRollback(
+                transaction,
+                () => previous,
+                () => changedIds,
+                mutationVersion,
+                commitReceipt,
+                signal,
+                cleanupTimeoutMs,
+              );
+              this.#publicationSuppressed = false;
+              this.#updateSnapshot({ configuration: 'out_of_sync' });
+              return { status: 'failed', reason: 'rollback-failed' };
+            }
+          }
+          if (!credentialRetirementStarted) {
+            const rolledBack = await this.#rollbackCancelledMutation(
+              previous,
+              committed,
+              changedIds,
+              cleanup,
+              mutationVersion,
+              commitReceipt.revision,
+            );
+            if (!rolledBack) return { status: 'failed', reason: 'rollback-failed' };
+            return {
+              status: 'failed',
+              reason: this.#closed ? 'closed' : 'cancelled',
+            };
+          }
+        } else {
+          if (credentialRetirementStarted) {
+            this.#publicationSuppressed = false;
+            this.#updateSnapshot({ configuration: 'out_of_sync' });
+            this.#refreshManagerSnapshot();
+          }
+          return { status: 'failed', reason: 'persist-failed' };
+        }
+      }
+      return (
+        await this.#synchronizeCommittedConfig(committed, {
+          previous,
+          changedIds,
+          rollbackOnCancel: !credentialRetirementStarted,
+          signal,
+          cleanupTimeoutMs,
+          mutationVersion,
+          committedRevision: commitReceipt.revision,
+        })
+      ).result;
+    } finally {
+      // Absence never grants ownership to an older compensation. Retain only
+      // the current owner's marker while its late settlement still needs it.
+      if (lateSettlement) void lateSettlement.finally(releaseOwnership).catch(() => undefined);
+      else releaseOwnership();
     }
-    return (await this.#synchronizeCommittedConfig(committed)).result;
   }
 
-  async #synchronizeCommittedConfig(committed: McpConfigFile): Promise<{
+  #settlePendingCommit(
+    transaction: Promise<McpConfigFile>,
+    changedIds: () => readonly string[],
+    cleanupTimeoutMs?: number,
+  ): Promise<TuiMcpActionResult> {
+    this.#publicationSuppressed = true;
+    this.#updateSnapshot({ configuration: 'committing' });
+    this.#refreshManagerSnapshot();
+    const reconcile = (error?: unknown) =>
+      this.#serializeAction(async (): Promise<TuiMcpActionResult> => {
+        if (this.#closed) {
+          return error instanceof AtomicFileWriteCommitUnknownError
+            ? this.#reconcilePublishedMutation(error)
+            : { status: 'failed', reason: 'closed' };
+        }
+        const signal = AbortSignal.any([
+          this.#lifetimeAbort.signal,
+          AbortSignal.timeout(this.#deps.actionTimeoutMs),
+        ]);
+        if (error instanceof AtomicFileWriteCommitUnknownError) {
+          return this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
+        }
+        try {
+          if (error !== undefined) throw error;
+          // Another controller may have committed after our write. Reload the
+          // current authority instead of publishing this transaction's snapshot.
+          const current = await waitForAbort(this.#deps.configStore.get(), signal);
+          return (
+            await this.#synchronizeCommittedConfig(current, {
+              changedIds: changedIds(),
+              rollbackOnCancel: false,
+              signal,
+              cleanupTimeoutMs,
+            })
+          ).result;
+        } catch {
+          this.#publicationSuppressed = false;
+          this.#updateSnapshot({ configuration: 'out_of_sync' });
+          this.#refreshManagerSnapshot();
+          return { status: 'failed', reason: 'persist-failed' };
+        }
+      });
+    const pending = transaction
+      .then(() => reconcile(), reconcile)
+      .finally(() => {
+        if (this.#pendingCommit === pending) this.#pendingCommit = undefined;
+      });
+    this.#pendingCommit = pending;
+    return pending;
+  }
+
+  async #reconcilePublishedMutation(
+    error: AtomicFileWriteCommitUnknownError,
+    signal?: AbortSignal,
+    cleanupTimeoutMs?: number,
+  ): Promise<TuiMcpActionResult> {
+    // The transform has already published, including any credential
+    // retirement. Reload its authority; never replay or roll back those effects.
+    this.#preparedImport = undefined;
+    let reconciliationError: unknown;
+    if (!this.#closed) {
+      try {
+        const committed = await waitForAbort(
+          this.#deps.configStore.get(),
+          signal?.aborted ? cleanupSignal(cleanupTimeoutMs) : signal,
+        );
+        if (!this.#closed) {
+          ({ reconciliationError } = await this.#synchronizeCommittedConfig(committed, {
+            changedIds: changedServerIds(this.#config ?? committed, committed),
+            rollbackOnCancel: false,
+            signal,
+            cleanupTimeoutMs,
+          }));
+        }
+      } catch (failure) {
+        if (!this.#closed) {
+          reconciliationError = failure;
+          this.#publicationSuppressed = false;
+          this.#snapshot = freezeSnapshot({
+            ...this.#snapshot,
+            configuration: 'out_of_sync',
+            servers: this.#snapshot.servers.map((server) => ({
+              ...server,
+              synchronized: false,
+            })),
+          });
+          this.#notify();
+        }
+      }
+    }
+    // Reconciliation does not establish the missing durability fence,
+    // and its own failure must not replace the original write error.
+    return {
+      status: 'failed',
+      reason: 'commit-unknown',
+      cause: error,
+      ...(reconciliationError === undefined ? {} : { reconciliationError }),
+    };
+  }
+
+  async #synchronizeCommittedConfig(
+    committed: McpConfigFile,
+    {
+      previous,
+      changedIds,
+      rollbackOnCancel,
+      signal,
+      cleanupTimeoutMs,
+      mutationVersion,
+      committedRevision,
+    }: {
+      readonly previous?: McpConfigFile;
+      readonly changedIds: readonly string[];
+      readonly rollbackOnCancel: boolean;
+      readonly signal?: AbortSignal;
+      readonly cleanupTimeoutMs?: number;
+      readonly mutationVersion?: symbol;
+      readonly committedRevision?: string;
+    },
+  ): Promise<{
     readonly result: TuiMcpActionResult;
     readonly reconciliationError?: unknown;
   }> {
-    if (this.#closed) return { result: { status: 'failed', reason: 'closed' } };
     this.#preparedImport = undefined;
     this.#config = cloneConfig(committed);
     this.#updateSnapshot({ configuration: 'synchronizing' });
     this.#refreshManagerSnapshot();
     this.#publicationSuppressed = true;
+    let synchronizationError: unknown;
     try {
-      await this.#deps.manager.sync(committed);
+      throwIfAborted(signal);
+      try {
+        await waitForAbort(this.#deps.manager.sync(committed, { signal }), signal);
+      } catch (error) {
+        synchronizationError = error;
+      }
+      throwIfAborted(signal);
+      this.#publicationSuppressed = false;
+      if (this.#closed) throw new Error('MCP controller closed');
+      this.#updateSnapshot({
+        configuration: synchronizationError === undefined ? 'ready' : 'out_of_sync',
+      });
+      this.#refreshManagerSnapshot();
+      const effect = await this.#settlePublication(signal);
+      throwIfAborted(signal);
+      return synchronizationError === undefined
+        ? { result: { status: 'applied', effect } }
+        : {
+            result: { status: 'applied', effect: 'sync_failed' },
+            reconciliationError: synchronizationError,
+          };
     } catch (error) {
+      if (rollbackOnCancel && (this.#closed || signal?.aborted)) {
+        const rolledBack = await this.#rollbackCancelledMutation(
+          previous,
+          committed,
+          changedIds,
+          cleanupSignal(cleanupTimeoutMs),
+          mutationVersion,
+          committedRevision,
+        );
+        if (!rolledBack) return { result: { status: 'failed', reason: 'rollback-failed' } };
+        return {
+          result: {
+            status: 'failed',
+            reason: this.#closed ? 'closed' : 'cancelled',
+          },
+        };
+      }
       this.#publicationSuppressed = false;
       this.#updateSnapshot({ configuration: 'out_of_sync' });
       this.#refreshManagerSnapshot();
-      await this.#settlePublication();
-      return { result: { status: 'applied', effect: 'sync_failed' }, reconciliationError: error };
+      const cleanup = cleanupSignal(cleanupTimeoutMs);
+      if (this.#closed || signal?.aborted) {
+        await this.#settleCancelledConnections(changedIds, cleanup);
+        this.#refreshManagerSnapshot();
+      }
+      await this.#settleCancelledPublication(cleanup);
+      return {
+        result: { status: 'applied', effect: 'sync_failed' },
+        reconciliationError: synchronizationError ?? error,
+      };
     }
-    this.#publicationSuppressed = false;
-    if (this.#closed) return { result: { status: 'failed', reason: 'closed' } };
-    this.#updateSnapshot({ configuration: 'ready' });
-    this.#refreshManagerSnapshot();
-    return { result: { status: 'applied', effect: await this.#settlePublication() } };
   }
 
   #prepareMutation(
@@ -610,17 +1006,22 @@ class TuiMcpControllerImpl implements TuiMcpController {
     }
     try {
       return {
-        next: normalizeMcpConfig({ version: MCP_CONFIG_VERSION, mcpServers: servers }),
+        next: normalizeMcpConfig({
+          version: MCP_CONFIG_VERSION,
+          mcpServers: servers,
+        }),
       };
     } catch {
       return { status: 'failed', reason: 'invalid-config' };
     }
   }
 
-  async #settlePublication(): Promise<TuiMcpActionEffect> {
+  async #settlePublication(signal?: AbortSignal): Promise<TuiMcpActionEffect> {
+    throwIfAborted(signal);
     this.#requestPublication();
     while (!this.#closed && (this.#publicationTask || this.#publicationRequested)) {
-      await this.#publicationTask?.catch(() => undefined);
+      await waitForAbort(this.#publicationTask ?? Promise.resolve(), signal);
+      throwIfAborted(signal);
     }
     if (
       this.#snapshot.publication === 'error' ||
@@ -669,6 +1070,194 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#notify();
   }
 
+  async #rollbackCancelledMutation(
+    previous: McpConfigFile | undefined,
+    committed: McpConfigFile,
+    serverIds: readonly string[],
+    signal?: AbortSignal,
+    mutationVersion?: symbol,
+    committedRevision?: string,
+  ): Promise<boolean> {
+    const ownedIds = serverIds.filter(
+      (serverId) =>
+        mutationVersion === undefined || this.#mutationVersions.get(serverId) === mutationVersion,
+    );
+    if (serverIds.length > 0 && ownedIds.length === 0) return true;
+    if (!previous) {
+      this.#publicationSuppressed = false;
+      this.#updateSnapshot({ configuration: 'out_of_sync' });
+      return false;
+    }
+    try {
+      let superseded = false;
+      const restored = await waitForAbort(
+        this.#deps.configStore
+          .transform(async (current, transaction) => {
+            throwIfAborted(signal);
+            if (committedRevision !== undefined) {
+              if (!transaction)
+                throw new Error('MCP config store lost transaction revision support');
+              transaction.assertRevision(committedRevision);
+            }
+            const servers = { ...current.mcpServers };
+            for (const serverId of ownedIds) {
+              if (
+                configRevision(servers[serverId]) !== configRevision(committed.mcpServers[serverId])
+              ) {
+                continue;
+              }
+              const currentEntry = servers[serverId];
+              const previousEntry = previous.mcpServers[serverId];
+              if (currentEntry && mcpConfigChangeRetiresCredentials(currentEntry, previousEntry)) {
+                await this.#deps.manager.forgetServerCredentials(serverId, currentEntry, {
+                  signal,
+                });
+                throwIfAborted(signal);
+              }
+              if (previousEntry) servers[serverId] = previousEntry;
+              else delete servers[serverId];
+            }
+            throwIfAborted(signal);
+            return normalizeMcpConfig({
+              version: MCP_CONFIG_VERSION,
+              mcpServers: servers,
+            });
+          })
+          .catch((error: unknown) => {
+            // A newer writer owns the config, even if it wrote identical values.
+            // Reconcile that authority without executing compensation effects.
+            if (error instanceof McpConfigRevisionConflictError) {
+              superseded = true;
+              return error.current;
+            }
+            throw error;
+          }),
+        signal,
+      );
+      this.#config = cloneConfig(restored);
+      if (this.#closed) return !superseded;
+      for (const serverId of ownedIds) {
+        if (!this.#deps.manager.disconnect) continue;
+        await waitForAbort(this.#deps.manager.disconnect(serverId, false, { signal }), signal);
+      }
+      await waitForAbort(this.#deps.manager.sync(restored, { signal }), signal);
+      this.#publicationSuppressed = false;
+      this.#updateSnapshot({ configuration: 'ready' });
+      this.#refreshManagerSnapshot();
+      await this.#settlePublication(signal);
+      // The manager can be synchronized even when compensation was refused.
+      // Do not claim cancellation rolled back a superseded transaction.
+      return !superseded;
+    } catch {
+      this.#publicationSuppressed = false;
+      this.#updateSnapshot({ configuration: 'out_of_sync' });
+      this.#refreshManagerSnapshot();
+      return false;
+    }
+  }
+
+  #scheduleLateMutationRollback(
+    transaction: Promise<McpConfigFile>,
+    previous: () => McpConfigFile | undefined,
+    serverIds: () => readonly string[],
+    mutationVersion: symbol,
+    commitReceipt: { readonly revision?: string },
+    signal?: AbortSignal,
+    cleanupTimeoutMs?: number,
+  ): Promise<void> {
+    return transaction
+      .then(
+        (committed) =>
+          this.#serializeAction(() =>
+            this.#rollbackCancelledMutation(
+              previous(),
+              committed,
+              serverIds(),
+              cleanupSignal(cleanupTimeoutMs),
+              mutationVersion,
+              commitReceipt.revision,
+            ),
+          ),
+        (error) => {
+          if (error instanceof AtomicFileWriteCommitUnknownError) {
+            return this.#serializeAction(async () => {
+              if (
+                serverIds().some(
+                  (serverId) => this.#mutationVersions.get(serverId) === mutationVersion,
+                )
+              ) {
+                await this.#reconcilePublishedMutation(error, signal, cleanupTimeoutMs);
+              }
+            });
+          }
+        },
+      )
+      .then(
+        () => undefined,
+        () => undefined,
+      );
+  }
+
+  async #settleCancelledConnection(serverId: string, signal?: AbortSignal): Promise<boolean> {
+    if (!this.#deps.manager.disconnect) return true;
+    try {
+      await waitForAbort(this.#deps.manager.disconnect(serverId, false, { signal }), signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async #settleCancelledConnections(
+    serverIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const disconnect = this.#deps.manager.disconnect;
+    if (!disconnect) return true;
+    try {
+      await Promise.all(
+        serverIds.map((serverId) =>
+          waitForAbort(disconnect.call(this.#deps.manager, serverId, false, { signal }), signal),
+        ),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async #settleCancelledPublication(signal?: AbortSignal): Promise<boolean> {
+    try {
+      await this.#settlePublication(signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async #settleCancelledCredentialOperation(
+    operation: Promise<void>,
+    signal: AbortSignal,
+    publish: boolean,
+    cleanupTimeoutMs?: number,
+  ): Promise<TuiMcpActionResult> {
+    const cleanup = cleanupSignal(cleanupTimeoutMs);
+    try {
+      await waitForAbort(operation, cleanup);
+    } catch (error) {
+      return {
+        status: 'failed',
+        reason: error === signal.reason ? 'cancelled' : 'rollback-failed',
+      };
+    }
+    // Resolving means the target committed. A cancellation racing the
+    // acknowledgement cannot retroactively turn that into a failed rollback.
+    const effect = publish
+      ? await this.#settlePublication(cleanup).catch(() => 'publication_failed' as const)
+      : 'pending_host';
+    return { status: 'applied', effect };
+  }
+
   #requestPublication(): void {
     if (this.#closed) {
       this.#publicationRequested = false;
@@ -693,7 +1282,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
   async #publishCurrentSnapshot(): Promise<void> {
     const availability = this.#availability;
     if (availability.kind !== 'connected') {
-      this.#updateSnapshot({ publication: availability.reason ?? 'host_unavailable' });
+      this.#updateSnapshot({
+        publication: availability.reason ?? 'host_unavailable',
+      });
       return;
     }
     const identity = connectionIdentity(availability);
@@ -710,8 +1301,19 @@ class TuiMcpControllerImpl implements TuiMcpController {
       provider = this.#deps.createProvider(this.#deps.manager);
       if (provider) {
         await this.#connection.replaceClientCapabilities(provider);
-      } else if (this.#published?.identity === identity && this.#published.registered) {
-        await this.#connection.unregisterClientCapabilities();
+        // The Host owns this registration as soon as replace resolves. Record
+        // that fact before checking whether the source snapshot is still
+        // current, so a coalesced empty snapshot can reliably unregister a
+        // replacement that became stale while the request was in flight.
+        this.#published = { identity, revision, registered: true };
+      } else {
+        if (this.#published?.identity === identity && this.#published.registered) {
+          await this.#connection.unregisterClientCapabilities();
+        }
+        // Even when no registration existed, remember that this revision's
+        // canonical Host state is empty. Otherwise settlePublication can spin:
+        // there is no mutation to perform, but the revision never converges.
+        this.#published = { identity, revision, registered: false };
       }
     } catch {
       await closeProvider(provider);
@@ -726,8 +1328,14 @@ class TuiMcpControllerImpl implements TuiMcpController {
       this.#requestPublication();
       return;
     }
-    this.#published = { identity, revision, registered: provider !== undefined };
-    this.#updateSnapshot({ publication: provider ? 'published' : 'not_published' });
+    this.#published = {
+      identity,
+      revision,
+      registered: provider !== undefined,
+    };
+    this.#updateSnapshot({
+      publication: provider ? 'published' : 'not_published',
+    });
   }
 
   #isCurrent(identity: string, revision: number): boolean {
@@ -805,6 +1413,48 @@ async function closeProvider(provider: ClientCapabilityProvider | undefined): Pr
 
 function cloneConfig(config: McpConfigFile): McpConfigFile {
   return structuredClone(config);
+}
+
+function changedServerIds(before: McpConfigFile, after: McpConfigFile): string[] {
+  return [...new Set([...Object.keys(before.mcpServers), ...Object.keys(after.mcpServers)])].filter(
+    (serverId) =>
+      configRevision(before.mcpServers[serverId]) !== configRevision(after.mcpServers[serverId]),
+  );
+}
+
+function cleanupSignal(timeoutMs?: number): AbortSignal | undefined {
+  return timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error(String(signal.reason ?? 'MCP action cancelled'));
+}
+
+function waitForAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  try {
+    throwIfAborted(signal);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  let rejectAbort!: (reason: Error) => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const onAbort = () => {
+    try {
+      throwIfAborted(signal);
+    } catch (error) {
+      rejectAbort(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  return Promise.race([promise, aborted]).finally(() => {
+    signal.removeEventListener('abort', onAbort);
+  });
 }
 
 function configRevision(config: McpConfigFile | McpServerConfig | undefined): string {
