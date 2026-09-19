@@ -684,6 +684,7 @@ function classifyProviderFacts(facts: ProviderErrorFacts): ModelFailureKind {
   const normalizedCode = code.toLowerCase();
   if (OPENAI_RESPONSES_TRANSPORT_CODES.has(code)) return 'network';
   if (code === 'MODEL_STREAM_TIMEOUT') return 'timeout';
+  if (code === 'TRAE_STREAM_TRUNCATED') return 'stream_truncated';
   if (structuredCodes.includes('gateway_stream_terminated')) return 'stream_truncated';
   if (
     PROVIDER_CAPACITY_CODES.has(normalizedCode) ||

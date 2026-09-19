@@ -517,6 +517,74 @@ test('Trae enrollment keeps the selected account through login and resets it on 
   assert.deepEqual(targets, [{ kind: 'create', traeAccount: 'sg-solo' }]);
 });
 
+
+for (const mode of ['create', 'existing'] as const) {
+  for (const stateHint of ['BYTEDANCE-1234', '']) {
+    test(`Trae ${mode} login ${stateHint ? 'shows the employee device code' : 'does not show an empty public device code'}`, async () => {
+      const harness = installRenderer();
+      const targets: ConnectionOAuthLoginTarget[] = [];
+      const completion = deferred<Awaited<ReturnType<ConnectionsBridge['oauth']['traeOAuth']['completeAuthorization']>>>();
+      const bridge = connectionDetailBridge({
+        hasSecret: async () => true,
+        oauth: {
+          ...connectionDetailBridge({}).oauth,
+          traeOAuth: {
+            getEnrollmentState: async () => ({ enabled: true }),
+            getAccountState: async () => ({ runtimeState: 'authenticated' }),
+            getAuthUrl: async (target) => {
+              targets.push(target);
+              return {
+                authRequestId: 'trae-code-login', stateHint,
+                connection: { connectionId: 'trae-connection', slug: 'trae', providerType: 'trae' },
+              };
+            },
+            openAuthUrl: async () => ({ ok: true }),
+            completeAuthorization: () => completion.promise,
+            cancelAuthorization: async () => ({ ok: true }),
+            logout: unexpectedCall,
+          },
+        },
+      });
+      const account = stateHint ? 'employee' : 'cn';
+      const panel = mode === 'create'
+        ? createElement(components.OAuthLoginPanel, { bridge, cardId: 'trae', onLoginSuccess: unexpectedCall })
+        : createElement(components.ConnectionDetail, {
+            bridge,
+            connection: { ...relayConnection(), connectionId: 'trae-connection', slug: 'trae', providerType: 'trae', traeAccount: account },
+            isDefault: true, onChanged: async () => {}, onDeleted: async () => {},
+          });
+      await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+        host: { profileId: 'local', hostId: 'host-local' }, children: panel,
+      }));
+      if (mode === 'create' && stateHint) {
+        const selector = harness.document.querySelector<HTMLButtonElement>('[role="combobox"]');
+        assert.ok(selector);
+        await act(async () => selector.click());
+        const employee = [...harness.document.querySelectorAll<HTMLElement>('[role="option"]')]
+          .find((element) => element.textContent?.includes('ByteDance'));
+        assert.ok(employee);
+        await act(async () => employee.click());
+      }
+      const login = [...harness.document.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent === (mode === 'create' ? 'Sign in and add' : 'Sign in again'));
+      assert.ok(login);
+      await act(async () => login.click());
+      assert.deepEqual(targets, [mode === 'create'
+        ? { kind: 'create', traeAccount: account }
+        : { kind: 'existing', connectionId: 'trae-connection' }]);
+      const text = harness.document.body.textContent;
+      if (stateHint) {
+        assert.ok(text.includes(stateHint));
+        assert.ok(text.includes('Sign-in code:'));
+      } else {
+        assert.ok(!text.includes('Sign-in code:'));
+      }
+      await act(async () => completion.resolve({ ok: false, reason: 'authorization_cancelled' }));
+      assert.ok(!harness.document.body.textContent.includes('BYTEDANCE-1234'));
+    });
+  }
+}
+
 function unexpectedCall(): never {
   assert.fail('unexpected service call');
 }

@@ -17,6 +17,11 @@
  * under the License.
  */
 
+/** A provider EOF before completion must use the model loop's truncated-stream retry. */
+export class TraeStreamTruncatedError extends Error {
+  readonly code = 'TRAE_STREAM_TRUNCATED';
+}
+
 /** Bounded incremental SSE decoding, including split UTF-8, CRLF and multiline data. */
 export async function* traeSse(
   body: ReadableStream<Uint8Array>,
@@ -81,7 +86,8 @@ export async function* traeSse(
       }
       if (buffer.length > 4 * 1024 * 1024) throw new Error('Trae stream frame exceeded its limit');
     }
-    if (buffer.trim() || data.length) throw new Error('Trae stream ended with an incomplete frame');
+    if (buffer.trim() || data.length)
+      throw new TraeStreamTruncatedError('Trae stream ended with an incomplete frame');
   } finally {
     signal?.removeEventListener('abort', onAbort);
     if (!ended) await reader.cancel().catch(() => undefined);

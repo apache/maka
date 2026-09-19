@@ -108,7 +108,7 @@ export function oauthLoginServiceFor(
         oauth.traeOAuth,
         connectionId,
         { name: connectionLabel ?? 'Trae', shortName: 'Trae' },
-        false,
+        true,
       );
     default:
       return null;
