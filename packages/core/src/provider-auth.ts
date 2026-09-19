@@ -29,7 +29,12 @@ import {
  * storage coordinator actually gates — an operation with no admission point
  * does not belong here, however natural it sounds beside these three.
  */
-export const PROVIDER_AUTH_ACTIONS = ['test_credentials', 'fetch_models', 'start_oauth'] as const;
+export const PROVIDER_AUTH_ACTIONS = [
+  'test_credentials',
+  'fetch_models',
+  'read_usage',
+  'start_oauth',
+] as const;
 export type ProviderAuthAction = (typeof PROVIDER_AUTH_ACTIONS)[number];
 
 export interface ProviderAuthContract {
@@ -93,6 +98,9 @@ export function deriveProviderAuthContract(input: {
     actionAvailability: actions({
       test_credentials: reachableWithoutSecret || hasSecret,
       fetch_models: canFetchModels && (reachableWithoutSecret || hasSecret),
+      // Reading account usage needs the same reachability as a connection test:
+      // a credential the provider accepts over HTTP.
+      read_usage: reachableWithoutSecret || hasSecret,
     }),
   };
 }

@@ -18,22 +18,13 @@
  */
 
 /**
- * Command Code CLI transport: the `/alpha/generate` wire the official
- * `command-code` CLI speaks, exposed as an AI SDK language model.
+ * Command Code CLI transport: the `/alpha/generate` wire, exposed as an AI SDK
+ * language model. The Go plan's keys are answered by
+ * `/provider/v1/chat/completions` with `403 upgrade_required`, so this is the
+ * wire that serves them.
  *
- * Why it exists: the Go plan has no Provider API access ("Go is the only plan
- * without API access"), so `/provider/v1/chat/completions` answers its keys
- * with `403 upgrade_required`. The CLI transport is the one wire those keys
- * can use. It is NOT a documented Command Code surface; the request shape,
- * headers, and event vocabulary below were learned from the MIT-licensed
- * `pi-commandcode-provider` and `dsh-commandcode-provider` projects, which
- * observed the official CLI (`command-code@1.54.0`). Provenance, the identity
- * headers this sends, and the authorization basis Maka does NOT have are
- * recorded in `docs/commandcode-cli-transport.md`; the transport ships off
- * and is enabled per install with
- * `MAKA_COMMANDCODE_CLI_TRANSPORT_EXPERIMENTAL=1`.
- *
- * Wire facts (all inferred, none published):
+ * Shape (see also the MIT-licensed `pi-commandcode-provider` and
+ * `dsh-commandcode-provider`):
  *   POST {apiBase}/alpha/generate
  *   body   { config, memory, taste, skills, params: { model, messages, tools,
  *            system, max_tokens, temperature, stream, reasoning_effort? }, threadId }
@@ -61,32 +52,11 @@ import {
 
 /** The official CLI release whose wire this mirrors; sent as its version header. */
 export const COMMANDCODE_CLI_VERSION = '1.54.0';
-export const COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE =
-  'MAKA_COMMANDCODE_CLI_TRANSPORT_EXPERIMENTAL';
 const DEFAULT_MAX_TOKENS = 64_000;
 const DEFAULT_TEMPERATURE = 0.3;
 /** The gateway rejects `call_id` values longer than this. */
 const MAX_WIRE_TOOL_CALL_ID_LENGTH = 64;
 const SCHEMA_NORMALIZE_MAX_DEPTH = 8;
-
-/**
- * Off unless the operator turned it on for this install. The flag records
- * that decision; it is not an authorization basis (see the module doc).
- */
-export function isCommandCodeCliTransportEnabled(
-  environment: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  return environment[COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE] === '1';
-}
-
-export class CommandCodeCliTransportDisabledError extends Error {
-  constructor() {
-    super(
-      `Command Code GO is off on this install. Set ${COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE}=1 to enable it, or use a Command Code plan with Provider API access.`,
-    );
-    this.name = 'CommandCodeCliTransportDisabledError';
-  }
-}
 
 export function commandCodeCliGenerateUrl(apiBase: string): string {
   return `${apiBase.replace(/\/+$/u, '')}/alpha/generate`;
@@ -661,6 +631,12 @@ function cliEventsToStreamParts(input: {
   let reasoningId: string | undefined;
   let nextId = 0;
   let finished = false;
+  // The wire splits one call's usage across two events: `finish-step` carries
+  // the provider's OWN body (`prompt_tokens`, `prompt_cache_hit_tokens`, …)
+  // under `usage.raw`, and `finish` carries only the normalized totals. The
+  // provider keys are what telemetry's cache accounting reads, so keep the
+  // body here until the finish event can carry it out.
+  let providerUsageRaw: Record<string, unknown> | undefined;
   const closeText = (controller: TransformStreamDefaultController<LanguageModelV4StreamPart>) => {
     if (textId === undefined) return;
     controller.enqueue({ type: 'text-end', id: textId });
@@ -728,13 +704,19 @@ function cliEventsToStreamParts(input: {
           controller.enqueue({ type: 'tool-call', toolCallId: id, toolName, input: args });
           break;
         }
+        case 'finish-step': {
+          // Carries the provider's own usage body; `finish` normalizes it away.
+          const usage = isRecord(event.usage) ? event.usage : undefined;
+          if (isRecord(usage?.raw)) providerUsageRaw = usage.raw;
+          break;
+        }
         case 'finish': {
           closeText(controller);
           closeReasoning(controller);
           finished = true;
           controller.enqueue({
             type: 'finish',
-            usage: usageFromEvent(event.totalUsage),
+            usage: usageFromEvent(event.totalUsage, providerUsageRaw),
             finishReason: mapFinishReason(event.finishReason),
           });
           break;
@@ -770,7 +752,10 @@ function cliEventsToStreamParts(input: {
   });
 }
 
-function usageFromEvent(value: unknown): LanguageModelV4Usage {
+function usageFromEvent(
+  value: unknown,
+  providerRaw?: Record<string, unknown>,
+): LanguageModelV4Usage {
   if (!isRecord(value)) return emptyUsage();
   const inputDetails = isRecord(value.inputTokenDetails) ? value.inputTokenDetails : undefined;
   const outputDetails = isRecord(value.outputTokenDetails) ? value.outputTokenDetails : undefined;
@@ -787,7 +772,18 @@ function usageFromEvent(value: unknown): LanguageModelV4Usage {
       text: undefined,
       reasoning: numberValue(outputDetails?.reasoningTokens),
     },
-    raw: value as LanguageModelV4Usage['raw'],
+    // `raw` must stay the PROVIDER's own usage body, which is where the
+    // OpenAI/Anthropic cache keys live (`prompt_tokens`,
+    // `prompt_tokens_details.cached_tokens`, `cache_read_input_tokens`, …).
+    // Only `finish-step` carries that body; `finish.totalUsage` is already
+    // normalized, so carrying the envelope here left telemetry's strict reader
+    // looking for `prompt_tokens` on an object that had only `inputTokens` —
+    // every attempt settled as `usageBasis: 'missing'` and the composer's
+    // context gauge never moved.
+    //
+    // The fallback keeps a body-less event readable on the normalized keys
+    // rather than handing telemetry `undefined`.
+    raw: (providerRaw ?? value) as LanguageModelV4Usage['raw'],
   };
 }
 

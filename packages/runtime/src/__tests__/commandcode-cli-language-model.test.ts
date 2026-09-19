@@ -28,12 +28,9 @@ import {
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   buildCommandCodeCliRequest,
-  COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE,
   COMMANDCODE_CLI_VERSION,
   CommandCodeCliLanguageModel,
-  CommandCodeCliTransportDisabledError,
   commandCodeCliHeaders,
-  isCommandCodeCliTransportEnabled,
   mapFinishReason,
   projectSlugFromPath,
   toolParametersSchema,
@@ -51,16 +48,6 @@ import {
 } from './conformance-harness.js';
 
 after(closeAllJsonServers);
-
-const FLAG = COMMANDCODE_CLI_TRANSPORT_ENVIRONMENT_VARIABLE;
-let savedFlag: string | undefined;
-beforeEach(() => {
-  savedFlag = process.env[FLAG];
-});
-afterEach(() => {
-  if (savedFlag === undefined) delete process.env[FLAG];
-  else process.env[FLAG] = savedFlag;
-});
 
 function respondCliStream(response: ServerResponse, events: readonly unknown[]): void {
   response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -272,6 +259,58 @@ describe('request building', () => {
 });
 
 describe('streaming against a CLI-shaped server', () => {
+  test('carries the provider usage body from finish-step into the finish part', async () => {
+    // The wire splits one call across two events: `finish-step` holds the
+    // provider's OWN usage body, `finish` holds only normalized totals. The
+    // provider keys are what telemetry's strict reader looks for, so losing
+    // them settles every attempt as `usageBasis: 'missing'` — which is what
+    // left the composer's context gauge stuck at a stale number.
+    const server = await startJsonServer(async (_request, response) => {
+      respondCliStream(response, [
+        { type: 'text-delta', text: 'ok' },
+        {
+          type: 'finish-step',
+          finishReason: 'stop',
+          usage: {
+            inputTokens: 7611,
+            outputTokens: 2,
+            raw: {
+              prompt_tokens: 7611,
+              completion_tokens: 2,
+              prompt_cache_hit_tokens: 7424,
+              prompt_cache_miss_tokens: 187,
+              total_tokens: 7613,
+            },
+          },
+        },
+        {
+          type: 'finish',
+          finishReason: 'stop',
+          totalUsage: {
+            inputTokens: 7611,
+            inputTokenDetails: { noCacheTokens: 187, cacheReadTokens: 7424 },
+            outputTokens: 2,
+            totalTokens: 7613,
+          },
+        },
+      ]);
+    });
+    const model = new CommandCodeCliLanguageModel({
+      modelId: 'deepseek/deepseek-v4.1-flash',
+      apiKey: 'user_k',
+      apiBase: server.url,
+      workingDir: '/repo',
+    });
+    const { stream } = await model.doStream(USER_HI);
+    const parts = await collect(stream);
+    const finish = parts.find((p) => p.type === 'finish');
+    assert.ok(finish && finish.type === 'finish');
+    assert.equal(finish.usage.inputTokens.total, 7611);
+    // The provider body, not the normalized envelope: telemetry reads
+    // `prompt_tokens` off this to decide the attempt reported usage at all.
+    assert.equal((finish.usage.raw as Record<string, unknown>).prompt_tokens, 7611);
+  });
+
   test('maps reasoning, text, a tool call, and usage onto AI SDK stream parts', async () => {
     let seenHeaders: Record<string, string | string[] | undefined> = {};
     let seenBody: Record<string, unknown> = {};
@@ -464,19 +503,9 @@ describe('runtime wiring', () => {
     assert.equal(runtime.baseUrl, 'https://api.commandcode.ai');
   });
 
-  test('the transport is off until the install opts in', async () => {
-    delete process.env[FLAG];
-    assert.equal(isCommandCodeCliTransportEnabled(), false);
-    assert.throws(
-      () => getAIModel({ connection, apiKey: 'k', modelId: 'deepseek/deepseek-v4.1-flash' }),
-      CommandCodeCliTransportDisabledError,
-    );
-    const disabled = await testConnection(connection, 'k', 'deepseek/deepseek-v4.1-flash');
-    assert.equal(disabled.ok, false);
-    assert.match(disabled.errorMessage ?? '', /MAKA_COMMANDCODE_CLI_TRANSPORT_EXPERIMENTAL=1/u);
-
-    process.env[FLAG] = '1';
-    assert.equal(isCommandCodeCliTransportEnabled(), true);
+  // Choosing this provider is the choice to use this wire: nothing else routes
+  // here, and no other provider falls back to it.
+  test('a Command Code GO connection builds the CLI transport', () => {
     const model = getAIModel({ connection, apiKey: 'k', modelId: 'deepseek/deepseek-v4.1-flash' });
     assert.ok(model instanceof CommandCodeCliLanguageModel);
   });
@@ -508,7 +537,6 @@ describe('runtime wiring', () => {
   });
 
   test('the connection test posts one tiny CLI generate and reads the status', async () => {
-    process.env[FLAG] = '1';
     const urls: string[] = [];
     const server = await startJsonServer(async (request, response) => {
       urls.push(String(request.url));
@@ -528,7 +556,6 @@ describe('runtime wiring', () => {
   });
 
   test('the connection test fails on an in-band error behind HTTP 200', async () => {
-    process.env[FLAG] = '1';
     const server = await startJsonServer((_request, response) => {
       respondCliStream(response, [
         {
@@ -550,7 +577,6 @@ describe('runtime wiring', () => {
   });
 
   test('the connection test fails when the stream never reaches finish', async () => {
-    process.env[FLAG] = '1';
     const server = await startJsonServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end(`data: ${JSON.stringify({ type: 'text-delta', text: 'cut' })}\n\n`);
@@ -566,7 +592,6 @@ describe('runtime wiring', () => {
   });
 
   test('a rate-limited stream error reports the provider, not the credential', async () => {
-    process.env[FLAG] = '1';
     const server = await startJsonServer((_request, response) => {
       respondCliStream(response, [
         { type: 'error', error: { message: 'slow down', statusCode: 429 } },

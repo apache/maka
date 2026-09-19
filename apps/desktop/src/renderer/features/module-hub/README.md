@@ -22,7 +22,7 @@
 `module-hub` owns the Desktop renderer behavior behind Extensions and
 Automations:
 
-- installed, managed-source, and bundled-catalog Skills projections and
+- installed, location, managed-source, and bundled-catalog Skills projections and
   mutations;
 - Scheduled Tasks projection, mutations, due/change subscriptions, and the
   create-dialog request nonce;
@@ -65,7 +65,7 @@ reach it only through `testing.ts`.
 
 ## Lifecycle invariants
 
-- The three Skills projections and Scheduled Tasks each have independent
+- The four Skills projections and Scheduled Tasks each have independent
   generation fences.
 - Host-scoped reads re-check the current default Runtime Host before committing.
   Late reads, mutation feedback, and diagnostics from an old Host are dropped.

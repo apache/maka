@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import { open, opendir, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
@@ -48,6 +49,7 @@ const CODEX_ROLLOUT_READ_BYTES = 64 * 1024;
 const CODEX_ROLLOUT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 const CODEX_ROLLOUT_MAX_MESSAGES = 250_000;
+const CODEX_EPOCH_MS_SQL_FUNCTION = 'maka_codex_epoch_ms';
 const CODEX_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const CODEX_SUPPORTED_THREAD_SOURCES = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
 const CODEX_UNSAFE_PATH_CHARS =
@@ -103,7 +105,7 @@ type CodexCatalogKeyset =
       readonly sortTimestamp: number;
       readonly id: string;
     }
-  | { readonly kind: 'filesystem'; readonly mtimeMs: number; readonly pathKey: string };
+  | { readonly kind: 'filesystem'; readonly mtimeMs: number; readonly pathIdentity: string };
 
 /**
  * Read-only adapter for Codex rollout JSONL.
@@ -272,6 +274,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     try {
       const sqlite = await import('node:sqlite');
       db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+      registerCodexEpochNormalization(db);
       const spec = codexThreadQuery(db, query, undefined, keyset);
       if (!spec) return undefined;
       const items: ExternalSessionCatalogPage['items'][number][] = [];
@@ -335,7 +338,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
 interface RolloutCandidate {
   path: string;
-  catalogKey: string;
+  catalogIdentity: string;
   mtimeMs: number;
   archived: boolean;
 }
@@ -869,6 +872,7 @@ async function readCodexThreadRows(
     const sqlite = await import('node:sqlite');
     const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
     try {
+      registerCodexEpochNormalization(db);
       const spec = codexThreadQuery(db, query, exactId);
       if (!spec) return undefined;
       return db.prepare(spec.sql).all(...spec.params) as CodexThreadRow[];
@@ -921,22 +925,11 @@ function codexThreadQuery(
   const orderColumns = ['updated_at_ms', 'updated_at', 'created_at_ms', 'created_at'].filter(
     (column) => columns.has(column),
   );
-  // One authority for the ordering key. It is computed here, selected as
-  // `sort_key`, and read straight back off the row to build the cursor, so the
-  // position a cursor names is by construction the position the query ordered
-  // by. Recomputing it in JS let the two drift on a stored TEXT value: SQL
-  // keeps the text as the key and orders it above every number, while the JS
-  // fallback chain skips that column and lands on a different one. A TEXT key
-  // never satisfies a numeric comparison, so the disagreement did not surface
-  // as a duplicate — it ended the traversal at that page and dropped every
-  // Conversation after it without an error. Casting first also keeps the key
-  // numeric, which is what the cursor's 8-byte encoding requires.
-  const orderValues = orderColumns.map((column) => {
-    const numeric = `CAST(${column} AS REAL)`;
-    return column.endsWith('_ms')
-      ? numeric
-      : `(CASE WHEN ${numeric} >= 1000000000000 THEN ${numeric} ELSE ${numeric} * 1000 END)`;
-  });
+  // The same normalizer owns displayed timestamps and this SQL ordering key.
+  // Selecting the key with the row then makes the cursor name exactly the
+  // position the query used, including ISO text stored in an INTEGER-affinity
+  // column.
+  const orderValues = orderColumns.map((column) => `${CODEX_EPOCH_MS_SQL_FUNCTION}(${column})`);
   const orderExpression = orderValues.length > 0 ? `coalesce(${orderValues.join(', ')}, 0)` : '0';
   if (keyset) {
     where.push(`(${orderExpression} < ? OR (${orderExpression} = ? AND id < ?))`);
@@ -965,6 +958,14 @@ function finiteNumber(value: unknown): number | undefined {
     if (Number.isFinite(numeric)) return numeric;
   }
   return undefined;
+}
+
+function registerCodexEpochNormalization(db: DatabaseSync): void {
+  db.function(
+    CODEX_EPOCH_MS_SQL_FUNCTION,
+    { deterministic: true, directOnly: true },
+    (value) => normalizeEpochMs(value) ?? null,
+  );
 }
 
 async function codexStateDbsNewestFirst(codexHome: string): Promise<string[]> {
@@ -1007,9 +1008,10 @@ async function* iterateRolloutFiles(
       entry.name.endsWith('.jsonl')
     ) {
       try {
+        const catalogKey = `${archived ? 'a' : 's'}/${relativePath}`;
         yield {
           path,
-          catalogKey: `${archived ? 'a' : 's'}/${relativePath}`,
+          catalogIdentity: createHash('sha256').update(catalogKey).digest('base64url'),
           mtimeMs: (await stat(path)).mtimeMs,
           archived,
         };
@@ -1076,10 +1078,10 @@ async function nextRolloutCatalogBatch(
 }
 
 function compareRolloutCandidates(
-  left: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
-  right: Pick<RolloutCandidate, 'mtimeMs' | 'catalogKey'>,
+  left: Pick<RolloutCandidate, 'mtimeMs' | 'catalogIdentity'>,
+  right: Pick<RolloutCandidate, 'mtimeMs' | 'catalogIdentity'>,
 ): number {
-  return right.mtimeMs - left.mtimeMs || left.catalogKey.localeCompare(right.catalogKey);
+  return right.mtimeMs - left.mtimeMs || left.catalogIdentity.localeCompare(right.catalogIdentity);
 }
 
 function rolloutCandidateIsAfter(
@@ -1089,7 +1091,7 @@ function rolloutCandidateIsAfter(
   return (
     compareRolloutCandidates(candidate, {
       mtimeMs: keyset.mtimeMs,
-      catalogKey: keyset.pathKey,
+      catalogIdentity: keyset.pathIdentity,
     }) > 0
   );
 }
@@ -1097,7 +1099,11 @@ function rolloutCandidateIsAfter(
 function candidateKeyset(
   candidate: RolloutCandidate,
 ): Extract<CodexCatalogKeyset, { kind: 'filesystem' }> {
-  return { kind: 'filesystem', mtimeMs: candidate.mtimeMs, pathKey: candidate.catalogKey };
+  return {
+    kind: 'filesystem',
+    mtimeMs: candidate.mtimeMs,
+    pathIdentity: candidate.catalogIdentity,
+  };
 }
 
 function encodeCatalogKeyset(
@@ -1108,7 +1114,7 @@ function encodeCatalogKeyset(
   if (keyset.kind === 'database') {
     return `d:${queryHash}:${Buffer.from(keyset.stateDatabase).toString('base64url')}:${encodeCursorNumber(keyset.sortTimestamp)}:${Buffer.from(keyset.id).toString('base64url')}`;
   }
-  return `f:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${Buffer.from(keyset.pathKey).toString('base64url')}`;
+  return `f2:${queryHash}:${encodeCursorNumber(keyset.mtimeMs)}:${keyset.pathIdentity}`;
 }
 
 function decodeCatalogKeyset(
@@ -1138,19 +1144,14 @@ function decodeCatalogKeyset(
     }
     return { kind: 'database', stateDatabase, sortTimestamp, id };
   }
-  if (parts[0] === 'f') {
+  if (parts[0] === 'f2') {
     if (parts.length !== 4) throw new ExternalSessionCatalogCursorError();
     const mtimeMs = decodeCursorNumber(parts[2]!);
-    const encodedPathKey = parts[3]!;
-    const pathKey = Buffer.from(encodedPathKey, 'base64url').toString('utf8');
-    if (
-      Buffer.byteLength(pathKey, 'utf8') > 320 ||
-      Buffer.from(pathKey).toString('base64url') !== encodedPathKey ||
-      !/^[as]\/[^\u0000-\u001f\u007f]+$/.test(pathKey)
-    ) {
+    const pathIdentity = parts[3]!;
+    if (!/^[A-Za-z0-9_-]{43}$/.test(pathIdentity)) {
       throw new ExternalSessionCatalogCursorError();
     }
-    return { kind: 'filesystem', mtimeMs, pathKey };
+    return { kind: 'filesystem', mtimeMs, pathIdentity };
   }
   throw new ExternalSessionCatalogCursorError();
 }

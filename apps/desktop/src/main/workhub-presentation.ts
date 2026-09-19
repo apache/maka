@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { BrowserWindow, View, WebContentsView, globalShortcut, ipcMain, screen, systemPreferences } from 'electron';
+import { BrowserWindow, View, WebContentsView, globalShortcut, ipcMain, screen, shell, systemPreferences } from 'electron';
 import type { WorkHubHost, WorkHubMainNavigation, WorkHubPresentationSnapshot } from '../shared/workhub-presentation.js';
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
+import { isExternalUrl } from './external-link-guard.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
 
@@ -140,15 +141,36 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     container.setVisible(false);
     container.addChildView(view);
     view.setBackgroundColor('#00000000');
-    const release = deps.onViewCreated?.(view.webContents, container);
-    releaseView = typeof release === 'function' ? release : undefined;
-    view.webContents.once('destroyed', releaseViewRegistration);
-    installMainWindowPermissionPolicy(view.webContents, entry.url);
-    view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    view.webContents.on('will-navigate', (event) => event.preventDefault());
-    view.webContents.on('will-frame-navigate', (event) => event.preventDefault());
-    view.webContents.on('will-attach-webview', (event) => event.preventDefault());
     const contents = view.webContents;
+    const release = deps.onViewCreated?.(contents, container);
+    releaseView = typeof release === 'function' ? release : undefined;
+    contents.once('destroyed', releaseViewRegistration);
+    installMainWindowPermissionPolicy(contents, entry.url);
+    // Keep remote pages out of the WorkHub renderer while preserving the
+    // user-facing assistant-link contract used by the main Desktop window.
+    // WorkHub is a local conversation surface, not the embedded browser.
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isExternalUrl(url)) void shell.openExternal(url).catch(() => {});
+      return { action: 'deny' };
+    });
+    contents.on('will-navigate', (event, url) => {
+      // Let the initial Vite dev-server or packaged entry load settle in place.
+      const current = contents.getURL();
+      if (current === url) return;
+      event.preventDefault();
+      if (isExternalUrl(url)) void shell.openExternal(url).catch(() => {});
+    });
+    contents.on('will-frame-navigate', (event) => {
+      if (!event.isMainFrame) {
+        event.preventDefault();
+        return;
+      }
+      const current = contents.getURL();
+      if (current === event.url) return;
+      event.preventDefault();
+      if (isExternalUrl(event.url)) void shell.openExternal(event.url).catch(() => {});
+    });
+    contents.on('will-attach-webview', (event) => event.preventDefault());
     contents.once('render-process-gone', (_event, details) => {
       if (!ownsWebContents(contents)) return;
       disposeView();
@@ -156,7 +178,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       changed();
       reportError(new Error(`WorkHub renderer exited: ${details.reason}`));
     });
-    void loadMainRenderer(view.webContents, entry, 'workhub').catch(reportError);
+    void loadMainRenderer(contents, entry, 'workhub').catch(reportError);
     changed();
     return view;
   }
@@ -625,6 +647,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (typeof payload !== 'string' || payload.length > 4096) throw new Error('Invalid session key');
             parseDesktopSessionKey(payload);
             await navigateMain({ kind: 'session', sessionKey: payload }, revision);
+            return;
+          case 'settings':
+            if (payload !== 'models') throw new Error('Invalid WorkHub settings section');
+            if (floating && !floating.isDestroyed()) hideFloating();
+            await navigateMain({ kind: 'settings', section: 'models' }, revision);
             return;
           default: throw new Error('Unknown WorkHub presentation command');
         }

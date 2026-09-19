@@ -101,7 +101,23 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 160 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 166 as const;
+// 166: Connection usage reads add an operation, an accepted availability reason
+// (`unauthorized`), a report field (`partiallyUnauthorized`), and a bounded
+// window list. Peers older than this epoch take the added operation for an
+// unknown key and reject the new reason and field.
+// 165: WorkHub coordination resolve adds a model_required error code. Older
+// peers reject the new operation outcome rather than misdiagnosing prose.
+// 164: Client Plugin bundles, desktop-ui composition, generation-fenced Host
+// Remote calls, and pull streams are projected through strict Host contracts.
+// 163: Session reference quotes carry strict capture and truncation provenance.
+// Epoch-162 peers reject the added QuoteRef fields.
+// 162: Runtime Resource control and stop replies drop the unused resource
+// snapshot; start replies allow compact state. Older peers require snapshots.
+// 161: Session transcript reads return the whole transcript under a byte budget,
+// and every page says whether it stops between two Turns. The windowed read's
+// range edges are gone, and the Turn landmark query takes a Turn to look up, so
+// a peer older than this epoch asks for what this Host no longer answers.
 // 160: Usage queries add revision-consistent screens and revision-bound activity pages.
 // 159: External Session catalog queries distinguish adapter source limits from
 // persistence failures. Older Clients reject the new closed error code.

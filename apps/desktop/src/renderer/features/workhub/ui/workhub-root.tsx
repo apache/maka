@@ -295,7 +295,6 @@ export function WorkHubRoot() {
       <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
-        onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
         composer={
           <div className="workHubComposerSurface" ref={composerSurface} onFocusCapture={editProgress} onPointerUpCapture={editProgress}>
             {(controller.error || control?.error) && (
@@ -306,7 +305,15 @@ export function WorkHubRoot() {
                 )}
               </div>
             )}
-            {controller.activeForm && <FormInteractionPrompt request={controller.activeForm} onRespond={controller.respondToUserForm} onStop={controller.stop} stopPending={controller.stopPending} />}
+            {controller.activeForm && (
+              <FormInteractionPrompt
+                request={controller.activeForm}
+                modelChoices={controller.choices}
+                onRespond={controller.respondToUserForm}
+                onStop={controller.stop}
+                stopPending={controller.stopPending}
+              />
+            )}
             {controller.activeQuestion && <UserQuestionPrompt key={controller.activeQuestion.requestId}
               request={controller.activeQuestion} onRespond={controller.respondToUserQuestion}
               onStop={controller.stop} stopPending={controller.stopPending} />}
@@ -324,6 +331,15 @@ export function WorkHubRoot() {
               sessionId={controller.sessionId}
               streaming={busy}
               sendBlocked={!controller.sessionId || controller.sending || !session?.model}
+              sendBlockedReason={controller.modelSetupRequired
+                ? controller.modelSetupChoicesReady
+                  ? controller.choices.length > 0
+                    ? t.selectModelToSend
+                    : t.configureModelToSend
+                  : t.loadingModels
+                : undefined}
+              noModelConnection={controller.modelSetupRequired && controller.modelSetupChoicesReady && controller.choices.length === 0}
+              noModelHint={t.noModelsAvailable}
               allowAttachmentImportWhileStreaming
               stopPending={controller.stopPending}
               onSend={async (text, attachments, followUpMode) => {
@@ -342,11 +358,19 @@ export function WorkHubRoot() {
               activeModelConnectionId={session?.llmConnectionId}
               activeModelConnectionSlug={session?.llmConnectionSlug}
               modelChoices={controller.choices}
+              pickerPresentation={showConversation ? 'popover' : 'wheel'}
+              pickersReadOnly={Boolean(controller.activeQuestion || controller.activeForm || controller.configuringModel)}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
+              onPickNewChatModel={controller.modelSetupRequired && controller.modelSetupChoicesReady && controller.choices.length > 0
+                ? controller.selectSetupModel
+                : undefined}
+              onOpenModelSettings={controller.modelSetupRequired && controller.modelSetupChoicesReady && controller.choices.length === 0
+                ? () => call(services.presentation.openSettings('models'))
+                : undefined}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
               contextUsage={session ? {
-                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, transcript, session.model, session),
+                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, session.model, session),
                 declaredContextWindow: modelChoice?.declaredContextWindow,
                 meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: modelChoice?.contextWindow,
@@ -382,10 +406,8 @@ export function WorkHubRoot() {
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}
           messages={[...transcript.messages]}
-          hasOlderHistory={transcript.hasOlder}
-          hasNewerHistory={transcript.hasNewer}
-          onPrefetchHistory={controller.prefetchHistory}
-          onRetainWindow={controller.retainWindow}
+          hasEarlierHistory={transcript.hasOlder}
+          onLoadEarlierHistory={controller.loadEarlier}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
           liveTurns={controller.liveTurns}

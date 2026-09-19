@@ -19,8 +19,10 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ShellRunUpdate } from '@maka/core/events';
-import { isTerminalShellRunStatus } from '@maka/core/shell-run';
-import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '../../../shared/runtime-host-identity.js';
+import {
+  isDesktopTerminalShellRun,
+  isTerminalShellRunStatus,
+} from '@maka/core/shell-run';
 import type { WorkbarServices } from '../../features/workbar';
 import { readSettledMessagesFrom } from './session-message-settlement.js';
 import { expectSessionUpdate } from './create-session-settings-services.js';
@@ -49,10 +51,10 @@ const DEFAULT_DEPENDENCIES: DesktopWorkbarServiceDependencies = {
 };
 
 function isDesktopTerminal(update: ShellRunUpdate): boolean {
-  return update.ownership.kind === 'local' &&
-    update.sourceTurnId.startsWith(DESKTOP_TERMINAL_LAUNCH_PREFIX) &&
-    update.sourceTurnId === update.sourceToolCallId &&
-    update.result.mode === 'pty';
+  return (
+    update.ownership.kind === 'local' &&
+    isDesktopTerminalShellRun({ ...update, mode: update.result.mode })
+  );
 }
 
 /** The only Desktop-to-Workbar adapter. It narrows the preload bridge by tool. */
@@ -106,6 +108,7 @@ export function createDesktopWorkbarServices(
     popupMenu: (input) => bridge.appWindow.popupMenu(input),
     review: {
       read: (input) => bridge.gitReview.read(input),
+      branch: (sessionId) => bridge.gitReview.branch({ sessionId }),
       subscribeSessionEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
     },

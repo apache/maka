@@ -541,6 +541,12 @@ export class DesktopRuntimeHostClient {
     });
   }
 
+  readConnectionUsage(
+    connectionId: string,
+  ): Promise<OperationOutput<"connection.usage.read">> {
+    return this.request("connection.usage.read", { connectionId });
+  }
+
   verifyConnectionOnboarding(
     input: OperationInput<"connection.onboarding.verify">,
   ): Promise<OperationOutput<"connection.onboarding.verify">> {
@@ -1700,11 +1706,13 @@ export class DesktopRuntimeHostClient {
 
   async listSessionTurnLandmarks(
     sessionId: string,
+    turnId: string | null = null,
   ): Promise<OperationOutput<'session.turn_landmarks.query'>> {
     this.#assertOpen();
     return this.request('session.turn_landmarks.query', {
       sessionId,
-      maxLandmarks: 64,
+      maxLandmarks: turnId === null ? 64 : 1,
+      turnId,
     });
   }
 

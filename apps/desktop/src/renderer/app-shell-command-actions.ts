@@ -88,7 +88,6 @@ export interface AppShellCommandListOptions {
   openSessionInChat: (sessionId: string) => void;
   openSettings: () => void;
   openSettingsSection: (section: SettingsSection) => void;
-  openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
   copyTodayDailyReview: () => Promise<void>;
@@ -220,7 +219,6 @@ export function buildAppShellCommandList(
     ...(options.clientPathsAccessible
       ? {
           onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
-          onOpenSkillsFolder: () => optionsRef.current.openSkillsFolder(),
         }
       : {}),
     onSelectModule: (selection) => {

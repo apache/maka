@@ -213,16 +213,53 @@
    the fix and is not obviously safe: it makes the pointer fall through to the
    ancestor whose `:hover` is what restores the button, so being clickable
    again depends on the browser redoing hit-testing on a later mouse event. */
-.maka-turn-footer-action,
-.maka-turn-footer-meta {
+.maka-turn-footer-action {
   opacity: 0;
   transition: opacity var(--duration-quick) var(--ease-out-strong);
 }
 .maka-chat-message:hover .maka-turn-footer-action,
-.maka-chat-message:focus-within .maka-turn-footer-action,
-.maka-chat-message:hover .maka-turn-footer-meta,
-.maka-chat-message:focus-within .maka-turn-footer-meta {
+.maka-chat-message:focus-within .maka-turn-footer-action {
   opacity: 1;
+}
+/*
+   The footer's meta row holds two facts of different weight, so it cannot fade
+   as one unit:
+     - the turn's STATE (running / done + when) is what the reader came for while
+       a reply grows, so it is always visible;
+     - the model name and cost are reference facts, quiet until asked for.
+   Fading the whole row hid the state behind a hover, which is the one thing the
+   row exists to show without one.
+*/
+.maka-turn-footer-meta-model {
+  opacity: 0;
+  transition: opacity var(--duration-quick) var(--ease-out-strong);
+}
+.maka-turn-footer-meta-separator {
+  opacity: 0;
+  transition: opacity var(--duration-quick) var(--ease-out-strong);
+}
+.maka-chat-message:hover .maka-turn-footer-meta-model,
+.maka-chat-message:focus-within .maka-turn-footer-meta-model,
+.maka-chat-message:hover .maka-turn-footer-meta-separator,
+.maka-chat-message:focus-within .maka-turn-footer-meta-separator {
+  opacity: 1;
+}
+/* The turn's state, inside the footer's meta row rather than on a line of its
+   own: one line reads as the turn's footer, two read as a stray paragraph
+   between the answer and the model name. Always visible — see the meta row's
+   rule above: a reader watching a long reply needs to know whether it is still
+   running, and after it settles, when it finished. */
+.maka-turn-status-line {
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+  font-variant-numeric: tabular-nums;
+}
+.maka-turn-status-line[data-turn-status='failed'] {
+  color: var(--destructive);
+}
+.maka-turn-footer-meta-separator,
+.maka-turn-footer-meta-model {
+  color: var(--muted-foreground);
 }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
@@ -251,6 +288,16 @@
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
 .maka-turn-elapsed { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
 .maka-turn-elapsed:empty { display: none; }
+/* Long diagnostics must fit the reading measure instead of overflowing on
+   both sides of Astryx's centered, non-shrinking default content span.
+   Keep the separate divider variant's presentation intact. */
+.maka-chat-system-message[data-variant='default'] > span {
+  min-width: 0;
+  max-width: 100%;
+  flex-shrink: 1;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .maka-compaction-status { display: inline-flex; align-items: center; gap: 8px; font: var(--maka-text-body); vertical-align: top; }
 /* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
    draw by hand (hairline + 5% wash) is a variant, and the box comes with it.
@@ -465,13 +512,23 @@
 /* Prose reads differently from chrome. Han glyphs fill the whole em box, so
    the 20px body leading that suits a control row leaves CJK paragraphs with
    no air between lines; 1.6 is the common CJK reading ratio. Inherited from
-   the document root: headings and fenced code declare their own leading and
-   keep it, inline code follows the line it sits in, which is what keeps that
-   line's box even. `text-autospace` puts the conventional hair space between
-   Han and Latin or digit runs when the model did not type one. */
+   the document root: headings declare their own leading and keep it, inline
+   code follows the line it sits in, which is what keeps that line's box even.
+   `text-autospace` puts the conventional hair space between Han and Latin or
+   digit runs when the model did not type one. */
 [data-maka-contract="markdown"] .astryx-markdown {
   line-height: 1.6;
   text-autospace: normal;
+}
+/* Only a fenced block's own lines declare the code leading. CodeBlock wraps
+   every 20 of them in a `content-visibility: auto` box whose placeholder is
+   `20lh`, and `lh` there resolves against what the box inherits — this prose
+   leading, 12% taller than the lines it stands in for. The block then shrinks
+   by 48px per chunk as Chromium lays each one out, which moves whatever the
+   reader is on below it. Astryx's own `:where(code, pre)` rule would carry the
+   leading down, but Maka strips that reset (scripts/build-astryx-theme.mjs). */
+[data-maka-contract="markdown"] .astryx-markdown pre {
+  line-height: var(--text-code-leading);
 }
 /* Han faces have no italic, so `*emphasis*` in Chinese renders as a synthetic
    shear of PingFang. Chinese typography marks emphasis with a dot under each
@@ -1192,5 +1249,7 @@
 .maka-message-status-time { display: inline-flex; align-items: center; gap: 4px; }
 
 .maka-choice-panel { outline: none; }
+
+.maka-choice-panel:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
 
 .maka-choice-hint { margin: 8px 0; }

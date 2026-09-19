@@ -36,16 +36,11 @@ import type {
 export interface WorkHubTranscriptSnapshot {
   readonly messages: readonly StoredMessage[];
   readonly hasOlder: boolean;
-  readonly hasNewer: boolean;
   readonly ready: boolean;
 }
 export interface WorkHubTranscript {
   observationChanged(phase: 'pending' | 'ready'): void;
-  /** Fills the window at an edge the reader approaches; resolves to whether a read was issued. */
-  prefetchHistory(edge: 'older' | 'newer'): Promise<boolean>;
-  /** Trims the window to the Turns the reader's band still covers. */
-  retain(window: { firstTurnId: string; lastTurnId: string }): void;
-  loadLatest(): Promise<void>;
+  loadEarlier(): Promise<void>;
   close(): Promise<void>;
 }
 export interface WorkHubServices extends WorkHubWorkspaceServices {
@@ -62,7 +57,11 @@ export interface WorkHubServices extends WorkHubWorkspaceServices {
   delegationFeedback(
     references: readonly WorkHubDelegationReference[],
   ): Promise<readonly WorkHubDelegationFeedback[]>;
-  modelChoices(sessionId: string): Promise<ChatModelChoice[]>;
+  modelChoices(sessionId?: string): Promise<ChatModelChoice[]>;
+  setDefaultModel(input: {
+    llmConnectionSlug: string;
+    model: string;
+  }): Promise<void>;
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;

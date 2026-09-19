@@ -26,8 +26,13 @@
   max-width: 100%;
 }
 
-/* Model and thinking triggers share the footer's ghost-button chrome.
-   The model control expands into the shared inline magnetic wheel. */
+/* The composer footer's model picker is a ghost-trigger Selector — the same
+   searchable list the settings pages use — and the thinking picker beside it
+   is the same control minus search; resting, hover, focus, and disabled
+   chrome all derive from Astryx, so no product overlay is needed here.
+   Trigger geometry (min/max width) is owned by composer.css, the one real
+   context these triggers render in. The collapsed WorkHub window is the one
+   exception: its model picker keeps the inline wheel. */
 
 .maka-model-picker-root {
   display: inline-flex;
@@ -76,4 +81,39 @@
 .modelPickerProviderMark .providerAssetMask {
   width: 100%;
   height: 100%;
+}
+.modelPickerOption {
+  min-width: 0;
+}
+
+/* Selector's popover stretches to its positioning context, not its content —
+   left alone it renders far wider than the option labels. Hug the widest row
+   instead, and cap it so one long id cannot stretch the popup past the
+   viewport: at ~44 chars per line this covers p99 of models.dev ids (p90=32,
+   p99=44), and the rare path-style ids ellipsize at the start. Scoped by the
+   option class renderModelPickerOption emits. */
+.astryx-selector-popup:has(.modelPickerOption) {
+  /* min-width keeps the painted card covering the trigger-sized layer, whose
+     leftover strip would otherwise swallow clicks without dismissing. */
+  min-width: 100%;
+  width: fit-content;
+  max-width: min(340px, 92vw);
+}
+
+.modelPickerOptionLabel {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* User-set connection names are unbounded too, but a heading is wayfinding —
+   one ellipsized line, not a tall row. */
+.astryx-selector-popup:has(.modelPickerOption) .astryx-selector-section-heading {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

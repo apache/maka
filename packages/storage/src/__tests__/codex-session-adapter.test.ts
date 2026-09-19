@@ -658,7 +658,7 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
-  test('filesystem keyset paging uses one path order across equal-mtime pages', async () => {
+  test('filesystem keyset paging uses one digest order across equal-mtime pages', async () => {
     await withCodexHome(async (codexHome) => {
       const underscore = await seedMinimalRollout(
         codexHome,
@@ -680,21 +680,72 @@ describe('CodexSessionAdapter', () => {
       const adapter = new CodexSessionAdapter({ codexHome });
 
       const first = await adapter.listSessionPage!({ limit: 1 });
-      assert.deepEqual(
-        first.items.map(({ summary }) => summary.id),
-        ['codex_a'],
-      );
+      assert.equal(first.items.length, 1);
       assert.equal(first.hasMore, true);
+      const cursor = first.items[0]!.nextCursor;
+      const [tag, queryHash, timestamp, identity] = cursor.split(':');
+      if (!queryHash || !timestamp || !identity) throw new Error('Expected a filesystem cursor');
+      assert.equal(tag, 'f2');
+      for (const invalidCursor of [
+        `f:${queryHash}:${timestamp}:${identity}`,
+        `f2:${queryHash}:${timestamp}:${identity.slice(0, -1)}`,
+        `f2:${queryHash}:${timestamp}:${identity}A`,
+        `f2:${queryHash}:${timestamp}:${identity.slice(0, -1)}+`,
+      ]) {
+        await assert.rejects(
+          adapter.listSessionPage!({ cursor: invalidCursor, limit: 1 }),
+          ExternalSessionCatalogCursorError,
+        );
+      }
 
       const second = await adapter.listSessionPage!({
-        cursor: first.items[0]!.nextCursor,
+        cursor,
         limit: 1,
       });
       assert.deepEqual(
-        second.items.map(({ summary }) => summary.id),
-        ['codex-a'],
+        new Set([...first.items, ...second.items].map(({ summary }) => summary.id)),
+        new Set(['codex_a', 'codex-a']),
       );
       assert.equal(second.hasMore, false);
+    });
+  });
+
+  test('filesystem cursor stays wire-bounded for deeply nested rollout paths', async () => {
+    await withCodexHome(async (codexHome) => {
+      const nestedDirectory = join(
+        codexHome,
+        'sessions',
+        ...Array.from({ length: 12 }, (_, index) => `${index}-${'nested'.repeat(8)}`),
+      );
+      await mkdir(nestedDirectory, { recursive: true });
+      const nestedId = 'codex-deep-cursor';
+      const nestedPath = join(nestedDirectory, `rollout-${nestedId}.jsonl`);
+      await writeFile(nestedPath, minimalRollout(nestedId, '/workspace/root', 'deep'));
+      const shallowPath = await seedMinimalRollout(
+        codexHome,
+        'codex-shallow-cursor',
+        false,
+        '/workspace/root',
+        'shallow',
+      );
+      const tied = new Date('2026-08-08T00:00:00Z');
+      await utimes(nestedPath, tied, tied);
+      await utimes(shallowPath, tied, tied);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      const first = await adapter.listSessionPage({ limit: 1 });
+      assert.equal(first.hasMore, true);
+      assert.ok(Buffer.byteLength(first.items[0]!.nextCursor, 'utf8') <= 512);
+      const second = await adapter.listSessionPage({
+        cursor: first.items[0]!.nextCursor,
+        limit: 1,
+      });
+
+      assert.equal(second.hasMore, false);
+      assert.deepEqual(
+        new Set([...first.items, ...second.items].map(({ summary }) => summary.id)),
+        new Set([nestedId, 'codex-shallow-cursor']),
+      );
     });
   });
 
@@ -913,12 +964,10 @@ describe('CodexSessionAdapter', () => {
         cursor = result.items.at(-1)?.nextCursor;
         assert.ok(cursor, 'a page that reports hasMore must carry a next cursor');
       }
-      // The cursor has to name the position the query ordered by. Recomputing
-      // the key in JS put `codex-text` at 1000 while the SQL key it was ordered
-      // by is text, so the next page asked for `key < 1000`, matched nothing,
-      // and reported the catalog exhausted — the other two Conversations were
-      // dropped without an error.
-      assert.deepEqual(seen.sort(), ['codex-a', 'codex-b', 'codex-text']);
+      // The same normalization must determine display time, SQL order, and
+      // cursor position. The ISO value is in 2026, so it precedes the small
+      // numeric fixtures instead of being cast to the number 2026.
+      assert.deepEqual(seen, ['codex-text', 'codex-a', 'codex-b']);
     });
   });
 

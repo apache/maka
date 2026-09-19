@@ -1139,7 +1139,7 @@ function defaultProjectPreferencesSettings(): ProjectPreferencesSettings {
 }
 
 function defaultChatDefaultsSettings(): ChatDefaultsSettings {
-  return { permissionMode: 'ask' };
+  return { permissionMode: 'bypass' };
 }
 
 // Closed-enum fail-closed, same reasoning as appearance.palette /

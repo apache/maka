@@ -31,8 +31,6 @@ import { defineOperation } from './operation-spec.js';
 export const SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES = 16 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_BYTES = 512 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES = 256;
-export const SESSION_TRANSCRIPT_RANGE_MAX_BYTES = 16 * 1024 * 1024;
-export const SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES = SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES;
 export const SESSION_TRANSCRIPT_PAGE_RESULT_MAX_BYTES = 744 * 1024;
 export const SESSION_TRANSCRIPT_CURSOR_MAX_BYTES = 1024;
 
@@ -53,11 +51,14 @@ export interface SessionTranscriptPage {
   readonly throughSequence: number | null;
   readonly rawBytes: number;
   readonly fragments: readonly SessionTranscriptFragment[];
-  /** Host-selected far edge that the client must assemble before publishing this range. */
-  readonly rangeBoundarySequence: number | null;
-  /** Host-selected Turn identity that bounded consumers must retain while trimming this range. */
-  readonly protectedTurnSequence: number | null;
   readonly nextCursor: string | null;
+  /**
+   * Whether every Turn with rows on this page has all of them here. A reader
+   * that stops on a page which says so cannot be holding half a Turn — which a
+   * change of owner between rows does not tell it, because the Host writes a
+   * nested Turn's rows between the rows of the Turn around it.
+   */
+  readonly endsAtTurnBoundary: boolean;
 }
 
 export interface SessionTranscriptBootstrap {
@@ -119,9 +120,13 @@ export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscr
   if (cursor !== null && anchorSequence !== null) {
     throw invalidProtocolFrame('Session transcript cursor and anchor are mutually exclusive');
   }
+  const direction = decodeDirection(input.direction);
+  if (anchorSequence !== null && direction !== 'newer') {
+    throw invalidProtocolFrame('Session transcript anchor requires a newer read');
+  }
   return {
     subscriptionId: requireId(input.subscriptionId, 'subscriptionId'),
-    direction: decodeDirection(input.direction),
+    direction,
     throughSequence:
       input.throughSequence === null
         ? null
@@ -157,10 +162,12 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     'throughSequence',
     'rawBytes',
     'fragments',
-    'rangeBoundarySequence',
-    'protectedTurnSequence',
     'nextCursor',
+    'endsAtTurnBoundary',
   ]);
+  if (typeof result.endsAtTurnBoundary !== 'boolean') {
+    throw invalidProtocolFrame('Invalid Session transcript page Turn boundary');
+  }
   if (result.kind !== 'page') throw invalidProtocolFrame('Invalid Session transcript page kind');
   const direction = decodeDirection(result.direction);
   const throughSequence =
@@ -193,26 +200,6 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
           'Session transcript cursor',
           SESSION_TRANSCRIPT_CURSOR_MAX_BYTES,
         );
-  const rangeBoundarySequence =
-    result.rangeBoundarySequence === null
-      ? null
-      : requireCount(result.rangeBoundarySequence, 'Session transcript range boundary sequence');
-  const protectedTurnSequence =
-    result.protectedTurnSequence === null
-      ? null
-      : requireCount(result.protectedTurnSequence, 'Session transcript protected Turn sequence');
-  if (
-    rangeBoundarySequence !== null &&
-    (throughSequence === null || rangeBoundarySequence > throughSequence)
-  ) {
-    throw invalidProtocolFrame('Invalid Session transcript range boundary');
-  }
-  if (
-    protectedTurnSequence !== null &&
-    (throughSequence === null || protectedTurnSequence > throughSequence)
-  ) {
-    throw invalidProtocolFrame('Invalid Session transcript protected Turn sequence');
-  }
   if (fragments.length === 0 && (rawBytes !== 0 || nextCursor !== null)) {
     throw invalidProtocolFrame('Invalid empty Session transcript page');
   }
@@ -223,9 +210,8 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     throughSequence,
     rawBytes,
     fragments,
-    rangeBoundarySequence,
-    protectedTurnSequence,
     nextCursor,
+    endsAtTurnBoundary: result.endsAtTurnBoundary,
   };
 }
 

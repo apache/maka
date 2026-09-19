@@ -70,9 +70,7 @@ export function mergeTransientMessageProjection(
 export function reconcileTransientMessages(
   transient: Map<string, TransientUserMessage>,
   durable: readonly StoredMessage[],
-  options: { includeTransient?: boolean } = {},
 ): TransientUserMessage[] {
   for (const message of durable) transient.delete(message.id);
-  if (transient.size === 0 || options.includeTransient === false) return [];
   return [...transient.values()];
 }

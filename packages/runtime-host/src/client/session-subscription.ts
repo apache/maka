@@ -25,8 +25,6 @@ import {
   type SessionDomainChangedFrame,
   type SessionContinuitySnapshot,
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
-  SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
-  SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
   type SessionTranscriptBootstrap,
@@ -241,11 +239,7 @@ export class ClientSessionSubscription
     try {
       assembler.accept(page.fragments);
       let cursor = page.nextCursor;
-      let rangeBytes = page.fragments.reduce((total, fragment) => total + fragment.totalBytes, 0);
-      const rangeIdentities = new Set(page.fragments.map((fragment) => fragment.sequence));
-      let reachedBoundary =
-        page.rangeBoundarySequence === null || rangeIdentities.has(page.rangeBoundarySequence);
-      while (assembler.continuationBytes !== null || !reachedBoundary) {
+      while (assembler.continuationBytes !== null) {
         if (cursor === null) {
           throw new RuntimeHostSubscriptionError(
             'correlation_changed',
@@ -258,10 +252,7 @@ export class ClientSessionSubscription
           throughSequence: page.throughSequence,
           cursor,
           anchorSequence: null,
-          maxBytes:
-            assembler.continuationBytes === null
-              ? SESSION_TRANSCRIPT_PAGE_MAX_BYTES
-              : Math.min(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, assembler.continuationBytes),
+          maxBytes: Math.min(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, assembler.continuationBytes),
         });
         if (continuation.nextCursor === requestedCursor) {
           throw new RuntimeHostSubscriptionError(
@@ -269,21 +260,7 @@ export class ClientSessionSubscription
             'Session transcript cursor did not advance',
           );
         }
-        for (const fragment of continuation.fragments) {
-          if (!rangeIdentities.has(fragment.sequence)) {
-            rangeIdentities.add(fragment.sequence);
-            rangeBytes += fragment.totalBytes;
-          }
-        }
-        if (
-          rangeBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES ||
-          rangeIdentities.size > SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES
-        ) {
-          throw new RangeError('Session transcript range exceeds the local capacity limit');
-        }
         assembler.accept(continuation.fragments);
-        reachedBoundary =
-          page.rangeBoundarySequence === null || rangeIdentities.has(page.rangeBoundarySequence);
         cursor = continuation.nextCursor;
       }
       return {

@@ -30,6 +30,7 @@
     "./provider-retry-countdown": "./dist/provider-retry-countdown.js",
     "./interaction": "./dist/interaction.js",
     "./session": "./dist/session.js",
+    "./session-reference": "./dist/session-reference.js",
     "./session-revisions": "./dist/session-revisions.js",
     "./collaboration": "./dist/collaboration.js",
     "./orchestration": "./dist/orchestration.js",
@@ -62,11 +63,13 @@
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",
     "./skill-invocation": "./dist/skill-invocation.js",
+    "./skill-locations": "./dist/skill-locations.js",
     "./runtime-inputs": "./dist/runtime-inputs.js",
     "./e2e-fixture": "./dist/e2e-fixture.js",
     "./capabilities": "./dist/capabilities.js",
     "./capability-audit": "./dist/capability-audit.js",
     "./client-capability-grant": "./dist/client-capability-grant.js",
+    "./client-plugin-bridge": "./dist/client-plugin-bridge.js",
     "./health": "./dist/health.js",
     "./search": "./dist/search.js",
     "./bot-events": "./dist/bot-events.js",
@@ -133,6 +136,7 @@
     "./bot-onboarding": "./dist/bot-onboarding.js",
     "./computer-use": "./dist/computer-use.js",
     "./connection-error-copy": "./dist/connection-error-copy.js",
+    "./connection-usage": "./dist/connection-usage.js",
     "./git-review": "./dist/git-review.js",
     "./graph-command": "./dist/graph-command.js",
     "./project": "./dist/project.js",
@@ -170,6 +174,6 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "intl-messageformat": "11.2.14"
+    "intl-messageformat": "11.2.15"
   }
 }

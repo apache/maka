@@ -160,6 +160,10 @@ const linkedCatalog = [
     profileName: 'Ubuntu',
     profileKind: 'environment',
   }),
+  session('side-conversation', {
+    parentSessionId: 'root',
+    labels: ['mode:side_conversation'],
+  }),
   session('archived', { isArchived: true }),
   session('hidden'),
 ];
@@ -205,7 +209,7 @@ describe('useSessionNavigationReads', () => {
     latestReads = undefined;
   });
 
-  it('projects linked, archived, hidden, Project, and Runtime Host Sessions once', async () => {
+  it('projects linked, archived, hidden, side-conversation, Project, and Runtime Host Sessions once', async () => {
     const { root } = installReactRenderer();
     await act(async () =>
       root.render(

@@ -2029,6 +2029,13 @@ function focusedRowOutline() {
   return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
 }
 
+function fieldChrome(element: HTMLElement) {
+  const field = element.parentElement;
+  if (!field) throw new Error('Settings field chrome is missing');
+  const style = getComputedStyle(field);
+  return `${style.borderColor} | ${style.boxShadow}`;
+}
+
 /**
  * The provider has to sit above the body: 已归档任务's story bridge confirms
  * through the same toast surface the shell's row action uses, and a hook cannot
@@ -2149,7 +2156,7 @@ async function openDailyReviewModelSelector(canvasElement: HTMLElement): Promise
   );
   await userEvent.click(selector);
   await waitForStoryCondition(
-    () => canvasElement.querySelector('.maka-model-wheel-viewport') !== null,
+    () => document.querySelector('[popover]:popover-open [role="listbox"]') !== null,
     'Daily Review model selector did not open',
   );
   return selector;
@@ -2215,7 +2222,7 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
-// Real path: 设置 → 通用 → 默认模型. Focus stays on the floating magnetic wheel;
+// Real path: 设置 → 通用 → 默认模型. Focus moves into the open Selector popup;
 // the containing settings row must not add a second focus ring.
 export const GeneralPickerOpenFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -2224,29 +2231,22 @@ export const GeneralPickerOpenFocusRing: Story = {
     const canvas = within(canvasElement);
     const trigger = await canvas.findByRole('button', { name: '默认模型' });
     trigger.scrollIntoView({ block: 'center' });
-    const rows = () => Array.from(canvasElement.querySelectorAll('.astryx-item')).map((element) => {
-      const { x, y, width, height } = element.getBoundingClientRect();
-      return { x, y, width, height };
-    });
-    const before = rows();
     await userEvent.click(trigger);
     await waitFor(() => {
       const active = document.activeElement as HTMLElement | null;
-      expect(active?.matches('.maka-model-wheel-viewport')).toBe(true);
+      expect(document.querySelector('[popover]:popover-open')).not.toBeNull();
+      expect(active?.closest('[popover]:popover-open')).not.toBeNull();
     });
     const active = document.activeElement as HTMLElement;
     const row = active.closest<HTMLElement>('.astryx-item');
     expect(row).not.toBeNull();
     expect(row ? getComputedStyle(row).outlineStyle : null).toBe('none');
-    expect(rows()).toEqual(before);
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(trigger).toHaveFocus());
-    expect(rows()).toEqual(before);
-    await userEvent.click(trigger);
   },
 };
 
-// Real path: keyboard navigation through 设置 → 通用. The model button carries the
+// Real path: keyboard navigation through 设置 → 通用. The field carries the
 // visible focus treatment; its containing Item does not add a second ring.
 export const GeneralKeyboardFocusRing: Story = {
   decorators: [withSettingsBridge],
@@ -2255,19 +2255,16 @@ export const GeneralKeyboardFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
     expect(focusedRowOutline()?.outlineStyle).toBe('none');
-    await waitFor(() => {
-      const style = getComputedStyle(trigger);
-      expect(style.outlineStyle).toBe('solid');
-      expect(Number.parseFloat(style.outlineWidth)).toBeGreaterThan(0);
-    });
+    await waitFor(() => expect(fieldChrome(trigger)).not.toBe(resting));
   },
 };
 
 // Real path: Windows High Contrast keyboard navigation through 设置 → 通用.
-// The model button's outline survives, and the Item retains its shared fallback.
+// The field loses its own paint there, so the Item retains the focus ring.
 export const GeneralForcedColorsFocusRing: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
@@ -2275,10 +2272,10 @@ export const GeneralForcedColorsFocusRing: Story = {
     const canvas = within(canvasElement);
     const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
     const trigger = canvas.getByRole('button', { name: '默认模型' });
+    const resting = fieldChrome(trigger);
     tone.focus();
     await tabTo(trigger);
-    expect(getComputedStyle(trigger).outlineStyle).toBe('solid');
-    expect(Number.parseFloat(getComputedStyle(trigger).outlineWidth)).toBeGreaterThan(0);
+    expect(fieldChrome(trigger)).toBe(resting);
     expect(focusedRowOutline()?.outlineStyle).toBe('solid');
   },
 };

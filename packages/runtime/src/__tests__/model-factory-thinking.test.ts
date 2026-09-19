@@ -1187,3 +1187,54 @@ test('Copilot Messages preserves bearer auth without the generic Anthropic beta 
     }
   }
 });
+
+describe('buildProviderOptions: Command Code CLI thinking level', () => {
+  // The Provider API exposes no reasoning metadata, so these levels come from
+  // the static table in model-metadata.ts, ported from the reference CLI
+  // effort map. The switcher only appears when the table declares the model.
+  test('selectable efforts surface for the models the CLI wire accepts them on', () => {
+    for (const providerType of ['commandcode-go', 'commandcode'] as const) {
+      assert.deepEqual(
+        [...thinkingVariantsForModel(providerType, 'claude-fable-5-1')],
+        ['low', 'medium', 'high', 'xhigh', 'max'],
+      );
+      assert.deepEqual(
+        [...thinkingVariantsForModel(providerType, 'moonshotai/Kimi-K3')],
+        ['low', 'high', 'max'],
+      );
+      assert.deepEqual(
+        [...thinkingVariantsForModel(providerType, 'xai/grok-4.6')],
+        ['low', 'medium', 'high', 'xhigh'],
+      );
+    }
+  });
+
+  test('models that reason automatically offer no selector', () => {
+    for (const providerType of ['commandcode-go', 'commandcode'] as const) {
+      // Tencent Hy3/Hy4 with no levels and the GLM-5.x-Fast siblings think with
+      // a depth Command Code chooses; the CLI omits reasoning_effort for them,
+      // so the table must stay silent and the picker must stay hidden.
+      for (const modelId of ['tencent/hy3-paid', 'zai-org/GLM-5.2-Fast', 'zai-org/GLM-5']) {
+        assert.deepEqual([...thinkingVariantsForModel(providerType, modelId)], []);
+        assert.deepEqual(buildProviderOptions(conn(providerType), modelId, 'high'), {});
+      }
+    }
+  });
+
+  test('an unknown model exposes nothing and sends nothing', () => {
+    assert.deepEqual([...thinkingVariantsForModel('commandcode-go', 'not-a-model')], []);
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'not-a-model', 'high'), {});
+  });
+
+  test('the chosen level is forwarded verbatim, including max', () => {
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'claude-fable-5-1', 'max'), {
+      'commandcode-cli': { reasoningEffort: 'max' },
+    });
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'moonshotai/Kimi-K3', 'low'), {
+      'commandcode-cli': { reasoningEffort: 'low' },
+    });
+    // `off` is a discard, and no declared model offers it on this route.
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'claude-fable-5-1', 'off'), {});
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'claude-fable-5-1'), {});
+  });
+});

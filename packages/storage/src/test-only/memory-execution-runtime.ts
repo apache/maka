@@ -68,6 +68,7 @@ import { immutableSteeringMessageId } from '../runtime-event-invariants.js';
 import {
   RuntimeTranscriptOversizedTurnError,
   type RuntimeTranscriptRun,
+  type RuntimeTranscriptTurn,
 } from '../runtime-transcript-query.js';
 import {
   partialRuntimeStream,
@@ -962,32 +963,48 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
       }
       return project(header, read());
     },
-    readTranscriptLandmarks: async (sessionId, throughOrdinal, n) =>
+    readTranscriptTurns: async (sessionId, request) =>
       a.read((s) => {
-        if (!Number.isSafeInteger(throughOrdinal) || throughOrdinal < 0 || !Number.isSafeInteger(n))
-          throw new RangeError('Invalid landmark bounds');
-        if (n < 1) return [];
-        const all = transcript(s, sessionId, throughOrdinal);
-        if (all.length === 0) return [];
-        const positions = new Set(
-          Array.from({ length: n }, (_, i) =>
-            n === 1 ? all.length - 1 : Math.floor((i * (all.length - 1)) / (n - 1)),
-          ),
-        );
-        return [...positions]
-          .map((i) => all[i]!)
-          .map((i) => ({
-            invocation: i.invocation,
-            firstOrdinal: i.firstOrdinal,
-            ...(i.events.find((e) => e.event.role === 'user' && e.event.content?.kind === 'text')
-              ? {
-                  prompt: i.events.find(
-                    (e) => e.event.role === 'user' && e.event.content?.kind === 'text',
-                  ),
-                }
-              : {}),
-          }));
+        const turns = transcriptTurns(s, sessionId);
+        return 'turnId' in request
+          ? turns.filter((turn) => turn.turnId === request.turnId)
+          : sampled(
+              turns.filter((turn) => turn.firstOrdinal <= request.throughOrdinal),
+              request.limit,
+            );
       }),
+    readTranscriptTurnCrossing: async (sessionId, ordinal) =>
+      a.read((s) =>
+        transcriptTurns(s, sessionId).some(
+          (turn) => turn.firstOrdinal < ordinal && turn.lastOrdinal >= ordinal,
+        ),
+      ),
   };
   return store;
+}
+
+function transcriptTurns(s: MemoryState, sessionId: string): RuntimeTranscriptTurn[] {
+  const turns = new Map<string, RuntimeTranscriptTurn>();
+  for (const { invocation, events } of transcript(s, sessionId)) {
+    const turnId = invocation.turnId;
+    const known = turns.get(turnId);
+    const prompt = events.find((e) => e.event.content?.kind === 'text' && e.event.role === 'user');
+    turns.set(turnId, {
+      turnId,
+      firstOrdinal: Math.min(known?.firstOrdinal ?? Infinity, ...events.map((e) => e.ordinal)),
+      lastOrdinal: Math.max(known?.lastOrdinal ?? 0, ...events.map((e) => e.ordinal)),
+      ...((known?.prompt ?? prompt) ? { prompt: known?.prompt ?? prompt } : {}),
+    });
+  }
+  return [...turns.values()].sort((x, y) => x.firstOrdinal - y.firstOrdinal);
+}
+
+function sampled<T>(items: readonly T[], limit: number): T[] {
+  if (limit < 1 || items.length === 0) return [];
+  if (limit === 1) return [items.at(-1)!];
+  const picked = new Set<T>();
+  for (let n = 0; n < limit; n += 1) {
+    picked.add(items[Math.floor((n * (items.length - 1)) / (limit - 1))]!);
+  }
+  return [...picked];
 }

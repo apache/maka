@@ -55,6 +55,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
   const views: FakeView[] = [];
   const containers: NativeView[] = [];
   const errors: unknown[] = [];
+  const externalUrls: string[] = [];
   let handler: ((event: unknown, command: string, payload?: unknown) => Promise<unknown>) | undefined;
   let unregistered = false;
   let shortcut: (() => void) | undefined;
@@ -77,7 +78,10 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
       this.captures++;
       return { toDataURL: () => 'data:image/png;base64,workhub-frame' };
     }
-    setWindowOpenHandler() {}
+    currentUrl = '';
+    getURL() { return this.currentUrl; }
+    windowOpenHandler?: (details: { url: string }) => { action: string };
+    setWindowOpenHandler(handler: (details: { url: string }) => { action: string }) { this.windowOpenHandler = handler; }
     loadURL() { return Promise.resolve(); }
     focus() {}
     close() { this.destroyed = true; this.emit('destroyed'); }
@@ -150,6 +154,7 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
     clearTimeout: (id: number) => timers.delete(id),
     require: (name: string) => name === 'electron' ? {
       BrowserWindow: FakeWindow, View: Container, WebContentsView: FakeView,
+      shell: { openExternal: (url: string) => { externalUrls.push(url); return Promise.resolve(); } },
       systemPreferences: { getAnimationSettings: () => ({ prefersReducedMotion: !animate }) },
       globalShortcut: { register: (_accelerator: string, callback: () => void) => { shortcut = callback; return true; }, unregister: () => { unregistered = true; } },
       ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; }, removeHandler: () => { handler = undefined; } },
@@ -170,8 +175,57 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
   controller.attachMainWindow(main as unknown as Electron.BrowserWindow);
   controller.registerIpc();
   const command = (sender: Contents, name: string, payload?: unknown) => handler!({ sender, senderFrame: sender.mainFrame }, name, payload);
-  return { onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, containers, get container() { return containers.at(-1)!; }, errors, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
+  return { onVisibilityChanged: (listener: () => void) => { visibilityChanged = listener; }, setMainAvailable: (value: boolean) => { mainAvailable = value; }, shortcut: () => shortcut!(), get mainRequests() { return mainRequests; }, controller, main, windows, views, containers, get container() { return containers.at(-1)!; }, errors, externalUrls, command, advance, setEnabled: (value: boolean) => { enabled = value; }, deferOpening: (value: Promise<void>) => { opening = value; return openingStarted.promise; }, movePointer: (display: typeof pointerDisplay) => { pointerDisplay = display; }, registrations: () => [registeredViews, releasedViews], handler: () => handler, unregistered: () => unregistered };
 }
+
+test('hands safe WorkHub links to the OS while keeping the view local', async () => {
+  const h = await harness();
+  await h.command(h.main.webContents, 'host', { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } });
+  const contents = h.views[0]!.webContents;
+  const windowOpenHandler = contents.windowOpenHandler;
+  assert.ok(windowOpenHandler);
+
+  assert.equal(windowOpenHandler({ url: 'https://example.com/' }).action, 'deny');
+  assert.deepEqual(h.externalUrls, ['https://example.com/']);
+  assert.equal(windowOpenHandler({ url: 'file:///Users/example/.ssh/id_rsa' }).action, 'deny');
+  assert.deepEqual(h.externalUrls, ['https://example.com/']);
+
+  contents.currentUrl = 'http://localhost:5173/';
+  const navigate = (url: string, isMainFrame = true) => {
+    let navigationPrevented = false;
+    contents.emit('will-frame-navigate', {
+      preventDefault: () => { navigationPrevented = true; },
+      isMainFrame,
+      url,
+    });
+    // Electron can stop after will-frame-navigate, so will-navigate is only
+    // reached when the frame handler lets the navigation continue.
+    if (!navigationPrevented) {
+      contents.emit('will-navigate', { preventDefault: () => { navigationPrevented = true; } }, url);
+    }
+    return navigationPrevented;
+  };
+
+  assert.equal(navigate(contents.currentUrl), false);
+  assert.deepEqual(h.externalUrls, ['https://example.com/']);
+
+  assert.equal(navigate('https://example.org/'), true);
+  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/']);
+
+  assert.equal(navigate('https://subframe.example/', false), true);
+  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/']);
+
+  let navigationPrevented = false;
+  contents.emit('will-navigate', { preventDefault: () => { navigationPrevented = true; } }, 'https://example.org/');
+  assert.equal(navigationPrevented, true);
+  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/', 'https://example.org/']);
+
+  navigationPrevented = false;
+  contents.emit('will-navigate', { preventDefault: () => { navigationPrevented = true; } }, 'javascript:alert(1)');
+  assert.equal(navigationPrevented, true);
+  assert.deepEqual(h.externalUrls, ['https://example.com/', 'https://example.org/', 'https://example.org/']);
+  h.controller.dispose();
+});
 
 test('moves a shared native container while keeping renderer and browser coordinates local', async () => {
   const h = await harness();

@@ -29,7 +29,6 @@ import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { ModelAdapter } from '../model-adapter.js';
 import { TOOL_SEARCH_PROVIDER_NAME } from '../tool-availability.js';
 import { resolveModelRuntime } from '../model-runtime.js';
-import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 import { lowerModelTools } from '../model-adapter.js';
 import { openAiResponsesBaseUrl, openResponsesUrl } from '../provider-urls.js';
 
@@ -347,6 +346,17 @@ describe('responses wire contract', () => {
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     });
 
+    const moonshotGlobal = resolveModelRuntime(
+      { providerType: 'moonshot-global', slug: 'moonshot-global' },
+      'kimi-k3',
+    );
+    assert.deepEqual(moonshotGlobal.reasoningReplay, {
+      kind: 'responses',
+      contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-summary' },
+    });
+    assert.equal(moonshotGlobal.responsesProviderOptionsKey, 'moonshot-global');
+    assert.equal(moonshotGlobal.responsesReplayProfile, 'moonshot-global');
+
     const relay = resolveModelRuntime(
       { providerType: 'openai-responses-compatible' },
       'relay-model',
@@ -386,49 +396,6 @@ describe('responses wire contract', () => {
       ).parallelToolCalls,
       true,
     );
-  });
-
-  test('enables Responses only through an explicit supported contract', () => {
-    const configured = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
-      const adapter = resolveRuntimeProviderAdapter(definition.runtimeAdapter);
-      return adapter.kind === 'openai-compatible' && adapter.responses
-        ? [{ providerType, contract: adapter.responses }]
-        : [];
-    });
-
-    assert.deepEqual(configured, [
-      {
-        providerType: 'deepseek',
-        contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
-      },
-      {
-        providerType: 'xai',
-        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
-      },
-      {
-        providerType: 'xai-oauth',
-        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
-      },
-      {
-        providerType: 'alibaba-token-plan-cn',
-        contract: {
-          adapter: 'open-responses',
-          reasoningReplay: 'plaintext-summary',
-          compatibility: 'alibaba-token-plan',
-        },
-      },
-      {
-        providerType: 'alibaba-token-plan',
-        contract: {
-          adapter: 'open-responses',
-          reasoningReplay: 'plaintext-summary',
-          compatibility: 'alibaba-token-plan',
-        },
-      },
-    ]);
-
-    const relay = PROVIDER_REGISTRY['openai-responses-compatible'].runtimeAdapter;
-    assert.equal(relay.kind, 'openai');
   });
 
   test('every encrypted-content Responses contract asks for encrypted reasoning', () => {

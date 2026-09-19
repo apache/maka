@@ -63,6 +63,7 @@ import {
   HostSessionCatalogCoordinator,
   NoUsableImportModelError,
   SessionOperationFailure,
+  WorkHubDefaultModelRequiredError,
   type HostSessionCatalogCoordinatorOptions,
 } from '../server/session-catalog-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
@@ -165,6 +166,7 @@ test('read marker clears unread only at the ledger transcript tail', async () =>
         records: [
           {
             sequence: 1,
+            cluster: 1,
             message: {
               type: 'assistant',
               id: 'message-2',
@@ -176,6 +178,7 @@ test('read marker clears unread only at the ledger transcript tail', async () =>
           },
           {
             sequence: 0,
+            cluster: 1,
             message: { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 10, text: 'ask' },
           },
         ],
@@ -211,6 +214,7 @@ test('read marker pages past a hidden tail to reach the newest visible message',
     records: [
       {
         sequence: 2,
+        cluster: 1,
         message: {
           type: 'turn_state' as const,
           id: 'turn-state-1',
@@ -227,6 +231,7 @@ test('read marker pages past a hidden tail to reach the newest visible message',
     records: [
       {
         sequence: 1,
+        cluster: 1,
         message: {
           type: 'assistant' as const,
           id: 'message-2',
@@ -1991,7 +1996,7 @@ test('autonomous create target fails closed when no default is set, even with a 
   await assert.rejects(
     fixture.coordinator.resolveDefaultCreateTarget(),
     (error: unknown) =>
-      error instanceof SessionOperationFailure &&
+      error instanceof WorkHubDefaultModelRequiredError &&
       error.code === 'operation_unavailable' &&
       /No default Session model is configured/i.test(error.message),
   );

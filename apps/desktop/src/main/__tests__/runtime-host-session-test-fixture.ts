@@ -86,8 +86,7 @@ function emptyPage(sessionId: string): SessionTranscriptPage {
     throughSequence: null,
     rawBytes: 0,
     fragments: [],
-    rangeBoundarySequence: null,
-    protectedTurnSequence: null,
     nextCursor: null,
+    endsAtTurnBoundary: true,
   };
 }
