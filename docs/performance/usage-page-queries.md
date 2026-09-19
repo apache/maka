@@ -58,22 +58,24 @@ Host projection repair, wire serialization, IPC/network and React are excluded.
 ## Results
 
 Measured on 2026-09-20 against baseline
-`0117d76c5688475e7467ee6db83057bf65edbabd`. Timings are milliseconds; each cell is
+`0117d76c5688475e7467ee6db83057bf65edbabd` and optimized commit
+`e39d80b11a636e57d5fc7eabffc53bcdcf8d4ec2`, with a clean tracked working tree.
+Timings are milliseconds; each cell is
 **median / p95**. These are synthetic local measurements, not production latency
 guarantees.
 
 | Runtime and fixture | Operation | Before | After |
 | --- | --- | ---: | ---: |
-| Node 24.14.0 / SQLite 3.51.2, 1,000 tools | Second page | 1.582 / 1.996 | 0.762 / 0.951 |
-| Node, 10,000 tools | Second page | 12.221 / 14.231 | 0.937 / 1.079 |
-| Node, 50,000 tools | Second page | 55.618 / 74.977 | 0.947 / 1.246 |
-| Node, 50,000 mixed sources, equal timestamps | Second page | 66.683 / 68.340 | 1.190 / 1.373 |
-| Node, 50,000 tools | Complete screen | 192.580 / 229.796 | 86.099 / 99.817 |
-| Node, 50,000 mixed sources, equal timestamps | Complete screen | 302.691 / 323.018 | 180.463 / 218.718 |
-| Electron 43.4.1 / SQLite 3.53.1, 50,000 tools | Second page | 56.400 / 62.955 | 0.745 / 0.829 |
-| Electron, 50,000 mixed sources, equal timestamps | Second page | 72.979 / 87.302 | 1.170 / 1.671 |
-| Electron, 50,000 tools | Complete screen | 194.235 / 203.816 | 83.289 / 98.792 |
-| Electron, 50,000 mixed sources, equal timestamps | Complete screen | 322.781 / 356.274 | 192.369 / 226.647 |
+| Node 24.14.0 / SQLite 3.51.2, 1,000 tools | Second page | 1.541 / 2.050 | 0.755 / 0.920 |
+| Node, 10,000 tools | Second page | 10.871 / 12.588 | 0.693 / 0.900 |
+| Node, 50,000 tools | Second page | 53.530 / 60.211 | 0.803 / 0.958 |
+| Node, 50,000 mixed sources, equal timestamps | Second page | 65.755 / 68.261 | 1.066 / 1.198 |
+| Node, 50,000 tools | Complete screen | 180.570 / 197.739 | 79.035 / 86.963 |
+| Node, 50,000 mixed sources, equal timestamps | Complete screen | 308.340 / 363.471 | 180.352 / 194.375 |
+| Electron 43.4.1 / SQLite 3.53.1, 50,000 tools | Second page | 59.392 / 76.300 | 0.853 / 1.128 |
+| Electron, 50,000 mixed sources, equal timestamps | Second page | 70.243 / 73.507 | 1.153 / 1.284 |
+| Electron, 50,000 tools | Complete screen | 195.282 / 203.461 | 88.037 / 100.974 |
+| Electron, 50,000 mixed sources, equal timestamps | Complete screen | 314.361 / 345.219 | 187.128 / 207.477 |
 
 On Node, matching second-page searches over 50,000 tools go from **99,900 to 51**
 JavaScript lowercase calls; the mixed-source fixture goes from **99,900 to 153**.
