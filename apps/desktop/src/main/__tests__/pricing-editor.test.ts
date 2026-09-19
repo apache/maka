@@ -816,6 +816,27 @@ describe('PricingEditor', () => {
     await act(async () => harness.root.unmount());
   });
 
+  for (const field of ['cacheRead', 'cacheWrite'] as const) {
+    it(`reveals a collapsed invalid ${field} field when saving`, async () => {
+      const harness = await renderEditor({ load: async () => SNAPSHOT });
+      try {
+        await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+        await click(buttonByText(harness.doc, copy.cacheSection));
+        const input = inputByLabel(harness.doc, field === 'cacheRead' ? copy.cacheReadLabel : copy.cacheWriteLabel);
+        await typeInput(input, 'invalid');
+        await click(buttonByText(harness.doc, copy.cacheSection));
+        await click(buttonByText(harness.doc, copy.save));
+
+        assert.equal(harness.mutations.length, 0);
+        assert.equal(input?.getAttribute('aria-invalid'), 'true');
+        assert.equal(buttonByText(harness.doc, copy.cacheSection)?.getAttribute('aria-expanded'), 'true',
+          'the field preventing save must be revealed');
+      } finally {
+        await act(async () => harness.root.unmount());
+      }
+    });
+  }
+
   it('a Host generation change preserves the draft and requires review after reloading authority (P1.1)', async () => {
     const nextSnapshot: DesktopPricingSnapshot = { ...SNAPSHOT, hostEpoch: 'epoch-2', revision: 1 };
     let loadCall = 0;

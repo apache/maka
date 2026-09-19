@@ -222,3 +222,24 @@ export const ManualExactKey: Story = {
     await userEvent.type(dialog.getByRole('textbox', { name: /^模型键/ }), 'acme:coder-v3');
   },
 };
+
+// Real path: Edit an override → enter an invalid cache price → collapse cache
+// prices → Save. The invalid field must become visible and receive focus.
+export const Validation: Story = {
+  render: () => <PricingTabPanel services={pricingServices(async () => MIXED_SNAPSHOT)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '编辑「zai:glm-4.7」定价' }));
+    const dialog = within(await canvas.findByRole('dialog', { name: '编辑定价' }));
+    const cacheToggle = dialog.getByRole('button', { name: /缓存价格/ });
+    await userEvent.click(cacheToggle);
+    const cacheRead = dialog.getByRole('textbox', { name: /缓存读取/ });
+    await userEvent.type(cacheRead, 'invalid');
+    await userEvent.click(cacheToggle);
+    await userEvent.click(dialog.getByRole('button', { name: '保存' }));
+    await expect(cacheToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(cacheRead).toHaveAttribute('aria-invalid', 'true');
+    await expect(cacheRead).toBeVisible();
+    await waitFor(() => expect(cacheRead).toHaveFocus());
+  },
+};
