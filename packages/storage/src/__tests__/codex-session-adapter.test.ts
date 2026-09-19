@@ -1189,6 +1189,205 @@ describe('CodexSessionAdapter', () => {
     }
   });
 
+  test('lists and imports a thread continued across context hand-off rollouts', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-handoff-root';
+      await seedHandoffRollout(codexHome, { day: '08', sessionId, text: 'opening turn' });
+      await seedHandoffRollout(codexHome, {
+        day: '09',
+        sessionId,
+        childId: 'codex-handoff-child-1',
+        text: 'second window',
+      });
+      const newest = await seedHandoffRollout(codexHome, {
+        day: '10',
+        sessionId,
+        childId: 'codex-handoff-child-2',
+        text: 'third window',
+      });
+      // A separate thread whose own id merely looks like a hand-off name.
+      const lookalikeId = `${sessionId}_lookalike`;
+      await seedHandoffRollout(codexHome, {
+        day: '11',
+        sessionId: lookalikeId,
+        text: 'unrelated thread',
+      });
+
+      // Without a state database the filesystem scan lists each thread once.
+      assert.deepEqual(
+        (await listSessions(new CodexSessionAdapter({ codexHome })))
+          .map((session) => session.id)
+          .sort(),
+        [sessionId, lookalikeId],
+      );
+      // ...and imports the whole family rather than only the opening rollout.
+      assert.deepEqual(
+        (await importedUserMessages(new CodexSessionAdapter({ codexHome }), sessionId)).map(
+          (message) => message.text,
+        ),
+        ['opening turn', 'second window', 'third window'],
+      );
+
+      // Codex points the thread row at its newest hand-off file.
+      await seedStateDatabase(codexHome, [handoffStateRow(sessionId, newest)]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await listSessions(adapter)).map((session) => session.id),
+        [sessionId],
+      );
+
+      const users = await importedUserMessages(adapter, sessionId);
+      assert.deepEqual(
+        users.map((message) => message.text),
+        ['opening turn', 'second window', 'third window'],
+      );
+      assert.equal(new Set(users.map((message) => message.id)).size, users.length);
+      assert.deepEqual(
+        (await importedUserMessages(adapter, lookalikeId)).map((message) => message.text),
+        ['unrelated thread'],
+      );
+    });
+  });
+
+  test('trusts a row that names the opening rollout and walks the store for a hand-off row', async () => {
+    await withCodexHome(async (codexHome) => {
+      const activeId = 'codex-handoff-active';
+      const opening = await seedHandoffRollout(codexHome, {
+        day: '08',
+        sessionId: activeId,
+        text: 'active opening',
+      });
+      await seedHandoffRollout(codexHome, {
+        day: '09',
+        sessionId: activeId,
+        childId: 'codex-handoff-active-child',
+        text: 'active continuation',
+      });
+      const archivedId = 'codex-handoff-archived';
+      await seedHandoffRollout(codexHome, {
+        day: '08',
+        sessionId: archivedId,
+        text: 'archived opening',
+        archived: true,
+      });
+      const archivedNewest = await seedHandoffRollout(codexHome, {
+        day: '09',
+        sessionId: archivedId,
+        childId: 'codex-handoff-archived-child',
+        text: 'archived continuation',
+        archived: true,
+      });
+      await seedStateDatabase(codexHome, [
+        handoffStateRow(activeId, opening),
+        { ...handoffStateRow(archivedId, archivedNewest), archived: true },
+      ]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      // Codex moves the row to every hand-off, so a row still naming the opening
+      // rollout is read on its own, without a walk of the whole store.
+      assert.deepEqual(
+        (await importedUserMessages(adapter, activeId)).map((message) => message.text),
+        ['active opening'],
+      );
+      assert.deepEqual(
+        (await listSessions(adapter, { includeArchived: true }))
+          .map((session) => session.id)
+          .sort(),
+        [activeId, archivedId],
+      );
+      assert.deepEqual(
+        (await importedUserMessages(adapter, archivedId)).map((message) => message.text),
+        ['archived opening', 'archived continuation'],
+      );
+    });
+  });
+
+  test('numbers hand-off lines across the family and tolerates a torn tail still being written', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-handoff-torn';
+      await seedHandoffRollout(codexHome, { day: '08', sessionId, text: 'opening turn' });
+      const newest = await seedHandoffRollout(codexHome, {
+        day: '09',
+        sessionId,
+        childId: 'codex-handoff-torn-child',
+        text: 'still writing',
+      });
+      // Codex is still appending to the newest file.
+      await appendFile(newest, '{"timestamp":"2026-08-09T00:00:02.000Z","type":"event_');
+      await seedStateDatabase(codexHome, [handoffStateRow(sessionId, newest)]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await importedUserMessages(adapter, sessionId)).map((message) => message.text),
+        ['opening turn', 'still writing'],
+      );
+
+      // A corrupt record in a finished file is reported at its family-wide line:
+      // two lines of the opening rollout, then the hand-off's meta, then this.
+      const content = await readFile(newest, 'utf8');
+      const [meta, ...rest] = content.split('\n');
+      await writeFile(newest, [meta, 'not json', ...rest].join('\n'));
+      await assert.rejects(adapter.readSession(sessionId), /at line 4:/);
+    });
+  });
+
+  test('spends one rollout byte budget across a hand-off family', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-handoff-budget';
+      const opening = await seedHandoffRollout(codexHome, {
+        day: '08',
+        sessionId,
+        text: 'opening turn',
+      });
+      const newest = await seedHandoffRollout(codexHome, {
+        day: '09',
+        sessionId,
+        childId: 'codex-handoff-budget-child',
+        text: 'second window',
+      });
+      await seedStateDatabase(codexHome, [handoffStateRow(sessionId, newest)]);
+      const familyBytes = (await stat(opening)).size + (await stat(newest)).size;
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome, maxRolloutBytes: familyBytes - 1 }).readSession(
+          sessionId,
+        ),
+        (error: unknown) =>
+          error instanceof ExternalSessionLimitError &&
+          error.limit.kind === 'transcript_bytes' &&
+          error.limit.max === familyBytes - 1,
+      );
+      assert.equal(
+        (
+          await importedUserMessages(
+            new CodexSessionAdapter({ codexHome, maxRolloutBytes: familyBytes }),
+            sessionId,
+          )
+        ).length,
+        2,
+      );
+    });
+  });
+
+  test('refuses a hand-off rollout whose session_meta names another thread', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-handoff-foreign';
+      await seedHandoffRollout(codexHome, { day: '08', sessionId, text: 'opening turn' });
+      const foreign = await seedHandoffRollout(codexHome, {
+        day: '09',
+        sessionId,
+        childId: 'codex-handoff-foreign-child',
+        metaId: 'codex-someone-else',
+        text: 'not this thread',
+      });
+      await seedStateDatabase(codexHome, [handoffStateRow(sessionId, foreign)]);
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+        /Session id mismatch/,
+      );
+    });
+  });
+
   test('is registered by the internal default registry', async () => {
     await withCodexHome(async (codexHome) => {
       const registry = createExternalSessionAdapterRegistry({ codex: { codexHome } });
@@ -1259,6 +1458,54 @@ async function seedFixtureRollout(
     sessionId,
   );
   return seedRawRollout(codexHome, sessionId, fixture, archived);
+}
+
+async function seedHandoffRollout(
+  codexHome: string,
+  options: {
+    day: string;
+    sessionId: string;
+    text: string;
+    childId?: string;
+    metaId?: string;
+    archived?: boolean;
+  },
+): Promise<string> {
+  const directory = options.archived
+    ? join(codexHome, 'archived_sessions')
+    : join(codexHome, 'sessions', '2026', '08', options.day);
+  await mkdir(directory, { recursive: true });
+  const suffix = options.childId ? `_${options.childId}` : '';
+  const path = join(
+    directory,
+    `rollout-2026-08-${options.day}T00-00-00-${options.sessionId}${suffix}.jsonl`,
+  );
+  const content = minimalRollout(
+    options.metaId ?? options.sessionId,
+    '/workspace/project',
+    options.text,
+  ).replaceAll('2026-08-08', `2026-08-${options.day}`);
+  await writeFile(path, content);
+  return path;
+}
+
+function handoffStateRow(id: string, rolloutPath: string): StateRow {
+  return {
+    id,
+    rolloutPath,
+    cwd: '/workspace/project',
+    name: id,
+    createdAtMs: 1000,
+    updatedAtMs: 3000,
+    archived: false,
+    source: 'vscode',
+  };
+}
+
+async function importedUserMessages(adapter: CodexSessionAdapter, sessionId: string) {
+  return (await adapter.readSession(sessionId)).messages.filter(
+    (message) => message.type === 'user',
+  );
 }
 
 async function seedMinimalRollout(
