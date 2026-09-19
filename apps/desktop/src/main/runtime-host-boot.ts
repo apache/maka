@@ -372,6 +372,14 @@ const workspaceRoot = join(
   "workspaces",
   e2eFixture?.workspaceName ?? "default",
 );
+// Declared before showDesktopMessageBox: storage-root repair (and any other
+// pre-window dialog) can run while the rest of this module is still awaiting
+// startup steps. Closing over a later `const` hits the temporal dead zone.
+const revealMode = resolveWindowRevealMode(
+  Boolean(e2eFixture) || isIsolatedE2e,
+  process.env.MAKA_E2E_SHOW_WINDOW === "1",
+  app.isPackaged,
+);
 const desktopDiagnostics: DesktopDiagnosticsDeps = {
   environment: () =>
     captureDesktopDiagnosticEnvironment({
