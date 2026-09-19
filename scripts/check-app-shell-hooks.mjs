@@ -133,7 +133,6 @@ export const ALLOWED = {
     // replaces put three `useState`, four effects and a `useStableActions`
     // facade on this fiber.
     useSessionNavigationReads: 1,
-    useSessionCollaborationDialog: 1,
     useSessionSettingIntent: 1,
     useShellAppearance: 1,
     useShellChatModel: 1,

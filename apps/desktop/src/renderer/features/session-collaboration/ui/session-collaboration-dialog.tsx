@@ -30,31 +30,26 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { reportUnexpectedError } from './application/contracts/operation-diagnostics.js';
+import { reportUnexpectedError } from '../../../application/contracts/operation-diagnostics.js';
+import { useSettingsNavigation } from '../../../application/contracts/settings-presentation/settings-navigation.js';
 import type {
   CollaborationAccessQueryResult,
-  CollaborationInvitationPrepareResult,
   SessionCollaborationGrant,
   SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
-import { getSessionCollaborationCopy } from './locales/session-collaboration-copy.js';
+import { getSessionCollaborationCopy } from '../../../locales/session-collaboration-copy.js';
 import {
   describeTurnRequestIntent,
   turnRequestStateLabel,
-  SessionGuestAliasAction,
-} from './features/session-collaboration';
+} from '../model/turn-request-inbox.js';
+import { SessionGuestAliasAction } from './session-collaboration-alias-action.js';
+import { useSessionCollaborationServices } from '../services-context.js';
+import type { PreparedSessionInvitation } from '../ports.js';
+import type { SessionCollaborationDialogTarget } from '../model/dialog-projection.js';
 
-type Props = {
-  readonly target?: {
-    readonly sessionId: string;
-    readonly sessionName: string;
-    readonly requiresRemoteAccess: boolean;
-  };
-  readonly onOpenRemoteAccessSettings: () => void;
+type Props = SessionCollaborationDialogTarget & {
   readonly onClose: () => void;
 };
-
-type ShareSessionDialogProps = NonNullable<Props['target']> & Omit<Props, 'target'>;
 
 type CollaborationAuthorityState =
   | 'loading'
@@ -62,41 +57,25 @@ type CollaborationAuthorityState =
   | 'remote_access_off'
   | 'unavailable';
 
-type PreparedInvitation = CollaborationInvitationPrepareResult & {
-  readonly connectivity:
-    | { readonly kind: 'peer'; readonly coordinationRelayCount: number }
-    | { readonly kind: 'configured' };
-};
-
 export function SessionCollaborationDialog(props: Props) {
-  if (!props.target) return null;
-  return (
-    <ShareSessionDialog
-      {...props.target}
-      onOpenRemoteAccessSettings={props.onOpenRemoteAccessSettings}
-      onClose={props.onClose}
-    />
-  );
-}
-
-function ShareSessionDialog(props: ShareSessionDialogProps) {
+  const services = useSessionCollaborationServices();
+  const settingsNavigation = useSettingsNavigation();
   const copy = getSessionCollaborationCopy(useUiLocale());
   const toast = useToast();
   const [preset, setPreset] = useState<'observe' | 'request_turn'>('observe');
   const [access, setAccess] = useState<CollaborationAccessQueryResult>();
-  const [invitation, setInvitation] = useState<PreparedInvitation>();
+  const [invitation, setInvitation] = useState<PreparedSessionInvitation>();
   const [turnRequests, setTurnRequests] = useState<readonly SessionTurnAccessRequest[]>();
   const [authorityState, setAuthorityState] = useState<CollaborationAuthorityState>('loading');
   const [working, setWorking] = useState(false);
 
   async function readProjection() {
     if (props.requiresRemoteAccess) {
-      const remoteAccess = await window.maka.localRuntimeHostRemoteAccess.getSnapshot();
-      if (remoteAccess.state !== 'on') return { kind: 'remote_access_off' } as const;
+      if (!(await services.isLocalRemoteAccessEnabled())) return { kind: 'remote_access_off' } as const;
     }
     const [nextAccess, nextRequests] = await Promise.all([
-      window.maka.sessionCollaboration.getAccess(props.sessionId),
-      window.maka.sessionCollaboration.getTurnRequests(props.sessionId),
+      services.getAccess(props.sessionId),
+      services.getTurnRequests(props.sessionId),
     ]);
     return {
       kind: 'available',
@@ -132,7 +111,7 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
 
   useEffect(() => {
     let disposed = false;
-    let timer: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
         const projection = await readProjection();
@@ -140,15 +119,15 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
       } catch {
         if (!disposed) setAuthorityState('unavailable');
       } finally {
-        if (!disposed) timer = window.setTimeout(() => void poll(), 2_000);
+        if (!disposed) timer = setTimeout(() => void poll(), 2_000);
       }
     };
     void poll();
     return () => {
       disposed = true;
-      if (timer !== undefined) window.clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
     };
-  }, [props.sessionId, props.requiresRemoteAccess]);
+  }, [props.sessionId, props.requiresRemoteAccess, services]);
 
   async function createInvitation(allowInsecure = false): Promise<void> {
     setWorking(true);
@@ -159,13 +138,12 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
       }
       if (authorityState !== 'available') return;
       if (props.requiresRemoteAccess) {
-        const access = await window.maka.localRuntimeHostRemoteAccess.getSnapshot();
-        if (access.state !== 'on') {
+        if (!(await services.isLocalRemoteAccessEnabled())) {
           openRemoteAccessSettings();
           return;
         }
       }
-      const created = await window.maka.sessionCollaboration.prepareInvitation(
+      const created = await services.prepareInvitation(
         props.sessionId,
         preset,
         allowInsecure,
@@ -193,13 +171,13 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
   function openRemoteAccessSettings(): void {
     props.onClose();
     toast.info(copy.enableRemoteAccessTitle, copy.enableRemoteAccessBody);
-    props.onOpenRemoteAccessSettings();
+    settingsNavigation.openSettingsSection('projects');
   }
 
   async function copyInvitation(): Promise<void> {
     if (!invitation) return;
     try {
-      await navigator.clipboard.writeText(invitation.invitationCode);
+      await services.writeInvitationClipboard(invitation.invitationCode);
       toast.success(copy.copied);
     } catch (error) {
       reportUnexpectedError('session-collaboration:copy', error);
@@ -210,7 +188,7 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
   async function revokePrincipal(principalId: string): Promise<void> {
     setWorking(true);
     try {
-      await window.maka.sessionCollaboration.revokePrincipal(props.sessionId, principalId);
+      await services.revokePrincipal(props.sessionId, principalId);
       await refresh();
     } catch (error) {
       reportUnexpectedError('session-collaboration:revoke-principal', error);
@@ -223,7 +201,7 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
   async function revokeGrant(grant: SessionCollaborationGrant): Promise<void> {
     setWorking(true);
     try {
-      await window.maka.sessionCollaboration.revokeGrant(
+      await services.revokeGrant(
         props.sessionId,
         grant.grantId,
       );
@@ -242,7 +220,7 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
   ): Promise<void> {
     setWorking(true);
     try {
-      await window.maka.sessionCollaboration.decideTurnRequest(
+      await services.decideTurnRequest(
         props.sessionId,
         request.requestId,
         decision,

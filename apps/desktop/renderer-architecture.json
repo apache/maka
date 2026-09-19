@@ -110,7 +110,6 @@
     "src/renderer/remote-project-directory-dialog.tsx",
     "src/renderer/scroll-motion-policy.ts",
     "src/renderer/session-catalog-state.ts",
-    "src/renderer/session-collaboration-dialog.tsx",
     "src/renderer/session-copy-attempt.ts",
     "src/renderer/session-error-presentation.ts",
     "src/renderer/session-event-health.ts",
@@ -290,6 +289,13 @@
       "symbol": "useOverlaysController",
       "owner": "src/renderer/features/overlays/ui/overlays-root.tsx",
       "ownerSymbol": "OverlaysRoot",
+      "count": 1
+    },
+    {
+      "implementation": "src/renderer/features/session-collaboration/controller/use-session-collaboration-dialog.ts",
+      "symbol": "useSessionCollaborationDialog",
+      "owner": "src/renderer/features/session-collaboration/ui/session-collaboration-dialog-root.tsx",
+      "ownerSymbol": "SessionCollaborationDialogRoot",
       "count": 1
     },
     {
@@ -712,7 +718,7 @@
         "nonTriviaTokens": 1273
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 64,
+        "importDeclarations": 63,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -757,7 +763,6 @@
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
           "useRef": 16,
-          "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
@@ -827,7 +832,6 @@
           "./pending-session-view": 1,
           "./plan-mode-panel": 1,
           "./scroll-motion-policy": 1,
-          "./session-collaboration-dialog": 1,
           "./session-workspace-errors": 1,
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
@@ -861,8 +865,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 100,
-        "nonTriviaTokens": 13135
+        "importSpecifiers": 99,
+        "nonTriviaTokens": 13121
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -2016,41 +2020,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./observable-state.js": 1,
-          "react": 1
-        }
-      },
-      "src/renderer/session-collaboration-dialog.tsx": {
-        "bridgePaths": {
-          "window.maka.localRuntimeHostRemoteAccess.getSnapshot": 2,
-          "window.maka.sessionCollaboration.decideTurnRequest": 1,
-          "window.maka.sessionCollaboration.getAccess": 1,
-          "window.maka.sessionCollaboration.getTurnRequests": 1,
-          "window.maka.sessionCollaboration.prepareInvitation": 1,
-          "window.maka.sessionCollaboration.revokeGrant": 1,
-          "window.maka.sessionCollaboration.revokePrincipal": 1
-        },
-        "environmentCapabilities": {
-          "navigator.clipboard.writeText": 1,
-          "window.clearTimeout": 1,
-          "window.setTimeout": 1
-        },
-        "hookCalls": {
-          "useEffect": 1,
-          "useState": 6,
-          "useToast": 1,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./application/contracts/operation-diagnostics.js": 1,
-          "./features/session-collaboration": 1,
-          "./locales/session-collaboration-copy.js": 1,
-          "@astryxdesign/core": 1,
-          "@astryxdesign/core/Dialog": 1,
-          "@astryxdesign/core/Layout": 1,
-          "@maka/ui": 1,
           "react": 1
         }
       },
