@@ -275,16 +275,12 @@ async function expectOrdinal(label: string, total: number) {
   const badge = badges.find((candidate) => candidate.textContent?.trim() === label);
   expect(badge).toBeTruthy();
   // A pin belongs at its own excerpt's end: it must hover just above where
-  // one of the painted ranges — the note in flight or a staged quote's —
-  // finishes, so it never covers the text it marks.
+  // one of the painted ranges finishes, so it never covers the text it marks.
   const ends: { x: number; y: number }[] = [];
-  for (const name of ['maka-quote-annotate', 'maka-quote-staged'] as const) {
-    const highlight = CSS.highlights?.get(name);
-    for (const range of highlight ? [...highlight] : []) {
-      const rects = (range as Range).getClientRects();
-      const last = rects[rects.length - 1];
-      if (last) ends.push({ x: last.right, y: last.top });
-    }
+  for (const range of CSS.highlights?.get('maka-quote-mark') ?? []) {
+    const rects = (range as Range).getClientRects();
+    const last = rects[rects.length - 1];
+    if (last) ends.push({ x: last.right, y: last.top });
   }
   const box = (badge as HTMLElement).getBoundingClientRect();
   const centerX = box.left + box.width / 2;

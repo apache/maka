@@ -92,7 +92,7 @@ test('a note is marked on the chip that carries it', async () => {
   assert.equal(withoutNote.querySelectorAll('.maka-quote-chip-comment-icon').length, 0);
 });
 
-test('a collapsed chip describes itself with the structured read', async () => {
+test('the chip points its description at the structured read', async () => {
   const container = await render(
     <QuoteRefChip quote={{ ...QUOTE, comment: 'noted' }} />,
   );
