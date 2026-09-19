@@ -1182,7 +1182,7 @@ function chatItemFromContent(
   };
 }
 
-function timelineItemKey(item: TurnTimelineItem): string {
+export function timelineItemKey(item: TurnTimelineItem): string {
   return item.kind === 'tools' ? `tool\0${item.items[0]!.toolUseId}` : `${item.kind}\0${item.messageId}`;
 }
 
