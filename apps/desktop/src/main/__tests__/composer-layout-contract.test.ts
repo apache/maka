@@ -38,10 +38,10 @@ function rule(selector: string): string {
 }
 
 describe('composer footer layout', () => {
-  it('lets the left footer shrink without growing its wrapper', () => {
+  it('allocates the remaining footer width to the left controls', () => {
     const footerLeft = rule('.maka-composer-astryx div:has(> .maka-composer-left-controls)');
     assert.match(footerLeft, /min-width:\s*0;/u);
-    assert.doesNotMatch(footerLeft, /flex:/u);
+    assert.match(footerLeft, /flex:\s*1\s+1\s+0;/u);
   });
 
   it('keeps model controls on one row and permits long labels to ellipsize', () => {
@@ -51,7 +51,7 @@ describe('composer footer layout', () => {
 
     const modelSelection = rule('.maka-composer-left-controls .maka-model-selection-controls');
     assert.match(modelSelection, /min-width:\s*0;/u);
-    assert.match(modelSelection, /flex:\s*0\s+1\s+auto;/u);
+    assert.match(modelSelection, /flex:\s*1\s+1\s+auto;/u);
     assert.match(modelSelection, /max-width:\s*100%;/u);
 
     const modelText = rule('.maka-composer-model-chip-text');

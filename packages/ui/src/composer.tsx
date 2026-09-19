@@ -2489,9 +2489,8 @@ function ContextUsageAction(props: {
       label={copy.systemNotes.contextUsageOpen}
       tooltip={tooltip}
       onClick={props.onOpen}
-      aria-busy={props.pending || undefined}
     >
-      <span className="maka-context-usage-value">{label}</span>
+      <span className="maka-context-usage-value" aria-busy={props.pending || undefined}>{label}</span>
     </UiButton>
   );
 }

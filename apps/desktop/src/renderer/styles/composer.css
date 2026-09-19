@@ -445,11 +445,23 @@
   min-width: 0;
   max-width: 100%;
 }
+/* Selector's className belongs to the trigger INSIDE its Field. The Field
+   is the model group's flex item, so its automatic content minimum must be
+   released here for the label to yield space to usage, branch, and send. */
+.maka-composer-left-controls .maka-model-selection-controls > .astryx-field:has(.maka-model-switcher-trigger, .maka-new-chat-model-selector) {
+  flex: 0 1 auto;
+  min-width: 100px;
+  max-width: 220px;
+}
 .maka-composer-left-controls .maka-model-switcher-trigger,
 .maka-composer-left-controls .maka-new-chat-model-selector {
-  flex: 0 1 auto;
-  min-width: 72px;
-  max-width: 220px;
+  min-width: 0;
+  max-width: 100%;
+}
+/* Keep the model family and version visible in the closed Composer picker. */
+.maka-composer-left-controls .maka-model-switcher-trigger .modelPickerOptionLabel,
+.maka-composer-left-controls .maka-new-chat-model-selector .modelPickerOptionLabel {
+  direction: ltr;
 }
 .maka-composer-model-chip-text {
   min-width: 0;

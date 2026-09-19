@@ -111,7 +111,9 @@ test('the context usage action keeps one control while its reading resolves', as
       'button[aria-label="Open usage trace"]',
     );
     assert.ok(pendingAction);
-    assert.equal(pendingAction.getAttribute('aria-busy'), 'true');
+    const value = pendingAction.querySelector('.maka-context-usage-value');
+    assert.ok(value);
+    assert.equal(value.getAttribute('aria-busy'), 'true');
     assert.equal(pendingAction.textContent?.trim(), '--%');
     assert.ok(pendingAction.querySelector('.maka-context-usage-value'));
 
@@ -132,7 +134,8 @@ test('the context usage action keeps one control while its reading resolves', as
       'button[aria-label="Open usage trace"]',
     );
     assert.equal(resolvedAction, pendingAction);
-    assert.equal(resolvedAction?.getAttribute('aria-busy'), null);
+    assert.equal(resolvedAction?.querySelector('.maka-context-usage-value'), value);
+    assert.equal(value.getAttribute('aria-busy'), null);
     assert.equal(resolvedAction?.textContent?.trim(), '40%');
   } finally {
     await act(() => root.unmount());
