@@ -91,6 +91,15 @@ const BARE_QUOTE: QuoteRef = {
   sourceTurnId: 'turn-4',
 };
 
+// Long enough that the sent chip must clip; expansion is the surface that
+// keeps the full excerpt readable.
+const LONG_QUOTE: QuoteRef = {
+  text: '接口已跑通，前 5 次判断成功；第 6 次被 Vercel 的免费层限流拦截，记录显示未送到 Jev。程序已停止，没有自动重试。'.repeat(
+    3,
+  ),
+  sourceTurnId: 'turn-3',
+};
+
 const baseComposer: ComposerProps = {
   draftKey: 'storybook-quote-annotations',
   onSend: noop,
@@ -383,6 +392,38 @@ export const TranscriptQuoteGesture: Story = {
     expect(
       reopened.querySelector('[contenteditable="true"]')?.textContent,
     ).toBe('按 debug 技能核对限流规则，再判断是否能降速继续。');
+
+    // The bar keeps the one-click path from before annotations existed:
+    // 直接引用 stages the excerpt as a token immediately, no panel involved.
+    await userEvent.click(panelButton(reopened, '取消'));
+    await selectExcerpt('turn-3', '记录显示未送到 Jev');
+    await userEvent.click(
+      await waitFor(() => {
+        const button = [
+          ...document.querySelectorAll<HTMLElement>('.maka-quote-actions button'),
+        ].find((candidate) => candidate.textContent === '直接引用');
+        expect(button).toBeTruthy();
+        return button!;
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll('.maka-composer-quote-token').length,
+      ).toBe(2),
+    );
+    expect(document.querySelector('.maka-quote-annotation-layer')).toBeNull();
+
+    // 取消 abandons a fresh annotation without staging anything.
+    await selectExcerpt('turn-3', '程序已停止');
+    await userEvent.click(await quoteActionButton());
+    const cancelled = await visiblePanel();
+    await userEvent.click(panelButton(cancelled, '取消'));
+    await waitFor(() =>
+      expect(document.querySelector('.maka-quote-annotation-layer')).toBeNull(),
+    );
+    expect(
+      document.querySelectorAll('.maka-composer-quote-token').length,
+    ).toBe(2);
   },
 };
 
@@ -470,7 +511,7 @@ export const SentQuoteWithNote: Story = {
               'u-quote',
               't-quote',
               '我会按 debug 技能核对限流规则，再判断是否能降速继续。',
-              [ANNOTATED_QUOTE, BARE_QUOTE],
+              [ANNOTATED_QUOTE, BARE_QUOTE, LONG_QUOTE],
             ),
           ]}
         />
@@ -490,5 +531,20 @@ export const SentQuoteWithNote: Story = {
         ),
       ).toHaveLength(1),
     );
+
+    // The long quote stays fully readable: clipping gives the chip's inner
+    // button an expand affordance (aria-expanded), and clicking expands the
+    // excerpt in place.
+    const longChipButton = await waitFor(() => {
+      const candidate = document.querySelector<HTMLElement>('.maka-quote-chip [aria-expanded]');
+      expect(candidate).toBeTruthy();
+      return candidate!;
+    });
+    const longChip = longChipButton.closest('.maka-quote-chip')!;
+    await userEvent.click(longChipButton);
+    await waitFor(() => {
+      expect(longChip.classList.contains('maka-quote-chip-expanded')).toBe(true);
+      expect(longChipButton.getAttribute('aria-expanded')).toBe('true');
+    });
   },
 };

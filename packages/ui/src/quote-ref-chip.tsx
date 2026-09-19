@@ -17,10 +17,12 @@
  * under the License.
  */
 
+import { useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { MetadataList, MetadataListItem, Text, VStack } from '@astryxdesign/core';
 import { MessageSquareQuote, MessagesSquare, TextQuote } from './icons.js';
+import { cn } from './utils.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { QuoteRef } from '@maka/core/events';
 import { useUiLocale } from './locale-context.js';
@@ -75,6 +77,11 @@ export function QuoteHoverCardContent(props: { quote: QuoteRef }) {
 export function QuoteRefChip(props: { quote: QuoteRef }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
+  const [expanded, setExpanded] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  // Measure the clipped text node itself — Astryx Button wraps children in an
+  // internal label span, so Button.root scrollWidth no longer reflects ellipsis.
+  const measureRef = useRef<HTMLSpanElement>(null);
   const label = props.quote.sourceSessionId && props.quote.sourceSessionName
     ? copy.sessionSnapshotLabel(props.quote.sourceSessionName)
     : props.quote.label;
@@ -82,25 +89,55 @@ export function QuoteRefChip(props: { quote: QuoteRef }) {
   const full = label ? `${label}: ${displayText}` : displayText;
   const provenance = quoteProvenanceSummary(props.quote, locale);
   const fullWithProvenance = provenance ? `${full} · ${provenance}` : full;
+
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    if (!el || expanded) return;
+    setClipped(el.scrollWidth > el.clientWidth + 1);
+  }, [expanded, displayText, label, provenance]);
+
+  const canExpand = clipped || expanded;
+  const a11yLabel = canExpand
+    ? `${expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel}: ${fullWithProvenance}`
+    : fullWithProvenance;
   const SourceIcon = props.quote.sourceSessionId ? MessagesSquare : TextQuote;
 
   const chip = (
-    <span className="maka-quote-chip">
-      <SourceIcon className="maka-quote-chip-icon" aria-hidden="true" />
+    <span
+      className={cn(
+        'maka-quote-chip',
+        expanded ? 'maka-quote-chip-expanded' : 'maka-quote-chip-collapsed',
+      )}
+    >
+      <SourceIcon
+        className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
+        aria-hidden="true"
+      />
       {/* Marks that the excerpt carries a note. The note itself lives in the
           hover card and the model-facing content, not in the chip's own line. */}
       {props.quote.comment ? (
-        <MessageSquareQuote className="maka-quote-chip-comment-icon" aria-hidden="true" />
+        <MessageSquareQuote
+          className={cn('maka-quote-chip-comment-icon', expanded && 'maka-quote-chip-icon-expanded')}
+          aria-hidden="true"
+        />
       ) : null}
       <Button
         type="button"
         variant="ghost"
         size="sm"
-        label={fullWithProvenance}
+        label={a11yLabel}
         className="maka-quote-chip-text"
-        tabIndex={-1}
+        tabIndex={canExpand ? undefined : -1}
+        aria-expanded={canExpand ? expanded : undefined}
+        onClick={canExpand ? () => setExpanded((open) => !open) : undefined}
       >
-        <span className="maka-quote-chip-text-body">
+        <span
+          ref={measureRef}
+          className={cn(
+            'maka-quote-chip-text-body',
+            !expanded && 'maka-quote-chip-text-clipped',
+          )}
+        >
           {label ? <span className="maka-quote-chip-label">{label} </span> : null}
           {displayText}
           {provenance ? ` · ${provenance}` : null}

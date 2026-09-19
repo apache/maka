@@ -1220,7 +1220,12 @@ function formatQuoteRefs(quotes: readonly QuoteRef[]): string {
       ].filter((attribute): attribute is string => attribute !== undefined);
       const opening =
         attributes.length > 0 ? `<quoted_excerpt ${attributes.join(' ')}>` : '<quoted_excerpt>';
-      return `${opening}\n${q.text}\n</quoted_excerpt>`;
+      // A literal closing tag inside the excerpt would end the block early
+      // and let the text that follows open a second, forged excerpt — one
+      // whose comment attribute reads as the user's own words. The body is
+      // otherwise verbatim, so only the tag boundary itself is neutralised.
+      const body = q.text.replace(/<(\/?)quoted_excerpt/gi, '\\u003c$1quoted_excerpt');
+      return `${opening}\n${body}\n</quoted_excerpt>`;
     })
     .join('\n');
 }
