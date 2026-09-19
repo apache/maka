@@ -42,8 +42,12 @@ export interface QuoteCommentPanelProps {
   submitLabel: string;
   /** Commits the quote with no note, discarding whatever is written below. */
   skipLabel: string;
+  /** Leaves without committing anything — the fresh-annotation exit the two
+   *  commit buttons cannot offer. */
+  cancelLabel?: string;
   onSubmit(comment: string): void;
   onSkip(): void;
+  onCancel?(): void;
 }
 
 /**
@@ -97,6 +101,9 @@ export function QuoteCommentPanel(props: QuoteCommentPanelProps) {
         onSubmit={submit}
       />
       <HStack gap={2} hAlign="end">
+        {props.cancelLabel ? (
+          <UiButton variant="ghost" size="sm" label={props.cancelLabel} onClick={props.onCancel} />
+        ) : null}
         <UiButton variant="ghost" size="sm" label={props.skipLabel} onClick={props.onSkip} />
         <UiButton size="sm" label={props.submitLabel} onClick={submit} />
       </HStack>
