@@ -283,12 +283,14 @@
   min-width: 0;
 }
 
-/* Release Astryx's footer-left wrapper's intrinsic minimum. Its own default
-   flex sizing keeps the footer compact; assigning flex-grow here would also
-   change the slot's size instead of only allowing horizontal shrink. */
+/* Astryx's footer slots otherwise size from their content. Give the left
+   controls only the space left after the fixed send slot and footer gap. */
 .maka-composer-astryx div:has(> .maka-composer-left-controls) {
+  flex: 1 1 0;
   min-width: 0;
-  max-width: 100%;
+}
+.maka-composer-astryx div:has(> .maka-composer-left-controls) + div {
+  flex: 0 0 auto;
 }
 
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */
@@ -439,14 +441,14 @@
 }
 /* Model + thinking pair lives in left-controls (after permission), not send. */
 .maka-composer-left-controls .maka-model-selection-controls {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
 }
 .maka-composer-left-controls .maka-model-switcher-trigger,
 .maka-composer-left-controls .maka-new-chat-model-selector {
   flex: 0 1 auto;
-  min-width: 100px;
+  min-width: 72px;
   max-width: 220px;
 }
 .maka-composer-model-chip-text {
