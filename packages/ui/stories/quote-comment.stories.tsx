@@ -133,9 +133,21 @@ function applyComment(quotes: QuoteRef[], index: number, comment: string): Quote
   });
 }
 
+const REPLY_TURN: StoredMessage = {
+  type: 'assistant',
+  id: 'a-3',
+  turnId: 'turn-3',
+  ts: NOW,
+  text: ASSISTANT_REPLY,
+  modelId: 'claude-sonnet-4-5',
+};
+
 /** The loop the app wires: select → annotate → stage → reopen the note over
  *  the excerpt itself. Quotes live in story state the way AppShell holds them. */
-function TranscriptQuoteLoop(props: { initialQuotes?: QuoteRef[] }) {
+function TranscriptQuoteLoop(props: {
+  initialQuotes?: QuoteRef[];
+  messages?: ChatViewProps['messages'];
+}) {
   const chatViewRef = useRef<ChatViewHandle>(null);
   const [quotes, setQuotes] = useState<QuoteRef[]>(props.initialQuotes ?? []);
   return (
@@ -165,16 +177,7 @@ function TranscriptQuoteLoop(props: { initialQuotes?: QuoteRef[] }) {
         {...baseChat}
         handleRef={chatViewRef}
         pendingQuoteCount={quotes.length}
-        messages={[
-          {
-            type: 'assistant',
-            id: 'a-3',
-            turnId: 'turn-3',
-            ts: NOW,
-            text: ASSISTANT_REPLY,
-            modelId: 'claude-sonnet-4-5',
-          },
-        ]}
+        messages={props.messages ?? [REPLY_TURN]}
         onQuoteSelection={(selection) =>
           setQuotes((current) => [
             ...current,
@@ -193,14 +196,87 @@ function TranscriptQuoteLoop(props: { initialQuotes?: QuoteRef[] }) {
   );
 }
 
-function needleTextNode(): Text | null {
-  const turn = document.querySelector('[data-turn-id="turn-3"]');
-  if (!turn) return null;
-  const walker = document.createTreeWalker(turn, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if ((node.nodeValue ?? '').includes('接口已跑通')) return node as Text;
-  }
-  return null;
+/** Selects the excerpt once the turn's DOM has stopped being replaced — the
+ *  virtualizer's first-measure churn and prop-driven re-renders both swap the
+ *  turn's nodes out, and a range over replaced nodes collapses on sight. The
+ *  range is built and added inside the same poll as the stability check, so a
+ *  render committed in the hand-off is caught by the selection itself going
+ *  empty rather than surfacing later as a missing action bar. */
+async function selectExcerpt(turnId: string, needle: string): Promise<void> {
+  await waitFor(
+    async () => {
+      const firstTurn = document.querySelector(`[data-turn-id="${turnId}"]`);
+      const first = firstTurn ? findQuoteTextRange(firstTurn as HTMLElement, needle) : null;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const secondTurn = document.querySelector(`[data-turn-id="${turnId}"]`);
+      const second = secondTurn ? findQuoteTextRange(secondTurn as HTMLElement, needle) : null;
+      expect(
+        firstTurn !== null &&
+          firstTurn === secondTurn &&
+          first !== null &&
+          second !== null &&
+          first.startContainer === second.startContainer &&
+          first.endContainer === second.endContainer,
+      ).toBe(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(second as Range);
+      expect((selection?.toString().length ?? 0) > 0).toBe(true);
+    },
+    { timeout: 8000 },
+  );
+}
+
+/** The floating 引用 action above the settled selection. */
+async function quoteActionButton(): Promise<HTMLElement> {
+  // The hook holds the bar back until the selection has been quiet for its
+  // full settle window, so this wait needs room well beyond a plain render.
+  return waitFor(
+    () => {
+      const button = [...document.querySelectorAll<HTMLElement>('.maka-quote-actions button')].find(
+        (candidate) => candidate.textContent === '引用',
+      );
+      expect(button).toBeTruthy();
+      return button as HTMLElement;
+    },
+    { timeout: 5000 },
+  );
+}
+
+function panelButton(panel: HTMLElement, label: string): HTMLElement {
+  const button = [...panel.querySelectorAll('button')].find(
+    (candidate) => candidate.textContent === label,
+  );
+  expect(button).toBeTruthy();
+  return button as HTMLElement;
+}
+
+function typeNote(panel: HTMLElement, note: string) {
+  const field = panel.querySelector('[contenteditable="true"]');
+  expect(field).toBeTruthy();
+  // The layer's mousedown preventDefault keeps userEvent's focus-driven
+  // typing from reaching the field; drive the editable's input directly.
+  field!.textContent = note;
+  field!.dispatchEvent(new InputEvent('input', { bubbles: true }));
+}
+
+/** The ordinal pinned at the excerpt's end while a note is being written:
+ *  the staged slot's number, on the text itself rather than on the card. */
+async function expectOrdinal(label: string) {
+  const badge = await waitFor(() => {
+    const el = document.querySelector<HTMLElement>('.maka-quote-ordinal');
+    expect(el?.checkVisibility()).toBe(true);
+    return el as HTMLElement;
+  });
+  expect(badge.textContent?.trim()).toBe(label);
+  const highlight = CSS.highlights?.get('maka-quote-annotate');
+  const range = highlight ? ([...highlight][0] as Range | undefined) : undefined;
+  const rects = range?.getClientRects();
+  const last = rects?.[rects.length - 1];
+  expect(last).toBeTruthy();
+  const box = badge.getBoundingClientRect();
+  expect(Math.abs(box.top + box.height / 2 - (last!.top + last!.height / 2))).toBeLessThan(16);
+  expect(Math.abs(box.left + box.width / 2 - last!.right)).toBeLessThan(24);
 }
 
 async function visiblePanel(): Promise<HTMLElement> {
@@ -307,47 +383,11 @@ export const TranscriptQuoteGesture: Story = {
   play: async () => {
     // The selection is the only source of truth — restoring a real Range over
     // the excerpt is what a user's drag produces.
-    const turn = await waitFor(() => {
-      const el = document.querySelector('[data-turn-id="turn-3"]');
-      expect(el).toBeTruthy();
-      return el as HTMLElement;
-    });
-    // The transcript's first renders replace the turn's text nodes while the
-    // virtualizer measures; a range over a node that is about to be replaced
-    // collapses with it. Wait until the excerpt's node has been quiet for
-    // longer than the hook's 350ms settle, so the range it selects still
-    // points at live DOM when the quote is read.
-    await waitFor(
-      async () => {
-        const first = needleTextNode();
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        expect(first !== null && first === needleTextNode()).toBe(true);
-      },
-      { timeout: 8000 },
-    );
-    const range = findQuoteTextRange(turn, ASSISTANT_REPLY);
-    expect(range).toBeTruthy();
-    window.getSelection()?.addRange(range as Range);
-    const quoteAction = await waitFor(() => {
-      const button = [...document.querySelectorAll('button')].find(
-        (candidate) => candidate.textContent === '引用',
-      );
-      expect(button).toBeTruthy();
-      return button as HTMLElement;
-    });
-    await userEvent.click(quoteAction);
+    await selectExcerpt('turn-3', ASSISTANT_REPLY);
+    await userEvent.click(await quoteActionButton());
     const panel = await visiblePanel();
-    const noteField = panel.querySelector('[contenteditable="true"]');
-    expect(noteField).toBeTruthy();
-    // The layer's mousedown preventDefault keeps userEvent's focus-driven
-    // typing from reaching the field; drive the editable's input directly.
-    noteField!.textContent = '按 debug 技能核对限流规则，再判断是否能降速继续。';
-    noteField!.dispatchEvent(new InputEvent('input', { bubbles: true }));
-    const submit = [...panel.querySelectorAll('button')].find(
-      (candidate) => candidate.textContent === '引用',
-    );
-    expect(submit).toBeTruthy();
-    await userEvent.click(submit as HTMLElement);
+    typeNote(panel, '按 debug 技能核对限流规则，再判断是否能降速继续。');
+    await userEvent.click(panelButton(panel, '引用'));
     const token = await waitFor(() => {
       const el = document.querySelector('.maka-composer-quote-token');
       expect(el).toBeTruthy();
@@ -359,6 +399,71 @@ export const TranscriptQuoteGesture: Story = {
     expect(
       reopened.querySelector('[contenteditable="true"]')?.textContent,
     ).toBe('按 debug 技能核对限流规则，再判断是否能降速继续。');
+  },
+};
+
+const SECOND_REPLY =
+  '第二轮我会按 debug 技能核对限流规则，再判断是否能降速继续，并补一轮端到端验证。';
+const SECOND_TURN: StoredMessage = {
+  type: 'assistant',
+  id: 'a-4',
+  turnId: 'turn-4',
+  ts: NOW,
+  text: SECOND_REPLY,
+  modelId: 'claude-sonnet-4-5',
+};
+
+// Real path, several annotations at once: each fresh note is numbered with
+// the slot it will take, and each staged token's editor reopens at its own
+// excerpt carrying that quote's own ordinal — the marker sits on the text,
+// not on the card.
+export const TranscriptTwoAnnotations: Story = {
+  render: () => (
+    <Frame>
+      <div style={{ padding: '0 24px', width: '100%', display: 'flex' }}>
+        <TranscriptQuoteLoop messages={[REPLY_TURN, SECOND_TURN]} />
+      </div>
+    </Frame>
+  ),
+  play: async () => {
+    // First annotation on the earlier reply takes the first free slot.
+    await selectExcerpt('turn-3', '第 6 次被 Vercel 的免费层限流拦截');
+    await userEvent.click(await quoteActionButton());
+    const firstPanel = await visiblePanel();
+    await expectOrdinal('1');
+    typeNote(firstPanel, '限流这段先核');
+    await userEvent.click(panelButton(firstPanel, '引用'));
+    // Staging the first token re-renders the transcript (pendingQuoteCount);
+    // select the next excerpt only once that churn has landed, or the new
+    // range collapses on the text nodes it replaces.
+    await waitFor(() =>
+      expect(document.querySelectorAll('.maka-composer-quote-token').length).toBe(1),
+    );
+
+    // The second annotation is numbered by what is already staged.
+    await selectExcerpt('turn-4', '核对限流规则，再判断是否能降速继续');
+    await userEvent.click(await quoteActionButton());
+    const secondPanel = await visiblePanel();
+    await expectOrdinal('2');
+    await userEvent.click(panelButton(secondPanel, '引用'));
+
+    // Both staged; each token's editor anchors back at its own excerpt with
+    // its own ordinal, so which staged quote it is never ambiguous.
+    const tokens = await waitFor(() => {
+      const all = document.querySelectorAll<HTMLElement>('.maka-composer-quote-token');
+      expect(all.length).toBe(2);
+      return [...all] as HTMLElement[];
+    });
+    await userEvent.click(tokens[0]);
+    const firstEdit = await visiblePanel();
+    await expectOrdinal('1');
+    expect(firstEdit.closest('.maka-quote-annotation-layer')).toBeTruthy();
+    expect(firstEdit.querySelector('[contenteditable="true"]')?.textContent).toBe('限流这段先核');
+    await userEvent.click(panelButton(firstEdit, '取消'));
+    await userEvent.click(tokens[1]);
+    const secondEdit = await visiblePanel();
+    await expectOrdinal('2');
+    expect(secondEdit.closest('.maka-quote-annotation-layer')).toBeTruthy();
   },
 };
 
