@@ -17,13 +17,15 @@
  * under the License.
  */
 
-import { app, BrowserWindow, clipboard, nativeTheme } from 'electron';
+import { app, clipboard, nativeTheme } from 'electron';
+import type { BrowserWindow } from 'electron';
 import { resolveSystemUiLocale, type UiLocale } from '@maka/core/ui-locale';
 import type { HostHandoffView, OpenHostHandoffSurface } from '@maka/runtime-host/client';
 import { readableAppIconPath } from './app-icon-surface.js';
 import { installApplicationMenu } from './application-menu.js';
 import { installDesktopStartupBranding } from './desktop-shell-presentation.js';
 import { revealMode } from './startup-context.js';
+import { auxiliaryWindowRegistry } from './auxiliary-window-registry.js';
 import {
   createStartupProgressWindow,
   type StartupPhase,
@@ -51,7 +53,7 @@ export function showDesktopStartupProgress(
       dark: nativeTheme.shouldUseDarkColors,
       icon: readableAppIconPath('default'),
       revealMode,
-      createWindow: (options) => new BrowserWindow(options),
+      createWindow: (options) => auxiliaryWindowRegistry.create('startup-progress', options),
       copyDiagnostics: (phase, handoff) => handoff
         ? clipboard.writeText(JSON.stringify(handoff, null, 2)) : copyDiagnostics(phase),
       onError: (error) => console.error('[startup] progress presentation failed:', error),
@@ -88,7 +90,7 @@ export function createDesktopHostHandoffSurface(resolveLocale: () => Promise<UiL
         window = createStartupProgressWindow({
           locale, dark: nativeTheme.shouldUseDarkColors, icon: readableAppIconPath('default'),
           revealMode,
-          createWindow: (options) => new BrowserWindow(options),
+          createWindow: (options) => auxiliaryWindowRegistry.create('startup-progress', options),
           copyDiagnostics: () => clipboard.writeText(JSON.stringify(latest, null, 2)),
           onError: (error) => console.error('[runtime-host] handoff presentation failed:', error),
         });

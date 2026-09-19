@@ -41,6 +41,8 @@ import { join } from 'node:path';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
 import type { CuPresentationFence } from '@maka/runtime/computer-use-types';
 import { resolveOverlayAssetDir } from '../overlay-assets.js';
+import { auxiliaryWindowRegistry } from '../auxiliary-window-registry.js';
+import type { WindowRevealMode } from '../window-reveal.js';
 import { cursorPresentationReadyDeadlineMs } from '../../renderer/computer-use-overlay/engine/cursor-engine.js';
 
 const requireElectron = createRequire(import.meta.url);
@@ -82,6 +84,7 @@ export interface CursorOverlayWindowLike {
 }
 
 export interface CreateCursorOverlayControllerDeps {
+  revealMode?: WindowRevealMode;
   createOverlayWindow?: (options: BrowserWindowConstructorOptions) => CursorOverlayWindowLike;
   resolveOverlayBounds?: () => Rectangle;
   /** Absolute path to the built overlay preload (dist/overlay/cursor-overlay-preload.cjs). */
@@ -198,7 +201,8 @@ export function cursorOverlayWindowOptions(bounds: Rectangle, preloadPath: strin
 export function createCursorOverlayController(
   deps: CreateCursorOverlayControllerDeps = {},
 ): CursorOverlayController {
-  const createOverlayWindow = deps.createOverlayWindow ?? defaultCreateOverlayWindow;
+  const createOverlayWindow = deps.createOverlayWindow
+    ?? ((options) => defaultCreateOverlayWindow(options, deps.revealMode ?? 'active'));
   const resolveOverlayBounds = deps.resolveOverlayBounds ?? defaultResolveOverlayBounds;
   const overlayAssetDir = resolveOverlayAssetDir(import.meta.url);
   const preloadPath = deps.preloadPath ?? join(overlayAssetDir, 'cursor-overlay-preload.cjs');
@@ -526,9 +530,11 @@ export function createCursorOverlayController(
   };
 }
 
-function defaultCreateOverlayWindow(options: BrowserWindowConstructorOptions): CursorOverlayWindowLike {
-  const { BrowserWindow } = requireElectron('electron') as typeof import('electron');
-  const bw = new BrowserWindow(options);
+function defaultCreateOverlayWindow(
+  options: BrowserWindowConstructorOptions,
+  revealMode: WindowRevealMode,
+): CursorOverlayWindowLike {
+  const bw = auxiliaryWindowRegistry.create('cursor-overlay', options);
   return {
     setIgnoreMouseEvents: (ignore, opts) => bw.setIgnoreMouseEvents(ignore, opts),
     setAlwaysOnTop: (flag, level, relativeLevel) =>
@@ -539,9 +545,9 @@ function defaultCreateOverlayWindow(options: BrowserWindowConstructorOptions): C
     moveAbove: (mediaSourceId) => bw.moveAbove(mediaSourceId),
     setVisibleOnAllWorkspaces: (visible, opts) => bw.setVisibleOnAllWorkspaces(visible, opts),
     loadFile: (path) => bw.loadFile(path),
-    showInactive: () => bw.showInactive(),
+    showInactive: () => auxiliaryWindowRegistry.show('cursor-overlay', bw, revealMode),
     isDestroyed: () => bw.isDestroyed(),
-    destroy: () => bw.destroy(),
+    destroy: () => auxiliaryWindowRegistry.destroy(bw),
     send: (channel, payload) => { if (!bw.isDestroyed()) bw.webContents.send(channel, payload); },
     onReady: (cb) => bw.webContents.once('did-finish-load', cb),
     onGone: (cb) => {

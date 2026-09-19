@@ -27,6 +27,7 @@ import {
   type ParentWindowLike,
   type PipWindowLike,
 } from './pip-electron.js';
+import type { WindowRevealMode } from '../window-reveal.js';
 import { join } from 'node:path';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
 import {
@@ -133,6 +134,7 @@ type PipControlId = 'stop' | 'hide';
 
 
 export interface CreatePipControllerDeps {
+  revealMode?: WindowRevealMode;
   createWindow?: (options: BrowserWindowConstructorOptions) => PipWindowLike;
   resolveBounds?: (aspect: number) => Rectangle;
   /**
@@ -602,7 +604,7 @@ export function createComputerUsePipController(
     const options = pipWindowOptions(bounds, preloadPath, parent);
     const created = deps.createWindow
       ? deps.createWindow(options)
-      : defaultCreateWindow(options, htmlPath);
+      : defaultCreateWindow(options, htmlPath, deps.revealMode ?? 'active');
     win = created;
     sessionId = nextSessionId;
     ready = false;
