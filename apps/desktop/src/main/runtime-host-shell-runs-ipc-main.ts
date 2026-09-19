@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '@maka/core/shell-run';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
 import type { SessionDomainChange } from '@maka/runtime-host/protocol';
@@ -28,12 +29,12 @@ import {
 } from './ipc-reconnect-policy.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserverTarget } from './runtime-host-session-observer.js';
+import type { TerminalCloseIntents } from './terminal-close-intents.js';
 
 export type RuntimeHostShellRunsClient = Pick<
   DesktopRuntimeHostClient,
   | 'acquireRuntimeResourceController'
   | 'controlRuntimeResource'
-  | 'getRuntimeResource'
   | 'listRuntimeResources'
   | 'releaseRuntimeResourceController'
   | 'startRuntimeResource'
@@ -75,6 +76,7 @@ export function registerRuntimeHostShellRunQueriesIpc(
 export function registerRuntimeHostShellRunsIpc(
   deps: {
     client: RuntimeHostShellRunsClient;
+    terminalCloses: TerminalCloseIntents;
     newId?: () => string;
     sessionObserver: {
       observe(
@@ -90,6 +92,7 @@ export function registerRuntimeHostShellRunsIpc(
   ipcMain: ReconnectableReadIpcMain,
 ): { close(): Promise<void> } {
   const newId = deps.newId ?? randomUUID;
+  const closes = deps.terminalCloses;
   const controllers = new RuntimeResourceControllers(
     deps.client,
     newId,
@@ -97,13 +100,19 @@ export function registerRuntimeHostShellRunsIpc(
   );
   ipcMain.handle('shell-runs:start', async (_event, sessionId: unknown) => {
     const normalizedSessionId = requiredId(sessionId, 'Session');
+    const launchId = `${DESKTOP_TERMINAL_LAUNCH_PREFIX}${newId()}`;
     const started = await deps.client.startRuntimeResource({
       sessionId: normalizedSessionId,
-      launchId: `desktop-terminal-${newId()}`,
+      launchId,
     });
-    return requiredRuntimeResource(
-      await deps.client.getRuntimeResource(normalizedSessionId, started.resource.ref),
-    );
+    const update: ShellRunUpdate = {
+      sessionId: normalizedSessionId,
+      ownership: { kind: 'local' },
+      sourceTurnId: launchId,
+      sourceToolCallId: launchId,
+      result: started.resource,
+    };
+    return update;
   });
   ipcMain.handle('shell-runs:attach', (event, value: unknown) =>
     controllers.attach(
@@ -117,10 +126,13 @@ export function registerRuntimeHostShellRunsIpc(
   ipcMain.handle('shell-runs:write', (_event, value: unknown) =>
     controllers.control(runtimeResourceControl(value)),
   );
-  ipcMain.handle('shell-runs:stop', async (_event, value: unknown) => {
+  handleReconnectableRead(ipcMain, 'shell-runs:recover', (_event, sessionId: unknown) => {
+    const id = requiredId(sessionId, 'Session');
+    return closes.recover(id, () => deps.client.listRuntimeResources(id));
+  });
+  ipcMain.handle('shell-runs:stop', (_event, value: unknown) => {
     const input = runtimeResourceIdentity(value, 'stop');
-    await controllers.stop(input);
-    return deps.client.getRuntimeResource(input.sessionId, input.ref);
+    return closes.stop(input, () => controllers.stop(input));
   });
 
   return { close: () => controllers.close() };
@@ -224,7 +236,6 @@ class RuntimeResourceControllers {
         control: protocolControl(input),
       });
       state.nextSequence = sequence + 1;
-      return this.#client.getRuntimeResource(input.sessionId, input.ref);
     });
   }
 
@@ -246,7 +257,7 @@ class RuntimeResourceControllers {
       await this.#client.stopRuntimeResource(input);
       const state = this.#states.get(resourceIdentity(input));
       this.#states.delete(resourceIdentity(input));
-      if (state) await this.#releaseObservation(state);
+      if (state) await this.#releaseObservation(state).catch(() => undefined);
     });
   }
 
@@ -413,11 +424,6 @@ function parseResourceIdentity(identity: string): [sessionId: string, ref: strin
   const separator = identity.indexOf('\0');
   if (separator < 0) throw new Error('Invalid Runtime Resource controller identity');
   return [identity.slice(0, separator), identity.slice(separator + 1)];
-}
-
-function requiredRuntimeResource(resource: ShellRunUpdate | null): ShellRunUpdate {
-  if (!resource) throw new Error('Terminal started without a Runtime Resource projection');
-  return resource;
 }
 
 function requiredId(value: unknown, name: string, maxLength = 512): string {

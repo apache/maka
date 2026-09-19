@@ -162,22 +162,46 @@ describe('Work Board contract', () => {
     assert.equal(unconfirmed.ok, false);
   });
 
-  test('rejects linkedSessions as a Phase 3 field in create input and stored records', () => {
+  test('rejects linked Sessions from create input but accepts Host-scoped stored links', () => {
     const createResult = normalizeCreateWorkBoardItemInput({
       scope: { kind: 'inbox' },
       title: 'x',
       creator: { kind: 'user' },
       provenance: { kind: 'manual' },
-      linkedSessions: [{ sessionId: 'session-1', linkedAt: 10 }],
+      linkedSessions: [
+        { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 10 },
+      ],
     });
     assert.equal(createResult.ok, false);
-    assert.equal(
+    assert.deepEqual(
       decodeWorkBoardItem({
         ...baseItem,
-        linkedSessions: [{ sessionId: 'session-1', linkedAt: 10 }],
-      }),
-      null,
+        linkedSessions: [
+          { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 10 },
+        ],
+      })?.linkedSessions,
+      [{ profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 10 }],
     );
+  });
+
+  test('drops malformed stored link entries instead of hiding the whole item', () => {
+    const valid = {
+      profileId: 'profile-1',
+      hostId: 'host-1',
+      sessionId: 'session-1',
+      linkedAt: 10,
+    };
+    const decoded = decodeWorkBoardItem({
+      ...baseItem,
+      linkedSessions: [
+        valid,
+        { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-2' }, // missing linkedAt
+        { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-3', linkedAt: 'nope' },
+        valid, // duplicate
+      ],
+    });
+    assert.ok(decoded);
+    assert.deepEqual(decoded.linkedSessions, [valid]);
   });
 
   test('rejects unknown fields at the contract boundary', () => {

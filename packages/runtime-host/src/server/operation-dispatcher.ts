@@ -20,6 +20,7 @@
 import type { RootTurnAdmissionAuthorization } from '@maka/storage/execution-stores';
 import {
   HOST_OPERATION_SPECS,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   decodeOperationOutcome,
   type HostOperationErrorCode,
   type OperationInput,
@@ -30,6 +31,7 @@ import {
   type ResponseFrame,
   type ResponseFrameFor,
 } from '../protocol/index.js';
+import { usageScreenMessageBytes } from '../protocol/usage-screen.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { HOST_RESOURCE_OPERATION_SPECS } from '../protocol/host-resources.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.js';
@@ -45,6 +47,7 @@ import { DAILY_REVIEW_OPERATION_SPECS } from '../protocol/daily-review.js';
 import { DEEP_RESEARCH_OPERATION_SPECS } from '../protocol/deep-research.js';
 import { EXECUTION_INSPECT_OPERATION_SPECS } from '../protocol/execution-inspect.js';
 import { EXTERNAL_SESSION_OPERATION_SPECS } from '../protocol/external-session.js';
+import { SESSION_BUNDLE_OPERATION_SPECS } from '../protocol/session-bundle.js';
 import { GOAL_OPERATION_SPECS } from '../protocol/goal.js';
 import { HOSTED_EXECUTION_OPERATION_SPECS } from '../protocol/hosted-execution.js';
 import { INTERACTION_OPERATION_SPECS } from '../protocol/interaction.js';
@@ -130,6 +133,7 @@ export type GoalOperationKey = keyof typeof GOAL_OPERATION_SPECS;
 export type ExecutionInspectOperationKey = keyof typeof EXECUTION_INSPECT_OPERATION_SPECS;
 export type HostedExecutionOperationKey = keyof typeof HOSTED_EXECUTION_OPERATION_SPECS;
 export type ExternalSessionOperationKey = keyof typeof EXTERNAL_SESSION_OPERATION_SPECS;
+export type SessionBundleOperationKey = keyof typeof SESSION_BUNDLE_OPERATION_SPECS;
 export type AgentGraphOperationKey = keyof typeof AGENT_GRAPH_OPERATION_SPECS;
 export type SessionContinuityOperationKey =
   | keyof typeof SESSION_CONTINUITY_OPERATION_SPECS
@@ -181,6 +185,7 @@ export type ExternalSessionOperationHandlerMap = Pick<
   OperationHandlerMap,
   ExternalSessionOperationKey
 >;
+export type SessionBundleOperationHandlerMap = Pick<OperationHandlerMap, SessionBundleOperationKey>;
 export type AgentGraphOperationHandlerMap = Pick<OperationHandlerMap, AgentGraphOperationKey>;
 export type SessionContinuityOperationHandlerMap = Pick<
   OperationHandlerMap,
@@ -376,7 +381,7 @@ async function dispatchTypedOperation<K extends OperationKey>(
       'Runtime Host operation failed',
     ) as ResponseFrameFor<K>;
   }
-  return outcome.ok
+  const response: ResponseFrameFor<K> = outcome.ok
     ? {
         requestId: request.requestId,
         operation: request.operation,
@@ -389,4 +394,18 @@ async function dispatchTypedOperation<K extends OperationKey>(
         ok: false,
         error: outcome.error,
       };
+  const frame = response as ResponseFrame;
+  if (
+    frame.operation === 'usage.query' &&
+    frame.ok &&
+    (frame.result.kind === 'screen' || frame.result.kind === 'activity') &&
+    usageScreenMessageBytes(frame.requestId, frame.result) > RUNTIME_HOST_MAX_MESSAGE_BYTES
+  ) {
+    return {
+      ...response,
+      ok: true,
+      result: { kind: 'screen_response_too_large', section: 'message' },
+    } as ResponseFrameFor<K>;
+  }
+  return response;
 }

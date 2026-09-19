@@ -114,13 +114,15 @@ async function createFormHost(
   assert.ok(offer);
   const descriptor = offer.tools[0];
   assert.ok(descriptor);
+  const header = sessionHeader();
   const runtime = new ToolRuntime({
     sessionId: RUN.sessionId,
-    header: sessionHeader(),
+    header,
     connection: llmConnection(),
     modelId: 'model-1',
     readExecutionBoundary: async () =>
       createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
+    readPermissionMode: async () => header.permissionMode,
     newId: nextId(),
     now: nextNow(),
     getPermissionPauseTarget: () => null,
@@ -299,7 +301,8 @@ function createInteractionCoordinator(
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => undefined,
     onPoison: () => undefined,
-    onSandboxBoundarySettled: async () => undefined,
+    resolveSandboxBoundaryRootSession: async () => undefined,
+    onSandboxBoundaryGraphWake: async () => undefined,
   };
   return new HostInteractionCoordinator(options);
 }

@@ -25,6 +25,13 @@
 
 ### Added
 
+- Added external Session import to the TUI. It lists the Runtime Host's external
+  sources (Claude Code, Codex, OpenCode) and imports one Session as a native
+  Maka Session through the same Host catalog/import path the Desktop App uses,
+  opening the result without sending a model request. Sources with prior imports
+  offer an action to open the most recently imported task or create another
+  independent import. An uncertain result remains visible as a warning while
+  still allowing a user-initiated import again in both Desktop and TUI.
 - Added `/transcript` to browse long TUI sessions without depending on terminal
   scrollback, with line, page, and first/last navigation.
 
@@ -40,6 +47,12 @@
 
 ### Changed
 
+- Imported Sessions replay conversation text only — the user's words and the
+  model's — so an import can no longer publish an empty or partial history. A
+  transcript whose rows convert to nothing is refused before anything is
+  persisted, and a transcript that opens on an assistant reply keeps that turn.
+- Reading a Claude Code transcript for the Session catalog is bounded to a head
+  and tail window instead of reading each transcript to its end.
 - Made typed `request()` the sole direct Runtime Host operation API; removed the 17 forwarding
   aliases from direct and reconnecting connections while preserving status validation,
   subscriptions, capabilities, listeners, lifecycle, and close behavior.
@@ -52,10 +65,11 @@
 - `token_usage` anchors now record the model and connection that produced them. A token count is a number in one model's tokenizer against one connection; carrying the route on the record lets any reader apply the rule the runtime already enforces, instead of pairing one model's usage with another model's window. The record decodes against a closed allowlist, so sessions written with these keys do not open in earlier releases, and the Runtime Host compatibility epoch moves to 107.
 - The provider-dropping note now also fires across the send boundary. A provider that truncates to a fixed window reports the same input on every later request while the user keeps adding turns, which a send of one or two steps cannot see from the inside; the first request of a send compares against the persisted anchor instead. Across the boundary the test is equality rather than "did not grow": inside a send Maka knows it only appended, while across it a manual compaction, a smaller tool set or an edited history all shrink the input legitimately, and none of them lands on exactly the same count. The note carries the two counts it compared, and is reported once per backend rather than once per send, because the condition persists once it starts.
 - Let the provider decide whether a request fits. Proactive compaction now uses only a user-declared Maka window and the previous accepted request's provider-reported `inputTokens + outputTokens`; no declaration means no proactive capacity threshold. `/models` and generated model metadata are display hints, not limits. `token_usage` records persist the last-request anchor under `lastRequestAnchor`; its new `{ inputTokens, outputTokens }` shape still decodes the retired `payloadChars` key from older sessions. Requests that are too large are compacted and retried once after a real provider rejection, then reported as a `context_overflow` provider error. Compaction is entered at most once per send, and a request rejected after a fold was actually applied is reported as still too large after compaction. A fold that failed open makes no such claim: that request went out with its full raw history. A reply cut at `finishReason: length` no longer triggers a fold, because the provider running out of window room and the provider's own lower output cap are indistinguishable from outside. Five system notes explain the provider-side cases: dropping context, a window worth declaring, an exchange past the declared window, a request accepted past the window the model reports (once per crossing, while nothing is declared), and a request still too large after compaction. The reply reserve that arms the proactive threshold is twice the last real reply, bounded at 8,000 tokens, rather than the model's maximum output. **Sessions this build writes do not open in earlier releases:** those decode `token_usage` against a closed allowlist, so the reshaped `lastRequestAnchor` key fails the record and, with it, the Session that contains it; downgrading therefore needs a copy of the workspace's `runtime.sqlite` taken before the upgrade. Nothing produces the `context_budget_exhausted` stop reason any more — a request that really is too large is compacted and retried once, then reported as a `context_overflow` provider error — though sessions that already recorded it still decode and present. The Runtime Host compatibility epoch moves to 106.
-- Unified context management under one Runtime-owned policy. `MAKA_CONTEXT_*` environment overrides no longer tune or disable compaction and Tool Result pruning; model-visible archive placeholders are read on demand through bounded `ArchiveRead` calls instead of eager hydration. Previously supported overrides are ignored on upgrade: if Tool Result pruning was set to `off`, pruning is re-enabled, and there is currently no supported replacement opt-out.
+- Unified context management under one Runtime-owned policy. `MAKA_CONTEXT_*` environment overrides no longer tune compaction or Tool Result pruning. Archived results are read on demand through bounded `Read` calls with a Maka resource path; `ArchiveRead` is removed. Read requires only `path`, with optional `offset` and `limit`; pass the complete `next` object to continue. Tool Result pruning has one `enabled` switch; the old tuning options are removed.
 - Moved Read image snapshots into the durable context-offload store with Runtime-owned
   lifecycle identity, exact branch and revision copying, recovery-safe cleanup, and bounded
   physical garbage collection after Session retirement.
+- Unified manual model registration and parameter overrides in the connection catalog, isolated by connection and saved atomically. Model capacity and automatic compaction now use separate fields. Redesigned the shared add/edit form, kept disabled models configurable, and removed bulk thinking edits and client catalog rebuilding. Legacy declarations migrate on the next save; Clients and Hosts must update together.
 
 ## 0.1.11 - 2026-08-18
 
@@ -453,6 +467,9 @@
 
 ### Removed
 
+- Removed the TUI's local foreign-Session scanner, the
+  `<foreign-session-digest>` handoff prompt, the second OpenCode reader, and the
+  `MAKA_IMPORT_*` switches. TUI and Desktop now share one import path.
 - Removed dead storage modules (#2104), consumer-less Desktop IPC bridge surface
   (#2065), and dead shell CSS recipes along with the check-dead-css blind spots
   that hid them (#2070).

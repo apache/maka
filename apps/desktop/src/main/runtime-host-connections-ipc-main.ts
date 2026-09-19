@@ -33,7 +33,7 @@ import {
   PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
-import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
+import { normalizeModelOverrides } from '@maka/core/model-thinking';
 import type { CredentialLocator } from '@maka/core/runtime-policy';
 import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
@@ -73,6 +73,7 @@ type HostConnectionsClient = Pick<
   | 'getConnectionRequestHeaders'
   | 'loadConnectionCatalog'
   | 'queryCredential'
+  | 'readConnectionUsage'
   | 'removeConnection'
   | 'replaceConnectionRequestHeaders'
   | 'setCredential'
@@ -120,6 +121,16 @@ export function registerRuntimeHostConnectionsIpc(
       const result = await deps.client.getConnectionRequestHeaders(connection.connectionId);
       if (result.kind !== 'found') throw new Error('Connection no longer exists');
       return { names: result.names } satisfies SavedRequestHeaders;
+    },
+  );
+  // Read-only: resolves the credential Host-side and never returns it, so the
+  // renderer learns the usage figures and nothing more.
+  handleReconnectableRead(
+    deps.ipcMain,
+    'connections:usage',
+    async (_event, identity: unknown) => {
+      const connection = requireConnectionIdentity(await snapshot(), identity);
+      return deps.client.readConnectionUsage(connection.connectionId);
     },
   );
   deps.ipcMain.handle(
@@ -202,7 +213,7 @@ export function registerRuntimeHostConnectionsIpc(
     const catalog = await snapshot();
     // Profiles ride as the typed field end to end — nothing free-form
     // crosses to the host.
-    const relayModelProfiles = input.relayModelProfiles;
+    const modelOverrides = input.modelOverrides;
     const created = await deps.client.createConnection(catalog.revision, {
       slug: input.slug,
       name: input.name,
@@ -213,7 +224,7 @@ export function registerRuntimeHostConnectionsIpc(
         defaultModel: input.defaultModel,
         enabledModelIds: defaultEnabledModelIdsWhenOmitted(input.providerType),
       }),
-      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+      ...(modelOverrides === undefined ? {} : { modelOverrides }),
       ...(input.requestBodyOverlay === undefined
         ? {}
         : { requestBodyOverlay: input.requestBodyOverlay }),
@@ -269,9 +280,9 @@ export function registerRuntimeHostConnectionsIpc(
         // Tri-state: a patch that mentions profiles re-normalizes them (empty
         // normalization = clear); a patch without profiles omits the key
         // entirely, which the store reads as "leave the table alone".
-        ...(patch.relayModelProfiles === undefined
+        ...(patch.modelOverrides === undefined
           ? {}
-          : { relayModelProfiles: normalizeRelayModelProfiles(patch.relayModelProfiles) ?? null }),
+          : { modelOverrides: normalizeModelOverrides(patch.modelOverrides) ?? null }),
         ...(patch.requestBodyOverlay === undefined
           ? {}
           : { requestBodyOverlay: patch.requestBodyOverlay }),
@@ -412,9 +423,9 @@ export function projectHostConnections(
       enabledModelIds: [...connection.enabledModelIds],
       models: [...connection.models],
       catalogEntries: connection.catalogEntries,
-      ...(connection.relayModelProfiles === undefined
+      ...(connection.modelOverrides === undefined
         ? {}
-        : { relayModelProfiles: connection.relayModelProfiles }),
+        : { modelOverrides: connection.modelOverrides }),
       ...(connection.requestBodyOverlay === undefined
         ? {}
         : { requestBodyOverlay: connection.requestBodyOverlay }),
@@ -583,6 +594,20 @@ function normalizeUpdateInput(
   value: unknown,
 ): UpdateConnectionInput {
   const patch = normalizeConnectionPatchSecretsForIpc(value);
+  if (patch.modelOverride !== undefined) {
+    const { modelId, expected, value: override, enable } = patch.modelOverride;
+    if (typeof modelId !== 'string' || !modelId.trim() || modelId !== modelId.trim() ||
+      typeof override !== 'object' || override === null || Array.isArray(override) ||
+      (enable !== undefined && typeof enable !== 'boolean') || patch.modelOverrides !== undefined) {
+      throw new Error('Invalid model override');
+    }
+    const normalize = (value: unknown) => normalizeModelOverrides({ model: value })?.model ?? null;
+    if (expected === undefined || JSON.stringify(normalize(expected)) !== JSON.stringify(normalize(current.modelOverrides?.[modelId]))) {
+      throw new Error('Model parameters changed. Reopen the editor before saving again.');
+    }
+    patch.modelOverrides = { ...current.modelOverrides, [modelId]: override };
+    if (enable) patch.enabledModelIds = [...new Set([...current.enabledModelIds, modelId])];
+  }
   if (patch.enabledModelIds !== undefined && !patch.enabledModelIds.every((id) => typeof id === 'string')) {
     throw new Error('Invalid enabled model list');
   }

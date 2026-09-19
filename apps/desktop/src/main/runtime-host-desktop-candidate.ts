@@ -81,7 +81,9 @@ import {
 } from "./runtime-host-session-catalog-ipc-main.js";
 import { registerRuntimeHostWorkHubIpc } from "./runtime-host-workhub-ipc-main.js";
 import { registerRuntimeHostExternalSessionsIpc } from "./runtime-host-external-sessions-ipc-main.js";
+import { registerRuntimeHostSessionBundleIpc } from "./runtime-host-session-bundle-ipc-main.js";
 import { registerRuntimeHostCollaborationIpc } from './runtime-host-collaboration-ipc-main.js';
+import { TerminalCloseIntents } from './terminal-close-intents.js';
 import type { DesktopCollaborationConnectionTarget } from './runtime-host-collaboration-invitation.js';
 import { registerRuntimeHostAttachmentPreviewIpc } from './runtime-host-artifacts-ipc-main.js';
 import {
@@ -118,12 +120,26 @@ import {
 type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler">;
 
 export interface DesktopRuntimeHostCandidateDeps {
+  readonly terminalCloses?: import('./terminal-close-intents.js').TerminalCloseIntents;
   readonly cacheTranscript?: (scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly ipcMain: RuntimeHostTargetIpcMain;
   readonly workspaceRoot: string;
   readonly attachmentApprovals: AttachmentApprovalRegistry;
   readonly stat: (path: string) => Promise<{ size: number }>;
   readonly resizeImage: (bytes: Uint8Array) => Promise<Uint8Array>;
+  /** Native file dialogs for moving a Session in or out as a bundle. */
+  readonly mainWindowController: {
+    showSaveDialog(options: {
+      title?: string;
+      defaultPath?: string;
+      filters?: Array<{ name: string; extensions: string[] }>;
+    }): Promise<{ canceled: boolean; filePath?: string }>;
+    showOpenDialog(options: {
+      title?: string;
+      properties?: string[];
+      filters?: Array<{ name: string; extensions: string[] }>;
+    }): Promise<{ canceled: boolean; filePaths: string[] }>;
+  };
   readonly nativeCapabilities: DesktopNativeCapabilityProviderInput;
   readonly botRegistry: BotRegistry;
   readonly resolveBotCreateTarget: (
@@ -143,6 +159,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     sessionId: string,
   ) => void | Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
+  readonly transcriptHistoryBytes?: number;
   readonly renderer?: {
     send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
   };
@@ -551,6 +568,11 @@ export async function createDesktopRuntimeHostCandidate(
   const reportError = (error: unknown): void => {
     if (isTargetActive()) deps.onError?.(error);
   };
+  // Managed candidates receive their target's owner. Direct standalone starts
+  // have no replacement lifetime, and own this instance until they close.
+  const terminalCloses = deps.terminalCloses ?? new TerminalCloseIntents(
+    (change) => sendToRenderer?.('shell-runs:close-changed', change),
+  );
   const sessionObservations =
     observationRegistry ??
     new RuntimeHostSessionObservationRegistry((error) => deps.onError?.(error));
@@ -580,6 +602,7 @@ export async function createDesktopRuntimeHostCandidate(
     if (failed) throw failed.reason;
   };
   const releaseNativeSession = async (sessionId: string): Promise<void> => {
+    terminalCloses.retireSession(sessionId);
     const abortResults = await Promise.allSettled(
       [...providers].map((provider) => provider.abortSession(sessionId)),
     );
@@ -635,6 +658,7 @@ export async function createDesktopRuntimeHostCandidate(
     };
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
+      transcriptHistoryBytes: deps.transcriptHistoryBytes,
       cacheTranscript: (snapshot) => {
         if (target.access === 'owner') deps.cacheTranscript?.(scope, snapshot);
       },
@@ -652,8 +676,6 @@ export async function createDesktopRuntimeHostCandidate(
         target.access === 'session_guest'
           ? sharedShellRuns?.sessionSubscriptionRecovered(sessionId)
           : domains?.sessionSubscriptionRecovered(sessionId),
-      emitObservationSeed: (sessionId, phase) =>
-        sendToRenderer?.('sessions:observation-seed', { sessionId, phase }),
       ...(target.access === 'owner'
         ? {
             onWatchedTurnFinished: (sessionId: string, outcome: 'completed' | 'abandoned') =>
@@ -674,6 +696,7 @@ export async function createDesktopRuntimeHostCandidate(
       domains = registerRuntimeHostSessionDomainsIpc(
         {
           client,
+          terminalCloses,
           sessionObserver,
           emitModeChanged,
           ...(deps.renderer ? { sendToRenderer } : {}),
@@ -717,7 +740,7 @@ export async function createDesktopRuntimeHostCandidate(
     }
     const observedSessionIds = sessionObservations.observedSessionIds();
     for (const sessionId of observedSessionIds) {
-      sendToRenderer('sessions:observation-seed', { sessionId, phase: 'pending' });
+      sendToRenderer(`sessions:event:${sessionId}`, { type: 'host_observation_pending' });
     }
     observationsAttached = true;
     const restoredSessionIds = await sessionObservations.attach(
@@ -747,7 +770,6 @@ export async function createDesktopRuntimeHostCandidate(
       );
     }
     for (const sessionId of restoredSessionIds) {
-      sendToRenderer('sessions:observation-seed', { sessionId, phase: 'ready' });
       emitSessionsChanged("message-appended", sessionId);
       emitSessionsChanged("goal-change", sessionId);
       domains?.sessionSubscriptionRecovered(sessionId);
@@ -874,6 +896,14 @@ export async function createDesktopRuntimeHostCandidate(
       registerRuntimeHostExternalSessionsIpc(
         {
           client,
+          emitSessionsChanged,
+        },
+        ipc,
+      );
+      registerRuntimeHostSessionBundleIpc(
+        {
+          client,
+          mainWindowController: deps.mainWindowController,
           emitSessionsChanged,
         },
         ipc,

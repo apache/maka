@@ -22,8 +22,6 @@ import {
   transcriptRestoreTarget,
 } from './controller/transcript-reading-position.js';
 
-export { TranscriptReadSupersededError } from './controller/transcript-reading-position.js';
-
 export const transcriptReadingPosition = {
   currentRange: currentTranscriptRange,
   restoreTarget: transcriptRestoreTarget,
@@ -32,6 +30,7 @@ export const transcriptReadingPosition = {
 export {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
+  type TranscriptTurnIndex,
 } from './controller/transcript-reading-position-controller.js';
 
 export {
@@ -45,11 +44,14 @@ export type { ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
 export { createConversationDisplayFrameScheduler } from './controller/display-frame-scheduler.js';
+export {
+  useAppShellSessionUiState,
+  type TranscriptPublisher,
+} from './controller/use-app-shell-session-ui-state.js';
 
 export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
 export { type PendingAttachment, toComposerIngestItems, retainedAttachmentRefs } from '@maka/ui/composer-attachments';
 export {
-  type PendingByKey,
   NEW_TASK_PENDING_KEY,
   selectPending,
   appendPending,
@@ -58,3 +60,16 @@ export {
   clearPending,
 } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
+export { useComposerQuotes } from './controller/use-composer-quotes.js';
+export { useSessionReferenceComposer } from './controller/use-session-reference-composer.js';
+export {
+  ComposerMentionsProvider,
+  useComposerMentionsContext,
+  type ComposerMentions,
+  type ComposerMentionsSurface,
+} from './ui/composer-mentions-provider.js';
+
+export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
+export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
+export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
+export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';

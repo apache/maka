@@ -432,6 +432,13 @@ function SessionListGroups(props: {
     return [...selectedIds].every((sessionId) => pinned.has(sessionId));
   }, [rail.sessions, selectedIds]);
 
+  // Pins follow the same rail membership in both views. Archiving a project
+  // folds its unpinned tasks without hiding its pins.
+  const pinnedGroup = useMemo(() => {
+    if (rail.groupVariant !== 'project') return undefined;
+    return groupSessionsForHistory(rail.sessions, locale).find((group) => group.id === 'pinned');
+  }, [locale, rail.groupVariant, rail.sessions]);
+
   const startRename = useCallback((target: SessionRenameTarget, opener: HTMLElement | null) => {
     renameOpenerRef.current = opener;
     setRenameTarget(target);
@@ -516,19 +523,10 @@ function SessionListGroups(props: {
   if (rail.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
     const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
-    const pinnedGroup = groupSessionsForHistory(
-      activeGroups.flatMap((group) => group.sessions),
-      locale,
-    ).find((group) => group.id === 'pinned');
 
-    function renderProjectGroup(
-      group: (typeof props.groups)[number],
-      includePinned = false,
-    ): ReactNode {
+    function renderProjectGroup(group: (typeof props.groups)[number]): ReactNode {
       const project = group.project;
-      const sessions = includePinned
-        ? group.sessions
-        : group.sessions.filter((session) => !session.isFlagged);
+      const sessions = group.sessions.filter((session) => !session.isFlagged);
       return (
         <ProjectNavRow
           key={group.key}
@@ -575,7 +573,7 @@ function SessionListGroups(props: {
                 {/* Always mount children: Astryx derives collapsible chrome from
                     !!children. Nulling on collapse removes the chevron and makes
                     the controlled isCollapsed prop a no-op. */}
-                {archivedGroups.map((group) => renderProjectGroup(group, true))}
+                {archivedGroups.map((group) => renderProjectGroup(group))}
               </SideNavItem>
             )}
           </SideNavSection>
@@ -799,17 +797,17 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         // whether or not it has a dot, so state reads as one column down the
         // rail instead of a mark that drifts with each title's length.
         icon={
-          signal ? (
-            <StatusDot
-              variant={signal.variant}
-              label={signal.label}
-              isPulsing={signal.isPulsing}
-              tooltip={signal.tooltip}
-              data-session-status={props.session.status}
-            />
-          ) : (
-            <span className="maka-session-row-signal-empty" aria-hidden="true" />
-          )
+          <span className="maka-session-row-signal">
+            {signal ? (
+              <StatusDot
+                variant={signal.variant}
+                label={signal.label}
+                isPulsing={signal.isPulsing}
+                tooltip={signal.tooltip}
+                data-session-status={props.session.status}
+              />
+            ) : null}
+          </span>
         }
         onClick={(event) => {
           // Shift- and ⌘-clicks are answered by the list, which has already

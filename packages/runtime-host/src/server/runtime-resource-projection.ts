@@ -17,13 +17,10 @@
  * under the License.
  */
 
+import { JsonArrayPageBudget } from './json-array-page-budget.js';
+
 import { createHash } from 'node:crypto';
-import type {
-  ShellRunSnapshotResult,
-  ShellRunStateResult,
-  ShellRunUpdate,
-  ToolResultContent,
-} from '@maka/core/events';
+import type { ShellRunStateResult, ShellRunUpdate } from '@maka/core/events';
 import {
   decodeRuntimeResourceQueryResult,
   RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
@@ -46,8 +43,12 @@ export function canonicalRuntimeResources(resources: readonly ShellRunUpdate[]):
 }
 
 function boundedRuntimeResourceUpdate(update: ShellRunUpdate): ShellRunUpdate {
-  const bounded = structuredClone(update);
-  shrinkStateToFit(bounded.result);
+  return { ...update, result: boundedRuntimeResourceState(update.result) };
+}
+
+export function boundedRuntimeResourceState(state: ShellRunStateResult): ShellRunStateResult {
+  const bounded = structuredClone(state);
+  shrinkStateToFit(bounded);
   return bounded;
 }
 
@@ -64,20 +65,19 @@ export function createRuntimeResourcePage(
   offset: number,
 ): RuntimeResourceQueryResult {
   const pageResources: ShellRunUpdate[] = [];
+  const budget = new JsonArrayPageBudget(RUNTIME_RESOURCE_RESULT_MAX_BYTES, {
+    kind: 'page',
+    sessionId,
+    revision,
+    resources: [],
+    nextCursor: null,
+  });
   for (let index = offset; index < resources.length; index += 1) {
     if (pageResources.length >= RUNTIME_RESOURCE_PAGE_MAX_ITEMS) break;
     const resource = resources[index];
     if (!resource) throw new Error('Runtime Resource projection index was out of bounds');
-    const candidateResources = [...pageResources, resource];
     const nextOffset = index + 1;
-    const candidate = {
-      kind: 'page' as const,
-      sessionId,
-      revision,
-      resources: candidateResources,
-      nextCursor: nextOffset < resources.length ? String(nextOffset) : null,
-    };
-    if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > RUNTIME_RESOURCE_RESULT_MAX_BYTES) {
+    if (!budget.tryAppend(resource, nextOffset < resources.length ? String(nextOffset) : null)) {
       break;
     }
     pageResources.push(resource);
@@ -93,25 +93,6 @@ export function createRuntimeResourcePage(
     resources: pageResources,
     nextCursor: nextOffset < resources.length ? String(nextOffset) : null,
   });
-}
-
-export function boundedRuntimeResourceSnapshot(
-  snapshot: ShellRunSnapshotResult,
-): ShellRunSnapshotResult {
-  const bounded = structuredClone(snapshot);
-  shrinkStateToFit(bounded);
-  if (bounded.output === undefined) throw new Error('Runtime Resource snapshot lost its output');
-  return bounded;
-}
-
-export function runtimeResourceSnapshotFromResult(
-  result: ToolResultContent,
-): ShellRunSnapshotResult {
-  if (result.kind !== 'shell_run' || result.output === undefined) {
-    throw new Error('Runtime Resource operation did not produce a ShellRun snapshot');
-  }
-  const { operation: _operation, ...snapshot } = result;
-  return snapshot;
 }
 
 function shrinkStateToFit(state: ShellRunStateResult): void {

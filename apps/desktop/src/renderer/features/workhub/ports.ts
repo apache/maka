@@ -18,16 +18,16 @@
  */
 
 import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 import type { SessionEvent, AttachmentRef, MessageQueuePlacement } from '@maka/core/events';
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { OperationInput, OperationOutput } from '@maka/runtime-host/protocol';
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../shared/workhub-conversation.js';
 import type { WorkHubControlBridge } from '../../../shared/workhub-control.js';
 import type { WorkHubPresentationBridge } from '../../../shared/workhub-presentation.js';
-import type { WorkHubCoordinationHostChange } from './controller/coordination-lifecycle.js';
+import type { WorkHubWorkspaceServices } from '../../application/contracts/workhub-workspace/use-workhub-workspace.js';
 import type {
   WorkHubDelegationFeedback,
   WorkHubDelegationReference,
@@ -36,37 +36,39 @@ import type {
 export interface WorkHubTranscriptSnapshot {
   readonly messages: readonly StoredMessage[];
   readonly hasOlder: boolean;
-  readonly hasNewer: boolean;
   readonly ready: boolean;
 }
 export interface WorkHubTranscript {
   observationChanged(phase: 'pending' | 'ready'): void;
-  /** Fills the window at an edge the reader approaches; resolves to whether a read was issued. */
-  prefetchHistory(edge: 'older' | 'newer'): Promise<boolean>;
-  /** Trims the window to the Turns the reader's band still covers. */
-  retain(window: { firstTurnId: string; lastTurnId: string }): void;
-  loadLatest(): Promise<void>;
+  loadEarlier(): Promise<void>;
   close(): Promise<void>;
 }
-export interface WorkHubServices {
+export interface WorkHubServices extends WorkHubWorkspaceServices {
+  readonly inspector: import('../../application/contracts/session-inspector/service.js').SessionInspectorService;
   readonly surface: 'main' | 'workhub';
   readonly initialLocale: UiLocale;
   subscribeAppearance(handler: (locale: UiLocale) => void): () => void;
   readonly presentation: WorkHubPresentationBridge;
   readonly control: WorkHubControlBridge;
-  resolve(): Promise<string>;
+  bindBrowserSession(sessionId: string | null): void;
   getSession(sessionId: string): Promise<SessionSummary & { revision: number }>;
-  subscribeHosts(handler: (event: WorkHubCoordinationHostChange) => void): () => void;
-  subscribeAvailability(handler: () => void): () => void;
-  listSessions(): Promise<(SessionSummary & { revision: number })[]>;
   subscribeSessions(handler: () => void): () => void;
+  listSessions(): Promise<(SessionSummary & { revision: number })[]>;
   delegationFeedback(
     references: readonly WorkHubDelegationReference[],
   ): Promise<readonly WorkHubDelegationFeedback[]>;
-  modelChoices(sessionId: string): Promise<ChatModelChoice[]>;
+  modelChoices(sessionId?: string): Promise<ChatModelChoice[]>;
+  setDefaultModel(input: {
+    llmConnectionSlug: string;
+    model: string;
+  }): Promise<void>;
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;
+  listActiveInteractions(sessionId: string): Promise<import('@maka/core/events').ActiveInteractionRequestEvent[]>;
+  subscribeActiveInteractions(handler: (event: { sessionId: string; interactions: import('@maka/core/events').ActiveInteractionRequestEvent[] }) => void): () => void;
+  respondToUserForm(sessionId: string, response: import('@maka/core/interaction').InteractionFormResponse): Promise<void>;
+  respondToUserQuestion(sessionId: string, response: import('@maka/core/user-question').UserQuestionResponse): Promise<void>;
   answer(sessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
   enqueueMessage(sessionId: string, messageId: string, text: string, attachments: AttachmentRef[], placement: MessageQueuePlacement): Promise<'admitted' | 'unknown' | 'rejected'>;
   retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
@@ -82,6 +84,7 @@ export interface WorkHubServices {
     handler: (event: SessionEvent) => void,
     onError: (error: unknown) => void,
     onPhase: (phase: 'pending' | 'ready') => void,
+    onExecution?: (projection: import('../../../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
   ): () => void;
   openTranscript(
     sessionId: string,

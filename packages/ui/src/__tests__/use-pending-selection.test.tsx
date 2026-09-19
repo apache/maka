@@ -31,6 +31,7 @@ interface Deferred {
 
 interface Harness {
   value(): string;
+  writeCount(): number;
   pick(next: string): Promise<void>;
   render(authoritative: string): Promise<void>;
   settle(index?: number): Promise<void>;
@@ -68,6 +69,7 @@ async function mount(initial: string): Promise<Harness> {
 
   return {
     value: () => handle!.value,
+    writeCount: () => writes.length,
     pick: async (next) => {
       await act(async () => {
         handle!.onChange(next);
@@ -126,6 +128,22 @@ test('the pick holds across an unrelated authority change while the write is in 
   assert.equal(h.value(), 'B');
   await h.settle();
   assert.equal(h.value(), 'C');
+});
+
+test('picking the displayed value again never fires a write', async () => {
+  // The wheel guarded this at the option; downstream "set model" writes carry
+  // required sibling fields (thinkingLevel) that a spurious re-write resets.
+  const h = await mount('A');
+  await h.pick('A');
+  assert.equal(h.writeCount(), 0);
+  await h.pick('B');
+  assert.equal(h.writeCount(), 1);
+  // While B's write is in flight the displayed value is B — re-picking it is a
+  // no-op, but re-picking the stale authority A is a real second write.
+  await h.pick('B');
+  assert.equal(h.writeCount(), 1);
+  await h.pick('A');
+  assert.equal(h.writeCount(), 2);
 });
 
 test('latest pick wins: a slower earlier write settling does not wipe a newer pick', async () => {

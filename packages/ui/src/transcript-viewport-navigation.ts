@@ -17,7 +17,7 @@
  * under the License.
  */
 
-/** Explicit viewport commands are consumed once, never replayed on mount or growth. */
+/** Bridge conversation commands to the active surface's scroll authority. */
 export function createTranscriptViewportNavigation() {
   const listeners = new Set<(sessionId: string) => void>();
   return {

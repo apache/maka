@@ -92,67 +92,22 @@
   padding: 12px 0;
 }
 
-/* Identity sits next to the prompt; shared chat bubbles remain neutral. */
-.workhub-message-identity {
-  display: flex;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
-.workhub-result-card {
-  display: grid;
-  gap: 6px;
-  width: min(100%, 34rem);
-  padding: 9px 11px;
-  border: 1px solid color-mix(in oklch, var(--workhub-work-color) 28%, transparent);
-  border-radius: var(--radius-md);
-  background: color-mix(in oklch, var(--workhub-work-color) 5%, transparent);
-}
-
-.workhub-result-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--workhub-work-label);
-  font-size: var(--font-size-body-sm, 12px);
-}
-
-.workhub-result-heading span,
-.workhub-result-card p {
-  margin: 0;
+/* Delegation status shares the prompt's timestamp row. */
+.workhub-delegation-status {
   color: var(--muted-foreground);
-  font-size: var(--font-size-body-xs, 12px);
 }
 
-.workhub-result-card p {
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  white-space: normal;
-}
-
-.workhub-message-identity button {
-  height: auto;
-  min-height: 28px;
-  max-width: 100%;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: right;
-  color: var(--workhub-work-label);
-  font-size: var(--font-size-body-sm, 12px);
-}
+.workhub-surface { --workhub-identity-label-tone: 0.42 0.075; }
+.dark .workhub-surface { --workhub-identity-label-tone: 0.8 0.09; }
 
 .workhub-work-identity {
   --workhub-work-color: oklch(0.58 0.1 var(--workhub-work-hue));
-  --workhub-work-label: oklch(0.42 0.075 var(--workhub-work-hue));
+  --workhub-work-label: oklch(var(--workhub-identity-label-tone) var(--workhub-work-hue));
   --workhub-work-highlight: oklch(0.48 0.18 var(--workhub-work-hue));
 }
 
 .dark .workhub-work-identity {
   --workhub-work-color: oklch(0.76 0.105 var(--workhub-work-hue));
-  --workhub-work-label: oklch(0.8 0.09 var(--workhub-work-hue));
   --workhub-work-highlight: oklch(0.85 0.15 var(--workhub-work-hue));
 }
 
@@ -193,13 +148,26 @@
 
   .workHubLive, .workHubDock { width: 100%; height: 100%; min-width: 0; min-height: 0; }
   .workHubLive { position: relative; display: flex; flex-direction: column; background: var(--background); }
-  .workHubLive > .maka-chat-layout { flex: 1; min-height: 0; }
+  .workHubWorkspace { display: flex; flex: 1; min-height: 0; }
+  .workHubWorkspace > .mainColumn { display: flex; flex: 1; min-width: 0; min-height: 0; }
+  .workHubWorkspace > .mainColumn > .maka-chat-layout { flex: 1; min-height: 0; }
   .workHubLiveWelcome, .workHubDockPlaceholder { display: grid; justify-items: center; align-content: center; gap: var(--space-3); padding: var(--space-6); min-height: 220px; text-align: center; }
   .workHubDockPlaceholder { height: 100%; }
   .workHubDockBackdrop { display: block; width: 100%; height: 100%; object-fit: fill; }
   .workHubLiveWelcome p { color: var(--muted-foreground); }
   .workHubLiveError { padding: var(--space-3); }
   .workHubComposerSurface { position: relative; width: 100%; }
+  .workHubComposerContent { position: relative; }
+  /* Compact WorkHub keeps its original inline wheel footprint. Other hosts
+     keep the button footprint and paint the same wheel over that position. */
+  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-model-wheel-anchor[data-open='true'] {
+    width: min(264px, 55vw); height: var(--maka-model-wheel-height);
+  }
+  /* Selector popups stay translucent over the transparent WorkHub surface. */
+  .workHubLive .astryx-selector-popup {
+    background: color-mix(in oklch, var(--background-elevated) 94%, transparent);
+    backdrop-filter: blur(12px);
+  }
   .workHubComposerActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
   .workHubRevealMark { position: absolute; inset: 32px 0 calc(var(--workhub-composer-height, 96px) + 12px); display: grid; place-items: center; z-index: 3; color: var(--foreground); opacity: 0; pointer-events: none; }
   .workHubRevealMark svg { filter: drop-shadow(0 2px 12px var(--background)); }
@@ -236,7 +204,7 @@
   .workHubLive[data-placement='floating'] .maka-chat-layout { background: transparent; }
   /* Keep the sticky dock bottom-aligned even before the native window has
      grown enough to fit its composer, 32px scroll button and 12px gaps. */
-  .workHubLive[data-placement='floating'][data-conversation-expanded='true'] > .maka-chat-layout {
+  .workHubLive[data-placement='floating'][data-conversation-expanded='true'] > .workHubWorkspace {
     position: absolute; bottom: 0; width: 100%; height: calc(100% - 32px);
     min-height: calc(var(--workhub-composer-height, 96px) + 56px);
   }
@@ -256,7 +224,7 @@
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor { padding-right: 24px; }
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor [contenteditable='true'] { padding-block: 6px; overscroll-behavior-y: contain; scrollbar-gutter: stable; scrollbar-width: thin; scroll-padding-block: 6px; }
   .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface { position: relative; -webkit-app-region: drag; }
-  .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], a) { -webkit-app-region: no-drag; }
+  .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], dialog, a) { -webkit-app-region: no-drag; }
   .workHubExpandButton { position: absolute; top: 6px; right: 8px; z-index: 2; color: var(--muted-foreground); -webkit-app-region: no-drag; }
 
 html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { background: transparent; }
@@ -299,3 +267,68 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 @media (prefers-reduced-motion: reduce) {
   .workHubLive[data-placement='floating'], .workHubLive[data-placement='floating']::before, body:has(.workHubLive[data-placement='floating'])::after, .workHubLive[data-conversation-expanded] .workHubHistory { transition: none; }
 }
+
+/* Each message carries Work identity on its sender's edge. */
+.workhub-surface .maka-user-message {
+  border-inline-end: 4px solid transparent;
+  padding-inline-end: 12px;
+}
+
+.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > .maka-assistant-answer {
+  border-inline-start: 4px solid transparent;
+  padding-inline-start: 12px;
+}
+
+.workhub-turn-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-bottom: 0;
+}
+
+.workhub-turn-label {
+  max-width: 100%;
+  color: var(--workhub-work-label);
+  /* Approved compact identity typography, expressed through the Text role. */
+  --text-supporting-size: 11px;
+  --text-supporting-leading: 16px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.workhub-navigation-workspace {
+  color: var(--workhub-work-label);
+}
+
+.workhub-surface .maka-user-message :has(> .workhub-turn-heading) {
+  row-gap: 4px;
+}
+
+.maka-assistant-answer .workhub-turn-heading {
+  justify-content: flex-start;
+  margin-bottom: -4px;
+}
+
+.maka-assistant-answer .workhub-turn-label {
+  text-align: left;
+}
+
+
+
+/* The button owns the rounded stripe; transparent message borders reserve its
+   gutter. Hover expands only the paint, so the conversation never shifts. */
+.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > :is(.maka-user-message, .maka-assistant-answer) { position: relative; }
+.workhub-surface .workhub-message-rail { --button-icon-only-aspect: auto; position: absolute; inset-block: 0; width: 16px; min-width: 0; height: auto; border: 0; border-radius: 5px; padding: 0; background: transparent; cursor: pointer; z-index: 1; }
+.workhub-message-rail::before { content: ''; position: absolute; inset-block: 0; inset-inline-start: 0; width: 4px; border-radius: 999px; background: var(--maka-turn-accent); transform-origin: left center; transition: transform 150ms ease-out, background-color 150ms ease-out; pointer-events: none; }
+.maka-user-message .workhub-message-rail { inset-inline-end: -4px; }
+.maka-user-message .workhub-message-rail::before { inset-inline-start: auto; inset-inline-end: 0; transform-origin: right center; }
+.maka-assistant-answer .workhub-message-rail { inset-inline-start: -4px; }
+.workhub-message-rail:is(:hover, :focus-visible, [data-work-highlighted='true'])::before { transform: scaleX(1.5); }
+.workhub-message-rail:focus-visible { outline: 2px solid var(--maka-turn-accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .workhub-surface .workhub-message-rail, .workhub-message-rail::before { transition: none; }
+}
+.workhub-conversation-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 16px; }
+.workhub-conversation-filter > span { overflow-wrap: anywhere; }

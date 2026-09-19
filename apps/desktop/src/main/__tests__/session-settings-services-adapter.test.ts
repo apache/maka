@@ -27,7 +27,8 @@ test('maps session setting services to the existing compound Desktop bridge', as
   const sessions = new Proxy({}, {
     get: (_target, property) => (...args: unknown[]) => {
       calls.push({ name: String(property), args });
-      return Promise.resolve({});
+      if (property === 'abandonPlanProposal') return Promise.resolve({ ok: true, value: {} });
+      return Promise.resolve({ ok: true, session: {} });
     },
   });
   const services = createDesktopSessionSettingsServices({
@@ -42,6 +43,7 @@ test('maps session setting services to the existing compound Desktop bridge', as
   });
   await services.setPermissionMode('session-1', 'bypass');
   await services.setOrchestrationMode('session-1', 'swarm');
+  await services.abandonPlanProposal('session-1', 'proposal-1');
 
   assert.deepEqual(calls, [
     {
@@ -55,5 +57,22 @@ test('maps session setting services to the existing compound Desktop bridge', as
     },
     { name: 'setPermissionMode', args: ['session-1', 'bypass'] },
     { name: 'setOrchestrationMode', args: ['session-1', 'swarm'] },
+    { name: 'abandonPlanProposal', args: ['session-1', 'proposal-1'] },
   ]);
+});
+
+test('unwraps a plan failure only after it reaches the renderer adapter', async () => {
+  const services = createDesktopSessionSettingsServices({
+    sessions: {
+      abandonPlanProposal: async () => ({
+        ok: false,
+        error: { code: 'operation_conflict', message: 'Host refused the transition' },
+      }),
+    },
+  } as unknown as MakaBridge);
+
+  await assert.rejects(
+    () => services.abandonPlanProposal('session-1', 'proposal-1'),
+    { name: 'ExpectedOperationError', message: 'operation_conflict' },
+  );
 });

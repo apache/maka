@@ -42,6 +42,50 @@ import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite SessionStore', () => {
+  test('persists the creation-time tool mode across reloads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-mode-'));
+    let store = createSessionStore(root);
+    try {
+      const code = await store.create(makeInput({ cwd: root, toolMode: 'code_mode' }));
+      const direct = await store.create(makeInput({ cwd: root }));
+      await store.close?.();
+      store = createSessionStore(root);
+      assert.equal((await store.readHeader(code.id)).toolMode, 'code_mode');
+      assert.equal((await store.readHeader(direct.id)).toolMode, 'direct');
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('persists a plugin executor route across reloads and catalog projection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-plugin-executor-route-'));
+    let store = createSessionStore(root);
+    try {
+      const created = await store.create(
+        makeInput({
+          cwd: root,
+          executorId: 'codex',
+          llmConnectionSlug: 'executor:codex',
+          model: 'codex',
+        }),
+      );
+      assert.equal(created.backend, 'plugin-executor');
+      assert.equal(created.executorId, 'codex');
+      assert.equal(created.llmConnectionId, undefined);
+
+      await store.close?.();
+      store = createSessionStore(root);
+      const reloaded = await store.readHeader(created.id);
+      assert.equal(reloaded.backend, 'plugin-executor');
+      assert.equal(reloaded.executorId, 'codex');
+      assert.equal((await store.list())[0]?.executorId, 'codex');
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('requires the reserved WorkHub Coordination identity and role together', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-identity-role-'));
     const store = createSessionStore(root);
@@ -499,6 +543,28 @@ describe('SQLite SessionStore', () => {
       await assert.rejects(store.readCatalogRecord(staging[0]!.id), (error) =>
         isSessionNotFoundError(error),
       );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('announces import commit only after validating the complete payload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-import-commit-boundary-'));
+    const store = createSessionStore(root);
+    let commitStarted = false;
+    try {
+      await assert.rejects(
+        store.createImportedSession(
+          makeInput(),
+          [{ type: 'user' } as unknown as StoredMessage],
+          { adapterId: 'fake', sourceSessionId: 'source-1' },
+          { onCommitStarted: () => (commitStarted = true) },
+        ),
+        /Invalid stored message schema/,
+      );
+      assert.equal(commitStarted, false);
+      assert.deepEqual(await store.listHeaders(), []);
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

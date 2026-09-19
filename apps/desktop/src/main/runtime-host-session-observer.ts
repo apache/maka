@@ -18,6 +18,7 @@
  */
 
 import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
+import type { SessionObservationMessage } from '../shared/session-execution-projection.js';
 import type { SessionChangedReason, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { AgentGraphClientChangedEvent } from '@maka/runtime/stream-graph-coordinator';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
@@ -26,25 +27,24 @@ import {
   isRuntimeHostTerminalTurn as isTerminalTurn,
   projectRuntimeHostInteractionRequest,
 } from "@maka/runtime-host/adapter";
-import {
-  SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
-  type InteractionAnsweredSnapshot,
-  type InteractionPendingSnapshot,
-  type SessionDomainChange,
-  type SessionContinuitySnapshot,
-  type SubscriptionFrame,
+import type {
+  InteractionAnsweredSnapshot,
+  InteractionPendingSnapshot,
+  SessionDomainChange,
+  SessionContinuitySnapshot,
+  SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES,
-  DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE,
-  DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_HISTORY_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES,
   type DesktopTranscriptBatch,
   type DesktopTranscriptBatchPayload,
+  type DesktopTranscriptOpenMode,
   type DesktopTranscriptOpenResult,
-  type DesktopTranscriptRangeRequest,
   type DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
 import {
@@ -59,13 +59,21 @@ import {
   type DesktopTranscriptReplicaSnapshot,
 } from './desktop-transcript-replica.js';
 import {
+  encodeDesktopTranscriptBatches,
   encodeDesktopTranscriptChange,
-  encodeDesktopTranscriptPage,
   encodeDesktopTranscriptSnapshot,
 } from './desktop-transcript-ipc.js';
 
 type SessionObserverClient = Pick<DesktopRuntimeHostClient, 'openSession'> &
-  Partial<Pick<DesktopRuntimeHostClient, 'listSessionTurns' | 'setSessionReadMarker'>>;
+  Partial<
+    Pick<
+      DesktopRuntimeHostClient,
+      | 'listSessionTurns'
+      | 'listSessionTurnLandmarks'
+      | 'setSessionReadMarker'
+      | 'queryMessageExecutions'
+    >
+  >;
 
 const TRANSCRIPT_DELIVERY_TIMEOUT_MS = 30_000;
 const TRANSCRIPT_DELIVERY_WINDOW = 4;
@@ -77,7 +85,7 @@ export interface RuntimeHostRendererTarget<Payload> {
   off(event: "destroyed", listener: () => void): void;
 }
 
-export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<SessionEvent>;
+export type RuntimeHostSessionObserverTarget = RuntimeHostRendererTarget<SessionEvent | SessionObservationMessage>;
 export type RuntimeHostTranscriptTarget = RuntimeHostRendererTarget<DesktopTranscriptBatch>;
 
 export interface RuntimeHostSessionObserverDeps {
@@ -101,8 +109,8 @@ export interface RuntimeHostSessionObserverDeps {
     interactions: readonly ActiveInteractionRequestEvent[],
   ) => void;
   emitSubscriptionRecovered?: (sessionId: string) => void;
-  emitObservationSeed?: (sessionId: string, phase: 'pending' | 'ready') => void;
   recoverConnectionClosed?: boolean;
+  transcriptHistoryBytes?: number;
   now?: () => number;
 }
 
@@ -110,7 +118,6 @@ interface ObserverTargetGroup {
   readonly target: RuntimeHostSessionObserverTarget;
   readonly observerIds: Set<string>;
   readonly destroyedListener: () => void;
-  seeded: boolean;
 }
 
 interface ObservedSessionState {
@@ -132,21 +139,13 @@ interface TranscriptConsumer {
   readonly consumerId: string;
   readonly target: RuntimeHostTranscriptTarget;
   generation: string;
-  /** The standing replacement; a read naming an older one has been abandoned. */
-  navigation: number;
   deliverySequence: number;
   deliveryBytes: number;
   deliveryTask?: Promise<void>;
   resetRequested: boolean;
-  /**
-   * Set only when the reset answers a navigation command, and stamped on that
-   * snapshot so the window can tell its own answer from a replacement it did
-   * not ask for. A reset from recovery or from an error carries no version:
-   * the window applies it to whatever it holds, under any navigation.
-   */
-  resetNavigation?: number;
-  /** Page answers queued behind the delivery loop so they never interleave with a change. */
-  readonly pendingPages: PendingTranscriptPage[];
+  /** An earlier read to send, reading down to `floor` when it is set. */
+  earlierRequested: false | { readonly floor: number | null };
+  readonly history?: TranscriptHistory;
   pendingChange?: PendingTranscriptChange;
   readonly pendingDeliveries: Map<number, {
     readonly generation: string;
@@ -156,18 +155,20 @@ interface TranscriptConsumer {
   }>;
 }
 
+/** Where a history consumer's delivered history ends. */
+interface TranscriptHistory {
+  throughSequence: number | null;
+  started: boolean;
+  cursor: string | null;
+  /** The oldest sequence delivered so far; a reset reads down to it again. */
+  oldestSequence: number | null;
+}
+
 interface PendingTranscriptChange {
-  coversFrom: number | null | undefined;
+  readonly coversFrom: number | null;
   durableThrough: number | null;
   readonly durableUpserts: Map<number, PendingTranscriptUpsert>;
   encodedBytes: number;
-}
-
-interface PendingTranscriptPage {
-  readonly navigation: number;
-  readonly generation: string;
-  readonly batches: Iterable<DesktopTranscriptBatchPayload>;
-  readonly encodedBytes: number;
 }
 
 interface PendingTranscriptUpsert {
@@ -185,6 +186,7 @@ interface ObserverRegistration {
   readonly state: ObservedSessionState;
   readonly group: ObserverTargetGroup;
   readonly ptyRef?: string;
+  seeded: boolean;
 }
 
 interface SubscriptionFailureIdentity {
@@ -224,11 +226,8 @@ export class RuntimeHostSessionObserver {
     interactions: readonly ActiveInteractionRequestEvent[],
   ) => void;
   readonly #emitSubscriptionRecovered: (sessionId: string) => void;
-  readonly #emitObservationSeed: (
-    sessionId: string,
-    phase: 'pending' | 'ready',
-  ) => void;
   readonly #recoverConnectionClosed: boolean;
+  readonly #transcriptHistoryBytes: number;
   readonly #now: () => number;
   #closed = false;
   #transcriptAccessClock = 0;
@@ -251,8 +250,8 @@ export class RuntimeHostSessionObserver {
       deps.emitActiveInteractionsChanged ?? (() => undefined);
     this.#emitSubscriptionRecovered =
       deps.emitSubscriptionRecovered ?? (() => undefined);
-    this.#emitObservationSeed = deps.emitObservationSeed ?? (() => undefined);
     this.#recoverConnectionClosed = deps.recoverConnectionClosed ?? false;
+    this.#transcriptHistoryBytes = deps.transcriptHistoryBytes ?? DESKTOP_TRANSCRIPT_HISTORY_MAX_BYTES;
     this.#now = deps.now ?? Date.now;
   }
 
@@ -260,6 +259,13 @@ export class RuntimeHostSessionObserver {
     sessionId: string,
     consumerId: string,
     target: RuntimeHostTranscriptTarget,
+    mode: DesktopTranscriptOpenMode = 'tail',
+    /**
+     * The oldest sequence the reader behind this consumer already holds. A
+     * consumer is new after the connection is replaced; the reader is not, so
+     * the first answer reads back down to here instead of to one budget.
+     */
+    resumeFrom?: number,
   ): Promise<DesktopTranscriptOpenResult> {
     this.#assertOpen();
     if (
@@ -311,11 +317,20 @@ export class RuntimeHostSessionObserver {
       consumerId,
       target,
       generation: replica.generation,
-      navigation: 0,
       deliverySequence: 0,
       deliveryBytes: 0,
       resetRequested: false,
-      pendingPages: [],
+      earlierRequested: false,
+      ...(mode === 'history'
+        ? {
+            history: {
+              throughSequence: null,
+              started: false,
+              cursor: null,
+              oldestSequence: resumeFrom ?? null,
+            },
+          }
+        : {}),
       pendingDeliveries: new Map(),
     };
     state.transcriptConsumers.set(consumerId, consumer);
@@ -347,176 +362,51 @@ export class RuntimeHostSessionObserver {
     }
   }
 
-  async loadTranscriptBefore(
-    request: DesktopTranscriptRangeRequest,
+  /**
+   * Delivers the next history budget older than what the consumer holds, and
+   * past it down to `throughSequence` when given, in one answer.
+   */
+  async loadEarlierTranscript(
+    consumerId: string,
     targetId?: number,
+    throughSequence?: number,
   ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, false, async (replica, isCurrent) => {
-      const page = await replica.loadBefore(
-        request.anchorSequence,
-        requireTranscriptRangeBytes(request.maxBytes),
-        isCurrent,
-      );
-      return page && {
-        batches: encodeDesktopTranscriptPage(this.#pageIdentity(replica, request), page, {
-          direction: 'older', anchor: request.anchorSequence,
-        }),
-        bytes: page.durable,
-      };
-    });
-  }
-
-  async loadTranscriptAfter(
-    request: DesktopTranscriptRangeRequest,
-    targetId?: number,
-  ): Promise<void> {
-    await this.#runTranscriptRangeOperation(request, targetId, false, async (replica, isCurrent) => {
-      const page = await replica.loadAfter(
-        request.anchorSequence,
-        requireTranscriptRangeBytes(request.maxBytes),
-        isCurrent,
-      );
-      return page && {
-        batches: encodeDesktopTranscriptPage(this.#pageIdentity(replica, request), page, {
-          direction: 'newer', anchor: request.anchorSequence,
-        }),
-        bytes: page.durable,
-      };
-    });
-  }
-
-  async loadTranscriptAround(
-    request: DesktopTranscriptRangeRequest,
-    targetId?: number,
-  ): Promise<void> {
-    if (request.anchorSequence === null) {
-      throw new Error('Desktop transcript around request requires an anchor');
+    const state = this.#transcriptConsumers.get(consumerId);
+    const consumer = state?.transcriptConsumers.get(consumerId);
+    if (!state || !consumer?.history) {
+      throw new Error('Desktop transcript history consumer does not exist');
     }
-    const sequence = request.anchorSequence;
-    await this.#runTranscriptRangeOperation(request, targetId, true, async (replica, isCurrent) => {
-      const snapshot = await replica.loadAround(
-        sequence,
-        requireTranscriptRangeBytes(request.maxBytes),
-        isCurrent,
-      );
-      return snapshot && {
-        batches: encodeDesktopTranscriptSnapshot(snapshot, request.navigation),
-        bytes: [...snapshot.durable, ...snapshot.overlay.map((message) => ({ message }))],
-      };
-    });
-  }
-
-  async loadTranscriptLatest(
-    request: DesktopTranscriptRangeRequest,
-    targetId?: number,
-  ): Promise<void> {
-    const { state, replica, consumer } = this.#admitTranscriptNavigation(request, targetId, true);
-    if (!consumer) return;
-    // This answer is the tail cache, and global reclaim trims that cache even
-    // while the Session is open (`#touchReplica`). Refill it first or a reader
-    // returning to latest is answered with less than a tail.
-    await replica.refillTail(
-      requireTranscriptRangeBytes(request.maxBytes),
-      this.#transcriptReadIsCurrent(state, replica, consumer, request),
-    );
-    if (!this.#transcriptReadIsCurrent(state, replica, consumer, request)()) return;
-    consumer.resetRequested = true;
-    consumer.resetNavigation = request.navigation;
+    if (targetId !== undefined && consumer.target.id !== targetId) {
+      throw new Error('Desktop transcript consumer belongs to another renderer');
+    }
+    const floors = [consumer.earlierRequested ? consumer.earlierRequested.floor : null, throughSequence]
+      .filter((floor): floor is number => typeof floor === 'number');
+    consumer.earlierRequested = { floor: floors.length === 0 ? null : Math.min(...floors) };
     await this.#scheduleTranscriptDelivery(state, consumer);
+    // The loop may have been finishing when the request arrived.
+    if (consumer.earlierRequested) await this.#scheduleTranscriptDelivery(state, consumer);
     this.#touchReplica(state);
   }
 
-  #pageIdentity(replica: DesktopTranscriptReplica, request: DesktopTranscriptRangeRequest) {
-    return {
-      sessionId: replica.sessionId,
-      generation: replica.generation,
-      hostEpoch: replica.hostEpoch,
-      navigation: request.navigation,
-    };
-  }
-
-  /**
-   * Main's navigation number is a cancellation hint and nothing more: dropping
-   * it would leave the system correct, because the Renderer decides what its
-   * window can splice from the anchors the answers carry. What it buys is not
-   * reading and shipping pages for a window the reader has already left.
-   */
-  #admitTranscriptNavigation(
-    request: DesktopTranscriptRangeRequest,
-    targetId: number | undefined,
-    replaces: boolean,
-  ): { state: ObservedSessionState; replica: DesktopTranscriptReplica; consumer?: TranscriptConsumer } {
-    const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
-    const navigation = request.navigation;
-    if (!Number.isSafeInteger(navigation) || navigation < 0) throw new Error('Invalid transcript navigation version');
-    if (navigation < consumer.navigation) return { state, replica };
-    if (replaces && navigation > consumer.navigation) {
-      consumer.navigation = navigation;
-      // Every queued answer was read for a window this replacement discards.
-      consumer.pendingPages.splice(0).forEach((page) =>
-        this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes),
-      );
-    }
-    return { state, replica, consumer };
-  }
-
-  /** Asked before a read is started and again before its answer is sent. */
-  #deliversTranscriptPage(consumer: TranscriptConsumer, navigation: number): boolean {
-    return navigation >= consumer.navigation;
-  }
-
-  /** Whether a Host read still belongs to the window that asked for it. */
-  #transcriptReadIsCurrent(
-    state: ObservedSessionState,
-    replica: DesktopTranscriptReplica,
-    consumer: TranscriptConsumer,
-    request: DesktopTranscriptRangeRequest,
-  ): () => boolean {
-    return () =>
-      state.replica === replica &&
-      state.transcriptConsumers.get(request.consumerId) === consumer &&
-      this.#deliversTranscriptPage(consumer, request.navigation);
-  }
-
-  async #runTranscriptRangeOperation(
-    request: DesktopTranscriptRangeRequest,
-    targetId: number | undefined,
-    replaces: boolean,
-    operation: (
-      replica: DesktopTranscriptReplica,
-      isCurrent: () => boolean,
-    ) => Promise<
-      | { batches: Iterable<DesktopTranscriptBatchPayload>; bytes: readonly { readonly message: StoredMessage }[] }
-      | undefined
-    >,
-  ): Promise<void> {
-    const { state, replica, consumer } = this.#admitTranscriptNavigation(request, targetId, replaces);
-    if (!consumer) return;
-    const isCurrent = this.#transcriptReadIsCurrent(state, replica, consumer, request);
-    let answer: Awaited<ReturnType<typeof operation>>;
+  /** Every message of one Turn, whether or not any consumer holds it. */
+  async readTranscriptTurn(sessionId: string, turnId: string): Promise<StoredMessage[]> {
+    this.#assertOpen();
+    const state = this.#state(sessionId);
+    state.pendingTranscriptConsumers += 1;
     try {
-      answer = await operation(replica, isCurrent);
-    } catch (error) {
-      // A replaced replica's failure is not a failure of the current window.
-      if (!isCurrent()) return;
-      throw error;
+      await state.subscriptionOwner.waitUntilReady();
+      if (!state.replica?.resident) await state.subscriptionOwner.refresh();
+      const replica = state.replica;
+      if (!replica?.resident) throw new Error('Desktop transcript replica is unavailable');
+      const landmark = (await this.#client.listSessionTurnLandmarks?.(sessionId, turnId))
+        ?.landmarks[0];
+      if (!landmark) return replica.messagesForTurn(turnId);
+      return await replica.readTurn(turnId, landmark, DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES);
+    } finally {
+      state.pendingTranscriptConsumers -= 1;
+      this.#touchReplica(state);
+      void this.#closeIfIdle(state);
     }
-    if (!answer || !isCurrent()) return;
-    const encodedBytes = answer.bytes.reduce(
-      (total, { message }) => total + encodedTranscriptMessageBytes(message),
-      0,
-    );
-    if (!this.#adjustTranscriptDeliveryBytes(consumer, encodedBytes)) {
-      throw new Error('Desktop transcript delivery capacity was reached');
-    }
-    consumer.pendingPages.push({
-      navigation: request.navigation,
-      generation: replica.generation,
-      batches: answer.batches,
-      encodedBytes,
-    });
-    await this.#scheduleTranscriptDelivery(state, consumer);
-    if (isCurrent()) this.#touchReplica(state);
   }
 
   async closeTranscript(consumerId: string, targetId?: number): Promise<void> {
@@ -602,7 +492,7 @@ export class RuntimeHostSessionObserver {
     target: RuntimeHostSessionObserverTarget,
     messageAdmissions = false,
     ptyRef?: string,
-  ): Promise<readonly SessionEvent[]> {
+  ): Promise<void> {
     this.#assertOpen();
     const previous = this.#observers.get(observerId);
     if (previous) {
@@ -612,7 +502,9 @@ export class RuntimeHostSessionObserver {
       ) {
         throw new Error("Runtime Host Session observer identity was reused");
       }
-      return previous.state.projector?.seedActive(true) ?? [];
+      await previous.state.subscriptionOwner.waitUntilReady();
+      if (!previous.seeded) this.#seedTarget(previous.state, previous.group, observerId);
+      return;
     }
     const state = this.#state(sessionId);
     if (messageAdmissions && !state.messageAdmissions) {
@@ -628,18 +520,19 @@ export class RuntimeHostSessionObserver {
         target,
         observerIds: new Set(),
         destroyedListener,
-        seeded: false,
       };
       state.targets.set(target.id, group);
       target.once("destroyed", destroyedListener);
     }
     group.observerIds.add(observerId);
-    this.#observers.set(observerId, { state, group, ptyRef });
+    const registration = { state, group, ptyRef, seeded: false };
+    this.#observers.set(observerId, registration);
     try {
       await state.subscriptionOwner.waitUntilReady();
       if (ptyRef) await this.#syncPtyInterests(state);
-      this.#seedTarget(state, group);
-      return state.projector?.seedActive(true) ?? [];
+      if (this.#observers.get(observerId) === registration && !registration.seeded) {
+        this.#seedTarget(state, group, observerId);
+      }
     } catch (error) {
       this.#detachObserver(observerId);
       throw error;
@@ -789,6 +682,7 @@ export class RuntimeHostSessionObserver {
         this.#prepareSubscriptionActivation(state, subscription, recovered),
       acceptFrame: (frame) => this.#acceptFrame(state, frame),
       recoveryStarted: (error) => {
+        this.#broadcast(state.sessionId, { type: 'host_observation_pending' });
         console.warn(
           "[runtime-host-session-observer] recovering subscription",
           subscriptionFailureIdentity(state, error),
@@ -829,11 +723,25 @@ export class RuntimeHostSessionObserver {
     return state;
   }
 
-  #seedTarget(state: ObservedSessionState, group: ObserverTargetGroup): void {
-    if (group.seeded) return;
-    group.seeded = true;
-    for (const event of state.projector?.seedActive(true) ?? []) {
-      this.#send(state, group, event);
+  #seedTarget(
+    state: ObservedSessionState,
+    group: ObserverTargetGroup,
+    observerId?: string,
+    events = state.projector?.seedActive(true) ?? [],
+  ): void {
+    if (!state.snapshot || !state.replica) return;
+    const observerIds = observerId ? [observerId] : [...group.observerIds];
+    this.#send(state, group, {
+      type: 'host_observation_seed',
+      observerIds,
+      execution: { type: 'host_execution', available: true, rootTurn: state.snapshot.rootTurn },
+      events,
+    });
+    // Activation may seed a subscriber before its observe() wait resumes.
+    // Track delivery per registration, not per window or execution Turn.
+    for (const id of observerIds) {
+      const registration = this.#observers.get(id);
+      if (registration) registration.seeded = true;
     }
   }
 
@@ -879,6 +787,10 @@ export class RuntimeHostSessionObserver {
     const update = state.projector?.accept(frame);
     if (!update || !state.projector) return;
     state.snapshot = state.projector.snapshot;
+    if (update.previousSnapshot) {
+      for (const group of state.targets.values()) this.#sendExecution(state, group);
+      await this.#reconcileRemovedQueueMessages(state, update.previousSnapshot, state.snapshot);
+    }
     for (const event of update.events) {
       this.#broadcast(state.sessionId, event);
       if (event.type === "tool_result") {
@@ -917,7 +829,50 @@ export class RuntimeHostSessionObserver {
     }
   }
 
-  #broadcast(sessionId: string, event: SessionEvent): void {
+  async #reconcileRemovedQueueMessages(
+    state: ObservedSessionState,
+    previous: SessionContinuitySnapshot,
+    next: SessionContinuitySnapshot,
+  ): Promise<void> {
+    if (!state.messageAdmissions || !this.#client.queryMessageExecutions
+      || previous.queue.hostEpoch !== next.queue.hostEpoch) return;
+    const retained = new Set(
+      [...next.queue.steering, ...next.queue.followup].map((entry) => entry.messageId),
+    );
+    // A queue removal can be delivery, promotion or cancellation. Only Host
+    // proof can retire the transient or name the successor; the snapshot's
+    // current root alone cannot. A queue contains at most 64 message identities.
+    const messageIds = [...previous.queue.steering, ...previous.queue.followup]
+      .filter((entry) => !retained.has(entry.messageId))
+      .map((entry) => entry.messageId);
+    if (messageIds.length === 0) return;
+    const projector = state.projector;
+    try {
+      const { resolutions } = await this.#client.queryMessageExecutions({
+        sessionId: state.sessionId, messageIds,
+      });
+      if (this.#closed || state.closing || state.projector !== projector) return;
+      for (const resolution of resolutions) {
+        if (resolution.state === 'pending') continue;
+        const turnId = resolution.state === 'owned'
+          ? resolution.turnId : (next.rootTurn ?? previous.rootTurn)?.turnId;
+        if (!turnId) continue;
+        this.#broadcast(state.sessionId, {
+          type: 'message_admission',
+          id: `host-message-resolution:${next.queue.hostEpoch}:${next.queue.queueRevision}:${resolution.messageId}`,
+          turnId,
+          ts: this.#now(),
+          messageId: resolution.messageId,
+          outcome: resolution.state === 'owned' ? 'admitted' : 'retracted',
+        });
+      }
+    } catch {
+      // Keep unproven messages visible. Durable transcript admission or the
+      // next observation recovery can resolve them without guessing a result.
+    }
+  }
+
+  #broadcast(sessionId: string, event: SessionEvent | SessionObservationMessage): void {
     const state = this.#states.get(sessionId);
     if (!state) return;
     for (const group of state.targets.values()) {
@@ -925,10 +880,19 @@ export class RuntimeHostSessionObserver {
     }
   }
 
+  #sendExecution(state: ObservedSessionState, group: ObserverTargetGroup): void {
+    if (!state.snapshot || !state.replica) return;
+    this.#send(state, group, {
+      type: 'host_execution',
+      available: true,
+      rootTurn: state.snapshot.rootTurn,
+    });
+  }
+
   #send(
     state: ObservedSessionState,
     group: ObserverTargetGroup,
-    event: SessionEvent,
+    event: SessionEvent | SessionObservationMessage,
   ): void {
     try {
       group.target.send(sessionEventChannel(state.sessionId), event);
@@ -940,26 +904,18 @@ export class RuntimeHostSessionObserver {
 
   #publishSubscriptionFailure(
     state: ObservedSessionState,
-    error: unknown,
+    error: Error,
   ): void {
     const root = state.snapshot?.rootTurn;
-    const reason =
-      error instanceof RuntimeHostSubscriptionError
-        ? error.reason
-        : "subscription_closed";
-    if (root && !isTerminalTurn(root)) {
-      this.#broadcast(state.sessionId, {
-        type: "error",
-        id: `host-subscription-error:${root.runId}`,
-        turnId: root.turnId,
-        ts: this.#now(),
-        recoverable: true,
-        reason,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Runtime Host Session subscription closed",
-      });
+    this.#broadcast(state.sessionId, { type: 'host_observation_pending' });
+    for (const group of state.targets.values()) {
+      try {
+        group.target.send(sessionEventChannel(state.sessionId), {
+          type: 'host_observation_error', message: error.message,
+        });
+      } catch {
+        this.#detachTarget(state, group);
+      }
     }
     this.#emitSessionsChanged(
       "status-change",
@@ -1057,15 +1013,11 @@ export class RuntimeHostSessionObserver {
       this.#touchReplica(state);
 
       if (replacement) {
-        this.#emitObservationSeed(state.sessionId, 'pending');
-        for (const event of replacement.terminalEvents) {
-          this.#broadcast(state.sessionId, event);
+        for (const group of state.targets.values()) {
+          this.#seedTarget(state, group, undefined, [
+            ...replacement.terminalEvents, ...replacement.activeEvents,
+          ]);
         }
-        for (const event of replacement.activeEvents) {
-          this.#broadcast(state.sessionId, event);
-        }
-        for (const group of state.targets.values()) group.seeded = true;
-        this.#emitObservationSeed(state.sessionId, 'ready');
         for (const turnId of replacement.terminalTurnIds) {
           this.#finishWatchedTurn(state, turnId, "completed");
           this.#emitSessionsChanged("turn-status-change", state.sessionId, {
@@ -1155,21 +1107,27 @@ export class RuntimeHostSessionObserver {
   }
 
   async #closeIfIdle(state: ObservedSessionState): Promise<void> {
-    if (
+    if (this.#isRetained(state)) return;
+    await Promise.resolve();
+    if (!this.#isRetained(state)) {
+      await this.#closeState(state);
+    }
+  }
+
+  /**
+   * A running root Turn keeps the subscription whether or not anyone is
+   * looking: the Host goes on producing either way, and letting go here only
+   * makes the next viewer ask it to send everything a second time.
+   */
+  #isRetained(state: ObservedSessionState): boolean {
+    const root = state.snapshot?.rootTurn;
+    return (
       state.targets.size > 0 ||
       state.watchedTurnIds.size > 0 ||
       state.transcriptConsumers.size > 0 ||
-      state.pendingTranscriptConsumers > 0
-    ) return;
-    await Promise.resolve();
-    if (
-      state.targets.size === 0 &&
-      state.watchedTurnIds.size === 0 &&
-      state.transcriptConsumers.size === 0 &&
-      state.pendingTranscriptConsumers === 0
-    ) {
-      await this.#closeState(state);
-    }
+      state.pendingTranscriptConsumers > 0 ||
+      (root !== null && root !== undefined && !isTerminalTurn(root))
+    );
   }
 
   #finishWatchedTurn(
@@ -1314,38 +1272,31 @@ export class RuntimeHostSessionObserver {
         while (state.transcriptConsumers.get(consumer.consumerId) === consumer) {
           if (consumer.resetRequested) {
             consumer.resetRequested = false;
-            const resetNavigation = consumer.resetNavigation;
-            consumer.resetNavigation = undefined;
             this.#clearPendingTranscriptChange(consumer);
             const replica = state.replica;
             if (!replica?.resident || state.closing) return;
+            consumer.generation = replica.generation;
+            if (consumer.history) {
+              await this.#sendTranscriptHistory(state, consumer, consumer.history, replica, true);
+              continue;
+            }
             const deliveryBytes = resetDeliveryWorkingSetBytes(replica.residentBytes);
             if (!this.#adjustTranscriptDeliveryBytes(consumer, deliveryBytes)) {
               throw new Error('Desktop transcript delivery capacity was reached');
             }
-            consumer.generation = replica.generation;
             try {
-              await this.#sendTranscriptBatches(
-                consumer,
-                encodeDesktopTranscriptSnapshot(replica.snapshot(), resetNavigation),
-              );
+              await this.#sendTranscriptBatches(consumer, encodeDesktopTranscriptSnapshot(replica.snapshot()));
             } finally {
               this.#adjustTranscriptDeliveryBytes(consumer, -deliveryBytes);
             }
             continue;
           }
-          const page = consumer.pendingPages.shift();
-          if (page) {
-            try {
-              if (
-                this.#deliversTranscriptPage(consumer, page.navigation) &&
-                page.generation === consumer.generation &&
-                state.replica?.generation === consumer.generation
-              ) {
-                await this.#sendTranscriptBatches(consumer, page.batches);
-              }
-            } finally {
-              this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes);
+          if (consumer.earlierRequested) {
+            const { floor } = consumer.earlierRequested;
+            consumer.earlierRequested = false;
+            const replica = state.replica;
+            if (consumer.history && replica?.resident && replica.generation === consumer.generation) {
+              await this.#sendTranscriptHistory(state, consumer, consumer.history, replica, false, floor);
             }
             continue;
           }
@@ -1398,17 +1349,108 @@ export class RuntimeHostSessionObserver {
   }
 
   /**
-   * Coalesces tail growth for one consumer. A merged change can only keep rows
-   * while each change starts where the last one ended; where it does not, the
-   * rows go and the merge carries nothing but the watermark, which is enough
-   * for the window to learn it has fallen behind and read forward itself.
+   * One history answer: a reset reads the newest whole Turns through the tail
+   * watermark; an earlier read continues below what was delivered. Each answer
+   * stops at a Turn boundary once it reaches its byte budget and its floor.
+   *
+   * A reset replaces everything the reader holds, so its floor is the oldest
+   * sequence this consumer was already given. Stopping at one budget would
+   * take back history the reader had loaded.
    */
+  async #sendTranscriptHistory(
+    state: ObservedSessionState,
+    consumer: TranscriptConsumer,
+    history: TranscriptHistory,
+    replica: DesktopTranscriptReplica,
+    reset: boolean,
+    floor: number | null = null,
+  ): Promise<void> {
+    let earlierThan: number | undefined;
+    if (reset) {
+      const snapshot = replica.snapshot();
+      floor = history.oldestSequence;
+      Object.assign(history, {
+        throughSequence: snapshot.durableThrough,
+        started: false,
+        cursor: null,
+        oldestSequence: null,
+      });
+    } else {
+      if (history.oldestSequence === null || !historyHasOlder(history)) return;
+      earlierThan = history.oldestSequence;
+    }
+    const budget = this.#transcriptHistoryBytes;
+    const identity = { sessionId: replica.sessionId, generation: replica.generation, hostEpoch: replica.hostEpoch };
+    const isCurrent = () =>
+      state.replica === replica &&
+      state.transcriptConsumers.get(consumer.consumerId) === consumer &&
+      !consumer.resetRequested;
+    let first = true;
+    /** Whether the oldest Turn in what has been read so far is whole. */
+    let beginsAtTurnBoundary = true;
+    const send = async (durable: readonly DesktopSequencedTranscriptMessage[], ready: boolean) => {
+      if (!ready && durable.length === 0) return;
+      await this.#sendTranscriptBatches(
+        consumer,
+        encodeDesktopTranscriptBatches(identity, {
+          durableThrough: history.throughSequence,
+          durable,
+          hasOlder: historyHasOlder(history),
+          beginsAtTurnBoundary,
+          ...(earlierThan === undefined ? {} : { earlierThan }),
+          reset: reset && first,
+          ready,
+        }),
+      );
+      first = false;
+    };
+    let bytes = 0;
+    while (history.throughSequence !== null && historyHasOlder(history)) {
+      let page: Awaited<ReturnType<DesktopTranscriptReplica['readOlderPage']>>;
+      try {
+        page = await replica.readOlderPage(history.throughSequence, history.cursor);
+      } catch (error) {
+        if (!isCurrent()) return;
+        throw error;
+      }
+      if (!isCurrent()) return;
+      history.started = true;
+      history.cursor = page.nextCursor;
+      beginsAtTurnBoundary = page.endsAtTurnBoundary;
+      const rows = page.durable;
+      const rowsBytes = rows.reduce(
+        (total, entry) => total + encodedTranscriptMessageBytes(entry.message),
+        0,
+      );
+      if (!this.#adjustTranscriptDeliveryBytes(consumer, rowsBytes)) {
+        throw new Error('Desktop transcript delivery capacity was reached');
+      }
+      bytes += rowsBytes;
+      if (rows.length > 0) history.oldestSequence = rows[0]!.sequence;
+      try {
+        await send(rows, false);
+      } finally {
+        this.#adjustTranscriptDeliveryBytes(consumer, -rowsBytes);
+      }
+      if (!isCurrent()) return;
+      const reachedFloor =
+        floor === null || (history.oldestSequence !== null && history.oldestSequence <= floor);
+      // The Host cuts its pages by bytes, so where an answer may end is the
+      // Host's to say: a page that leaves a Turn half-read is read past,
+      // however much of the budget has already been spent.
+      if (bytes >= budget && reachedFloor && page.endsAtTurnBoundary) break;
+    }
+    if (isCurrent()) await send([], true);
+  }
+
+  /** Coalesces tail growth for one consumer; a change that does not join the pending one needs a reset. */
   #mergeTranscriptChange(
     consumer: TranscriptConsumer,
     change: DesktopTranscriptReplicaChange,
   ): boolean {
     if (consumer.resetRequested) return true;
     const existing = consumer.pendingChange;
+    if (existing && existing.durableThrough !== change.coversFrom) return false;
     const pending = existing ?? {
       coversFrom: change.coversFrom,
       durableThrough: change.durableThrough,
@@ -1416,15 +1458,8 @@ export class RuntimeHostSessionObserver {
       encodedBytes: 0,
     };
     let byteDelta = 0;
-    const joins = !existing ||
-      (pending.coversFrom !== undefined && pending.durableThrough === change.coversFrom);
-    if (!joins) {
-      for (const { encodedBytes } of pending.durableUpserts.values()) byteDelta -= encodedBytes;
-      pending.durableUpserts.clear();
-      pending.coversFrom = undefined;
-    }
     pending.durableThrough = change.durableThrough;
-    for (const entry of joins ? change.durableUpserts : []) {
+    for (const entry of change.durableUpserts) {
       const previous = pending.durableUpserts.get(entry.sequence);
       if (previous) byteDelta -= previous.encodedBytes;
       const encodedBytes = encodedTranscriptMessageBytes(entry.message);
@@ -1540,42 +1575,6 @@ export class RuntimeHostSessionObserver {
     await Promise.all(deliveries);
   }
 
-  #requireTranscriptConsumer(
-    request: DesktopTranscriptRangeRequest,
-    targetId?: number,
-  ): {
-    state: ObservedSessionState;
-    replica: DesktopTranscriptReplica;
-    consumer: TranscriptConsumer;
-  } {
-    const state = this.#transcriptConsumers.get(request.consumerId);
-    const consumer = state?.transcriptConsumers.get(request.consumerId);
-    const replica = state?.replica;
-    if (!state || !consumer || !replica) {
-      throw new Error('Desktop transcript consumer does not exist');
-    }
-    if (targetId !== undefined && consumer.target.id !== targetId) {
-      throw new Error('Desktop transcript consumer belongs to another renderer');
-    }
-    // Durable transcript sequence identities belong to the Session and the
-    // Runtime Host epoch, not to a Desktop replica generation. Recovery may
-    // install a replacement replica (new generation, same session and host
-    // epoch) after the renderer dispatches a range request; continue that
-    // read against the current replica so navigation completes across
-    // reconnect. When the Host itself is replaced, sequence identity is not
-    // preserved, so reject the stale request instead of silently reading a
-    // different slice.
-    if (state.sessionId !== request.sessionId) {
-      throw new Error('Desktop transcript consumer belongs to another session');
-    }
-    if (replica.hostEpoch !== request.hostEpoch) {
-      throw new Error(
-        `${DESKTOP_TRANSCRIPT_HOST_EPOCH_CHANGED_CODE}: Desktop transcript host epoch changed; reopen the transcript`,
-      );
-    }
-    return { state, replica, consumer };
-  }
-
   #detachTranscriptConsumer(
     state: ObservedSessionState,
     consumer: TranscriptConsumer,
@@ -1584,10 +1583,8 @@ export class RuntimeHostSessionObserver {
     state.transcriptConsumers.delete(consumer.consumerId);
     this.#transcriptConsumers.delete(consumer.consumerId);
     consumer.resetRequested = false;
+    consumer.earlierRequested = false;
     this.#clearPendingTranscriptChange(consumer);
-    consumer.pendingPages.splice(0).forEach((page) =>
-      this.#adjustTranscriptDeliveryBytes(consumer, -page.encodedBytes),
-    );
     for (const pending of consumer.pendingDeliveries.values()) {
       pending.reject(new Error('Desktop transcript consumer was closed'));
     }
@@ -1656,20 +1653,13 @@ function encodedTranscriptMessageBytes(message: StoredMessage): number {
   return Buffer.byteLength(JSON.stringify(message), 'utf8');
 }
 
-function requireTranscriptRangeBytes(value: number): number {
-  if (
-    !Number.isSafeInteger(value) ||
-    value < 1 ||
-    value > DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES
-  ) {
-    throw new Error('Invalid Desktop transcript range byte limit');
-  }
-  return value;
+function historyHasOlder(history: TranscriptHistory): boolean {
+  return history.started ? history.cursor !== null : history.throughSequence !== null;
 }
 
 function resetDeliveryWorkingSetBytes(residentBytes: number): number {
   return (
-    Math.min(residentBytes, SESSION_TRANSCRIPT_RANGE_MAX_BYTES) +
+    Math.min(residentBytes, DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES) +
     Math.min(
       residentBytes,
       (TRANSCRIPT_DELIVERY_WINDOW * 2 + 1) * DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
@@ -1707,6 +1697,7 @@ function replacementProjection(
   const previousRoot = previous.rootTurn;
   const root = next.rootTurn;
   const terminalEvents: SessionEvent[] = [];
+  const seedEvents = projector.seedActive(true);
   if (previousRoot && !isTerminalTurn(previousRoot)) {
     if (!root || root.runId !== previousRoot.runId) {
       const stored = projector.seedStoredTerminal(
@@ -1725,7 +1716,7 @@ function replacementProjection(
       }
       terminalEvents.push(...stored);
     } else if (isTerminalTurn(root)) {
-      terminalEvents.push(...projector.seedTerminal(root));
+      terminalEvents.push(...seedEvents.splice(0), ...projector.seedTerminal(root));
     }
   }
   if (
@@ -1733,12 +1724,11 @@ function replacementProjection(
     isTerminalTurn(root) &&
     (!previousRoot || previousRoot.runId !== root.runId)
   ) {
-    terminalEvents.push(...projector.seedTerminal(root));
+    terminalEvents.push(...seedEvents.splice(0), ...projector.seedTerminal(root));
   }
   return {
     terminalEvents,
-    activeEvents:
-      root && !isTerminalTurn(root) ? projector.seedActive(true) : [],
+    activeEvents: seedEvents,
     terminalTurnIds: new Set(
       terminalEvents.filter(isTerminalSessionEvent).map((event) => event.turnId),
     ),

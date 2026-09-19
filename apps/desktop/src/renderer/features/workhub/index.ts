@@ -24,7 +24,6 @@ export {
 } from './model/linked-work.js';
 export { projectWorkHubDelegationState, workHubTurnResultPreview } from './model/delegation-feedback.js';
 export { WorkHubNavigationRail } from './ui/workhub-navigation-rail.js';
-export { WorkHubResultCard } from './ui/workhub-conversation.js';
 export type { WorkHubServices, WorkHubTranscriptSnapshot } from './ports.js';
 export { WorkHubServicesProvider } from './services.js';
 export { WorkHubRoot } from './ui/workhub-root.js';
@@ -32,5 +31,9 @@ export { WorkHubDock } from './ui/workhub-dock.js';
 export { WorkHubSurfaceSwitch } from './ui/workhub-surface-switch.js';
 export { WorkHubControlOverlay } from './ui/control-overlay.js';
 export { WorkHubMainNavigation } from './ui/main-navigation.js';
-export { startWorkHubCoordinationLifecycle, type WorkHubCoordinationHostChange } from './controller/coordination-lifecycle.js';
+export {
+  startWorkHubCoordinationLifecycle,
+  WorkHubModelConfigurationRequiredError,
+  type WorkHubCoordinationHostChange,
+} from '../../application/contracts/workhub-workspace/coordination-lifecycle.js';
 export { WorkHubReturnButton } from './ui/return-button.js';

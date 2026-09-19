@@ -46,6 +46,14 @@ function statusHasSpinner(toolStatuses: readonly ('running' | 'completed')[]): b
     </LocaleProvider>,
   );
   const { document } = parseHTML(markup);
+  // Exactly one cue, and it lives on the turn's status line at the BOTTOM of the
+  // turn — the position that stays visible while a long answer streams.
+  assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
+  // One cue, on the footer row (which also carries the model name) — never
+  // inside a process disclosure, where a growing answer would scroll it away.
+  assert.ok(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'));
+  assert.equal(document.querySelector('.maka-processing-summary .maka-turn-processing'), null);
+  assert.doesNotMatch(markup, /Waiting for model output/);
   return document.querySelector('.maka-turn-processing .astryx-spinner') !== null;
 }
 
@@ -66,16 +74,92 @@ function runningStatusText(locale: 'en' | 'zh-CN'): string {
   return parseHTML(markup).document.querySelector('.maka-turn-processing')?.textContent ?? '';
 }
 
-test('hands the spinner to the turn status after the tool settles', () => {
+test('keeps the process header spinner-free across tool settlement and grouping', () => {
   assert.equal(statusHasSpinner(['running']), false);
-  assert.equal(statusHasSpinner(['completed']), true);
+  assert.equal(statusHasSpinner(['completed']), false);
+  assert.equal(statusHasSpinner(['running', 'completed']), false);
 });
 
-test('keeps the turn spinner when a collapsed group hides the running tool', () => {
-  assert.equal(statusHasSpinner(['running', 'completed']), true);
+test('keeps a working cue before any process content arrives', () => {
+  assert.equal(runningStatusText('zh-CN'), '正在琢磨…');
+  assert.equal(runningStatusText('en'), 'Pondering…');
 });
 
-test('describes provider silence without inventing semantic progress', () => {
-  assert.equal(runningStatusText('zh-CN'), '等待模型输出…');
-  assert.equal(runningStatusText('en'), 'Waiting for model output…');
+test('user input and provider retry suppress playful process activity', () => {
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'running', tools: [], notes: [], startedAt: 1,
+    timeline: [{ kind: 'thinking', text: 'reasoning', messageId: 'thought' }],
+  };
+  for (const runningStatus of [false, true]) {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} liveStreaming={{ runningStatus, ...(runningStatus ? {
+          providerRetry: { receivedAtMs: 1, event: {
+            id: 'retry', type: 'provider_retry', turnId: 'turn-1', ts: 1,
+            phase: 'scheduled', reason: 'network', attempt: 1, maxAttempts: 3,
+            delayMs: 1000,
+          } },
+        } : {}) }} />
+      </LocaleProvider>,
+    );
+    const { document } = parseHTML(markup);
+    assert.equal(document.querySelector('.maka-turn-processing'), null);
+    assert.equal(document.querySelector('.maka-processing-summary')?.textContent, 'Execution process');
+    assert.equal(document.querySelectorAll('.maka-turn-provider-retry').length, runningStatus ? 1 : 0);
+  }
+});
+
+test('only the latest assistant segment owns live activity after a user instruction', () => {
+  const tool = { toolUseId: 'read', toolName: 'Read', status: 'completed' as const, args: {} };
+  const instruction = { id: 'steer', role: 'user' as const, text: 'Also check the keyboard', ts: 2 };
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'running', tools: [tool], notes: [], startedAt: 1,
+    timeline: [
+      { kind: 'tools', items: [tool] },
+      { kind: 'user', messageId: instruction.id, message: instruction },
+      { kind: 'thinking', text: 'checking keyboard behavior', messageId: 'thought' },
+    ],
+  };
+  const { document } = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en"><TurnView turn={turn} liveStreaming={{ runningStatus: true }} /></LocaleProvider>,
+  ));
+  const summaries = document.querySelectorAll('.maka-processing-summary');
+  assert.equal(summaries.length, 2);
+  // Every disclosure names itself; none of them hosts the live cue any more.
+  assert.equal(summaries[0]?.textContent, 'Execution process');
+  assert.equal(summaries[1]?.textContent, 'Execution process');
+  // Exactly one cue, on the turn status line at the bottom.
+  assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
+  assert.ok(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'));
+});
+
+test('states the elapsed once, on the turn status line rather than the process header', () => {
+  const tool = { toolUseId: 'read', toolName: 'Read', status: 'completed' as const, args: {} };
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [tool], notes: [], startedAt: 1,
+    durationMs: 213_000,
+    timeline: [{ kind: 'tools', items: [tool] }, { kind: 'text', messageId: 'answer', text: 'the answer' }],
+  };
+  const { document } = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <TurnView turn={turn} footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]} />
+    </LocaleProvider>,
+  ));
+  // The duration lives on the status line at the BOTTOM of the turn, where a
+  // growing answer cannot push it out of view. The top summary states only what
+  // the disclosure holds.
+  assert.equal(document.querySelector('.maka-processing-summary')?.textContent?.trim(), 'Execution process');
+  const statusLine = document.querySelector('.maka-turn-status-line')?.textContent ?? '';
+  // Localized duration (the same wording the copy owns), not the compact
+  // `3m 33s` the live counter uses.
+  assert.match(statusLine, /Done · Worked for 3m 33s/);
+  // This turn carries only the placeholder start (the fixture's `startedAt: 1`),
+  // so no finish time is printed rather than dating it to 1970.
+  assert.doesNotMatch(statusLine, /1970/);
+  // The footer's meta row carries the turn's state AND the model facts on one
+  // line, rather than the state taking a line of its own.
+  assert.equal(
+    document.querySelector('.maka-turn-footer-meta')?.textContent,
+    'Done · Worked for 3m 33s · fixture-model',
+  );
 });

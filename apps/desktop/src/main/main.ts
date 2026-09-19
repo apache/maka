@@ -23,7 +23,7 @@ import {
   developmentLaunchResultFile,
   shouldShowLoserDialog,
 } from '@maka/core/dev-single-instance';
-import { app, clipboard, dialog, ipcMain } from 'electron';
+import { app, clipboard, dialog, ipcMain, protocol } from 'electron';
 import { join } from 'node:path';
 import { resolveBuildInfo } from './build-info.js';
 import { resolveUpdateTestUserDataDirectory } from './app-update-test-context.js';
@@ -43,13 +43,13 @@ import {
   type MainProcessRecoveryJournal,
 } from './main-process-recovery-journal.js';
 import { showFatalStartupError } from './native-diagnostic-dialog.js';
-import { isIsolatedE2e } from './startup-context.js';
+import { isIsolatedE2e, revealMode } from './startup-context.js';
 import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
 import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics-ipc-main.js';
 import { showBrowserMessageBox } from './browser-message-box.js';
+import { MAKA_CLIENT_PLUGIN_SCHEME } from './client-plugin-transport.js';
 import {
   showDesktopStartupProgress,
-  startupRevealMode,
   updateDesktopStartupProgress,
   desktopStartupProgressWindow,
 } from './startup-presentation.js';
@@ -66,6 +66,13 @@ installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDi
 // socket/pipe namespace, and single-instance lock) without touching any
 // path logic. See https://github.com/maka-agent/maka-agent/issues/2252.
 app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: MAKA_CLIENT_PLUGIN_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true },
+  },
+]);
 
 // Electron otherwise quits implicitly when the last BrowserWindow closes.
 // Startup and fatal-recovery surfaces can be the only window, so keep process
@@ -125,7 +132,7 @@ if (!app.requestSingleInstanceLock()) {
               cancelId: 0,
             },
             undefined,
-            { locale, revealMode: startupRevealMode() },
+            { locale, revealMode },
           );
         })
         .catch((error) => {
@@ -252,7 +259,7 @@ if (!app.requestSingleInstanceLock()) {
             showMessageBox: (options) =>
               showBrowserMessageBox(options, desktopStartupProgressWindow(), {
                 locale,
-                revealMode: startupRevealMode(),
+                revealMode,
               }),
           });
         }

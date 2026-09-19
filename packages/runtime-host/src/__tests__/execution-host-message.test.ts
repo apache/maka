@@ -114,6 +114,7 @@ test('subscribed Clients receive the durable steering echo as a session event', 
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await subscription.ready();
     const probe = new SubscriptionProbe(subscription);
 
     const turnId = randomUUID();
@@ -224,6 +225,7 @@ test('steering becomes durable and ordered followups automatically start the nex
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
     });
+    await queueSubscription.ready();
     const queuedFollowups = queueSubscription.snapshot.queue.followup;
     assert.deepEqual(
       queuedFollowups.map((entry) => entry.messageId),

@@ -67,13 +67,12 @@ async function runFixture(fixture) {
       sessionId: session.id,
       subscriptionId: `benchmark-${fixture.name}`,
       throughSequence,
-      rootTurn: null,
-      activeAssistantStreams: [],
       maxBytes: BOOTSTRAP_BYTES,
+      projection: 'owner',
     });
     const bootstrapCpuMs = performance.now() - openedAt;
     let pageRequests = 0;
-    let transferredRawBytes = bootstrap.durable.rawBytes + bootstrap.overlay.rawBytes;
+    let transferredRawBytes = bootstrap.durable.rawBytes;
     const subscription = new ClientSessionSubscription(
       {
         hostEpoch: 'benchmark-host',
@@ -123,7 +122,7 @@ async function runFixture(fixture) {
       fixture: fixture.name,
       messages: messages.length,
       rawMiB: decimalMiB(transferredRawBytes),
-      bootstrapKiB: decimalKiB(bootstrap.durable.rawBytes + bootstrap.overlay.rawBytes),
+      bootstrapKiB: decimalKiB(bootstrap.durable.rawBytes),
       wireRequests,
       pageRequests,
       setupMs: setupMs.toFixed(1),
@@ -163,9 +162,6 @@ function sqliteReader(store) {
   return {
     readDurableHighWater: (sessionId) => store.readTranscriptHighWaterSnapshot(sessionId),
     readDurablePage: (sessionId, request) => store.readTranscriptPageSnapshot(sessionId, request),
-    readDurableMessagesById: (sessionId, messageIds, throughSequence) =>
-      store.readTranscriptMessagesSnapshot(sessionId, messageIds, throughSequence),
-    readActiveOverlay: async () => [],
   };
 }
 

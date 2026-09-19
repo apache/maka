@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { UsageScreenQuery, UsageScreenRequest } from '@maka/core/settings';
+
 import {
   useEffect,
   useEffectEvent,
@@ -42,6 +44,7 @@ import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
 import type {
   AppSettings,
   RuntimeHostAppSettings,
+  RuntimeHostSettingsUpdateGuard,
   ChatDefaultPermissionMode,
   SettingsSection,
   ThemePalette,
@@ -62,8 +65,16 @@ import type {
 } from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
-import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  Banner,
+  MakaClientSlotOutlet,
+  Selector,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
+import { ExternalAgentsSettingsPage } from '../features/external-agent-settings/index.js';
 import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
 import { ProjectsSettingsPage } from './projects-settings-page';
@@ -86,8 +97,9 @@ import {
 } from './settings-nav';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import { SettingRow } from './settings-rows';
-import { SettingsPage } from './settings-section';
+import { SettingsPage, SettingsSection as SettingsSectionBlock } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
+import { SessionBundleTasks } from '../features/session-bundle';
 import { ImportTasksSettingsPage } from './import-tasks-settings-page';
 import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
 import { UsageScopeMount, UsageSettingsPage, type UsageScopeHandle } from './usage-settings-page';
@@ -127,6 +139,10 @@ import { createSettingsRequestAuthority } from './settings-request-authority.js'
 
 const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
 const RUNTIME_HOST_CATALOG_KEY = 'runtime-host-catalog';
+
+function isBuiltInSettingsSection(value: string): value is SettingsSection {
+  return SETTINGS_NAV.some((item) => item.id === value);
+}
 
 type RuntimeHostAvailabilityStatus = 'loading' | 'ready' | 'unavailable' | 'error';
 
@@ -196,7 +212,9 @@ function SettingsSurfaceContent(
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
   const isNarrowSettings = useMediaQuery(NARROW_SETTINGS_QUERY);
-  const [section, setSection] = useState<SettingsSection>(() => props.request?.section ?? readLastSettingsSection());
+  const [section, setSection] = useState<string>(
+    () => props.request?.section ?? readLastSettingsSection(),
+  );
   const [providerCatalogRequested, setProviderCatalogRequested] = useState(props.openProviderCatalog === true);
   // One-shot landing intent, mirroring providerCatalogRequested above: the
   // request retires once ProvidersPanel consumes it, so remounting the panel
@@ -233,7 +251,7 @@ function SettingsSurfaceContent(
   // away from anything the user opened inside Settings dozens of times a
   // second while a session streams.
   useEffect(() => {
-    props.initialFocusRef.current?.focus();
+    if (isBuiltInSettingsSection(section)) props.initialFocusRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ref identity is stable; re-run only on section change.
   }, [section]);
 
@@ -387,11 +405,19 @@ function SettingsSurfaceContent(
   // Settings surface. `usageScopeRef.fenceTarget()` rejects an in-flight old-Host
   // load synchronously at a Host change, before React re-renders the new target.
   const usageScopeRef = useRef<UsageScopeHandle>(null);
+  const readUsage = (range: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, query?: UsageScreenQuery) =>
+    selectedRuntimeHost ? window.maka.settings.usageStats(range, selectedRuntimeHost, query) : Promise.resolve(null);
   const usageServices = {
-    loadUsageStats: (range: UsageRange) =>
-      selectedRuntimeHost
-        ? window.maka.settings.usageStats(range, selectedRuntimeHost)
-        : Promise.resolve(null),
+    loadUsageStats: async (range: UsageRange, query?: UsageScreenQuery) => {
+      const result = await readUsage(range, query);
+      if (result && 'kind' in result && result.kind !== 'screen_response_too_large') throw new Error('Invalid Usage screen response');
+      return result;
+    },
+    loadUsageActivity: async (input: Extract<UsageScreenRequest, {kind: 'activity'}>) => {
+      const result = await readUsage(input);
+      if (!result || !('kind' in result)) throw new Error('Invalid Usage activity response');
+      return result;
+    },
     updateUsageSettings: (patch: Partial<AppSettings['usage']>) =>
       updateSettings({ usage: patch }).then((result) => result.settings.usage),
   };
@@ -440,7 +466,9 @@ function SettingsSurfaceContent(
   );
   const connections = selectedConnections?.connections ?? [];
   const defaultSlug = selectedConnections?.defaultSlug ?? null;
-  const sectionScope = settingsSectionScope(section);
+  const sectionScope = isBuiltInSettingsSection(section)
+    ? settingsSectionScope(section)
+    : 'client';
   const showsRuntimeHost = sectionScope !== 'client';
   const requiresRuntimeHost = sectionScope === 'runtime-host';
   useEffect(() => {
@@ -449,7 +477,7 @@ function SettingsSurfaceContent(
     );
     return () => props.onSelectedRuntimeHostProfileIdChange(undefined);
   }, [props.onSelectedRuntimeHostProfileIdChange, selectedProfileId, showsRuntimeHost]);
-  const sectionNeedsSettings = ['general', 'subagents', 'memory', 'search'].includes(section);
+  const sectionNeedsSettings = ['general', 'subagents', 'memory', 'search', 'external-agents'].includes(section);
   const sectionNeedsConnections = ['general', 'models', 'subagents', 'daily-review'].includes(section);
   const runtimeHostAvailabilityStatus: RuntimeHostAvailabilityStatus =
     selectedRuntimeHost
@@ -596,7 +624,10 @@ function SettingsSurfaceContent(
     }
   }
 
-  async function updateSettings(patch: Parameters<typeof window.maka.settings.update>[0]) {
+  async function updateSettings(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+    guard?: RuntimeHostSettingsUpdateGuard,
+  ) {
     const uiLocaleTicket = props.uiLocaleUpdateGate.begin(
       patch.personalization?.uiLocale !== undefined,
     );
@@ -617,7 +648,7 @@ function SettingsSurfaceContent(
         ? undefined
         : ++clientSettingsTicketRef.current;
       const result = host
-        ? await window.maka.settings.update(patch, host)
+        ? await window.maka.settings.update(patch, host, guard)
         : await window.maka.settings.updateClient(patch);
       if (hostTicket && !runtimeHostRequestAuthority.isCurrentTarget(hostTicket)) {
         throw new Error(copy.runtimeHostUnavailable);
@@ -799,7 +830,9 @@ function SettingsSurfaceContent(
   // boundary — so an unrouted section fails loudly at build time instead of
   // silently rendering 通用 copy over a different page's body. The nav
   // highlight below still keys off `section === item.id` independently.
-  const headerCopy = getSettingsNavigationCopy(locale).sections[section];
+  const headerCopy = isBuiltInSettingsSection(section)
+    ? getSettingsNavigationCopy(locale).sections[section]
+    : undefined;
   const runtimeHostOptions = (runtimeHosts?.entries ?? [])
     .filter((entry) => entry.enabled)
     .map((entry) => ({
@@ -894,6 +927,14 @@ function SettingsSurfaceContent(
                   ))}
                 </SideNavSection>
               ))}
+              <MakaClientSlotOutlet
+                name="settings.navigation"
+                owner={{
+                  activePage: section,
+                  compact: isNarrowSettings,
+                  selectPage: setSection,
+                }}
+              />
             </SideNav>
           </LayoutPanel>
         )}
@@ -917,7 +958,7 @@ function SettingsSurfaceContent(
                  one place; its margins must not depend on which page is
                  open. */
               contentWidth={920}
-              header={(
+              header={headerCopy ? (
                 <LayoutHeader padding={6}>
                   <div className="settingsPageHeader">
                     <div className="settingsPageHeaderTitleStack">
@@ -944,7 +985,7 @@ function SettingsSurfaceContent(
                     ) : null}
                   </div>
                 </LayoutHeader>
-              )}
+              ) : undefined}
               content={(
                 <LayoutContent padding={6} isScrollable={false}>
                   <UsageScopeMount
@@ -1005,6 +1046,11 @@ function SettingsSurfaceContent(
                         >
                           <SettingsPageBody
                             section={section}
+                            onClose={props.onClose}
+                            // A bundle names a path on THIS machine, so the
+                            // feature is offered only while the Local Host is
+                            // the target -- never beside a Remote one.
+                            isLocalRuntimeHost={selectedRuntimeHostEntry?.profile.kind === 'local'}
                             settings={settings}
                             connections={connections}
                             connectionsBridge={connectionsBridge}
@@ -1059,7 +1105,9 @@ function SettingsSurfaceContent(
 }
 
 function SettingsPageBody(props: {
-  section: SettingsSection;
+  section: string;
+  onClose(): void;
+  isLocalRuntimeHost: boolean;
   settings: AppSettings;
   connections: ProjectedLlmConnection[];
   connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
@@ -1078,7 +1126,10 @@ function SettingsPageBody(props: {
   themePref: ThemePreference;
   themePalette: ThemePalette;
   onRefreshConnections(): Promise<void>;
-  onUpdateSettings(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
+  onUpdateSettings(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+    guard?: RuntimeHostSettingsUpdateGuard,
+  ): Promise<UpdateAppSettingsResult>;
   onReloadSettings(): Promise<void>;
   onReloadClientSettings(): Promise<void>;
   onRetryRuntimeHost(): Promise<void>;
@@ -1120,6 +1171,8 @@ function SettingsPageBody(props: {
           />
         </SettingsPage>
       );
+    case 'external-agents':
+      return <ExternalAgentsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
     case 'subagents':
       return (
         <SubagentSettingsPage
@@ -1190,10 +1243,21 @@ function SettingsPageBody(props: {
       return <TasksSettingsPage {...props.archivedTasks} />;
     case 'import-tasks':
       return (
-        <ImportTasksSettingsPage
-          onImported={props.onTaskImported}
-          onOpenImported={props.onOpenSession}
-        />
+        <SettingsPage as="section">
+          <SessionBundleTasks
+            isLocalTarget={props.isLocalRuntimeHost}
+            sessions={props.archivedTasks.sessions}
+            renderSection={({ children, ...section }) => (
+              <SettingsSectionBlock {...section}>{children}</SettingsSectionBlock>
+            )}
+          >
+            <ImportTasksSettingsPage
+              onImported={props.onTaskImported}
+              onOpenImported={props.onOpenSession}
+              offersBundleSource={props.isLocalRuntimeHost}
+            />
+          </SessionBundleTasks>
+        </SettingsPage>
       );
     case 'data':
       return (
@@ -1229,9 +1293,24 @@ function SettingsPageBody(props: {
       );
     default:
       return (
-        <div className="settingsRows">
-          <SettingRow title={navLabel(props.section, locale)} detail={copy.unavailablePage} value={copy.ready} />
-        </div>
+        <MakaClientSlotOutlet
+          name="settings.page"
+          owner={{ page: props.section, close: props.onClose }}
+          options={{
+            entryKey: props.section,
+            fallback: (
+              <div className="settingsRows">
+                <SettingRow
+                  title={isBuiltInSettingsSection(props.section)
+                    ? navLabel(props.section, locale)
+                    : props.section}
+                  detail={copy.unavailablePage}
+                  value={copy.ready}
+                />
+              </div>
+            ),
+          }}
+        />
       );
   }
 }

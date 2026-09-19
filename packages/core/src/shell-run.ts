@@ -137,6 +137,8 @@ export interface ShellRunRecord {
   cwd: string;
   command: string;
   status: ShellRunStatus;
+  /** Native root process id, when admitted by the process driver. */
+  pid?: number;
   exitCode?: number;
   failureMessage?: string;
   startedAt: number;
@@ -159,7 +161,14 @@ export interface ShellRunRecord {
 export type ShellRunPatch = Partial<
   Pick<
     ShellRunRecord,
-    'status' | 'exitCode' | 'failureMessage' | 'updatedAt' | 'completedAt' | 'observedAt' | 'output'
+    | 'status'
+    | 'pid'
+    | 'exitCode'
+    | 'failureMessage'
+    | 'updatedAt'
+    | 'completedAt'
+    | 'observedAt'
+    | 'output'
   >
 >;
 
@@ -196,6 +205,25 @@ export function isTerminalShellRunStatus(value: ShellRunStatus): value is ShellR
 
 export function isActiveShellRunStatus(value: ShellRunStatus): value is ShellRunActiveStatus {
   return (SHELL_RUN_ACTIVE_STATUSES as readonly string[]).includes(value);
+}
+
+/** Desktop interactive-terminal launch identity, persisted as the run's source ids. */
+export const DESKTOP_TERMINAL_LAUNCH_PREFIX = 'desktop-terminal-';
+
+/**
+ * A Desktop-owned interactive terminal carries no transcript tool call, so
+ * nothing consumes the output on its update and wire projections.
+ */
+export function isDesktopTerminalShellRun(source: {
+  readonly sourceTurnId: string;
+  readonly sourceToolCallId: string;
+  readonly mode: string;
+}): boolean {
+  return (
+    source.mode === 'pty' &&
+    source.sourceTurnId === source.sourceToolCallId &&
+    source.sourceTurnId.startsWith(DESKTOP_TERMINAL_LAUNCH_PREFIX)
+  );
 }
 
 export function isValidShellRunStatusTransition(
@@ -307,6 +335,7 @@ const SHELL_RUN_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 const SHELL_RUN_PATCH_KEYS: ReadonlySet<string> = new Set([
   'status',
+  'pid',
   'exitCode',
   'failureMessage',
   'updatedAt',
@@ -325,6 +354,7 @@ const SHELL_RUN_RECORD_KEYS: ReadonlySet<string> = new Set([
   'cwd',
   'command',
   'status',
+  'pid',
   'startedAt',
   'updatedAt',
   'completedAt',
@@ -380,6 +410,7 @@ export function normalizeShellRunRecord(
     record.sessionId === sessionId &&
     record.shellRunId === shellRunId &&
     isShellRunStatus(record.status) &&
+    (record.pid === undefined || isPositiveInteger(record.pid)) &&
     isFiniteNumber(record.startedAt) &&
     isFiniteNumber(record.updatedAt) &&
     isPositiveInteger(record.revision) &&
@@ -515,6 +546,7 @@ function isShellRunSandboxEscalation(value: unknown, execution: unknown): boolea
 
 function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
   return {
+    ...(record.pid !== undefined ? { pid: record.pid } : {}),
     shellRunId: record.shellRunId,
     sessionId: record.sessionId,
     ...(record.sourceRunId !== undefined ? { sourceRunId: record.sourceRunId } : {}),

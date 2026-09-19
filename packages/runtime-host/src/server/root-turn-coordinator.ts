@@ -1896,10 +1896,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   }
 
   /** Reads both user authority and the advisory routing decision of the exact live WorkHub Turn. */
-  readActiveWorkHubRoutingRequest(
-    turnId: string,
-  ): Promise<
-    { readonly content: MessageContent; readonly decision?: WorkHubRoutingDecision } | undefined
+  readActiveWorkHubRoutingRequest(turnId: string): Promise<
+    | {
+        readonly content: MessageContent;
+        readonly runId: string;
+        readonly decision?: WorkHubRoutingDecision;
+      }
+    | undefined
   > {
     const sessionId = WORKHUB_COORDINATION_SESSION_ID;
     return this.sessionAdmission.run(sessionId, async () => {
@@ -1917,6 +1920,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       )
         return undefined;
       return {
+        runId: active.runId,
         content: requireHostedExecutionMessageContent(admission),
         ...(admission.execution.routingDecision
           ? { decision: admission.execution.routingDecision }
@@ -2248,9 +2252,19 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     };
   }
 
+  /** Internal composition seam for checks that must share fresh continuation admission. */
+  startTurnResumeWithValidation(
+    input: TurnResumeStartInput,
+    context: ConnectionContext,
+    beforeFreshAdmission?: () => Promise<void>,
+  ): Promise<TurnResumeStartOutcome> {
+    return this.startTurnResume(input, context, beforeFreshAdmission);
+  }
+
   private startTurnResume(
     input: TurnResumeStartInput,
     context: ConnectionContext,
+    beforeFreshAdmission?: () => Promise<void>,
   ): Promise<TurnResumeStartOutcome> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return Promise.resolve(
@@ -2360,6 +2374,15 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               reservation,
               reconstructed.continuation,
             );
+          }
+
+          try {
+            await beforeFreshAdmission?.();
+          } catch (error) {
+            return {
+              kind: 'complete',
+              outcome: operationConflict(errorMessage(error)),
+            };
           }
 
           reservation ??= this.reserveRootTurn(input.sessionId);
@@ -3017,7 +3040,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         startSettled.resolve();
       }
       this.observeExecutionCompletion(active, { kind: 'terminal', snapshot });
-      await this.interruptPlanAfterUnsuccessfulTurn(input.sessionId, active, snapshot.status);
+      await this.settlePlanAfterTerminalTurn(input.sessionId, active, snapshot.status);
       await this.materializeAdmittedMessageSources(active);
       terminalTransitionStarted = true;
       await this.completeTerminalTransition(input.sessionId, active);
@@ -3041,7 +3064,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               kind: 'terminal',
               snapshot,
             });
-            await this.interruptPlanAfterUnsuccessfulTurn(input.sessionId, active, snapshot.status);
+            await this.settlePlanAfterTerminalTurn(input.sessionId, active, snapshot.status);
             await this.materializeAdmittedMessageSources(active);
             terminalTransitionStarted = true;
             await this.completeTerminalTransition(input.sessionId, active);
@@ -3127,18 +3150,16 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (settlement) active.observationSettled = Promise.resolve(settlement);
   }
 
-  private async interruptPlanAfterUnsuccessfulTurn(
+  private async settlePlanAfterTerminalTurn(
     sessionId: string,
     active: ActiveRootTurn,
-    status: string,
+    status: 'completed' | 'failed' | 'cancelled',
   ): Promise<void> {
-    if (status === 'completed' || !this.manager.hasPlanAuthority()) return;
-    await this.manager.interruptActivePlanExecution(
+    if (!this.manager.hasPlanAuthority()) return;
+    await this.manager.settleActivePlanExecutionAfterRootTurn(
       sessionId,
-      status === 'cancelled'
-        ? 'Plan execution was interrupted because the Runtime root Turn was cancelled.'
-        : 'Plan execution was interrupted because the Runtime root Turn failed.',
-      `plan_interrupt_${active.runId}`,
+      status,
+      `plan_root_terminal_${active.runId}`,
     );
   }
 

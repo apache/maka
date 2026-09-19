@@ -9,9 +9,13 @@
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
     },
-    "context-window-save.spec.ts": {
+    "composer-session-reference.spec.ts": {
       "tests": 1,
-      "electron": "the saved window is read back from the Host's connection snapshot, not from renderer state"
+      "electron": "the referenced transcript snapshot crosses renderer, preload, main process, and Runtime Host boundaries before the staged quote can be sent"
+    },
+    "expected-failure-feedback.spec.ts": {
+      "tests": 2,
+      "electron": "WorkHub attachment rejection crosses a native file dialog, preload and main; Session settings and Plan failures must preserve their codes through a real contextBridge IPC round trip"
     },
     "new-task-reload.spec.ts": {
       "tests": 2,
@@ -19,7 +23,7 @@
     },
     "partial-history-notice.spec.ts": {
       "tests": 1,
-      "electron": "bounded paging crosses renderer, preload and Host transcript storage; the return-to-tail assertion also uses a real pointer hit-test"
+      "electron": "bounded paging crosses renderer, preload and Host transcript storage: each page comes from the Host only when the reader asks, and the Host Turn index lists the whole Session before it is loaded; the return-to-tail assertion also uses a real pointer hit-test. Where the arriving rows leave the reader is renderer-owned and lives in the PrependedHistoryKeepsMeasuredHeights story."
     },
     "proxy-password-editing.spec.ts": {
       "tests": 1,
@@ -42,20 +46,24 @@
       "electron": "SQLite admission crosses preload and main, survives both renderer reload and complete Electron restart, and cached history must render when the live IPC endpoint is unavailable"
     },
     "session-workbar.spec.ts": {
-      "tests": 6,
-      "electron": "Git changes re-read on window focus, terminal PTY ownership across Sessions, Side Chat's fork lifecycle, a first send that has to reach the Host, and per-Session collapse persisted across a renderer reload; the composer-usage test is renderer-only and rides along on those windows until app-shell.tsx's composer-to-workbar wiring has a story host"
+      "tests": 5,
+      "electron": "Git changes re-read on native window focus; native PTY ownership survives Session navigation and renderer replacement, while Stop/exit cross preload/main into the terminal view; Side Chat owns a Host fork lifecycle; first send reaches the Host; the composer usage entry opens a workbar whose per-Session visibility survives renderer reload."
     },
     "settings-pricing.spec.ts": {
       "tests": 1,
       "electron": "the effective pricing snapshot is a main-process round trip to the real embedded Runtime Host (no bridge stub -- an enabled Add proves it loaded), and closing the editor must return real Electron focus to its trigger, which a linkedom story cannot honestly exercise"
     },
     "settings.spec.ts": {
-      "tests": 4,
-      "electron": "the preload makaE2eLatch holds the settings chunk mid-load, and the rename it commits is a Host write; the workbar-chrome test rides along on that window and would move to a story the day app-shell.tsx's settings wiring has one"
+      "tests": 2,
+      "electron": "Code Mode reads back Host settings through IPC; opening Settings commits a pending title rename to the Host, with workbar hide/restore asserted in that same Session."
     },
     "sidebar-project-reload.spec.ts": {
       "tests": 1,
       "electron": "rail grouping has to be rebuilt from persisted project state after a renderer reload"
+    },
+    "side-chat-followups.spec.ts": {
+      "tests": 1,
+      "electron": "queue mutations and successive Side Chat Turns cross renderer/preload/main/Host; native dragging must pass the main-window drop guard and Host reconnect must restore the live fork without remounting it"
     },
     "skill-draft-lifecycle.spec.ts": {
       "tests": 2,
@@ -69,13 +77,9 @@
       "tests": 4,
       "electron": "observation seeding, reconnect and settle are Host subscriptions surviving a renderer remount"
     },
-    "transcript-scroll-cost.spec.ts": {
-      "tests": 4,
-      "electron": "the perf budget is measured from CDP wheel input and the browser's own render skipping, and reader displacement only exists against a real layout"
-    },
     "workhub-layout.spec.ts": {
-      "tests": 2,
-      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; native floating preserves macOS Dock visibility and pointer dragging verifies model-wheel scrolling and release snapping; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
+      "tests": 3,
+      "electron": "WorkHub model configuration and attachment sending cross the Host boundary; the Project New task action must dismiss the native dock owned by a separate WebContentsView; the native Workbar menu must coexist with the live sibling WebContentsView without hiding its compositor; the compact native window grows only with the inline composer wheel and keeps its bottom anchor; opening context details routes to Main’s Workbar without resizing or docking the floating conversation, while the thinking sheet stays within the compact bounds, and pointer dragging scrolls the no-drag wheel instead of moving the frameless window; native floating preserves macOS Dock visibility; a held-open Host Turn verifies immediate prompt visibility, durable transcript handoff and persistence after renderer reload"
     },
     "workhub-reconstruction.spec.ts": {
       "tests": 1,
@@ -83,7 +87,7 @@
     },
     "workhub-return-rail.spec.ts": {
       "tests": 2,
-      "electron": "WorkHub lives in a separate native WebContentsView: compare its scrollport with the main Session after Host-backed sends, then open that Session and return through the shell while retaining the same WorkHub draft"
+      "electron": "WorkHub lives in a separate native WebContentsView: open a Session and return through the shell while retaining the same WorkHub draft; a Host-backed pending question survives renderer reload and native detach/dock with its selection and focus"
     },
     "zh-tw-locale.spec.ts": {
       "tests": 1,

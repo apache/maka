@@ -19,6 +19,14 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
+import type { UpdateCatalogConnectionInput } from '@maka/core/runtime-policy';
+import { createDesktopConnectionSettingsServices } from '../../renderer/platform/desktop/create-connection-settings-services.js';
 import { defaultEnabledModelIdsWhenOmitted } from '@maka/core/llm-connections';
 import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
@@ -77,6 +85,7 @@ test('registers pure Connection reads for replacement-Host retry', () => {
     'connections:getRequestHeaders',
     'connections:getSnapshot',
     'connections:hasSecret',
+    'connections:usage',
   ]);
   assert.ok(effects.has('connections:create'));
   assert.ok(effects.has('connections:onboardingVerify'));
@@ -424,6 +433,41 @@ test('reports an existing but unconfigured credential as missing', async () => {
   );
 });
 
+test('reads connection usage Host-side and rejects an identity with extra keys', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let readFor: string | undefined;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async () => catalog(),
+      readConnectionUsage: async (connectionId: string) => {
+        readFor = connectionId;
+        return { kind: 'unavailable', reason: 'unsupported' };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  assert.deepEqual(
+    await handlers.get('connections:usage')?.({}, connectionIdentity()),
+    { kind: 'unavailable', reason: 'unsupported' },
+  );
+  assert.equal(readFor, 'connection-1');
+
+  // The renderer bug this guards: passing the whole projected connection
+  // instead of the narrow identity. Structural typing lets the extra fields
+  // through at compile time, so the boundary must refuse them at runtime.
+  await assert.rejects(
+    async () =>
+      handlers.get('connections:usage')?.({}, { ...connectionIdentity(), name: 'OpenRouter' }),
+    /Invalid Connection identity/i,
+  );
+});
+
 test('keeps saved custom header values out of the renderer and preserves them by name', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let replacedHeaders: unknown;
@@ -622,3 +666,62 @@ function catalog(): ConnectionCatalogSnapshot {
 function connectionIdentity() {
   return { connectionId: 'connection-1', slug: 'openrouter' } as const;
 }
+
+test('renderer service saves through IPC into the canonical catalog and reads it back', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-save-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('root is already owned');
+  try {
+    const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: { slug: 'local', name: 'Local', providerType: 'ollama', enabled: true,
+        enabledModelIds: ['other'], modelOverrides: { other: { vision: true } } },
+    });
+    assert.equal(created.kind, 'committed');
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    registerRuntimeHostConnectionsIpc({
+      ipcMain: { handle: (channel, handler) => { handlers.set(channel, handler as (...args: unknown[]) => unknown); } },
+      client: {
+        loadConnectionCatalog: async () => {
+          const snapshot = await stores.connectionCatalog.getSnapshot();
+          return { ...snapshot, connections: snapshot.connections.map(connection => ({
+            ...connection,
+            catalogEntries: resolveConnectionModelCatalog({ ...connection, defaultModel: '', models: [...connection.models], enabledModelIds: [...connection.enabledModelIds] }),
+          })) };
+        },
+        updateConnection: (expected: UpdateCatalogConnectionInput['expected'], changes: UpdateCatalogConnectionInput['changes']) => stores.connectionCatalog.update({ expected, changes }),
+      } as never,
+      emitConnectionListChanged() {},
+    });
+    const host = { profileId: 'profile', hostId: 'host' };
+    const services = createDesktopConnectionSettingsServices(() => ({ connections: {
+      update: (identity: unknown, patch: unknown, target: unknown) => {
+        assert.deepEqual(target, host);
+        return handlers.get('connections:update')!({}, identity, patch);
+      },
+      getSnapshot: (_options: unknown, target: unknown) => {
+        assert.deepEqual(target, host);
+        return handlers.get('connections:getSnapshot')!({});
+      },
+    } }) as never).forHost(host).connections;
+    const connection = (await services.getSnapshot()).connections[0]!;
+    const identity = { connectionId: connection.connectionId, slug: connection.slug };
+    const value = { contextWindow: 128000, inputLimit: 64000, compactionThreshold: 48000, vision: true };
+    await services.update(identity, { modelOverride: { modelId: 'manual', expected: null, value } });
+    const saved = (await stores.connectionCatalog.getSnapshot()).connections[0]!;
+    assert.deepEqual(saved.modelOverrides, { other: { vision: true }, manual: value });
+    const reopened = (await services.getSnapshot()).connections[0]!;
+    assert.deepEqual(reopened.modelOverrides?.manual, value);
+    assert.deepEqual(reopened.enabledModelIds, ['other']);
+    await assert.rejects(services.update(identity, { modelOverride: { modelId: 'manual', expected: {}, value: { vision: false } } }), /Model parameters changed/);
+    assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections[0], saved);
+    await services.update(identity, { modelOverride: { modelId: 'manual', expected: value, value: {} } });
+    assert.deepEqual((await services.getSnapshot()).connections[0]?.modelOverrides, { other: { vision: true }, manual: {} });
+  } finally {
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

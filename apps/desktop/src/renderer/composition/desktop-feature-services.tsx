@@ -23,6 +23,12 @@ import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub
 import { ConversationServicesProvider } from '../features/conversation';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
+import {
+  ClientPluginRoot,
+  ClientPluginServicesProvider,
+} from '../features/client-plugins/index.js';
+import { ExternalAgentSettingsServicesProvider } from '../features/external-agent-settings/index.js';
+import { createDesktopExternalAgentSettingsServices } from '../platform/desktop/create-external-agent-settings-services.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
 import { GoalServicesProvider } from '../features/goals';
 import { ModuleHubServicesProvider } from '../features/module-hub';
@@ -33,17 +39,22 @@ import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { UsagePricingServicesProvider } from '../features/usage';
 import { WorkbarServicesProvider } from '../features/workbar';
+import { OverlaysServicesProvider } from '../features/overlays/index.js';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
+import { createDesktopClientPluginServices } from '../platform/desktop/create-client-plugin-services.js';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
 import { createDesktopModuleHubServices } from '../platform/desktop/create-module-hub-services';
 import { createDesktopRuntimeHostManagementServices } from '../platform/desktop/create-runtime-host-management-services';
 import { createDesktopSessionCollaborationServices } from '../platform/desktop/create-session-collaboration-services';
 import { createDesktopSessionNavigationServices } from '../platform/desktop/create-session-navigation-services';
+import { SessionBundleServicesProvider } from '../features/session-bundle';
+import { createDesktopSessionBundleServices } from '../platform/desktop/create-session-bundle-services.js';
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
 import { createDesktopUsagePricingServices } from '../platform/desktop/create-usage-pricing-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
+import { createDesktopOverlaysServices } from '../platform/desktop/create-overlays-services';
 import { observeReactPerformanceMeasures } from '../platform/desktop/react-performance-measures';
 
 if (import.meta.env.DEV) {
@@ -54,14 +65,18 @@ if (import.meta.env.DEV) {
 export function createDesktopFeatureServices() {
   return {
     appUpdate: createDesktopAppUpdateServices(),
+    clientPlugins: createDesktopClientPluginServices(),
     workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
+    externalAgentSettings: createDesktopExternalAgentSettingsServices(),
     goal: createDesktopGoalServices(),
     moduleHub: createDesktopModuleHubServices(),
+    overlays: createDesktopOverlaysServices(),
     runtimeHostManagement: createDesktopRuntimeHostManagementServices(),
     sessionCollaboration: createDesktopSessionCollaborationServices(),
     sessionNavigation: createDesktopSessionNavigationServices(),
+    sessionBundle: createDesktopSessionBundleServices(),
     sessionSettings: createDesktopSessionSettingsServices(),
     taskEntry: createDesktopTaskEntryServices(),
     usagePricing: createDesktopUsagePricingServices(),
@@ -74,8 +89,11 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
-    <AppUpdateServicesProvider services={props.services.appUpdate}>
+    <ClientPluginServicesProvider services={props.services.clientPlugins}>
+      <ClientPluginRoot>
+        <AppUpdateServicesProvider services={props.services.appUpdate}>
       <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
+      <ExternalAgentSettingsServicesProvider services={props.services.externalAgentSettings}>
         <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
           <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
             <SessionNavigationServicesProvider services={props.services.sessionNavigation}>
@@ -86,9 +104,13 @@ export function DesktopFeatureServicesProvider(props: {
                       <WorkbarServicesProvider services={props.services.workbar}>
                         <ConversationServicesProvider services={props.services.conversation}>
                           <WorkHubServicesProvider services={props.services.workHub}>
-                            <UsagePricingServicesProvider services={props.services.usagePricing}>
-                              {props.children}
-                            </UsagePricingServicesProvider>
+                            <SessionBundleServicesProvider services={props.services.sessionBundle}>
+                              <OverlaysServicesProvider services={props.services.overlays}>
+                                <UsagePricingServicesProvider services={props.services.usagePricing}>
+                                  {props.children}
+                                </UsagePricingServicesProvider>
+                              </OverlaysServicesProvider>
+                            </SessionBundleServicesProvider>
                           </WorkHubServicesProvider>
                         </ConversationServicesProvider>
                       </WorkbarServicesProvider>
@@ -99,7 +121,10 @@ export function DesktopFeatureServicesProvider(props: {
             </SessionNavigationServicesProvider>
           </SessionCollaborationServicesProvider>
         </RuntimeHostManagementServicesProvider>
+      </ExternalAgentSettingsServicesProvider>
       </ConnectionSettingsServicesProvider>
-    </AppUpdateServicesProvider>
+        </AppUpdateServicesProvider>
+      </ClientPluginRoot>
+    </ClientPluginServicesProvider>
   );
 }

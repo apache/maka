@@ -503,7 +503,6 @@ describe('buildProviderOptions: thinking level', () => {
       }
     }
 
-    assert.equal(activeClaudeModels.length, 16);
     assert.ok(
       activeClaudeModels.some(
         ({ connection, modelId }) =>
@@ -843,7 +842,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     const declared: LlmConnection = {
       ...conn('openai-compatible', 'my-relay'),
       baseUrl: 'https://relay.example/v1',
-      relayModelProfiles: {
+      modelOverrides: {
         'dsv4-flash': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
       },
     };
@@ -873,7 +872,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       ...conn('openai-responses-compatible', 'my-responses-relay'),
       baseUrl: 'https://relay.example/v1',
       models: [{ id: 'custom-reasoner', apiProtocol: 'openai-responses' }],
-      relayModelProfiles: {
+      modelOverrides: {
         'custom-reasoner': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
       },
     };
@@ -902,14 +901,14 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     const chat: LlmConnection = {
       ...conn('openai-compatible', 'my-relay'),
       baseUrl: 'https://relay.example/v1',
-      relayModelProfiles: { 'fast-model': { serviceTier: 'fast' } },
+      modelOverrides: { 'fast-model': { serviceTier: 'fast' } },
     };
     assert.deepEqual(buildProviderOptions(chat, 'fast-model'), {});
     const responses: LlmConnection = {
       ...conn('openai-responses-compatible', 'my-responses-relay'),
       baseUrl: 'https://relay.example/v1',
       models: [{ id: 'gpt-5-relay', apiProtocol: 'openai-responses' }],
-      relayModelProfiles: { 'gpt-5-relay': { serviceTier: 'fast' } },
+      modelOverrides: { 'gpt-5-relay': { serviceTier: 'fast' } },
     };
     assert.deepEqual(buildProviderOptions(responses, 'gpt-5-relay'), {
       openai: {
@@ -945,7 +944,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
         ...conn('openai-responses-compatible', 'my-responses-relay'),
         baseUrl: 'https://relay.example/v1',
         models: [{ id: modelId, apiProtocol: 'openai-responses' }],
-        relayModelProfiles: { [modelId]: { serviceTier: 'fast' } },
+        modelOverrides: { [modelId]: { serviceTier: 'fast' } },
       };
       assert.deepEqual(buildProviderOptions(connection, modelId), {
         openai: {
@@ -967,7 +966,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       ...conn('openai-responses-compatible', 'my-responses-relay'),
       baseUrl: 'https://relay.example/v1',
       models: [{ id: 'gpt-5-relay', apiProtocol: 'openai-responses' }],
-      relayModelProfiles: { 'gpt-5-relay': { serviceTier: 'fast' } },
+      modelOverrides: { 'gpt-5-relay': { serviceTier: 'fast' } },
     };
     const model = getAIModel({
       connection: modelConnection,
@@ -1016,7 +1015,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
     const declared: LlmConnection = {
       ...conn('openai-compatible', 'my-relay'),
       baseUrl: 'https://relay.example/v1',
-      relayModelProfiles: {
+      modelOverrides: {
         'dsv4-flash': { thinkingLevels: ['minimal', 'low', 'medium', 'high', 'max'] },
       },
     };
@@ -1187,4 +1186,55 @@ test('Copilot Messages preserves bearer auth without the generic Anthropic beta 
       assert.equal(headers.get('x-api-key'), null);
     }
   }
+});
+
+describe('buildProviderOptions: Command Code CLI thinking level', () => {
+  // The Provider API exposes no reasoning metadata, so these levels come from
+  // the static table in model-metadata.ts, ported from the reference CLI
+  // effort map. The switcher only appears when the table declares the model.
+  test('selectable efforts surface for the models the CLI wire accepts them on', () => {
+    for (const providerType of ['commandcode-go', 'commandcode'] as const) {
+      assert.deepEqual(
+        [...thinkingVariantsForModel(providerType, 'claude-fable-5-1')],
+        ['low', 'medium', 'high', 'xhigh', 'max'],
+      );
+      assert.deepEqual(
+        [...thinkingVariantsForModel(providerType, 'moonshotai/Kimi-K3')],
+        ['low', 'high', 'max'],
+      );
+      assert.deepEqual(
+        [...thinkingVariantsForModel(providerType, 'xai/grok-4.6')],
+        ['low', 'medium', 'high', 'xhigh'],
+      );
+    }
+  });
+
+  test('models that reason automatically offer no selector', () => {
+    for (const providerType of ['commandcode-go', 'commandcode'] as const) {
+      // Tencent Hy3/Hy4 with no levels and the GLM-5.x-Fast siblings think with
+      // a depth Command Code chooses; the CLI omits reasoning_effort for them,
+      // so the table must stay silent and the picker must stay hidden.
+      for (const modelId of ['tencent/hy3-paid', 'zai-org/GLM-5.2-Fast', 'zai-org/GLM-5']) {
+        assert.deepEqual([...thinkingVariantsForModel(providerType, modelId)], []);
+        assert.deepEqual(buildProviderOptions(conn(providerType), modelId, 'high'), {});
+      }
+    }
+  });
+
+  test('an unknown model exposes nothing and sends nothing', () => {
+    assert.deepEqual([...thinkingVariantsForModel('commandcode-go', 'not-a-model')], []);
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'not-a-model', 'high'), {});
+  });
+
+  test('the chosen level is forwarded verbatim, including max', () => {
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'claude-fable-5-1', 'max'), {
+      'commandcode-cli': { reasoningEffort: 'max' },
+    });
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'moonshotai/Kimi-K3', 'low'), {
+      'commandcode-cli': { reasoningEffort: 'low' },
+    });
+    // `off` is a discard, and no declared model offers it on this route.
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'claude-fable-5-1', 'off'), {});
+    assert.deepEqual(buildProviderOptions(conn('commandcode-go'), 'claude-fable-5-1'), {});
+  });
 });

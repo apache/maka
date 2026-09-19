@@ -1108,7 +1108,7 @@ describe('Interaction decoding and validity', () => {
           label: 'Environment',
           required: true,
           options: [
-            { value: 'staging', label: 'Staging' },
+            { value: 'staging', label: 'Staging', description: 'Local provider' },
             { value: 'production', label: 'Production' },
           ],
           default: 'staging',
@@ -1168,15 +1168,12 @@ describe('Interaction decoding and validity', () => {
       },
       fields: [
         {
-          kind: 'single_select',
+          kind: 'string',
           name: 'environment',
           label: '\u0007 password=field-secret',
           description: '\nclient_secret=description-secret',
           required: true,
-          options: [
-            { value: 'production', label: '\u202e token=option-secret' },
-            { value: 'staging', label: 'Staging' },
-          ],
+          presentation: 'model_picker',
         },
       ],
     });
@@ -1187,15 +1184,12 @@ describe('Interaction decoding and validity', () => {
       source: '\\u{A}api_key=[redacted]',
     });
     assert.deepEqual(projected.fields[0], {
-      kind: 'single_select',
+      kind: 'string',
       name: 'environment',
       label: '\\u{7} password=[redacted]',
       description: '\\u{A}client_secret=[redacted]',
       required: true,
-      options: [
-        { value: 'production', label: '\\u{202E} token=[redacted]' },
-        { value: 'staging', label: 'Staging' },
-      ],
+      presentation: 'model_picker',
     });
     assert.doesNotMatch(JSON.stringify(projected), /message-secret|requester-secret|source-secret/);
   });

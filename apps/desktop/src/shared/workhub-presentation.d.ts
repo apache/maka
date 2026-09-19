@@ -24,9 +24,15 @@ export interface WorkHubHostRect {
   readonly height: number;
 }
 
+export interface WorkHubWorkbarState {
+  readonly collapsed: boolean;
+  readonly placement: 'right' | 'bottom';
+}
+
 export interface WorkHubHost {
   readonly visible: boolean;
   readonly occluded?: boolean;
+  readonly workbar?: WorkHubWorkbarState;
   readonly rect: WorkHubHostRect;
 }
 
@@ -36,24 +42,29 @@ export interface WorkHubPresentationSnapshot {
   readonly shortcutRegistered: boolean;
   readonly rendererCrashed: boolean;
   readonly progressRequest?: number;
+  readonly workbar?: WorkHubWorkbarState;
 }
 
 export type WorkHubMainNavigation =
-  | { readonly kind: 'workhub' }
-  | { readonly kind: 'session'; readonly sessionKey: string };
+  | { readonly kind: 'workhub'; readonly panelAction?: 'usage' | 'toggle' }
+  | { readonly kind: 'session'; readonly sessionKey: string }
+  | { readonly kind: 'settings'; readonly section: 'models' };
 
 export interface WorkHubPresentationBridge {
   ready(): Promise<void>;
   getSnapshot(): Promise<WorkHubPresentationSnapshot>;
   setHost(host: WorkHubHost): Promise<string | void>;
-  setConversationLayout(layout: { expanded: boolean; compactHeight: number }): Promise<void>;
+  setConversationLayout(layout: { expanded: boolean; compactHeight: number; interactionPending?: boolean }): Promise<void>;
   progressReady(request: number): Promise<void>;
   resizeProgress(request: number, height: number): Promise<void>;
-  showConversation(progressRequest?: number): Promise<void>;
+  expandProgress(progressRequest: number): Promise<void>;
   detach(): Promise<void>;
   dock(): Promise<void>;
   hide(): Promise<void>;
+  openUsage(): Promise<void>;
+  toggleWorkbar(): Promise<void>;
   openSession(sessionKey: string): Promise<void>;
+  openSettings(section: 'models'): Promise<void>;
   subscribe(handler: (snapshot: WorkHubPresentationSnapshot) => void): () => void;
   /** Visible top edge inside the animation canvas, in CSS pixels. */
   onViewportInset(handler: (inset: number) => void): () => void;

@@ -51,6 +51,10 @@ const MESSAGE_VALUES = {
   format: 'email',
   notice: 'The original account was deleted.',
   recovery: 'Add or enable a connection first.',
+  source: 'OpenCode',
+  kind: 'records',
+  max: 250_000,
+  sessionId: 'session-imported',
 } as const;
 
 describe('TUI copy resources', () => {
@@ -101,6 +105,21 @@ describe('TUI copy resources', () => {
     assert.equal(getTuiPickerCopy('zh-TW').selectPickerHint, '↑↓ 選擇 · Enter 確認 · Esc 關閉');
     assert.equal(getTuiPickerCopy('zh-CN').currentMarker, '当前');
     assert.equal(getTuiPickerCopy('zh-TW').defaultMarker, '預設');
+  });
+
+  test('describes /setup as provider onboarding in every locale', () => {
+    for (const locale of UI_LOCALES) {
+      assert.doesNotMatch(
+        TUI_COPY_RESOURCES['primary-guidance'][locale].commands.setup,
+        /api[ -]?key/iu,
+        `primary-guidance/${locale}`,
+      );
+      assert.doesNotMatch(
+        TUI_COPY_RESOURCES['connection-identity'][locale].emptyChoiceRecovery,
+        /api[ -]?key/iu,
+        `connection-identity/${locale}`,
+      );
+    }
   });
 
   test('formats the English MCP count with ICU plural rules', () => {

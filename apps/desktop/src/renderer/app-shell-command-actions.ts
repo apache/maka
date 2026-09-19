@@ -34,7 +34,7 @@ import {
   buildCommandList,
   buildSessionCommands,
 } from "./command-palette-commands.js";
-import type { Command } from "./command-palette-types.js";
+import type { Command } from './features/overlays/index.js';
 import { renderConversationMarkdown } from "./conversation-markdown.js";
 import {
   commandPaletteActionErrorMessage,
@@ -88,7 +88,6 @@ export interface AppShellCommandListOptions {
   openSessionInChat: (sessionId: string) => void;
   openSettings: () => void;
   openSettingsSection: (section: SettingsSection) => void;
-  openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
   copyTodayDailyReview: () => Promise<void>;
@@ -220,7 +219,6 @@ export function buildAppShellCommandList(
     ...(options.clientPathsAccessible
       ? {
           onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
-          onOpenSkillsFolder: () => optionsRef.current.openSkillsFolder(),
         }
       : {}),
     onSelectModule: (selection) => {

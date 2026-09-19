@@ -17,6 +17,12 @@
  * under the License.
  */
 
+import type { UsageScreenRequest, UsageScreenResult } from '@maka/core/settings';
+import {
+  decodeUsageScreenRequest,
+  decodeUsageScreenResult,
+  assertUsageScreenResult,
+} from './usage-screen.js';
 import {
   canonicalPricingConfigsEqual,
   comparePricingModelKeys,
@@ -200,6 +206,7 @@ export interface ToolUsageLogProjection {
 export type UsageLogProjection = LlmUsageLogProjection | ToolUsageLogProjection;
 
 export type UsageQueryInput =
+  | UsageScreenRequest
   | { readonly kind: 'summary'; readonly query: LlmUsageQuery }
   | {
       readonly kind: 'buckets';
@@ -231,6 +238,7 @@ export type UsageQueryInput =
     };
 
 export type UsageQueryResult =
+  | UsageScreenResult
   | {
       readonly kind: 'summary';
       readonly summary: UsageSummaryV2;
@@ -404,6 +412,7 @@ export const USAGE_PRICING_OPERATION_SPECS = {
 
 export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
   const input = requireRecord(value, 'usage query input');
+  if (input.kind === 'screen' || input.kind === 'activity') return decodeUsageScreenRequest(value);
   if (input.kind === 'summary') {
     const exact = requireExactRecord(input, 'usage summary input', ['kind', 'query']);
     return { kind: 'summary', query: decodeLlmUsageQuery(exact.query) };
@@ -452,6 +461,12 @@ export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
 
 export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
   const result = requireRecord(value, 'usage query result');
+  if (
+    ['screen', 'activity', 'revision_changed', 'screen_response_too_large'].includes(
+      String(result.kind),
+    )
+  )
+    return decodeUsageScreenResult(value);
   if (result.kind === 'summary') {
     const exact = requireExactRecord(result, 'usage summary result', [
       'kind',
@@ -664,6 +679,23 @@ export function decodePricingMutateResult(value: unknown): PricingMutateResult {
 }
 
 function assertUsageQueryOutputForInput(input: UsageQueryInput, output: UsageQueryResult): void {
+  if (input.kind === 'screen' || input.kind === 'activity') {
+    if (
+      output.kind !== 'screen' &&
+      output.kind !== 'activity' &&
+      output.kind !== 'revision_changed' &&
+      output.kind !== 'screen_response_too_large'
+    )
+      throw invalidProtocolFrame('Invalid Usage screen result');
+    return assertUsageScreenResult(input, output);
+  }
+  if (
+    output.kind === 'screen' ||
+    output.kind === 'activity' ||
+    output.kind === 'revision_changed' ||
+    output.kind === 'screen_response_too_large'
+  )
+    throw invalidProtocolFrame('Invalid legacy Usage result');
   if (output.kind !== input.kind) {
     throw invalidProtocolFrame('Usage response kind does not match its request');
   }
@@ -935,7 +967,7 @@ function decodeToolUsage(value: unknown): NonNullable<UsageSummaryV2['toolUsage'
  * legacy table, and how many stored records could not be read. A total
  * crossing the wire without this cannot be presented honestly.
  */
-function decodeUsageProvenance(value: unknown): UsageProvenance {
+export function decodeUsageProvenance(value: unknown): UsageProvenance {
   const provenance = requireExactRecord(value, 'usage provenance', [
     'coverage',
     'legacyRecords',

@@ -376,6 +376,20 @@ test('ASF source authority changes select their dedicated gate', () => {
   assert.equal(planTests(['scripts/audit-alignment.mjs'], { graph }).asfSource, false);
 });
 
+test('every script that drives the Electron tier selects it', () => {
+  for (const path of [
+    'apps/desktop/scripts/browser-observe-act-smoke.mjs',
+    'scripts/audit-alignment.mjs',
+    'scripts/ax-tree-audit.mjs',
+    'scripts/fixture-env.mjs',
+    'scripts/run-desktop-e2e-parallel.mjs',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.e2e, true, path);
+    assert.equal(plan.full, false, path);
+  }
+});
+
 test('shared CLI validation changes select installed-package validation', () => {
   const plan = planTests(['.github/workflows/cli-package-validation.yml'], { graph });
 
@@ -481,6 +495,32 @@ test('full-suite authority files select every surface', () => {
   }
 });
 
+test('a full suite still selects the icon and toolchain gates only from their own inputs', () => {
+  const dependencies = planTests(['package.json'], { graph });
+  assert.equal(dependencies.full, true);
+  assert.equal(dependencies.appIcons, false);
+  assert.equal(dependencies.deepseekHarnessToolchain, false);
+
+  const workflow = planTests(['.github/workflows/ci.yml'], { graph });
+  assert.equal(workflow.appIcons, true);
+  assert.equal(workflow.deepseekHarnessToolchain, true);
+
+  const withInputs = planTests(
+    [
+      'package.json',
+      'scripts/generate-app-icons.py',
+      'scripts/prepare-deepseek-harness-toolchain.mjs',
+    ],
+    { graph },
+  );
+  assert.equal(withInputs.appIcons, true);
+  assert.equal(withInputs.deepseekHarnessToolchain, true);
+
+  const forced = planTests([], { graph, forceFull: true });
+  assert.equal(forced.appIcons, true);
+  assert.equal(forced.deepseekHarnessToolchain, true);
+});
+
 // The SessionTodo cutover (#4351) retired an operation and stranded every
 // workspace holding a credential issued before it (#4420). It changed the
 // vocabulary, not the decoders — so a trigger listing only decoders stays green
@@ -502,6 +542,12 @@ test('a durable-state decoder selects the released forward roll', () => {
   const plan = planTests(['packages/runtime-host/src/server/access-credential-store.ts'], {
     graph,
   });
+
+  assert.equal(plan.stateRootCompat, true);
+});
+
+test('a core durable-state decoder selects the released forward roll', () => {
+  const plan = planTests(['packages/core/src/goal.ts'], { graph });
 
   assert.equal(plan.stateRootCompat, true);
 });

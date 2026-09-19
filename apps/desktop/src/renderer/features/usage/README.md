@@ -36,8 +36,8 @@ to a thin wrapper).
 
 ## Boundary
 
-- `ports.ts` — `UsageServices`: `loadUsageStats(range)` and
-  `updateUsageSettings(patch)`. Both narrow — the feature consumes only
+- `ports.ts` — `UsageServices`: `loadUsageStats(range, query)`, revision-checked
+  `loadUsageActivity(input)`, and `updateUsageSettings(patch)`. All narrow — the feature consumes only
   `UsageSettings`/`UsageStats`, never the whole `AppSettings`.
 - `pricing-ports.ts` + `pricing-services-context.tsx` — the two Host-backed
   Pricing capabilities: load one complete effective snapshot and apply one CAS
@@ -49,8 +49,8 @@ to a thin wrapper).
   it retains the exact mutation intent and compares it with the next successful
   snapshot via the shared pure reconciliation rules in `@maka/runtime-host/protocol`.
 - `services-context.tsx` — `UsageFeatureScope`, the persistent state owner
-  (single tagged `{ range, value }` snapshot, reload ticket, unmount isolation,
-  Host/generation invalidation, load-failure toast), plus `useUsageServices()`
+  (single complete snapshot with range/query labels, screen/page request tickets,
+  fixed filter time bounds, Host invalidation, and visible stale/capacity failures), plus `useUsageServices()`
   and `useUsageStats(range)`. It also keeps the Pricing editor's input (mode,
   draft, and cache-section state) through `usePricingEditorDraft()`, so Settings'
   Host-keyed content and loading gate cannot discard the user's work. Pricing
@@ -111,3 +111,13 @@ shim, since `settings-error-copy` is not a copy catalog.
   treats `shared/` as external) with a thin React shell on each side is the real
   fix, but it touches the legacy originals and their consumers, so it is left as a
   focused follow-up rather than widening this extraction PR.
+
+## Consistency
+
+The Settings adapter installs the Storage screen as one unit and requests activity
+continuation only on demand. Filter changes reload the entire screen while keeping
+its resolved time bounds. A failed load retains the old complete screen with its
+original labels; revision changes disable continuation until Refresh. Capacity
+failures stay typed across IPC/preload and do not enter the generic error/retry
+path. Successful installation resets table pagination without remounting the
+search input. See [the implementation contract](../../../../../../docs/architecture/usage-screen-revision-consistency.md).

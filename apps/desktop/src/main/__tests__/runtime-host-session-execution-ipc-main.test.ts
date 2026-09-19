@@ -29,6 +29,7 @@ import { deferred } from '@maka/core/test-only/async-primitives';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import { type AttachmentRef } from '@maka/core/events';
 import {
+  MESSAGE_QUEUE_MAX_ENTRIES,
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type SessionCatalogProjection,
 } from "@maka/runtime-host/protocol";
@@ -96,33 +97,39 @@ for (const phase of ['connecting', 'seeding'] as const) {
   }
 }
 
-test('window transcript reads are observation operations scoped to the renderer', async () => {
+test('transcript history IPC forwards open mode, load-earlier, and read-turn to the registry', async () => {
   const ipc = ipcHarness();
   const observations = new RuntimeHostSessionObservationRegistry();
   const calls: unknown[] = [];
-  observations.loadTranscriptAfter = async (request, targetId) => { calls.push({ command: 'after', request, targetId }); };
-  observations.loadTranscriptLatest = async (request, targetId) => { calls.push({ command: 'latest', request, targetId }); };
-  registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
-  const request = {
-    consumerId: 'guest-consumer', sessionId: 'shared-session', hostEpoch: 'host-1',
-    anchorSequence: 42, maxBytes: 512 * 1024, navigation: 7,
+  observations.openTranscript = async (sessionId, consumerId, target, mode) => {
+    calls.push({ command: 'open', sessionId, consumerId, targetId: target.id, mode });
+    return { sessionId, generation: 'generation-1', hostEpoch: 'host-1', readThroughMessageId: null };
   };
-  await ipc.invoke('sessions:transcript:load-after', request);
-  await ipc.invoke('sessions:transcript:load-latest', { ...request, anchorSequence: null });
+  observations.loadEarlierTranscript = async (consumerId, targetId) => {
+    calls.push({ command: 'earlier', consumerId, targetId });
+  };
+  const turn = [{ type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'hello' }];
+  observations.readTranscriptTurn = async (sessionId, turnId) => {
+    calls.push({ command: 'read-turn', sessionId, turnId });
+    return turn as never;
+  };
+  registerRuntimeHostSessionObservationIpc({ observations, resolveSideConversation: async () => false }, ipc);
+
+  await ipc.invoke('sessions:transcript:open', 'shared-session', 'guest-consumer', 'history');
+  await ipc.invoke('sessions:transcript:load-earlier', 'guest-consumer');
+  assert.deepEqual(await ipc.invoke('sessions:transcript:read-turn', 'shared-session', 'turn-1'), turn);
+  assert.equal(ipc.reconnectableChannels.has('sessions:transcript:read-turn'), true);
   assert.deepEqual(calls, [
-    { command: 'after', request, targetId: 9 },
-    { command: 'latest', request: { ...request, anchorSequence: null }, targetId: 9 },
+    { command: 'open', sessionId: 'shared-session', consumerId: 'guest-consumer', targetId: 9, mode: 'history' },
+    { command: 'earlier', consumerId: 'guest-consumer', targetId: 9 },
+    { command: 'read-turn', sessionId: 'shared-session', turnId: 'turn-1' },
   ]);
   await assert.rejects(
-    ipc.invoke('sessions:transcript:load-after', { ...request, anchorSequence: -1 }),
-    /Invalid Desktop transcript range anchor/,
+    ipc.invoke('sessions:transcript:open', 'shared-session', 'other-consumer', 'window'),
+    /Invalid Desktop transcript open mode/,
   );
-  // The Renderer owns the window, so every read must name the version it reads for.
-  await assert.rejects(
-    ipc.invoke('sessions:transcript:load-after', { ...request, navigation: undefined }),
-    /Invalid Desktop transcript navigation/,
-  );
-  assert.equal(calls.length, 2);
+  await assert.rejects(ipc.invoke('sessions:transcript:load-earlier', ''), /Transcript consumer/);
+  assert.equal(calls.length, 3);
 });
 
 test('treats pending Session observation teardown as IPC cancellation', async () => {
@@ -169,16 +176,14 @@ test('treats pending transcript teardown as IPC cancellation', async () => {
         readThroughMessageId: null,
       };
     },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async loadTranscriptAfter() {},
-    async loadTranscriptLatest() {},
+    async loadEarlierTranscript() {},
+    async readTranscriptTurn() { return []; },
     acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
   const ipc = observationIpcHarness(observations);
 
-  const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1');
+  const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail');
   try {
     await started.promise;
     assert.deepEqual(observations.trackedSessionIds(), ['session-1']);
@@ -214,16 +219,14 @@ for (const teardown of ['forgetSession', 'close'] as const) {
           readThroughMessageId: null,
         };
       },
-      async loadTranscriptBefore() {},
-      async loadTranscriptAround() {},
-      async loadTranscriptAfter() {},
-      async loadTranscriptLatest() {},
+      async loadEarlierTranscript() {},
+      async readTranscriptTurn() { return []; },
       acknowledgeTranscriptTail() {},
       async closeTranscript() {},
     });
     const ipc = observationIpcHarness(observations);
     const observing = ipc.invoke('sessions:observe', 'session-1', 'observer-1');
-    const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1');
+    const opening = ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail');
     // Attach rejection handlers before teardown. The late source completion
     // must not turn the lost observation into readiness or silent cancellation.
     const results = Promise.allSettled([observing, opening]);
@@ -256,10 +259,8 @@ test('preserves genuine Session observation initialization failures', async () =
     async openTranscript() {
       throw transcriptFailure;
     },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async loadTranscriptAfter() {},
-    async loadTranscriptLatest() {},
+    async loadEarlierTranscript() {},
+    async readTranscriptTurn() { return []; },
     acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
@@ -270,7 +271,7 @@ test('preserves genuine Session observation initialization failures', async () =
     (error) => error === sessionFailure,
   );
   await assert.rejects(
-    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail'),
     (error) => error === transcriptFailure,
   );
   await observations.close();
@@ -285,14 +286,14 @@ test('releases a transcript registration whose source lacks the window contract'
   const ipc = observationIpcHarness(observations);
 
   await assert.rejects(
-    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail'),
     /transcript source is unavailable/,
   );
   assert.deepEqual(observations.trackedSessionIds(), []);
   // Reusing the consumer id must reach the same missing-source failure rather
   // than the duplicate-identity guard, which only a leaked registration trips.
   await assert.rejects(
-    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'),
+    ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail'),
     /transcript source is unavailable/,
   );
   await observations.close();
@@ -312,10 +313,8 @@ test('returns explicit ready results for Session observation IPC', async () => {
     async openTranscript() {
       return transcript;
     },
-    async loadTranscriptBefore() {},
-    async loadTranscriptAround() {},
-    async loadTranscriptAfter() {},
-    async loadTranscriptLatest() {},
+    async loadEarlierTranscript() {},
+    async readTranscriptTurn() { return []; },
     acknowledgeTranscriptTail() {},
     async closeTranscript() {},
   });
@@ -323,9 +322,9 @@ test('returns explicit ready results for Session observation IPC', async () => {
 
   assert.deepEqual(await ipc.invoke('sessions:observe', 'session-1', 'observer-1'), {
     kind: 'ready',
-    value: [],
+    value: undefined,
   });
-  assert.deepEqual(await ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1'), {
+  assert.deepEqual(await ipc.invoke('sessions:transcript:open', 'session-1', 'consumer-1', 'tail'), {
     kind: 'ready',
     value: transcript,
   });
@@ -1040,14 +1039,18 @@ test("submits an ordinary composer message once under its stable message identit
 
 test('returns Host-owned cancellation proof to the renderer', async () => {
   const ipc = ipcHarness();
+  const queriedMessageIds: string[][] = [];
   registerExecutionIpc(
     {
       client: executionClient({
-        queryMessages: async (input) => ({
-          cancelledMessageIds: input.messageIds.filter(
+        queryMessages: async (input) => {
+          queriedMessageIds.push([...input.messageIds]);
+          return {
+            cancelledMessageIds: input.messageIds.filter(
             (messageId) => messageId === 'message-cancelled',
-          ),
-        }),
+            ),
+          };
+        },
       }),
     },
     ipc,
@@ -1059,6 +1062,109 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
       'message-cancelled',
     ]),
     { cancelledMessageIds: ['message-cancelled'] },
+  );
+  assert.deepEqual(queriedMessageIds, [['message-accepted', 'message-cancelled']]);
+});
+
+test('batches cancellation proof queries at the Runtime Host protocol boundary', async () => {
+  const ipc = ipcHarness();
+  const queriedMessageIds: string[][] = [];
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async (input) => {
+          queriedMessageIds.push([...input.messageIds]);
+          return { cancelledMessageIds: input.messageIds.slice(-1) };
+        },
+      }),
+    },
+    ipc,
+  );
+  const messageIds = Array.from({ length: 65 }, (_, index) => `message-${index}`);
+
+  assert.deepEqual(
+    await ipc.invoke('sessions:queryCancelledMessages', 'session-1', messageIds),
+    { cancelledMessageIds: ['message-63', 'message-64'] },
+  );
+  assert.deepEqual(queriedMessageIds.map((ids) => ids.length), [64, 1]);
+});
+
+test('rejects duplicate cancellation proof identities across protocol batches', async () => {
+  const ipc = ipcHarness();
+  let queryCount = 0;
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async () => {
+          queryCount += 1;
+          return { cancelledMessageIds: [] };
+        },
+      }),
+    },
+    ipc,
+  );
+  const messageIds = Array.from({ length: 65 }, (_, index) => `message-${index}`);
+  messageIds[64] = messageIds[0] as string;
+
+  await assert.rejects(
+    ipc.invoke('sessions:queryCancelledMessages', 'session-1', messageIds),
+    /Duplicate Message identities/u,
+  );
+  assert.equal(queryCount, 0);
+});
+
+test('rejects invalid or unbounded Desktop cancellation proof queries before dispatch', async () => {
+  const ipc = ipcHarness();
+  let queryCount = 0;
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async () => {
+          queryCount += 1;
+          return { cancelledMessageIds: [] };
+        },
+      }),
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    ipc.invoke('sessions:queryCancelledMessages', 'session-1', ['valid-message', 42]),
+    /Invalid Message identity/u,
+  );
+  await assert.rejects(
+    ipc.invoke('sessions:queryCancelledMessages', 'session-1', ['not a protocol identity']),
+    /Invalid Message identity/u,
+  );
+  await assert.rejects(
+    ipc.invoke(
+      'sessions:queryCancelledMessages',
+      'session-1',
+      Array.from({ length: 4_097 }, (_, index) => `message-${index}`),
+    ),
+    /Invalid Message identities/u,
+  );
+  assert.equal(queryCount, 0);
+});
+
+test('rejects duplicate cancellation proofs returned across protocol batches', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessages: async () => ({ cancelledMessageIds: ['message-0'] }),
+      }),
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    ipc.invoke(
+      'sessions:queryCancelledMessages',
+      'session-1',
+      Array.from({ length: 65 }, (_, index) => `message-${index}`),
+    ),
+    /Duplicate cancelled Message identities/u,
   );
 });
 
@@ -1099,6 +1205,117 @@ test('returns Host-owned Message execution resolutions to the renderer', async (
       ],
     },
   );
+});
+
+test('batches Message execution queries at the Runtime Host protocol boundary', async () => {
+  const ipc = ipcHarness();
+  const queriedMessageIds: string[][] = [];
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessageExecutions: async (input) => {
+          queriedMessageIds.push([...input.messageIds]);
+          assert.ok(input.messageIds.length <= MESSAGE_QUEUE_MAX_ENTRIES);
+          return {
+            resolutions: input.messageIds.map((messageId) => {
+              if (messageId === 'message-0') {
+                return {
+                  messageId,
+                  state: 'owned' as const,
+                  turnId: 'turn-0',
+                  runId: 'run-0',
+                };
+              }
+              if (messageId === 'message-64') {
+                return { messageId, state: 'cancelled' as const };
+              }
+              return { messageId, state: 'pending' as const };
+            }),
+          };
+        },
+      }),
+    },
+    ipc,
+  );
+  const messageIds = Array.from({ length: 65 }, (_, index) => `message-${index}`);
+
+  const result = await ipc.invoke(
+    'sessions:queryMessageExecutions',
+    'session-1',
+    messageIds,
+  ) as { resolutions: unknown[] };
+
+  assert.deepEqual(queriedMessageIds.map((ids) => ids.length), [64, 1]);
+  assert.deepEqual(result.resolutions, messageIds.map((messageId) => {
+    if (messageId === 'message-0') {
+      return {
+        messageId,
+        state: 'owned',
+        turnId: 'turn-0',
+        runId: 'run-0',
+      };
+    }
+    if (messageId === 'message-64') return { messageId, state: 'cancelled' };
+    return { messageId, state: 'pending' };
+  }));
+});
+
+test('rejects duplicate Message execution identities before protocol batching', async () => {
+  const ipc = ipcHarness();
+  let queryCount = 0;
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessageExecutions: async () => {
+          queryCount += 1;
+          return { resolutions: [] };
+        },
+      }),
+    },
+    ipc,
+  );
+  const messageIds = Array.from({ length: 65 }, (_, index) => `message-${index}`);
+  messageIds[64] = messageIds[0] as string;
+
+  await assert.rejects(
+    ipc.invoke('sessions:queryMessageExecutions', 'session-1', messageIds),
+    /Duplicate Message identities/u,
+  );
+  assert.equal(queryCount, 0);
+});
+
+test('rejects invalid or unbounded Desktop Message execution queries before dispatch', async () => {
+  const ipc = ipcHarness();
+  let queryCount = 0;
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessageExecutions: async () => {
+          queryCount += 1;
+          return { resolutions: [] };
+        },
+      }),
+    },
+    ipc,
+  );
+
+  await assert.rejects(
+    ipc.invoke('sessions:queryMessageExecutions', 'session-1', ['valid-message', 42]),
+    /Invalid Message identity/u,
+  );
+  await assert.rejects(
+    ipc.invoke('sessions:queryMessageExecutions', 'session-1', ['not a protocol identity']),
+    /Invalid Message identity/u,
+  );
+  await assert.rejects(
+    ipc.invoke(
+      'sessions:queryMessageExecutions',
+      'session-1',
+      Array.from({ length: 4_097 }, (_, index) => `message-${index}`),
+    ),
+    /Invalid Message identities/u,
+  );
+  assert.equal(queryCount, 0);
 });
 
 test('submits a slash Skill message and reports the Host Skill outcome', async () => {
@@ -1981,6 +2198,103 @@ test('does not let an admitted Stop interrupt a replacement Turn', async () => {
   await observer.close();
 });
 
+test('returns the attachment_blocked envelope when an approved source has expired', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async () => {
+          throw new Error("A blocked send must never reach the Host");
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => {
+        throw new Error("an expired approval must not touch the filesystem");
+      },
+      beforeStop() {},
+      newId: () => "turn-1",
+    },
+    ipc,
+  );
+
+  const result = await ipc.invoke("sessions:send", "session-1", {
+    type: "send",
+    text: "expired attachment",
+    attachmentItems: [{
+      approvalId: "expired",
+      name: "expired.txt",
+      mimeType: "text/plain",
+    }],
+  });
+  assert.deepEqual(result, { ok: false, reason: "attachment_blocked", code: "source_expired" });
+});
+
+test('Session snapshot IPC keeps committed text despite a lagging active marker', async () => {
+  const ipc = ipcHarness();
+  let closes = 0;
+  const opened = runtimeHostSessionFixture({
+    snapshot: {
+      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+      session: { sessionId: 'session-1', metadataRevision: 1, status: 'running', createdAt: 1, isArchived: false },
+      projectionRevision: 1,
+      rootTurn: { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1', status: 'running' },
+      goal: null,
+      queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+      interactions: { pending: [] },
+    },
+    activeAssistantStreams: [
+      { kind: 'text', turnId: 'turn-1', messageId: 'settled' },
+      { kind: 'text', turnId: 'turn-1', messageId: 'streaming' },
+    ],
+    transcript: Promise.resolve([]),
+    events: (async function* () {})(),
+    async decodeTranscriptPage() {
+      return {
+        messages: [
+          { identity: 1, message: { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'committed question' } },
+          { identity: 3, message: { type: 'assistant', id: 'settled', turnId: 'turn-0', ts: 0, text: 'settled answer', modelId: 'test-model' } },
+        ],
+        nextCursor: 'older-page',
+      };
+    },
+    async close() { closes += 1; throw new Error('connection closed'); },
+  });
+  registerExecutionIpc({ client: executionClient({
+    getSession: async () => session(),
+    openSession: async () => opened,
+  }) }, ipc);
+  const result = await ipc.invoke('sessions:readSnapshot', 'session-1') as import('@maka/core/session-reference').SessionSnapshot;
+  assert.equal(result.text, 'Assistant: settled answer\n\nUser: committed question');
+  assert.equal(result.truncated, true);
+  assert.equal(closes, 1);
+  assert.equal(ipc.reconnectableChannels.has('sessions:readSnapshot'), true);
+
+  opened.snapshot.session.isArchived = true;
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
+  assert.equal(closes, 2, 'archive race must still release the subscription');
+  opened.snapshot.session.isArchived = false;
+  opened.decodeTranscriptPage = async () => { throw new Error('decode failed'); };
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /decode failed/);
+  assert.equal(closes, 3, 'close failure must not mask the original read failure');
+});
+
+test('Session snapshot IPC rejects invalid budgets and unavailable sources before opening', async () => {
+  const ipc = ipcHarness();
+  let lookups = 0;
+  let source: SessionCatalogProjection | null = null;
+  registerExecutionIpc({ client: executionClient({ getSession: async () => { lookups += 1; return source; } }) }, ipc);
+  for (const options of [null, [], 1, { maxChars: 0 }, { maxChars: 32_001 }, { maxChars: 1.5 }]) {
+    await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1', options), /Invalid Session snapshot/);
+  }
+  assert.equal(lookups, 0);
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /not found/);
+  source = { ...session(), isArchived: true };
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
+});
+
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];
 
 function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
@@ -1994,12 +2308,13 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     getSession: unavailable,
     ingestAttachment: unavailable,
     interruptTurn: unavailable,
-    listSessionTurnLandmarks: unavailable,
     listSessionTurns: unavailable,
+    listSessionTurnLandmarks: unavailable,
     queryMessageExecutions: unavailable,
     queryMessages: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
+    openSession: unavailable,
     regenerateTurn: unavailable,
     retractQueueEntry: unavailable,
     promoteQueueEntry: unavailable,
@@ -2112,6 +2427,10 @@ function ipcHarness() {
       assert.ok(handler, `missing handler: ${channel}`);
       return handler({ sender } as never, ...args);
     },
+    rendererNavigate(inPlace = false, mainFrame = true) {
+      sender.emit('did-start-navigation', {}, 'file:///index.html', inPlace, mainFrame);
+    },
+    rendererListenerCount() { return sender.listenerCount('destroyed'); },
     rendererGone() {
       sender.emit('render-process-gone');
     },
@@ -2208,4 +2527,48 @@ test('steers WorkHub through Host admission even though the ordinary Session cat
   });
   assert.deepEqual(submits, [{ sessionId: WORKHUB_COORDINATION_SESSION_ID, messageId: 'workhub-steering', placement: 'current_turn', content: { text: 'Change direction immediately', inlineReferences: [] } }]);
   assert.equal((result as { disposition: string }).disposition, 'steering');
+});
+
+
+test('renderer reload releases old observations without accumulating destroyed listeners', async () => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  const removed: string[] = [];
+  await registry.attach({ async observe() {}, async unobserve(id) { removed.push(id); } });
+  const ipc = observationIpcHarness(registry);
+  for (let i = 0; i < 20; i++) {
+    await ipc.invoke('sessions:observe', 'session-1', `observer-${i}`);
+    assert.equal(ipc.rendererListenerCount(), 2);
+    ipc.rendererNavigate(true); // Same-document navigation keeps live subscriptions.
+    ipc.rendererNavigate(false, false); // So do child-frame navigations.
+    assert.deepEqual(registry.observedSessionIds(), ['session-1']);
+    ipc.rendererNavigate();
+    assert.deepEqual(registry.observedSessionIds(), []);
+    assert.equal(ipc.rendererListenerCount(), 1);
+  }
+  assert.equal(removed.length, 20);
+  await registry.close();
+  assert.equal(ipc.rendererListenerCount(), 0);
+});
+
+test('an observation admitted across document replacement is cancelled before registration', async () => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  const ipc = ipcHarness();
+  const resolving = deferred();
+  registerRuntimeHostSessionObservationIpc({ observations: registry, resolveSideConversation: async () => { await resolving.promise; return false; } }, ipc);
+  const observing = ipc.invoke('sessions:observe', 'session-1', 'old-document');
+  ipc.rendererNavigate();
+  resolving.resolve();
+  assert.deepEqual(await observing, { kind: 'cancelled' });
+  assert.deepEqual(registry.observedSessionIds(), []);
+  await registry.close();
+});
+
+
+test('late transcript acknowledgement after renderer teardown is a no-op', async () => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  const ipc = observationIpcHarness(registry);
+  await ipc.invoke('sessions:transcript:acknowledge-tail', {
+    consumerId: 'released-consumer', sessionId: 'session-1', hostEpoch: 'epoch-1', through: 4,
+  });
+  await registry.close();
 });

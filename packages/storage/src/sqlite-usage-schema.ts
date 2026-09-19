@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_USAGE_SCHEMA_VERSION = 7;
+export const SQLITE_USAGE_SCHEMA_VERSION = 9;
 
 /**
  * The canonical ledger's columns, in the order every statement binds them.
@@ -227,6 +227,60 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS usage_model_call_attempts_session_completed_at
       ON usage_model_call_attempts(session_id, completed_at DESC, attempt_id);
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_screen_revision (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      incarnation TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision >= 0)
+    );
+    INSERT OR IGNORE INTO usage_screen_revision VALUES (1, lower(hex(randomblob(16))), 0);
+    CREATE INDEX IF NOT EXISTS usage_llm_calls_screen ON usage_llm_calls(ts DESC, storage_key DESC);
+    CREATE INDEX IF NOT EXISTS usage_tool_invocations_screen ON usage_tool_invocations(ts DESC, storage_key DESC);
+    CREATE INDEX IF NOT EXISTS usage_model_call_attempts_screen ON usage_model_call_attempts(completed_at DESC, attempt_id DESC);
+  `);
+  // These are invalidation metadata, never an accounting or repair authority.
+  // Triggers run in the mutating transaction, including cascades and rollbacks.
+  for (const table of [
+    'usage_llm_calls',
+    'usage_tool_invocations',
+    'usage_model_call_attempts',
+    'usage_model_call_projection_checkpoints',
+    'usage_pricing_overrides',
+    'usage_pricing_authority',
+    'session_metadata',
+    'core_agent_runs',
+    'core_agent_run_events',
+  ]) {
+    // The standalone Usage migration is also used by legacy conversion tests;
+    // source tables are installed by the operational owner before this migration.
+    if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(table))
+      continue;
+    for (const event of ['INSERT', 'UPDATE', 'DELETE']) {
+      let when = '';
+      if (table === 'session_metadata') {
+        // Only title/identity changes affect the Usage activity projection.
+        when =
+          event === 'UPDATE'
+            ? 'WHEN OLD.name IS NOT NEW.name OR OLD.session_id IS NOT NEW.session_id'
+            : '';
+      } else if (table === 'core_agent_run_events') {
+        const old = "OLD.event_type = 'model_call_attempt_recorded'";
+        const next = "NEW.event_type = 'model_call_attempt_recorded'";
+        when = `WHEN ${event === 'INSERT' ? next : event === 'DELETE' ? old : `${old} OR ${next}`}`;
+      } else if (table === 'core_agent_runs') {
+        when =
+          event === 'INSERT'
+            ? 'WHEN NEW.latest_model_call_sequence IS NOT NULL'
+            : event === 'DELETE'
+              ? 'WHEN OLD.latest_model_call_sequence IS NOT NULL'
+              : 'WHEN OLD.latest_model_call_sequence IS NOT NEW.latest_model_call_sequence OR OLD.session_id IS NOT NEW.session_id OR OLD.run_id IS NOT NEW.run_id';
+      }
+      db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_screen_${event.toLowerCase()}
+        AFTER ${event} ON ${table} ${when} BEGIN
+          UPDATE usage_screen_revision SET revision = revision + 1 WHERE singleton = 1;
+        END`);
+    }
+  }
 }
 
 /**

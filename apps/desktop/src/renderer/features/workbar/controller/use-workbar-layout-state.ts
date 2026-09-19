@@ -67,7 +67,7 @@ export function useWorkbarLayoutState(
     if (authoritativeSessionIds) {
       dispatch({ type: 'retain-sessions', sessionIds: authoritativeSessionIds });
     }
-  }, [authoritativeSessionIds, activeSessionId]);
+  }, [authoritativeSessionIds, activeSessionId, state.panels]);
   const stateRef = useRef(state);
   stateRef.current = state;
   const rightDragStartRef = useRef(state.rightWidth);
@@ -139,6 +139,14 @@ export function useWorkbarLayoutState(
   const openDynamicWorkbarTab = useCallback(
     (tab: SessionWorkbarTab, placement: SessionWorkbarPlacement = 'right') =>
       dispatch({ type: 'open', placement, tab }),
+    [],
+  );
+  const restoreTerminals = useCallback(
+    (tabs: readonly SessionWorkbarTab[]) => dispatch({ type: 'restore-terminals', tabs }),
+    [],
+  );
+  const closeTerminal = useCallback(
+    (sessionId: string, ref: string) => dispatch({ type: 'close-terminal', sessionId, ref }),
     [],
   );
   const activateWorkbarTab = useCallback(
@@ -235,9 +243,11 @@ export function useWorkbarLayoutState(
     workbarPanelsState: state.panels,
     openWorkbarTab,
     openDynamicWorkbarTab,
+    restoreTerminals,
     activateWorkbarTab,
     closeWorkbarTab,
     closeWorkbarTabs,
+    closeTerminal,
     moveWorkbarTabToPanel,
     titleWorkbarTab,
     openWorkbarLauncher,

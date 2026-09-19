@@ -195,8 +195,30 @@ export function estimateEffectiveToolResultChars(
 export function estimateRuntimeEventChars(event: RuntimeEvent): number {
   let total = 0;
   const content = event.content;
-  if (content?.kind === 'text' || content?.kind === 'thinking') total += content.text.length;
-  else if (content?.kind === 'function_call')
+  if (content?.kind === 'text' || content?.kind === 'thinking') {
+    total += content.text.length;
+    // Structured carriers are part of the event's weight: a quote- or
+    // attachment-only user message must not estimate to zero, or the
+    // history-compact gate drops a model-visible event (#4804).
+    if (content.kind === 'text') {
+      for (const quote of content.quotes ?? []) {
+        total += quote.text.length + (quote.label?.length ?? 0);
+      }
+      for (const attachment of content.attachments ?? []) {
+        // Weight the block the projection actually emits, not the display
+        // fields: name+mimeType is ~25 chars while the formatted attachment
+        // block with its Read guidance runs to hundreds (#4815 review).
+        total += formatAttachmentRefs([attachment]).length;
+      }
+      // Directory references project as one fixed envelope per message; count
+      // what it actually emits, or a directory-only message estimates to zero
+      // and the history-compact gate drops a model-visible event from the
+      // replay successors (#4815 review).
+      if (content.directoryReferences?.length) {
+        total += formatDirectoryReferences(content.directoryReferences).length;
+      }
+    }
+  } else if (content?.kind === 'function_call')
     total += content.name.length + stableJsonLength(content.args);
   else if (content?.kind === 'function_response')
     total += content.name.length + estimateEffectiveToolResultChars(content, event.sessionId);
@@ -273,6 +295,7 @@ export type RuntimeEventReplayFallbackGate =
   | 'runtime_replay_unsupported_semantics';
 
 export type RuntimeEventReplayDiagnosticCode =
+  | 'repaired_prefix_dropped'
   | 'partial_skipped'
   | 'unsupported_role'
   | 'unsupported_content'
@@ -293,8 +316,6 @@ export interface RuntimeEventReplayDiagnostic {
   turnId?: string;
   detail?: Record<string, unknown>;
 }
-
-export type RuntimeEventReplaySemanticKind = 'text' | 'thinking' | 'tool_call' | 'tool_result';
 
 export type RuntimeEventModelReplayItem =
   | {
@@ -488,7 +509,6 @@ function replayToolIdentity(invocationId: string, toolCallId: string): string {
 export interface RuntimeEventModelReplayPlan {
   items: RuntimeEventModelReplayItem[];
   textMessages: TextModelMessage[];
-  semanticKinds: RuntimeEventReplaySemanticKind[];
   diagnostics: RuntimeEventReplayDiagnostic[];
   hasProviderNativeSemantics: boolean;
 }
@@ -499,6 +519,13 @@ export interface RuntimeEventModelReplayPlan {
 
 export interface BuildRuntimeEventModelReplayPlanOptions {
   includeSystemEvents?: boolean;
+  /**
+   * Preserve repaired assistant content before the first model-visible user.
+   *
+   * This is reserved for continuations that passed their separate provider
+   * replay admission. Ordinary projections default to a user-led history.
+   */
+  allowRepairedAssistantPrefix?: boolean;
   /**
    * Turn IDs known — from the FULL prior ledger — to contain tool activity.
    *
@@ -512,6 +539,47 @@ export interface BuildRuntimeEventModelReplayPlanOptions {
    * unions them with tool activity found in `events`.
    */
   toolActivityTurnIds?: ReadonlySet<string>;
+}
+
+export interface RuntimeEventProviderHistoryBoundary {
+  events: readonly RuntimeEvent[];
+  diagnostic?: RuntimeEventReplayDiagnostic;
+}
+
+/**
+ * Apply the canonical provider-history boundary before any consumer-specific
+ * RuntimeEvent projection. Repaired content stays durable and UI-visible; only
+ * the provider request view drops an assistant prefix before its first user.
+ */
+export function applyRuntimeEventProviderHistoryBoundary(
+  events: readonly RuntimeEvent[],
+  options: Pick<BuildRuntimeEventModelReplayPlanOptions, 'allowRepairedAssistantPrefix'> = {},
+): RuntimeEventProviderHistoryBoundary {
+  if (options.allowRepairedAssistantPrefix) return { events };
+  const firstUserIndex = events.findIndex(
+    (event) =>
+      !isPartialRuntimeEvent(event) &&
+      event.role === 'user' &&
+      runtimeEventHasModelVisibleContent(event),
+  );
+  const boundaryEnd = firstUserIndex < 0 ? events.length : firstUserIndex;
+  const repairedAssistantIndex = events.findIndex(
+    (event) =>
+      event.refs?.storedMessageId !== undefined &&
+      event.role === 'model' &&
+      (event.content?.kind === 'text' || event.content?.kind === 'thinking'),
+  );
+  if (repairedAssistantIndex < 0 || repairedAssistantIndex >= boundaryEnd) return { events };
+  const repairedAssistant = events[repairedAssistantIndex]!;
+  return {
+    events: firstUserIndex < 0 ? [] : events.slice(firstUserIndex),
+    diagnostic: diagnostic(
+      repairedAssistant,
+      'repaired_prefix_dropped',
+      'repaired assistant prefix dropped before provider replay user boundary',
+      { droppedEventCount: firstUserIndex < 0 ? events.length : firstUserIndex },
+    ),
+  };
 }
 
 /**
@@ -542,8 +610,12 @@ export function buildRuntimeEventModelReplayPlan(
   options: BuildRuntimeEventModelReplayPlanOptions = {},
 ): RuntimeEventModelReplayPlan {
   const includeSystemEvents = options.includeSystemEvents ?? false;
+  const boundary = applyRuntimeEventProviderHistoryBoundary(events, options);
+  const replayEvents = boundary.events;
   const items: RuntimeEventModelReplayItem[] = [];
-  const diagnostics: RuntimeEventReplayDiagnostic[] = [];
+  const diagnostics: RuntimeEventReplayDiagnostic[] = boundary.diagnostic
+    ? [boundary.diagnostic]
+    : [];
   const callsById = new Map<
     string,
     {
@@ -574,7 +646,7 @@ export function buildRuntimeEventModelReplayPlan(
   // are step-paired — without it every sliced tool turn would degrade.
   const pairedToolTurnIds = new Set<string>();
   const unpairedToolTurnIds = new Set<string>();
-  for (const event of events) {
+  for (const event of replayEvents) {
     if (isPartialRuntimeEvent(event)) continue;
     if (event.modelVisibility === 'hidden') continue;
     if (event.content?.kind === 'function_call' && event.turnId) {
@@ -586,7 +658,7 @@ export function buildRuntimeEventModelReplayPlan(
     if (!pairedToolTurnIds.has(id)) unpairedToolTurnIds.add(id);
   }
 
-  for (const event of events) {
+  for (const event of replayEvents) {
     if (isPartialRuntimeEvent(event)) {
       diagnostics.push(
         diagnostic(event, 'partial_skipped', 'partial RuntimeEvent skipped for model replay'),
@@ -941,16 +1013,11 @@ export function buildRuntimeEventModelReplayPlan(
           }
         : { role: item.role, content: item.content },
     );
-  const semanticKinds = [...new Set(items.map((item) => item.kind))];
   return {
     items,
     textMessages,
-    semanticKinds,
     diagnostics,
-    hasProviderNativeSemantics:
-      semanticKinds.includes('thinking') ||
-      semanticKinds.includes('tool_call') ||
-      semanticKinds.includes('tool_result'),
+    hasProviderNativeSemantics: items.some((item) => item.kind !== 'text'),
   };
 }
 
@@ -1111,7 +1178,7 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
     .map((attachment) => {
       const resourceRef = formatAttachmentResourceRef(attachment.ref);
       const readArgument = resourceRef
-        ? { ref: resourceRef }
+        ? { path: resourceRef }
         : attachment.ref.kind === 'workspace_file'
           ? { path: attachment.ref.relativePath }
           : attachment.ref.kind === 'external_file'
@@ -1124,7 +1191,7 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
               ...(attachment.kind === 'image'
                 ? [`Markdown image source: ${JSON.stringify(resourceRef)}`]
                 : []),
-              'This is a Session resource, not a workspace file. Use the ref above; never use the display name as a path.',
+              'This is a Session resource, not a workspace file. Use the path above; never use the display name as a path.',
             ].join('\n')
           : `Read argument: ${JSON.stringify(readArgument)}`
         : 'The attachment content is unavailable to Read.';
@@ -1142,8 +1209,23 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
 function formatQuoteRefs(quotes: readonly QuoteRef[]): string {
   return quotes
     .map((q) => {
-      const label = q.label === undefined ? '' : ` label="${q.label.replace(/"/g, "'")}"`;
-      return `<quoted_excerpt${label}>\n${q.text}\n</quoted_excerpt>`;
+      const attributes = [
+        q.label === undefined ? undefined : `label="${quoteAttribute(q.label)}"`,
+        q.sourceSessionId === undefined
+          ? undefined
+          : `source_session="${quoteAttribute(q.sourceSessionId)}"`,
+        q.sourceCapturedAt === undefined ? undefined : `captured_at="${q.sourceCapturedAt}"`,
+        q.sourceTruncated === undefined ? undefined : `truncated="${q.sourceTruncated}"`,
+      ].filter((attribute): attribute is string => attribute !== undefined);
+      const opening =
+        attributes.length > 0 ? `<quoted_excerpt ${attributes.join(' ')}>` : '<quoted_excerpt>';
+      return `${opening}\n${q.text}\n</quoted_excerpt>`;
     })
     .join('\n');
+}
+
+function quoteAttribute(value: string): string {
+  return value.replace(/["<&>]/g, (character) =>
+    character === '"' ? "'" : `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }

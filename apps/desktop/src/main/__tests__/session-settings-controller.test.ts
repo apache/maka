@@ -475,7 +475,7 @@ function Harness(props: {
     catalogRevision: 0,
     isActiveSession: () => true,
     sessions: props.sessions,
-    newTaskPermissionMode: 'ask',
+    newSessionPermissionMode: 'ask',
     refreshCatalog: async () => {},
     saveComposerDefaults: props.saveComposerDefaults,
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),
@@ -499,7 +499,7 @@ function CausalRetirementHarness(props: {
     catalogRevision: props.catalogRevision,
     isActiveSession: () => true,
     sessions: props.sessions,
-    newTaskPermissionMode: 'ask',
+    newSessionPermissionMode: 'ask',
     refreshCatalog: async () => {},
     saveComposerDefaults: () => {},
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),
@@ -543,6 +543,8 @@ function createServices(
     setModelConfiguration: async () => ({} as DesktopSessionSummary),
     setPermissionMode: async () => ({} as DesktopSessionSummary),
     setOrchestrationMode: async () => ({} as DesktopSessionSummary),
+    setCollaborationMode: async () => ({} as DesktopSessionSummary),
+    abandonPlanProposal: async () => {},
     ...overrides,
   };
 }

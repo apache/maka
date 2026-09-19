@@ -54,7 +54,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
 import { SETTINGS_NAV } from './settings/settings-nav.js';
-import type { Command } from './command-palette-types.js';
+import type { Command } from './features/overlays/index.js';
 
 /**
  * Helper composing the palette's base command list (everything except the
@@ -84,7 +84,6 @@ export function buildCommandList(args: {
   onSetDefaultConnection?(slug: string): Promise<void> | void;
   onOpenWorkspace?(): Promise<void> | void;
   onOpenProjectFolder?(): Promise<void> | void;
-  onOpenSkillsFolder?(): Promise<void> | void;
   /** Copy the active conversation as Markdown to the clipboard. */
   onExportActiveConversation?(): Promise<void> | void;
   /**
@@ -321,16 +320,6 @@ export function buildCommandList(args: {
       Icon: FolderOpen,
       keywords: [...copy.staticKeywords['diag:open-project-folder']],
       run: () => args.onOpenProjectFolder!(),
-    });
-  }
-  if (args.onOpenSkillsFolder) {
-    cmds.push({
-      id: 'diag:open-skills',
-      kind: 'action',
-      ...staticCopy('diag:open-skills'),
-      Icon: FolderOpen,
-      keywords: [...copy.staticKeywords['diag:open-skills']],
-      run: () => args.onOpenSkillsFolder!(),
     });
   }
   if (args.onExportActiveConversation && args.activeSessionId) {

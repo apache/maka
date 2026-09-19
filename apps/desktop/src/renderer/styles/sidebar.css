@@ -239,20 +239,19 @@
 }
 
 /*
- * Project groups are a parent-child hierarchy. SideNav always nests children
- * by spacing-6; that is a fixed inset, not a title-alignment rule. Project
- * rows lead with a 16px folder, session rows with an 8px StatusDot, so the
- * default 24px inset puts session titles 16px right of the project name.
- * Product intent: keep an 8px hierarchical inset (spacing-2) so titles share
- * one x. The whole session button, including hover/selected fill, moves with
- * that inset; the right edge stays on the rail. Pin the value because StyleX
+ * Project groups are a parent-child hierarchy, and SideNav indents children by
+ * spacing-6 by default. That inset shifted the whole session button — its
+ * hover/selected fill included — 24px right of the project row, so the two
+ * fills began on different x. Zero it: session rows sit on the project row's
+ * left edge, and the leading status gutter below is the same 1rem as the
+ * project folder, so titles still share one x. Pin the value because StyleX
  * owns the unlayered default. Child combinator only — do not use a descendant
  * selector that would indent deeper nest levels twice if any appear later.
  * DOM: .maka-project-row > SideNavItem root > [role=group] > childrenInner
  */
 .maka-project-row > div > [role="group"] > div {
   /* !important: StyleX childrenInner paddingInlineStart is unlayered. */
-  padding-inline-start: var(--spacing-2) !important;
+  padding-inline-start: 0 !important;
 }
 
 /*
@@ -368,15 +367,19 @@
 /*
  * Slot 1: the leading status gutter.
  *
- * Astryx's StatusDot is a fixed 8px box (StatusDot.tsx), so only the empty case
- * needs declaring: a row with no dot must still hold the column, or titles would
- * start at a different x depending on whether the task has a state. The dot is
- * present or absent; the gutter is not.
+ * A fixed box every row pays for, whether or not it has a dot, so state reads
+ * as one column down the rail instead of a mark that drifts with each title's
+ * length. 1rem, the same box Astryx gives the project row's `size="sm"` folder
+ * icon: with the group inset zeroed above, the equal gutters are what keep
+ * session titles on the project name's x, and the session hover/selected fill
+ * on the project row's left edge.
  */
-.maka-session-row .maka-session-row-signal-empty {
-  display: block;
-  width: 8px;
-  height: 8px;
+.maka-session-row-signal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
   flex: none;
 }
 

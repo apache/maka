@@ -45,6 +45,8 @@ const MAX_SESSION_SEND_TEXT_LENGTH = 128_000;
 const MAX_QUOTE_COUNT = 16;
 const MAX_QUOTE_TEXT_LENGTH = 32_000;
 const MAX_QUOTE_LABEL_LENGTH = 200;
+const MAX_QUOTE_SOURCE_SESSION_ID_LENGTH = 512;
+const MAX_QUOTE_SOURCE_SESSION_NAME_LENGTH = 200;
 const MAX_INLINE_REFERENCE_COUNT = 32;
 const MAX_INLINE_REFERENCE_VALUE_LENGTH = 4_096;
 
@@ -209,7 +211,29 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   const displayText =
     value.displayText === undefined ? undefined : normalizeSendText(value.displayText);
   const skillIds = normalizeSessionSkillIds(value.skillIds);
-  if (!text.trim() && skillIds.length === 0) {
+  // A send may carry structured content instead of text (a pure quote or a
+  // pure attachment, #4804). Only the presence is decided here: attachment
+  // state, ownership, and size limits stay with the ingestion checks, and
+  // quotes are normalized below before the command is returned.
+  const quotes = normalizeOptionalQuotes(value.quotes).quotes;
+  // A normal edit can keep an existing attachment while dropping all inline
+  // text; the retained refs travel separately from attachmentItems and are
+  // normalized before the empty-body rejection so a retained-attachment-only
+  // edit is not refused (#4804).
+  const retainedAttachments = normalizeOptionalRetainedAttachments(value.retainedAttachments);
+  // attachmentItems get the same per-item normalization as the other
+  // structured carriers: a junk entry (`[null]`, `[{}]`) used to satisfy the
+  // empty-body check while nothing ingestible would arrive downstream
+  // (#4815 review, reachability ③).
+  const attachmentItems = normalizeOptionalAttachmentItems(value.attachmentItems);
+  const hasAttachmentItems = (attachmentItems.attachmentItems?.length ?? 0) > 0;
+  if (
+    !text.trim() &&
+    skillIds.length === 0 &&
+    (quotes?.length ?? 0) === 0 &&
+    !hasAttachmentItems &&
+    (retainedAttachments.retainedAttachments?.length ?? 0) === 0
+  ) {
     throw new Error('Invalid send text');
   }
   return {
@@ -219,13 +243,13 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     text,
     ...(displayText !== undefined ? { displayText } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
-    ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
-    ...normalizeOptionalRetainedAttachments(value.retainedAttachments),
+    ...attachmentItems,
+    ...retainedAttachments,
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
     ...normalizeOptionalDirectoryReferences(value.directoryReferences),
-    ...normalizeOptionalQuotes(value.quotes),
+    ...(quotes !== undefined ? { quotes } : {}),
     ...normalizeOptionalWorkspaceFileReferences(
       value.workspaceFileReferences,
       displayText ?? text,
@@ -254,6 +278,32 @@ function normalizeOptionalRetainedAttachments(
   return input.length > 0
     ? { retainedAttachments: input.map((attachment) => structuredClone(attachment)) }
     : {};
+}
+
+// The wire shape is the preload's IngestPayload: an approval-backed descriptor
+// (`approvalId` + `name`, optional `mimeType`) or inline `base64` bytes for a
+// dragged/pasted blob — the same shapes prepareIngestItems resolves. A bare
+// `{}` or `null` entry used to satisfy the empty-body check while carrying
+// nothing ingestible (#4815 review).
+function isComposerIngestItem(item: unknown): boolean {
+  if (typeof item !== 'object' || item === null) return false;
+  const candidate = item as Record<string, unknown>;
+  if (typeof candidate.approvalId === 'string') {
+    return typeof candidate.name === 'string';
+  }
+  return typeof candidate.name === 'string' && typeof candidate.base64 === 'string';
+}
+
+function normalizeOptionalAttachmentItems(input: unknown): { attachmentItems?: unknown[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > MAX_ATTACHMENT_COUNT ||
+    !input.every(isComposerIngestItem)
+  ) {
+    throw new Error('Invalid attachment items');
+  }
+  return input.length > 0 ? { attachmentItems: input } : {};
 }
 
 function normalizeOptionalWorkspaceFileReferences(
@@ -321,10 +371,49 @@ function normalizeOptionalQuotes(input: unknown): { quotes?: QuoteRef[] } {
             'Invalid send quote sourceTurnId',
             MAX_TURN_ID_LENGTH,
           );
+    const sourceSessionId =
+      value.sourceSessionId === undefined
+        ? undefined
+        : normalizeRequiredString(
+            value.sourceSessionId,
+            'Invalid send quote sourceSessionId',
+            MAX_QUOTE_SOURCE_SESSION_ID_LENGTH,
+          );
+    const sourceSessionName =
+      value.sourceSessionName === undefined
+        ? undefined
+        : normalizeRequiredString(
+            value.sourceSessionName,
+            'Invalid send quote sourceSessionName',
+            MAX_QUOTE_SOURCE_SESSION_NAME_LENGTH,
+          );
+    const sourceCapturedAt = value.sourceCapturedAt;
+    const sourceTruncated = value.sourceTruncated;
+    const hasSourceMetadata =
+      sourceSessionId !== undefined ||
+      sourceSessionName !== undefined ||
+      sourceCapturedAt !== undefined ||
+      sourceTruncated !== undefined;
+    if (
+      hasSourceMetadata &&
+      (sourceSessionId === undefined ||
+        sourceSessionName === undefined ||
+        typeof sourceCapturedAt !== 'number' ||
+        !Number.isFinite(sourceCapturedAt) ||
+        sourceCapturedAt < 0 ||
+        sourceCapturedAt > 8.64e15 ||
+        typeof sourceTruncated !== 'boolean')
+    ) {
+      throw new Error('Invalid send quote Session provenance');
+    }
     return {
       text: normalizeRequiredString(value.text, 'Invalid send quote text', MAX_QUOTE_TEXT_LENGTH),
       ...(label ? { label } : {}),
       ...(sourceTurnId ? { sourceTurnId } : {}),
+      ...(sourceSessionId ? { sourceSessionId } : {}),
+      ...(sourceSessionName ? { sourceSessionName } : {}),
+      ...(hasSourceMetadata ? { sourceCapturedAt: sourceCapturedAt as number } : {}),
+      ...(hasSourceMetadata ? { sourceTruncated: sourceTruncated as boolean } : {}),
     };
   });
   return quotes.length > 0 ? { quotes } : {};

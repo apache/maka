@@ -33,3 +33,5 @@ export { UsageFeatureScope } from './services-context.js';
 export type { UsagePricingServices } from './pricing-ports.js';
 export type { UsageHostRef } from './ports.js';
 export { getPricingSettingsCopy } from '../../locales/settings-pricing-copy.js';
+
+export {useUsageStats} from './services-context.js';

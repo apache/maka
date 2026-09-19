@@ -602,6 +602,7 @@ function SubagentPresetEditor(props: {
               isLabelHidden
               value={draft.model}
               options={modelOptions}
+              hasSearch
               width="100%"
               isDisabled={props.isSaving || offerableModels.length === 0}
               disabledMessage={offerableModels.length === 0 ? copy.editor.noModel : undefined}

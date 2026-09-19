@@ -33,7 +33,7 @@ import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
   type SessionEvent,
-  type ShellRunSnapshotResult,
+  type ShellRunStateResult,
   type ShellRunUpdate,
 } from '@maka/core/events';
 import { isSideConversationSession } from '@maka/core/side-conversation';
@@ -171,6 +171,7 @@ type RuntimeHostSessionDriverConnection = Pick<
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionRequest): Promise<SessionSummary>;
   readMessages(): Promise<StoredMessage[]>;
+  getWorkspaceTarget(): WorkspaceTarget | undefined;
   resumeLatest(): AsyncIterable<SessionEvent>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
@@ -390,7 +391,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async runUserCommand(command: string): Promise<{
     commandId: string;
-    result: ShellRunSnapshotResult;
+    result: ShellRunStateResult;
     takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
   }> {
     const stopGeneration = this.#userCommandStopGeneration;
@@ -863,6 +864,27 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (promptMessage.origin) {
       throw new Error(`Cannot rewind to turn ${turnId}: Host-triggered prompts are read-only.`);
     }
+    const unsupported =
+      (promptMessage.quotes?.length ?? 0) > 0
+        ? 'rewind_unsupported_quotes'
+        : (promptMessage.attachments?.length ?? 0) > 0
+          ? 'rewind_unsupported_attachments'
+          : (promptMessage.directoryReferences?.length ?? 0) > 0
+            ? 'rewind_unsupported_directory_references'
+            : null;
+    if (unsupported) {
+      // Refilling only the human-facing text would silently drop the turn's
+      // structured context from the replacement submit (#5109). Fail closed
+      // until the TUI can carry it. The machine code lets the runner render
+      // a localized notice naming the carrier; the message text is the
+      // depth-of-defence fallback and deliberately promises nothing about
+      // other surfaces.
+      const error = new Error(
+        `Cannot rewind to turn ${turnId}: it carries structured context the TUI cannot restore into the replacement prompt.`,
+      ) as Error & { code?: string };
+      error.code = unsupported;
+      throw error;
+    }
     const targetSessionId = this.#newId();
     for (let attempt = 0; attempt < MAX_CATALOG_ATTEMPTS; attempt += 1) {
       const current = await getRuntimeHostSession(this.#connection, sourceSessionId);
@@ -1109,6 +1131,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   getSessionId(): string | null {
     return this.#sessionId;
+  }
+
+  getWorkspaceTarget(): WorkspaceTarget | undefined {
+    return this.#workspace.target;
   }
 
   getGoal(): GoalProjection | null {
@@ -1461,11 +1487,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       sessionId,
       transcript: { kind: 'none' },
     });
-    const draining = (async () => {
-      for await (const _frame of subscription) {
-        // Keep the bounded subscription healthy until turn.stop settles.
-      }
-    })();
     try {
       const turn = subscription.snapshot.rootTurn;
       if (!turn || isTerminalTurn(turn)) return;
@@ -1476,7 +1497,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       });
     } finally {
       await subscription.close().catch(() => undefined);
-      await draining.catch(() => undefined);
     }
   }
 
@@ -1696,17 +1716,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     owner: { readonly sessionId: string; readonly commandId: string },
   ): Promise<void> {
     if (this.#activeUserCommands.get(ref) !== owner) return;
-    const stopped = await this.#request('runtime.resource.stop', {
+    await this.#request('runtime.resource.stop', {
       sessionId: owner.sessionId,
       ref,
     });
-    this.#publishShellRunUpdate({
-      sessionId: owner.sessionId,
-      ownership: { kind: 'local' },
-      sourceTurnId: owner.commandId,
-      sourceToolCallId: owner.commandId,
-      result: stopped.resource,
-    });
+    this.#activeUserCommands.delete(ref);
+    this.#publishRuntimeResource(owner.sessionId, ref);
   }
 
   #publishShellRunUpdate(update: ShellRunUpdate): void {
@@ -1843,16 +1858,11 @@ async function loadCurrentMessages(
     sessionId,
     transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
   });
-  const draining = (async () => {
-    for await (const _frame of subscription) {
-      // The transcript is pinned to the subscription snapshot. Drain newer
-      // frames only to preserve the bounded transport while the read runs.
-    }
-  })();
+  // This read never declares readiness, so the Host holds every frame instead
+  // of queueing them against a consumer that will not take them.
   try {
     return await subscription.loadTranscript(decodeStoredMessage);
   } finally {
     await subscription.close().catch(() => undefined);
-    await draining.catch(() => undefined);
   }
 }

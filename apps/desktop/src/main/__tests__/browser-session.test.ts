@@ -92,6 +92,7 @@ type HostSpy = {
 function installHost(overrides: Partial<BrowserViewHost> = {}): HostSpy {
   const spy: HostSpy = { resolved: [], released: [], disposed: [], host: null as never };
   const host: BrowserViewHost = {
+    beginAction: () => undefined,
     currentUrl: () => "https://example.com/",
     openOriginLease: () => ({
       approvedOrigin: 'https://example.com',
@@ -258,11 +259,40 @@ describe('BrowserSession', () => {
     assert.deepEqual(spy.released, ['s1']);
   });
 
+  it('releases background rendering when cancellation interrupts preparation', async () => {
+    const preparing = deferred<void>();
+    const ready = deferred<void>();
+    let released = false;
+    installHost({ beginAction: () => {
+      preparing.resolve();
+      return { ready: ready.promise, release: async () => { released = true; } };
+    } });
+    installBridges([makeFakePage()]);
+    const abort = new AbortController();
+    let ran = false;
+    const action = withBrowserPage('s1', 'click', async () => { ran = true; }, { abort: abort.signal });
+    const canceled = assert.rejects(action, BrowserActionCanceledError);
+    await preparing.promise;
+    abort.abort();
+    await canceled;
+    ready.resolve();
+    assert.equal(ran, false);
+    assert.equal(released, true);
+  });
+
   it('releaseBrowserSession disposes the view and closes the connection', async () => {
     const spy = installHost();
     const bridges = installBridges([makeFakePage()]);
     await withBrowserPage('s1', 'snapshot', async () => 'ok');
-    await releaseBrowserSession('s1');
+    const closeGate = deferred<void>();
+    bridges[0]!.close = async () => {
+      await closeGate.promise;
+      bridges[0]!.closed = true;
+    };
+    const release = releaseBrowserSession('s1');
+    assert.deepEqual(spy.disposed, ['s1'], 'view disposal starts before bridge close settles');
+    closeGate.resolve();
+    await release;
     assert.equal(bridges[0]?.closed, true);
     assert.deepEqual(spy.disposed, ['s1']);
   });
@@ -315,7 +345,7 @@ describe('BrowserSession', () => {
     const bridges = installBridges([makeFakePage()]);
     const p = withBrowserPage('s1', 'snapshot', () => new Promise<never>(() => {}), { takeover: 'observe' });
     await tick(); // connect + enter run()
-    revokeHiddenBrowserActions('other'); // window switched to another conversation
+    revokeHiddenBrowserActions((sessionId) => sessionId === 'other'); // window switched to another conversation
     await assert.rejects(p, BrowserActionRevokedError);
     // Severed and detached — no orphaned run() left driving the now-hidden page,
     // and (crucially) the rejected action returns no page data to the tool.
@@ -341,7 +371,7 @@ describe('BrowserSession', () => {
       },
     );
     await tick();
-    revokeHiddenBrowserActions('s1'); // s1 is the one now on screen → leave it running
+    revokeHiddenBrowserActions((sessionId) => sessionId === 's1'); // s1 is still on screen → leave it running
     await tick();
     assert.equal(settled, false);
     ctrl.abort(); // clean up the deliberately-dangling action

@@ -16,30 +16,35 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 31 |
-| platform-contract | 31 |
+| portable-candidate | 35 |
+| platform-contract | 38 |
 
-Total Windows-excluded declarations: **89**
+Total Windows-excluded declarations: **100**
 
 ## Inventory
 
 | Classification | Test | Skip expression |
 |---|---|---|
+| platform-contract | `apps/desktop/scripts/check-renderer-architecture.test.mjs` handles read-only POSIX permissions on the checker directory according to --strict-base | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP remove reconciles a live manager after the real store publishes then fails directory sync | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP upsert reconciles the reread authority including an intervening writer without replaying its mutation | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP published write explicitly reports out-of-sync when reconciliation ${phase} fails | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP cancelled install does not start a new connection during post-rename reconciliation | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
+| platform-contract | `apps/desktop/src/main/__tests__/runtime-host-skills-ipc-main.test.ts` reports create_failed without opening when a Skill directory parent is not writable | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory parent read-only' : process.getuid?.() === 0` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` imports the login PATH without importing application control variables | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` bounds shell output instead of buffering until the global timeout | `process.platform === 'win32'` |
+| platform-contract | `apps/desktop/src/main/__tests__/skill-locations.test.ts` reports an unreadable Skill directory instead of an available empty location | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory unreadable' : process.getuid?.() === 0` |
+| platform-contract | `packages/cli/src/__tests__/acp-prompt-content.test.ts` rejects a FIFO without blocking the process | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` shortens POSIX paths under the home directory | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` keeps POSIX paths outside the home directory absolute | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/runtime-host-local-managed-activation.test.ts` local CLI cold-starts through the installed ${legacy ? 'legacy' : 'Node'} operator | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/runtime-host-setup.test.ts` managed operator binds its Client Data Root and routes deployment cleanup | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/tui-mcp-control.test.ts` TUI MCP reconciles an already-published write through execute: ${scenario} | `process.platform === 'win32'` |
 | portable-candidate | `packages/eval/src/__tests__/install-preflight.test.ts` rejects an unusable trials root before invoking external prerequisites | `process.platform === 'win32' \|\| process.geteuid?.() === 0` |
+| platform-contract | `packages/runtime-host/src/__tests__/antigravity-install.test.ts` <dynamic test title> | `process.platform !== 'darwin'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/connection-effect-coordinator.test.ts` leaves canonical onboarding state unchanged when the durable intent cannot be published | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/connection-effect-coordinator.test.ts` recovers a durable onboarding intent instead of rolling back a partial publication | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/control-endpoint.test.ts` runtime host control endpoint | `process.platform === 'win32'` |
@@ -71,6 +76,7 @@ Total Windows-excluded declarations: **89**
 | portable-candidate | `packages/runtime/src/__tests__/filesystem-apply-patch.test.ts` deletes a self-referential symlink entry without following it | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
+| platform-contract | `packages/runtime/src/__tests__/glob-search.test.ts` both Glob paths report permission failures and recover after permissions are restored | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
 | portable-candidate | `packages/runtime/src/__tests__/shell-exec.test.ts` writes a legacy WSL Bash command through stdin | `process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
@@ -82,6 +88,8 @@ Total Windows-excluded declarations: **89**
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` settles after root exit when a detached descendant retains inherited stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps the first committed lifecycle cause across Stop and timeout races | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/workspace-executor.test.ts` a bypass Grep finds ripgrep installed after Host startup outside its inherited PATH | `process.platform === 'win32' ? 'POSIX executable fixture' : false` |
+| platform-contract | `packages/runtime/src/__tests__/workspace-executor.test.ts` leaves other spawn failures, such as a non-executable rg, untouched | `process.platform === 'win32' ? 'POSIX execute permissions' : false` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` removes its temp file and rethrows after a chmod failure | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` creates the target 0600 on POSIX | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` re-chmods a pre-existing world-readable target to 0600 on the next write | `process.platform === 'win32'` |
@@ -113,4 +121,7 @@ Total Windows-excluded declarations: **89**
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
+| portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after a delayed Runtime Host Ready | `process.platform === 'win32'` |
+| portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after the real Runtime Host is ready | `process.platform === 'win32'` |
+| portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` rejects a Runtime Host that fails verifier shutdown | `process.platform === 'win32'` |
 | portable-candidate | `scripts/release-cli-eval-support.test.mjs` preserves the primary process failure when diagnostics cannot be read | `process.platform === 'win32'` |
