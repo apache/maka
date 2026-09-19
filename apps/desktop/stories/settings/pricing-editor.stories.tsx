@@ -262,3 +262,59 @@ export const Validation: Story = {
     await waitFor(() => expect(cacheRead).toHaveFocus());
   },
 };
+
+// Real path: Edit an override → another client changes its prices → Save. The
+// Host returns the current snapshot, while the user's draft remains for review.
+export const Conflict: Story = {
+  render: () => <PricingTabPanel services={pricingServices(async () => MIXED_SNAPSHOT, async () => ({
+    kind: 'review_required',
+    reason: 'revision_conflict',
+    snapshot: {
+      ...MIXED_SNAPSHOT,
+      revision: 8,
+      entries: MIXED_SNAPSHOT.entries.map((row) => row.pricing.modelKey === 'zai:glm-4.7'
+        ? { ...row, pricing: { ...row.pricing, inputUsdPer1M: 7, outputUsdPer1M: 8, cacheReadUsdPer1M: 0, cacheWriteUsdPer1M: 0.4 } }
+        : row),
+    },
+  }))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '编辑「zai:glm-4.7」定价' }));
+    const dialogElement = await canvas.findByRole('dialog', { name: '编辑定价' });
+    const dialog = within(dialogElement);
+    const input = dialog.getByRole('textbox', { name: /输入价格/ });
+    await userEvent.clear(input);
+    await userEvent.type(input, '1.25');
+    await userEvent.click(dialog.getByRole('button', { name: '保存' }));
+    await expect(await dialog.findByText('定价已被其他修改更新')).toBeVisible();
+    await expect(input).toHaveValue('1.25');
+    const latest = dialog.getByText(/当前最新：/);
+    await expect(latest).toHaveTextContent('$7');
+    await expect(latest).toHaveTextContent('$0.4');
+    await expect(dialog.getByRole('button', { name: '核对并保存' })).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(dialogElement.contains(document.activeElement)).toBe(true);
+  },
+};
+
+// Real path: Edit an override → the dispatched write loses its result and the
+// recovery read fails. The open draft offers Refresh and blocks further writes.
+export const Uncertain: Story = {
+  render: () => <PricingTabPanel services={pricingServices(async () => MIXED_SNAPSHOT, async () => ({
+    kind: 'reconciliation_unavailable', reason: 'outcome_unknown',
+  }))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '编辑「zai:glm-4.7」定价' }));
+    const dialogElement = await canvas.findByRole('dialog', { name: '编辑定价' });
+    const dialog = within(dialogElement);
+    const input = dialog.getByRole('textbox', { name: /输入价格/ });
+    await userEvent.clear(input);
+    await userEvent.type(input, '1.25');
+    await userEvent.click(dialog.getByRole('button', { name: '保存' }));
+    await expect(await dialog.findByText('无法确认结果')).toBeVisible();
+    await expect(input).toHaveValue('1.25');
+    await expect(dialog.getByRole('button', { name: '保存' })).toHaveAttribute('aria-disabled', 'true');
+    await expect(dialog.getByRole('button', { name: '刷新' })).toBeVisible();
+    await expect(dialogElement.contains(document.activeElement)).toBe(true);
+  },
+};
