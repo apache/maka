@@ -76,6 +76,7 @@ apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/session-settings/services-context.tsx
+apps/desktop/src/renderer/features/session-settings/ui/session-settings-provider.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx
