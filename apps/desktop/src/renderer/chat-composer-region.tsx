@@ -151,6 +151,7 @@ interface ChatComposerRegionProps
     children: (
       usage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
       gitBranch: { readonly name?: string; readonly shortSha?: string } | undefined,
+      usagePending: boolean,
     ) => ReactNode;
   }>;
   directoryComposerProps: Pick<
@@ -268,6 +269,7 @@ export function ChatComposerRegion({
   const renderComposer = (
     liveContextUsage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
     gitBranch: { name?: string; shortSha?: string } | undefined,
+    liveContextUsagePending: boolean,
   ) => (
     <ComposerGoalProjectionConsumer>
       {(goalProjection) => (
@@ -275,13 +277,28 @@ export function ChatComposerRegion({
           ref={composerRef}
           {...composerRest}
           gitBranch={gitBranch}
-          contextUsage={contextUsage && liveContextUsage
+          contextUsage={contextUsage
             ? {
                 ...contextUsage,
-                usageTokens: liveContextUsage.usageTokens,
-                meteredContextWindow: liveContextUsage.contextWindow,
+                ...(liveContextUsage
+                  ? {
+                      usageTokens: liveContextUsage.usageTokens,
+                      meteredContextWindow: liveContextUsage.contextWindow,
+                    }
+                  : {}),
+                pending:
+                  liveContextUsagePending
+                  && !liveContextUsage
+                  && !(
+                    contextUsage.usageTokens !== undefined
+                    && (
+                      contextUsage.declaredContextWindow
+                      ?? contextUsage.metadataContextWindow
+                      ?? 0
+                    ) > 0
+                  ),
               }
-            : contextUsage}
+            : undefined}
           // AppShell carries staged attachments into both queued and steering
           // follow-ups. Other Composer hosts remain gated by default because a
           // text-only running-turn submission would leave attachments behind.
@@ -378,10 +395,10 @@ export function ChatComposerRegion({
           model={composerRest.activeModel}
           providerType={composerRest.activeProviderType}
         >
-          {(usage, gitBranch) => renderComposer(usage, gitBranch)}
+          {(usage, gitBranch, usagePending) => renderComposer(usage, gitBranch, usagePending)}
         </LiveContextUsageProbe>
       ) : (
-        renderComposer(undefined, undefined)
+        renderComposer(undefined, undefined, false)
       )}
     </>
   );

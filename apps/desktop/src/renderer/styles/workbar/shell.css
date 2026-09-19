@@ -26,13 +26,14 @@
 /* ──────────────────────────────────────────────────────────────────────── */
 
 .maka-detail-with-artifacts {
+  --maka-conversation-min-width: 520px;
   position: relative;
   display: grid;
   grid-template-areas:
     "main right-handle right"
     "bottom-handle right-handle right"
     "bottom right-handle right";
-  grid-template-columns: minmax(0, 1fr) 0 auto;
+  grid-template-columns: minmax(var(--maka-conversation-min-width), 1fr) 0 auto;
   grid-template-rows: minmax(0, 1fr) 0 auto;
   flex: 1 1 auto;
   height: auto;

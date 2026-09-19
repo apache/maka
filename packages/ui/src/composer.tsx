@@ -448,6 +448,8 @@ export const Composer = forwardRef<
     /** Read-only usage indicator for the active model's latest request. */
     contextUsage?: {
       usageTokens?: number;
+      /** The active target is still resolving its first authoritative reading. */
+      pending?: boolean;
       declaredContextWindow?: number;
       /**
        * The window the usage number was metered against, frozen at call time.
@@ -2449,6 +2451,7 @@ export const Composer = forwardRef<
 
 function ContextUsageAction(props: {
   usageTokens?: number;
+  pending?: boolean;
   declaredContextWindow?: number;
   meteredContextWindow?: number;
   metadataContextWindow?: number;
@@ -2465,11 +2468,15 @@ function ContextUsageAction(props: {
   const window =
     props.declaredContextWindow ?? props.meteredContextWindow ?? props.metadataContextWindow;
   const label =
-    props.usageTokens !== undefined && window !== undefined && window > 0
+    props.pending
+      ? '--%'
+      : props.usageTokens !== undefined && window !== undefined && window > 0
       ? `${Math.round((props.usageTokens / window) * 100)}%`
       : copy.systemNotes.contextUsageLabel;
   const tooltip =
-    props.usageTokens === undefined
+    props.pending
+      ? copy.systemNotes.contextUsageOpen
+      : props.usageTokens === undefined
       ? copy.systemNotes.contextUsageUnavailable
       : window !== undefined && window > 0
         ? copy.systemNotes.contextUsageShare(props.usageTokens, window)
@@ -2483,7 +2490,7 @@ function ContextUsageAction(props: {
       tooltip={tooltip}
       onClick={props.onOpen}
     >
-      {label}
+      <span className="maka-context-usage-value" aria-busy={props.pending || undefined}>{label}</span>
     </UiButton>
   );
 }

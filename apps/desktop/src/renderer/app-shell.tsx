@@ -2529,7 +2529,15 @@ function AppShellContent({
                     ? shellCopy.configureModelsOnHost(composerProfileName)
                     : undefined}
                   sendBlocked={taskSubmissionHardBlocked}
-                  permissionMode={activePermissionMode}
+                  // A session switch starts a fresh authoritative boundary
+                  // read. Keep the fixed footer slot mounted during that read
+                  // with the session's persisted mode, but leave it disabled
+                  // until the boundary confirms local interaction is allowed.
+                  permissionMode={
+                    activePermissionMode
+                    ?? activeSessionForView?.permissionMode
+                    ?? newSessionPermissionMode
+                  }
                   // Every "cannot change this mid-turn" gate reads `turnActive`,
                   // the same witness Stop reads. Reading the persisted status
                   // here instead left these toggles live through the whole
@@ -2537,7 +2545,9 @@ function AppShellContent({
                   // mode change to land before the run registers and alter the
                   // execution config of the turn already sent.
                   permissionModeDisabledReason={
-                    activeStreamingLive
+                    activeId && !activeBoundarySurface.localInteractionAvailable
+                      ? boundaryUnreadableNotice?.detail ?? shellCopy.modeChangeLoading
+                      : activeStreamingLive
                       ? shellCopy.permissionModeStreaming
                       : activeId && turnActive
                         ? shellCopy.permissionModeRunning
@@ -2545,13 +2555,10 @@ function AppShellContent({
                           ? shellCopy.permissionModeWaiting
                           : undefined
                   }
-                  onPermissionModeChange={
-                    activeBoundarySurface.localInteractionAvailable
-                      ? async mode => {
-                          await setPermissionMode(mode)
-                        }
-                      : undefined
-                  }
+                  onPermissionModeChange={async mode => {
+                    if (!activeBoundarySurface.localInteractionAvailable) return;
+                    await setPermissionMode(mode);
+                  }}
                   planModeActive={activePlanMode}
                   // No pending-keyed disable while a toggle commits: the
                   // pending registries already swallow re-entrant toggles, and

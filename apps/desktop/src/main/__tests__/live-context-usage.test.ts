@@ -19,8 +19,13 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { act, createElement, type ReactElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import { parseHTML } from 'linkedom';
 import type { SessionEvent } from '@maka/core/events';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
+import type { SessionInspectorService } from '../../renderer/application/contracts/session-inspector/service.js';
+import { useLiveContextUsageState } from '../../renderer/application/contracts/session-inspector/use-live-context-usage.js';
 import {
   createLiveContextUsageTracker,
   liveContextUsageFromDiagnostics,
@@ -239,12 +244,14 @@ describe('createLiveContextUsageTracker', () => {
     const timer = fakeTimer();
     const query = scriptedQuery();
     const seen: unknown[] = [];
+    let failures = 0;
     const tracker = createLiveContextUsageTracker({
       query: query.query,
       delayMs: 400,
       schedule: timer.schedule,
       cancel: timer.cancel,
       onChange: (usage) => seen.push(usage),
+      onReadFailure: () => { failures += 1; },
     });
     tracker.setTarget({ sessionId: 's1', route: ROUTE });
     query.pending[0]!.resolve(available());
@@ -255,6 +262,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     await Promise.resolve();
     assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
+    assert.equal(failures, 1);
     tracker.dispose();
   });
 
@@ -408,4 +416,86 @@ describe('createLiveContextUsageTracker', () => {
     // Only the aiming clear lands; the disposed tracker's read is dropped.
     assert.deepEqual(seen, [undefined]);
   });
+});
+
+it('reports pending rather than another target usage during a session switch', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, {
+    document,
+    window,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  type ContextResult = Awaited<ReturnType<SessionInspectorService['context']>>;
+  const pending: Array<{ sessionId: string; resolve: (value: ContextResult) => void }> = [];
+  const inspector: SessionInspectorService = {
+    trace: async () => { throw new Error('not used'); },
+    summary: async () => { throw new Error('not used'); },
+    context: (sessionId: string) =>
+      new Promise<ContextResult>((resolve) => pending.push({ sessionId, resolve })),
+    subscribeSessionEvents: () => () => undefined,
+    subscribeUsageChanges: () => () => undefined,
+  };
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  let renders: Array<{
+    sessionId: string;
+    status: 'pending' | 'available' | 'unavailable';
+    usageTokens: number | undefined;
+  }> = [];
+  function Probe(props: { sessionId: string }): ReactElement {
+    const usage = useLiveContextUsageState({
+      inspector,
+      sessionId: props.sessionId,
+      model: ROUTE.model,
+      providerType: ROUTE.providerType,
+    });
+    renders.push({
+      sessionId: props.sessionId,
+      status: usage.status,
+      usageTokens: usage.status === 'available' ? usage.usage.usageTokens : undefined,
+    });
+    return createElement('span');
+  }
+
+  try {
+    await act(() => root.render(createElement(Probe, { sessionId: 's1' })));
+    await act(async () => {
+      pending[0]?.resolve({ ok: true, data: available({ inputTokens: 1_000 }) });
+      await Promise.resolve();
+    });
+    assert.equal(renders.at(-1)?.usageTokens, 1_000);
+
+    renders = [];
+    await act(() => root.render(createElement(Probe, { sessionId: 's2' })));
+    assert.ok(renders.length > 0);
+    assert.equal(renders.at(-1)?.status, 'pending');
+    assert.equal(
+      renders.some((render) => render.usageTokens === 1_000),
+      false,
+      'the old session usage must not appear in any render for the new target',
+    );
+    await act(async () => {
+      pending[1]?.resolve({
+        ok: true,
+        data: { status: 'unavailable', reason: 'no_completed_request' },
+      });
+      await Promise.resolve();
+    });
+    assert.equal(renders.at(-1)?.status, 'unavailable');
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
 });

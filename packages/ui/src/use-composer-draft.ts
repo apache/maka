@@ -35,7 +35,7 @@
  * same moment without this hook depending on them.
  */
 
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import type { ComposerTextPort } from './chat-input-behavior.js';
 import {
   appendPromptContextDraft,
@@ -118,7 +118,7 @@ export function useComposerDraft(input: {
     return activeDraftKeyRef.current;
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previousKey = activeDraftKeyRef.current;
     const nextKey = input.draftKey;
     if (previousKey === nextKey) return;
@@ -134,7 +134,7 @@ export function useComposerDraft(input: {
     input.text.setValue(nextDraft);
   }, [input.draftKey]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const key = activeDraftKeyRef.current;
     const persisted = input.persistence?.read(key);
     if (!persisted) return;
