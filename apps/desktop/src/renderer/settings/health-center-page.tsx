@@ -35,7 +35,7 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { dotForStatus } from '@maka/ui';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { runtimeHostSettingsKey, useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 import {
   SettingsStatusSummaryFilter,
   type SettingsStatusSummaryOption,
@@ -56,12 +56,17 @@ import {
  * Read-only boundary: no test buttons, no repair flows. Test/repair entries
  * will be wired in PR-HC-2 once typed actions are exposed.
 */
-export function HealthCenterPage() {
+export function HealthCenterPage(props: {
+  initialSnapshot?: HealthSnapshot;
+  onSnapshot(key: string, snapshot: HealthSnapshot): void;
+}) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getHealthCenterCopy(locale);
-  const [snapshot, setSnapshot] = useState<HealthSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [snapshot, setSnapshot] = useState<HealthSnapshot | null>(
+    () => props.initialSnapshot ?? null,
+  );
+  const [loading, setLoading] = useState(snapshot === null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [signalFilter, setSignalFilter] = useState<HealthSignalStatus | null>(null);
@@ -74,6 +79,7 @@ export function HealthCenterPage() {
       .getSnapshot(host)
       .then((next) => {
         if (cancelled) return;
+        props.onSnapshot(runtimeHostSettingsKey(host), next);
         setSnapshot(next);
         setLoading(false);
       })
@@ -85,7 +91,7 @@ export function HealthCenterPage() {
     return () => {
       cancelled = true;
     };
-  }, [host, locale, refreshTick]);
+  }, [host, locale, props.onSnapshot, refreshTick]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -95,17 +101,18 @@ export function HealthCenterPage() {
     });
   }, [snapshot]);
 
-  if (loading) {
+  if (loading && !snapshot) {
     return (
       <SettingsSkeletonStack label={copy.loading} />
     );
   }
 
-  if (error || !snapshot) {
+  if (!snapshot) {
     return (
       <SettingsPage>
         <Banner
           status="error"
+          role="alert"
           title={copy.readFailed}
           description={error ?? copy.noData}
           endContent={<Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />} />
@@ -130,6 +137,15 @@ export function HealthCenterPage() {
 
   return (
     <SettingsPage>
+      {error ? (
+        <Banner
+          status="error"
+          role="alert"
+          title={copy.readFailed}
+          description={error}
+          endContent={<Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />}
+        />
+      ) : null}
       <SettingsSection
         /* The header used to name the internal layer taxonomy — 配置 · 验证 ·
            权限 · 功能 · 操作审批 · 记忆 · 运行态 · 存储 — and then draw the
@@ -147,6 +163,7 @@ export function HealthCenterPage() {
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
+              isLoading={loading}
               label={copy.refresh}
             />
           </div>
