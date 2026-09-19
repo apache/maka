@@ -366,6 +366,7 @@ function PricingEditorDialog(props: {
                 <VStack gap={1}>
                   <Typeahead<CatalogItem>
                     label={copy.catalogPickerLabel}
+                    isRequired
                     searchSource={catalogSource}
                     value={picked}
                     onChange={(item) => {

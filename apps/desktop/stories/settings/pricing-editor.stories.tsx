@@ -229,8 +229,22 @@ export const ManualExactKey: Story = {
     const add = await canvas.findByRole('button', { name: '添加定价' });
     await userEvent.click(add);
     let dialog = within(await canvas.findByRole('dialog', { name: '添加定价' }));
-    await userEvent.type(dialog.getByRole('combobox'), 'openai:gpt-5');
+    const model = dialog.getByRole('combobox');
+    await expect(model).not.toHaveAttribute('aria-invalid', 'true');
+    // An empty catalog submission must focus the model before the empty rates.
+    await userEvent.click(dialog.getByRole('button', { name: '保存' }));
+    await expect(model).toHaveAttribute('aria-invalid', 'true');
+    await expect(model).toHaveFocus();
+    await userEvent.type(dialog.getByRole('textbox', { name: /输入价格/ }), '1');
+    const output = dialog.getByRole('textbox', { name: /输出价格/ });
+    await userEvent.type(output, '2');
+    await expect(output).toHaveFocus();
+    // With valid rates, the model is the only error and still receives focus.
+    await userEvent.click(dialog.getByRole('button', { name: '保存' }));
+    await expect(model).toHaveFocus();
+    await userEvent.type(model, 'openai:gpt-5');
     await userEvent.click(await within(document.body).findByRole('option', { name: 'openai:gpt-5' }));
+    await expect(model).not.toHaveAttribute('aria-invalid', 'true');
     await expect(dialog.getByRole('textbox', { name: /输入价格/ })).toHaveValue('1.25');
     await userEvent.click(dialog.getByRole('button', { name: '取消' }));
     await waitFor(() => expect(canvas.queryByRole('dialog')).not.toBeInTheDocument());
