@@ -17,8 +17,9 @@
  * under the License.
  */
 
+import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { userEvent, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider } from '@maka/ui';
 import { createDefaultSettings } from '@maka/core/settings';
 import {
@@ -87,16 +88,37 @@ const EMPTY_SNAPSHOT: DesktopPricingSnapshot = {
   entries: [],
 };
 
-// A mutate never runs at mount (CI does not autoplay), but the services shape
-// must be honest, so return the base as an unchanged commit rather than throw.
-const noopMutate: UsagePricingServices['mutatePricing'] = async (_host, base) => ({
-  kind: 'saved',
-  disposition: 'unchanged',
-  snapshot: base,
-});
+function pricingServices(
+  load: UsagePricingServices['loadPricing'],
+  mutate: UsagePricingServices['mutatePricing'] = async () => {
+    throw new Error('This pricing story does not configure writes');
+  },
+): UsagePricingServices {
+  return { loadPricing: load, mutatePricing: mutate };
+}
 
-function pricingServices(load: UsagePricingServices['loadPricing']): UsagePricingServices {
-  return { loadPricing: load, mutatePricing: noopMutate };
+function EditablePricingPanel() {
+  const [services] = useState<UsagePricingServices>(() => {
+    let snapshot = MIXED_SNAPSHOT;
+    return pricingServices(async () => snapshot, async (_host, _base, mutation) => {
+      // This browser fixture supports editing its existing custom rows and
+      // deleting the local-only row. Host CAS/reconciliation has lower-tier tests.
+      if (mutation.kind === 'upsert') {
+        snapshot = {
+          ...snapshot, revision: snapshot.revision + 1,
+          entries: snapshot.entries.map((row) => row.pricing.modelKey === mutation.pricing.modelKey
+            ? { ...row, pricing: mutation.pricing } : row),
+        };
+      } else {
+        snapshot = {
+          ...snapshot, revision: snapshot.revision + 1,
+          entries: snapshot.entries.filter((row) => row.pricing.modelKey !== mutation.modelKey),
+        };
+      }
+      return { kind: 'saved', disposition: 'committed', snapshot };
+    });
+  });
+  return <PricingTabPanel services={services} />;
 }
 
 function PricingTabPanel(props: { services: UsagePricingServices }) {
@@ -141,7 +163,21 @@ type Story = StoryObj;
 // The overrides-only table shows the custom rows (自定义, with Reset or Delete per
 // their reset effect); the built-in catalog is reached only via the Add picker.
 export const Populated: Story = {
-  render: () => <PricingTabPanel services={pricingServices(async () => MIXED_SNAPSHOT)} />,
+  render: () => <EditablePricingPanel />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '编辑「zai:glm-4.7」定价' }));
+    const dialogElement = await canvas.findByRole('dialog', { name: '编辑定价' });
+    const dialog = within(dialogElement);
+    const input = dialog.getByRole('textbox', { name: /输入价格/ });
+    await userEvent.clear(input);
+    await userEvent.type(input, '0.75');
+    // The smoke runner also repeats this with real Enter input. userEvent's
+    // implicit-submit implementation does not resolve an external form button.
+    await userEvent.click(dialog.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(canvas.queryByRole('dialog')).not.toBeInTheDocument());
+    await expect(canvas.getByText('$0.75', { exact: true })).toBeVisible();
+  },
 };
 
 // Real path: 设置 → 使用统计 → 定价配置 on a Host with no user overrides yet — the

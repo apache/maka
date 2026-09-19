@@ -1317,7 +1317,7 @@ async function renderEditor(options: {
 async function click(button: HTMLButtonElement | undefined) {
   assert.ok(button, 'expected a clickable button');
   await act(async () => {
-    button.click();
+    activateButton(button);
     await Promise.resolve();
     await Promise.resolve();
   });
@@ -1337,9 +1337,21 @@ async function submitEditor(doc: Document): Promise<void> {
 async function clickWithoutSettling(button: HTMLButtonElement | undefined) {
   assert.ok(button, 'expected a clickable button');
   await act(async () => {
-    button.click();
+    activateButton(button);
     await Promise.resolve();
   });
+}
+
+function activateButton(button: HTMLButtonElement): void {
+  button.click();
+  // linkedom has no default form activation. Model that step for controller
+  // tests; the Pricing Populated browser story proves actual Enter submission.
+  if (button.getAttribute('type') !== 'submit' || button.disabled || button.getAttribute('aria-disabled') === 'true') return;
+  const formId = button.getAttribute('form');
+  const form = formId ? button.ownerDocument.getElementById(formId) : button.closest('form');
+  assert.ok(form, 'a submit button must belong to a form');
+  const EventClass = button.ownerDocument.defaultView!.Event;
+  form.dispatchEvent(new EventClass('submit', { bubbles: true, cancelable: true }));
 }
 
 async function clickElement(element: HTMLElement | undefined) {

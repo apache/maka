@@ -287,6 +287,7 @@ function PricingEditorDialog(props: {
 }) {
   const c = props.controller;
   const { copy, draft, validation, editor } = c;
+  const formId = useId();
   const dialogRef = usePricingDialogFocus();
   const isEdit = editor?.mode === 'edit';
   const title = isEdit ? copy.editTitle : copy.addTitle;
@@ -342,7 +343,7 @@ function PricingEditorDialog(props: {
         header={<DialogHeader title={title} onOpenChange={(open) => { if (!open) close(); }} />}
         content={
           <LayoutContent padding={4}>
-            <VStack as="form" gap={3} onSubmit={(event) => { event.preventDefault(); submit(); }}>
+            <VStack as="form" id={formId} gap={3} onSubmit={(event) => { event.preventDefault(); submit(); }}>
               {isEdit ? (
                 // Editing an existing override: the key is fixed, shown read-only.
                 <TextInput
@@ -516,11 +517,12 @@ function PricingEditorDialog(props: {
               <Button variant="ghost" label={copy.cancel} isDisabled={c.saving} onClick={close} />
               <Button
                 variant="primary"
+                type="submit"
+                form={formId}
                 label={c.writeState.kind === 'conflict' ? copy.reviewSave : copy.save}
                 isLoading={c.saving}
                 isDisabled={c.saving || c.writesBlocked}
                 tooltip={c.writesBlocked ? copy.writeBlockedReason : undefined}
-                onClick={submit}
               />
             </HStack>
           </LayoutFooter>

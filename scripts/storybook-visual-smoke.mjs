@@ -258,6 +258,20 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
       }
     }
 
+    if (job.storyId === 'product-settings-pricing--populated' && browserFailures.length === 0) {
+      // userEvent implements implicit submit by querying descendants of form,
+      // missing the Pricing dialog's associated footer button. Real key input
+      // catches a broken form association without simulating submit ourselves.
+      const edit = page.getByRole('button', { name: '编辑「zai:glm-4.7」定价' });
+      await edit.click();
+      const dialog = page.getByRole('dialog', { name: '编辑定价' });
+      const input = dialog.getByRole('textbox', { name: /输入价格/ });
+      await input.fill('0.875');
+      await input.press('Enter');
+      await dialog.waitFor({ state: 'hidden' });
+      await page.getByRole('cell', { name: '$0.875', exact: true }).waitFor({ state: 'visible' });
+    }
+
     const result = await page.evaluate(() => {
       const root = document.querySelector('#storybook-root');
       const failures = [...(window.__makaStorybookSmoke?.failures ?? [])];
