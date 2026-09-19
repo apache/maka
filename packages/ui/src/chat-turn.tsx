@@ -697,15 +697,15 @@ export const TurnView = memo(function TurnView(props: {
                 Intermediate text, reasoning and tools share a disclosure;
                 the final reply and inserted user instructions stay outside. */}
               {liveWorkOwnsDisclosure && (
+                // An empty work log for a Turn that IS rendered: the cue lives
+                // on the footer row, so passing `activity` here would show it
+                // twice. This disclosure only holds the turn's process entries,
+                // and it has none yet.
                 <ProcessingBlock
                   key="processing-status"
                   activityObserved={props.activityObserved}
                   entries={[]}
                   running={!!props.liveStreaming || turn.status === 'running'}
-                  durationMs={turn.durationMs}
-                  activity={props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
-                    ? { startedAt: turn.startedAt, label: runningToolLabel }
-                    : undefined}
                 />
               )}
               {segment.items.map((item, index) =>
@@ -715,12 +715,9 @@ export const TurnView = memo(function TurnView(props: {
                     activityObserved={props.activityObserved}
                     entries={item.children}
                     running={!!props.liveStreaming || turn.status === 'running'}
-                    durationMs={ownsTurnChrome ? turn.durationMs : undefined}
-                    activity={index === activityProcessIndex
-                      && props.liveStreaming?.runningStatus
-                      && !props.liveStreaming.providerRetry
-                      ? { startedAt: turn.startedAt, label: runningToolLabel }
-                      : undefined}
+                    // No cue and no duration here: both belong to the footer row
+                    // (`TurnStatusLine`). Repeating the cue on a disclosure showed
+                    // it twice, once where a growing answer scrolls it away.
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
                     onSwitchToBypassAndRetry={
@@ -804,12 +801,36 @@ export const TurnView = memo(function TurnView(props: {
                 ))}
               </Marker>
             )}
-            {ownsTurnChrome &&
-            (props.liveStreaming || props.footerActions?.length || hasTurnFooterContribution) ? (
+            {ownsTurnChrome ? (
               <TurnFooter
                 turnId={turn.turnId}
                 actions={props.liveStreaming ? [] : props.footerActions ?? []}
-                meta={props.liveStreaming ? undefined : turnMetaSummary(turn)}
+                meta={
+                  // The turn's state and the model facts share this row: one line
+                  // reads as the turn's footer, two read as a stray paragraph
+                  // between the answer and the model name. The state leads.
+                  <TurnFooterMeta
+                    status={
+                      <TurnStatusLine
+                        // The live STREAM decides whether work is happening: a turn
+                        // record can still say `running` while nothing is arriving
+                        // (a retry is scheduled, input is awaited), and announcing
+                        // activity then is a claim the reader watches fail.
+                        status={props.liveStreaming ? 'running' : turn.status}
+                        running={props.liveStreaming?.runningStatus === true}
+                        providerRetry={props.liveStreaming?.providerRetry !== undefined}
+                        startedAt={turn.startedAt}
+                        durationMs={turn.durationMs}
+                        activityLabel={
+                          props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                            ? runningToolLabel
+                            : undefined
+                        }
+                      />
+                    }
+                    model={turnMetaSummary(turn)}
+                  />
+                }
                 live={!!props.liveStreaming}
                 activity={props.liveStreaming?.providerRetry ? (
                   <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
@@ -930,11 +951,104 @@ export interface TurnPresentation {
 
 export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnPresentation;
 
+/**
+ * The turn's state, rendered as part of the turn's footer row.
+ *
+ * It shares that row rather than taking a line of its own: a second line between
+ * the answer and the model name read as a stray paragraph, and the row it joins
+ * is the one place guaranteed to be under the answer when the turn ends — a
+ * growing reply cannot push it out of view the way the process disclosure at the
+ * top is pushed. Running keeps the working cue (phrase + ticking clock) the
+ * disclosure used to host; settled states the duration and the wall-clock time
+ * the turn finished, which is what makes a transcript reviewable later — the
+ * message's relative stamp says how long ago, not when.
+ */
+function TurnStatusLine(props: {
+  status: TurnViewModel['status'];
+  startedAt: number;
+  durationMs?: number;
+  /** A concrete activity (e.g. driving an app) outranks the playful phrase. */
+  activityLabel?: string;
+  /** Work is actually arriving. Only consulted for the running arm. */
+  running?: boolean;
+  /** A scheduled retry is waiting, not working. */
+  providerRetry?: boolean;
+}): ReactNode {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+
+  if (props.status === 'running') {
+    // A retry is not progress: nothing is produced while the client waits, and
+    // the retry indicator already says what is happening. A live turn whose
+    // stream is not running has nothing to announce either.
+    if (props.providerRetry || props.running === false) return null;
+    return <TurnRunningStatus startedAt={props.startedAt || undefined} activityLabel={props.activityLabel} />;
+  }
+
+  // Localized duration, not the compact `3m 33s` the live counter uses: this
+  // reads as prose in the transcript, and a Chinese UI must not show English units.
+  const elapsed = props.durationMs === undefined
+    ? undefined
+    : copy.processDuration(
+        Math.floor(props.durationMs / 60_000),
+        Math.floor(props.durationMs / 1_000) % 60,
+      );
+  // `startedAt + durationMs` is the same arithmetic the projection used to
+  // derive the duration, so the two cannot disagree. A placeholder start (the
+  // projection yields 0 for a turn whose messages carried none) would date the
+  // turn to 1970, so an implausibly early value suppresses the time instead.
+  const finishedAt =
+    props.durationMs !== undefined && props.startedAt > MIN_PLAUSIBLE_TURN_TS
+      ? formatAbsoluteTimestamp(props.startedAt + props.durationMs, locale)
+      : undefined;
+
+  const label =
+    props.status === 'completed'
+      ? elapsed !== undefined && finishedAt !== undefined
+        ? copy.turnStatusCompleted(elapsed, finishedAt)
+        : elapsed !== undefined
+          ? copy.turnStatusCompletedAloneWithDuration(elapsed)
+          : copy.turnStatusCompletedAlone
+      : props.status === 'aborted'
+        ? elapsed === undefined
+          ? undefined
+          : copy.turnStatusAborted(elapsed)
+        : elapsed === undefined
+          ? undefined
+          : copy.turnStatusFailed(elapsed);
+  if (label === undefined) return null;
+  return <span className="maka-turn-status-line" data-turn-status={props.status}>{label}</span>;
+}
+
+/**
+ * Below this, a `startedAt` is a placeholder rather than a time (the projection
+ * yields 0 for a turn whose messages carried no timestamp). 2001-09-09 in millis:
+ * comfortably after every real timestamp, comfortably before any clock a
+ * transcript could predate.
+ */
+const MIN_PLAUSIBLE_TURN_TS = 1_000_000_000_000;
+
+/** The turn's state, then the quieter model/cost facts, in one row. */
+function TurnFooterMeta(props: { status: ReactNode; model?: string }): ReactNode {
+  if (props.status === null && props.model === undefined) return undefined;
+  return (
+    <>
+      {props.status}
+      {props.status !== null && props.model !== undefined ? <span className="maka-turn-footer-meta-separator"> · </span> : null}
+      {props.model !== undefined ? <span className="maka-turn-footer-meta-model">{props.model}</span> : null}
+    </>
+  );
+}
+
 export function TurnFooter(props: {
   turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
-  /** One-line turn meta (model · duration · cost) shown beside the actions. */
-  meta?: string;
+  /**
+   * The turn's one-line meta, beside the actions. A node rather than a string so
+   * the turn's state can share this row with the model name: two lines where one
+   * will do reads as a stray paragraph between the answer and the footer.
+   */
+  meta?: ReactNode;
   live?: boolean;
   activity?: ReactNode;
   context: string;
@@ -1357,11 +1471,11 @@ export function ProcessingBlock(props: {
   // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = props.running || manualOpen === true;
-  const seconds = props.durationMs !== undefined && Number.isFinite(props.durationMs)
-    ? Math.floor(Math.max(0, props.durationMs) / 1000)
-    : undefined;
-  const label = props.running || seconds === undefined ? copy.processDetails
-    : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
+  // The summary names WHAT the disclosure holds. The elapsed clock and the
+  // settled duration live on the turn's footer row (`TurnStatusLine`), the one
+  // place under the answer that a growing reply cannot scroll out of view;
+  // restating them here said the same thing twice, once where it gets lost.
+  const label = copy.processDetails;
   return (
     <details
       className="maka-processing-sequence"
@@ -1379,6 +1493,13 @@ export function ProcessingBlock(props: {
           if (!props.running) setManualOpen(!open);
         }}
       >
+        {/*
+          The cue belongs on the turn's footer row (see `TurnStatusLine`), the
+          one place under the answer that a growing reply cannot push away. The
+          exception is the WAITING state: a turn the transcript does not contain
+          yet has no footer, and this empty disclosure is what stands in for it —
+          there the cue is the only thing to show, so it renders here.
+        */}
         {props.activity ? (
           <TurnRunningStatus
             startedAt={props.activity.startedAt}

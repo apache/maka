@@ -928,6 +928,12 @@ export function ChatView(props: {
                       } />
                     </LocalizedChatMessage>
                   ) : runningStatus ? (
+                    // The waiting cue. This row stands in for the Turn until the
+                    // transcript contains it, and an empty disclosure has no
+                    // footer to host the cue — so the cue renders in the
+                    // disclosure here, and moves to the footer once the real
+                    // TurnView takes over. Passing `activity` is what selects
+                    // that form.
                     <ProcessingBlock entries={[]} running activity={{}} />
                   ) : null}
                 </section>
