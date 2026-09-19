@@ -38,6 +38,7 @@ import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import {
   RuntimeHostOperationError,
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
 } from "@maka/runtime-host/client";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
@@ -53,7 +54,6 @@ import {
 import {
   type PreparedSessionSubscription,
   RuntimeHostSessionSubscriptionOwner,
-  SessionRemovedSubscriptionError,
 } from "./runtime-host-session-subscription-owner.js";
 import {
   type DesktopSequencedTranscriptMessage,
@@ -683,7 +683,6 @@ export class RuntimeHostSessionObserver {
     const subscriptionOwner = new RuntimeHostSessionSubscriptionOwner({
       client: this.#client,
       sessionId,
-      now: this.#now,
       transcriptReplicaOptions: {
         accountPreparationBytes: (deltaBytes) =>
           this.#accountTranscriptPreparation(state, deltaBytes),

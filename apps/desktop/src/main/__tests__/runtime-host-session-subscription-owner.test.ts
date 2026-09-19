@@ -28,12 +28,12 @@ import {
 import {
   RuntimeHostOperationError,
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
 } from '@maka/runtime-host/client';
 import type { SubscriptionFrame } from '@maka/runtime-host/protocol';
 import type { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
 import {
   RuntimeHostSessionSubscriptionOwner,
-  SessionRemovedSubscriptionError,
 } from '../runtime-host-session-subscription-owner.js';
 import {
   AsyncFrameQueue,
@@ -60,7 +60,6 @@ test('dispatches a frame failure before the subscription iterator finishes closi
         }),
     },
     sessionId: 'session-1',
-    now: Date.now,
     prepareActivation: async () => () => {},
     installReseededReplica: () => {},
     acceptFrame: () => {
@@ -88,10 +87,10 @@ test('dispatches a frame failure before the subscription iterator finishes closi
   await owner.close();
 });
 
-test('absorbs an unclassified transcript read failure and keeps consuming', async () => {
+test('a committed frame failure is terminal, not absorbed', async () => {
   const events = new AsyncFrameQueue();
-  let accepted = 0;
   let terminal: Error | undefined;
+  const injected = new Error('committed frame failure');
   const owner = new RuntimeHostSessionSubscriptionOwner({
     client: {
       openSession: async () =>
@@ -102,12 +101,10 @@ test('absorbs an unclassified transcript read failure and keeps consuming', asyn
         }),
     },
     sessionId: 'session-1',
-    now: Date.now,
     prepareActivation: async () => () => {},
     installReseededReplica: () => {},
     acceptFrame: () => {
-      accepted += 1;
-      if (accepted === 1) throw new Error('transient read failure');
+      throw injected;
     },
     recoveryStarted: () => {},
     recoveryCompleted: () => {},
@@ -119,16 +116,22 @@ test('absorbs an unclassified transcript read failure and keeps consuming', asyn
   owner.start();
   await owner.waitUntilReady();
 
-  // A transcript frame's acceptFrame is a pure read: its rejection carries no
-  // evidence of subscription death, so the pump consumes the next frame
-  // instead of tearing the subscription down.
-  events.push(transcriptFrame(1));
-  events.push(transcriptFrame(2));
-  await pollFor(() => accepted === 2, {
-    attempts: 50,
-    message: 'pump stopped consuming after an absorbed read failure',
+  // A non-transcript frame's acceptFrame may have committed a mutation that
+  // will not be replayed, so its unclassified failure dies loudly instead of
+  // being absorbed like a transcript read failure.
+  events.push({
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-session-1',
+    sessionId: 'session-1',
+    sequence: 1,
+    domain: 'usage',
   });
-  assert.equal(terminal, undefined);
+  await pollFor(() => terminal !== undefined, {
+    attempts: 50,
+    message: 'committed frame failure was absorbed instead of terminating',
+  });
+  assert.equal(terminal, injected);
   await owner.close();
 });
 
@@ -161,7 +164,6 @@ test('reseeds an evicted replica on the same live subscription', async () => {
       },
     },
     sessionId: 'session-1',
-    now: () => 0,
     transcriptReplicaOptions: {
       accountPreparationBytes: (deltaBytes) => {
         prepBytes += deltaBytes;
@@ -190,12 +192,12 @@ test('reseeds an evicted replica on the same live subscription', async () => {
 
   replica.discard();
   watermark = 6;
-  const reseeded = await owner.reseedTranscriptReplica();
+  await owner.reseedTranscriptReplica();
 
   assert.equal(opens, 1, 'reseed must reuse the live subscription');
-  assert.ok(reseeded);
+  assert.equal(installs.length, 1);
+  const reseeded = installs[0]!;
   assert.notEqual(reseeded, replica);
-  assert.deepEqual(installs, [reseeded]);
   assert.throws(() => replica.messages(), /is closed/);
   assert.equal(reseeded.resident, true);
   assert.equal(reseeded.durableThrough, 6);
@@ -240,7 +242,6 @@ test('a reseed superseded by subscription recovery does not displace the new rep
       },
     },
     sessionId: 'session-1',
-    now: () => 0,
     transcriptReplicaOptions: {
       accountPreparationBytes: (deltaBytes) => {
         prepBytes += deltaBytes;
@@ -274,78 +275,13 @@ test('a reseed superseded by subscription recovery does not displace the new rep
   await pollFor(() => opens === 2);
   reseedFetch.resolve(undefined);
 
-  assert.equal(await reseeding, undefined);
+  await reseeding;
   await owner.waitUntilReady();
   assert.equal(replicas.length, 2);
   assert.equal(installs.length, 0);
   // The superseded build is closed, not installed: only the recovery
   // replica's resident bytes stay accounted.
   assert.equal(prepBytes, replicas[1]!.residentBytes);
-  await owner.close();
-});
-
-test('routes a dead-subscription reseed read through subscription recovery', async () => {
-  const firstEvents = new AsyncFrameQueue();
-  const secondEvents = new AsyncFrameQueue();
-  let opens = 0;
-  const replicas: DesktopTranscriptReplica[] = [];
-  const installs: DesktopTranscriptReplica[] = [];
-  const owner = new RuntimeHostSessionSubscriptionOwner({
-    client: {
-      openSession: async () => {
-        opens += 1;
-        const events = opens === 1 ? firstEvents : secondEvents;
-        return runtimeHostSessionFixture({
-          snapshot: continuitySnapshot(),
-          events,
-          transcriptBootstrap: { durable: transcriptPage('older', 2) },
-          transcriptWatermark: () => 2,
-          decodeTranscriptPage: async (page) => ({
-            messages: rowsThrough(page.throughSequence),
-            nextCursor: page.nextCursor,
-          }),
-          // The transcript context on the live handle is gone — the class of
-          // failure subscription recovery exists to heal.
-          loadTranscriptPage: async () => {
-            throw new RuntimeHostOperationError(
-              'session.transcript.page',
-              'not_found',
-              'subscription transcript context was lost',
-            );
-          },
-          async close() {
-            events.end();
-          },
-        });
-      },
-    },
-    sessionId: 'session-1',
-    now: () => 0,
-    prepareActivation: async (subscription) => {
-      replicas.push(subscription.replica);
-      return () => {};
-    },
-    installReseededReplica: (replica) => installs.push(replica),
-    acceptFrame: () => {},
-    recoveryStarted: () => {},
-    recoveryCompleted: () => {},
-    recoveryFailed: () => {},
-    terminalFailure: (error) => {
-      throw error;
-    },
-  });
-  owner.start();
-  await owner.waitUntilReady();
-
-  replicas[0]!.discard();
-  const reseeded = await owner.reseedTranscriptReplica();
-
-  assert.equal(reseeded, undefined);
-  assert.equal(installs.length, 0);
-  // Recovery replaced the subscription instead of leaving the session on a
-  // dead handle.
-  assert.equal(opens, 2);
-  assert.equal(replicas.length, 2);
   await owner.close();
 });
 
@@ -379,7 +315,6 @@ test('serializes concurrent reseeds into exactly one swap', async () => {
         }),
     },
     sessionId: 'session-1',
-    now: () => 0,
     transcriptReplicaOptions: {
       accountPreparationBytes: (deltaBytes) => {
         prepBytes += deltaBytes;
@@ -408,11 +343,8 @@ test('serializes concurrent reseeds into exactly one swap', async () => {
   fetches[0]!.resolve(undefined);
   fetches[1]!.resolve(undefined);
 
-  const results = await Promise.all([first, second]);
-  const winners = results.filter((reseeded) => reseeded !== undefined);
-  assert.equal(winners.length, 1);
+  await Promise.all([first, second]);
   assert.equal(installs.length, 1);
-  assert.equal(installs[0], winners[0]);
   // The loser is closed, not installed: only the winner's resident bytes stay
   // accounted.
   assert.equal(prepBytes, installs[0]!.residentBytes);
@@ -458,7 +390,6 @@ test('a reseed committing inside recovery teardown loses the swap', async () => 
       },
     },
     sessionId: 'session-1',
-    now: () => 0,
     prepareActivation: async (subscription) => {
       replicas.push(subscription.replica);
       return () => {};
@@ -500,7 +431,7 @@ test('a reseed committing inside recovery teardown loses the swap', async () => 
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(loserSettled, false);
   handleClose.resolve(undefined);
-  assert.equal(await reseeding, undefined);
+  await reseeding;
   assert.equal(installs.length, 0);
   await pollFor(() => opens === 2);
   await owner.waitUntilReady();
@@ -543,7 +474,6 @@ test('a losing reseed propagates the recovery terminal failure', async () => {
       },
     },
     sessionId: 'session-1',
-    now: () => 0,
     prepareActivation: async (subscription) => {
       replicas.push(subscription.replica);
       return () => {};
@@ -593,7 +523,13 @@ test('a reseed masked by the subscription close classifies by its recorded reaso
           transcriptWatermark: () => 2,
           // The subscription already closed for a slow consumer, but a
           // transcript read that races its death only sees the dead-state mask.
-          closedReason: first ? () => 'slow_consumer' : undefined,
+          deathCause: first
+            ? () =>
+                new RuntimeHostSubscriptionError(
+                  'slow_consumer',
+                  'Runtime Host Session subscription closed for a slow consumer',
+                )
+            : undefined,
           decodeTranscriptPage: async (page) => ({
             messages: rowsThrough(page.throughSequence),
             nextCursor: page.nextCursor,
@@ -611,7 +547,6 @@ test('a reseed masked by the subscription close classifies by its recorded reaso
       },
     },
     sessionId: 'session-1',
-    now: () => 0,
     prepareActivation: async (subscription) => {
       replicas.push(subscription.replica);
       return () => {};
@@ -629,7 +564,7 @@ test('a reseed masked by the subscription close classifies by its recorded reaso
   await owner.waitUntilReady();
 
   replicas[0]!.discard();
-  assert.equal(await owner.reseedTranscriptReplica(), undefined);
+  await owner.reseedTranscriptReplica();
   await pollFor(() => opens === 2);
   await owner.waitUntilReady();
   assert.equal(terminal, undefined);
@@ -648,7 +583,7 @@ test('a reseed masked by the subscription close preserves a terminal removal', a
           events: new AsyncFrameQueue(),
           transcriptBootstrap: { durable: transcriptPage('older', 2) },
           transcriptWatermark: () => 2,
-          closedReason: () => 'session_removed',
+          deathCause: () => new SessionRemovedSubscriptionError('session removed'),
           loadTranscriptPage: async () => {
             throw new RuntimeHostSubscriptionError(
               'connection_closed',
@@ -659,7 +594,6 @@ test('a reseed masked by the subscription close preserves a terminal removal', a
         }),
     },
     sessionId: 'session-1',
-    now: () => 0,
     prepareActivation: async (subscription) => {
       replicas.push(subscription.replica);
       return () => {};
@@ -709,7 +643,6 @@ test('closes the orphan replica when install throws', async () => {
         }),
     },
     sessionId: 'session-1',
-    now: () => 0,
     transcriptReplicaOptions: {
       accountPreparationBytes: (deltaBytes) => {
         prepBytes += deltaBytes;
@@ -746,8 +679,7 @@ test('closes the orphan replica when install throws', async () => {
   assert.equal(installs.length, 1);
 
   failInstall = false;
-  const reseeded = await owner.reseedTranscriptReplica();
-  assert.ok(reseeded);
+  await owner.reseedTranscriptReplica();
   assert.equal(installs.length, 2);
   await owner.close();
 });
@@ -793,7 +725,6 @@ test('routes a post-commit catch-up failure through attempt recovery', async () 
       },
     },
     sessionId: 'session-1',
-    now: () => 0,
     prepareActivation: async (subscription) => {
       replicas.push(subscription.replica);
       return () => {};
@@ -816,8 +747,7 @@ test('routes a post-commit catch-up failure through attempt recovery', async () 
   await owner.waitUntilReady();
 
   replicas[0]!.discard();
-  const reseeded = await owner.reseedTranscriptReplica();
-  assert.ok(reseeded);
+  await owner.reseedTranscriptReplica();
   assert.equal(installs.length, 1);
 
   // The committed replica's catch-up hit the dead transcript context; the

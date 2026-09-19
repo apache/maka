@@ -20,6 +20,8 @@
 import {
   RuntimeHostOperationError,
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
+  subscriptionClosedError,
 } from "@maka/runtime-host/client";
 import type {
   SessionAssistantStreamIdentity,
@@ -46,7 +48,6 @@ export interface PreparedSessionSubscription {
 export interface RuntimeHostSessionSubscriptionOwnerDeps {
   readonly client: SessionSubscriptionClient;
   readonly sessionId: string;
-  readonly now: () => number;
   readonly transcriptReplicaOptions?: DesktopTranscriptReplicaOptions;
   prepareActivation(
     subscription: PreparedSessionSubscription,
@@ -71,13 +72,8 @@ interface SubscriptionAttempt {
     readonly resolve: (error: Error) => void;
   };
   replica?: DesktopTranscriptReplica;
-  phase: 'preparing' | 'active';
   failure?: Error;
   fail(error: Error): void;
-}
-
-export class SessionRemovedSubscriptionError extends Error {
-  readonly name = "SessionRemovedSubscriptionError";
 }
 
 /** Owns exactly one replaceable Host subscription for one Desktop Session. */
@@ -141,17 +137,16 @@ export class RuntimeHostSessionSubscriptionOwner {
    * Rebuilds the transcript tail on the live subscription after the replica
    * was evicted. The commit runs inside the staleness check — the caller's
    * state moves to the new replica before the evicted one closes, so an
-   * installed replica is never a closed object. Answers the new replica only
-   * when this call swapped it in; a concurrent recovery installs its own
-   * replica through activation instead.
+   * installed replica is never a closed object. A concurrent recovery
+   * installs its own replica through activation instead.
    */
-  async reseedTranscriptReplica(): Promise<DesktopTranscriptReplica | undefined> {
+  async reseedTranscriptReplica(): Promise<void> {
     await this.waitUntilReady();
-    if (this.#closed) return undefined;
+    if (this.#closed) return;
     const attempt = this.#attempt;
-    if (!attempt) return undefined;
+    if (!attempt) return;
     const evicted = attempt.replica;
-    if (evicted?.resident) return undefined;
+    if (evicted?.resident) return;
     let replica: DesktopTranscriptReplica;
     try {
       replica = await DesktopTranscriptReplica.reseed(
@@ -161,17 +156,11 @@ export class RuntimeHostSessionSubscriptionOwner {
     } catch (error) {
       // A subscription-scoped read failure means this handle is dead; the
       // attempt decides whether that means recovery or terminal, exactly like
-      // a pump-frame failure does. Generic read failures stay the caller's
+      // a pump-frame failure does. Unclassified failures stay the caller's
       // transient error.
-      if (
-        error instanceof RuntimeHostSubscriptionError ||
-        error instanceof RuntimeHostOperationError
-      ) {
-        this.#failAttempt(attempt, error, true);
-        await this.waitUntilReady();
-        return undefined;
-      }
-      throw error;
+      if (!this.#failAttempt(attempt, error, true)) throw error;
+      await this.waitUntilReady();
+      return;
     }
     if (this.#closed || this.#attempt !== attempt || attempt.replica !== evicted) {
       replica.close();
@@ -179,7 +168,7 @@ export class RuntimeHostSessionSubscriptionOwner {
       // for it to settle so the caller picks up the installed replica rather
       // than erroring on the corpse it replaced.
       await this.waitUntilReady();
-      return undefined;
+      return;
     }
     try {
       this.#deps.installReseededReplica(replica);
@@ -193,7 +182,6 @@ export class RuntimeHostSessionSubscriptionOwner {
     // unread; the catch-up is an attempt read, so a dead handle takes the
     // same recovery path as a pump-frame rejection.
     void replica.advance().catch((error) => this.#failAttempt(attempt, error, true));
-    return replica;
   }
 
   async #establish(failed?: SubscriptionAttempt, initialError?: Error): Promise<void> {
@@ -243,7 +231,6 @@ export class RuntimeHostSessionSubscriptionOwner {
         activate();
         this.#candidate = undefined;
         this.#attempt = attempt;
-        attempt.phase = "active";
         attempt.preparationFailure = undefined;
         await attempt.handle.ready();
       } catch (error) {
@@ -281,7 +268,6 @@ export class RuntimeHostSessionSubscriptionOwner {
     const attempt: SubscriptionAttempt = {
       handle,
       preparationFailure: createPreparationFailure(),
-      phase: "preparing",
       fail(error) {
         if (attempt.failure) return;
         attempt.failure = error;
@@ -357,9 +343,10 @@ export class RuntimeHostSessionSubscriptionOwner {
           if (frame.kind === "subscription.closed") {
             throw subscriptionClosedError(frame.reason);
           }
-          if (attempt.phase === 'preparing') {
-            // The Host holds frames until `ready()`, so one arriving here is a
-            // broken contract rather than a consumer falling behind.
+          if (this.#candidate === attempt) {
+            // The Host holds frames until `ready()`, so one arriving while the
+            // attempt is still a candidate is a broken contract rather than a
+            // consumer falling behind.
             throw new Error('Runtime Host sent a Session frame before the subscriber was ready');
           }
           await this.#deps.acceptFrame(frame);
@@ -401,17 +388,10 @@ export class RuntimeHostSessionSubscriptionOwner {
       return true;
     }
     // A transcript read that raced the subscription's death only sees its
-    // dead-state mask ('connection_closed'); the subscription itself knows
-    // the real reason, and it is already recorded before the mask can fire.
-    // A closed frame is the Host's own death statement — it is recorded
-    // before any terminalError can exist, so it always outranks the
-    // synthesized mask a dying transport stores afterwards.
-    const failure = asError(
-      attempt.handle.closedReason === undefined
-        ? (attempt.handle.terminalError ?? error)
-        : subscriptionClosedError(attempt.handle.closedReason),
-    );
-    if (attempt.phase !== 'active') {
+    // dead-state mask ('connection_closed'); the subscription itself already
+    // recorded the real reason before the mask can fire.
+    const failure = asError(attempt.handle.deathCause ?? error);
+    if (this.#candidate === attempt) {
       attempt.fail(failure);
       return true;
     }
@@ -454,25 +434,6 @@ function createPreparationFailure(): NonNullable<SubscriptionAttempt['preparatio
   let resolve!: (error: Error) => void;
   const promise = new Promise<Error>((settle) => { resolve = settle; });
   return { promise, resolve };
-}
-
-function subscriptionClosedError(
-  reason: "slow_consumer" | "session_removed" | 'access_revoked',
-): Error {
-  if (reason === 'session_removed') {
-    return new SessionRemovedSubscriptionError(
-      'Runtime Host Session was removed while it was observed',
-    );
-  }
-  if (reason === 'access_revoked') {
-    return new SessionRemovedSubscriptionError(
-      'Access to the shared Runtime Host Session was revoked',
-    );
-  }
-  return new RuntimeHostSubscriptionError(
-    'slow_consumer',
-    'Runtime Host Session subscription closed for a slow consumer',
-  );
 }
 
 function isRecoverableSubscriptionFailure(error: unknown): boolean {

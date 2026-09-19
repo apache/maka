@@ -160,16 +160,13 @@ export class DesktopTranscriptReplica {
     handle: DesktopRuntimeHostSession,
     options: DesktopTranscriptReplicaOptions = {},
   ): Promise<DesktopTranscriptReplica> {
-    const watermark = handle.transcriptWatermark;
-    const durable = watermark === null
-      ? handle.transcriptBootstrap.durable
-      : await handle.loadTranscriptPage({
-          direction: 'older',
-          throughSequence: watermark,
-          cursor: null,
-          anchorSequence: null,
-          maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
-        });
+    const durable = await handle.loadTranscriptPage({
+      direction: 'older',
+      throughSequence: handle.transcriptWatermark,
+      cursor: null,
+      anchorSequence: null,
+      maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+    });
     const replica = await this.#install(handle, options, durable);
     try {
       await replica.advance();
@@ -641,7 +638,7 @@ export class DesktopTranscriptReplica {
   }
 
   #isLive(): boolean {
-    return !this.#closed && this.#resident && this.#failure === undefined;
+    return !this.#closed && this.#resident;
   }
 
   #assertOpen(): void {
@@ -651,10 +648,6 @@ export class DesktopTranscriptReplica {
   #assertLive(): void {
     if (this.#failure) throw this.#failure;
     this.#assertOpen();
-    this.#assertResident();
-  }
-
-  #assertResident(): void {
     if (!this.#resident) {
       throw new Error('Desktop transcript replica was evicted');
     }

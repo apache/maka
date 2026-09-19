@@ -38,6 +38,7 @@ import { markPersisted } from '@maka/core/persisted-value';
 import {
   connectRuntimeHost,
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
   type RuntimeHostConnection,
 } from '../client/index.js';
 import { clientSubscription } from './fixtures/client-session-subscription.js';
@@ -431,7 +432,7 @@ test('records the close reason before a full queue can reject the frame', () => 
       }),
     hasSubscriptionReason('slow_consumer'),
   );
-  assert.equal(subscription.closedReason, 'session_removed');
+  assert.ok(subscription.deathCause instanceof SessionRemovedSubscriptionError);
 });
 
 test('a transcript read surfaces the terminal error, not the dead-state mask', () => {
@@ -444,7 +445,7 @@ test('a transcript read surfaces the terminal error, not the dead-state mask', (
   );
   const failure = new RuntimeHostSubscriptionError('sequence_gap', 'test gap');
   subscription.fail(failure);
-  assert.equal(subscription.terminalError, failure);
+  assert.equal(subscription.deathCause, failure);
   assert.throws(
     () =>
       subscription.loadTranscriptPage({

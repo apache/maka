@@ -35,8 +35,7 @@ export function runtimeHostSessionFixture(input: {
   readonly events?: AsyncIterable<SubscriptionFrame>;
   readonly transcriptBootstrap?: DesktopRuntimeHostSession['transcriptBootstrap'];
   transcriptWatermark?: () => number | null;
-  terminalError?: () => Error | undefined;
-  closedReason?: () => DesktopRuntimeHostSession['closedReason'];
+  deathCause?: () => Error | undefined;
   decodeTranscriptPage?: DesktopRuntimeHostSession['decodeTranscriptPage'];
   loadTranscriptPage?: DesktopRuntimeHostSession['loadTranscriptPage'];
   ready?: DesktopRuntimeHostSession['ready'];
@@ -70,11 +69,8 @@ export function runtimeHostSessionFixture(input: {
     get transcriptWatermark() {
       return input.transcriptWatermark ? input.transcriptWatermark() : transcriptWatermark;
     },
-    get terminalError() {
-      return input.terminalError?.();
-    },
-    get closedReason() {
-      return input.closedReason?.();
+    get deathCause() {
+      return input.deathCause?.();
     },
     events: {
       [Symbol.asyncIterator]() {

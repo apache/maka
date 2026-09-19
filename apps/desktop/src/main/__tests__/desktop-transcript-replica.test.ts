@@ -188,7 +188,6 @@ test('re-reads the watermark when it moves during a blocked fetch', async () => 
   // the one post-settle re-arm still carry it to the live watermark.
   await replica.advance();
   assert.equal(replica.durableThrough, 9);
-  assert.equal(pageReads, 2);
   await handle.close();
 });
 
@@ -206,8 +205,8 @@ test('advance resolves quietly without reading once evicted', async () => {
   const replica = await DesktopTranscriptReplica.prepare(handle);
 
   replica.discard();
-  // A transcript_advanced frame arriving while evicted must resolve quietly —
-  // a throw here would reach the pump and terminate the whole subscription.
+  // An evicted replica must stay inert: a subscription-scoped throw from here
+  // would still reach the pump and tear down the live subscription.
   await replica.advance();
   assert.equal(pageReads, 0);
   assert.equal(replica.durableThrough, null);

@@ -56,6 +56,27 @@ export class RuntimeHostSubscriptionError extends Error {
   }
 }
 
+export class SessionRemovedSubscriptionError extends Error {
+  readonly name = 'SessionRemovedSubscriptionError';
+}
+
+export function subscriptionClosedError(reason: SubscriptionClosedFrame['reason']): Error {
+  if (reason === 'session_removed') {
+    return new SessionRemovedSubscriptionError(
+      'Runtime Host Session was removed while it was observed',
+    );
+  }
+  if (reason === 'access_revoked') {
+    return new SessionRemovedSubscriptionError(
+      'Access to the shared Runtime Host Session was revoked',
+    );
+  }
+  return new RuntimeHostSubscriptionError(
+    'slow_consumer',
+    'Runtime Host Session subscription closed for a slow consumer',
+  );
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -71,14 +92,14 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   /** Newest durable sequence the Host announced; updated before the frame is handed out. */
   readonly transcriptWatermark: number | null;
   /**
-   * The subscription's own death certificate: the failure that terminated it,
-   * or the reason on a received `subscription.closed` frame. A transcript read
-   * racing the death only sees the dead-state mask; classify by this instead.
-   * Optional introspection — fakes that never produce a certificate need not
-   * declare it.
+   * The subscription's own death certificate: the reason on a received
+   * `subscription.closed` frame, or the failure that terminated it. A
+   * transcript read racing the death only sees the dead-state mask; classify
+   * by this instead. The closed reason is recorded before any terminal error
+   * can exist, so it always wins here. Optional introspection — fakes that
+   * never produce a certificate need not declare it.
    */
-  readonly terminalError?: Error | undefined;
-  readonly closedReason?: SubscriptionClosedFrame['reason'] | undefined;
+  readonly deathCause?: Error | undefined;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
   decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
@@ -125,11 +146,12 @@ export class ClientSessionSubscription
   get transcriptWatermark(): number | null {
     return this.#latestTranscriptThroughSequence;
   }
-  get terminalError(): Error | undefined {
-    return this.#terminalError;
-  }
-  get closedReason(): SubscriptionClosedFrame['reason'] | undefined {
-    return this.#closedReason;
+  get deathCause(): Error | undefined {
+    // #closedReason is recorded at accept()-time, before #terminalError can
+    // exist — it is always the authoritative death statement.
+    return this.#closedReason === undefined
+      ? this.#terminalError
+      : subscriptionClosedError(this.#closedReason);
   }
   readonly #queue: QueuedFrame[] = [];
   readonly #ptyListeners = new Set<(frame: SessionRuntimeResourcePtyDataFrame) => void>();
