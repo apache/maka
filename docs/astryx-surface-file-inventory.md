@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.2` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 290 files — blocker 0, reimplementation 0, polish 4, aligned 286.
+**Totals:** 292 files — blocker 0, reimplementation 0, polish 4, aligned 288.
 
 ## Exclusions (explicit)
 
@@ -60,6 +60,8 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput) | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/provider-capability-editor.tsx` | other | DropdownMenu, DropdownMenuCheckboxItem, Field, FormLayout, Selector, TextInput | aligned — uses Astryx (DropdownMenu, DropdownMenuCheckboxItem, Field, FormLayout, Selector, TextInput) | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/connection-settings/trae-account-setup.tsx` | other | Selector | aligned — uses Astryx (Selector) | aligned |
+| `apps/desktop/src/renderer/features/connection-settings/trae-provider-mark.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/conversation/controller/live-turn-reconciler.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/conversation/controller/transcript-reading-position-controller.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
