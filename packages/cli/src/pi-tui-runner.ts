@@ -93,6 +93,7 @@ import {
   type MakaSessionDriver,
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
+  type SessionResumeAvailability,
 } from './session-driver.js';
 import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js';
 import {
@@ -528,6 +529,8 @@ function sessionConnectionIdentityNotice(
   }
   return undefined;
 }
+
+const SESSION_RESUME_AVAILABILITY_CONCURRENCY = 8;
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
@@ -2059,7 +2062,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // serial lock like any control action; mid-turn that lock is held by the
   // running Turn, so the switch goes through the detach path instead of
   // silently no-oping on the busy gate.
-  const goToSession = async (sessionId: string): Promise<void> => {
+  const goToSession = async (sessionId: string): Promise<boolean> => {
     const pair = sideConversation;
     if (
       pair &&
@@ -2067,24 +2070,31 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (sessionId === pair.parentSessionId || sessionId === pair.sideSessionId)
     ) {
       await toggleSideConversation();
-      return;
+      return true;
     }
     const leavesPair =
       pair !== undefined && sessionId !== pair.parentSessionId && sessionId !== pair.sideSessionId;
     if (!turnRunning) {
+      let switched = false;
       await runControl(async () => {
         await switchSession(sessionId);
+        switched = true;
         if (leavesPair) await discardCurrentSidePair();
       });
-      return;
+      return switched;
     }
     // One detach at a time (#3380): a second mid-turn switch while the first
     // is still handing the view over would clear `detaching` early, reopen
     // the interrupt window, and double-apply the adoption.
-    if (detaching) return;
-    await switchAwayMidTurn(sessionId)
-      .then(() => (leavesPair ? discardCurrentSidePair() : undefined))
-      .catch(reportError);
+    if (detaching) return false;
+    try {
+      await switchAwayMidTurn(sessionId);
+      if (leavesPair) await discardCurrentSidePair();
+      return true;
+    } catch (error) {
+      reportError(error);
+      return false;
+    }
   };
 
   const openSideConversation = async (prompt: string): Promise<void> => {
@@ -2978,7 +2988,35 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
+  let sessionListPromise: Promise<SessionSummary[]> | undefined;
+  let activeResumeAvailabilityChecks = 0;
+  const queuedResumeAvailabilityChecks: Array<() => void> = [];
+  const runResumeAvailabilityCheck = async <T>(task: () => Promise<T>): Promise<T> => {
+    if (activeResumeAvailabilityChecks >= SESSION_RESUME_AVAILABILITY_CONCURRENCY) {
+      await new Promise<void>((resolve) => queuedResumeAvailabilityChecks.push(resolve));
+    }
+    activeResumeAvailabilityChecks += 1;
+    try {
+      return await task();
+    } finally {
+      activeResumeAvailabilityChecks -= 1;
+      queuedResumeAvailabilityChecks.shift()?.();
+    }
+  };
+  const listSessions = (): Promise<SessionSummary[]> => {
+    if (!sessionListPromise) {
+      sessionListPromise = input.driver.listSessions().finally(() => {
+        sessionListPromise = undefined;
+      });
+    }
+    return sessionListPromise;
+  };
+
   const resumeSession = async () => {
+    if (!input.driver.getSessionId()) {
+      await showSessionList({ onlyResumable: true });
+      return;
+    }
     if (!input.driver.resumeLatest) {
       throw new Error('Safe-boundary resume is unavailable on this runtime.');
     }
@@ -3013,305 +3051,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
-  const openImportedExternalSession = async (
-    sessionId: string,
-    failureText: string,
-  ): Promise<void> => {
-    try {
-      await switchSession(sessionId);
-    } catch {
-      state.entries.push({ kind: 'notice', level: 'error', text: failureText });
-      requestRender();
-      return;
-    }
-    try {
-      await discardCurrentSidePair();
-    } catch (error) {
-      reportError(error);
-    }
-  };
-
-  const importExternalSession = async (
-    adapterId: string,
-    source: ExternalSessionCatalogItem,
-  ): Promise<void> => {
-    if (!input.externalSessions) return;
-    const copy = TUI_SESSION_ACTIONS_COPY[locale];
-    if (source.importState.isImporting) {
-      state.entries.push({
-        kind: 'notice',
-        level: 'error',
-        text: copy.externalUnavailable,
-      });
-      requestRender();
-      return;
-    }
-    let importedSessionId: string | undefined;
-    try {
-      const result = await input.externalSessions.importSession({
-        adapterId,
-        sourceSessionId: source.id,
-      });
-      if (result.kind === 'source_limit_exceeded') {
-        state.entries.push({
-          kind: 'notice',
-          level: 'error',
-          text: formatUiMessage(
-            copy.externalImportLimit,
-            {
-              kind: externalImportLimitLabel(copy, result.limit.kind),
-              max: result.limit.max,
-            },
-            locale,
-          ),
-        });
-        return;
-      }
-      importedSessionId = result.session.id;
-    } catch (error) {
-      const code = externalImportErrorCode(error);
-      if (code === 'model_unavailable') {
-        state.entries.push({
-          kind: 'notice',
-          level: 'error',
-          text: copy.externalImportModelUnavailable,
-        });
-        return;
-      }
-      if (code === 'source_unreadable') {
-        state.entries.push({
-          kind: 'notice',
-          level: 'error',
-          text: copy.externalImportSourceUnreadable,
-        });
-        return;
-      }
-      if (code !== 'commit_outcome_unknown') {
-        state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
-        return;
-      }
-      state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportUncertain });
-      return;
-    }
-    await openImportedExternalSession(
-      importedSessionId,
-      formatUiMessage(copy.externalOpenFailed, { sessionId: importedSessionId }, locale),
-    );
-  };
-
-  const showExternalSessionPage = async (
-    adapterId: string,
-    initialScope: ExternalSessionCatalogScope,
-  ): Promise<void> => {
-    if (!input.externalSessions || closed) return;
-    const copy = TUI_SESSION_ACTIONS_COPY[locale];
-    let scope = initialScope;
-    let query = '';
-    let sessions: readonly ExternalSessionCatalogItem[] = [];
-    let nextCursor: string | null = null;
-    let revision = 0;
-    let overlay: OverlayHandle | undefined;
-    let search: SessionSearchOverlay | undefined;
-    let byValue = new Map<string, ExternalSessionCatalogItem>();
-
-    const closeOverlay = () => overlay?.hide();
-    const toggleScope = (): void => {
-      const alternate = input.externalSessions
-        ?.listScopes()
-        .find((candidate) => candidate !== scope);
-      if (!alternate) return;
-      scope = alternate;
-      void load(false);
-    };
-    const render = (): void => {
-      // SelectList has no disabled-row contract. A Host-owned in-flight import
-      // disables another import, but it does not disable opening an already
-      // published task.
-      const selectable = sessions.filter(
-        (session) =>
-          !session.importState.isImporting || session.importState.importedSessionIds.length > 0,
-      );
-      byValue = new Map(
-        selectable.map((session) => [`external:${adapterId}:${session.id}`, session] as const),
-      );
-      const choices: SessionSearchChoice[] = selectable.map((session) => ({
-        item: {
-          value: `external:${adapterId}:${session.id}`,
-          label: session.name,
-          description: [
-            session.hostCwd,
-            session.importState.importedCount > 0
-              ? formatUiMessage(
-                  copy.externalImportedCount,
-                  { count: session.importState.importedCount },
-                  locale,
-                )
-              : undefined,
-          ]
-            .filter(Boolean)
-            .join(' · '),
-        },
-        searchText: '',
-      }));
-      if (nextCursor) {
-        choices.push({
-          item: { value: 'external:load-more', label: copy.externalLoadMore },
-          searchText: '',
-        });
-      }
-      const alternateScope = input.externalSessions
-        ?.listScopes()
-        .find((candidate) => candidate !== scope);
-      if (alternateScope) {
-        choices.push({
-          item: {
-            value: 'external:toggle-workspace',
-            label:
-              alternateScope === 'all' ? copy.externalAllWorkspaces : copy.externalCurrentWorkspace,
-          },
-          searchText: '',
-        });
-      }
-      const scopeLabel =
-        scope === 'all' ? copy.externalAllWorkspaces : copy.externalCurrentWorkspace;
-      const notice =
-        sessions.length > 0 && selectable.length === 0 ? copy.externalUnavailable : undefined;
-      if (search) {
-        search.updateChoices(choices, scopeLabel, notice);
-        search.invalidate();
-        return;
-      }
-      search = new SessionSearchOverlay(tui, {
-        locale,
-        choices,
-        scopeLabel,
-        title: formatUiMessage(
-          copy.externalSessionTitle,
-          { source: externalSourceLabel(adapterId) },
-          locale,
-        ),
-        emptyText: sessions.length === 0 ? copy.externalEmpty : copy.externalUnavailable,
-        notice,
-        onQuery: (text) => {
-          query = text;
-          void load(false);
-        },
-        onSelect: (item) => {
-          if (item.value === 'external:load-more' && nextCursor) {
-            void load(true, nextCursor);
-            return;
-          }
-          if (item.value === 'external:toggle-workspace' && alternateScope) {
-            toggleScope();
-            return;
-          }
-          const source = byValue.get(item.value);
-          if (!source) return;
-          closeOverlay();
-          if (busy || turnRunning) {
-            state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportBusy });
-            requestRender();
-            return;
-          }
-          const latestImportedSessionId = source.importState.importedSessionIds[0];
-          if (latestImportedSessionId === undefined) {
-            void runControl(() => importExternalSession(adapterId, source));
-            return;
-          }
-          const actionTitle = formatUiMessage(
-            copy.externalImportedActionsTitle,
-            { source: source.name },
-            locale,
-          );
-          const actions: SelectItem[] = [
-            { value: 'open-latest', label: copy.externalOpenLatestImported },
-            ...(!source.importState.isImporting
-              ? [{ value: 'import-again', label: copy.externalImportAgain }]
-              : []),
-          ];
-          showSelectPicker(
-            actionTitle,
-            source.name,
-            actions,
-            (action) => {
-              if (busy || turnRunning) {
-                state.entries.push({
-                  kind: 'notice',
-                  level: 'error',
-                  text: copy.externalImportBusy,
-                });
-                requestRender();
-                return;
-              }
-              if (action.value === 'import-again') {
-                void runControl(() => importExternalSession(adapterId, source));
-                return;
-              }
-              void runControl(() =>
-                openImportedExternalSession(
-                  latestImportedSessionId,
-                  formatUiMessage(
-                    copy.externalOpenLatestFailed,
-                    { sessionId: latestImportedSessionId },
-                    locale,
-                  ),
-                ),
-              );
-            },
-            { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 48 },
-          );
-        },
-        onCancel: closeOverlay,
-        onToggleScope: toggleScope,
-      });
-      overlay = showBottomPicker(search);
-    };
-
-    const load = async (append: boolean, cursor?: string): Promise<void> => {
-      const requestRevision = ++revision;
-      try {
-        const page = await input.externalSessions!.listSessions({
-          adapterId,
-          scope,
-          ...(cursor ? { cursor } : {}),
-          ...(query ? { text: query } : {}),
-        });
-        if (requestRevision !== revision || closed || turnRunning) return;
-        sessions = append ? [...sessions, ...page.sessions] : page.sessions;
-        nextCursor = page.nextCursor;
-        render();
-      } catch {
-        if (requestRevision !== revision) return;
-        state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
-        requestRender();
-      }
-    };
-
-    await load(false);
-  };
-
-  const showExternalSourcePicker = (adapterIds: readonly string[]): void => {
-    if (!input.externalSessions) return;
-    const initialScope = input.externalSessions.listScopes()[0];
-    if (adapterIds.length === 1) {
-      void showExternalSessionPage(adapterIds[0]!, initialScope);
-      return;
-    }
-    const copy = TUI_SESSION_ACTIONS_COPY[locale];
-    showSelectPicker(
-      copy.externalSourceTitle,
-      copy.externalSourceTitle,
-      adapterIds.map((adapterId) => ({
-        value: adapterId,
-        label: externalSourceLabel(adapterId),
-      })),
-      (item) => void showExternalSessionPage(item.value, initialScope),
-      { minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 40 },
-    );
-  };
-
-  const showSessionList = async () => {
-    const sessions = await input.driver.listSessions();
+  const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
+    const sessions = await listSessions();
     const sessionTree = projectRevisionLinkedSessionTree(
       sessions,
       input.driver.getSessionId() ?? undefined,
@@ -3320,28 +3061,68 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       sessionTree.roots,
       sessionTree.childrenByParentId,
     );
-    // Maka-session availability and Host source discovery are independent I/O; run
+    const checkSessionAvailability = async (
+      session: SessionSummary,
+    ): Promise<readonly [string, SessionResumeAvailability]> => {
+      try {
+        return await runResumeAvailabilityCheck(async () => {
+          if (!session.cwd) {
+            return [session.id, { available: false, reason: 'Missing working directory' }] as const;
+          }
+          const availability = options.onlyResumable
+            ? ((await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
+              (await input.driver.getSessionResumeAvailability?.(session)) ??
+              (await inspectSessionResumeAvailability(session)))
+            : ((await input.driver.getSessionResumeAvailability?.(session)) ??
+              (await inspectSessionResumeAvailability(session)));
+          return [session.id, availability] as const;
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return [session.id, { available: false, reason: detail }] as const;
+      }
+    };
+    const sessionsToCheck =
+      sessionListScope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions;
+    // Maka-session availability and the foreign scan are independent I/O; run
     // them concurrently so the picker's open latency is the slower of the two,
     // not their sum.
-    const [availabilityEntries, externalSourceQuery] = await Promise.all([
-      Promise.all(
-        sessions.map(async (session) => {
-          return [
-            session.id,
-            (await input.driver.getSessionResumeAvailability?.(session)) ??
-              (await inspectSessionResumeAvailability(session)),
-          ] as const;
-        }),
-      ),
-      input.externalSessions && !turnRunning
-        ? input.externalSessions.listSources().then(
-            (adapterIds) => ({ adapterIds }),
-            () => ({ error: true as const }),
+    const [availabilityEntries, foreignScan] = await Promise.all([
+      Promise.all(sessionsToCheck.map(checkSessionAvailability)),
+      // Foreign (Claude Code / Codex) rows are an import flow: it starts a NEW
+      // Session and hands off a turn, which cannot detach from the running
+      // one (#3380). Skip the scan mid-turn instead of offering rows whose
+      // selection would silently no-op on importForeignSession's busy guard.
+      !options.onlyResumable && input.foreignSessions && !turnRunning
+        ? input.foreignSessions.listSessions({ cwd }).then(
+            (summaries) => ({ summaries }),
+            (error: unknown) => ({ error }),
           )
         : Promise.resolve({ adapterIds: [] as readonly string[] }),
     ]);
     const availability = new Map(availabilityEntries);
-    if ('error' in externalSourceQuery) {
+    const ensureAvailabilityForScope = async (scope: 'current' | 'all'): Promise<void> => {
+      const scopeSessions =
+        scope === 'current' ? sessions.filter((session) => session.cwd === cwd) : sessions;
+      const missingSessions = scopeSessions.filter((session) => !availability.has(session.id));
+      if (missingSessions.length === 0) return;
+      for (const [sessionId, sessionAvailability] of await Promise.all(
+        missingSessions.map(checkSessionAvailability),
+      )) {
+        availability.set(sessionId, sessionAvailability);
+      }
+    };
+    // Foreign (Claude Code / Codex) sessions for the current cwd, keyed by a
+    // prefixed select value so they never collide with Maka session ids. A scan
+    // error is surfaced (not silently swallowed): degrade to no rows but tell
+    // the user why, so a real store bug isn't mistaken for "no sessions".
+    // Deliberate #2672 exception: the interpolated detail is a local
+    // file-scan diagnostic (not backend copy) and the TUI has no log channel
+    // to carry it, so dropping it would hide the only debugging signal.
+    const foreignByValue = new Map<string, ForeignSessionSummary>();
+    if ('error' in foreignScan) {
+      const detail =
+        foreignScan.error instanceof Error ? foreignScan.error.message : String(foreignScan.error);
       state.entries.push({
         kind: 'notice',
         level: 'error',
@@ -3355,7 +3136,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         sessionListScope === 'current'
           ? projectedSessions.filter(({ session }) => session.cwd === cwd)
           : projectedSessions;
-      const choices: SessionSearchChoice[] = visibleSessions.map(({ session, depth }) => {
+      const selectableSessions = options.onlyResumable
+        ? visibleSessions.filter(({ session }) => availability.get(session.id)?.available === true)
+        : visibleSessions;
+      const choices: SessionSearchChoice[] = selectableSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
         const statusBadge = sessionStatusBadge(session, locale);
         const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
@@ -3385,15 +3169,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             .toLocaleLowerCase(),
         };
       });
-      if ('adapterIds' in externalSourceQuery && externalSourceQuery.adapterIds.length > 0) {
-        choices.push({
-          item: {
-            value: 'external:import',
-            label: TUI_SESSION_ACTIONS_COPY[locale].externalImport,
-            description: TUI_SESSION_ACTIONS_COPY[locale].externalImportDescription,
-          },
-          searchText: TUI_SESSION_ACTIONS_COPY[locale].externalImport.toLocaleLowerCase(),
-        });
+      if (!options.onlyResumable) {
+        // Foreign sessions are cwd-scoped; show them in both scope views (they
+        // belong to this project) so a Tab toggle never makes them vanish.
+        for (const [value, summary] of foreignByValue) {
+          choices.push({
+            item: {
+              value,
+              label: summary.title,
+              description: `↩ resume from ${foreignSourceLabel(summary.source)}`,
+            },
+            searchText:
+              `${summary.title} ${summary.id} ${summary.cwd} ${summary.source}`.toLocaleLowerCase(),
+          });
+        }
       }
       const closeOverlay = () => {
         sessionPickerOverlayOpen = false;
@@ -3405,9 +3194,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           showExternalSourcePicker(externalSourceQuery.adapterIds);
           return;
         }
-        if (availability.get(item.value)?.available === false) return;
+        const itemAvailability = availability.get(item.value);
+        if (
+          itemAvailability?.available === false &&
+          itemAvailability.reason === 'Missing working directory'
+        ) {
+          return;
+        }
         closeOverlay();
-        void goToSession(item.value);
+        void (async () => {
+          const switched = await goToSession(item.value);
+          if (switched && options.onlyResumable) await runControl(resumeSession);
+        })().catch(reportError);
       };
       const scopeLabel =
         sessionListScope === 'current'
@@ -3425,14 +3223,44 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         onSelect,
         onCancel: closeOverlay,
         onToggleScope: () => {
-          sessionListScope = sessionListScope === 'current' ? 'all' : 'current';
-          renderScope();
+          const nextScope = sessionListScope === 'current' ? 'all' : 'current';
+          void ensureAvailabilityForScope(nextScope)
+            .then(() => {
+              sessionListScope = nextScope;
+              renderScope();
+            })
+            .catch(reportError);
         },
       });
       sessionPickerOverlayOpen = true;
       overlay = showBottomPicker(sessionSearch);
     };
     renderScope();
+  };
+
+  const announceResumeAvailability = async (): Promise<void> => {
+    const sessionId = input.driver.getSessionId();
+    try {
+      if (!input.driver.getSessionResumeCandidateAvailability) return;
+      const sessions = await listSessions();
+      const session =
+        sessions.find((candidate) => candidate.id === sessionId) ??
+        sessions.find((candidate) => candidate.cwd === cwd);
+      if (!session) return;
+      const availability = await runResumeAvailabilityCheck(() =>
+        input.driver.getSessionResumeCandidateAvailability!(session),
+      );
+      if (availability.available) {
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: pickerCopy.resumeAvailabilityNotice,
+        });
+        requestRender();
+      }
+    } catch {
+      // Resume discovery is advisory and must never prevent the TUI from starting.
+    }
   };
 
   const showRewindPicker = async () => {
@@ -4897,6 +4725,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // line discipline and leaks onto the screen as a stray `^[[I` on launch.
     terminal.write(ENABLE_FOCUS_REPORTING);
     if (input.firstRun) void showSetupWizard();
+    setTimeout(() => void announceResumeAvailability(), 0);
   } catch (error) {
     beginClose(error instanceof Error ? error : new Error(String(error)));
   }
