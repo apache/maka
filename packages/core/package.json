@@ -97,6 +97,7 @@
     "./codex-model-compatibility": "./dist/codex-model-compatibility.js",
     "./llm-connections": "./dist/llm-connections.js",
     "./provider-registry": "./dist/provider-registry.js",
+    "./provider-retirement": "./dist/provider-retirement.js",
     "./model-catalog": "./dist/model-catalog.js",
     "./model-facts": "./dist/model-facts.js",
     "./model-metadata": "./dist/model-metadata.js",
