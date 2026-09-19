@@ -764,28 +764,11 @@ export function ChatView(props: {
   );
   useImperativeHandle(props.handleRef, () => ({ openQuoteAnnotation }), [openQuoteAnnotation]);
 
-  // The input owns the DOM selection while a note is written, so the
-  // excerpt's mark is painted instead: a named highlight over the same
-  // range, which focus cannot collapse.
-  const annotationTarget = editingQuote ?? annotatingSelection;
-  useEffect(() => {
-    const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
-    if (!annotationTarget?.turnId || !highlights) return undefined;
-    const turn = scrollRef.current?.querySelector(
-      `[data-turn-id="${CSS.escape(annotationTarget.turnId)}"]`,
-    );
-    const range = turn ? findQuoteTextRange(turn, annotationTarget.text) : null;
-    if (!range) return undefined;
-    highlights.set('maka-quote-annotate', new Highlight(range));
-    return () => {
-      highlights.delete('maka-quote-annotate');
-    };
-  }, [annotationTarget, selectionQuote, scrollRef]);
-
-  // Every excerpt a staged quote still points at keeps a painted highlight
-  // and a numbered pin at its end after the panel closes; the fresh
-  // annotation borrows the next slot's number while it is written. Ranges
-  // are re-found after every commit because the virtualizer remounts turns
+  // Every excerpt carrying a quote — each staged one and the excerpt a fresh
+  // annotation is written on — keeps a painted highlight plus a numbered pin
+  // at its end. The mark is painted rather than selected because the note
+  // input owns the DOM selection while a note is written. Ranges are
+  // re-found after every commit because the virtualizer remounts turns
   // underneath us, and positions re-measure on capture-phase scroll because
   // a scroll that swaps nothing produces no commit.
   const measureQuoteMarks = useCallback(() => {
@@ -814,8 +797,8 @@ export function ChatView(props: {
   useLayoutEffect(() => {
     const { marks, ranges } = measureQuoteMarks();
     const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
-    if (ranges.length > 0) highlights?.set('maka-quote-staged', new Highlight(...ranges));
-    else highlights?.delete('maka-quote-staged');
+    if (ranges.length > 0) highlights?.set('maka-quote-mark', new Highlight(...ranges));
+    else highlights?.delete('maka-quote-mark');
     setQuoteMarks((current) =>
       current.length === marks.length &&
       current.every(
@@ -826,7 +809,7 @@ export function ChatView(props: {
         : marks,
     );
     return () => {
-      highlights?.delete('maka-quote-staged');
+      highlights?.delete('maka-quote-mark');
     };
   });
 

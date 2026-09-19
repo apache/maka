@@ -214,12 +214,10 @@
 .maka-quote-marks { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
 .maka-quote-ordinal { position: absolute; transform: translate(-50%, -110%); pointer-events: none; }
 
-/* While a note is written the input owns the DOM selection; the excerpt's
-   mark is painted through named highlights instead, which focus cannot
-   collapse — annotate for the excerpt being written, staged for the quotes
-   already resting on their excerpts. */
-::highlight(maka-quote-annotate),
-::highlight(maka-quote-staged) { background-color: var(--selection); }
+/* Excerpts carrying a quote are painted through this named highlight rather
+   than a live selection, so the mark survives both the note input taking the
+   DOM selection and the panel closing. */
+::highlight(maka-quote-mark) { background-color: var(--selection); }
 
 .maka-session-todo-empty {
   margin: 0;
