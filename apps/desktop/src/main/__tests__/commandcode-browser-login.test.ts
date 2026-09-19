@@ -91,12 +91,15 @@ const APPROVED = {
 /** True when the port could be taken, i.e. no attempt is listening on it. */
 async function isPortFree(port: number): Promise<boolean> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      await occupyPort(port);
-      return true;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    const server = createNetServer();
+    const free = await new Promise<boolean>((resolve) => {
+      server.once('error', () => resolve(false));
+      server.listen(port, '127.0.0.1', () => {
+        server.close(() => resolve(true));
+      });
+    });
+    if (free) return true;
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
   return false;
 }
@@ -181,6 +184,7 @@ describe('CommandCodeBrowserLoginController', () => {
       reason: 'superseded',
     });
     assert.deepEqual(await controller.complete('never-issued'), { ok: false, reason: 'superseded' });
+    assert.equal(await isPortFree(started.port), true);
   });
 
   test('a state mismatch is answered 403 and the attempt keeps waiting', async () => {
@@ -197,6 +201,7 @@ describe('CommandCodeBrowserLoginController', () => {
     const approved = await post(started.callback, APPROVED);
     assert.equal(approved.status, 200);
     assert.equal((await completion).ok, true);
+    assert.equal(await isPortFree(started.port), true);
   });
 
   test('a denial carrying the real state ends the attempt as denied', async () => {
@@ -210,6 +215,7 @@ describe('CommandCodeBrowserLoginController', () => {
     });
     assert.equal(response.status, 200);
     assert.deepEqual(await completion, { ok: false, reason: 'denied' });
+    assert.equal(await isPortFree(started.port), true);
   });
 
   test('the CORS preflight succeeds only for the Studio origins', async () => {
@@ -297,6 +303,7 @@ describe('CommandCodeBrowserLoginController', () => {
     const approved = await post(started.callback, APPROVED);
     assert.equal(approved.status, 200);
     assert.equal((await completion).ok, true);
+    assert.equal(await isPortFree(started.port), true);
   });
 
   test('the login window elapsing settles the attempt as timeout', async () => {
@@ -307,6 +314,7 @@ describe('CommandCodeBrowserLoginController', () => {
       reason: 'timeout',
     });
     await assert.rejects(post(started.callback, APPROVED));
+    assert.equal(await isPortFree(started.port), true);
   });
 
   test('cancel settles the attempt and releases the port', async () => {
@@ -316,6 +324,7 @@ describe('CommandCodeBrowserLoginController', () => {
     controller.cancel();
     assert.deepEqual(await completion, { ok: false, reason: 'cancelled' });
     await assert.rejects(post(started.callback, APPROVED));
+    assert.equal(await isPortFree(started.port), true);
     // Cancelling again, or a stranger's id, is a no-op.
     controller.cancel(started.attemptId);
     controller.cancel('unknown');
@@ -334,6 +343,7 @@ describe('CommandCodeBrowserLoginController', () => {
     const completion = controller.complete(second.attemptId);
     assert.equal((await post(second.callback, APPROVED)).status, 200);
     assert.equal((await completion).ok, true);
+    assert.equal(await isPortFree(second.port), true);
   });
 
   test('two simultaneous starts leave one live attempt and free the loser\'s port', async () => {
@@ -358,6 +368,7 @@ describe('CommandCodeBrowserLoginController', () => {
     const completion = controller.complete(winner.attemptId);
     assert.equal((await post(callback.toString(), APPROVED)).status, 200);
     assert.equal((await completion).ok, true);
+    assert.equal(await isPortFree(Number(callback.port)), true);
   });
 
   test('an occupied port is skipped for the next one in the CLI range', async () => {
