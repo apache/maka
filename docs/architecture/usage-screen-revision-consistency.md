@@ -45,22 +45,6 @@ and stable storage identity ordering; the cross-source comparator is
 Cursors bind that tuple and the fixed query identity. The tuple must identify a
 stored row in the selected range.
 
-Activity applies the cursor and filters separately to each source, orders by
-that source's timestamp and stable identity index, and selects at most 51
-matches before merging at most 153 candidates. For an equal-timestamp cursor,
-sources below the cursor source include that timestamp, sources above it exclude
-it, and the same source seeks by `(timestamp, stableStorageIdentity)`. The
-validated cursor replaces the redundant range upper bound so the compound index
-can seek directly to deep positions. The final ordering and 50-row response stay
-unchanged. Sparse filters and unreadable canonical rows can still require more
-index visits than the number of returned candidates.
-
-An unfiltered screen derives its exact activity total from model requests plus
-tool calls already counted by the complete range statistics. Filtered counts
-read only each source's search/status fields. A zero count skips the activity
-query in the same snapshot. Full range statistics and exact substring counts
-remain history-sized work; see [Usage query measurements](../performance/usage-page-queries.md).
-
 The opaque revision combines the durable database incarnation and Usage counter
 with a reader lifecycle identity; Host adds its own generation fence. A restored
 backup may repeat the durable incarnation and counter, but reopening the stores
