@@ -208,6 +208,9 @@
 /* The quote's ordinal sits on the panel's corner like a margin marker, the
    same way the staged list numbers it. */
 .maka-quote-comment-index { position: absolute; top: -8px; right: -8px; }
+/* The ordinal pinned at the excerpt's end is a marker only; it must never
+   catch a click or steal the selection under it. */
+.maka-quote-ordinal { pointer-events: none; }
 
 /* While a note is written the input owns the DOM selection; the excerpt's
    mark is painted through this named highlight instead, which focus cannot

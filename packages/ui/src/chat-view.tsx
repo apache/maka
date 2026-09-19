@@ -57,7 +57,7 @@ import type {
   ShellRunUpdate,
 } from '@maka/core/events';
 import { isDeepResearchSession } from '@maka/core/deep-research';
-import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
+import { Badge, Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { finalAssistantReplyText, materializeChat } from './materialize.js';
@@ -673,6 +673,7 @@ export function ChatView(props: {
     comment?: string;
     anchor: { x: number; y: number };
   } | null>(null);
+  const [ordinalAnchor, setOrdinalAnchor] = useState<{ x: number; y: number } | null>(null);
   const barVisible =
     selectionQuote !== null && annotatingSelection === null && editingQuote === null;
   const panelVisible = annotatingSelection !== null || editingQuote !== null;
@@ -697,6 +698,9 @@ export function ChatView(props: {
       clearSelectionQuote();
     },
   });
+  // The staged ordinal rides on the excerpt's end, not on the panel, so the
+  // number says where the quote lives rather than decorating the card.
+  const ordinalLayer = useLayer({ mode: 'fixed', lightDismiss: false });
   useEffect(() => {
     if (barVisible) selectionActionsLayer.show();
     else selectionActionsLayer.hide();
@@ -705,6 +709,11 @@ export function ChatView(props: {
     if (panelVisible) annotationLayer.show();
     else annotationLayer.hide();
   }, [panelVisible, annotationLayer.show, annotationLayer.hide]);
+  const ordinalVisible = panelVisible && ordinalAnchor !== null;
+  useEffect(() => {
+    if (ordinalVisible) ordinalLayer.show();
+    else ordinalLayer.hide();
+  }, [ordinalVisible, ordinalLayer.show, ordinalLayer.hide]);
   const selectionActionsLabel = [
     props.onQuoteSelection ? copy.quoteSelection : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
@@ -764,17 +773,29 @@ export function ChatView(props: {
   const annotationTarget = editingQuote ?? annotatingSelection;
   useEffect(() => {
     const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
-    if (!annotationTarget?.turnId || !highlights) return undefined;
+    if (!annotationTarget?.turnId || !highlights) {
+      setOrdinalAnchor(null);
+      return undefined;
+    }
     const turn = scrollRef.current?.querySelector(
       `[data-turn-id="${CSS.escape(annotationTarget.turnId)}"]`,
     );
     const range = turn ? findQuoteTextRange(turn, annotationTarget.text) : null;
-    if (!range) return undefined;
+    if (!range) {
+      setOrdinalAnchor(null);
+      return undefined;
+    }
     highlights.set('maka-quote-annotate', new Highlight(range));
+    // The ordinal marks where the excerpt ends, the way the staged list
+    // numbers the quote: last line's right edge, centered on the line.
+    const rects = range.getClientRects();
+    const last = rects[rects.length - 1];
+    setOrdinalAnchor(last ? { x: last.right, y: last.top + last.height / 2 } : null);
     return () => {
       highlights.delete('maka-quote-annotate');
+      setOrdinalAnchor(null);
     };
-  }, [annotationTarget, scrollRef]);
+  }, [annotationTarget, selectionQuote, scrollRef]);
 
   // The panel hangs from the live quote once the restored selection settles
   // into one; until then the anchor measured at open time holds it. A
@@ -1133,7 +1154,6 @@ export function ChatView(props: {
                 >
                   <QuoteCommentPanel
                     key={editingQuote.index}
-                    index={editingQuote.index}
                     comment={editingQuote.comment}
                     title={conversationCopy.composer.quoteCommentTitle}
                     submitLabel={conversationCopy.composer.quoteCommentSave}
@@ -1152,7 +1172,6 @@ export function ChatView(props: {
                   onMouseDown={(event) => event.preventDefault()}
                 >
                   <QuoteCommentPanel
-                    index={props.pendingQuoteCount ?? 0}
                     title={copy.quoteCommentTitle}
                     submitLabel={copy.quoteSelection}
                     skipLabel={copy.quoteCommentSkip}
@@ -1176,6 +1195,20 @@ export function ChatView(props: {
                   Math.max(8, window.innerHeight - QUOTE_ANNOTATION_PANEL_HEIGHT),
                 ),
                 style: { transform: 'translateX(-50%)' },
+              },
+            )
+          : null}
+        {ordinalAnchor && ordinalVisible
+          ? ordinalLayer.render(
+              <Badge
+                variant="info"
+                label={(editingQuote?.index ?? props.pendingQuoteCount ?? 0) + 1}
+                className="maka-quote-ordinal"
+              />,
+              {
+                x: ordinalAnchor.x,
+                y: ordinalAnchor.y,
+                style: { transform: 'translate(-30%, -50%)' },
               },
             )
           : null}
