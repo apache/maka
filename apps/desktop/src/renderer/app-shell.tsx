@@ -366,7 +366,7 @@ function AppShellContent({
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   // The owner bridge keeps commands stable while TaskEntryRoot swaps the
   // current feature-owned implementation below the shell.
-  const { selectLocalProject, resolveWorkBoardTarget, prepareWorkBoardDraft } = taskEntry.commands;
+  const { resolveWorkBoardTarget, prepareWorkBoardDraft } = taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
   // Staged files and quotes do NOT take the target-scoped key: they belong to
   // the composer the user is looking at, and an in-flight send needs an owner
@@ -1227,44 +1227,17 @@ function AppShellContent({
 
   // Stable, because the rail's Project rows carry it: a fresh identity here
   // rebuilt the whole list on every AppShell commit (#4109).
-  const createSessionInProject = useCallback(
-    async (projectId: string) => {
-      if (!selectLocalProject(projectId)) return;
-      openNewTaskSurface();
-    },
-    [openNewTaskSurface, selectLocalProject],
-  );
-
-  // Sidebar Project groups are Local. Their catalog mutations remain on the
-  // default-scoped bridge until Settings receives its own Host selector.
-  //
-  // Memoized because the rail reads it: rebuilt per render, this one object
-  // would put the whole list back on every AppShell commit (#4109).
   const projectRowActions = useMemo<ProjectRowActions | undefined>(
-    () =>
-      projectCapabilities.setLocalDefault
-        ? {
-            onNew: createSessionInProject,
-            onRename: renameProject,
-            onArchive: archiveProject,
-            onRestore: restoreProject,
-            ...(projectCapabilities.chooseClientDirectory
-              ? {
-                  onRelink: (projectId: string) =>
-                    relinkProject(projectId).then(() => undefined),
-                }
-              : {}),
-          }
-        : undefined,
-    [
-      archiveProject,
-      createSessionInProject,
-      projectCapabilities.chooseClientDirectory,
-      projectCapabilities.setLocalDefault,
-      relinkProject,
-      renameProject,
-      restoreProject,
-    ],
+    () => taskEntry.selectors.projectScopes.length === 0 ? undefined : {
+      onNew: (key) => {
+        if (taskEntry.commands.selectProject(key)) openNewTaskSurface();
+      },
+      onRename: taskEntry.commands.renameProject,
+      onArchive: taskEntry.commands.archiveProject,
+      onRestore: taskEntry.commands.restoreProject,
+      onRelink: taskEntry.commands.relinkProject,
+    },
+    [openNewTaskSurface, taskEntry.commands, taskEntry.selectors.projectScopes.length],
   );
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
@@ -2342,7 +2315,7 @@ function AppShellContent({
               <SessionNavigationProvider
                 scheduledTasks={scheduledTasks}
                 rail={sessionRail}
-                projects={localProjects}
+                projectScopes={taskEntry.selectors.projectScopes}
                 streamingSessionIds={streamingSessionIds}
                 staleSessionIds={staleSessionIds}
                 SessionBadge={SessionCollaboration.SessionTurnRequestBadge}

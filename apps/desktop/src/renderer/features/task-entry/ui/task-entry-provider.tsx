@@ -67,6 +67,11 @@ const EMPTY_CONTROLLER: TaskEntryController = {
   commands: {
     async refresh() {},
     selectLocalProject: () => false,
+    selectProject: () => false,
+    async renameProject() {},
+    async archiveProject() {},
+    async restoreProject() {},
+    async relinkProject() {},
     addProject() {},
     async chooseProjectForProfile() {},
     resolveWorkBoardTarget: (
@@ -87,6 +92,7 @@ const EMPTY_CONTROLLER: TaskEntryController = {
     usesDefaultHost: true,
     workspacePicker: EMPTY_WORKSPACE_PICKER,
     canAddProject: false,
+    projectScopes: [],
   },
 };
 
@@ -109,6 +115,16 @@ function createTaskEntryOwner(): TaskEntryOwner & {
       refresh: () => current.commands.refresh(),
       selectLocalProject: (projectId: string) =>
         current.commands.selectLocalProject(projectId),
+      selectProject: (projectKey: string) =>
+        current.commands.selectProject(projectKey),
+      renameProject: (projectKey: string, name: string) =>
+        current.commands.renameProject(projectKey, name),
+      archiveProject: (projectKey: string) =>
+        current.commands.archiveProject(projectKey),
+      restoreProject: (projectKey: string) =>
+        current.commands.restoreProject(projectKey),
+      relinkProject: (projectKey: string) =>
+        current.commands.relinkProject(projectKey),
       addProject: () => current.commands.addProject(),
       chooseProjectForProfile: (profileId: string) =>
         current.commands.chooseProjectForProfile(profileId),
@@ -181,6 +197,13 @@ function sameSelectedHost(
   );
 }
 
+function sameProjectScopes(
+  previous: TaskEntryControllerSelectors['projectScopes'],
+  next: TaskEntryControllerSelectors['projectScopes'],
+): boolean {
+  return previous === next || JSON.stringify(previous) === JSON.stringify(next);
+}
+
 const selectShellSelectors = (
   controller: TaskEntryController,
 ): Omit<TaskEntryControllerSelectors, 'workspacePicker'> => {
@@ -200,7 +223,8 @@ function sameShellSelectors(
     previous.selectedProfileId === next.selectedProfileId &&
     previous.defaultProfileId === next.defaultProfileId &&
     previous.usesDefaultHost === next.usesDefaultHost &&
-    previous.canAddProject === next.canAddProject
+    previous.canAddProject === next.canAddProject &&
+    sameProjectScopes(previous.projectScopes, next.projectScopes)
   );
 }
 
