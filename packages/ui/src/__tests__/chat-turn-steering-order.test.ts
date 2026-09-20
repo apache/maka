@@ -205,3 +205,97 @@ test('anchors a persisted steering row ahead of live work the stream seeded afte
     'thinking:in-flight after the steer',
   ]);
 });
+
+test('keeps pre-steering content in place when its completion lands after the boundary', () => {
+  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+    type: 'text_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'answer before',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'steering_message', id: 'steer-event', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'text_complete', id: 'e2', turnId: 'turn-1', messageId: 'm1', ts: 3, text: 'answer before',
+  });
+
+  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
+    'text:answer before',
+    'user:steer',
+  ]);
+});
+
+test('splits a completion across the boundary instead of duplicating the sealed portion', () => {
+  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+    type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'pre-',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'steering_message', id: 'steer-event', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'thinking_delta', id: 'e2', turnId: 'turn-1', messageId: 'm1', ts: 3, text: 'post',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'thinking_complete', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, text: 'pre-post',
+  });
+
+  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
+    'thinking:pre-',
+    'user:steer',
+    'thinking:post',
+  ]);
+});
+
+test('keeps consecutive steering rows in arrival order', () => {
+  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+    type: 'text_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'before',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'steering_message', id: 's1', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'one' },
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'steering_message', id: 's2', turnId: 'turn-1', messageId: 'steer-2', ts: 3, content: { text: 'two' },
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'text_delta', id: 'e2', turnId: 'turn-1', messageId: 'm2', ts: 4, text: 'after',
+  });
+
+  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
+    'text:before',
+    'user:one',
+    'user:two',
+    'text:after',
+  ]);
+});
+
+test('renders a repeated steering event once', () => {
+  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+    type: 'steering_message', id: 's1', turnId: 'turn-1', messageId: 'steer-1', ts: 1, content: { text: 'steer' },
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'steering_message', id: 's1-echo', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
+  });
+
+  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), ['user:steer']);
+});
+
+test('trails a settled steering that carries no ts behind live work', () => {
+  const turn: TurnViewModel = {
+    turnId: 't1',
+    status: 'running',
+    tools: [],
+    notes: [],
+    startedAt: 1,
+    timeline: [
+      { kind: 'text', text: 'persisted answer', messageId: 'm1', ts: 1 },
+      { kind: 'user', message: { id: 'steer-1', role: 'user', text: 'steer' }, messageId: 'steer-1', steeringEventId: 'steer-event' },
+    ],
+  };
+  const live = applyLiveTurnEvent(armLiveTurn('t1'), {
+    type: 'text_delta', id: 'e1', turnId: 't1', messageId: 'm2', ts: 5, text: 'in-flight',
+  });
+
+  assert.deepEqual(timelineOrder(overlayLiveTurn([turn], live, 'en')[0]!.timeline), [
+    'text:persisted answer',
+    'text:in-flight',
+    'user:steer',
+  ]);
+});

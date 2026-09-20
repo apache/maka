@@ -282,6 +282,7 @@ describe('applyLiveTurnEvent', () => {
       text: '完整思考',
       truncated: false,
       complete: true,
+      sourceEndOffset: 4,
     });
   });
 

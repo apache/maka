@@ -314,15 +314,17 @@ function projectLiveTurnEvent(
     : event.type === 'tool_start'
       ? event.stepId ?? existingToolStep?.stepId ?? `tool:${event.toolUseId}`
       : existingToolStep?.stepId ?? `tool:${event.toolUseId}`;
-  // A steering boundary freezes the positions before it: same-stepId content
-  // arriving after one continues the step in a fresh slice, so a stepId can
-  // repeat across the array. An event for an existing tool row is not new
-  // content — the row's position was fixed at its start — so it stays on its
-  // own slice, or joins the named step's last slice when tool_start re-anchors.
+  // A steering boundary freezes the positions before it: same-stepId deltas
+  // arriving after one continue the step in a fresh slice, so a stepId can
+  // repeat across the array. Completions and events for an existing tool row
+  // are updates to a row whose position is already fixed — they resolve to
+  // the row's last slice wherever it sits, on either side of a boundary.
   const boundaryIndex = prior.steps.findLastIndex((candidate) => candidate.steering !== undefined);
   const sameStepIndex = prior.steps.findLastIndex((candidate) => candidate.stepId === stepId);
   const stepIndex = existingToolStep === undefined
-    ? sameStepIndex > boundaryIndex ? sameStepIndex : -1
+    ? event.type === 'thinking_complete' || event.type === 'text_complete'
+      ? sameStepIndex
+      : sameStepIndex > boundaryIndex ? sameStepIndex : -1
     : event.type !== 'tool_start'
         || event.stepId === undefined
         || event.stepId === existingToolStep.stepId
@@ -368,7 +370,10 @@ function projectLiveTurnEvent(
       },
     };
   } else if (event.type === 'thinking_complete') {
-    const applied = applyThinkingComplete(event.text, { locale });
+    const applied = applyThinkingComplete(
+      event.text.slice(step.continuedThinkingEndOffset ?? 0),
+      { locale },
+    );
     nextStep = {
       ...step,
       thinking: {
@@ -403,7 +408,10 @@ function projectLiveTurnEvent(
       },
     };
   } else if (event.type === 'text_complete') {
-    const applied = applyAssistantComplete(event.text, { locale });
+    const applied = applyAssistantComplete(
+      event.text.slice(step.continuedTextEndOffset ?? 0),
+      { locale },
+    );
     nextStep = {
       ...step,
       text: {
@@ -560,21 +568,19 @@ function projectLiveTurnEvent(
       ? prior.steps.map((candidate, index) => index === stepIndex ? nextStep : candidate)
       : [...prior.steps, nextStep];
   }
-  // A complete event carries the message's full text, so it supersedes the
-  // partial copy an earlier slice of the same step still holds.
-  const supersedesKind = event.type === 'thinking_complete'
+  // A completion finalizes the message across every slice it occupies: an
+  // earlier slice keeps the portion it rendered — marked complete — so a
+  // steering boundary never relocates pre-steering content into the full text
+  // a later slice finalizes.
+  const finalizedKind = event.type === 'thinking_complete'
     ? 'thinking'
     : event.type === 'text_complete' ? 'text' : undefined;
-  if (supersedesKind !== undefined) {
+  if (finalizedKind !== undefined) {
     steps = steps.map((candidate) =>
       candidate !== nextStep
           && candidate.stepId === stepId
-          && candidate[supersedesKind] !== undefined
-        ? {
-            ...candidate,
-            [supersedesKind]: undefined,
-            contentOrder: candidate.contentOrder?.filter((kind) => kind !== supersedesKind),
-          }
+          && candidate[finalizedKind] !== undefined
+        ? { ...candidate, [finalizedKind]: { ...candidate[finalizedKind]!, complete: true } }
         : candidate);
   }
   return { ...priorWithoutRetry, steps };
@@ -591,9 +597,7 @@ function replaySafeDelta(
   if (event.startOffset === undefined) {
     return {
       text: event.text,
-      ...(currentEndOffset === undefined
-        ? {}
-        : { sourceEndOffset: currentEndOffset + event.text.length }),
+      sourceEndOffset: (currentEndOffset ?? 0) + event.text.length,
     };
   }
   const endOffset = event.startOffset + event.text.length;

@@ -609,7 +609,10 @@ export function overlayLiveTurn(
   const liveKeys = new Set(liveEntries.map(({ entry }) => timelineItemKey(entry)));
   // A steering the live stream missed is position-ambiguous once it sits at
   // the settled tail; splice it into the live order where its own ts falls
-  // instead of blindly trailing content that followed it.
+  // instead of blindly trailing content that followed it. Missing ts sorts
+  // conservatively on both sides: a live entry without one keeps the deferred
+  // steering behind it, and a settled steering without one trails the live
+  // order rather than leaping ahead of known content.
   const deferredSettled = new Set<number>();
   for (const [index, item] of current.timeline.entries()) {
     if (item.kind !== 'user' || item.steeringEventId === undefined
