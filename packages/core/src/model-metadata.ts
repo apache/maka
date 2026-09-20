@@ -34,11 +34,6 @@ export interface ModelMetadata {
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
   lastUpdated?: string;
-  /**
-   * models.dev prices the model at zero input cost; this does not establish
-   * which clients or accounts may use that price.
-   */
-  isFree?: boolean;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**
