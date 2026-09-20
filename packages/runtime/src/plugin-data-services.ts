@@ -144,9 +144,9 @@ class PluginNamespacedDataService extends Service {
     );
   }
   protected watchValues(listener: (keys: readonly string[]) => void): () => void {
-    const subscribe = this.runtime().subscribe;
-    if (!subscribe) throw new Error(`Plugin ${this.domain} subscriptions are unavailable`);
-    return subscribe(this.namespace(), this.domain, listener);
+    const runtime = this.runtime();
+    if (!runtime.subscribe) throw new Error(`Plugin ${this.domain} subscriptions are unavailable`);
+    return runtime.subscribe(this.namespace(), this.domain, listener);
   }
 }
 

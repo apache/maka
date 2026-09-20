@@ -26,6 +26,7 @@ import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import {
   projectWorkHubDelegationState,
   workHubTurnResultPreview,
+  WorkHubModelConfigurationRequiredError,
   type WorkHubDelegationReference,
   type WorkHubServices,
 } from '../../features/workhub/index.js';
@@ -84,7 +85,11 @@ export function createDesktopWorkHubServices(
     },
     presentation: bridge.workHubPresentation,
     control: bridge.workHubControl,
-    resolve: () => bridge.workHub.resolveCoordinationSession(),
+    resolve: async () => {
+      const result = await bridge.workHub.resolveCoordinationSession();
+      if (typeof result !== 'string') throw new WorkHubModelConfigurationRequiredError();
+      return result;
+    },
     getSession: (sessionId) => bridge.workHub.getSession(sessionId),
     subscribeHosts: (handler) => bridge.runtimeHostProfiles.subscribeChanges(handler),
     subscribeAvailability: (handler) => bridge.connections.subscribeEvents(() => handler()),
@@ -168,6 +173,8 @@ export function createDesktopWorkHubServices(
     },
     modelChoices: async (sessionId) =>
       (await bridge.connections.getSnapshot(sessionId)).chatModelChoices,
+    setDefaultModel: ({ llmConnectionSlug, model }) =>
+      bridge.connections.setDefaultModel({ slug: llmConnectionSlug, model }),
     attachments: bridge.attachments,
     readAttachmentBytes: bridge.attachments.readBytes,
     prepareAttachments: async (sessionId, items) => {

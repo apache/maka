@@ -397,7 +397,6 @@ export function WorkbarSurface(props: {
     kind: SessionWorkbarTabKind,
   ) => void;
   quotes?: readonly QuoteCompanionPanelState[];
-  sessions?: readonly SessionSummary[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
@@ -418,14 +417,35 @@ export function WorkbarSurface(props: {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
   const tools = workbarToolsForWorkspace(props.workspace);
+  // Inactive Side Chats remain mounted across main-Session navigation. Retain
+  // the last authoritative source summary for each one so its subscription and
+  // eventual explicit-close cleanup never lose the source identity merely
+  // because another Session is currently selected.
+  const sideChatSourceSessionsRef = useRef(new Map<string, SessionSummary>());
+  if (props.sourceSession) {
+    sideChatSourceSessionsRef.current.set(props.sourceSession.id, props.sourceSession);
+  }
+  const retainedSideChatSourceIds = new Set(
+    props.quotes?.map((quote) => quote.sourceSessionId),
+  );
+  for (const sourceSessionId of sideChatSourceSessionsRef.current.keys()) {
+    if (!retainedSideChatSourceIds.has(sourceSessionId)) {
+      sideChatSourceSessionsRef.current.delete(sourceSessionId);
+    }
+  }
   const [artifactCount, setArtifactCount] = useState({ sessionId: props.sessionId, count: 0 });
   const allowedPanels = (['right', 'bottom'] as const).reduce((panels, placement) => {
     const tabIds = panels[placement].tabs.filter((tab) => !tools.some((tool) => tool.kind === tab.kind)).map((tab) => tab.id);
     return tabIds.length ? reduceWorkbarPanels(panels, { type: 'close', placement, tabIds }) : panels;
   }, props.panelsState);
   const visiblePanels = projectWorkbarPanelsForSession(
-    allowedPanels, props.sessionId,
-    new Set(props.quotes?.map((quote) => `side-chat:${quote.id}`)),
+    allowedPanels,
+    props.sessionId,
+    new Set(
+      props.quotes
+        ?.filter((quote) => quote.sourceSessionId === props.sessionId)
+        .map((quote) => `side-chat:${quote.id}`),
+    ),
   );
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];
   const positionedTabs = placements.flatMap((placement) =>
@@ -566,20 +586,15 @@ export function WorkbarSurface(props: {
           const panelId = tab.id.slice('side-chat:'.length);
           const quote = props.quotes?.find((candidate) => candidate.id === panelId);
           if (quote) {
-            const sourceSession = props.sessions?.find(
-              (session) => session.id === quote.sourceSessionId,
-            ) ??
-              (props.sourceSession?.id === quote.sourceSessionId
-                ? props.sourceSession
-                : undefined);
             content = (
               <QuoteCompanionPanel
                 panelId={quote.id}
-                sourceSessionId={quote.sourceSessionId}
                 active={!props.hidden && active}
                 quotes={quote.quotes}
                 initialPrompt={quote.initialPrompt}
-                sourceSession={sourceSession}
+                sourceSession={sideChatSourceSessionsRef.current.get(
+                  quote.sourceSessionId,
+                )}
                 modelChoices={props.modelChoices ?? []}
                 confirmBypass={props.confirmBypass}
                 onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}

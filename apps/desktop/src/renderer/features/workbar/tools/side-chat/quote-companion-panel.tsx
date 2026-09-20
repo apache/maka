@@ -69,7 +69,6 @@ import { useWorkbarServices } from '../../services-context.js';
  */
 export function QuoteCompanionPanel(props: {
   panelId: string;
-  sourceSessionId: string;
   active: boolean;
   /** Excerpts staged for the next send (accumulated as the user adds more). */
   quotes: readonly StagedCompanionQuote[];
@@ -125,7 +124,6 @@ export function QuoteCompanionPanel(props: {
   });
   const companion = useQuoteCompanion({
     panelId: props.panelId,
-    sourceSessionId: props.sourceSessionId,
     pendingQuotes: props.quotes,
     sourceSession: props.sourceSession,
     modelChoices: props.modelChoices,
@@ -294,6 +292,7 @@ export function QuoteCompanionPanel(props: {
                 {companion.activeForm && (
                   <FormInteractionPrompt
                     request={companion.activeForm}
+                    modelChoices={props.modelChoices}
                     onRespond={companion.respondToUserForm}
                   />
                 )}

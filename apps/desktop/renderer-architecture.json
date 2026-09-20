@@ -389,7 +389,7 @@
           "react": 1
         },
         "importSpecifiers": 9,
-        "nonTriviaTokens": 2299
+        "nonTriviaTokens": 2275
       },
       "src/renderer/app-shell-context-compaction.ts": {
         "importDeclarations": 0,
@@ -419,7 +419,7 @@
           "@maka/core/redaction": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 393
+        "nonTriviaTokens": 391
       },
       "src/renderer/app-shell-detail-panel.tsx": {
         "importDeclarations": 0,
@@ -538,7 +538,7 @@
       "src/renderer/app-shell-project-actions.ts": {
         "importDeclarations": 4,
         "bridgePaths": {
-          "window.maka.app.openPath": 4,
+          "window.maka.app.openPath": 3,
           "window.maka.app.resolveProjectGitInfo": 1,
           "window.maka.projects.add": 1,
           "window.maka.projects.archive": 1,
@@ -563,7 +563,7 @@
           "./session-workspace-errors": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2284
+        "nonTriviaTokens": 2157
       },
       "src/renderer/app-shell-revision-actions.ts": {
         "importDeclarations": 4,
@@ -862,7 +862,7 @@
           "react": 1
         },
         "importSpecifiers": 100,
-        "nonTriviaTokens": 13128
+        "nonTriviaTokens": 13127
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,

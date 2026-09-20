@@ -338,6 +338,34 @@
   max-width: min(320px, 92vw);
 }
 
+/* The Git-branch readout beside the usage gauge in the composer footer. A
+   `<span>`, not a control — nothing to click — but it wears the same label type
+   and pill geometry as the model chip. The cap is wider than the model chip's
+   180px so a usual branch (`feat/some-topic`) shows whole; only a genuinely long
+   one ellipsizes, and the `title` carries the full text in that case. */
+.maka-composer-git-branch {
+  font: var(--maka-text-label);
+  height: var(--h-control-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  max-width: min(360px, 40vw);
+}
+
+.maka-composer-git-branch-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Model chip (static fallback) still owns its own quiet geometry. */
 .maka-composer-model-chip {
   font: var(--maka-text-label);

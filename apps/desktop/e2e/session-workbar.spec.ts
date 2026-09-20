@@ -26,6 +26,7 @@ import {
   test,
   expect,
 } from './fixtures';
+import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -255,13 +256,16 @@ test('Terminal survives navigation and reload, then stops on explicit close', as
   await expect(terminal).toHaveCount(0);
 });
 
-test('Side Chat survives collapse, confirms close, and cleans up on source switch', async ({
+test('Side Chat survives collapse and source switches, then cleans up on explicit close', async ({
   window: page,
 }) => {
-  const { composer, sessionId, sidebar } = await createSession(
+  const { sessionId, sidebar } = await createSession(
     page,
     'create side chat source session',
   );
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  const other = await createSession(page, 'create another main session');
+  await sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
   const openSideChat = page.getByRole('button', {
     name: /侧边对话.*在不打断主任务的情况下追问和只读探索/,
@@ -317,16 +321,30 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
   await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
   await openSideChat.click();
   await expect(companion).toBeVisible();
-  // Fork again on the reopened panel's first send.
+  // Switch away immediately after the first send starts. This keeps creation
+  // and execution in flight across the exact navigation race that used to
+  // classify the panel as stale and delete its temporary fork.
   const reopenedComposer = companion.locator(COMPOSER_INPUT);
-  await reopenedComposer.fill('inspect once more before switching away');
+  await reopenedComposer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await awaitSendReady(companion);
   await reopenedComposer.press('Enter');
-  await expect(companion).toContainText(
-    'Fake backend received: inspect once more before switching away',
-  );
+  await sidebar.locator(`[data-session-id=${JSON.stringify(other.sessionId)}]`).click();
+  await expect(companion).toBeAttached();
+  await expect(companion).not.toBeVisible();
   const secondForkId = await waitForCompanionForkId(page, sessionId);
+  await expect
+    .poll(async () =>
+      (await page.evaluate(() => window.maka.sessions.list()))
+        .some((session) => session.id === secondForkId),
+    )
+    .toBe(true);
 
-  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  await expect(companion).toBeVisible();
+  await expect(companion).toContainText('Fake backend waiting');
+
+  await closeActiveSideChat();
+  await confirmation.getByRole('button', { name: '关闭侧边对话' }).click();
   await expect(companion).toHaveCount(0);
   await expect
     .poll(async () =>
@@ -334,7 +352,6 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
         .some((session) => session.id === secondForkId),
     )
     .toBe(false);
-  await expect(composer).toHaveText('');
 });
 
 test('linked child navigation keeps the Side Chat Host fork and draft', async ({
@@ -374,12 +391,14 @@ test('linked child navigation keeps the Side Chat Host fork and draft', async ({
     hasText: PARENT_REMOVAL_CHILD_NAME,
   }).click();
   await expect(page.getByRole('region', { name: `对话：${PARENT_REMOVAL_CHILD_NAME}` })).toBeVisible();
-  await expect(companion).toBeVisible();
+  await expect(companion).toBeAttached();
+  await expect(companion).not.toBeVisible();
   await expect(draft).toHaveText('unsent linked draft');
-  await expect(companion).toContainText('Fake backend received: retain this reply across linked navigation');
   await expect.poll(async () => (await page.evaluate(() => window.maka.sessions.list()))
     .some((session) => session.id === forkId)).toBe(true);
 
   await sidebar.locator(`[data-session-id=${JSON.stringify(parent!.id)}]`).click();
+  await expect(companion).toBeVisible();
   await expect(draft).toHaveText('unsent linked draft');
+  await expect(companion).toContainText('Fake backend received: retain this reply across linked navigation');
 });

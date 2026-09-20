@@ -18,15 +18,19 @@
  */
 
 import type { SessionSummary } from '@maka/core/session';
+import { isSideConversationSession } from '@maka/core/side-conversation';
 
 /**
  * Which sessions the rail lists. Archived tasks are managed in Settings › 活动 ›
- * 已归档任务 (#2985), so the rail shows everything else.
+ * 已归档任务 (#2985). Side-conversation forks belong to their Workbar panels,
+ * not the main task catalog; filtering their durable label here prevents the
+ * `sessions:changed(created)` broadcast from flashing a row before the panel's
+ * renderer-local hidden-id update arrives.
  *
  * This used to switch on `NavSelection.filter`. That filter is gone (#2984): its
  * last two values were a destination that moved to Settings and a value nothing
  * ever selected, which left one branch reachable — this one.
  */
 export function sessionMatchesRail(session: SessionSummary): boolean {
-  return !session.isArchived;
+  return !session.isArchived && !isSideConversationSession(session.labels);
 }

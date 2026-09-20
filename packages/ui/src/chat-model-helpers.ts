@@ -42,6 +42,7 @@
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 
 import type { ProviderType } from '@maka/core/llm-connections';
+import { connectionModelChoiceValue } from '@maka/core/llm-connections';
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -149,7 +150,7 @@ export function exactModelChoiceValue(
   connectionSlug: string,
   model: string,
 ): string {
-  return `${encodeURIComponent(connectionId)}:${modelChoiceValue(connectionSlug, model)}`;
+  return connectionModelChoiceValue(connectionId, connectionSlug, model);
 }
 
 export function parseModelChoiceValue(value: string): { llmConnectionSlug: string; model: string } | undefined {
