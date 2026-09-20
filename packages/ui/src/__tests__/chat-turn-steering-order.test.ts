@@ -24,13 +24,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
-import { materializeTurns, type TurnViewModel } from '../materialize.js';
+import { foldTimeline } from '../timeline-fold.js';
+import { materializeTurns, overlayLiveTurn, type TurnTimelineItem, type TurnViewModel } from '../materialize.js';
 import { createTranscriptProjection } from '../transcript-projection.js';
 import { ChatView } from '../chat-view.js';
 import { Composer } from '../composer.js';
 import { renderTranscriptMarkup } from './transcript-test-dom.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
-import { armLiveTurn } from '../live-turn-projection.js';
+import { armLiveTurn, type LiveTurnProjection } from '../live-turn-projection.js';
 import { applyLiveTurnEvent } from './live-turn-zh.js';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
@@ -124,4 +125,83 @@ test('holds steering above the composer while old output continues, then renders
   const text = accepted.body.textContent ?? '';
   assert.deepEqual(timeline(), ['old answer continues', pending.text, 'reply to new instruction']);
   assert.equal(text.split(pending.text).length - 1, 1);
+});
+
+const timelineOrder = (timeline: readonly TurnTimelineItem[]): string[] =>
+  timeline.map((item) =>
+    item.kind === 'user'
+      ? `user:${item.message.text}`
+      : item.kind === 'tools'
+        ? `tools:${item.items.map((tool) => tool.toolUseId).join('+')}`
+        : `${item.kind}:${item.text}`,
+  );
+
+test('keeps post-steering work below the steering row even when it continues the same step', () => {
+  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+    type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'pre-steer reasoning',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'tool_start', id: 'e2', turnId: 'turn-1', stepId: 'm1', toolUseId: 'tool-1', toolName: 'Read', args: {}, ts: 2,
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'steering_message', id: 'steer-event', turnId: 'turn-1', messageId: 'steer-1', ts: 3, content: { text: 'steer' },
+  });
+  // A late result for a row that already exists updates that row in place; it
+  // does not claim the steering because its position was fixed at tool_start.
+  live = applyLiveTurnEvent(live, {
+    type: 'tool_result', id: 'e3', turnId: 'turn-1', toolUseId: 'tool-1', isError: false, ts: 4,
+    content: { kind: 'text', text: 'done' },
+  });
+  // While the steering awaits its boundary it must already render as one.
+  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
+    'thinking:pre-steer reasoning', 'tools:tool-1', 'user:steer',
+  ]);
+  live = applyLiveTurnEvent(live, {
+    type: 'thinking_delta', id: 'e4', turnId: 'turn-1', messageId: 'm1', ts: 5, text: 'post-steer reasoning',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'tool_start', id: 'e5', turnId: 'turn-1', stepId: 'm1', toolUseId: 'tool-2', toolName: 'Bash', args: {}, ts: 6,
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'text_delta', id: 'e6', turnId: 'turn-1', messageId: 'm1', ts: 7, text: 'answer continues',
+  });
+
+  const timeline = overlayLiveTurn([], live, 'en')[0]!.timeline;
+  assert.deepEqual(timelineOrder(timeline), [
+    'thinking:pre-steer reasoning',
+    'tools:tool-1',
+    'user:steer',
+    'thinking:post-steer reasoning',
+    'tools:tool-2',
+    'text:answer continues',
+  ]);
+  const folded = foldTimeline(timeline).entries.map((entry) =>
+    entry.kind === 'processing'
+      ? `fold:${entry.children.map((child) => child.kind).join('+')}`
+      : entry.kind === 'user'
+        ? `user:${entry.message.text}`
+        : `text:${entry.text}`,
+  );
+  assert.deepEqual(folded, [
+    'fold:thinking+tools',
+    'user:steer',
+    'fold:thinking+tools',
+    'text:answer continues',
+  ]);
+});
+
+test('anchors a persisted steering row ahead of live work the stream seeded after it', () => {
+  const settled = materializeTurns([
+    { type: 'user', id: 'original', turnId: 't1', ts: 1, text: 'request' },
+    { type: 'user', id: 'steer-1', turnId: 't1', ts: 3, text: 'steer', steeringEventId: 'steer-event' },
+  ], 'en');
+  const live = applyLiveTurnEvent(armLiveTurn('t1'), {
+    type: 'thinking_delta', id: 'e1', turnId: 't1', messageId: 'm2', ts: 5, text: 'in-flight after the steer',
+  });
+
+  const [overlaid] = overlayLiveTurn(settled, live, 'en');
+  assert.deepEqual(timelineOrder(overlaid!.timeline), [
+    'user:steer',
+    'thinking:in-flight after the steer',
+  ]);
 });
