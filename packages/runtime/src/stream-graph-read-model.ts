@@ -34,6 +34,7 @@ import type {
   AgentGraphRecordFacet,
   AgentGraphSupervisorSignal,
 } from './stream-graph-projection.js';
+import { AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS } from './stream-graph-projection.js';
 import type { AgentGraphReadinessWait } from './stream-graph-readiness.js';
 import {
   projectAgentGraphSchedule,
@@ -66,7 +67,6 @@ const MAX_OPERATOR_INSPECTION_EDGES = 512;
 const MAX_OPERATOR_INSPECTION_WORK = 256;
 const MAX_OPERATOR_INSPECTION_CLAIMS = 256;
 const MAX_INSTRUCTION_PREVIEW_CHARS = 500;
-export const MAX_OUTPUT_PREVIEW_CODE_POINTS = 280;
 
 export type AgentGraphClientOperatorStatus =
   | 'not_started'
@@ -377,6 +377,7 @@ export function advanceMaterializedAgentGraphClientProjection(
     runtime.claim.targetRunId,
     ['completed', 'failed', 'aborted', 'cancelled'].includes(inspectionInput.operator.status),
     sampleStartedAt,
+    inspectionInput.operator.currentActivation?.activationId,
   );
   if (!projected && !output) return undefined;
   if (
@@ -868,7 +869,9 @@ function advanceClientOperatorOutput(
   activationId: string,
   operatorSettled: boolean,
   sampleStartedAt?: number,
+  currentActivationId?: string,
 ): AgentGraphClientOperatorOutput | undefined {
+  if (currentActivationId && currentActivationId !== activationId) return undefined;
   if (current?.activationId === activationId && current.sourceEventId === event.id) {
     return undefined;
   }
@@ -883,13 +886,18 @@ function advanceClientOperatorOutput(
   if (event.type === 'text_delta' || event.type === 'text_complete') {
     const sameMessage = existing?.messageId === event.messageId;
     const append = event.type === 'text_delta' && sameMessage;
+    const discontinuous =
+      append &&
+      event.startOffset !== undefined &&
+      !existing.previewTruncated &&
+      event.startOffset > existing.preview.length;
     const text = append ? foldClientOutputDelta(existing, event) : event.text;
     const preview = boundClientOutputPreview(text);
     if (!preview.text) return undefined;
     return {
       activationId,
       preview: preview.text,
-      previewTruncated: preview.truncated || (append && existing.previewTruncated),
+      previewTruncated: preview.truncated || discontinuous || (append && existing.previewTruncated),
       phase: operatorSettled || existing?.phase === 'completed' ? 'completed' : 'streaming',
       previewUpdatedAt: event.ts,
       sourceEventId: event.id,
@@ -936,10 +944,10 @@ function foldClientOutputDelta(
 
 function boundClientOutputPreview(text: string): { text: string; truncated: boolean } {
   const codePoints = Array.from(text);
-  if (codePoints.length <= MAX_OUTPUT_PREVIEW_CODE_POINTS) {
+  if (codePoints.length <= AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS) {
     return { text: codePoints.join(''), truncated: false };
   }
-  const visible = codePoints.slice(-MAX_OUTPUT_PREVIEW_CODE_POINTS);
+  const visible = codePoints.slice(-AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS);
   return { text: visible.join(''), truncated: true };
 }
 

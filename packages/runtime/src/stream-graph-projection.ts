@@ -26,6 +26,7 @@ import { stableHash, stableStringify } from './request-shape.js';
 import { compareAgentGraphIdentity } from './stream-graph-identity.js';
 
 export const AGENT_GRAPH_RECORD_SCHEMA_VERSION = 1 as const;
+export const AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS = 280;
 
 export const AGENT_GRAPH_RECORD_FACETS = [
   'message',
@@ -312,8 +313,6 @@ export async function readCommittedAgentGraphProjectionWithRuns(
     },
   };
 }
-
-const AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS = 280;
 
 function projectOperatorOutputs(
   streams: readonly AgentGraphRunStream[],

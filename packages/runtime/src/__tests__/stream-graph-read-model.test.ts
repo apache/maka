@@ -552,6 +552,89 @@ describe('agent graph client read model', () => {
     assert.equal(settled.operator.operator.output?.phase, 'completed');
     assert.equal(settled.snapshot.operators[0]?.output?.phase, 'completed');
   });
+
+  test('marks a non-contiguous output fragment as truncated', () => {
+    const graphId = 'graph-gap';
+    const operatorId = 'operator-gap';
+    const childSessionId = 'child-gap';
+    const initial = materializeAgentGraphClientProjection(
+      runningInput(graphId, operatorId, childSessionId),
+    );
+    const first = advanceMaterializedAgentGraphClientProjection(
+      initial.snapshot,
+      initial.operators[0]!,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'gap-first',
+        type: 'text_delta',
+        ts: 1_000,
+        messageId: 'gap-message',
+        startOffset: 0,
+        text: 'first',
+      }),
+      false,
+    )!;
+    const fragment = advanceMaterializedAgentGraphClientProjection(
+      first.snapshot,
+      first.operator,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'gap-fragment',
+        type: 'text_delta',
+        ts: 2_000,
+        messageId: 'gap-message',
+        startOffset: 20,
+        text: 'tail',
+      }),
+      false,
+    )!;
+
+    assert.equal(fragment.operator.operator.output?.preview, 'tail');
+    assert.equal(fragment.operator.operator.output?.previewTruncated, true);
+  });
+
+  test('ignores late output from an older activation', () => {
+    const graphId = 'graph-late';
+    const operatorId = 'operator-late';
+    const childSessionId = 'child-late';
+    const initial = materializeAgentGraphClientProjection(
+      runningInput(graphId, operatorId, childSessionId),
+    );
+    const inspection = structuredClone(initial.operators[0]!);
+    inspection.operator.currentActivation = {
+      activationId: 'run-1',
+      status: 'running',
+      recordCount: 0,
+      firstEventTime: 2_000,
+      lastEventTime: 2_000,
+      run: { sessionId: childSessionId, agentRunId: 'run-1', turnId: 'turn-1' },
+    };
+    inspection.operator.output = {
+      activationId: 'run-1',
+      preview: 'current output',
+      previewTruncated: false,
+      phase: 'streaming',
+      previewUpdatedAt: 2_000,
+      sourceEventId: 'current-event',
+      messageId: 'current-message',
+      sampleStartedAt: 2_000,
+    };
+
+    const stale = advanceMaterializedAgentGraphClientProjection(
+      initial.snapshot,
+      inspection,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'late-event',
+        type: 'text_delta',
+        ts: 3_000,
+        messageId: 'old-message',
+        startOffset: 0,
+        text: 'stale output',
+      }),
+      false,
+    );
+
+    assert.equal(stale, undefined);
+    assert.equal(inspection.operator.output.preview, 'current output');
+  });
 });
 
 function emptyInput(graphId: string) {

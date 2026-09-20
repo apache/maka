@@ -40,6 +40,7 @@ import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import type { MakaTool } from './tool-runtime.js';
 import type { SessionManager } from './session-manager.js';
 import {
+  AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS,
   readCommittedAgentGraphProjection,
   type AgentGraphRecord,
 } from './stream-graph-projection.js';
@@ -61,7 +62,6 @@ import {
 } from './stream-graph-schedule-reconcile.js';
 import {
   AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
-  MAX_OUTPUT_PREVIEW_CODE_POINTS,
   advanceMaterializedAgentGraphClientProjection,
   buildAgentGraphClientSnapshot,
   decodeAgentGraphTerminalCursor,
@@ -1169,13 +1169,13 @@ export class AgentGraphCoordinator {
             current.startOffset === previous.startOffset + previous.text.length))
       ) {
         const joined = Array.from(previous.text + current.text);
-        const truncated = joined.length > MAX_OUTPUT_PREVIEW_CODE_POINTS + 1;
+        const truncated = joined.length > AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS + 1;
         pending.event = {
           ...event,
           event: {
             ...current,
             text: truncated
-              ? joined.slice(-(MAX_OUTPUT_PREVIEW_CODE_POINTS + 1)).join('')
+              ? joined.slice(-(AGENT_GRAPH_OUTPUT_PREVIEW_MAX_CODE_POINTS + 1)).join('')
               : joined.join(''),
             startOffset: truncated ? undefined : previous.startOffset,
           },
