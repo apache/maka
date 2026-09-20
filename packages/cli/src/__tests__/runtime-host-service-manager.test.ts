@@ -2995,6 +2995,27 @@ describe('managed Runtime Host service', () => {
       legacyOperator?.kind === 'error' ? legacyOperator.error.code : undefined,
       'service_manager_operation_failed',
     );
+
+    // Repair mode must not soften the refusal: with a damaged active target
+    // the probe catch degrades probe failures to "operator unavailable", but
+    // an answered-but-unsupported verdict still refuses — otherwise the
+    // forced retire under --allow-interrupt-active-tasks would retire an
+    // operator it cannot safely interrogate.
+    statusReads = 0;
+    observedVersion = '2.0.0';
+    readyFailure = true;
+    output = '';
+    order.length = 0;
+    assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 1);
+    assert.deepEqual(order, []);
+    const repairedLegacyOperator = decodeRuntimeHostServiceManagementFrame(
+      output.trim().split('\n').at(-1) ?? '',
+    );
+    assert.equal(
+      repairedLegacyOperator?.kind === 'error' ? repairedLegacyOperator.error.code : undefined,
+      'service_manager_operation_failed',
+    );
+    readyFailure = false;
     operatorLacksCapability = false;
   });
 

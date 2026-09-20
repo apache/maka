@@ -239,10 +239,11 @@ export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale)
 }
 
 /**
- * Default renderer binding: subscribes to BOTH `sessions:changed`
- * and `connections:event` so any session lifecycle (create / delete /
- * archive / rebound / message-appended) or any connection change
- * (verified / disabled / removed) invalidates the snapshot.
+ * Default renderer binding: subscribes to `sessions:changed`,
+ * `connections:event`, and Runtime Host profile changes so any session
+ * lifecycle (create / delete / archive / rebound / message-appended),
+ * connection change (verified / disabled / removed), or Host readiness
+ * transition invalidates the snapshot.
  *
  * Settings changes are NOT subscribed: there is no existing
  * settings-wide event channel and PR110c is not inventing one. If a
@@ -272,9 +273,15 @@ const LIVE_DEPS: UseOnboardingSnapshotDeps = {
   subscribeInvalidations(onInvalidate) {
     const unsubscribeSessions = window.maka.sessions.subscribeChanges(() => onInvalidate());
     const unsubscribeConnections = window.maka.connections.subscribeEvents(() => onInvalidate());
+    // A deferred pending must re-pull when the default Host settles: the
+    // retried pull re-runs shouldDeferError against the new readiness, so
+    // connecting→unavailable releases the held error instead of pinning the
+    // skeleton.
+    const unsubscribeHosts = window.maka.runtimeHostProfiles.subscribeChanges(() => onInvalidate());
     return () => {
       unsubscribeSessions();
       unsubscribeConnections();
+      unsubscribeHosts();
     };
   },
 };

@@ -364,6 +364,7 @@ export async function runManagedRuntimeHostUpdateCli(
         );
         let currentOperatorUnavailable = false;
         if (status.service.active) {
+          let probeSupportsLifetimeLock = false;
           try {
             const probe = await deps.runOperator(
               currentOperator,
@@ -383,22 +384,35 @@ export async function runManagedRuntimeHostUpdateCli(
                 'The current Runtime Host operator returned an invalid status result',
               );
             }
-            // An operator that cannot echo the requested capability predates
-            // the lifetime-lock protocol; retiring it would race unmanaged
-            // service state, so it must be removed before updating.
-            if (
-              !probe.operatorCapabilities?.includes(
+            probeSupportsLifetimeLock =
+              probe.operatorCapabilities?.includes(
                 RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
-              )
-            ) {
-              throw new RuntimeHostServiceManagerError(
-                'service_manager_operation_failed',
-                'The active Runtime Host operator predates capability reporting and cannot be safely retired; uninstall it before updating',
-              );
-            }
+              ) ?? false;
           } catch (error) {
             if (!activeTargetNeedsRepair) throw error;
             currentOperatorUnavailable = true;
+          }
+          // An operator that answered but cannot echo the requested
+          // capability predates the lifetime-lock protocol; retiring it would
+          // race unmanaged service state, so it must be removed before
+          // updating. This verdict is not a probe failure: it must refuse
+          // even when the target needs repair (where the catch above would
+          // degrade it to an unavailable operator), and nothing has been
+          // mutated yet — emitting directly keeps the instruction visible
+          // instead of folding it into the post-mutation "update_incomplete"
+          // remap.
+          if (!currentOperatorUnavailable && !probeSupportsLifetimeLock) {
+            emit({
+              schemaVersion: 1,
+              kind: 'error',
+              action: 'update',
+              error: {
+                code: 'service_manager_operation_failed',
+                message:
+                  'The active Runtime Host operator predates capability reporting and cannot be safely retired; uninstall it before updating',
+              },
+            });
+            return 1;
           }
         }
 
