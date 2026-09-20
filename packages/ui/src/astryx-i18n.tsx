@@ -99,6 +99,12 @@ const OVERRIDES_BY_LOCALE = {
   },
   'zh-CN': chineseOverrides('zh-CN', ASTRYX_COPY_ZH),
   'zh-TW': chineseOverrides('zh-TW', ASTRYX_COPY_ZH_TW),
+  ko: {
+    en: {
+      '@astryx.chatComposerDrawer.collapse': 'Click to collapse {label}',
+      '@astryx.chatComposerDrawer.expand': 'Click to expand {label}',
+    },
+  },
 } satisfies UiCatalog<Overrides>;
 
 export function astryxMessageOverrides(locale: UiLocale): Overrides {

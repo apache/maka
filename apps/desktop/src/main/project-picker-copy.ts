@@ -19,7 +19,7 @@
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
-const TITLE = { 'zh-CN': '添加项目', 'zh-TW': '新增專案', en: 'Add project' } satisfies UiCatalog<string>;
+const TITLE = { 'zh-CN': '添加项目', 'zh-TW': '新增專案', en: 'Add project', ko: '프로젝트 추가' } satisfies UiCatalog<string>;
 
 export function projectPickerTitle(locale: UiLocale): string {
   return TITLE[locale];

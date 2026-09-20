@@ -147,6 +147,11 @@ const COPY: UiCatalog<StatusItemCopy> = {
     stopUnnamed: 'Stop Computer Use',
     empty: 'No Active Sessions',
   },
+  ko: {
+    stopUsing: (appName) => `${appName} 사용 중지`,
+    stopUnnamed: 'Computer Use 중지',
+    empty: '활성 세션 없음',
+  },
 };
 
 function defaultResolveLocale(): UiLocale {

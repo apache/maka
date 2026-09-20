@@ -65,6 +65,17 @@ const COPY_BY_LOCALE = {
     retryFailedTitle: 'Could not retry update download',
     retryFailedFallback: 'Try again later, or download the latest version manually.',
   },
+  ko: {
+    installFailedTitle: 'Could not install update',
+    installFailedFallback: 'Try again later.',
+    installManualFallback: 'Try again later, or download the latest version manually.',
+    activeTasksTitle: 'Tasks are still running',
+    activeTasksDescription: 'Tasks are still running. Updating will interrupt them. Continue?',
+    activeTasksConfirm: 'Update anyway',
+    activeTasksCancel: 'Cancel',
+    retryFailedTitle: 'Could not retry update download',
+    retryFailedFallback: 'Try again later, or download the latest version manually.',
+  },
 } satisfies UiCatalog<AppUpdateCopy>;
 
 export function getAppUpdateCopy(locale: UiLocale): AppUpdateCopy {

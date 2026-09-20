@@ -41,6 +41,16 @@ const catalog = {
     check: 'Check status',
     updateError: 'Unable to update the saved message',
   },
+  ko: {
+    saved: 'Saved locally · waiting to send',
+    sending: 'Delivering to Host',
+    accepted: 'Host accepted',
+    unknown: 'Host outcome unknown',
+    failed: 'Not sent · local copy retained',
+    remove: 'Remove local copy',
+    check: 'Check status',
+    updateError: 'Unable to update the saved message',
+  },
   'zh-CN': {
     saved: '已本地保存 · 等待发送',
     sending: '正在投递到 Host',

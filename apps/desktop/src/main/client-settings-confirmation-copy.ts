@@ -50,6 +50,13 @@ const COPY = {
     message: "Allow Maka to update this client's settings?",
     buttons: ['Apply changes', 'Cancel'],
   },
+  ko: {
+    labels: { theme: 'Theme', palette: 'Palette', uiLocale: 'UI language', runComplete: 'Run-complete notifications', keepSystemAwake: 'Keep system awake' },
+    on: 'true',
+    off: 'false',
+    message: "Allow Maka to update this client's settings?",
+    buttons: ['Apply changes', 'Cancel'],
+  },
 } satisfies UiCatalog<ConfirmationCopy>;
 
 export function clientSettingsConfirmation(

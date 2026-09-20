@@ -94,6 +94,14 @@ const PROMPT_SUGGESTIONS_BY_LOCALE: UiCatalog<PromptSuggestion[]> = {
     { label: 'Draft message', prompt: 'Help me draft a ____ message to ____, with the goal of ____:\n\nPoints to cover:\n- \n- ' },
     { label: 'Review code', prompt: 'Please review this code — readability, error handling, performance concerns:\n\n```\n\n```' },
   ],
+  ko: [
+    { label: 'Summarize codebase', prompt: 'Help me map this codebase: directory layout, key modules, and how they fit together.' },
+    { label: 'Explain code', prompt: 'Paste a snippet — explain it line by line and flag any pitfalls:\n\n```\n\n```' },
+    { label: 'Read a long doc', prompt: 'Here\'s an article or doc — pull out the core argument, list the key facts, and tell me what I might be missing:\n\n' },
+    { label: 'Translate & polish', prompt: 'Translate the text below into Chinese; keep the meaning, tone should stay natural and professional:\n\n' },
+    { label: 'Draft message', prompt: 'Help me draft a ____ message to ____, with the goal of ____:\n\nPoints to cover:\n- \n- ' },
+    { label: 'Review code', prompt: 'Please review this code — readability, error handling, performance concerns:\n\n```\n\n```' },
+  ],
 };
 
 export function getPromptSuggestions(locale: UiLocale): PromptSuggestion[] {

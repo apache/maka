@@ -69,6 +69,18 @@ const TASK_READINESS_COPY = {
       actionLabel: { workspace_picker: 'Choose workspace', retry: 'Check again' },
     },
   },
+  ko: {
+    runtime: {
+      title: 'The Maka runtime is unavailable.',
+      description: 'The task was not submitted. Check the runtime again before retrying.',
+      actionLabel: 'Check again',
+    },
+    workspace: {
+      title: 'This task workspace is unavailable.',
+      description: 'The folder may have moved, been deleted, or become inaccessible. Choose an available workspace.',
+      actionLabel: { workspace_picker: 'Choose workspace', retry: 'Check again' },
+    },
+  },
 } satisfies UiCatalog<TaskReadinessCopy>;
 
 export function getTaskReadinessCopy(locale: UiLocale): TaskReadinessCopy {

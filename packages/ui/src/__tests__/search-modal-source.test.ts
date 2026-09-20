@@ -153,6 +153,7 @@ describe('search error copy', () => {
       'zh-CN': '搜索词无效，请缩短内容或移除凭据后重试。',
       'zh-TW': '搜尋詞無效，請縮短內容或移除憑證後重試。',
       en: 'Invalid search query. Shorten it or remove credential material and try again.',
+      ko: 'Invalid search query. Shorten it or remove credential material and try again.',
     } satisfies UiCatalog<string>;
     for (const locale of UI_LOCALES) {
       for (const query of ['a'.repeat(501), 'password=supersecret']) {

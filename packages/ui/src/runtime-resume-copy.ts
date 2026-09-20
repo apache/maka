@@ -187,6 +187,49 @@ const RESUME_PARK_COPY = {
       resume_feature_disabled: 'Resuming interrupted tasks is not enabled.',
     },
   },
+  ko: {
+    title: 'This round cannot be resumed yet',
+    fallbackDescription: 'This task does not currently meet the conditions to continue.',
+    missingCandidateTitle: 'Nothing to resume',
+    missingCandidateDescription: 'This task is already up to date.',
+    reasons: {
+      dangling_tool_state:
+        'The previous tool run was interrupted; its records are preserved, so it cannot continue automatically yet.',
+      pending_permission: 'The previous run is still waiting for a permission approval.',
+      background_operation_pending: 'Background operations are still running, so this round cannot continue yet.',
+      workspace_identity_mismatch: 'The current workspace does not match the one from the interrupted run.',
+      workspace_identity_missing: 'The workspace from the interrupted run could not be identified.',
+      workspace_cwd_mismatch: 'The current working directory does not match the one from the interrupted run.',
+      workspace_ref_missing: 'The workspace from the interrupted run is no longer available.',
+      tool_catalog_mismatch: 'The available tools have changed, so it is not safe to continue.',
+      checkpoint_restore_failed: 'Restoring the workspace checkpoint failed.',
+      source_run_unreadable: "The previous run's record could not be read in full.",
+      runtime_ledger_unreadable: "The previous run's ledger could not be read in full.",
+      runtime_ledger_empty: 'The previous run has no records to replay.',
+      terminal_repair_failed: "Repairing the previous run's record failed.",
+      provider_resume_head_unsupported: 'The current model does not support this resume point.',
+      provider_resume_boundary_unsupported: 'The current model does not support this resume boundary.',
+      provider_replay_non_suffix_gap: 'The interruption point in the previous model output cannot be trimmed safely.',
+      provider_replay_unsupported:
+        "The previous run's history cannot be replayed safely under the current model protocol.",
+      runtime_lineage_cycle: 'The resume chain contains a cycle; resuming was stopped.',
+      runtime_lineage_depth_exceeded: 'The resume chain is too long; automatic resuming was stopped.',
+      runtime_lineage_missing: 'The resume chain is missing required history records.',
+      runtime_lineage_start_mismatch: "The resume chain's starting record is inconsistent; resuming was stopped.",
+      runtime_lineage_replay_mismatch:
+        "The resume chain's recorded model context does not match what was rebuilt here.",
+      runtime_lineage_claim_mismatch:
+        'The resume chain lacks a matching resume-ownership record; resuming was stopped.',
+      source_prefix_digest_mismatch: "The previous run's immutable boundary has changed.",
+      continuation_already_exists: 'A continuation for this interrupted task already exists.',
+      continuation_claim_repair_required:
+        'Resume ownership was preserved, but the continuation record needs repair first.',
+      continuation_started_indeterminate:
+        'The continuation already started, but has not reached a provable terminal state.',
+      continuation_authority_unavailable: 'The current storage does not support safe resume ownership.',
+      resume_feature_disabled: 'Resuming interrupted tasks is not enabled.',
+    },
+  },
 } satisfies UiCatalog<ResumeParkCopy>;
 
 export function resumeParkToastCopy(reasons: readonly string[], locale: UiLocale): ResumeParkToastCopy {
