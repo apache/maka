@@ -128,6 +128,18 @@
 /* The card header stays visible while the latest-turn body scrolls. */
 .maka-recent-turn-overlay > .maka-progress-card { flex: 0 0 auto; }
 
+.maka-recent-turn-navigation {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-2);
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
+}
+.maka-recent-turn-navigation p { margin: 0; }
+
 .maka-recent-turn-content {
   min-height: 0;
   overflow: auto;
@@ -215,7 +227,7 @@
   inset: auto auto var(--space-4) 50%;
   transform: translateX(-50%);
   z-index: 4;
-  width: min(68vw, 1200px, calc(100% - 2 * var(--space-4)));
+  width: min(960px, calc(100% - 2 * var(--space-4)));
   padding: 0;
   background: transparent;
   pointer-events: auto;
@@ -233,6 +245,12 @@
   max-width: none;
 }
 
+/* The model group also carries real-session usage and branch readouts. Let
+   the branch shrink inside that group instead of covering Send/Stop. */
+.maka-detail-with-artifacts[data-preview-focused] .maka-composer-git-branch {
+  min-width: 0;
+}
+
 .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > .astryx-chat-composer-drawer,
 .maka-detail-with-artifacts[data-preview-focused] .maka-composer-astryx > div:has(> div:first-child .maka-composer-input) {
   border-top: 0;
@@ -248,7 +266,7 @@
   display: none;
 }
 
-.maka-detail-with-artifacts[data-preview-focused][data-preview-dock-minimized] .maka-recent-turn-overlay {
+.maka-recent-turn-overlay[data-minimized] {
   bottom: 0;
   right: 0;
   left: auto;
@@ -300,11 +318,6 @@
   color: var(--background);
 }
 
-@media (max-width: 990px) {
-  .maka-detail-with-artifacts[data-preview-focused] > .mainColumn .maka-chat-layout > :last-child > :last-child {
-    width: calc(100% - 2 * var(--space-4));
-  }
-}
 
 .maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar[data-placement="right"],
 .maka-detail-with-artifacts[data-preview-focused] .maka-session-workbar-panel[data-overlay][data-placement="right"] {

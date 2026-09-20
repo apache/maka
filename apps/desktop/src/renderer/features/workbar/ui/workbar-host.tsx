@@ -118,6 +118,7 @@ export interface WorkbarHostModel {
   onActivityStateChange?: (panelId: string, active: boolean) => void;
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
+  onOpenConversation?(sessionId: string, turnId?: string): void;
   modelChoices?: readonly ChatModelChoice[];
   onStartWorkBoardTask?: (item: WorkBoardItem) => void;
   resolveWorkBoardStartTask?: (item: WorkBoardItem) => { ok: boolean; message?: string };
@@ -163,6 +164,11 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
           <RecentTurnOverlay key={props.activeId} sessionId={props.activeId}
             hidden={!previewFocus.focusedPreview}
             sourceSession={props.sourceSession} onHeightChange={previewFocus.setOverlayHeight}
+            onExit={previewFocus.clear}
+            onOpenConversation={(turnId) => {
+              previewFocus.clear();
+              props.onOpenConversation?.(props.activeId!, turnId);
+            }}
             minimized={previewFocus.minimized} onMinimize={previewFocus.minimize} onRestore={previewFocus.restore} />,
           previewFocus.composerTarget,
         )}

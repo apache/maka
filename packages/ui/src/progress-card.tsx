@@ -21,6 +21,12 @@ import type { ReactNode, Ref } from 'react';
 import { Button, IconButton } from '@astryxdesign/core';
 import { MakaWordmark } from './maka-wordmark.js';
 
+export const progressStatusCopy = {
+  en: { working: 'Working', paused: 'Paused', attention: 'Needs attention', finished: 'Finished', openConversation: 'View full conversation' },
+  'zh-CN': { working: '正在处理', paused: '已暂停', attention: '需要查看', finished: '本轮已结束', openConversation: '查看完整对话' },
+  'zh-TW': { working: '正在處理', paused: '已暫停', attention: '需要查看', finished: '本輪已結束', openConversation: '查看完整對話' },
+};
+
 type ProgressCardAction = {
   label: string;
   icon: ReactNode;

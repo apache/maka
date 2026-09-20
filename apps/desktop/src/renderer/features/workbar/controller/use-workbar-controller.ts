@@ -116,7 +116,7 @@ export interface UseWorkbarControllerInput {
   toastApi: ToastApi;
   composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
   openNewTaskSurface?(): number;
-  openSessionInChat?(sessionId: string): void;
+  openSessionInChat?(sessionId: string, turnId?: string): void;
   resolveWorkBoardTarget?(item: WorkBoardItem):
     | { ok: true; target: { profileId: string; hostId: string; projectId: string } }
     | { ok: false; message: string };
@@ -979,6 +979,7 @@ export function useWorkbarController(
       },
       onActivityStateChange: sideConversations.setActive,
       sourceSession: input.activeSession,
+      onOpenConversation: input.openSessionInChat,
       modelChoices: input.modelChoices,
       onStartWorkBoardTask: startWorkBoardTask,
       resolveWorkBoardStartTask: input.resolveWorkBoardTarget,

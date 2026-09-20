@@ -58,7 +58,19 @@ export function useFocusedPreview(input: {
     const frame = surfaceRef.current?.closest<HTMLElement>('.maka-detail-with-artifacts');
     if (!focusedPreview || !frame || !composerTarget) return;
     frame.dataset.previewFocused = focusedPreview;
+    return () => {
+      delete frame.dataset.previewFocused;
+      delete frame.dataset.previewDockMinimized;
+      frame.style.removeProperty('--maka-focused-dock-height');
+      frame.style.removeProperty('--maka-focused-composer-space');
+    };
+  }, [focusedPreview, composerTarget]);
+
+  useLayoutEffect(() => {
+    const frame = surfaceRef.current?.closest<HTMLElement>('.maka-detail-with-artifacts');
+    if (!focusedPreview || !frame || !composerTarget) return;
     if (minimized) frame.dataset.previewDockMinimized = 'true';
+    else delete frame.dataset.previewDockMinimized;
     const measure = () => {
       const dockHeight = Math.ceil(composerTarget.getBoundingClientRect().height);
       frame.style.setProperty('--maka-focused-dock-height', `${dockHeight}px`);
@@ -67,13 +79,7 @@ export function useFocusedPreview(input: {
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(composerTarget);
-    return () => {
-      observer.disconnect();
-      delete frame.dataset.previewFocused;
-      delete frame.dataset.previewDockMinimized;
-      frame.style.removeProperty('--maka-focused-dock-height');
-      frame.style.removeProperty('--maka-focused-composer-space');
-    };
+    return () => observer.disconnect();
   }, [focusedPreview, composerTarget, overlayHeight, minimized]);
 
   function toggle(kind: PreviewKind) {
@@ -83,6 +89,17 @@ export function useFocusedPreview(input: {
     setRequest((current) => current?.sessionId === sessionId && current.kind === kind
       ? null : { sessionId, kind });
   }
+
+  useEffect(() => {
+    if (!focusedPreview || !composerTarget) return;
+    const exit = (event: Event) => {
+      event.preventDefault();
+      setRequest(null);
+      setMinimized(false);
+    };
+    composerTarget.addEventListener('maka-composer-escape', exit);
+    return () => composerTarget.removeEventListener('maka-composer-escape', exit);
+  }, [focusedPreview, composerTarget]);
 
   function finishResize() {
     const drag = resizeRef.current;
