@@ -18,7 +18,7 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { ICON_SIZE, Ban, ChevronRight, GitBranch, Maximize2, Minimize2, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, ChevronRight, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
@@ -42,7 +42,6 @@ import {
   Token,
   useLightbox,
   useMediaQuery,
-  useScrollableArea,
 } from '@astryxdesign/core';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
@@ -1440,19 +1439,6 @@ function TurnTimelineEntry(props: {
   );
 }
 
-/**
- * The turn's whole execution process (reasoning, intermediate commentary, tool
- * activity) as ONE bounded, scrollable card: a titled header row and, when
- * open, a body that grows with its content up to a cap and then scrolls. The
- * container's border is the card's frame, so a collapsed box keeps its outline
- * and shows only the title row.
- *
- * The body owns its own scroll, not the transcript: a turn with hundreds of
- * steps scrolls here instead of becoming an unreadable wall the reader has to
- * traverse. While the body overflows, its top and/or bottom edge fades the
- * content out, so the clipped rows read as "more above/below" rather than
- * abruptly cut off.
- */
 export function ProcessingBlock(props: {
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
@@ -1474,27 +1460,6 @@ export function ProcessingBlock(props: {
   // under the answer that a growing reply cannot scroll out of view; restating
   // them here said the same thing twice, once where it gets lost.
   const label = copy.processDetails;
-  // The whole box's height switch: false keeps the reading cap (the default
-  // frame), true raises it so more of the process shows at once — the reader's
-  // "show me more" for a turn they want to read end to end.
-  const [unclamped, setUnclamped] = useState(false);
-  // Astryx measures the body for us: `isScrollable` is the "taller than it
-  // shows" condition (what offers the switch, independent of what KIND of
-  // entries fill the body), and `atStart` / `atEnd` are the edge-fade flags.
-  // It also sets `overscroll-behavior: auto`, so reaching an edge chains the
-  // wheel to the transcript instead of dead-stopping. `stickyContainment`
-  // leaves a fitting body a non-scroll-container so the corner switch resolves
-  // against the transcript; a scrollable body (capped or magnified) is the
-  // switch's scrollport, which is what keeps it pinned to the visible edge.
-  const scrollable = useScrollableArea({
-    axis: 'block',
-    // The transcript owns keyboard scrolling (it handles it in the capture
-    // phase); the body stays a native scroll target, not a second tab stop.
-    keyboardAccess: { owner: 'content' },
-    overscroll: 'allow',
-    stickyContainment: 'whenScrollable',
-  });
-  const overflows = scrollable.state.block.isScrollable;
   return (
     <details
       className="maka-processing-sequence"
@@ -1525,56 +1490,21 @@ export function ProcessingBlock(props: {
             activityLabel={props.activity.label}
           />
         ) : (
-          <span className="maka-processing-title">{label}</span>
+          <span>{label}</span>
         )}
         {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}
       </summary>
-      {/* The body owns its own scroll, capped at a reading height, and carries
-          the zoom switch in a zero-height sticky wrapper pinned to its visible
-          bottom edge — inside the body, not floating, so it never drifts with
-          the content and never takes flow space (which would change the
-          content's height and the overflow measure). The body is a scroll
-          container in BOTH states (capped, or a taller magnified cap), which is
-          what the sticky wrapper needs to resolve to; an unbounded body would
-          stop being one and the switch would strand at the end of the content.
-          The switch is a real Astryx `IconButton`, not a disclosure control, so
-          activating it never toggles the frame — a folded box stays folded, and
-          reopening keeps whichever height the reader last chose. It appears
-          only when the body actually overflows (nothing to unclamp otherwise),
-          and stays put while magnified so the reader can take the cap back. */}
-      <div
-        // The class goes INTO the getter, not after the spread: the returned
-        // props already carry the primitive's overflow class, and a later
-        // `className` would replace it (keeping only the inline vars) and leave
-        // the overflow — including `stickyContainment` — up to product CSS.
-        {...scrollable.getViewportProps<HTMLDivElement>({ className: 'maka-processing-body' })}
-        data-unclamped={unclamped ? 'true' : undefined}
-      >
-        <div {...scrollable.getContentProps<HTMLDivElement>()} className="maka-processing-content">
-          {props.entries.map((entry, index) => (
-            <TurnTimelineEntry
-              key={timelineEntryKey(entry, index)}
-              activityObserved={open && props.activityObserved !== false}
-              item={entry}
-              onStreamingSettled={props.onStreamingSettled}
-              onOpenLinkedSession={props.onOpenLinkedSession}
-              initialLiveContent={props.initialLiveContent}
-            />
-          ))}
-        </div>
-        {(overflows || unclamped) && (
-          <div className="maka-processing-zoom">
-            <UiIconButton
-              label={unclamped ? copy.processRestore : copy.processExpandAll}
-              tooltip={unclamped ? copy.processRestore : copy.processExpandAll}
-              icon={<Icon icon={unclamped ? Minimize2 : Maximize2} size="sm" aria-hidden="true" />}
-              variant="secondary"
-              size="sm"
-              aria-pressed={unclamped}
-              onClick={() => setUnclamped((previous) => !previous)}
-            />
-          </div>
-        )}
+      <div className="maka-processing-body">
+        {props.entries.map((entry, index) => (
+          <TurnTimelineEntry
+            key={timelineEntryKey(entry, index)}
+            activityObserved={open && props.activityObserved !== false}
+            item={entry}
+            onStreamingSettled={props.onStreamingSettled}
+            onOpenLinkedSession={props.onOpenLinkedSession}
+            initialLiveContent={props.initialLiveContent}
+          />
+        ))}
       </div>
     </details>
   );
