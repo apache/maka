@@ -1642,6 +1642,24 @@ function AppShellContent({
     if (sessionId && messageId) removeTransientMessage(sessionId, messageId);
   }
 
+  // Event handlers act per observed Session, not the active one — same failure
+  // surface as the plate's queue actions.
+  async function retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
+    try {
+      await window.maka.sessions.retractQueueEntry(sessionId, entryId);
+    } catch (error) {
+      if (activeIdRef.current === sessionId) {
+        const copy = getDesktopConversationCopy(uiLocale).actions;
+        showSessionError(
+          sessionId,
+          copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+        );
+      }
+      throw error;
+    }
+  }
+
   // Surfaces the failure, then rethrows so the pending plate can settle its
   // in-flight action state without guessing with a timer.
   async function runQueueEntryAction(
@@ -1688,6 +1706,7 @@ function AppShellContent({
   const [sessionDisplayBatch] = useState(createAppShellSessionDisplayBatch);
   const {
     handleEvent,
+    isQueuedSteering,
     reconcilePersistedMessages,
     settleAssistantStreaming,
     flushDisplayEvents,
@@ -1703,7 +1722,11 @@ function AppShellContent({
     setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
     setInteractionBySession: sessionUiController.setInteractionBySession,
     setMessageQueueBySession: sessionUiController.setMessageQueueBySession,
+    getMessageQueue: (sessionId) => sessionUiController.getState().messageQueueBySession[sessionId],
     removeTransientMessage,
+    upsertTransientMessage: addTransientMessage,
+    retractQueueEntry,
+    restoreMessageDraft: restoreLocalMessageDraft,
     displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
@@ -2078,7 +2101,17 @@ function AppShellContent({
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
-    <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} restoreDraft={restoreLocalMessageDraft} />
+    <Conversation.SessionLocalMessages
+      sessionId={activeId}
+      publish={addTransientMessage}
+      retire={(sessionId, messageId) => {
+        // A queue-owned steering bubble is the Host's own placeholder; the
+        // local outbox accepting it must not retire the transcript copy.
+        if (!isQueuedSteering(sessionId, messageId)) removeTransientMessage(sessionId, messageId);
+      }}
+      reportError={toastApi.error}
+      restoreDraft={restoreLocalMessageDraft}
+    />
     <CatalogRowWatch
       catalog={sessionCatalogController}
       sessionIds={[revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId]}
