@@ -3988,6 +3988,25 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       }),
       '## Goal',
     );
+    const providerRequestsBeforePluginTitle = provider.requests.length;
+    assert.equal(
+      await sessionEffects.generateTitle({
+        sessionId: session.id,
+        header: {
+          ...session,
+          backend: 'plugin-executor',
+          executorId: 'codex.app-server',
+          llmConnectionId: undefined,
+          llmConnectionSlug: 'executor:codex.app-server',
+          model: 'gpt-5.6-sol',
+          thinkingLevel: 'high',
+        },
+        sourceText: 'Run this task through the Codex plugin executor',
+        abortSignal: new AbortController().signal,
+      }),
+      undefined,
+    );
+    assert.equal(provider.requests.length, providerRequestsBeforePluginTitle);
     const recap = await sessionEffects.generateRecap({
       sessionId: session.id,
       effectId: 'recap-effect-1',

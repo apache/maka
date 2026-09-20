@@ -47,6 +47,13 @@ import { useNewTaskChoice } from './use-new-task-choice.js';
 export type { NewChatModel } from './shell-chat-model-selection.js';
 export type NewChatExecutionTarget = NewChatModel | { executorId: string; model: string };
 
+export function resolveNewChatExecutionThinkingLevel(
+  executorTarget: MakaClientExecutorTarget | undefined,
+  nativeThinkingLevel: ThinkingLevel | undefined,
+): ThinkingLevel | undefined {
+  return executorTarget?.thinkingLevel ?? nativeThinkingLevel;
+}
+
 export type SessionHealthNoticeView = {
   tone: 'info' | 'warning' | 'destructive';
   label: string;
@@ -100,6 +107,7 @@ export function useShellChatModel(options: {
   newChatProviderType: IdentifiedLlmConnection['providerType'] | undefined;
   newChatThinkingLevels: readonly ThinkingLevel[];
   newChatThinkingLevel: ThinkingLevel | undefined;
+  newChatExecutionThinkingLevel: ThinkingLevel | undefined;
   /** Raw draft intent; unlike the display value above, undefined stays untouched. */
   pendingNewChatThinkingLevel: ThinkingLevel | null | undefined;
   composerSupportsVision: boolean | undefined;
@@ -348,6 +356,10 @@ export function useShellChatModel(options: {
     newChatThinkingLevels,
     newChatThinkingLevel,
     pendingNewChatThinkingLevel,
+    newChatExecutionThinkingLevel: resolveNewChatExecutionThinkingLevel(
+      pendingExecutorTarget,
+      newChatThinkingLevel,
+    ),
     composerSupportsVision,
     pendingNewChatModel,
     setPendingNewChatModel,
