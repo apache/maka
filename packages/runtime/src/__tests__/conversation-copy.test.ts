@@ -4076,12 +4076,16 @@ test('conversation copy preserves a corrupt paging dispatch hash for the re-scan
     // launder that into a valid-looking ledger by stamping the rewritten
     // identity over it — importing the copied ledger has to be rejected on
     // the very conflict the source carried (#5466 review).
-    const plan = await prepareTestCopyPlan(source, firstTurnMessages, runStore, runtimeEventStore);    const stampCorruptHash = (event: RuntimeEvent): RuntimeEvent => {
+    const plan = await prepareTestCopyPlan(source, firstTurnMessages, runStore, runtimeEventStore);
+    const stampCorruptHash = (event: RuntimeEvent): RuntimeEvent => {
       const dispatch = event.actions?.toolDispatch;
       if (!dispatch) return event;
       return {
         ...event,
-        actions: { ...event.actions, toolDispatch: { ...dispatch, canonicalArgsHash: corruptHash } },
+        actions: {
+          ...event.actions,
+          toolDispatch: { ...dispatch, canonicalArgsHash: corruptHash },
+        },
       };
     };
     const tamperedPlan = {
