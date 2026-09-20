@@ -57,7 +57,11 @@ export interface WorkHubServices extends WorkHubWorkspaceServices {
   delegationFeedback(
     references: readonly WorkHubDelegationReference[],
   ): Promise<readonly WorkHubDelegationFeedback[]>;
-  modelChoices(sessionId: string): Promise<ChatModelChoice[]>;
+  modelChoices(sessionId?: string): Promise<ChatModelChoice[]>;
+  setDefaultModel(input: {
+    llmConnectionSlug: string;
+    model: string;
+  }): Promise<void>;
   readonly attachments: ComposerAttachmentService;
   readAttachmentBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   prepareAttachments(sessionId: string, items: Array<{ approvalId: string; name: string; mimeType?: string } | { file: File }>): Promise<AttachmentRef[]>;

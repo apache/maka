@@ -129,4 +129,3 @@ export function renderModelPickerValue(option: SelectorOptionData): ReactNode {
     <SelectorOption icon={option.icon} label={<TailVisibleLabel text={option.label ?? option.value} />} />
   );
 }
-

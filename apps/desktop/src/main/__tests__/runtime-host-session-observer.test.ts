@@ -892,7 +892,7 @@ test('broadcasts durable admission and transcript changes from the same message'
   await observer.close();
 });
 
-for (const resolution of ['owned', 'cancelled', 'pending', 'unavailable'] as const) {
+for (const resolution of ['owned', 'cancelled', 'not_admitted', 'pending', 'unavailable'] as const) {
   test(`proves a removed follow-up is ${resolution} before successor content`, async (t) => {
     const events = new AsyncFrameQueue();
     const queries: string[][] = [];
@@ -944,7 +944,7 @@ for (const resolution of ['owned', 'cancelled', 'pending', 'unavailable'] as con
     const admissions = target.events.filter((event) => event.type === 'message_admission');
     assert.deepEqual(admissions.map((event) => ({
       messageId: event.messageId, turnId: event.turnId, outcome: event.outcome,
-    })), resolution === 'owned' || resolution === 'cancelled' ? [{
+    })), resolution === 'owned' || resolution === 'cancelled' || resolution === 'not_admitted' ? [{
       messageId: 'followup-1', turnId: 'turn-2',
       outcome: resolution === 'owned' ? 'admitted' : 'retracted',
     }] : []);

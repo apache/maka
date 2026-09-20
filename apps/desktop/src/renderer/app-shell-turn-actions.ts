@@ -78,17 +78,10 @@ export function createAppShellTurnActions(deps: {
     const key = turnActionRegistry.keyOf(sessionId, turnId, actionId);
     // Ref-backed guard blocks same-frame double clicks before React has
     // committed the disabled state. State alone is too late here because
-    // retry/regenerate IPC returns after starting the stream asynchronously.
+    // Branch IPC returns after the copy starts asynchronously.
     if (!turnActionRegistry.addKey(key)) return;
     try {
-      if (actionId === 'regenerate') {
-        await window.maka.sessions.regenerateTurn(sessionId, {
-          sourceTurnId: turnId,
-        });
-        if (selectionIsCurrent()) {
-          toastApi.info(copy.regenerateStartedTitle, copy.regenerateStartedDescription);
-        }
-      } else if (actionId === 'branch') {
+      if (actionId === 'branch') {
         const copyAttempt = acquireSessionCopyAttempt(
           {
             scope: `turn-footer:${turnId}`,

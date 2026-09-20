@@ -160,7 +160,8 @@ export interface SessionCreateInput {
   readonly modelTarget?: SessionModelTarget;
   /** Named black-box executor contributed by a Host plugin. */
   readonly executorId?: string;
-  readonly thinkingLevel?: ThinkingLevel;
+  /** Omitted applies the model preference; null explicitly uses the provider default. */
+  readonly thinkingLevel?: ThinkingLevel | null;
   readonly toolProfile?: SessionToolProfile;
   readonly permissionMode?: PermissionMode;
   readonly collaborationMode?: CollaborationMode;
@@ -549,7 +550,7 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
     ...(target ? { modelTarget: target } : {}),
     ...(executorId ? { executorId } : {}),
     ...(Object.hasOwn(input, 'thinkingLevel')
-      ? { thinkingLevel: thinkingLevel(input.thinkingLevel) }
+      ? { thinkingLevel: input.thinkingLevel === null ? null : thinkingLevel(input.thinkingLevel) }
       : {}),
     ...(Object.hasOwn(input, 'toolProfile')
       ? { toolProfile: sessionToolProfile(input.toolProfile) }

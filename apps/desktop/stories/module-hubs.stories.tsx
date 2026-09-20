@@ -30,6 +30,7 @@ import {
   SkillsPage,
   type ManagedSkillUpdatePreview,
   type SkillEntry,
+  type SkillLocation,
   ToastProvider,
   useUiLocale,
 } from '@maka/ui';
@@ -48,6 +49,7 @@ import {
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
 import { withScopedMakaBridge } from './maka-bridge';
+import { withSkillLocationCounts } from '../src/shared/skill-location-counts';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -78,14 +80,15 @@ const CONFIGURED_COMPLETED_LAST_RUN = {
 
 const INSTALLED_SKILLS: SkillEntry[] = [
   {
-    ref: 'workspace:maka:skill-git-flow',
+    ref: 'workspace:legacy:skill-git-flow',
     id: 'skill-git-flow',
     name: 'git-flow',
     description: '封装分支创建、合并与发布打 tag 的常用 git 操作。',
-    path: '~/.maka/skills/git-flow',
+    path: '/workspace/skills/skill-git-flow',
     declaredTools: ['Bash', 'Write'],
     sourceType: 'workspace',
     scope: 'workspace',
+    source: 'legacy',
     contextStatus: 'advertised',
     manageable: true,
     enabled: true,
@@ -96,24 +99,26 @@ const INSTALLED_SKILLS: SkillEntry[] = [
     id: 'skill-docs-screenshot',
     name: 'docs-screenshot',
     description: '把组件截图同步进设计文档，按 token 分类命名。',
-    path: '~/.maka/skills/docs-screenshot',
+    path: '/home/maka/.agents/skills/skill-docs-screenshot',
     declaredTools: ['Bash', 'Read'],
     sourceType: 'workspace',
     scope: 'user',
+    source: 'agents',
     contextStatus: 'disabled',
     manageable: true,
     enabled: false,
     runtimeStatus: 'disabled',
   },
   {
-    ref: 'project:maka:skill-release-notes',
+    ref: 'project:agents:skill-release-notes',
     id: 'skill-release-notes',
     name: 'release-notes',
     description: '从最近的 commit 历史生成发布说明草稿。',
-    path: '~/.maka/skills/release-notes',
+    path: '/project/.agents/skills/skill-release-notes',
     declaredTools: ['Bash'],
-    sourceType: 'bundled',
+    sourceType: 'workspace',
     scope: 'project',
+    source: 'agents',
     contextStatus: 'advertised',
     manageable: false,
     enabled: true,
@@ -123,15 +128,16 @@ const INSTALLED_SKILLS: SkillEntry[] = [
 
 const UPDATE_AVAILABLE_SKILLS: SkillEntry[] = [
   {
-    ref: 'workspace:maka:release-checklist',
+    ref: 'workspace:legacy:release-checklist',
     id: 'release-checklist',
     name: 'release-checklist',
     description: '发布前检查版本、测试证据和变更说明。',
-    path: '~/.maka/skills/release-checklist',
+    path: '/workspace/skills/release-checklist',
     declaredTools: ['Bash', 'Read'],
     sourceType: 'managed',
     managedUpdateStatus: 'update_available',
     scope: 'workspace',
+    source: 'legacy',
     contextStatus: 'advertised',
     manageable: true,
     enabled: true,
@@ -144,7 +150,7 @@ const UPDATE_AVAILABLE_PREVIEW: ManagedSkillUpdatePreview = {
     id: 'release-checklist',
     name: 'release-checklist',
     description: '发布前检查版本、测试证据和变更说明。',
-    path: '~/.maka/skills/release-checklist/SKILL.md',
+    path: '/workspace/skills/release-checklist/SKILL.md',
     declaredTools: ['Bash', 'Read'],
     sourceType: 'managed',
     userModified: false,
@@ -171,14 +177,15 @@ const UPDATE_AVAILABLE_PREVIEW: ManagedSkillUpdatePreview = {
 
 const DISABLED_SKILLS: SkillEntry[] = [
   {
-    ref: 'workspace:maka:spreadsheet-audit',
+    ref: 'workspace:legacy:spreadsheet-audit',
     id: 'spreadsheet-audit',
     name: 'spreadsheet-audit',
     description: '检查工作簿中的公式、格式和异常值。',
-    path: '~/.maka/skills/spreadsheet-audit',
+    path: '/workspace/skills/spreadsheet-audit',
     declaredTools: ['Read'],
     sourceType: 'bundled',
     scope: 'workspace',
+    source: 'legacy',
     contextStatus: 'disabled',
     manageable: true,
     enabled: false,
@@ -190,19 +197,30 @@ const DISABLED_SKILLS: SkillEntry[] = [
 // viewport — the #2236 regression surface (the view switch scrolling away
 // with the list) only exists when the list is taller than its container.
 const LONG_LIST_SKILLS: SkillEntry[] = Array.from({ length: 40 }, (_, index) => ({
-  ref: `workspace:maka:skill-long-${index}`,
+  ref: `workspace:legacy:skill-long-${index}`,
   id: `skill-long-${index}`,
   name: `long-list-skill-${index}`,
   description: '长列表占位技能，用于滚动契约。',
-  path: `~/.maka/skills/skill-long-${index}`,
+  path: `/workspace/skills/skill-long-${index}`,
   declaredTools: ['Bash'],
   sourceType: 'workspace',
   scope: 'workspace',
+  source: 'legacy',
   contextStatus: 'advertised',
   manageable: true,
   enabled: true,
   runtimeStatus: 'enabled',
 }));
+
+// A local Project with readable cross-client and compatibility directories;
+// its client-specific directories have not been created yet.
+const SKILL_DIRECTORIES: Omit<SkillLocation, 'skillCount'>[] = [
+  { ref: 'project:maka', scope: 'project', source: 'maka', path: '/project/.maka/skills', status: 'missing' },
+  { ref: 'project:agents', scope: 'project', source: 'agents', path: '/project/.agents/skills', status: 'available' },
+  { ref: 'workspace:legacy', scope: 'workspace', source: 'legacy', path: '/workspace/skills', status: 'available' },
+  { ref: 'user:maka', scope: 'user', source: 'maka', path: '/home/maka/.maka/skills', status: 'missing' },
+  { ref: 'user:agents', scope: 'user', source: 'agents', path: '/home/maka/.agents/skills', status: 'available' },
+];
 
 const BUNDLED_SKILLS: NonNullable<ComponentProps<typeof SkillsPage>['bundledSkillCatalog']> = [
   {
@@ -692,6 +710,7 @@ function ExtensionsSkillsSurface(props: {
           badge: <ModuleHubSelector hub="extensions" value="skills" onChange={() => {}} />,
         }}
         skills={props.skills ?? []}
+        skillLocations={withSkillLocationCounts(SKILL_DIRECTORIES, props.skills ?? [])}
         managedSkillSources={[]}
         bundledSkillCatalog={props.bundledSkillCatalog ?? []}
         onRefreshSkills={noop}
@@ -699,7 +718,7 @@ function ExtensionsSkillsSurface(props: {
         onRefreshBundledSkillCatalog={noop}
         onOpenSkill={noop}
         onUseSkill={noop}
-        onOpenSkillsFolder={noop}
+        onOpenSkillLocation={noop}
         onInstallBundledSkill={noop}
         onPreviewManagedSkillUpdate={async (skillId) => (
           skillId === UPDATE_AVAILABLE_PREVIEW.skill.id ? UPDATE_AVAILABLE_PREVIEW : null
@@ -838,6 +857,7 @@ function ProductionModuleHubHostSurface() {
         <ModuleHubProvider
           selection={{ section: 'extensions', module: 'skills' }}
           selectModule={noop}
+          clientPathsAccessible={true}
           useSkillInChat={noop}
           openSession={noop}
           appendComposerText={noop}
@@ -883,6 +903,22 @@ async function waitForStoryText(canvasElement: HTMLElement, text: string): Promi
   throw new Error(`Story text did not render: ${text}`);
 }
 
+function expectModuleBodyAlignedWithHeader(canvasElement: HTMLElement): void {
+  const heading = canvasElement.querySelector<HTMLElement>('.astryx-layout-header h1');
+  const body = canvasElement.querySelector<HTMLElement>(
+    '.maka-module-page-rows, .maka-daily-review-report',
+  );
+  if (!heading || !body) throw new Error('Module page geometry did not render');
+  const headingBounds = heading.getBoundingClientRect();
+  const bodyBounds = body.getBoundingClientRect();
+  const leftDelta = Math.abs(bodyBounds.left - headingBounds.left);
+  if (leftDelta > 1 || bodyBounds.width > 900) {
+    throw new Error(
+      `Module body is ${Math.round(leftDelta)}px outside the header content lane and ${Math.round(bodyBounds.width)}px wide`,
+    );
+  }
+}
+
 // Real path: sidebar → 扩展 → 技能, before any Skill or bundled catalog entry exists.
 export const ExtensionsSkillsEmpty: Story = {
   render: () => <ExtensionsSkillsSurface />,
@@ -922,6 +958,30 @@ export const HostAutomationsDailyReview: Story = {
 // Real path: sidebar → 扩展 → 技能, with several installed Skills.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, 'git-flow');
+    expectModuleBodyAlignedWithHeader(canvasElement);
+  },
+};
+
+// Real path: sidebar → 扩展 → 技能 → 更多技能操作 → 技能位置,
+// with installed copies in the project, compatibility and user directories.
+export const ExtensionsSkillsLocations: Story = {
+  render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
+  play: async ({ canvasElement }) => {
+    const more = await waitForStoryButton(
+      canvasElement,
+      (button) => button.getAttribute('aria-label') === '更多技能操作',
+    );
+    more.click();
+    const body = canvasElement.ownerDocument.body;
+    const submenu = await waitForStorySelector<HTMLElement>(
+      body,
+      '[role="menuitem"][aria-haspopup="menu"]',
+    );
+    submenu.click();
+    await waitForStoryText(body, '/home/maka/.agents/skills');
+  },
 };
 
 // Real path: sidebar → 扩展 → 技能, with bundled Skills available to install.
@@ -967,6 +1027,7 @@ export const ExtensionsSkillsInspector: Story = {
     );
     row.click();
     await waitForStoryText(canvasElement, '固定到技能上下文');
+    expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
 
@@ -1027,6 +1088,7 @@ export const ExtensionsMcpConfigured: Story = {
     );
     installed.click();
     await waitForStoryText(canvasElement, 'filesystem');
+    expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
 
@@ -1106,6 +1168,10 @@ export const ScheduledTasks: Story = {
 // lives on the settings menu item rather than this page.
 export const ScheduledTasksConfigured: Story = {
   render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, '每周发布风险复盘');
+    expectModuleBodyAlignedWithHeader(canvasElement);
+  },
 };
 
 // A newer external settings read wins over a slow local write in the Module
@@ -1173,6 +1239,7 @@ export const ScheduledTasksInspector: Story = {
     );
     row.click();
     await waitForStoryText(canvasElement, '立即触发');
+    expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
 
@@ -1284,6 +1351,7 @@ export const ScheduledDailyReviewReport: Story = {
     );
     view.click();
     await waitForStoryText(canvasElement, '返回活动');
+    expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
 

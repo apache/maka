@@ -23,7 +23,10 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { createHash } from 'node:crypto';
 import { authorizeConnectionModel, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
-import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
+import {
+  defaultThinkingLevelForConnection,
+  thinkingVariantsForConnection,
+} from '@maka/core/model-thinking';
 import {
   executionBoundaryDisplayMode,
   type ExecutionBoundary,
@@ -181,6 +184,14 @@ export class NoUsableImportModelError extends SessionOperationFailure {
   }
 }
 
+/** The WorkHub bootstrap path has no executable default selected by the user. */
+export class WorkHubDefaultModelRequiredError extends SessionOperationFailure {
+  constructor(message: string) {
+    super('operation_unavailable', message);
+    this.name = 'WorkHubDefaultModelRequiredError';
+  }
+}
+
 export interface HostSessionCatalogCoordinatorOptions {
   readonly stores: SessionCatalogStores;
   readonly turnIndex: SessionTurnIndexReader;
@@ -201,6 +212,7 @@ interface ResolvedSessionModel {
   readonly connectionId: string;
   readonly connectionSlug: string;
   readonly model: string;
+  readonly thinkingLevel: SessionHeader['thinkingLevel'];
 }
 
 /** A connection+model the import path may attempt, in preference order. */
@@ -340,7 +352,19 @@ export class HostSessionCatalogCoordinator {
    * action.
    */
   async resolveDefaultCreateTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
-    return this.#composeCreateTarget(this.#resolveModel({ kind: 'default' }, undefined));
+    try {
+      return await this.#composeCreateTarget(
+        this.#resolveModel({ kind: 'default' }, undefined, true),
+      );
+    } catch (error) {
+      if (
+        error instanceof SessionOperationFailure &&
+        (error.code === 'operation_unavailable' || error.code === 'invalid_request')
+      ) {
+        throw new WorkHubDefaultModelRequiredError(error.message);
+      }
+      throw error;
+    }
   }
 
   async #composeCreateTarget(
@@ -351,6 +375,7 @@ export class HostSessionCatalogCoordinator {
       llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
       model: model.model,
+      ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
       permissionMode: policy.policy.chatDefaults.permissionMode,
       toolMode: policy.policy.chatDefaults.codeModeEnabled ? 'code_mode' : 'direct',
       collaborationMode: 'agent',
@@ -388,7 +413,7 @@ export class HostSessionCatalogCoordinator {
           ...(model.connectionId ? { llmConnectionId: model.connectionId } : {}),
           llmConnectionSlug: model.connectionSlug,
           model: model.model,
-          ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+          ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
           ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
           permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
           toolMode: policy.policy.chatDefaults.codeModeEnabled ? 'code_mode' : 'direct',
@@ -622,7 +647,7 @@ export class HostSessionCatalogCoordinator {
               ...(model.connectionId ? { llmConnectionId: model.connectionId } : {}),
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
-              ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+              ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
               ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
               permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
               toolMode:
@@ -1052,6 +1077,7 @@ export class HostSessionCatalogCoordinator {
             model: candidate.modelId,
           },
           undefined,
+          true,
         );
       } catch (error) {
         if (!(error instanceof SessionOperationFailure)) throw error;
@@ -1080,7 +1106,8 @@ export class HostSessionCatalogCoordinator {
 
   async #resolveModel(
     target: SessionModelTarget,
-    thinkingLevel: SessionCreateInput['thinkingLevel'],
+    thinkingLevel: Exclude<SessionCreateInput['thinkingLevel'], null>,
+    applyConfiguredDefault = false,
   ): Promise<ResolvedSessionModel> {
     const selected = await this.#selectModelTarget(target);
     const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection({
@@ -1152,25 +1179,37 @@ export class HostSessionCatalogCoordinator {
     // rejected — execution-model-authority rebuilds the runtime connection
     // from the same table, so whatever passes here is exactly what the wire
     // can send.
+    const resolvedThinkingLevel =
+      thinkingLevel ??
+      (applyConfiguredDefault
+        ? defaultThinkingLevelForConnection(
+            {
+              providerType: connection.providerType,
+              modelOverrides: connection.modelOverrides,
+            },
+            selected.modelId,
+          )
+        : undefined);
     if (
-      thinkingLevel !== undefined &&
+      resolvedThinkingLevel !== undefined &&
       !thinkingVariantsForConnection(
         {
           providerType: connection.providerType,
           modelOverrides: connection.modelOverrides,
         },
         selected.modelId,
-      ).includes(thinkingLevel)
+      ).includes(resolvedThinkingLevel)
     ) {
       throw new SessionOperationFailure(
         'invalid_request',
-        `Session model does not support thinking level ${thinkingLevel}`,
+        `Session model does not support thinking level ${resolvedThinkingLevel}`,
       );
     }
     return {
       connectionId: connection.connectionId,
       connectionSlug: connection.slug,
       model: selected.modelId,
+      thinkingLevel: resolvedThinkingLevel,
     };
   }
 
@@ -1280,6 +1319,7 @@ export class HostSessionCatalogCoordinator {
     readonly connectionId?: string;
     readonly connectionSlug: string;
     readonly model: string;
+    readonly thinkingLevel?: SessionHeader['thinkingLevel'];
   }> {
     if (input.executorId) {
       try {
@@ -1302,7 +1342,11 @@ export class HostSessionCatalogCoordinator {
         'Session creation requires a model target or executor id',
       );
     }
-    return await this.#resolveModel(input.modelTarget, input.thinkingLevel);
+    return await this.#resolveModel(
+      input.modelTarget,
+      input.thinkingLevel ?? undefined,
+      input.thinkingLevel !== null,
+    );
   }
 
   async #readRuntimePolicy(): Promise<
@@ -1388,7 +1432,7 @@ function createRequestFingerprint(
   prepared: PreparedSessionCreate,
 ): string {
   const identity = [
-    'session.create.v4',
+    'session.create.v5',
     input.sessionId,
     input.workspace.kind === 'project'
       ? ['project', input.workspace.projectId]
@@ -1405,7 +1449,7 @@ function createRequestFingerprint(
             input.modelTarget!.connectionSlug,
             input.modelTarget!.model,
           ],
-    input.thinkingLevel ?? null,
+    input.thinkingLevel === undefined ? ['model_default'] : input.thinkingLevel,
     input.toolProfile ?? null,
     prepared.permissionMode ?? ['runtime_default'],
     input.collaborationMode ?? 'agent',

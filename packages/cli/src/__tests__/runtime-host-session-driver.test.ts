@@ -2973,15 +2973,7 @@ class FakeConnection {
     }
     if (operation === 'runtime.resource.stop') {
       if (this.runtimeResourceStopFailure) throw this.runtimeResourceStopFailure;
-      return {
-        resource: {
-          ...this.userCommandResource,
-          status: 'cancelled',
-          updatedAt: 2,
-          completedAt: 2,
-          revision: 2,
-        },
-      } as OperationOutput<K>;
+      return {} as OperationOutput<K>;
     }
     if (operation === 'runtime.resource.query') {
       if (this.runtimeResourceQuery === undefined) {

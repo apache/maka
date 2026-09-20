@@ -80,8 +80,8 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
       },
       'blocked:all_connections_retired': {
         eyebrow: '连接需要处理',
-        title: '现有连接的登录方式已停用。',
-        body: '这些连接使用的登录方式已从 Maka 移除，无法再登录，也无法用于对话。添加一个新的模型连接即可继续。',
+        title: '现有连接的模型服务已停用。',
+        body: '这些连接已无法用于对话。添加一个新的模型连接即可继续。',
         cta: { label: '添加模型连接' },
         tone: 'destructive',
       },
@@ -129,8 +129,8 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
       },
       'blocked:all_connections_retired': {
         eyebrow: '連線需要處理',
-        title: '現有連線的登入方式已停用。',
-        body: '這些連線使用的登入方式已從 Maka 移除，無法再登入，也無法用於對話。新增一個新的模型連線即可繼續。',
+        title: '現有連線的模型服務已停用。',
+        body: '這些連線已無法用於對話。新增一個模型連線即可繼續。',
         cta: { label: '新增模型連線' },
         tone: 'destructive',
       },
@@ -178,8 +178,8 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
       },
       'blocked:all_connections_retired': {
         eyebrow: 'Connection needs attention',
-        title: 'The sign-in your connections use is retired.',
-        body: 'The sign-in these connections use was removed from Maka. They can no longer be signed into or used in a conversation. Add a new model connection to continue.',
+        title: 'Your model providers are retired.',
+        body: 'These connections can no longer be used for conversations. Add a new model connection to continue.',
         cta: { label: 'Add a model connection' },
         tone: 'destructive',
       },

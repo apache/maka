@@ -618,6 +618,9 @@ function validateNonTextInputs(candidateRoot, identity, entries) {
 
   for (const entry of files) {
     const contents = readEntry(entry);
+    if (contents.subarray(0, 16).equals(Buffer.from('SQLite format 3\u0000'))) {
+      throw new Error(`SQLite database ${entry} must be distributed as a textual SQL fixture`);
+    }
     const compiledFormat = compiledArtifactFormat(contents);
     if (compiledFormat) {
       throw new Error(`Compiled artifact ${entry} has forbidden ${compiledFormat} content`);

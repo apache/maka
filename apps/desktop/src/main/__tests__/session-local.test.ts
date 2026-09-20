@@ -453,6 +453,166 @@ test('lost ACK recovery never changes epoch or ID and does not block another Ses
   assert.equal(calls.find((call) => call.messageId === 'message-2')?.originHostEpoch, 'epoch-2');
 });
 
+test('a Message dispatched in a released epoch is settled from the Host, never replayed', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const submissions: TurnMessageSubmitInput[] = [];
+  const queried: string[][] = [];
+  let quiescent = false;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target-1' },
+    client: {
+      ...client('epoch-2'),
+      async queryMessageExecutions(input) {
+        queried.push([...input.messageIds]);
+        return {
+          resolutions: [
+            { messageId: 'message-1', state: 'owned', turnId: 'turn-recovered', runId: 'run-1' },
+          ],
+        };
+      },
+    },
+    submit: async (input) => {
+      submissions.push(input);
+      return accepted;
+    },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  // Dispatch once in the previous epoch, then lose the answer the way a Host
+  // restart does: the local copy is left `unknown` with a dead dispatch epoch.
+  const dispatched = store.enqueue('authority', intent());
+  store.update({
+    ...dispatched,
+    state: 'unknown',
+    intent: { ...dispatched.intent, originHostEpoch: 'epoch-1' },
+  });
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-1')?.state === 'accepted');
+  assert.deepEqual(queried, [['message-1']]);
+  // The old epoch's submit is never replayed: that answer can only be
+  // `outcome_unknown`, which would freeze the copy forever.
+  assert.deepEqual(submissions, []);
+  assert.equal(store.get('authority', 'message-1')?.result?.disposition, 'turn_started');
+});
+
+test('a stale-epoch Message the Host never admitted is retired so later sends proceed', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const submissions: string[] = [];
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target-1' },
+    client: {
+      ...client('epoch-2'),
+      async queryMessageExecutions(input) {
+        // The Host holds no receipt, steering proof, tombstone, or admission
+        // for this identity, so it reports that absence positively.
+        return {
+          resolutions: input.messageIds.map(
+            (messageId) => ({ messageId, state: 'not_admitted' as const }),
+          ),
+        };
+      },
+    },
+    submit: async (input) => {
+      submissions.push(input.messageId);
+      return accepted;
+    },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  const dispatched = store.enqueue('authority', intent());
+  store.update({
+    ...dispatched,
+    state: 'unknown',
+    intent: { ...dispatched.intent, originHostEpoch: 'epoch-1' },
+  });
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-1')?.state === 'failed');
+  // A settled non-delivery releases the Session's ordering.
+  store.enqueue('authority', intent('message-2'));
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-2')?.state === 'accepted');
+  assert.deepEqual(submissions, ['message-2']);
+});
+
+test('a running Host that cannot yet resolve a stale Message leaves the copy unresolved', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target-1' },
+    client: {
+      ...client('epoch-2'),
+      async queryMessageExecutions() {
+        throw new RuntimeHostOperationError('turn.message.execution.query', 'host_not_ready', 'busy');
+      },
+    },
+    submit: async () => accepted,
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  const dispatched = store.enqueue('authority', intent());
+  store.update({
+    ...dispatched,
+    state: 'unknown',
+    intent: { ...dispatched.intent, originHostEpoch: 'epoch-1' },
+  });
+  service.wake();
+  await nextTurn();
+  // Guessing "never delivered" here would let the user resend a Message the
+  // Host may already own, so the copy stays unresolved instead.
+  assert.equal(store.get('authority', 'message-1')?.state, 'unknown');
+});
+
+test('an omitted resolution leaves the stale copy unresolved rather than failed', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target-1' },
+    client: {
+      ...client('epoch-2'),
+      // The Host answered successfully but could not assert anything about the
+      // identity, so it omitted it. That is "cannot say yet", not "not admitted".
+      async queryMessageExecutions() {
+        return { resolutions: [] };
+      },
+    },
+    submit: async () => accepted,
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  const dispatched = store.enqueue('authority', intent());
+  store.update({
+    ...dispatched,
+    state: 'unknown',
+    intent: { ...dispatched.intent, originHostEpoch: 'epoch-1' },
+  });
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-1')?.state === 'unknown');
+  // Only a positive `not_admitted` may retire the copy; silence must not.
+  assert.equal(store.get('authority', 'message-1')?.state, 'unknown');
+});
+
 test('a removed authority cannot be repopulated by an in-flight admission', async (t) => {
   const { store, beforeClose } = await database(t);
   const response = deferred<TurnMessageSubmitResult>();

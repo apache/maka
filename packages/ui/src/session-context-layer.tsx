@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useReducer, type ReactElement } from 'react';
+import { useEffect, useReducer, type ReactElement, type ReactNode } from 'react';
 import {
   BreadcrumbItem,
   Breadcrumbs,
@@ -96,6 +96,7 @@ export function SessionContextLayer(props: {
   onOpenMemorySettings?(): void;
   deepResearchActive?: boolean;
   goal?: SessionContextGoal;
+  actions?: ReactNode;
 }) {
   const copy = getConversationCopy(useUiLocale()).chat;
   const contextItems: ContextItem[] = [];
@@ -338,7 +339,7 @@ export function SessionContextLayer(props: {
     });
   }
 
-  if (!props.branch && contextItems.length === 0) return null;
+  if (!props.branch && contextItems.length === 0 && !props.actions) return null;
   const parentSessionId = props.branch?.parentSessionId;
 
   return (
@@ -392,29 +393,32 @@ export function SessionContextLayer(props: {
             </Breadcrumbs>
           ) : null}
         </div>
-        {contextItems.length > 0 && (
+        {(contextItems.length > 0 || props.actions) && (
           <div className="maka-session-context__cluster">
-            <OverflowList
-              gap={1}
-              minVisibleItems={1}
-              collapseFrom="end"
-              overflowRenderer={(overflowItems) => {
-                const items = overflowItems.flatMap(({ index }) => contextItems[index]?.overflowItems ?? []);
-                return (
-                  <MoreMenu
-                    label={copy.sessionContextMore(items.length)}
-                    size="sm"
-                    items={items}
-                  />
-                );
-              }}
-            >
-              {contextItems.map((item) => (
-                <div key={item.key} className="maka-session-context__item">
-                  {item.element}
-                </div>
-              ))}
-            </OverflowList>
+            {contextItems.length > 0 ? (
+              <OverflowList
+                gap={1}
+                minVisibleItems={1}
+                collapseFrom="end"
+                overflowRenderer={(overflowItems) => {
+                  const items = overflowItems.flatMap(({ index }) => contextItems[index]?.overflowItems ?? []);
+                  return (
+                    <MoreMenu
+                      label={copy.sessionContextMore(items.length)}
+                      size="sm"
+                      items={items}
+                    />
+                  );
+                }}
+              >
+                {contextItems.map((item) => (
+                  <div key={item.key} className="maka-session-context__item">
+                    {item.element}
+                  </div>
+                ))}
+              </OverflowList>
+            ) : null}
+            {props.actions}
           </div>
         )}
       </div>

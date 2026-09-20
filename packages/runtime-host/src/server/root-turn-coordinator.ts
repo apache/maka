@@ -65,7 +65,6 @@ import {
 } from '@maka/runtime/interaction-authority';
 import {
   normalizeStopSessionSource,
-  RuntimeRegenerateTurnError,
   type SessionManager,
   type StopSessionInput,
 } from '@maka/runtime/session-manager';
@@ -2170,21 +2169,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   ): Promise<RootMessageContentPreparation> {
     if ('content' in request) return { kind: 'ready', content: request.content };
     if ('prepareFreshContent' in request) return request.prepareFreshContent(lease);
-    try {
-      return {
-        kind: 'ready',
-        content: normalizeMessageContent(await request.prepareContent()),
-      };
-    } catch (error) {
-      if (error instanceof RuntimeRegenerateTurnError) {
-        return {
-          kind: 'rejected',
-          outcome:
-            error.code === 'not_found' ? notFound(error.message) : operationConflict(error.message),
-        };
-      }
-      throw error;
-    }
+    return {
+      kind: 'ready',
+      content: normalizeMessageContent(await request.prepareContent()),
+    };
   }
 
   private async queryTurnResume(
@@ -2252,9 +2240,19 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     };
   }
 
+  /** Internal composition seam for checks that must share fresh continuation admission. */
+  startTurnResumeWithValidation(
+    input: TurnResumeStartInput,
+    context: ConnectionContext,
+    beforeFreshAdmission?: () => Promise<void>,
+  ): Promise<TurnResumeStartOutcome> {
+    return this.startTurnResume(input, context, beforeFreshAdmission);
+  }
+
   private startTurnResume(
     input: TurnResumeStartInput,
     context: ConnectionContext,
+    beforeFreshAdmission?: () => Promise<void>,
   ): Promise<TurnResumeStartOutcome> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return Promise.resolve(
@@ -2364,6 +2362,15 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               reservation,
               reconstructed.continuation,
             );
+          }
+
+          try {
+            await beforeFreshAdmission?.();
+          } catch (error) {
+            return {
+              kind: 'complete',
+              outcome: operationConflict(errorMessage(error)),
+            };
           }
 
           reservation ??= this.reserveRootTurn(input.sessionId);

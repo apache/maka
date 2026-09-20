@@ -24,7 +24,7 @@ import type { StoredMessage } from '@maka/core/session';
 import { ProcessingBlock, TurnView } from '../src/chat-turn.js';
 import { useUiLocale } from '../src/locale-context.js';
 import { applyLiveTurnEvent, armLiveTurn } from '../src/live-turn-projection.js';
-import { materializeTurns, overlayLiveTurn } from '../src/materialize.js';
+import { materializeTurns, overlayLiveTurn, type TurnViewModel } from '../src/materialize.js';
 
 // Fidelity convention (#1433): the desktop transcript reaches this path
 // through app-shell live events → overlayLiveTurn → TurnView, which is what
@@ -160,13 +160,35 @@ export const AdoptsTheRecordedStart: Story = {
   },
 };
 
-// The same Turn once it settles: the duration is copy, not a clock, and the
-// zh number needs a space before its unit.
+// The same Turn once it settles. The duration lives on the turn's footer row
+// with its finish time, NOT on the process disclosure: the disclosure scrolls
+// away as the answer grows, and the settled state is what a reader comes back
+// for. The zh number needs a space before its unit.
 export const SettledDuration: Story = {
-  render: () => <ProcessingBlock entries={[]} running={false} durationMs={RUNNING_FOR_MS} />,
+  render: () => <SettledTurn />,
   play: async ({ canvasElement }) => {
+    const status = canvasElement.querySelector('.maka-turn-footer-meta .maka-turn-status-line');
+    await expect(status).toHaveTextContent('完成 · 用时 3 分 33 秒');
+    // The finish time is what makes the row worth reading later; the exact clock
+    // depends on the fixture's start, so assert its shape, not a literal.
+    await expect(status?.textContent ?? '').toMatch(/\d{1,2}:\d{2}/);
+    // The disclosure names itself and no longer restates the clock.
     await expect(canvasElement.querySelector('.maka-processing-summary')).toHaveTextContent(
-      '用时 3 分 33 秒',
+      '执行过程',
     );
   },
 };
+
+/** A settled Turn, so its footer row — which owns the state — is mounted. */
+function SettledTurn() {
+  const turn: TurnViewModel = {
+    turnId: TURN_ID,
+    status: 'completed',
+    tools: [],
+    notes: [],
+    startedAt: Date.UTC(2026, 8, 19, 9, 0),
+    durationMs: RUNNING_FOR_MS,
+    timeline: [{ kind: 'text', messageId: 'answer', text: '已完成。' }],
+  };
+  return <TurnView turn={turn} />;
+}

@@ -30,6 +30,20 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
+## `electron-updater@6.8.9`
+
+GitHub can continue serving a withdrawn prerelease in `releases.atom` after
+the Release and its channel metadata are gone. The GitHub provider otherwise
+pins that first same-channel entry, retries its missing `dev.yml`, falls back
+to its missing `latest.yml`, and never considers the next complete entry.
+
+For prerelease channels only, the patch retains eligible Atom entries in feed
+order and advances when both metadata names return 404. Other HTTP and parsing
+failures remain terminal, stable-release selection is unchanged, and the
+withdrawn candidate is never offered or downloaded. Remove the patch when
+electron-updater ships equivalent missing-metadata candidate selection. The
+provider regression is in `scripts/desktop-nightly.test.mjs`.
+
 ## `run@2.1.4` and `@ai-sdk/code-mode@1.0.56`
 
 Code Mode awaits normal Runtime tools, including user interactions. The upstream
@@ -158,7 +172,7 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
-## `@astryxdesign/core@0.6.1`
+## `@astryxdesign/core@0.6.2`
 
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short
@@ -184,6 +198,10 @@ The short, multiline, tall and completion submission stories in
 
 The other component changes preserve host-owned state and semantics:
 
+- `ChatComposerTrigger.menuAnchorRef` lets the Session picker align with the
+  composer instead of a caret-sized anchor. Popover's existing anchor sizing
+  keeps its rows aligned on resize without a second positioning observer.
+  Other triggers retain their caret placement.
 - `ChatLayout.autoScroll` forwards the existing hook's `enabled` option so
   Maka's transcript authority can own scrolling without competing with the
   dependency's auto-follow listeners and writes.
@@ -206,6 +224,12 @@ rewritten or later text still reveals and fades from a parsed-visible boundary.
 Markdown can also transform the displayed prefix immediately before its
 existing incremental parser, so host syntax such as math stays behind the
 streaming cursor without adding another parser or scheduler.
+
+`trimStreamingArtifacts` pairs its unclosed-marker scans with the inline math
+spans it already found. Without that, a complete `$…$` whose TeX contains
+`[`, `*`, or `~~` on the last streamed line is trimmed or auto-closed as if
+the characters were Markdown, mangling a finished formula. Remove this hunk
+when upstream scopes those scans to text outside math.
 
 One hunk is a geometry fix rather than a seam. `ChatLayout`'s frosted dock
 layer is a per-density constant (80/100/120px) while the dock it fades is
