@@ -55,6 +55,7 @@ import type {
   RuntimeHostLifecycleProvider,
   RuntimeHostProviderDefinition,
 } from './runtime-host-lifecycle-provider.js';
+import { nodeRuntimeRefusal, probeNodeRuntime } from './node-runtime-support.js';
 
 /** The budget a managed Runtime Host has to become reachable after its lifecycle is activated. */
 export const RUNTIME_HOST_READY_TIMEOUT_MS = 45_000;
@@ -69,6 +70,7 @@ export interface RuntimeHostLifecycleTransactionDeps {
   ) => Promise<void>;
   readonly verifyOperator: (config: RuntimeHostManagedDeploymentConfig) => Promise<void>;
   readonly connectExisting?: typeof connectExistingRuntimeHost;
+  readonly probeNodeRuntime?: typeof probeNodeRuntime;
   /** Legacy migration keeps the validated old config until commit as its deterministic receipt. */
   readonly uninstallLegacy?: (
     transition: RuntimeHostManagedDeploymentTransition | RuntimeHostManagedDeploymentBlocked,
@@ -88,7 +90,13 @@ export interface RuntimeHostLifecycleTransitionInput {
 
 export class RuntimeHostLifecycleTransactionError extends Error {
   constructor(
-    readonly code: 'transition_failed' | 'recovery_failed' | 'owner_changed' | 'active_tasks',
+    readonly code:
+      | 'transition_failed'
+      | 'recovery_failed'
+      | 'owner_changed'
+      | 'active_tasks'
+      | 'unsupported_node_runtime'
+      | 'node_runtime_unverified',
     message: string,
     options?: ErrorOptions,
   ) {
@@ -558,6 +566,20 @@ export async function replaceRuntimeHostLifecycle(input: {
     ? decodeRuntimeHostManagedDeploymentConfig(input.current)
     : undefined;
   const desired = decodeRuntimeHostManagedDeploymentConfig(input.desired);
+  // Every path that writes a deployment record converges here, and the pinned binary
+  // is launched verbatim afterwards. Retirement below is destructive and an on-demand
+  // update keeps its successor when activation fails, so a runtime that cannot run the
+  // Host — or that nothing could verify — must be refused before anything is retired.
+  const refusedRuntime = nodeRuntimeRefusal(
+    await (input.deps.probeNodeRuntime ?? probeNodeRuntime)(desired.launch.nodePath),
+    desired.launch.nodePath,
+  );
+  if (refusedRuntime) {
+    throw new RuntimeHostLifecycleTransactionError(
+      refusedRuntime.kind === 'unverified' ? 'node_runtime_unverified' : 'unsupported_node_runtime',
+      refusedRuntime.message,
+    );
+  }
   const currentProvider = supervisedProvider(current ?? null, input.deps);
   if (desired.lifecycle.mode === 'supervised') {
     await input.deps.resolveProvider(desired).supervisor.preflight();

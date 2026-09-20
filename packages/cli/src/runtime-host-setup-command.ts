@@ -47,6 +47,7 @@ import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
+import { nodeRuntimeRefusal, probeNodeRuntime } from './node-runtime-support.js';
 import {
   prepareRuntimeHostAccessCredential,
   replaceRuntimeHostAccessCredential,
@@ -183,6 +184,7 @@ interface RuntimeHostSetupDeps {
   readonly resolvePeerNativePath: typeof resolveRuntimeHostNativePath;
   readonly allocateLoopbackPort: typeof allocateRuntimeHostLoopbackPort;
   readonly allocatePeerPort: typeof allocateRuntimeHostPeerPort;
+  readonly probeNodeRuntime: typeof probeNodeRuntime;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
 }
@@ -267,6 +269,7 @@ export async function runRuntimeHostSetupCli(
     resolvePeerNativePath: resolveRuntimeHostNativePath,
     allocateLoopbackPort: allocateRuntimeHostLoopbackPort,
     allocatePeerPort: allocateRuntimeHostPeerPort,
+    probeNodeRuntime,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
     ...overrides,
@@ -605,6 +608,26 @@ async function runRuntimeHostSupervisedSetupLocked(
   });
 }
 
+/**
+ * A deployment pins one Node binary for the life of the record, and an existing pin is
+ * carried forward rather than reselected. The lifecycle transaction refuses an unusable
+ * runtime for every writer; failing here keeps setup from resolving a package first.
+ */
+async function resolveManagedLaunchNodePath(
+  current: RuntimeHostManagedDeploymentConfig | undefined,
+  deps: Pick<RuntimeHostSetupDeps, 'probeNodeRuntime'>,
+): Promise<string> {
+  const nodePath = current?.launch.nodePath ?? process.execPath;
+  const refused = nodeRuntimeRefusal(await deps.probeNodeRuntime(nodePath), nodePath);
+  if (refused) {
+    throw new RuntimeHostSetupError(
+      refused.kind === 'unverified' ? 'node_runtime_unverified' : 'unsupported_node_runtime',
+      refused.message,
+    );
+  }
+  return nodePath;
+}
+
 async function prepareSupervisedDeploymentConfig(
   options: RuntimeHostSetupCliOptions,
   deps: RuntimeHostSetupDeps,
@@ -616,6 +639,7 @@ async function prepareSupervisedDeploymentConfig(
   legacy: RuntimeHostManagedServiceConfig | null,
   offer: RuntimeHostLifecycleProviderOffer,
 ): Promise<RuntimeHostManagedDeploymentConfig> {
+  const nodePath = await resolveManagedLaunchNodePath(current, deps);
   const projectDirectoryRoots = await resolveRuntimeHostManagedProjectDirectoryRoots(
     options.projectDirectoryRoots ??
       current?.projectDirectoryRoots ??
@@ -647,7 +671,7 @@ async function prepareSupervisedDeploymentConfig(
     projectDirectoryRoots: [...projectDirectoryRoots],
     launch: {
       kind: 'exact_package',
-      nodePath: current?.launch.nodePath ?? process.execPath,
+      nodePath,
       package: {
         kind: 'npm_registry',
         version: candidate.version,
@@ -806,6 +830,7 @@ async function runRuntimeHostOnDemandSetupLocked(
       `Runtime Host ${current.launch.package.version} is already installed; changing its exact package requires the update workflow`,
     );
   }
+  const nodePath = await resolveManagedLaunchNodePath(current, deps);
   const draft: RuntimeHostManagedDeploymentConfig = {
     schemaVersion: 1,
     state: 'active',
@@ -820,7 +845,7 @@ async function runRuntimeHostOnDemandSetupLocked(
       current?.projectDirectoryRoots ?? [{ label: '~', path: resolve(homedir()) }],
     launch: {
       kind: 'exact_package',
-      nodePath: current?.launch.nodePath ?? process.execPath,
+      nodePath,
       package: {
         kind: 'npm_registry',
         version: candidate.version,

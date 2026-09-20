@@ -64,7 +64,7 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 ### Requirements
 
-- Node.js 22.19 or newer (CI uses Node.js 24);
+- Node.js 22.19 or newer, excluding 23.0 through 23.7 (CI uses Node.js 24);
 - npm (the lockfile and scripts use npm; the current `packageManager` is npm 11);
 - Git;
 - `ripgrep`, used by Runtime's `Grep` tool.

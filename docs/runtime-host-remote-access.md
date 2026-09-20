@@ -25,9 +25,9 @@ Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or ex
 
 ## Set up a Linux or macOS Host
 
-On a machine with Node.js 22.19 or newer, the released CLI can install and verify a persistent
-Runtime Host in one command. Linux uses a systemd user service; macOS uses a LaunchAgent and
-requires an active GUI login session for that user.
+On a machine with Node.js 22.19 or newer (excluding 23.0 through 23.7), the released CLI can
+install and verify a persistent Runtime Host in one command. Linux uses a systemd user service;
+macOS uses a LaunchAgent and requires an active GUI login session for that user.
 
 ```sh
 npx --yes --package maka-agent@latest maka runtime-host setup \

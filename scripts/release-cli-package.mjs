@@ -259,10 +259,15 @@ function copyNativePrebuildInputToCleanTree(cleanRoot) {
   return destination;
 }
 
+// Node added the `node:zlib` Zstandard bindings Session Bundles import in 22.15.0 and
+// 23.8.0, so 23.0 through 23.7 clear the 22.19 baseline yet cannot run the Host.
+const SUPPORTED_NODE_RANGE = '>=22.19.0 <23.0.0 || >=23.8.0';
+
 function validateNodeVersion() {
   const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
-  if (major < 22 || (major === 22 && minor < 19)) {
-    throw new Error(`Node.js >=22.19.0 is required; found ${process.versions.node}`);
+  const supported = major > 23 || (major === 23 && minor >= 8) || (major === 22 && minor >= 19);
+  if (!supported) {
+    throw new Error(`Node.js ${SUPPORTED_NODE_RANGE} is required; found ${process.versions.node}`);
   }
 }
 

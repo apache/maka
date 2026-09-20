@@ -55,6 +55,7 @@ describe('managed Runtime Host selected update', () => {
       root: { id: TARGET.rootId, path: TARGET.rootPath },
       lifecycle: { mode: 'supervised', provider: 'test' },
       launch: {
+        nodePath: process.execPath,
         package: { kind: 'npm_registry', version: '2.0.0', integrity: INTEGRITY },
       },
     };
@@ -439,7 +440,7 @@ describe('canonical WSL update fences', () => {
     root: { id: TARGET.rootId, path: TARGET.rootPath },
     lifecycle: { mode: 'on_demand', availability: 'activation' },
     launch: {
-      nodePath: '/source/node',
+      nodePath: process.execPath,
       package: { kind: 'npm_registry', version: '2.0.0', integrity: INTEGRITY },
     },
   };
@@ -461,7 +462,7 @@ describe('canonical WSL update fences', () => {
         rootPath: TARGET.rootPath,
         projectDirectoryRoots: [],
         websocket: { host: '127.0.0.1', port: 7400, path: '/runtime-host' },
-        launch: { nodePath: '/source/node', cliPath: '/managed/current/dist/cli.js' },
+        launch: { nodePath: process.execPath, cliPath: '/managed/current/dist/cli.js' },
       },
     },
   };
@@ -504,6 +505,47 @@ describe('canonical WSL update fences', () => {
       assert.equal(terminal?.kind === 'error' ? terminal.error.code : undefined, 'target_mismatch');
     });
 
+  it('refuses a deployment pinned to an unusable runtime before staging', async () => {
+    let output = '';
+    const code = await runManagedRuntimeHostUpdateCli(
+      {
+        ...OPTIONS,
+        version: '2.0.0',
+        sourcePackageRoot: '/candidate',
+        managedRootId: TARGET.rootId,
+        expectedHost: { hostEpoch: 'observed-host', pid: 42 },
+      },
+      {
+        withDeploymentLock: async (_root, operation) => operation(88),
+        prepareDeployment: async () =>
+          assert.fail('an unusable pinned runtime must be refused before staging'),
+        retireSource: async () =>
+          assert.fail('an unusable pinned runtime must be refused before retirement'),
+        canonical: {
+          ...canonical,
+          // An update carries the pinned runtime forward, so the repair path for an
+          // affected deployment must judge it rather than inherit it unexamined.
+          createLifecycleDeps: () =>
+            ({
+              probeNodeRuntime: async (nodePath: string) => {
+                assert.equal(nodePath, process.execPath);
+                return { kind: 'version', version: '23.7.0' };
+              },
+            }) as never,
+        },
+        writeOutput: (value) => {
+          output += value;
+        },
+      },
+    );
+    assert.equal(code, 1);
+    const terminal = decodeRuntimeHostServiceManagementFrame(
+      output.trim().split('\n').at(-1) ?? '',
+    );
+    assert.equal(terminal?.kind === 'error' ? terminal.error.code : undefined, 'invalid_launch');
+    assert.match(terminal?.kind === 'error' ? terminal.error.message : '', /23\.7\.0/u);
+  });
+
   it('runs the source package under the inherited lease and preserves a refused Host', async () => {
     let retired = false;
     let output = '';
@@ -519,7 +561,7 @@ describe('canonical WSL update fences', () => {
         withDeploymentLock: async (_root, operation) => operation(88),
         prepareDeployment: async () => assert.fail('same exact package does not need staging'),
         retireSource: async (input) => {
-          assert.equal(input.sourceNodePath, '/source/node');
+          assert.equal(input.sourceNodePath, process.execPath);
           assert.match(input.sourceCliPath, /\/versions\/registry-[a-f0-9]+\/dist\/cli\.js$/u);
           assert.equal(input.inheritableAuthorityLeaseFd, 88);
           assert.equal(input.expectedHostEpoch, 'observed-host');

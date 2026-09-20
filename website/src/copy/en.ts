@@ -223,7 +223,7 @@ export const en: Copy = {
     source: {
       h2: 'Build from source',
       prerequisites: [
-        'Node.js 22.19 or newer',
+        'Node.js 22.19 or newer, excluding 23.0 through 23.7',
         'npm 11',
         'Git',
         'ripgrep, which the Grep tool shells out to',

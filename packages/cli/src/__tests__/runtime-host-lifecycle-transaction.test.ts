@@ -52,6 +52,7 @@ import {
   retireRuntimeHostLifecycleOwner,
   runtimeHostReconciliationTriggerDefinition,
   runtimeHostSupervisorDefinition,
+  RuntimeHostLifecycleTransactionError,
   verifyRuntimeHostLifecycleReady,
   type RuntimeHostLifecycleTransactionDeps,
 } from '../runtime-host-lifecycle-transaction.js';
@@ -463,6 +464,89 @@ test('replacement reactivates a proven previous authority after a pre-commit fai
     if (current) provider.assertInstalled(current);
     else assert.equal(legacyInstalled, true);
   }
+});
+
+test('a carried-forward runtime that cannot run the Host is refused before retirement', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-node-runtime-'));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  const authorityDirectory = dirname(
+    resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId),
+  );
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+
+  const current = config(capability.canonicalPath, capability.rootId, 1, 'launch_agent');
+  // An update replaces only the package, so an unusable pin survives it untouched.
+  const desired = {
+    ...current,
+    configRevision: 2,
+    launch: {
+      ...current.launch,
+      nodePath: '/opt/node-23.7.0/bin/node',
+      package: {
+        kind: 'npm_registry' as const,
+        version: '2.0.0',
+        integrity: UPDATED_INTEGRITY,
+      },
+    },
+  };
+  await claimRuntimeHostManagedDeployment(capability, current);
+
+  const refusingDeps = (probe: RuntimeHostLifecycleTransactionDeps['probeNodeRuntime']) => ({
+    convergeOperator: async () => assert.fail('an unusable runtime must be refused first'),
+    verifyOperator: async () => assert.fail('an unusable runtime must be refused first'),
+    resolveProvider: () => assert.fail('an unusable runtime must be refused first'),
+    ...(probe ? { probeNodeRuntime: probe } : {}),
+  });
+
+  for (const [probed, expected] of [
+    [{ kind: 'version' as const, version: '23.7.0' }, /23\.7\.0/u],
+    [{ kind: 'unusable' as const, detail: 'the pinned binary does not exist' }, /does not exist/u],
+  ] as const) {
+    await assert.rejects(
+      replaceRuntimeHostLifecycle({
+        operation: 'update',
+        current,
+        desired,
+        deps: refusingDeps(async (nodePath) => {
+          assert.equal(nodePath, desired.launch.nodePath);
+          return probed;
+        }),
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostLifecycleTransactionError &&
+        error.code === 'unsupported_node_runtime' &&
+        expected.test(error.message) &&
+        error.message.includes(desired.launch.nodePath),
+      JSON.stringify(probed),
+    );
+    assert.deepEqual(
+      (await readRuntimeHostManagedDeploymentAuthorityRecord(capability)) ?? undefined,
+      current,
+    );
+  }
+
+  // Retirement below is destructive and an on-demand update keeps its successor when
+  // activation fails, so a runtime nothing could verify must not become authoritative.
+  await assert.rejects(
+    replaceRuntimeHostLifecycle({
+      operation: 'update',
+      current,
+      desired,
+      deps: refusingDeps(async () => ({
+        kind: 'unknown',
+        detail: 'the runtime did not answer before the probe deadline',
+      })),
+    }),
+    (error: unknown) =>
+      error instanceof RuntimeHostLifecycleTransactionError &&
+      error.code === 'node_runtime_unverified' &&
+      /could not verify/u.test(error.message),
+  );
+  assert.deepEqual(
+    (await readRuntimeHostManagedDeploymentAuthorityRecord(capability)) ?? undefined,
+    current,
+  );
 });
 
 test('failed on-demand candidate activation retains the successor authority', async (t) => {

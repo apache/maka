@@ -233,8 +233,16 @@ test('on-demand setup installs one exact deployment without a service backend', 
   assert.equal(persisted.reconciliation.trigger, 'activation');
 
   const retryOutputs: string[] = [];
-  persisted.launch.nodePath =
-    process.platform === 'win32' ? 'C:\\Program Files\\nodejs\\node.exe' : '/opt/maka/node';
+  // A pinned runtime is now probed before it is retained, so this stands in for an
+  // earlier install's pin with a usable binary reached by a path of its own rather
+  // than one that cannot be executed.
+  const carriedForwardNode = join(base, 'carried-forward-node');
+  if (process.platform === 'win32') {
+    persisted.launch.nodePath = process.execPath;
+  } else {
+    await symlink(process.execPath, carriedForwardNode);
+    persisted.launch.nodePath = carriedForwardNode;
+  }
   await writeFile(
     resolveRuntimeHostManagedDeploymentConfigPath(rootId),
     `${JSON.stringify(persisted)}\n`,
@@ -281,6 +289,33 @@ test('on-demand setup installs one exact deployment without a service backend', 
   assert.equal(
     failure?.kind === 'error' ? failure.error.code : undefined,
     'unsupported_lifecycle_configuration',
+  );
+
+  // A pinned runtime that cannot load the Host is refused before it reaches the
+  // record, including the pin an earlier install carried forward.
+  const refusedRuntime: string[] = [];
+  assert.equal(
+    await runRuntimeHostSetupCli(options, {
+      ...overrides,
+      probeNodeRuntime: async () => ({ kind: 'version' as const, version: '23.7.0' }),
+      writeOutput: (value) => refusedRuntime.push(value),
+    }),
+    1,
+  );
+  const unsupportedRuntime = refusedRuntime
+    .map(decodeRuntimeHostSetupFrame)
+    .find((frame) => frame?.kind === 'error');
+  assert.equal(
+    unsupportedRuntime?.kind === 'error' ? unsupportedRuntime.error.code : undefined,
+    'unsupported_node_runtime',
+  );
+  assert.match(
+    unsupportedRuntime?.kind === 'error' ? unsupportedRuntime.error.message : '',
+    /23\.7\.0/u,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(resolveRuntimeHostManagedDeploymentConfigPath(rootId), 'utf8')),
+    persisted,
   );
 
   // Discovery reuses canonical identity even when a newer/older Desktop selects
