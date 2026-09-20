@@ -45,8 +45,11 @@ export interface AppShellSessionUiState {
 
 // The pending plate keeps the Host revision beside its entries so edits can
 // reject stale multi-client projections instead of silently overwriting them.
+// turnId/ts bind the queued-steering bubbles derived from this snapshot.
 export interface MessageQueueUiState {
   readonly queueRevision?: number;
+  readonly turnId: string;
+  readonly ts: number;
   readonly entries: readonly MessageQueueEntryProjection[];
 }
 
