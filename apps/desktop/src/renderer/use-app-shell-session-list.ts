@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import { useUiLocale } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -32,15 +32,14 @@ import {
   selectAuthoritativeSessionIds,
   type SessionCatalogController,
 } from './session-catalog-state.js';
-import { sessionIdSetsEqual } from './features/conversation/index.js';
-import { useExternalStoreSelector } from './use-external-store-selector.js';
+import { sessionIdSetsEqual } from './application/contracts/session-catalog/session-id-set.js';
+import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
+import { createSessionPatchDrain } from './platform/desktop/session-catalog-sync.js';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 
 type ToastApi = {
   error(title: string, description?: string): void;
 };
-
-type RefBox<T> = { current: T };
 
 export function useAppShellSessionList(
   toastApi: ToastApi,
@@ -62,109 +61,48 @@ export function useAppShellSessionList(
     undefined,
     sessionIdSetsEqual,
   );
-  const sessionsRef = useRef<DesktopSessionSummary[]>([]);
-  const refresherRef = useRef<SessionListRefresher<DesktopSessionSummary> | null>(null);
-  const pendingPatchesRef = useRef(
-    new Map<string, { resolve: (session: DesktopSessionSummary | null) => void }[]>(),
+  // The catalog is the authority; the box only adapts its read shape.
+  const sessionsRef = useMemo(
+    () => ({ get current() { return catalog.getState().sessions; } }),
+    [catalog],
   );
-  const patchDrainActiveRef = useRef(false);
+  const refresherRef = useRef<SessionListRefresher<DesktopSessionSummary> | null>(null);
+  refresherRef.current ??= createSessionListRefresher({
+    listSessions: () => window.maka.sessions.list(),
+    currentSessions: () => [...sessionsRef.current],
+    commitSessions: (next) =>
+      catalog.commitSessions(next.map(normalizeSessionSummaryForDisplay)),
+    onError: (error) => {
+      const locale = uiLocaleRef.current;
+      const copy = getDesktopConversationCopy(locale).actions;
+      toastApi.error(
+        copy.refreshSessionsFailedTitle,
+        localizedShellErrorMessage(error, copy.refreshSessionsFailedFallback, locale),
+      );
+    },
+  });
 
-  function commitSessions(next: DesktopSessionSummary[]): void {
-    sessionsRef.current = next;
-    catalog.commitSessions(next);
-  }
-
-  function commitPatch(sessionId: string, summary: DesktopSessionSummary | null): void {
-    catalog.commitPatch(sessionId, summary);
-    sessionsRef.current = [...catalog.getState().sessions];
-  }
-
-  // `sessions:changed` carries the changed row's id, so the hot path reads and
-  // commits only that row. Calls arriving while a batch is in flight fold into
-  // the next drain instead of queueing one IPC per event.
-  async function drainSessionPatches(): Promise<void> {
-    try {
-      while (pendingPatchesRef.current.size > 0) {
-        const batch = [...pendingPatchesRef.current.entries()];
-        pendingPatchesRef.current.clear();
-        await Promise.all(batch.map(async ([sessionId, waiters]) => {
-          try {
-            const summary = await window.maka.sessions.get(sessionId);
-            const normalized = summary === null
-              ? null
-              : normalizeSessionSummaryForDisplay(summary);
-            commitPatch(sessionId, normalized);
-            waiters.forEach(({ resolve }) => resolve(normalized));
-          } catch {
-            // A failed row read must not evict the row; fall back to a full
-            // refresh (deduped by the refresher) so it cannot strand stale.
-            waiters.forEach(({ resolve }) => resolve(null));
-            void refresherRef.current?.refresh().catch(() => undefined);
-          }
-        }));
-      }
-    } finally {
-      patchDrainActiveRef.current = false;
-    }
-  }
-
-  function refreshChangedSession(sessionId: string): Promise<DesktopSessionSummary | null> {
-    const pending = new Promise<DesktopSessionSummary | null>((resolve) => {
-      const waiters = pendingPatchesRef.current.get(sessionId);
-      if (waiters) waiters.push({ resolve });
-      else pendingPatchesRef.current.set(sessionId, [{ resolve }]);
+  // Fixed identities for the renderer's lifetime: everything closes over ref
+  // boxes or the stable controller, and consumers list the actions in dep
+  // arrays and hand them down as props (see `session-workspace-actions.ts`).
+  // Row-level refresh reads the changed row only; the drain lives on the
+  // Desktop adapter because the bridge is not reachable from this layer.
+  const actions = useMemo(() => {
+    const drain = createSessionPatchDrain({
+      normalize: normalizeSessionSummaryForDisplay,
+      commitPatch: (sessionId, summary) => catalog.commitPatch(sessionId, summary),
+      onReadFailure: () => void refresherRef.current?.refresh().catch(() => undefined),
     });
-    if (!patchDrainActiveRef.current) {
-      patchDrainActiveRef.current = true;
-      void drainSessionPatches();
-    }
-    return pending;
-  }
-
-  if (!refresherRef.current) {
-    refresherRef.current = createSessionListRefresher({
-      listSessions: () => window.maka.sessions.list(),
-      currentSessions: () => sessionsRef.current,
-      commitSessions: (next) => commitSessions(next.map(normalizeSessionSummaryForDisplay)),
-      onError: (error) => {
-        const locale = uiLocaleRef.current;
-        const copy = getDesktopConversationCopy(locale).actions;
-        toastApi.error(
-          copy.refreshSessionsFailedTitle,
-          localizedShellErrorMessage(error, copy.refreshSessionsFailedFallback, locale),
-        );
+    return {
+      refreshSessions: () => refresherRef.current!.refresh(),
+      refreshChangedSession: drain.request,
+      seedSessions(snapshotSessions: readonly DesktopSessionSummary[]) {
+        const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
+        catalog.commitSessions(next);
+        return next;
       },
-    });
-  }
+    };
+  }, [catalog]);
 
-  // Fixed identities for the renderer's lifetime: both close over ref boxes and
-  // a state setter only, and consumers list them in dep arrays and hand them
-  // down as props (see `session-workspace-actions.ts`).
-  const actionsRef = useRef<{
-    refreshSessions(): Promise<DesktopSessionSummary[]>;
-    refreshChangedSession(sessionId: string): Promise<DesktopSessionSummary | null>;
-    seedSessions(
-      snapshotSessions: readonly DesktopSessionSummary[],
-    ): DesktopSessionSummary[];
-  } | null>(null);
-  actionsRef.current ??= {
-    async refreshSessions() {
-      return refresherRef.current!.refresh();
-    },
-    refreshChangedSession,
-    seedSessions(snapshotSessions) {
-      const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
-      commitSessions(next);
-      return next;
-    },
-  };
-  const { refreshSessions, seedSessions } = actionsRef.current;
-
-  return {
-    authoritativeSessionIds,
-    sessionsRef,
-    refreshSessions,
-    refreshChangedSession: actionsRef.current.refreshChangedSession,
-    seedSessions,
-  };
+  return { authoritativeSessionIds, sessionsRef, ...actions };
 }

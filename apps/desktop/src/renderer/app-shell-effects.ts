@@ -39,8 +39,8 @@ import {
   createSessionEventStreamSubscription,
   evaluateSessionEventStreamSnapshot,
   recordSessionEventStreamEvent,
-} from './session-event-health';
-import { handleSessionChangedEvent } from './session-change-effects.js';
+} from './application/contracts/session-catalog/session-event-health.js';
+import { handleSessionChangedEvent } from './application/contracts/session-catalog/session-change-effects.js';
 import type {
   DesktopRuntimeHostProfileChangedEvent,
   WindowCommand,
@@ -200,7 +200,14 @@ export function useAppShellBootstrapSubscriptions(options: {
     else if (command.id === 'openHelp') options.openHelp();
   });
   const handleSessionChange = useEffectEvent(
-    (event: SessionChangedEvent) => handleSessionChangedEvent(event, options),
+    (event: SessionChangedEvent) =>
+      handleSessionChangedEvent(event, {
+        ...options,
+        notifyModelRebound: (modelId) => {
+          const copy = getDesktopConversationCopy(options.uiLocale).actions;
+          options.toastApi.info(copy.modelReboundTitle, copy.modelReboundDescription(modelId));
+        },
+      }),
   );
   // Both shortcuts fire while the composer has focus — they always did, and
   // that is the point of a global new-task / settings key — so both opt out of

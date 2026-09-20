@@ -31,8 +31,8 @@ import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/Segme
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
-import { selectSessions, type SessionCatalogController } from '../../session-catalog-state.js';
-import { useExternalStoreSelector } from '../../use-external-store-selector.js';
+import { selectSessions, type SessionCatalogController } from '../../application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../application/contracts/session-catalog/use-external-store-selector.js';
 import { getExternalSessionImportCopy } from '../../locales/external-session-import-copy.js';
 import { getSettingsSharedCopy } from '../../locales/settings-shared-copy.js';
 import { ExportTree } from './export-tree.js';

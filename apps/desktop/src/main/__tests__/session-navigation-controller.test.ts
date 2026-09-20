@@ -37,7 +37,7 @@ import {
   type SessionNavigationSession,
   type UseSessionNavigationControllerInput,
 } from '../../renderer/features/session-navigation/testing.js';
-import { createSessionCatalogController } from '../../renderer/session-catalog-state.js';
+import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 
 function session(

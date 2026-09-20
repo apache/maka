@@ -55,7 +55,7 @@ import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
-import { createObservableState } from '../../../../observable-state.js';
+import { createObservableState } from '../../../../application/contracts/session-catalog/observable-state.js';
 import type { WorkbarIngestInput } from '../../ports.js';
 import {
   abandonPendingCompanionCopy,

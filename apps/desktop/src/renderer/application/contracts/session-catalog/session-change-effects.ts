@@ -19,9 +19,7 @@
 
 import type { SessionChangedEvent, SessionSummary } from '@maka/core/session';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import type { UiLocale } from '@maka/core/ui-locale';
 import { recordSessionEventStreamChange } from './session-event-health.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
 type RefBox<T> = { current: T };
 
@@ -32,7 +30,6 @@ type SessionEventHealthUpdater = (
 export function handleSessionChangedEvent(
   event: SessionChangedEvent,
   options: {
-    uiLocale: UiLocale;
     activeIdRef: RefBox<string | undefined>;
     clearPendingTurnActionsForSession: (sessionId: string) => void;
     refreshMessages: (sessionId: string) => Promise<boolean>;
@@ -43,8 +40,9 @@ export function handleSessionChangedEvent(
     retiredSessionIds(sessions: readonly { id: string }[]): string[];
     /** Mirrors the committed catalog; refresh promises resolve after commit. */
     sessionsRef: RefBox<readonly SessionSummary[]>;
+    /** Surfaces a model rebound; the caller owns the copy. */
+    notifyModelRebound: (modelId: string | undefined) => void;
     setSessionEventHealthBySession: SessionEventHealthUpdater;
-    toastApi: { info(title: string, description?: string): void };
   },
 ): void {
   // The sweep below reads the committed catalog (sessionsRef) rather than this
@@ -77,10 +75,7 @@ export function handleSessionChangedEvent(
   if (event.reason === 'message-appended' && changedSessionId && changedSessionId === options.activeIdRef.current) {
     void options.refreshMessages(changedSessionId);
   }
-  if (event.reason === 'rebound') {
-    const copy = getDesktopConversationCopy(options.uiLocale).actions;
-    options.toastApi.info(copy.modelReboundTitle, copy.modelReboundDescription(event.modelId));
-  }
+  if (event.reason === 'rebound') options.notifyModelRebound(event.modelId);
   void refreshedSessions.then(() => {
     options.retiredSessionIds(options.sessionsRef.current).forEach(options.retireSession);
   });

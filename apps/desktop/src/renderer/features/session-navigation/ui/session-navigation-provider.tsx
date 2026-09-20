@@ -48,10 +48,10 @@ import type {
   SessionNavigationProjectScope,
   SessionNavigationSession,
 } from '../ports.js';
-import { selectSessions, type SessionCatalogController } from '../../../session-catalog-state.js';
-import { selectStaleSessionIds } from '../../../stale-sessions.js';
-import { sessionIdSetsEqual } from '../../../../shared/session-id-set.js';
-import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
+import { selectSessions, type SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
+import { selectStaleSessionIds } from '../../../application/contracts/session-catalog/stale-sessions.js';
+import { sessionIdSetsEqual } from '../../../application/contracts/session-catalog/session-id-set.js';
+import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
 
 /** The chrome the shell owns and the rail only displays. */

@@ -85,10 +85,9 @@ import {
   type SessionNavigationRowActions,
 } from './features/session-navigation';
 import {
-  selectSessionById,
-  selectSessionCount,
-} from './session-catalog-state';
-import { useExternalStoreSelector } from './use-external-store-selector';
+  CatalogRowWatch,
+  type DesktopSessionSummary,
+} from './application/contracts/session-catalog/catalog-row-watch.js';
 import * as TaskEntry from './features/task-entry';
 import type { TaskEntryShellProjection } from './features/task-entry';
 import * as Overlays from './features/overlays/index.js';
@@ -344,10 +343,10 @@ function AppShellContent({
     ownerActiveId,
     switchingSession,
   } = useAppShellSessionWorkspace(toastApi);
-  // The shell's own readings of the catalog, at the granularity it displays —
-  // background row churn belongs to the rail, which subscribes the catalog
-  // inside SessionNavigationProvider (#4109).
-  const sessionCount = useExternalStoreSelector(sessionCatalogController, selectSessionCount);
+  // The shell's own reading of the catalog rides the membership set the list
+  // hook already publishes — background row churn belongs to the rail, which
+  // subscribes the catalog inside SessionNavigationProvider (#4109).
+  const sessionCount = authoritativeSessionIds?.size ?? 0;
   // Only the outstanding read needs a fence; past Sessions leave no hydration metadata.
   const interactionHydrationRef = useRef<{ sessionId: string } | null>(null);
   const markInteractionChanged = useCallback((sessionId: string) => {
@@ -623,31 +622,23 @@ function AppShellContent({
     revisionDraftRef.current = draft;
     setRevisionDraft(draft);
   }, []);
-  // The draft survives on exactly two rows; only their changes can retire it.
-  const revisionDraftSource = useExternalStoreSelector(
-    sessionCatalogController,
-    selectSessionById,
-    revisionDraft?.sourceSessionId,
+  // The draft survives on exactly two catalog rows; CatalogRowWatch below
+  // selects them so their changes alone can retire it.
+  const retireRevisionDraftIfRowsLeave = useCallback(
+    (rows: readonly (DesktopSessionSummary | undefined)[]) => {
+      const draft = revisionDraftRef.current;
+      if (!draft) return;
+      const [source, owner] = rows;
+      if (source && owner && !source.isArchived && !owner.isArchived) return;
+      composerRef.current?.clearDraft(draft.draftSessionId);
+      if (draft.sourceSessionId !== draft.draftSessionId)
+        composerRef.current?.clearDraft(draft.sourceSessionId);
+      if (draft.copyPhase === 'reserved') completeTurnRevisionCopyAttempt(draft);
+      else void abandonTurnRevisionCopyAttempt(draft);
+      commitRevisionDraft(null);
+    },
+    [commitRevisionDraft],
   );
-  const revisionDraftOwner = useExternalStoreSelector(
-    sessionCatalogController,
-    selectSessionById,
-    revisionDraft?.draftSessionId,
-  );
-  useEffect(() => {
-    const draft = revisionDraftRef.current;
-    if (!draft) return;
-    if (
-      revisionDraftSource && revisionDraftOwner
-      && !revisionDraftSource.isArchived && !revisionDraftOwner.isArchived
-    ) return;
-    composerRef.current?.clearDraft(draft.draftSessionId);
-    if (draft.sourceSessionId !== draft.draftSessionId)
-      composerRef.current?.clearDraft(draft.sourceSessionId);
-    if (draft.copyPhase === 'reserved') completeTurnRevisionCopyAttempt(draft);
-    else void abandonTurnRevisionCopyAttempt(draft);
-    commitRevisionDraft(null);
-  }, [revisionDraftSource, revisionDraftOwner, commitRevisionDraft]);
 
   const {
     resumePendingSessionId,
@@ -2174,6 +2165,11 @@ function AppShellContent({
       reportError={showSessionError}
     >
     <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} />
+    <CatalogRowWatch
+      catalog={sessionCatalogController}
+      sessionIds={[revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId]}
+      onRows={retireRevisionDraftIfRowsLeave}
+    />
     <ModuleHub.ModuleHubProvider
       selection={navSelection}
       selectModule={setNavSelection}

@@ -31,7 +31,7 @@ import { reconcileRuntimeHostSessionCatalog } from '../../preload/runtime-host-s
 import {
   createSessionCatalogController,
   type SessionCatalogController,
-} from '../../renderer/session-catalog-state.js';
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 
 type Controller = ReturnType<typeof useSessionSettingIntent<{ sessionId?: string }>>;

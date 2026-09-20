@@ -17,46 +17,4 @@
  * under the License.
  */
 
-/**
- * The writable half of a renderer store: one state value, replaced whole.
- *
- * The renderer has three of these — `app-shell-session-ui-state`,
- * `session-catalog-state`, `session-rail-layout-store` — and they differ only
- * in what they hold and which commands they expose. What they must NOT differ
- * in is the notification rule below, which is load-bearing and was previously
- * restated once per store.
- *
- * Pair with `useExternalStoreSelector` to read one derived value from it.
- */
-export function createObservableState<S>(initial: S) {
-  let current = initial;
-  const listeners = new Set<() => void>();
-
-  return {
-    getState: (): S => current,
-
-    /** Subscribe to state replacements. Stable identity, for `useSyncExternalStore`. */
-    subscribe(listener: () => void): () => void {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-
-    /**
-     * Swap the state and notify, synchronously and in that order. Never
-     * schedule the notification: the terminal-turn handoff reads back the
-     * state it announces, and a selection change is read back by the handler
-     * that made it (#1985, #4109).
-     *
-     * A replacement with the same identity is not a change and notifies
-     * nobody, which is what lets a store's commands be written as plain
-     * `if (unchanged) return`.
-     */
-    replaceState(next: S): void {
-      if (next === current) return;
-      current = next;
-      for (const listener of [...listeners]) listener();
-    },
-  };
-}
+export * from './application/contracts/session-catalog/observable-state.js';

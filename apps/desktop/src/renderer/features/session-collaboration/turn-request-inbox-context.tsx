@@ -21,8 +21,8 @@ import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { useToast, useUiLocale } from '@maka/ui';
 import { getSessionCollaborationCopy } from '../../locales/session-collaboration-copy.js';
 import { useSessionTurnRequestInbox } from './controller/use-turn-request-inbox.js';
-import type { SessionCatalogController, SessionCatalogState } from '../../session-catalog-state.js';
-import { useExternalStoreSelector } from '../../use-external-store-selector.js';
+import type { SessionCatalogController, SessionCatalogState } from '../../application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../application/contracts/session-catalog/use-external-store-selector.js';
 
 const selectSessionIdNames = (
   state: SessionCatalogState,

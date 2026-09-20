@@ -36,7 +36,7 @@ import {
   type SessionModelConfigurationIntent,
   type SessionModelTarget,
 } from './session-model-configuration-intent.js';
-import type { SessionCatalogController } from '../../session-catalog-state.js';
+import type { SessionCatalogController } from '../../application/contracts/session-catalog/session-catalog-state.js';
 import { useSessionSettingsServices } from './services-context.js';
 
 type SessionSettingValues = {

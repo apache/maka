@@ -107,7 +107,7 @@ export function selectStreamingSessionIds(
   return streaming;
 }
 
-export { sessionIdSetsEqual } from '../../../../shared/session-id-set.js';
+export { sessionIdSetsEqual } from '../../../application/contracts/session-catalog/session-id-set.js';
 
 function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | undefined {
   for (let index = items.length - 1; index >= 0; index -= 1) {

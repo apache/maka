@@ -21,7 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { SessionChangedEvent, SessionSummary, StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
-import { handleSessionChangedEvent } from '../../renderer/session-change-effects.js';
+import { handleSessionChangedEvent } from '../../renderer/application/contracts/session-catalog/session-change-effects.js';
 import { createSessionWorkspaceActions } from '../../renderer/session-workspace-actions.js';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 
@@ -71,6 +71,7 @@ function harness(activeId: string | undefined, catalog: SessionSummary[]) {
       return Promise.resolve(next);
     },
     setSessionEventHealthBySession: () => {},
+    notifyModelRebound: () => {},
     toastApi: {
       error: () => {},
       info: () => {},

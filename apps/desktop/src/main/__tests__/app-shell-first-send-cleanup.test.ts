@@ -39,7 +39,7 @@ import { act, createElement } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { useAppShellSessionUiState } from '../../renderer/features/conversation/index.js';
-import { createSessionCatalogController } from '../../renderer/session-catalog-state.js';
+import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 import type { LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';

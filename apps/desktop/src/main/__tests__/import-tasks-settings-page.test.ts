@@ -30,7 +30,7 @@ import {
   SessionBundleServicesProvider,
   SessionBundleTasks,
 } from '../../renderer/features/session-bundle/index.js';
-import { createSessionCatalogController } from '../../renderer/session-catalog-state.js';
+import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { ImportTasksSettingsPage } from '../../renderer/settings/import-tasks-settings-page.js';
 import { RuntimeHostSettingsTarget } from '../../renderer/settings/runtime-host-settings-target.js';
 

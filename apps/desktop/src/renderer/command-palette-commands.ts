@@ -49,7 +49,6 @@ import type { ChatDefaultPermissionMode, SettingsSection, ThemePreference } from
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
@@ -479,36 +478,5 @@ export function buildCommandList(args: {
     }
   }
 
-  return cmds;
-}
-
-/**
- * Session rows for the palette's 会话 group, derived separately from the
- * base command list (#1045): the base list is frozen per palette open/close,
- * while these rebuild only when the visible session catalog or the active
- * session actually changes, so background session creates/renames stay live
- * without reintroducing per-render list rebuilds.
- */
-export function buildSessionCommands(args: {
-  locale: UiLocale;
-  sessions: readonly SessionSummary[];
-  activeSessionId: string | undefined;
-  onSelectSession(id: string): void;
-}): Command[] {
-  const copy = getShellCopy(args.locale).commandPalette;
-  const cmds: Command[] = [];
-  for (const session of args.sessions) {
-    if (session.isArchived) continue;
-    cmds.push({
-      id: `session:${session.id}`,
-      kind: 'session',
-      label: session.name,
-      hint: session.id === args.activeSessionId ? copy.current : undefined,
-      group: copy.groups.conversations,
-      Icon: session.isFlagged ? Palette : MessageSquare,
-      keywords: ['session', 'chat', session.name],
-      run: () => args.onSelectSession(session.id),
-    });
-  }
   return cmds;
 }

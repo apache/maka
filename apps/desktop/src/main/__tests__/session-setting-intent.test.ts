@@ -23,7 +23,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { useSessionSettingIntent, type SessionSettingIntentCatalog } from '@maka/ui';
-import { createObservableState } from '../../renderer/observable-state.js';
+import { createObservableState } from '../../renderer/application/contracts/session-catalog/observable-state.js';
 
 type SessionSettingIntentController<Value> = ReturnType<
   typeof useSessionSettingIntent<{ setting: Value }>

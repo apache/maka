@@ -117,14 +117,7 @@ export const ALLOWED = {
     useAppShellSessionWorkspace: 1,
     useAppShellTurnPresentation: 1,
     useComposerAttachments: 1,
-    useEffect: 7,
-    // The shell's own reads of the session catalog: the session count gates the
-    // onboarding surface, and the two revision-draft rows feed the commit it
-    // issues. Three selector call sites, all whole-tree-scoped reads the shell
-    // genuinely consumes — the catalog subscription itself lives in
-    // `SessionNavigationProvider` / `useAppShellCommands`, which is why this
-    // entry did not exist before (#5441).
-    useExternalStoreSelector: 3,
+    useEffect: 6,
     useLayoutEffect: 2,
     useNewTaskChoice: 1,
     useOnboardingSnapshot: 1,

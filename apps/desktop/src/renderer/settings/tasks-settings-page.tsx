@@ -28,8 +28,7 @@ import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import type { SessionPurgeOutcome } from '../features/session-navigation';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
-import { selectSessions, type SessionCatalogController } from '../session-catalog-state.js';
-import { useExternalStoreSelector } from '../use-external-store-selector.js';
+import type { SessionCatalogController } from '../application/contracts/session-catalog/session-catalog-state.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -46,7 +45,6 @@ import {
  * not have to understand.
  */
 export interface ArchivedTasksBridge {
-  /** The shell's session catalog; the page subscribes it while it is open. */
   catalog: SessionCatalogController;
   projects: readonly ProjectRecord[];
   onRestore(sessionId: string): void;
@@ -76,7 +74,9 @@ export interface ArchivedTasksBridge {
  * changed. What is genuinely new here is finding a task by name or project, and
  * clearing a set of them in one pass.
  */
-export function TasksSettingsPage(props: ArchivedTasksBridge) {
+export function TasksSettingsPage(
+  props: ArchivedTasksBridge & { sessions: readonly DesktopSessionSummary[] },
+) {
   const locale = useUiLocale();
   const copy = getSettingsTasksCopy(locale);
   const toast = useToast();
@@ -103,13 +103,12 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
     [copy.noProject, projectNames],
   );
 
-  const sessions = useExternalStoreSelector(props.catalog, selectSessions);
   // Store order is already recency-first with a stable id tie-break, and the
   // projection preserves it, so there is nothing left to sort here.
-  const archived = useMemo(() => archivedTaskRows(sessions), [sessions]);
+  const archived = useMemo(() => archivedTaskRows(props.sessions), [props.sessions]);
   const knownSessionIds = useMemo(
-    () => new Set(sessions.map((session) => session.id)),
-    [sessions],
+    () => new Set(props.sessions.map((session) => session.id)),
+    [props.sessions],
   );
   const isSearching = query.trim().length > 0;
   const visible = useMemo(

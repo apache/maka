@@ -25,8 +25,8 @@ import { createAppShellSessionUiStateController, type AppShellSessionUiStateCont
 import {
   selectSessionById,
   type SessionCatalogController,
-} from '../../../session-catalog-state.js';
-import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
+} from '../../../application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 
 interface TranscriptSource {
   range(): { readonly sessionId: string; readonly hasOlder: boolean };

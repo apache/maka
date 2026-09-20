@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deriveStaleSessionIds } from '../../renderer/stale-sessions.js';
+import { deriveStaleSessionIds } from '../../renderer/application/contracts/session-catalog/stale-sessions.js';
 
 test('derives stale rows from each Session Host readiness projection', () => {
   const sessions = [

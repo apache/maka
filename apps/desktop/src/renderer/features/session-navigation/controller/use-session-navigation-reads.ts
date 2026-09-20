@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
-import type { SessionCatalogState } from '../../../session-catalog-state.js';
-import type { SessionCatalogController } from '../../../session-catalog-state.js';
+import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
+import type { SessionCatalogState } from '../../../application/contracts/session-catalog/session-catalog-state.js';
+import type { SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { deriveBranchBanner, type BranchBanner } from '../model/branch-banner.js';
 import {
   selectRailLayout,

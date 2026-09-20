@@ -30,15 +30,9 @@ import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host-operation.js';
-import {
-  buildCommandList,
-  buildSessionCommands,
-} from "./command-palette-commands.js";
+import { buildCommandList } from "./command-palette-commands.js";
 import type { Command } from './features/overlays/index.js';
-import { sessionMatchesRail } from './features/session-navigation/index.js';
-import type { SessionCatalogController, SessionCatalogState } from './session-catalog-state.js';
-import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
-import { useExternalStoreSelector } from './use-external-store-selector.js';
+import type { SessionCatalogController } from './session-catalog-state.js';
 import { renderConversationMarkdown } from "./conversation-markdown.js";
 import {
   commandPaletteActionErrorMessage,
@@ -400,45 +394,6 @@ export function buildAppShellCommandList(
   });
 }
 
-/** The command palette lists the rail's membership minus its hidden rows. */
-const selectPaletteSessions = (
-  state: SessionCatalogState,
-  hiddenSessionIds: ReadonlySet<string>,
-) =>
-  state.sessions.filter(
-    (session) => sessionMatchesRail(session) && !hiddenSessionIds.has(session.id),
-  );
-
-const EMPTY_PALETTE_SESSIONS: readonly DesktopSessionSummary[] = [];
-const selectClosedPaletteSessions = () => EMPTY_PALETTE_SESSIONS;
-
-/** A palette command shows id, name and the flag glyph; nothing else re-lists it. */
-function paletteSessionsEqual(
-  left: readonly DesktopSessionSummary[],
-  right: readonly DesktopSessionSummary[],
-): boolean {
-  return left.length === right.length
-    && left.every((session, index) =>
-      session.id === right[index]!.id
-      && session.name === right[index]!.name
-      && session.isFlagged === right[index]!.isFlagged);
-}
-
-export function buildAppShellSessionCommands(
-  optionsRef: RefBox<AppShellCommandListOptions>,
-  visibleSessions: readonly SessionSummary[],
-): ReturnType<typeof buildSessionCommands> {
-  const options = optionsRef.current;
-  return buildSessionCommands({
-    locale: options.uiLocale,
-    sessions: visibleSessions,
-    activeSessionId: options.activeId,
-    onSelectSession: (sessionId) => {
-      optionsRef.current.openSessionInChat(sessionId);
-    },
-  });
-}
-
 /**
  * #1045: the palette's command list keeps a stable identity while it is open.
  * app-shell rebuilds commandOptions on every render (streaming ticks
@@ -453,26 +408,27 @@ export function buildAppShellSessionCommands(
 export function useAppShellCommands(
   paletteOpen: boolean,
   commandOptions: AppShellCommandListOptions,
-): Command[] {
+): {
+  commands: Command[];
+  sessionCatalog: SessionCatalogController;
+  hiddenSessionIds: ReadonlySet<string>;
+  activeSessionId: string | undefined;
+  onSelectSession: (id: string) => void;
+} {
   const optionsRef = useRef(commandOptions);
   optionsRef.current = commandOptions;
-  const { activeId, uiLocale, sessionCatalog, hiddenSessionIds } = commandOptions;
-  const visibleSessions = useExternalStoreSelector(
-    sessionCatalog,
-    paletteOpen ? selectPaletteSessions : selectClosedPaletteSessions,
-    hiddenSessionIds,
-    paletteSessionsEqual,
-  );
-  const baseCommands = useMemo(
+  const { uiLocale } = commandOptions;
+  const commands = useMemo(
     () => buildAppShellCommandList(optionsRef),
     [paletteOpen, uiLocale],
   );
-  const sessionCommands = useMemo(
-    () => (paletteOpen ? buildAppShellSessionCommands(optionsRef, visibleSessions) : []),
-    [paletteOpen, visibleSessions, activeId, uiLocale],
-  );
-  return useMemo(
-    () => [...baseCommands, ...sessionCommands],
-    [baseCommands, sessionCommands],
-  );
+  // Session rows subscribe the catalog inside the palette — the consumption
+  // point — so shell renders are not driven by palette-only reads.
+  return {
+    commands,
+    sessionCatalog: commandOptions.sessionCatalog,
+    hiddenSessionIds: commandOptions.hiddenSessionIds,
+    activeSessionId: commandOptions.activeId,
+    onSelectSession: commandOptions.openSessionInChat,
+  };
 }
