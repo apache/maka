@@ -94,12 +94,6 @@ function domRoot({ clientHeight = 360, scrollHeight = 360 }: { clientHeight?: nu
   return { container, root };
 }
 
-async function openProcessActivity(container: Element) {
-  const trigger = container.querySelector('.maka-process-activity > button');
-  assert.ok(trigger);
-  await act(() => { trigger.dispatchEvent(new window.Event('click', { bubbles: true })); });
-}
-
 function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
   return {
     turnId: 'turn-1',
@@ -211,53 +205,21 @@ test('keeps the assistant answer element as a turn settles around it', async () 
   );
 });
 
-test('groups activity between commentary and preserves expanded details across streamed steps and tool projection', async () => {
+test('keeps reasoning expanded when its last neighboring tool is projected away', async () => {
   const { container, root } = domRoot();
   const thinking: TurnTimelineItem = {
     kind: 'thinking', messageId: 'reason-1', text: 'First observation', live: false,
   };
-  const commentary: TurnTimelineItem = { kind: 'text', messageId: 'before', text: 'Checking the source' };
-  const nextCommentary: TurnTimelineItem = { kind: 'text', messageId: 'after', text: 'Now checking the tests' };
-  const moreTools: TurnTimelineItem = { kind: 'tools', items: [
-    { toolUseId: 'tool-2', toolName: 'Edit', status: 'completed', args: {} },
-    { toolUseId: 'tool-3', toolName: 'Bash', status: 'running', args: {} },
-  ] };
-  await renderTurn(root, turnWith([commentary, thinking, RUNNING_TOOL, ANSWER]), { runningStatus: true });
-  const group = container.querySelector('.maka-process-activity');
-  const trigger = group?.querySelector('button');
-  assert.ok(group && trigger);
-  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
-  assert.match(trigger.textContent ?? '', /Thinking.*1 tool call.*read/);
-  await act(() => { trigger.dispatchEvent(new window.Event('click', { bubbles: true })); });
-  const header = group.querySelector('[data-slot="activity-card-header"]');
+  await renderTurn(root, turnWith([thinking, RUNNING_TOOL, ANSWER]));
+  const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
   assert.equal(header.getAttribute('aria-expanded'), 'true');
-  await renderTurn(root, turnWith([
-    commentary, { ...thinking, text: 'First observation updated' }, RUNNING_TOOL, moreTools,
-    nextCommentary, { ...thinking, messageId: 'reason-2' }, ANSWER,
-  ]), { runningStatus: true });
-  const groups = container.querySelectorAll('.maka-process-activity');
-  assert.equal(groups.length, 2);
-  assert.equal(groups[0], group);
-  assert.equal(trigger.getAttribute('aria-expanded'), 'true');
-  assert.match(trigger.textContent ?? '', /3 tool calls.*Bash/);
-  assert.equal(group.querySelectorAll('.maka-tool-activity-card').length, 3);
-  assert.equal(groups[1]?.querySelector('button')?.getAttribute('aria-expanded'), 'false');
-  for (const batch of groups) assert.doesNotMatch(batch.textContent ?? '', /Checking the source|Now checking the tests|the answer/);
-  assert.match(group.querySelector('.maka-chat-reasoning-content')?.textContent ?? '', /First observation updated/);
-  await renderTurn(root, turnWith([commentary, thinking, ANSWER]));
-  assert.equal(container.querySelector('.maka-process-activity'), group);
-  assert.equal(trigger.getAttribute('aria-expanded'), 'true');
-  assert.equal(group.querySelector('[data-slot="activity-card-header"]'), header);
-  assert.equal(header.getAttribute('aria-expanded'), 'true');
-  await renderTurn(root, { ...turnWith([commentary, thinking, { ...ANSWER, live: false }]), status: 'completed', durationMs: 1000 });
-  const process = container.querySelector('details.maka-processing-sequence')!;
-  assert.equal(process.hasAttribute('open'), false);
-  await act(() => { process.querySelector('summary')!.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
-  assert.equal(process.hasAttribute('open'), true);
-  assert.equal(trigger.getAttribute('aria-expanded'), 'true');
-  assert.equal(header.getAttribute('aria-expanded'), 'true');
+  await renderTurn(root, turnWith([thinking, ANSWER]));
+  const after = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(after);
+  assert.ok(after.isSameNode(header));
+  assert.equal(after.getAttribute('aria-expanded'), 'true');
 });
 
 test('redacts secrets before rendering a settled collapsed reasoning preview', async () => {
@@ -271,7 +233,6 @@ test('redacts secrets before rendering a settled collapsed reasoning preview', a
     },
   ]));
 
-  await openProcessActivity(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /<redacted>/);
@@ -289,7 +250,6 @@ test('preserves currency in a settled collapsed reasoning preview', async () => 
     },
   ]));
 
-  await openProcessActivity(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /cost is \$5, not x \+ 1/);
@@ -303,7 +263,6 @@ test('expanded truncated reasoning shows the current tail without replaying its 
     text: thinking.text, truncated: thinking.truncated,
   }]));
   await renderThinking();
-  await openProcessActivity(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -328,7 +287,6 @@ test('preserves a model-authored single newline in plain reasoning', async () =>
     },
   ]));
 
-  await openProcessActivity(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -891,7 +849,6 @@ test('keeps failed-tool details folded with duration while turn recovery stays o
   assert.doesNotMatch(summary.textContent ?? '', /Needs attention/);
   assert.equal(summary.textContent, 'Worked for 2s');
   assert.equal(container.querySelector('.maka-turn-status-line')?.textContent, 'Failed');
-  assert.match(container.querySelector('.maka-process-activity > button')?.textContent ?? '', /Failed/);
   assert.equal(process.hasAttribute('open'), false);
   assert.doesNotMatch(process.textContent ?? '', /Continue this turn/);
   assert.match(container.textContent ?? '', /Continue this turn/);

@@ -3753,15 +3753,6 @@ const processDisclosureMessages: StoredMessage[] = [
   { type: 'turn_state', id: 'process-completed', turnId: 'process-turn', ts: NOW, status: 'completed' },
 ];
 
-const processActivityMessages: StoredMessage[] = processDisclosureMessages.flatMap((message): StoredMessage[] => message.id !== 'process-check' ? [message] : [
-  message,
-  { type: 'assistant', id: 'process-investigate', turnId: 'process-turn', ts: NOW - 180_000, text: '', thinking: { text: '对照存储模块与恢复测试，确认初始化前是否访问会话。' }, modelId: 'claude-sonnet-4-5' },
-  { type: 'tool_call', id: 'process-storage', turnId: 'process-turn', ts: NOW - 179_000, toolName: 'Read', activityKind: 'read', stepId: 'process-investigate', args: { path: 'src/session-storage.ts' } },
-  { type: 'tool_result', id: 'process-storage-result', turnId: 'process-turn', ts: NOW - 178_000, toolUseId: 'process-storage', isError: false, content: { kind: 'text', text: 'const storedSession = storage.getItem("session");' } },
-  { type: 'tool_call', id: 'process-auth-test', turnId: 'process-turn', ts: NOW - 177_000, toolName: 'Read', activityKind: 'read', stepId: 'process-investigate', args: { path: 'src/auth-store.test.ts' } },
-  { type: 'tool_result', id: 'process-auth-test-result', turnId: 'process-turn', ts: NOW - 176_000, toolUseId: 'process-auth-test', isError: false, content: { kind: 'text', text: 'expect(restoreSession()).toEqual(savedSession);' } },
-]);
-
 // The review controls schedule real stream events and durable ledger receipts.
 // Text arrives live before tools; its assistant row lands after tool results.
 const processPlaybackFrames: Array<{ events: SessionEvent[]; messages: StoredMessage[] }> = [];
@@ -3912,7 +3903,7 @@ export const CompletedProcessCollapsed: Story = {
 // a selection in the final answer. Native summary keyboard activation remains
 // browser-owned; userEvent does not emulate its Enter or focus behavior.
 export const CompletedProcessExpanded: Story = {
-  render: () => <ComposedShell motionEnabled sidebarCollapsed chat={{ messages: processActivityMessages, scrollBehavior: 'auto' }} />,
+  render: () => <ComposedShell motionEnabled sidebarCollapsed chat={{ messages: processDisclosureMessages, scrollBehavior: 'auto' }} />,
   play: async ({ canvasElement }) => {
     await within(canvasElement).findByText('已修复登录状态恢复。');
     const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
@@ -3939,22 +3930,6 @@ export const CompletedProcessExpanded: Story = {
     await expect(getComputedStyle(processBody).overflowY).toBe('clip');
     await expect(summary).toHaveFocus();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
-    const batchTrigger = within(canvasElement).getByRole('button', { name: /3 次工具调用/ });
-    const batch = batchTrigger.closest('.maka-process-activity')!;
-    const foldedHeight = batch.getBoundingClientRect().height;
-    await expect(foldedHeight).toBeLessThanOrEqual(batchTrigger.getBoundingClientRect().height + 1);
-    batchTrigger.click();
-    await waitFor(() => expect(batch.getBoundingClientRect().height).toBeGreaterThan(foldedHeight * 3));
-    const tool = [...batch.querySelectorAll<HTMLElement>('.maka-tool-activity-card [aria-expanded]')]
-      .find((element) => element.textContent?.includes('session-storage.ts'))!;
-    await expect(tool).toBeVisible();
-    tool.click();
-    await waitFor(() => expect([...batch.querySelectorAll('pre')].some((element) =>
-      element.textContent?.includes('storedSession') && element.getBoundingClientRect().height > 0,
-    )).toBe(true));
-    tool.click();
-    batchTrigger.click();
-    await waitFor(() => expect(batch.getBoundingClientRect().height).toBeLessThanOrEqual(foldedHeight + 1));
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
     await expect(answer).toBeVisible();
     const selection = window.getSelection()!;
