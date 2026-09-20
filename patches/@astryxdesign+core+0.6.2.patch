@@ -539,6 +539,76 @@ index 3432f13..898e131 100644
  }
  Markdown.displayName = 'Markdown';
 \ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/dist/Markdown/parser.js b/node_modules/@astryxdesign/core/dist/Markdown/parser.js
+index 55ac179..971f1fc 100644
+--- a/node_modules/@astryxdesign/core/dist/Markdown/parser.js
++++ b/node_modules/@astryxdesign/core/dist/Markdown/parser.js
+@@ -1741,6 +1741,7 @@ export function trimStreamingArtifacts(input, options) {
+   const lastNL = displayTrimmed.lastIndexOf('\n');
+   const prefix = lastNL === -1 ? '' : displayTrimmed.slice(0, lastNL + 1);
+   let tail = lastNL === -1 ? displayTrimmed : displayTrimmed.slice(lastNL + 1);
++  const mathRanges = [];
+   if (options?.math) {
+     // Hold an unmatched inline opener so raw TeX syntax does not flash while
+     // streaming. If another unescaped dollar is already present but fails the
+@@ -1755,6 +1756,7 @@ export function trimStreamingArtifacts(input, options) {
+       }
+       const close = findInlineMathEnd(tail, index);
+       if (close !== -1) {
++        mathRanges.push(index, close);
+         index = close;
+         continue;
+       }
+@@ -1772,10 +1774,23 @@ export function trimStreamingArtifacts(input, options) {
+       index = laterDollar;
+     }
+   }
++  // Unclosed-marker checks below must not see `[`, `*`, or `~~` that live
++  // inside a completed inline math span; TeX owns those characters.
++  const inMathSpan = (pos) => {
++    for (let i = 0; i < mathRanges.length; i += 2) {
++      if (pos >= mathRanges[i] && pos <= mathRanges[i + 1]) {
++        return true;
++      }
++    }
++    return false;
++  };
+ 
+   // Scan backwards for unclosed syntax markers — no regex to avoid ReDoS
+   // Find the last unclosed [ or ![ (link/image start)
+-  const lastBracket = tail.lastIndexOf('[');
++  let lastBracket = tail.lastIndexOf('[');
++  while (lastBracket !== -1 && inMathSpan(lastBracket)) {
++    lastBracket = tail.lastIndexOf('[', lastBracket - 1);
++  }
+   if (lastBracket !== -1) {
+     const afterBracket = tail.slice(lastBracket);
+     // A closed link/image has ](...)  somewhere after the [
+@@ -1834,8 +1849,9 @@ export function trimStreamingArtifacts(input, options) {
+       while (idx + markerLen < tail.length && tail[idx + markerLen] === '*') {
+         markerLen++;
+       }
+-      if (markerLen > 3) {
+-        // 4+ stars — not standard markdown emphasis, skip
++      if (markerLen > 3 || inMathSpan(idx)) {
++        // 4+ stars — not standard markdown emphasis, skip. A `*` inside a
++        // completed math span is TeX, not emphasis.
+         searchFrom = idx + markerLen;
+         continue;
+       }
+@@ -1903,8 +1919,10 @@ export function trimStreamingArtifacts(input, options) {
+       if (idx === -1) {
+         break;
+       }
+-      positions.push(idx);
+-      count++;
++      if (!inMathSpan(idx)) {
++        positions.push(idx);
++        count++;
++      }
+       searchFrom = idx + 2;
+     }
+     if (count % 2 === 1) {
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 index c55f046..09efbbe 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
@@ -1345,6 +1415,76 @@ index 75e68af..ca671d4 100644
    return rendered;
  }
  
+diff --git a/node_modules/@astryxdesign/core/src/Markdown/parser.ts b/node_modules/@astryxdesign/core/src/Markdown/parser.ts
+index 6dee3b2..3717b78 100644
+--- a/node_modules/@astryxdesign/core/src/Markdown/parser.ts
++++ b/node_modules/@astryxdesign/core/src/Markdown/parser.ts
+@@ -2149,6 +2149,7 @@ export function trimStreamingArtifacts(
+   const prefix = lastNL === -1 ? '' : displayTrimmed.slice(0, lastNL + 1);
+   let tail = lastNL === -1 ? displayTrimmed : displayTrimmed.slice(lastNL + 1);
+ 
++  const mathRanges: number[] = [];
+   if (options?.math) {
+     // Hold an unmatched inline opener so raw TeX syntax does not flash while
+     // streaming. If another unescaped dollar is already present but fails the
+@@ -2169,6 +2170,7 @@ export function trimStreamingArtifacts(
+       }
+       const close = findInlineMathEnd(tail, index);
+       if (close !== -1) {
++        mathRanges.push(index, close);
+         index = close;
+         continue;
+       }
+@@ -2186,10 +2188,23 @@ export function trimStreamingArtifacts(
+       index = laterDollar;
+     }
+   }
++  // Unclosed-marker checks below must not see `[`, `*`, or `~~` that live
++  // inside a completed inline math span; TeX owns those characters.
++  const inMathSpan = (pos: number): boolean => {
++    for (let i = 0; i < mathRanges.length; i += 2) {
++      if (pos >= (mathRanges[i] ?? 0) && pos <= (mathRanges[i + 1] ?? 0)) {
++        return true;
++      }
++    }
++    return false;
++  };
+ 
+   // Scan backwards for unclosed syntax markers — no regex to avoid ReDoS
+   // Find the last unclosed [ or ![ (link/image start)
+-  const lastBracket = tail.lastIndexOf('[');
++  let lastBracket = tail.lastIndexOf('[');
++  while (lastBracket !== -1 && inMathSpan(lastBracket)) {
++    lastBracket = tail.lastIndexOf('[', lastBracket - 1);
++  }
+   if (lastBracket !== -1) {
+     const afterBracket = tail.slice(lastBracket);
+     // A closed link/image has ](...)  somewhere after the [
+@@ -2251,8 +2266,9 @@ export function trimStreamingArtifacts(
+       while (idx + markerLen < tail.length && tail[idx + markerLen] === '*') {
+         markerLen++;
+       }
+-      if (markerLen > 3) {
+-        // 4+ stars — not standard markdown emphasis, skip
++      if (markerLen > 3 || inMathSpan(idx)) {
++        // 4+ stars — not standard markdown emphasis, skip. A `*` inside a
++        // completed math span is TeX, not emphasis.
+         searchFrom = idx + markerLen;
+         continue;
+       }
+@@ -2317,8 +2333,10 @@ export function trimStreamingArtifacts(
+       if (idx === -1) {
+         break;
+       }
+-      positions.push(idx);
+-      count++;
++      if (!inMathSpan(idx)) {
++        positions.push(idx);
++        count++;
++      }
+       searchFrom = idx + 2;
+     }
+     if (count % 2 === 1) {
 diff --git a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
 index 6c581d4..d3a9857 100644
 --- a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
