@@ -2278,11 +2278,31 @@ export const Composer = forwardRef<
                   its explanation, so the footer never reflows when a turn
                   starts or ends. */}
               <div className="maka-model-selection-controls">
-                {/* A plugin Executor owns its model and thinking controls through
-                    the Composer slot below. Rendering the native AI-SDK pair at
-                    the same time presents two contradictory model targets. */}
-                {props.executorTarget ? null : (
-                  <>
+                <MakaClientSessionScope sessionId={props.activeSession?.id}>
+                  <MakaClientSlotOutlet
+                    name="conversation.composer.model-selection"
+                    owner={{
+                      disabled: props.disabled === true,
+                      streaming: props.streaming === true,
+                      hasSession: props.activeSession !== undefined,
+                      presentation: props.pickerPresentation,
+                      isReadOnly: props.pickersReadOnly,
+                      modelChoices: props.modelChoices ?? [],
+                      activeModel: props.activeModel,
+                      activeModelLabel: props.activeModelLabel,
+                      activeModelConnectionId: props.activeModelConnectionId,
+                      activeModelConnectionSlug: props.activeModelConnectionSlug,
+                      activeProviderType: props.activeProviderType,
+                      newChatModel: props.newChatModel,
+                      executorTarget: props.executorTarget,
+                      onNativeModelChange: props.activeSession
+                        ? props.onModelChange
+                        : props.onPickNewChatModel,
+                      onExecutorTargetChange: props.onExecutorTargetChange,
+                    }}
+                    options={{
+                      fallback: (
+                        <>
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     presentation={props.pickerPresentation}
@@ -2347,8 +2367,11 @@ export const Composer = forwardRef<
                     onChange={props.onNewChatThinkingLevelChange}
                   />
                 )}
-                  </>
-                )}
+                        </>
+                      ),
+                    }}
+                  />
+                </MakaClientSessionScope>
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
               </div>
               {/* The project decides where a NEW chat starts, which makes it a

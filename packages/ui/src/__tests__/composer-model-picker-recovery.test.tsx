@@ -30,7 +30,7 @@ import { ThinkingLevelSelector } from '../chat-model-switcher.js';
 import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
 import { LocaleProvider } from '../locale-context.js';
 
-test('a plugin Executor replaces the native model and thinking controls', () => {
+test('the native model pair remains the model-selection slot fallback', () => {
   const session = {
     id: 'codex-session',
     llmConnectionSlug: 'executor:codex.app-server',
@@ -72,9 +72,10 @@ test('a plugin Executor replaces the native model and thinking controls', () => 
   assert.match(native, /maka-model-switcher-trigger/u);
   assert.match(native, /maka-thinking-level-selector/u);
 
-  const pluginExecutor = render(true);
-  assert.doesNotMatch(pluginExecutor, /maka-model-switcher-trigger/u);
-  assert.doesNotMatch(pluginExecutor, /maka-thinking-level-selector/u);
+  const pluginExecutorWithoutClientContribution = render(true);
+  assert.match(pluginExecutorWithoutClientContribution, /maka-model-switcher-trigger/u);
+  assert.match(pluginExecutorWithoutClientContribution, /maka-thinking-level-selector/u);
+  assert.match(pluginExecutorWithoutClientContribution, /conversation\.composer\.model-selection/u);
 });
 
 test('model switch availability has one priority-ordered contract', () => {

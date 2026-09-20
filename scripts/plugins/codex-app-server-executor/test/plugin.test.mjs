@@ -83,7 +83,7 @@ test('package registers the main-compatible executor and lifecycle order', () =>
   });
 });
 
-test('client bundle registers Codex controls in the Composer toolbar', async () => {
+test('client bundle merges Codex and native models in the Composer model selector', async () => {
   let moduleFactory;
   runInNewContext(await readFile(join(here, '..', 'client.js'), 'utf8'), {
     window: {
@@ -96,22 +96,34 @@ test('client bundle registers Codex controls in the Composer toolbar', async () 
   });
   assert.equal(typeof moduleFactory, 'function');
   const React = {
+    Fragment: Symbol('Fragment'),
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
     useEffect() {},
     useState(value) {
+      if (Array.isArray(value)) {
+        return [
+          [
+            {
+              model: 'gpt-6-astra',
+              displayName: 'GPT-6-Astra',
+              defaultReasoningEffort: 'high',
+              supportedReasoningEfforts: [{ reasoningEffort: 'high' }],
+            },
+          ],
+          () => {},
+        ];
+      }
+      if (value === true) return [false, () => {}];
       return [value, () => {}];
     },
   };
   const client = moduleFactory((id) => {
-    assert.equal(id, 'react');
-    return React;
+    if (id === 'react') return React;
+    if (id === '@maka/ui/client-plugin') return { Selector: 'Selector' };
+    assert.fail(`unexpected module: ${id}`);
   });
   let registration;
-  let css = '';
   client.apply({
-    style(value) {
-      css = value;
-    },
     remote: { call: async () => [] },
     slots: {
       register(options, component) {
@@ -120,10 +132,35 @@ test('client bundle registers Codex controls in the Composer toolbar', async () 
       },
     },
   });
-  assert.equal(registration.options.name, 'conversation.composer.toolbar');
-  assert.match(css, /codexExecutorControls/u);
-  assert.doesNotThrow(() =>
-    registration.component({ disabled: false, streaming: false, hasSession: false }),
+  assert.equal(registration.options.name, 'conversation.composer.model-selection');
+  assert.equal(registration.options.select({ onExecutorTargetChange() {} }), true);
+  assert.equal(registration.options.select({}), null);
+  const rendered = registration.component({
+    disabled: false,
+    streaming: false,
+    hasSession: false,
+    modelChoices: [
+      {
+        connectionId: 'native-1',
+        connectionSlug: 'native',
+        model: 'native-model',
+        label: 'Native model',
+        providerLabel: 'OpenAI',
+      },
+    ],
+    onExecutorTargetChange() {},
+  });
+  const controls = rendered.type(rendered.props);
+  const selector = controls.children[0];
+  assert.equal(selector.type, 'Selector');
+  assert.equal(
+    JSON.stringify(
+      selector.props.options.map(({ label, description }) => ({ label, description })),
+    ),
+    JSON.stringify([
+      { label: 'Native model', description: 'OpenAI' },
+      { label: 'GPT-6-Astra', description: 'Codex' },
+    ]),
   );
 });
 
