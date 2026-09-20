@@ -62,6 +62,7 @@
 }
 
 .maka-composer-queue {
+  position: relative;
   width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
   max-width: var(--maka-reading-measure);
   margin: 0 auto var(--space-1);
@@ -129,24 +130,17 @@
   cursor: grabbing;
 }
 
-.maka-composer-queue-local:not(:first-child) {
-  border-top: var(--border-width-hairline) solid var(--border);
+.maka-composer-queue-help {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  opacity: 0;
+  transition: opacity 120ms ease;
 }
 
-.maka-composer-queue-delivery {
-  display: grid;
-  place-items: center;
-  width: 16px;
-  color: var(--muted-foreground);
-  outline: none;
-}
-
-.maka-composer-queue-delivery[data-tone='unconfirmed'] {
-  color: var(--warning-text);
-}
-
-.maka-composer-queue-delivery[data-tone='failed'] {
-  color: var(--destructive-text);
+.maka-composer-queue:hover .maka-composer-queue-help,
+.maka-composer-queue-help:focus-visible {
+  opacity: 1;
 }
 
 @media (max-width: 640px) {
@@ -664,13 +658,3 @@
   gap: var(--space-3);
 }
 
-.maka-composer-queue-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  color: var(--muted-foreground);
-  font: var(--maka-text-body);
-  white-space: nowrap;
-}

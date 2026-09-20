@@ -35,6 +35,7 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   let changed!: (sessionId: string) => void;
   const cancelled: string[][] = [];
   const reconciled: string[][] = [];
+  const restored: string[][] = [];
   let messages: DesktopLocalMessage[] = [
     { sessionId: 'session-1', messageId: 'steering', createdAt: 1, state: 'unknown', canCancel: false,
       text: 'steering', attachments: [], inlineReferences: [], placement: 'current_turn' },
@@ -59,23 +60,24 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       publish: (_id, message) => { transient.set(message.id, message); },
       retire: (_id, messageId) => { transient.delete(messageId); },
       reportError: (message) => { throw new Error(message); },
+      restoreDraft: (sessionId, text) => { restored.push([sessionId, text]); },
     }) }),
   })));
   const steering = transient.get('steering');
-  assert.equal(steering?.deliveryState, 'unconfirmed');
   assert.equal(steering?.deliveryStatus, 'Delivery unconfirmed. Do not send again.');
   assert.deepEqual(steering?.deliveryActions?.map((action) => action.label), ['Check delivery'],
     'an unconfirmed send offers only its receipt check, never cancellation');
   const followup = transient.get('followup');
-  assert.equal(followup?.deliveryState, 'pending');
   assert.equal(followup?.deliveryStatus, 'Waiting to send');
-  assert.deepEqual(followup?.deliveryActions?.map((action) => action.label), ['Cancel sending']);
+  assert.deepEqual(followup?.deliveryActions?.map((action) => action.label), ['Edit', 'Cancel sending']);
   await act(async () => { await steering?.deliveryActions?.[0]?.onClick(); });
   assert.deepEqual(reconciled, [['session-1', 'steering']]);
   assert.equal(transient.has('steering'), true, 'checking delivery does not retire the row');
   await act(async () => { await followup?.deliveryActions?.[0]?.onClick(); });
   assert.deepEqual(cancelled, [['session-1', 'followup']]);
-  assert.equal(transient.has('followup'), false, 'cancel retires the local row');
+  assert.deepEqual(restored, [['session-1', 'followup']],
+    'editing a never-dispatched message returns its text to the composer');
+  assert.equal(transient.has('followup'), false, 'edit retires the local row');
   messages = [
     { ...messages[0]!, state: 'failed', canCancel: true },
     { sessionId: 'session-1', messageId: 'settled', createdAt: 4, state: 'accepted', canCancel: false,
@@ -86,9 +88,8 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   ];
   await act(async () => changed('session-1'));
   const failed = transient.get('steering');
-  assert.equal(failed?.deliveryState, 'failed');
   assert.equal(failed?.deliveryStatus, 'Could not send · message kept');
-  assert.deepEqual(failed?.deliveryActions?.map((action) => action.label), ['Delete unsent message']);
+  assert.deepEqual(failed?.deliveryActions?.map((action) => action.label), ['Edit', 'Delete unsent message']);
   assert.deepEqual([...transient.keys()], ['steering', 'root', 'later']);
   assert.equal(transient.get('root')?.transientPlacement, 'current_turn');
   await act(async () => changed('session-1'));
