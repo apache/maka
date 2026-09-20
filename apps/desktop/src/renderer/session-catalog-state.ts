@@ -18,6 +18,7 @@
  */
 
 import { useRef } from 'react';
+import { valuesEqual } from '@maka/ui';
 import {
   compareDesktopSessionCatalogSummaries,
   type DesktopSessionSummary,
@@ -64,12 +65,16 @@ export function createSessionCatalogController() {
       const previousById = new Map(current.sessions.map((s) => [s.id, s]));
       const reconciled = next.map((s) => {
         const prior = previousById.get(s.id);
-        return prior !== undefined && (isStaleSummary(prior, s) || summaryValuesEqual(prior, s))
+        return prior !== undefined && (isStaleSummary(prior, s) || valuesEqual(prior, s))
           ? prior
           : s;
       });
       const sameRows = reconciled.length === current.sessions.length
         && reconciled.every((s, i) => s === current.sessions[i]);
+      // A commit that changed nothing publishes nothing — except the first
+      // one: revision 0 means "no authoritative observation yet", and even an
+      // empty list is one.
+      if (sameRows && current.revision > 0) return;
       state.replaceState({
         ...current,
         sessions: sameRows ? current.sessions : reconciled,
@@ -90,15 +95,16 @@ export function createSessionCatalogController() {
         return;
       }
       if (prior !== undefined && isStaleSummary(prior, summary)) return;
-      const row = prior !== undefined && summaryValuesEqual(prior, summary) ? prior : summary;
+      const row = prior !== undefined && valuesEqual(prior, summary) ? prior : summary;
       const sessions = [...current.sessions];
       if (index < 0) sessions.push(row); else sessions[index] = row;
       sessions.sort(compareDesktopSessionCatalogSummaries);
       const sameRows = sessions.length === current.sessions.length
         && sessions.every((s, i) => s === current.sessions[i]);
+      if (sameRows) return;
       state.replaceState({
         ...current,
-        sessions: sameRows ? current.sessions : sessions,
+        sessions,
         revision: current.revision + 1,
       });
     },
@@ -115,19 +121,6 @@ export type SessionCatalogController = ReturnType<typeof createSessionCatalogCon
 /** A committed row at a newer revision is authoritative over an older snapshot of it. */
 function isStaleSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): boolean {
   return prior.revision > next.revision;
-}
-
-function summaryValuesEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    return Array.isArray(a) && Array.isArray(b) && a.length === b.length
-      && a.every((v, i) => summaryValuesEqual(v, b[i]));
-  }
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  return aKeys.length === bKeys.length
-    && aKeys.every((k) => summaryValuesEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
 }
 
 export const selectSessions = (state: SessionCatalogState): readonly DesktopSessionSummary[] =>
