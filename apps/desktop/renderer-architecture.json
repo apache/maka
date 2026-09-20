@@ -496,7 +496,7 @@
           "react": 1
         },
         "importSpecifiers": 14,
-        "nonTriviaTokens": 3519
+        "nonTriviaTokens": 3512
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,

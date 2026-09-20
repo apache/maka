@@ -188,7 +188,6 @@ export function useAppShellBootstrapSubscriptions(options: {
     void options.refreshProjects();
     void options.refreshConnections();
     void options.refreshMemoryActive('load');
-    void options.refreshShellSettings();
   });
   // PR-2088: the macOS application menu routes New Task / Settings / Keyboard
   // Shortcuts here through one channel. The renderer already owns these
