@@ -23,6 +23,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   SNIPPET_MAX_CODE_POINTS,
   TOOL_RESULT_SCAN_CAP_BYTES,
+  ThreadSearchReadError,
   capCodePoints,
   collectSearchableText,
   findMatch,
@@ -101,8 +102,11 @@ function makeDeps(entries: Record<string, Entry>, privacyPayload: unknown = { in
     async listSessions() {
       return Object.values(entries).map((entry) => entry.session);
     },
-    async readMessages(sessionId: string) {
-      return entries[sessionId]?.messages ?? [];
+    async *readMessagePages(sessionId: string) {
+      yield {
+        messages: (entries[sessionId]?.messages ?? []).map((message, sequence) => ({ sequence, message })),
+        hasMore: false,
+      };
     },
     async getPrivacyContext() {
       return privacyPayload;
@@ -212,11 +216,11 @@ describe('runThreadSearch', () => {
             messages: [userMessage('needle')],
           },
         }),
-        async readMessages(sessionId, signal) {
+        async *readMessagePages(sessionId, signal) {
           reads += 1;
           assert.equal(signal, controller.signal);
           if (sessionId === 'newest') controller.abort();
-          return [];
+          yield { messages: [], hasMore: false };
         },
       },
       { abortSignal: controller.signal },
@@ -459,11 +463,57 @@ describe('runThreadSearch', () => {
       expectResults(
         await runThreadSearch(
         { source: 'thread', query: 'diagnostic', limit: 5 },
-        { ...deps, readMessages: async () => null },
+        { ...deps, readMessagePages: () => { throw new ThreadSearchReadError('unavailable'); } },
         ),
       ),
       [],
     );
+  });
+
+  it('keeps title priority and the result budget across pages and sessions', async () => {
+    const deps = makeDeps({
+      older: { session: session({ id: 'older', name: 'needle older', lastMessageAt: 1 }), messages: [] },
+      newer: { session: session({ id: 'newer', name: 'needle newer', lastMessageAt: 2 }), messages: [] },
+    });
+    const opened: string[] = [];
+    const closed: string[] = [];
+    const response = await runThreadSearch({ source: 'thread', query: 'needle', limit: 5 }, {
+      ...deps,
+      async *readMessagePages(sessionId) {
+        opened.push(sessionId);
+        try {
+          yield { messages: [{ sequence: 8, message: userMessage('needle first', `${sessionId}-first`) }], hasMore: true };
+          yield { messages: [{ sequence: 24, message: userMessage('needle second', `${sessionId}-second`) }], hasMore: false };
+        } finally {
+          closed.push(sessionId);
+        }
+      },
+    });
+    assert.deepEqual(expectResults(response).map(({ target }) => [target?.sessionId, target?.sequence]), [
+      ['newer', undefined], ['newer', 8], ['newer', 24], ['older', undefined], ['older', 8],
+    ]);
+    assert.deepEqual(opened, ['newer', 'older']);
+    assert.deepEqual(closed, ['newer', 'older']);
+    assert.equal(expectResults(response).at(-1)!.truncated, true);
+  });
+
+  it('continues to the next session when closing a reader fails after an early match', async () => {
+    const deps = makeDeps({
+      broken: { session: session({ id: 'broken', lastMessageAt: 2 }), messages: [] },
+      healthy: { session: session({ id: 'healthy', lastMessageAt: 1 }), messages: [] },
+    });
+    const response = await runThreadSearch({ source: 'thread', query: 'needle', limit: 1 }, {
+      ...deps,
+      async *readMessagePages(sessionId) {
+        try {
+          yield { messages: [{ sequence: 8, message: userMessage('needle') }], hasMore: sessionId === 'broken' };
+        } finally {
+          if (sessionId === 'broken') throw new ThreadSearchReadError('close failed');
+        }
+      },
+    });
+    assert.deepEqual(expectResults(response).map(({ target }) => target?.sessionId), ['healthy']);
+    assert.equal(response.ok && response.truncated, false);
   });
 
   it('blocks active or unverifiable privacy state before scanning', async () => {
@@ -486,9 +536,9 @@ describe('runThreadSearch', () => {
             listCalls++;
             return [];
           },
-          async readMessages() {
+          async *readMessagePages() {
             readCalls++;
-            return [];
+            yield { messages: [], hasMore: false };
           },
         },
       );

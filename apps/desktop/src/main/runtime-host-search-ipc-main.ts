@@ -18,12 +18,14 @@
  */
 
 import type { SearchResult } from '@maka/core/search';
-import { runThreadSearch } from '@maka/core/thread-search';
+import { runThreadSearch, ThreadSearchReadError, type ThreadSearchMessagePage } from '@maka/core/thread-search';
+import { SESSION_TRANSCRIPT_PAGE_MAX_BYTES } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { WebContents } from 'electron';
+import { DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES } from '../preload/transcript-contract.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
 import {
-  readWithFallback,
+  rethrowReconnectableReadFailure,
   type ReconnectableReadIpcMain,
 } from './ipc-reconnect-policy.js';
 
@@ -72,25 +74,7 @@ export function registerRuntimeHostSearchIpc(
       const result = await runThreadSearch(request, {
         listSessions: async () =>
           (await deps.client.listSessions()).map(toDesktopHostSessionSummary),
-        readMessages: (sessionId, signal) =>
-          readWithFallback(async () => {
-            if (signal?.aborted) return null;
-            const session = await deps.client.openSession(sessionId);
-            // This handle belongs only to this search. Closing it immediately
-            // stops the Host client's paginated transcript reader before its
-            // next page, including when a read is currently awaiting a reply.
-            let closeTask: Promise<void> | undefined;
-            const close = () => (closeTask ??= session.close());
-            const cancelRead = () => { void close().catch(() => undefined); };
-            signal?.addEventListener('abort', cancelRead, { once: true });
-            try {
-              if (signal?.aborted) return null;
-              return await session.loadTranscript();
-            } finally {
-              signal?.removeEventListener('abort', cancelRead);
-              await close();
-            }
-          }, null),
+        readMessagePages: (sessionId, signal) => readSearchMessagePages(deps.client, sessionId, signal),
         getPrivacyContext: async () => ({
           incognitoActive: (await deps.client.queryRuntimePolicy()).policy.privacy
             .incognitoActive,
@@ -110,6 +94,59 @@ export function registerRuntimeHostSearchIpc(
   deps.ipcMain.handle('search:thread:cancel', (event, requestId: unknown) => {
     if (typeof requestId === 'string') pending.get(event.sender)?.get(requestId)?.abort();
   });
+}
+
+async function* readSearchMessagePages(
+  client: Pick<DesktopRuntimeHostClient, 'openSession'>,
+  sessionId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<ThreadSearchMessagePage> {
+  try {
+    if (signal?.aborted) return;
+    const session = await client.openSession(sessionId);
+    // Only this search owns the handle. Closing also stops a fragment
+    // continuation after its in-flight reply, before another page is requested.
+    let closeTask: Promise<void> | undefined;
+    const close = () => (closeTask ??= session.close());
+    const cancelRead = () => { void close().catch(() => undefined); };
+    signal?.addEventListener('abort', cancelRead, { once: true });
+    try {
+      if (signal?.aborted) return;
+      const bootstrap = session.transcriptBootstrap.durable;
+      const readPage = (cursor: string | null) => session.loadTranscriptPage({
+        direction: 'newer', throughSequence: bootstrap.throughSequence,
+        cursor, anchorSequence: null, maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+      });
+      // A complete bootstrap already contains the whole small transcript.
+      // Otherwise start at the oldest message, with the opening watermark.
+      let cursor: string | null = null;
+      let page = bootstrap.nextCursor === null ? bootstrap : await readPage(cursor);
+      let lastSequence = -1;
+      for (;;) {
+        if (signal?.aborted) return;
+        const decoded = await session.decodeTranscriptPage(page, DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES);
+        if (signal?.aborted) return;
+        const messages = decoded.messages.map(({ identity, message }) => {
+          if (identity <= lastSequence) throw new Error('Search transcript sequence did not advance');
+          lastSequence = identity;
+          return { sequence: identity, message };
+        });
+        if (decoded.nextCursor !== null && (messages.length === 0 || decoded.nextCursor === cursor)) {
+          throw new Error('Search transcript cursor did not advance');
+        }
+        yield { messages, hasMore: decoded.nextCursor !== null };
+        if (decoded.nextCursor === null || signal?.aborted) return;
+        cursor = decoded.nextCursor;
+        page = await readPage(cursor);
+      }
+    } finally {
+      signal?.removeEventListener('abort', cancelRead);
+      await close();
+    }
+  } catch (error) {
+    rethrowReconnectableReadFailure(error);
+    throw new ThreadSearchReadError('Session transcript could not be read.', { cause: error });
+  }
 }
 
 function projectDesktopSearchResult(result: SearchResult): SearchResult {

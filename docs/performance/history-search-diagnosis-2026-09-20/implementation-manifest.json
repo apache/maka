@@ -1,0 +1,17 @@
+{
+  "commit": "d3292393c575d2019ca406a5048099abf3399e0f",
+  "node": "v24.14.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "sourceSha256": {
+    "packages/runtime-host/src/client/session-subscription.ts": "b24285e94747d4831ff7850be148adf628f33b95a6c7bfba490151741cb26034",
+    "packages/core/src/thread-search.ts": "4f57aee6c89116ae1f71a5525dfb15597324b18b9e9664304d91892fb4adc8f1",
+    "packages/core/src/session.ts": "609d31188b2ea61a964b76dcd4f5f06a1ee3fe7d73a70e474e437a9c38fda725",
+    "packages/core/src/runtime-policy.ts": "9fb3410f0acda7cf6817d708d354b63acc957760e05d32e8a583c276a0816040",
+    "apps/desktop/src/main/runtime-host-search-ipc-main.ts": "c53dbe5a14d88c58d4805125f1b3d9bdd121d5a52ef480b9f7060c82adb5c8c1",
+    "packages/runtime-host/src/server/session-transcript-pager.ts": "6504758f52a7e9b10f4c22f56ab296394b3ac1e71f871ca9f945b96eec0501a0",
+    "apps/desktop/src/main/runtime-host-client.ts": "1e8d603e232fab7315321cbd5629e1efa1699dfcb060d015b83529858165d550",
+    "packages/runtime-host/src/protocol/session-transcript.ts": "91ee66c382f0195fbed57e0a1b5e38dd49f0d6d965349a4baf4cf21a151f3161",
+    "packages/runtime-host/src/server/session-transcript-reader.ts": "2d9106a94d6b561140bcbbc3d5b257e8e981950aa09bd28d98fd584e1191d7e8"
+  }
+}

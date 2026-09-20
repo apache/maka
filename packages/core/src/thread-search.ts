@@ -27,7 +27,7 @@
  *
  * Scope (this module, PR-SEARCH-2):
  *   - Pure helper. Accepts an injected `ThreadSearchDeps` so unit tests can
- *     supply fake `listSessions` / `readMessages` without an Electron runtime.
+ *     supply fake `listSessions` / `readMessagePages` without an Electron runtime.
  *   - Bounded substring scan over user-visible message types only:
  *       UserMessage / AssistantMessage / ToolCallMessage / ToolResultMessage.
  *     Excluded: SystemNoteMessage / TokenUsageMessage / TurnStateMessage /
@@ -99,7 +99,15 @@ export const THREAD_SOURCE = 'thread' as const;
  */
 export interface ThreadSearchDeps {
   listSessions(): Promise<SessionSummary[]>;
-  readMessages(sessionId: string, abortSignal?: AbortSignal): Promise<StoredMessage[] | null>;
+  /**
+   * Lazily reads oldest-first pages, preserving the transcript's sequence
+   * identities. Ending iteration must release the reader. Ordinary read
+   * failures throw ThreadSearchReadError so partial content hits can be undone.
+   */
+  readMessagePages(
+    sessionId: string,
+    abortSignal?: AbortSignal,
+  ): AsyncIterable<ThreadSearchMessagePage>;
   /**
    * Host-authority workspace privacy snapshot. Returned as `unknown`
    * deliberately — the helper validates the payload with
@@ -108,6 +116,16 @@ export interface ThreadSearchDeps {
    * or workspace owner). Untrusted request payloads MUST NOT flow into this dep.
    */
   getPrivacyContext(): Promise<unknown>;
+}
+
+export interface ThreadSearchMessagePage {
+  readonly messages: readonly { readonly sequence: number; readonly message: StoredMessage }[];
+  /** Lets a result at the page boundary stop without fetching the next page. */
+  readonly hasMore: boolean;
+}
+
+export class ThreadSearchReadError extends Error {
+  readonly name = 'ThreadSearchReadError';
 }
 
 export interface ThreadSearchSuccess {
@@ -198,7 +216,7 @@ export async function runThreadSearch(
   //   - active incognito (user toggled on): `incognitoActive === true`
   //   - malformed authority payload (system fail-closed): validator
   //     reject treated as if incognito were active
-  // Both paths MUST NOT touch `listSessions` / `readMessages`.
+  // Both paths MUST NOT touch `listSessions` / `readMessagePages`.
   // Distinguishing message wording is kept for diagnostics; consumers
   // can read `message` if they need to differentiate.
   const privacyPayload = await deps.getPrivacyContext();
@@ -294,67 +312,84 @@ export async function runThreadSearch(
       }
     }
 
-    const messages = await deps.readMessages(session.id, options.abortSignal);
-    if (options.abortSignal?.aborted) return abortedSearch();
-    if (!messages) continue;
+    // A failed transcript contributes no content hits, even if earlier pages
+    // matched. The title and any previous Sessions' results remain valid.
+    const contentStart = results.length;
+    const bytesBeforeContent = totalBytes;
+    const truncatedBeforeContent = truncated;
+    let messagesScanned = 0;
+    try {
+      for await (const page of deps.readMessagePages(session.id, options.abortSignal)) {
+        if (options.abortSignal?.aborted) return abortedSearch();
+        for (let messageIndex = 0; messageIndex < page.messages.length; messageIndex += 1) {
+          if (messagesScanned > 0 && messagesScanned % 256 === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          if (options.abortSignal?.aborted) return abortedSearch();
+          messagesScanned += 1;
+          const { message, sequence } = page.messages[messageIndex]!;
+          const turnId = message.turnId;
+          if (
+            session.id === options.activeSessionId &&
+            turnId &&
+            options.excludeTurnIds?.has(turnId)
+          ) {
+            continue;
+          }
 
-    for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
-      if (messageIndex > 0 && messageIndex % 256 === 0) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
+          const rawCandidate = collectSearchableText(message);
+          if (rawCandidate === undefined) continue;
+          const candidate = redactSecrets(rawCandidate);
+          const hit = findMatch(candidate, queryFolded);
+          if (hit === undefined) continue;
+
+          const snippet = capCodePoints(
+            redactSecrets(buildSnippet(candidate, hit, SNIPPET_CONTEXT_HALF)),
+            SNIPPET_MAX_CODE_POINTS,
+          );
+          const snippetBytes = Buffer.byteLength(snippet, 'utf8');
+          if (totalBytes + snippetBytes > TOTAL_PAYLOAD_CAP_BYTES) {
+            truncated = true;
+            scannedCompletePage = false;
+            break sessionScan;
+          }
+          totalBytes += snippetBytes;
+          results.push({
+            source: THREAD_SOURCE,
+            title: searchableTitle,
+            summary: formatSearchResultSummary(message),
+            snippet,
+            target: {
+              kind: 'thread',
+              sessionId: session.id,
+              ...(turnId ? { turnId } : {}),
+              sequence,
+              messageId: message.id,
+              matchKind: threadSearchMatchKind(message),
+              messageTimestamp: message.ts,
+            },
+          });
+          if (
+            results.length >= maxResults &&
+            (messageIndex + 1 < page.messages.length || page.hasMore)
+          ) {
+            truncated = true;
+            scannedCompletePage = false;
+            break sessionScan;
+          }
+        }
+        if (!page.hasMore) break;
       }
+    } catch (error) {
       if (options.abortSignal?.aborted) return abortedSearch();
-      const message = messages[messageIndex]!;
-      if (results.length >= maxResults) {
-        truncated = true;
-        scannedCompletePage = false;
-        break sessionScan;
-      }
-
-      const turnId = (message as { turnId?: string }).turnId;
-      if (session.id === options.activeSessionId && turnId && options.excludeTurnIds?.has(turnId)) {
-        continue;
-      }
-
-      const rawCandidate = collectSearchableText(message);
-      if (rawCandidate === undefined) continue;
-      const candidate = redactSecrets(rawCandidate);
-
-      const hit = findMatch(candidate, queryFolded);
-      if (hit === undefined) continue;
-
-      // Build the snippet, redact secrets, cap length.
-      const snippet = capCodePoints(
-        redactSecrets(buildSnippet(candidate, hit, SNIPPET_CONTEXT_HALF)),
-        SNIPPET_MAX_CODE_POINTS,
-      );
-
-      const snippetBytes = Buffer.byteLength(snippet, 'utf8');
-      if (totalBytes + snippetBytes > TOTAL_PAYLOAD_CAP_BYTES) {
-        truncated = true;
-        scannedCompletePage = false;
-        break sessionScan;
-      }
-      totalBytes += snippetBytes;
-
-      results.push({
-        source: THREAD_SOURCE,
-        title: redactSecrets(session.name),
-        summary: formatSearchResultSummary(message),
-        snippet,
-        // PR-SEARCH-1.5: navigation target via discriminated union; no
-        // `url` field for thread results (maka://session is deferred).
-        target: {
-          kind: 'thread',
-          sessionId: session.id,
-          ...(turnId ? { turnId } : {}),
-          sequence: messageIndex,
-          messageId: message.id,
-          matchKind: threadSearchMatchKind(message),
-          messageTimestamp: message.ts,
-        },
-      });
+      if (!(error instanceof ThreadSearchReadError)) throw error;
+      results.length = contentStart;
+      totalBytes = bytesBeforeContent;
+      truncated = truncatedBeforeContent;
+      scannedCompletePage = true;
     }
   }
+  if (options.abortSignal?.aborted) return abortedSearch();
 
   if (truncated && results.length > 0) {
     results[results.length - 1] = { ...results[results.length - 1]!, truncated: true };

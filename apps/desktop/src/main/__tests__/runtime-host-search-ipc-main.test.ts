@@ -26,7 +26,7 @@ import type { StoredMessage } from '@maka/core/session';
 import type { SearchError, SearchResult } from '@maka/core/search';
 import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
 import type { IpcHandler, ReconnectableReadIpcMain } from '../ipc-reconnect-policy.js';
-import type { DesktopRuntimeHostClient } from '../runtime-host-client.js';
+import type { DesktopRuntimeHostClient, DesktopRuntimeHostSession } from '../runtime-host-client.js';
 import { registerRuntimeHostSearchIpc } from '../runtime-host-search-ipc-main.js';
 import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc-main.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
@@ -60,9 +60,9 @@ test('Runtime Host transcripts produce title and content hits with turn ids', as
           // Three earlier messages so the hit's `sequence` is its real position
           // in the transcript. With a single message every projection, correct
           // or not, reports 0.
-          loadTranscript: async () => [
+          ...transcriptPages(async () => [
             { type: 'user', id: 'host-user-0', turnId: 'turn-host-0', ts: 1, text: '第 0 个问题' },
-            { type: 'assistant', id: 'host-reply-0', turnId: 'turn-host-0', ts: 2, text: '回答 0' },
+            { type: 'assistant', id: 'host-reply-0', turnId: 'turn-host-0', ts: 2, text: '回答 0', modelId: 'fixture' },
             { type: 'user', id: 'host-user-1', turnId: 'turn-host-1', ts: 3, text: '第 1 个问题' },
             {
               type: 'user',
@@ -71,7 +71,7 @@ test('Runtime Host transcripts produce title and content hits with turn ids', as
               ts: 4,
               text: '第 3 个问题：这一段的调用链路是怎样的？',
             },
-          ],
+          ]),
           close: async () => {
             closed += 1;
           },
@@ -159,7 +159,7 @@ test('canceling a search closes its transcript and stops reading further session
       openSession: async (id) => {
         opened.push(id);
         return {
-          loadTranscript: () => { firstRead.resolve(); return transcript.promise; },
+          ...transcriptPages(() => { firstRead.resolve(); return transcript.promise; }),
           close: async () => { closed += 1; transcript.resolve([]); },
         } as never;
       },
@@ -201,7 +201,7 @@ test('a canceled search is not replayed on a replacement Host candidate', async 
     openSession: async () => {
       opened += 1;
       return {
-        loadTranscript: () => { started.resolve(); return transcript.promise; },
+        ...transcriptPages(() => { started.resolve(); return transcript.promise; }),
         close: async () => {},
       } as never;
     },
@@ -257,7 +257,7 @@ for (const lifecycleEvent of ['destroyed', 'render-process-gone'] as const) {
     await started.promise;
     sender.emit(lifecycleEvent, {}, { reason: 'crashed', exitCode: 1 });
     opening.resolve({
-      loadTranscript: async () => { read += 1; return []; },
+      ...transcriptPages(async () => { read += 1; return []; }),
       close: async () => { closed += 1; },
     } as never);
     assert.equal((await task).reason, 'aborted');
@@ -286,10 +286,10 @@ test('renderer crash closes an in-flight search and allows a new search on the s
         opened.push(id);
         const abandoned = opened.length === 1;
         return {
-          loadTranscript: async () => {
+          ...transcriptPages(async () => {
             if (abandoned) { started.resolve(); return transcript.promise; }
             return [{ type: 'user', id: 'message', turnId: 'turn', ts: 1, text: 'latest match' }];
-          },
+          }),
           close: async () => { closed.push(id); },
         } as never;
       },
@@ -339,13 +339,13 @@ test('rapid replacement and dismissal stop each old scan while the latest query 
         const scan = { closed: 0, page: deferred<StoredMessage[]>() };
         scans.push(scan);
         return {
-          loadTranscript: async () => {
+          ...transcriptPages(async () => {
             started.resolve();
             if (completeLatest) return [
               { type: 'user', id: 'message', turnId: 'turn', ts: 1, text: 'latest match' },
             ];
             return scan.page.promise;
-          },
+          }),
           close: async () => { scan.closed += 1; },
         } as never;
       },
@@ -449,5 +449,23 @@ function catalogSession(id: string, name: string): SessionCatalogProjection {
     permissionMode: 'ask',
     collaborationMode: 'agent',
     orchestrationMode: 'default',
+  };
+}
+
+/** Lifecycle tests can hold a page in flight without opening a real Host. */
+function transcriptPages(read: () => Promise<StoredMessage[]>): Pick<
+  DesktopRuntimeHostSession, 'transcriptBootstrap' | 'decodeTranscriptPage'
+> {
+  return {
+    transcriptBootstrap: {
+      durable: {
+        kind: 'page', sessionId: 'fixture', direction: 'older', throughSequence: null,
+        fragments: [], rawBytes: 0, nextCursor: null, endsAtTurnBoundary: true,
+      },
+    },
+    decodeTranscriptPage: async () => ({
+      messages: (await read()).map((message, identity) => ({ identity, message })),
+      nextCursor: null,
+    }),
   };
 }

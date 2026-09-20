@@ -162,7 +162,7 @@ describe('search error copy', () => {
             const fail = async (): Promise<never> => assert.fail('Rejected queries must not read history');
             const response = await runThreadSearch(request, {
               listSessions: fail,
-              readMessages: fail,
+              readMessagePages: () => assert.fail('Rejected queries must not read history'),
               getPrivacyContext: fail,
             });
             assert.equal(response.ok, false);
