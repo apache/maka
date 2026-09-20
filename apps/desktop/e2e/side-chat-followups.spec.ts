@@ -88,7 +88,7 @@ test('Side Chat follow-ups survive queue actions, Host handoffs and reconnect', 
     await composer.fill('side conversation acceptance source');
     await awaitSendReady(page);
     await composer.press('Enter');
-    await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, { timeout: 20_000 });
+    await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, { timeout: 20_000 });
     const originalSessionIds = await page.evaluate(async () =>
       (await window.maka.sessions.list()).map((session) => session.id));
     await page.getByRole('button', { name: '展开任务工作栏' }).click();

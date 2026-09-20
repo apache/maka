@@ -723,6 +723,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           limitsConflict={limitsConflict}
           defaultContextWindow={modelEntry?.defaultContextWindow}
           defaultInputLimit={modelEntry?.defaultInputLimit}
+          thinkingLevels={modelEntry?.thinkingLevels ?? []}
           onChange={(patch) => setDraftParameters(editingModelId, patch)}
           contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
           contextWindowInputInvalid={contextWindowInputInvalid}

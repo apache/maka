@@ -53,7 +53,6 @@ import {
 } from "./attachment-ingest.js";
 import {
   normalizeRuntimeHostBranchFromTurnInput,
-  normalizeRegenerateTurnInput,
   normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
   normalizeClientCapabilityResponse,
@@ -122,7 +121,6 @@ type RuntimeHostSessionExecutionClient = Pick<
   | 'queryMessages'
   | "queryTurnResume"
   | "readExecutionBoundary"
-  | "regenerateTurn"
   | "retractQueueEntry"
   | "promoteQueueEntry"
   | "updateQueueEntry"
@@ -843,20 +841,6 @@ export function registerRuntimeHostSessionExecutionIpc(
       turnId: result.turn.turnId,
     };
   });
-  ipcMain.handle(
-    "sessions:regenerateTurn",
-    async (_event, sessionId: string, input: unknown) => {
-      const normalized = normalizeRegenerateTurnInput(input);
-      const turnId = normalized.turnId ?? newId();
-      await deps.client.regenerateTurn({
-        sessionId,
-        sourceTurnId: normalized.sourceTurnId,
-        turnId,
-      });
-      deps.emitSessionsChanged("status-change", sessionId, { turnId });
-    },
-  );
-
   ipcMain.handle(
     "sessions:branchFromTurn",
     async (event, sessionId: string, input: unknown) => {

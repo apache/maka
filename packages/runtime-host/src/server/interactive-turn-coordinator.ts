@@ -24,9 +24,8 @@ import { normalizeMessageContent, type MessageContent } from '@maka/core/events'
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
 import { parseSkillInvocationTokens } from '@maka/runtime/skill-invocation';
-import { type SessionManager } from '@maka/runtime/session-manager';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
-import type { OperationOutcome, TurnRegenerateInput, TurnStartInput } from '../protocol/index.js';
+import type { TurnStartInput } from '../protocol/index.js';
 import type { ConnectionContext, TurnOperationHandlerMap } from './operation-dispatcher.js';
 import type {
   RootMessageContentPreparation,
@@ -49,29 +48,23 @@ type InteractiveTurnStore = Pick<
   ExecutionStoresWriter<'interactive'>['agentRunStore'],
   'commitRootTurnStartRejection' | 'readRootTurnAdmission' | 'readRootTurnStartRejection'
 >;
-type InteractiveTurnRuntime = Pick<SessionManager, 'prepareRegenerateTurn'>;
-
 export interface HostInteractiveTurnCoordinatorOptions {
   readonly executions: InteractiveTurnExecutionPort;
   readonly turns: InteractiveTurnStore;
-  readonly runtime: InteractiveTurnRuntime;
 }
 
-/** Owns Interactive Turn start and regenerate wire semantics. */
+/** Owns Interactive Turn start wire semantics. */
 export class HostInteractiveTurnCoordinator {
-  readonly handlers: Pick<TurnOperationHandlerMap, 'turn.start' | 'turn.regenerate'> = {
+  readonly handlers: Pick<TurnOperationHandlerMap, 'turn.start'> = {
     'turn.start': (input, context) => this.#start(input, context),
-    'turn.regenerate': (input, context) => this.#regenerate(input, context),
   };
 
   readonly #executions: InteractiveTurnExecutionPort;
   readonly #turns: InteractiveTurnStore;
-  readonly #runtime: InteractiveTurnRuntime;
 
   constructor(options: HostInteractiveTurnCoordinatorOptions) {
     this.#executions = options.executions;
     this.#turns = options.turns;
-    this.#runtime = options.runtime;
   }
 
   async #start(input: TurnStartInput, context: ConnectionContext): Promise<TurnStartOutcome> {
@@ -186,28 +179,6 @@ export class HostInteractiveTurnCoordinator {
         skillInvocation: admission.skillInvocation ?? EMPTY_SKILL_INVOCATION,
       },
     };
-  }
-
-  #regenerate(
-    input: TurnRegenerateInput,
-    context: ConnectionContext,
-  ): Promise<OperationOutcome<'turn.regenerate'>> {
-    if (input.sourceTurnId === input.turnId) {
-      return Promise.resolve(
-        operationConflict('Regenerate source and target Turn identities must differ'),
-      );
-    }
-    return this.#executions.startInteractiveRootMessage(
-      {
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        execution: { kind: 'regenerate', sourceTurnId: input.sourceTurnId },
-        archivedMessage: 'Cannot regenerate a Turn in an archived Session',
-        prepareContent: async () =>
-          (await this.#runtime.prepareRegenerateTurn(input.sessionId, input.sourceTurnId)).content,
-      },
-      context,
-    );
   }
 }
 

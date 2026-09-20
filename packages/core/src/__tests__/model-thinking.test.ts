@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type ConnectionThinkingContext,
+  defaultThinkingLevelForConnection,
   normalizeModelOverrides,
   modelOverride,
   resolveThinkingLevel,
@@ -50,6 +51,27 @@ test('relay profiles preserve the fast service tier declaration', () => {
     m: { serviceTier: 'fast' },
   });
   assert.deepEqual(normalizeModelOverrides({ m: { serviceTier: 'unknown' } }), { m: {} });
+});
+
+test('per-model thinking defaults resolve only when the model offers the level', () => {
+  const connection = {
+    providerType: 'openai-compatible',
+    modelOverrides: {
+      reasoner: { thinkingLevels: ['low', 'high'], defaultThinkingLevel: 'high' },
+      stale: { thinkingLevels: ['low'], defaultThinkingLevel: 'high' },
+      invalid: { thinkingLevels: ['low'], defaultThinkingLevel: 'turbo' },
+    },
+  } as unknown as ConnectionThinkingContext;
+  assert.equal(defaultThinkingLevelForConnection(connection, 'reasoner'), 'high');
+  assert.equal(defaultThinkingLevelForConnection(connection, 'stale'), undefined);
+  assert.equal(defaultThinkingLevelForConnection(connection, 'invalid'), undefined);
+  assert.deepEqual(normalizeModelOverrides(connection.modelOverrides)?.reasoner, {
+    thinkingLevels: ['low', 'high'],
+    defaultThinkingLevel: 'high',
+  });
+  assert.deepEqual(normalizeModelOverrides(connection.modelOverrides)?.invalid, {
+    thinkingLevels: ['low'],
+  });
 });
 
 test('Fast visibility mirrors the pinned OpenAI SDK priority-processing families', () => {

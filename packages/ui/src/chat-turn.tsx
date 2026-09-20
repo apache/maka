@@ -18,7 +18,7 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { ICON_SIZE, Ban, ChevronRight, GitBranch, Maximize2, Minimize2, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, ChevronRight, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
@@ -472,8 +472,6 @@ export const TurnView = memo(function TurnView(props: {
    * linked subagent tool rows; omitted when the host has no navigation.
    */
   onOpenLinkedSession?(sessionId: string): void;
-  /** Resolve a requires-bypass tool refusal, then regenerate this turn. */
-  onSwitchToBypassAndRetry?(turnId: string): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
@@ -715,16 +713,15 @@ export const TurnView = memo(function TurnView(props: {
                     activityObserved={props.activityObserved}
                     entries={item.children}
                     running={!!props.liveStreaming || turn.status === 'running'}
-                    // No cue and no duration here: both belong to the footer row
-                    // (`TurnStatusLine`). Repeating the cue on a disclosure showed
-                    // it twice, once where a growing answer scrolls it away.
-                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
-                    onOpenLinkedSession={props.onOpenLinkedSession}
-                    onSwitchToBypassAndRetry={
-                      props.onSwitchToBypassAndRetry
-                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
+                    durationMs={index === activityProcessIndex ? turn.durationMs : undefined}
+                    activity={
+                      index === activityProcessIndex && props.activityObserved !== false &&
+                      props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                        ? { startedAt: turn.startedAt || undefined, label: runningToolLabel }
                         : undefined
                     }
+                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
+                    onOpenLinkedSession={props.onOpenLinkedSession}
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ) : (
@@ -734,11 +731,6 @@ export const TurnView = memo(function TurnView(props: {
                     item={item}
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
-                    onSwitchToBypassAndRetry={
-                      props.onSwitchToBypassAndRetry
-                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
-                        : undefined
-                    }
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ),
@@ -821,6 +813,7 @@ export const TurnView = memo(function TurnView(props: {
                         providerRetry={props.liveStreaming?.providerRetry !== undefined}
                         startedAt={turn.startedAt}
                         durationMs={turn.durationMs}
+                        elapsedInProcess={activityProcessIndex !== -1}
                         activityLabel={
                           props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
                             ? runningToolLabel
@@ -906,7 +899,7 @@ function splitTimelineAtUserMessages(
 }
 
 export interface TurnFooterActionMeta {
-  id: 'regenerate' | 'branch' | 'copy';
+  id: 'branch' | 'copy';
   label: string;
   enabled: boolean;
   tooltip?: string;
@@ -967,6 +960,7 @@ function TurnStatusLine(props: {
   status: TurnViewModel['status'];
   startedAt: number;
   durationMs?: number;
+  elapsedInProcess?: boolean;
   /** A concrete activity (e.g. driving an app) outranks the playful phrase. */
   activityLabel?: string;
   /** Work is actually arriving. Only consulted for the running arm. */
@@ -981,13 +975,13 @@ function TurnStatusLine(props: {
     // A retry is not progress: nothing is produced while the client waits, and
     // the retry indicator already says what is happening. A live turn whose
     // stream is not running has nothing to announce either.
-    if (props.providerRetry || props.running === false) return null;
+    if (props.elapsedInProcess || props.providerRetry || props.running === false) return null;
     return <TurnRunningStatus startedAt={props.startedAt || undefined} activityLabel={props.activityLabel} />;
   }
 
   // Localized duration, not the compact `3m 33s` the live counter uses: this
   // reads as prose in the transcript, and a Chinese UI must not show English units.
-  const elapsed = props.durationMs === undefined
+  const elapsed = props.durationMs === undefined || props.elapsedInProcess
     ? undefined
     : copy.processDuration(
         Math.floor(props.durationMs / 60_000),
@@ -1004,16 +998,16 @@ function TurnStatusLine(props: {
 
   const label =
     props.status === 'completed'
-      ? elapsed !== undefined && finishedAt !== undefined
+      ? finishedAt !== undefined
         ? copy.turnStatusCompleted(elapsed, finishedAt)
         : elapsed !== undefined
           ? copy.turnStatusCompletedAloneWithDuration(elapsed)
           : copy.turnStatusCompletedAlone
       : props.status === 'aborted'
-        ? elapsed === undefined
+        ? props.durationMs === undefined
           ? undefined
           : copy.turnStatusAborted(elapsed)
-        : elapsed === undefined
+        : props.durationMs === undefined
           ? undefined
           : copy.turnStatusFailed(elapsed);
   if (label === undefined) return null;
@@ -1138,7 +1132,6 @@ function turnMetaSummary(turn: TurnViewModel): string | undefined {
 }
 
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
-  regenerate: <Icon icon={RefreshCcw} size="sm" />,
   branch: <Icon icon={GitBranch} size="sm" />,
   copy: <Icon icon="copy" size="sm" />,
 };
@@ -1416,7 +1409,6 @@ function TurnTimelineEntry(props: {
   item: Exclude<TurnTimelineItem, { kind: 'user' }>;
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
-  onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const { item } = props;
@@ -1436,7 +1428,6 @@ function TurnTimelineEntry(props: {
         items={item.items}
         activityObserved={props.activityObserved}
         onOpenLinkedSession={props.onOpenLinkedSession}
-        onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
       />
     );
   }
@@ -1454,19 +1445,6 @@ function TurnTimelineEntry(props: {
   );
 }
 
-/**
- * The turn's whole execution process (reasoning, intermediate commentary, tool
- * activity) as ONE bounded, scrollable card: a titled header row and, when
- * open, a body that grows with its content up to a cap and then scrolls. The
- * container's border is the card's frame, so a collapsed box keeps its outline
- * and shows only the title row.
- *
- * The body owns its own scroll, not the transcript: a turn with hundreds of
- * steps scrolls here instead of becoming an unreadable wall the reader has to
- * traverse. While the body overflows, its top and/or bottom edge fades the
- * content out, so the clipped rows read as "more above/below" rather than
- * abruptly cut off.
- */
 export function ProcessingBlock(props: {
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
@@ -1475,7 +1453,6 @@ export function ProcessingBlock(props: {
   activity?: { startedAt?: number; label?: string };
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
-  onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
@@ -1484,55 +1461,12 @@ export function ProcessingBlock(props: {
   // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = props.running || manualOpen === true;
-  // The title names WHAT the box holds. The elapsed clock and the settled
-  // duration live on the turn's footer row (`TurnStatusLine`), the one place
-  // under the answer that a growing reply cannot scroll out of view; restating
-  // them here said the same thing twice, once where it gets lost.
-  const label = copy.processDetails;
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const [overflow, setOverflow] = useState({ top: false, bottom: false });
-  const [overflows, setOverflows] = useState(false);
-  // The whole box's height switch: false keeps the reading cap (the default
-  // frame), true drops it so the process lists in full — the reader's "show me
-  // everything at once" for a turn they want to read end to end.
-  const [unclamped, setUnclamped] = useState(false);
-  // Re-measure whenever the box can change height: opening, entries streaming
-  // in, the reader dropping the cap, and their own scrolling. Only re-set state
-  // when a flag actually flips, so a live turn does not re-render each frame.
-  // An unclamped body has no clipped edge, so it measures no fade.
-  useEffect(() => {
-    const body = bodyRef.current;
-    if (!body || !open) {
-      setOverflow((previous) =>
-        previous.top || previous.bottom ? { top: false, bottom: false } : previous,
-      );
-      return;
-    }
-    const measure = () => {
-      // Whether the body is taller than it shows — the real condition for
-      // offering the height switch, independent of what KIND of entries fill it.
-      setOverflows(body.scrollHeight > body.clientHeight + 1);
-      const top = !unclamped && body.scrollTop > 0;
-      const bottom = !unclamped && body.scrollTop + body.clientHeight < body.scrollHeight - 1;
-      setOverflow((previous) =>
-        previous.top === top && previous.bottom === bottom ? previous : { top, bottom },
-      );
-    };
-    measure();
-    body.addEventListener('scroll', measure, { passive: true });
-    // Absent in the SSR/test DOM: appended entries and the reader's own scroll
-    // still re-measure there, so the fade simply stays off.
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
-    // Observe the CONTENT, not the body: at the cap the body stops resizing,
-    // but content keeps growing inside an existing entry (streaming reasoning, a
-    // tool gaining output). The content's box is what actually changes height.
-    const content = body.querySelector('.maka-processing-content');
-    observer?.observe(content ?? body);
-    return () => {
-      body.removeEventListener('scroll', measure);
-      observer?.disconnect();
-    };
-  }, [open, props.entries.length, unclamped]);
+  const seconds = !props.running && props.durationMs !== undefined && Number.isFinite(props.durationMs)
+    ? Math.floor(Math.max(0, props.durationMs) / 1000)
+    : undefined;
+  const label = seconds === undefined
+    ? copy.processDetails
+    : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
   return (
     <details
       className="maka-processing-sequence"
@@ -1550,69 +1484,27 @@ export function ProcessingBlock(props: {
           if (!props.running) setManualOpen(!open);
         }}
       >
-        {/*
-          The cue belongs on the turn's footer row (see `TurnStatusLine`), the
-          one place under the answer that a growing reply cannot push away. The
-          exception is the WAITING state: a turn the transcript does not contain
-          yet has no footer, and this box is what stands in for it — there the
-          cue is the only thing to show, so it renders here.
-        */}
         {props.activity ? (
           <TurnRunningStatus
             startedAt={props.activity.startedAt}
             activityLabel={props.activity.label}
           />
         ) : (
-          <span className="maka-processing-title">{label}</span>
+          <span>{label}</span>
         )}
         {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}
       </summary>
-      {/* The body owns its own scroll, capped at a reading height, and carries
-          the zoom switch in a zero-height sticky wrapper pinned to its visible
-          bottom edge — inside the body, not floating, so it never drifts with
-          the content and never takes flow space (which would change the
-          content's height and the overflow measure). The body is a scroll
-          container in BOTH states (capped, or a taller magnified cap), which is
-          what the sticky wrapper needs to resolve to; an unbounded body would
-          stop being one and the switch would strand at the end of the content.
-          The switch is a real Astryx `IconButton`, not a disclosure control, so
-          activating it never toggles the frame — a folded box stays folded, and
-          reopening keeps whichever height the reader last chose. It appears
-          only when the body actually overflows (nothing to unclamp otherwise),
-          and stays put while magnified so the reader can take the cap back. */}
-      <div
-        className="maka-processing-body"
-        ref={bodyRef}
-        data-unclamped={unclamped ? 'true' : undefined}
-        data-overflow-top={overflow.top ? 'true' : undefined}
-        data-overflow-bottom={overflow.bottom ? 'true' : undefined}
-      >
-        <div className="maka-processing-content">
-          {props.entries.map((entry, index) => (
-            <TurnTimelineEntry
-              key={timelineEntryKey(entry, index)}
-              activityObserved={open && props.activityObserved !== false}
-              item={entry}
-              onStreamingSettled={props.onStreamingSettled}
-              onOpenLinkedSession={props.onOpenLinkedSession}
-              onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
-              initialLiveContent={props.initialLiveContent}
-            />
-          ))}
-        </div>
-        {(overflows || unclamped) && (
-          <div className="maka-processing-zoom">
-            <UiIconButton
-              label={unclamped ? copy.processRestore : copy.processExpandAll}
-              tooltip={unclamped ? copy.processRestore : copy.processExpandAll}
-              icon={<Icon icon={unclamped ? Minimize2 : Maximize2} size="sm" aria-hidden="true" />}
-              variant="secondary"
-              size="sm"
-              aria-pressed={unclamped}
-              onClick={() => setUnclamped((previous) => !previous)}
-            />
-          </div>
-        )}
+      <div className="maka-processing-body">
+        {props.entries.map((entry, index) => (
+          <TurnTimelineEntry
+            key={timelineEntryKey(entry, index)}
+            activityObserved={open && props.activityObserved !== false}
+            item={entry}
+            onStreamingSettled={props.onStreamingSettled}
+            onOpenLinkedSession={props.onOpenLinkedSession}
+            initialLiveContent={props.initialLiveContent}
+          />
+        ))}
       </div>
     </details>
   );

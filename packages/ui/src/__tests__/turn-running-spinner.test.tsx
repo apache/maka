@@ -46,13 +46,9 @@ function statusHasSpinner(toolStatuses: readonly ('running' | 'completed')[]): b
     </LocaleProvider>,
   );
   const { document } = parseHTML(markup);
-  // Exactly one cue, and it lives on the turn's status line at the BOTTOM of the
-  // turn — the position that stays visible while a long answer streams.
   assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
-  // One cue, on the footer row (which also carries the model name) — never
-  // inside a process disclosure, where a growing answer would scroll it away.
-  assert.ok(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'));
-  assert.equal(document.querySelector('.maka-processing-summary .maka-turn-processing'), null);
+  assert.ok(document.querySelector('.maka-processing-summary .maka-turn-processing'));
+  assert.equal(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'), null);
   assert.doesNotMatch(markup, /Waiting for model output/);
   return document.querySelector('.maka-turn-processing .astryx-spinner') !== null;
 }
@@ -125,20 +121,24 @@ test('only the latest assistant segment owns live activity after a user instruct
   ));
   const summaries = document.querySelectorAll('.maka-processing-summary');
   assert.equal(summaries.length, 2);
-  // Every disclosure names itself; none of them hosts the live cue any more.
   assert.equal(summaries[0]?.textContent, 'Execution process');
-  assert.equal(summaries[1]?.textContent, 'Execution process');
-  // Exactly one cue, on the turn status line at the bottom.
+  assert.equal(summaries[1]?.textContent, 'Pondering…');
   assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
-  assert.ok(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'));
+  assert.equal(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'), null);
+  const settled = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en"><TurnView turn={{ ...turn, status: 'completed', durationMs: 213_000 }} /></LocaleProvider>,
+  )).document;
+  const settledSummaries = settled.querySelectorAll('.maka-processing-summary');
+  assert.equal(settledSummaries[0]?.textContent, 'Execution process');
+  assert.equal(settledSummaries[1]?.textContent, 'Worked for 3m 33s');
+  assert.equal(settled.querySelector('.maka-turn-status-line')?.textContent, 'Done');
 });
 
-test('states the elapsed once, on the turn status line rather than the process header', () => {
-  const tool = { toolUseId: 'read', toolName: 'Read', status: 'completed' as const, args: {} };
+test('keeps elapsed and model metadata in the footer for a reply without process entries', () => {
   const turn: TurnViewModel = {
-    turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [tool], notes: [], startedAt: 1,
+    turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [], notes: [], startedAt: 1,
     durationMs: 213_000,
-    timeline: [{ kind: 'tools', items: [tool] }, { kind: 'text', messageId: 'answer', text: 'the answer' }],
+    timeline: [{ kind: 'text', messageId: 'answer', text: 'the answer' }],
   };
   const { document } = parseHTML(renderToStaticMarkup(
     <LocaleProvider locale="en">

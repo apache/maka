@@ -645,13 +645,10 @@ export const RunningStatusDuringToolRun: Story = {
   play: async ({ canvasElement }) => {
     const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
     await expect(process.open).toBe(true);
-    // The running cue lives on the turn's footer row, not inside the process
-    // disclosure: the disclosure scrolls away as the answer grows, and the cue
-    // is the one thing that has to stay visible while work is happening.
-    const activity = canvasElement.querySelector('.maka-turn-footer-meta .maka-turn-processing')!;
+    const activity = process.querySelector('.maka-processing-summary .maka-turn-processing')!;
     await expect(activity).toHaveTextContent('正在琢磨…');
     await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
-    await expect(process.querySelector('.maka-turn-processing')).toBeNull();
+    await expect(canvasElement.querySelector('.maka-turn-footer-meta .maka-turn-processing')).toBeNull();
     // Live work is not a disclosure action. Even pointer activation cannot
     // hide it; the tool keeps ownership of its visible spinner.
     const summary = process.querySelector('summary')!;
@@ -2710,17 +2707,6 @@ function oversizedTurnMessages(steps = 24): StoredMessage[] {
       durationMs: 100 + step,
       content: { kind: 'text', text: `第 ${step} 组：确定性、可重放，无回归。` },
     });
-    // The last step stays OUTSIDE the process box (only the trailing answer is):
-    // the box now caps and scrolls, so this reply alone gives the Turn its
-    // multi-viewport height for the cold-scroll story.
-    if (step === steps) {
-      out.push(assistant(
-        `msg-oversized-a-${step}-final`,
-        turnId,
-        1,
-        ['### 最终结论', ...Array.from({ length: 28 }, (_, p) => `第 ${p + 1} 段。${prose}`)].join('\n\n'),
-      ));
-    }
   }
   return out;
 }
@@ -2776,14 +2762,14 @@ export const OversizedTurnHoldsAReadingAnchorOnColdScroll: Story = {
       process.querySelector('summary')!.click();
       await waitFor(() => expect(process.open).toBe(true));
       await waitFor(() => expect(document.querySelector('.maka-markdown-pending')).toBeNull());
-      // Start cold scrolling only once the expanding body has its content laid
-      // out. The body caps and scrolls, so it is the scroller, not the whole
-      // content, that the reader traverses.
       await waitFor(() => {
-        const body = process.querySelector('.maka-processing-body')!.getBoundingClientRect();
-        expect(body.height).toBeGreaterThan(0);
-        expect(process.querySelector<HTMLElement>('.maka-processing-body')!.scrollHeight)
-          .toBeGreaterThanOrEqual(body.height);
+        const body = process.querySelector<HTMLElement>('.maka-processing-body')!;
+        expect(body.clientHeight).toBeGreaterThan(root.clientHeight * 3);
+        expect(body.scrollHeight - body.clientHeight).toBeLessThanOrEqual(1);
+        expect(body.lastElementChild!.getBoundingClientRect().bottom)
+          .toBeLessThanOrEqual(body.getBoundingClientRect().bottom + 1);
+        body.scrollTop = 240;
+        expect(body.scrollTop).toBe(0);
       });
       scrollAsReader(root, root.scrollHeight);
       await painted(4);
@@ -3904,9 +3890,9 @@ export const CompletedProcessCollapsed: Story = {
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
     await expect(answer).toBeVisible();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).not.toBeVisible();
-    // Real geometry: process consumes only its single header row (plus the
-    // frame's bottom hairline); the answer starts below the whole frame.
     const summary = process!.querySelector('summary')!;
+    await expect(getComputedStyle(process!).borderTopWidth).toBe('0px');
+    await expect(getComputedStyle(process!).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     await expect(process!.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 2);
     await expect(answer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process!.getBoundingClientRect().bottom - 1);
   },
@@ -3939,9 +3925,9 @@ export const CompletedProcessExpanded: Story = {
     summary.focus();
     summary.click();
     await waitFor(() => expect(process.open).toBe(true));
-    // The body grows with its content up to a cap and scrolls past it; the
-    // open frame therefore equals header + (capped) body.
     await waitFor(() => expect(process.getBoundingClientRect().height).toBeGreaterThanOrEqual(summary.getBoundingClientRect().height + process.querySelector<HTMLElement>('.maka-processing-body')!.clientHeight - 1));
+    const processBody = process.querySelector<HTMLElement>('.maka-processing-body')!;
+    await expect(getComputedStyle(processBody).overflowY).toBe('clip');
     await expect(summary).toHaveFocus();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');
@@ -3963,72 +3949,5 @@ export const CompletedProcessExpanded: Story = {
     summary.click();
     await waitFor(() => expect(process.open).toBe(true));
     selection.removeAllRanges();
-  },
-};
-
-// Real path: the reader zooms the process out to its full, uncapped height and
-// then folds it. Folding is the priority action — it must collapse the whole
-// frame even while unclamped, and reopening must keep the zoom they chose. The
-// overflow fixture is what reaches the state (a body past the 360px cap) where
-// the switch must exist at all; the capped reading also pins the switch to the
-// VISIBLE bottom edge as the rows scroll under it (the [P2] the review caught:
-// an absolutely positioned control drifted up and out with the content).
-export const CompletedProcessZoomThenFold: Story = {
-  render: () => <ComposedShell motionEnabled sidebarCollapsed chat={{ messages: oversizedTurn, scrollBehavior: 'auto' }} />,
-  play: async ({ canvasElement }) => {
-    await waitFor(() => {
-      expect(canvasElement.querySelector('.maka-processing-sequence')).not.toBeNull();
-    });
-    const process = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence')!;
-    const body = process.querySelector<HTMLElement>('.maka-processing-body')!;
-    if (!process.open) process.querySelector('summary')!.click();
-    await waitFor(() => expect(process.open).toBe(true));
-    const corner = body.querySelector<HTMLElement>('.maka-processing-zoom')!;
-    await expect(corner).toBeVisible();
-    const toggle = corner.querySelector<HTMLButtonElement>('button')!;
-    // Where the switch sits relative to the body's own box. This is independent
-    // of where the transcript happens to be scrolled: a switch that has drifted
-    // into the scrolled content reports ~contentHeight (the [P2] bug), while a
-    // switch that stays with the reading edge reports at most the visible box.
-    const switchOffsetInBody = () =>
-      toggle.getBoundingClientRect().top - body.getBoundingClientRect().top;
-    // Scroll the body to its end: the switch must ride the visible bottom edge,
-    // not travel up and out with the content.
-    body.scrollTop = body.scrollHeight;
-    await waitFor(() => {
-      expect(body.scrollTop).toBeGreaterThan(0);
-      expect(switchOffsetInBody()).toBeGreaterThanOrEqual(-1);
-      expect(switchOffsetInBody()).toBeLessThanOrEqual(body.clientHeight);
-    });
-    const cappedHeight = body.clientHeight;
-    toggle.click();
-    await waitFor(() => expect(body.getAttribute('data-unclamped')).toBe('true'));
-    await expect(toggle).toHaveAttribute('aria-label', '恢复固定高度');
-    // Taking the cap off gives the body a taller frame (not an unbounded one):
-    // it stays a scroller so the corner switch keeps a scrollport to stick to.
-    await expect(body.clientHeight).toBeGreaterThan(cappedHeight);
-    await expect(getComputedStyle(body).overflowY).toBe('auto');
-    // Unclamped the switch must not be stranded at the end of the ~8000px list;
-    // it stays within a viewport of the frame's top. (If the box is on screen,
-    // also assert it is actually on screen — the reader's real condition.)
-    await waitFor(() => {
-      expect(switchOffsetInBody()).toBeLessThan(window.innerHeight);
-    });
-    const scroll = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
-    const viewport = scroll.getBoundingClientRect();
-    const frame = process.getBoundingClientRect();
-    if (frame.bottom > viewport.top && frame.top < viewport.bottom) {
-      const rect = toggle.getBoundingClientRect();
-      expect(rect.bottom).toBeGreaterThan(viewport.top);
-      expect(rect.top).toBeLessThan(viewport.bottom);
-    }
-    // Fold still collapses everything while unclamped — the regression guard.
-    const summary = process.querySelector('summary')!;
-    summary.click();
-    await waitFor(() => expect(process.open).toBe(false));
-    await waitFor(() => expect(process.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 2));
-    summary.click();
-    await waitFor(() => expect(process.open).toBe(true));
-    await expect(body.getAttribute('data-unclamped')).toBe('true');
   },
 };

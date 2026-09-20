@@ -387,6 +387,7 @@ function normalizeCreateThinkingLevel(
   value: unknown,
 ): Pick<SessionCreateInput, 'thinkingLevel'> | Record<string, never> {
   if (value === undefined) return {};
+  if (value === null) return { thinkingLevel: null };
   if (!isThinkingLevel(value)) throw new Error(`Invalid thinking level: ${String(value)}`);
   return { thinkingLevel: value };
 }

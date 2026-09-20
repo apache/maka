@@ -171,7 +171,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 
-import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
+import type { TurnOrchestration, SessionListFilter } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchResult } from '@maka/core/search';
 import type {
@@ -1521,17 +1521,11 @@ const makaBridge = {
       return ipcRenderer.invoke(
         'session-collaboration:turn-request:create',
         session.scope,
-        input.kind === 'start'
-          ? {
-              sessionId: session.sessionId,
-              turnId: input.turnId,
-              content: { text: input.text },
-            }
-          : {
-              sessionId: session.sessionId,
-              turnId: input.turnId,
-              sourceTurnId: input.sourceTurnId,
-            },
+        {
+          sessionId: session.sessionId,
+          turnId: input.turnId,
+          content: { text: input.text },
+        },
       );
     },
     async getTurnRequests(sessionId) {
@@ -2338,9 +2332,6 @@ const makaBridge = {
     },
     listTurnLandmarks(sessionId, turnId = null) {
       return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId, turnId);
-    },
-    regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:regenerateTurn', sessionId, input);
     },
     branchFromTurn: invokeBranchFromTurn,
     async reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<DesktopSessionSummary> {
