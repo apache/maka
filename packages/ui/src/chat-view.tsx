@@ -144,6 +144,8 @@ export interface ChatViewGoalIndicatorProps {
 export interface TransientUserMessageProjection {
   /** Held above the composer until Runtime emits steering_message. */
   pendingSteering?: boolean;
+  /** Outbox tone for the composer row: pending sends differ from ones needing attention. */
+  deliveryState?: 'pending' | 'unconfirmed' | 'failed';
   deliveryStatus?: string;
   deliveryDetail?: string;
   deliveryActions?: readonly { label: string; icon: ReactNode; onClick(): void | Promise<void> }[];

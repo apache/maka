@@ -62,10 +62,12 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     }) }),
   })));
   const steering = transient.get('steering');
+  assert.equal(steering?.deliveryState, 'unconfirmed');
   assert.equal(steering?.deliveryStatus, 'Delivery unconfirmed. Do not send again.');
   assert.deepEqual(steering?.deliveryActions?.map((action) => action.label), ['Check delivery'],
     'an unconfirmed send offers only its receipt check, never cancellation');
   const followup = transient.get('followup');
+  assert.equal(followup?.deliveryState, 'pending');
   assert.equal(followup?.deliveryStatus, 'Waiting to send');
   assert.deepEqual(followup?.deliveryActions?.map((action) => action.label), ['Cancel sending']);
   await act(async () => { await steering?.deliveryActions?.[0]?.onClick(); });
@@ -84,6 +86,7 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   ];
   await act(async () => changed('session-1'));
   const failed = transient.get('steering');
+  assert.equal(failed?.deliveryState, 'failed');
   assert.equal(failed?.deliveryStatus, 'Could not send · message kept');
   assert.deepEqual(failed?.deliveryActions?.map((action) => action.label), ['Delete unsent message']);
   assert.deepEqual([...transient.keys()], ['steering', 'root', 'later']);

@@ -375,29 +375,44 @@ test('deduplicates pending steering against Host queue entries and keeps the pla
     const document = parseHTML(`<html><body>${markup}</body></html>`).document;
     assert.equal(document.querySelectorAll('.maka-composer-queue-text').length, 1);
     assert.equal(document.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
-    assert.equal(document.querySelector('.maka-composer-queue-status')?.textContent, 'Steering');
+    assert.equal(
+      document.querySelector('.maka-composer-queue-status')?.textContent ?? null,
+      entries.length > 0 ? 'Steering' : null,
+      'only Host-admitted entries carry a queue group; a pending send stays in the outbox',
+    );
   }
 });
 
 
-test('local queue rows keep recovery actions without stacking delivery text', () => {
+test('local sends render as an outbox, not as admitted queue entries', () => {
   const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
+    queuedMessages={[{
+      entryId: 'admitted', messageId: 'message-admitted',
+      content: { text: 'admitted follow-up' }, placement: 'next_turn', state: 'queued',
+    }]}
     pendingMessages={[
       { id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'next_turn',
-        deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
+        deliveryState: 'unconfirmed', deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
         deliveryActions: [{ label: 'Check delivery', icon: <Search size={ICON_SIZE.control} aria-hidden="true" />, onClick() {} }] },
       { id: 'sending', text: 'still sending', ts: 2, transientPlacement: 'next_turn',
-        deliveryStatus: 'Sending…' },
+        deliveryState: 'pending', deliveryStatus: 'Sending…' },
     ]} /></LocaleProvider>);
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;
   assert.deepEqual(
-    [...document.querySelectorAll('.maka-composer-queue-list li')].map((row) => row.textContent),
+    [...document.querySelectorAll('.maka-composer-queue-local li')].map((row) => row.textContent),
     ['offline follow-up', 'still sending'],
   );
+  assert.deepEqual(
+    [...document.querySelectorAll('[data-queue-placement="next_turn"] li')].map((row) => row.textContent),
+    ['admitted follow-up'],
+    'an unconfirmed send never joins the Host-admitted follow-up group',
+  );
+  const delivery = document.querySelector('.maka-composer-queue-delivery[data-tone="unconfirmed"]');
+  assert.equal(delivery?.getAttribute('aria-label'), 'Delivery uncertain');
   assert.ok(document.querySelector('.maka-composer-queue-actions button[aria-label="Check delivery"]'),
     'the delivery action stays an accessible labelled icon control');
-  const rows = [...document.querySelectorAll('li')];
-  const sendingRow = rows.find((row) => row.textContent?.includes('still sending'));
+  const sendingRow = [...document.querySelectorAll('li')]
+    .find((row) => row.textContent?.includes('still sending'));
   assert.ok(sendingRow);
   assert.equal(sendingRow.querySelectorAll('.maka-composer-queue-actions button').length, 0,
     'a local row without delivery actions offers no Host edit/steer/delete operations');

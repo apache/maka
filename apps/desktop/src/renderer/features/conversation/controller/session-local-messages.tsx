@@ -62,6 +62,11 @@ export function SessionLocalMessages(props: {
               quotes: message.quotes,
               inlineReferences: message.inlineReferences,
               hostTurnId: message.turnId,
+              deliveryState: message.state === 'unknown'
+                ? 'unconfirmed'
+                : message.state === 'failed'
+                  ? 'failed'
+                  : 'pending',
               deliveryStatus: copy[message.state],
               deliveryDetail: message.error,
               deliveryActions: message.canCancel

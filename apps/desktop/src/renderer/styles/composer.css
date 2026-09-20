@@ -129,6 +129,26 @@
   cursor: grabbing;
 }
 
+.maka-composer-queue-local:not(:first-child) {
+  border-top: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-composer-queue-delivery {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  color: var(--muted-foreground);
+  outline: none;
+}
+
+.maka-composer-queue-delivery[data-tone='unconfirmed'] {
+  color: var(--warning-text);
+}
+
+.maka-composer-queue-delivery[data-tone='failed'] {
+  color: var(--destructive-text);
+}
+
 @media (max-width: 640px) {
   .maka-composer-queue {
     width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-3))));
