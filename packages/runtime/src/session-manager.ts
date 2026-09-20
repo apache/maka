@@ -50,7 +50,7 @@ import type {
   ShellRunUpdate,
   MessageContent,
 } from '@maka/core/events';
-import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
+import { messageContentsEqual } from '@maka/core/events';
 import type {
   SessionHeader,
   SessionHeaderPatch,
@@ -68,7 +68,6 @@ import type {
 } from '@maka/core/session';
 import type {
   CreateSessionInput,
-  RegenerateTurnInput,
   UserMessageInput,
   SessionListFilter,
 } from '@maka/core/runtime-inputs';
@@ -583,22 +582,6 @@ export class SessionConfigurationRevisionConflictError extends Error {
       `Session configuration revision conflict: expected ${expectedRevision}, actual ${actualRevision}`,
     );
   }
-}
-
-export class RuntimeRegenerateTurnError extends Error {
-  readonly name = 'RuntimeRegenerateTurnError';
-
-  constructor(
-    readonly code: 'not_found' | 'operation_conflict',
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export interface RegenerateTurnSource {
-  readonly sourceTurnId: string;
-  readonly content: MessageContent;
 }
 
 export interface SessionStore {
@@ -4230,66 +4213,6 @@ export class SessionManager {
     return authority
       ? authority.stopRoot(identity, input)
       : this.runtimeKernel.stopSession(identity.sessionId, input);
-  }
-
-  async *regenerateTurn(
-    sessionId: string,
-    input: RegenerateTurnInput,
-  ): AsyncIterable<SessionEvent> {
-    const execution = this.runtimeKernel.claimExecution(sessionId);
-    try {
-      const source = await this.prepareRegenerateTurn(sessionId, input.sourceTurnId);
-      yield* this.sendMessage(
-        sessionId,
-        {
-          turnId: input.turnId ?? this.deps.newId(),
-          ...source.content,
-          parentTurnId: source.sourceTurnId,
-          regeneratedFromTurnId: source.sourceTurnId,
-        },
-        { execution },
-      );
-    } finally {
-      execution.release();
-    }
-  }
-
-  async prepareRegenerateTurn(
-    sessionId: string,
-    sourceTurnId: string,
-  ): Promise<RegenerateTurnSource> {
-    const view = await this.getSessionView(sessionId);
-    const source = view.turns.find((candidate) => candidate.turnId === sourceTurnId);
-    if (!source) {
-      throw new RuntimeRegenerateTurnError(
-        'not_found',
-        `Cannot regenerate unknown Turn ${sourceTurnId}`,
-      );
-    }
-    if (
-      source.status !== 'failed' &&
-      source.status !== 'aborted' &&
-      source.status !== 'completed'
-    ) {
-      throw new RuntimeRegenerateTurnError(
-        'operation_conflict',
-        `Cannot regenerate Turn ${sourceTurnId} while it is ${source.status}`,
-      );
-    }
-    const user = view.messages.find(
-      (message): message is UserMessage =>
-        message.type === 'user' && message.turnId === sourceTurnId,
-    );
-    if (!user) {
-      throw new RuntimeRegenerateTurnError(
-        'operation_conflict',
-        `Turn ${sourceTurnId} has no UserMessage`,
-      );
-    }
-    return {
-      sourceTurnId,
-      content: normalizeMessageContent(user),
-    };
   }
 
   /** Canonical, repaired source view for a Host-owned cross-Session copy. */

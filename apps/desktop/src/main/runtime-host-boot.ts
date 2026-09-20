@@ -28,6 +28,7 @@ import {
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
+  protocol,
   shell,
   Tray,
   type MessageBoxOptions,
@@ -101,7 +102,7 @@ import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
 import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js";
 import { DesktopSessionLocalStore } from './session-local-store.js';
-import { DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
+import { createSessionLocalChangedEmitter, DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
@@ -248,6 +249,11 @@ import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
 import { registerRuntimeHostRendererIpc } from "./runtime-host-renderer-ipc-main.js";
+import {
+  ClientPluginTransport,
+  MAKA_CLIENT_PLUGIN_SCHEME,
+  registerClientPluginIpc,
+} from './client-plugin-transport.js';
 import { registerRuntimeHostSearchIpc } from "./runtime-host-search-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
 import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
@@ -290,6 +296,8 @@ await resolveShellEnv();
 const MANAGED_UPDATE_RECONNECT_TIMEOUT_MS = 10_000;
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
+const clientPluginTransport = new ClientPluginTransport();
+protocol.handle(MAKA_CLIENT_PLUGIN_SCHEME, (request) => clientPluginTransport.serve(request.url));
 const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient({
   isPackaged: app.isPackaged,
   enableDevelopmentPeer: process.argv.includes('--runtime-host-peer'),
@@ -594,10 +602,10 @@ onMainWindowClose = () => {
 };
 const attachmentApprovals = createAttachmentApprovalRegistry();
 const sessionLocalStore = new DesktopSessionLocalStore(join(userDataDir, 'session-experience.sqlite'));
-const localSessionChanged = (scope: DesktopTargetScope, sessionId?: string): void => {
-  mainWindowController.send('session-local:changed', scope, { sessionId });
-  mainWindowController.send('sessions:changed', scope, { reason: 'updated', ts: Date.now(), ...(sessionId ? { sessionId } : {}) });
-};
+const localSessionChanged = createSessionLocalChangedEmitter({
+  send: (channel, scope, payload) => mainWindowController.send(channel, scope, payload),
+  locallyOwned: (scope, sessionId) => sessionLocal.locallyOwned(scope, sessionId),
+});
 const sessionLocal = new DesktopSessionLocalService(sessionLocalStore, {
   targets: () => (runtimeHostManager?.entries() ?? []).flatMap((state) => {
     if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') return [];
@@ -1686,6 +1694,7 @@ function registerHostClientIpc(
     emitConnectionListChanged: emitTargetConnectionListChanged,
   });
   registerRuntimeHostRendererIpc({ ipcMain: scopedIpc, client });
+  registerClientPluginIpc({ ipcMain: scopedIpc, client, transport: clientPluginTransport });
   registerRuntimeHostArtifactsIpc({
     uiLocale: () => desktopLocale.current(),
     ipcMain: scopedIpc,
@@ -1768,6 +1777,7 @@ function registerHostClientIpc(
     workspaceRoot,
     mainWindowController,
     getSelectedWorkspaceTarget: () => selectedDesktopWorkspaceTarget(target),
+    getSelectedProject: () => requireRuntimePolicyTarget(target).projectManagement.current(),
     resolveNewSessionWorkspaceTarget: async (projectId) => {
       if (typeof projectId === "string") {
         return { kind: "project", projectId };
@@ -1903,6 +1913,7 @@ function registerHostClientIpc(
   registerOnboardingIpc({ onboardingService, ipcMain: scopedIpc });
   registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);
   return async () => {
+    clientPluginTransport.release(client);
     unsubscribeConfigurationChanges();
     await managedArtifactPreview.closeScope(scope.targetEpoch);
     unsubscribeConnectionCatalogChanges();

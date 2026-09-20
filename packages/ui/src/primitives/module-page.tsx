@@ -82,7 +82,10 @@ export interface ModulePageProps {
    * vertical divider starts exactly where that rule ends.
    */
   toolbar?: ReactNode;
-  /** Page body. Rendered edge-to-edge; the caller owns its own padding. */
+  /**
+   * Page body. LayoutContent keeps its scrollport at the outer edge while
+   * aligning direct children to the same contentWidth lane as the header.
+   */
   children: ReactNode;
   /**
    * Inspector content for the selected item. `undefined` hides the panel and
@@ -189,7 +192,7 @@ export function ModulePage({
         </LayoutHeader>
       }
       content={(
-        <LayoutContent padding={0}>
+        <LayoutContent>
           {children}
           {/* Mounted for the whole narrow session, opened by `isOpen`: Astryx
               returns focus on the open→closed transition, and a dialog that

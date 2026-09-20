@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createSessionCatalogController, selectAuthoritativeSessionIds } from '../../renderer/session-catalog-state.js';
+import { createSessionCatalogController, selectAuthoritativeSessionIds } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { sessionIdSetsEqual } from '../../renderer/features/conversation/index.js';
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';

@@ -171,7 +171,7 @@ test('shell settings default, normalize, and merge through their shared boundary
   );
 });
 
-test('a chat-default thinking level the app does not recognize drops to no preference', () => {
+test('an unrecognized legacy chat thinking field drops to no preference', () => {
   const normalized = normalizeSettings({
     chatDefaults: { thinkingLevel: 'ultra' as unknown as undefined },
   });

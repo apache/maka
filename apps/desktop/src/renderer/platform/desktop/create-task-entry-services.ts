@@ -20,13 +20,24 @@
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { TaskEntryServices } from '../../features/task-entry';
 
-export type DesktopTaskEntryBridge = Pick<MakaBridge, 'newTasks'>;
+export type DesktopTaskEntryBridge = Pick<MakaBridge, 'newTasks' | 'projects'>;
 
 /** The only Desktop-to-Task Entry adapter. */
 export function createDesktopTaskEntryServices(
   bridge: DesktopTaskEntryBridge = window.maka,
 ): TaskEntryServices {
   return {
-    catalog: bridge.newTasks,
+    catalog: {
+      ...bridge.newTasks,
+      async renameProject(host, projectId, name) {
+        await bridge.projects.rename(projectId, name, host);
+      },
+      async archiveProject(host, projectId) {
+        await bridge.projects.archive(projectId, host);
+      },
+      async restoreProject(host, projectId) {
+        await bridge.projects.restore(projectId, host);
+      },
+    },
   };
 }

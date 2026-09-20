@@ -28,7 +28,7 @@ export { ModuleHubSelector } from './module-hub-selector.js';
 export type { ModuleHubHeader } from './module-hub-selector.js';
 export { SearchModal } from './search-modal.js';
 export { SessionListPanel } from './session-list-panel.js';
-export { SessionRailProvider } from './session-rail-context.js';
+export { SessionRailProvider, useSessionRailData } from './session-rail-context.js';
 export type {
   SessionRailChrome,
   SessionRailData,
@@ -43,7 +43,7 @@ export {
   useSidebarUpdateProjection,
   type SidebarUpdateProjection,
 } from './sidebar-update-projection-context.js';
-export type { BundledSkillCatalogEntry, DailyReviewMarkdownActionInput, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';
+export type { BundledSkillCatalogEntry, DailyReviewMarkdownActionInput, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails, SkillLocation, SkillLocationRef } from './module-panel-types.js';
 export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolDisplayName } from './tool-format.js';
 export { formatBytes, ToolCallDetail, ToolTrow } from './tool-activity.js';
 export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
@@ -79,6 +79,7 @@ export type {
   ComposerGoalProps,
   ComposerProps,
   ComposerHandle,
+  ComposerSessionReference,
   ComposerSendMetadata,
   ComposerSlashCommandOption,
 } from './composer.js';

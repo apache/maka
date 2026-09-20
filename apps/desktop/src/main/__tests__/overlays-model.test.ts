@@ -20,24 +20,24 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  CLOSED_SETTINGS_SURFACE,
-  closeSettingsSurface,
-  openSettingsSurface,
+  CLOSED_SETTINGS_MODAL,
+  closeSettingsModal,
+  openSettingsModal,
   settingsIntentSection,
   withSettingsProfileId,
-  type SettingsSurface,
+  type SettingsModalState,
 } from '../../renderer/features/overlays/testing.js';
 
-const remembered: SettingsSurface = {
-  ...CLOSED_SETTINGS_SURFACE,
+const remembered: SettingsModalState = {
+  ...CLOSED_SETTINGS_MODAL,
   request: { section: 'general', profileId: 'profile-1' },
 };
 
-describe('Settings surface model', () => {
+describe('Settings modal state model', () => {
   test('a plain open keeps the remembered request and resets every sub-surface', () => {
-    const detail = openSettingsSurface(remembered, { kind: 'connection-detail', slug: 'acme' });
+    const detail = openSettingsModal(remembered, { kind: 'connection-detail', slug: 'acme' });
     assert.equal(detail.connectionDetailSlug, 'acme');
-    const reopened = openSettingsSurface(detail, { kind: 'settings' });
+    const reopened = openSettingsModal(detail, { kind: 'settings' });
     assert.deepEqual(reopened, {
       open: true,
       request: { section: 'models', profileId: 'profile-1' },
@@ -48,28 +48,28 @@ describe('Settings surface model', () => {
   });
 
   test('a section open merges the section into the request', () => {
-    const next = openSettingsSurface(remembered, { kind: 'section', section: 'projects' });
+    const next = openSettingsModal(remembered, { kind: 'section', section: 'projects' });
     assert.deepEqual(next.request, { section: 'projects', profileId: 'profile-1' });
     assert.equal(next.open, true);
   });
 
   test('a project open replaces the whole request so a stale profile cannot leak', () => {
-    const next = openSettingsSurface(remembered, { kind: 'project', profileId: 'profile-2' });
+    const next = openSettingsModal(remembered, { kind: 'project', profileId: 'profile-2' });
     assert.deepEqual(next.request, { section: 'projects', profileId: 'profile-2' });
   });
 
   test('the models openers land on models and raise only their own sub-surface', () => {
-    const catalog = openSettingsSurface(remembered, { kind: 'provider-catalog' });
+    const catalog = openSettingsModal(remembered, { kind: 'provider-catalog' });
     assert.equal(catalog.request.section, 'models');
     assert.equal(catalog.providerCatalogOpen, true);
     assert.equal(catalog.connectionDetailSlug, undefined);
     assert.equal(catalog.createProviderType, undefined);
 
-    const detail = openSettingsSurface(catalog, { kind: 'connection-detail', slug: 'acme' });
+    const detail = openSettingsModal(catalog, { kind: 'connection-detail', slug: 'acme' });
     assert.equal(detail.providerCatalogOpen, false);
     assert.equal(detail.connectionDetailSlug, 'acme');
 
-    const create = openSettingsSurface(detail, { kind: 'provider-create', providerType: 'openai' });
+    const create = openSettingsModal(detail, { kind: 'provider-create', providerType: 'openai' });
     assert.equal(create.connectionDetailSlug, undefined);
     assert.equal(create.createProviderType, 'openai');
   });
@@ -87,13 +87,13 @@ describe('Settings surface model', () => {
   });
 
   test('closing drops the open flag and the catalog, keeps the rest for the next open', () => {
-    const detail = openSettingsSurface(remembered, { kind: 'connection-detail', slug: 'acme' });
-    const closed = closeSettingsSurface({ ...detail, providerCatalogOpen: true });
+    const detail = openSettingsModal(remembered, { kind: 'connection-detail', slug: 'acme' });
+    const closed = closeSettingsModal({ ...detail, providerCatalogOpen: true });
     assert.equal(closed.open, false);
     assert.equal(closed.providerCatalogOpen, false);
     assert.equal(closed.connectionDetailSlug, 'acme');
     assert.deepEqual(closed.request, detail.request);
-    assert.equal(closeSettingsSurface(CLOSED_SETTINGS_SURFACE), CLOSED_SETTINGS_SURFACE);
+    assert.equal(closeSettingsModal(CLOSED_SETTINGS_MODAL), CLOSED_SETTINGS_MODAL);
   });
 
   test('a profile change is a no-op when the profile is already set', () => {

@@ -127,6 +127,7 @@ export function AddModelDialog(props: {
         disabled={isSaving}
         showsFastMode={supportsRelayFastServiceTier(props.providerType, trimmedId)}
         defaultVision={undefined}
+        thinkingLevels={profile.thinkingLevels ?? []}
         onContextWindowInput={setContextWindowInput}
       >
         <TextInput

@@ -28,6 +28,7 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
+import type { ConnectionUsageReadResult } from '@maka/runtime-host/protocol';
 import type {
   ConnectionOnboardingSaveInput,
   ConnectionOnboardingSaveResult,
@@ -143,6 +144,11 @@ export interface ConnectionsBridge {
     Pick<ModelDiscoveryResult, 'models' | 'source'>
   >;
   hasSecret(connection: DesktopConnectionIdentity): Promise<boolean>;
+  /**
+   * Read-only account usage for a connection. Optional: fixtures and adapters
+   * without a Host surface omit it, and the section then does not render.
+   */
+  usage?(connection: DesktopConnectionIdentity): Promise<ConnectionUsageReadResult>;
   getRequestHeaders(connection: DesktopConnectionIdentity): Promise<SavedRequestHeaders>;
   setRequestHeaders(
     connection: DesktopConnectionIdentity,

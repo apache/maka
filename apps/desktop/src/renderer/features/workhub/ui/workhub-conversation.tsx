@@ -24,6 +24,7 @@ import { Button, Link, Text } from '@astryxdesign/core';
 import { WorkHubHighlightContext, useWorkHubIdentityHue } from './workhub-work-identity.js';
 import type { WorkHubDelegationState, WorkHubLinkedWork } from '../model/linked-work.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
+import { deriveWorkHubTurnPresentation } from '../model/turn-presentation.js';
 
 export function WorkHubDelegationStatus(props: {
   work: WorkHubLinkedWork;
@@ -129,6 +130,7 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
     liveTurns={liveTurns}
     transientMessages={selected ? chat.transientMessages?.filter((message) => message.hostTurnId && matchingTurns.has(message.hostTurnId)) : chat.transientMessages}
     activeTurn={activeTurn}
+    deriveTurnPresentation={(turns) => deriveWorkHubTurnPresentation(turns, locale)}
     emptyOverride={selected ? <p>{copy.noWorkConversation}</p> : chat.emptyOverride}
     turnDecorations={turnDecorations}
     promptRailDecorations={promptRailDecorations}

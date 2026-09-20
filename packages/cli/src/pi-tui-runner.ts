@@ -32,7 +32,10 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
-import type { ExternalSessionLimit } from '@maka/core/external-session';
+import {
+  normalizeExternalSessionQueryText,
+  type ExternalSessionLimit,
+} from '@maka/core/external-session';
 import { CurrentTodoStore, TodoOverlay, renderTodoIndicator } from './pi-tui-todo.js';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { deriveConnectionSlug, type ProviderType } from '@maka/core/llm-connections';
@@ -185,6 +188,8 @@ import {
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
+
+const EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS = 120;
 
 export interface MakaPiTuiInput {
   /** Launcher command used in resume and recovery instructions. */
@@ -567,6 +572,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let connectionIdentityNotice: string | undefined;
   let busy = false;
   let closed = false;
+  const cancelScheduledExternalSearches = new Set<() => void>();
   let currentActivityCompletion: Promise<void> | undefined;
   let permissionResponseInFlightRequestId: string | null = null;
   // Session recap (issue #1055): an in-flight lock shared by manual and
@@ -1145,6 +1151,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     attention.reset();
     // Stop asking the terminal for focus reports before handing it back.
     terminal.write(DISABLE_FOCUS_REPORTING);
+    for (const cancel of cancelScheduledExternalSearches) cancel();
+    cancelScheduledExternalSearches.clear();
     tui.stop();
   };
 
@@ -3110,17 +3118,40 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     let sessions: readonly ExternalSessionCatalogItem[] = [];
     let nextCursor: string | null = null;
     let revision = 0;
+    let normalizedQuery = normalizeExternalSessionQueryText(query);
+    let cancelScheduledSearch: (() => void) | undefined;
+    let pageClosed = false;
     let overlay: OverlayHandle | undefined;
     let search: SessionSearchOverlay | undefined;
     let byValue = new Map<string, ExternalSessionCatalogItem>();
 
-    const closeOverlay = () => overlay?.hide();
+    const dropScheduledSearch = (): boolean => {
+      const hadScheduledSearch = cancelScheduledSearch !== undefined;
+      if (cancelScheduledSearch) cancelScheduledExternalSearches.delete(cancelScheduledSearch);
+      cancelScheduledSearch?.();
+      cancelScheduledSearch = undefined;
+      return hadScheduledSearch;
+    };
+    const resetCatalogPage = (): void => {
+      sessions = [];
+      nextCursor = null;
+      byValue = new Map();
+      render();
+    };
+    const closeOverlay = (): void => {
+      pageClosed = true;
+      dropScheduledSearch();
+      revision += 1;
+      overlay?.hide();
+    };
     const toggleScope = (): void => {
       const alternate = input.externalSessions
         ?.listScopes()
         .find((candidate) => candidate !== scope);
       if (!alternate) return;
+      dropScheduledSearch();
       scope = alternate;
+      resetCatalogPage();
       void load(false);
     };
     const render = (): void => {
@@ -3193,8 +3224,26 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         emptyText: sessions.length === 0 ? copy.externalEmpty : copy.externalUnavailable,
         notice,
         onQuery: (text) => {
+          const nextNormalizedQuery = normalizeExternalSessionQueryText(text);
           query = text;
-          void load(false);
+          if (nextNormalizedQuery === normalizedQuery) return;
+          normalizedQuery = nextNormalizedQuery;
+          dropScheduledSearch();
+          resetCatalogPage();
+          // Retire an older in-flight response immediately. Waiting until the
+          // debounce fires would let it repaint results for the previous query.
+          const requestRevision = ++revision;
+          let cancel: (() => void) | undefined;
+          const handle = setTimeout(() => {
+            if (cancel) cancelScheduledExternalSearches.delete(cancel);
+            cancelScheduledSearch = undefined;
+            if (closed || pageClosed) return;
+            void load(false, undefined, requestRevision);
+          }, EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS);
+          handle.unref();
+          cancel = () => clearTimeout(handle);
+          cancelScheduledSearch = cancel;
+          cancelScheduledExternalSearches.add(cancel);
         },
         onSelect: (item) => {
           if (item.value === 'external:load-more' && nextCursor) {
@@ -3267,8 +3316,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       overlay = showBottomPicker(search);
     };
 
-    const load = async (append: boolean, cursor?: string): Promise<void> => {
-      const requestRevision = ++revision;
+    const load = async (
+      append: boolean,
+      cursor?: string,
+      scheduledRevision?: number,
+    ): Promise<void> => {
+      const requestRevision = scheduledRevision ?? ++revision;
       try {
         const page = await input.externalSessions!.listSessions({
           adapterId,
@@ -3276,12 +3329,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           ...(cursor ? { cursor } : {}),
           ...(query ? { text: query } : {}),
         });
-        if (requestRevision !== revision || closed || turnRunning) return;
+        if (requestRevision !== revision || pageClosed || closed || turnRunning) return;
         sessions = append ? [...sessions, ...page.sessions] : page.sessions;
         nextCursor = page.nextCursor;
         render();
       } catch {
-        if (requestRevision !== revision) return;
+        if (requestRevision !== revision || pageClosed || closed) return;
         state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
         requestRender();
       }

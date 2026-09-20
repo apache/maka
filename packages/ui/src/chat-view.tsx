@@ -80,6 +80,11 @@ import {
   SessionAttachmentProvider,
   type ReadAttachmentBytes,
 } from './attachment-image.js';
+import {
+  MakaClientSessionScope,
+  MakaClientSlotOutlet,
+  useMakaClientSlotOccupied,
+} from './client-plugin-slots.js';
 
 /**
  * How far outside the viewport, in pixels, rows are mounted.
@@ -89,10 +94,29 @@ import {
  * left to push the reader. virtua's default is 200px and a wheel notch travels
  * 600, so a row went from unmounted to straddling within one notch and was
  * always measured too late: reading upwards through the 24-Turn geometry scene
- * jumped 13 times, by 5 to 194px. Mounting 2000px ahead leaves the measurement
- * room to land before the row reaches the reader.
+ * jumped 13 times, by 5 to 194px.
+ *
+ * 2000px fixed the tall-Turn cases it was measured against but not the tallest
+ * ones: a Turn whose real height exceeds the margin still reaches the reader
+ * unmeasured, and the correction that lands then is the one virtua does not
+ * absorb. On the 24-Turn geometry scene that row is ~3000px, so the cold sweep
+ * slipped twice, displacing the reading anchor by 365px — and the gate caught it
+ * in most runs, not rarely.
+ *
+ * The value is bounded on BOTH sides, which is why it is 4000 and not "as large
+ * as possible". Under the tallest Turn, the gate fails as described. Far above
+ * it — 6000 made the first upward reader step mount enough rows at once to move
+ * the anchor by a full step (`per-step drift: -200` in
+ * `upward-traversal-holds-turn-geometry`, a story that walks the transcript in
+ * 200px reader steps). 4000 leaves the tall Turn measured before the reader
+ * arrives while the first step still mounts a viewport's worth of rows, not a
+ * page: the gate now slips at most once and displaces the anchor by ≤25px, and
+ * the traversal story stays within its 1px budget.
+ *
+ * Mounting further ahead costs layout but not responsiveness: the gate's own
+ * `layoutMs` reads 27–33ms here, no higher than at 2000px.
  */
-const MEASURE_AHEAD_MARGIN = 2000;
+const MEASURE_AHEAD_MARGIN = 4000;
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -314,8 +338,6 @@ export function ChatView(props: {
    * reconciliation on the hot streaming path (ChatView also ref-wraps this).
    */
   onOpenLinkedSession?(sessionId: string): void;
-  /** Resolve a requires-bypass tool refusal, then regenerate its owning turn. */
-  onSwitchToBypassAndRetry?(turnId: string): void | Promise<void>;
   onNew(): void;
   onPromptSuggestion?(prompt: string): void;
   /**
@@ -492,12 +514,6 @@ export function ChatView(props: {
     (sessionId: string) => onOpenLinkedSessionRef.current?.(sessionId),
     [],
   );
-  const onSwitchToBypassAndRetryRef = useRef(props.onSwitchToBypassAndRetry);
-  onSwitchToBypassAndRetryRef.current = props.onSwitchToBypassAndRetry;
-  const stableSwitchToBypassAndRetry = useCallback(
-    (turnId: string) => onSwitchToBypassAndRetryRef.current?.(turnId),
-    [],
-  );
   const conversationItemPlacement = useMemo(() => placeChatConversationItems(
     (props.conversationItems ?? []).map((item) => ({
       afterTurnId: item.afterTurnId,
@@ -603,6 +619,9 @@ export function ChatView(props: {
     props.onQuoteSelection ? copy.quoteSelection : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
   ].filter((label): label is string => label !== null).join(' / ');
+  const hasConversationHeaderActions = useMakaClientSlotOccupied(
+    'conversation.header.actions',
+  );
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -744,10 +763,11 @@ export function ChatView(props: {
   ) : null;
 
   return (
-    <SessionAttachmentProvider
-      sessionId={props.activeSession.id}
-      readBytes={props.onReadAttachmentBytes}
-    >
+    <MakaClientSessionScope sessionId={props.activeSession.id}>
+      <SessionAttachmentProvider
+        sessionId={props.activeSession.id}
+        readBytes={props.onReadAttachmentBytes}
+      >
       <section
         className="maka-main agents-chat-panel agents-chat-view-root"
         role="region"
@@ -763,6 +783,12 @@ export function ChatView(props: {
         onOpenMemorySettings={props.onOpenMemorySettings}
         deepResearchActive={deepResearchActive}
         goal={props.goalIndicator}
+        actions={hasConversationHeaderActions ? (
+          <MakaClientSlotOutlet
+            name="conversation.header.actions"
+            owner={{ sessionName: props.activeSession.name }}
+          />
+        ) : undefined}
       />
       {deepResearchActive && props.deepResearchRun && (
         <DeepResearchProgressPanel
@@ -854,11 +880,6 @@ export function ChatView(props: {
                           onOpenLinkedSession={
                             props.onOpenLinkedSession ? stableOpenLinkedSession : undefined
                           }
-                          onSwitchToBypassAndRetry={
-                            props.onSwitchToBypassAndRetry
-                              ? stableSwitchToBypassAndRetry
-                              : undefined
-                          }
                           searchHighlighted={highlightedTurnId === turn.turnId}
                           liveStreaming={
                             turn.turnId === tailTurnId
@@ -913,6 +934,12 @@ export function ChatView(props: {
                       } />
                     </LocalizedChatMessage>
                   ) : runningStatus ? (
+                    // The waiting cue. This row stands in for the Turn until the
+                    // transcript contains it, and an empty disclosure has no
+                    // footer to host the cue — so the cue renders in the
+                    // disclosure here, and moves to the footer once the real
+                    // TurnView takes over. Passing `activity` is what selects
+                    // that form.
                     <ProcessingBlock entries={[]} running activity={{}} />
                   ) : null}
                 </section>
@@ -979,7 +1006,8 @@ export function ChatView(props: {
         ) : null}
       </div>
       </section>
-    </SessionAttachmentProvider>
+      </SessionAttachmentProvider>
+    </MakaClientSessionScope>
   );
 }
 
