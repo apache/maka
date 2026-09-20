@@ -739,6 +739,9 @@ async function smokeInteractiveTui({ packageRoot, cliEntrypoint, ptySpawn, root 
   const workspace = join(root, 'workspace');
   mkdirSync(workspace, { recursive: true });
   const environment = isolatedEnvironment(home);
+  for (const key of ['DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
+    delete environment[key];
+  }
   const dataRoots = await resolveInstalledDataRoots(packageRoot, environment, home);
   await withCleanup(
     async () => {
@@ -760,7 +763,9 @@ async function smokeInteractiveTui({ packageRoot, cliEntrypoint, ptySpawn, root 
         },
         timeoutMs: PROCESS_TIMEOUT_MS,
       });
-      if (result.exitCode !== 0) throw new Error(`Interactive TUI exited with ${result.exitCode}`);
+      if (result.exitCode !== 0) {
+        throw new Error(`Interactive TUI exited with ${result.exitCode}: ${result.output}`);
+      }
     },
     (completed) => settleRuntimeHost(packageRoot, dataRoots.workspaceRoot, completed),
   );
