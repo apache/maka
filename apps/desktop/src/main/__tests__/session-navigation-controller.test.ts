@@ -295,7 +295,7 @@ describe('useSessionNavigationReads', () => {
                 hiddenSessionIds,
                 projectScopes: [localProjectScope],
                 streamingSessionIds: new Set<string>(),
-                staleSessionIds: new Set<string>(),
+                sessionSendOutcomes: {},
                 ports: ports(linkedCatalog, 'child'),
                 commandsRef: { current: null },
                 selection: { section: 'sessions' },

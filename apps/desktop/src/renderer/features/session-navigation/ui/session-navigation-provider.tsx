@@ -49,7 +49,10 @@ import type {
   SessionNavigationSession,
 } from '../ports.js';
 import { selectSessions, type SessionCatalogController } from '../../../session-catalog-state.js';
+import { selectStaleSessionIds } from '../../../stale-sessions.js';
+import { sessionIdSetsEqual } from '../../conversation/model/live-turn-snapshot.js';
 import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
+import type { SessionSendProjection } from '@maka/core/session-send-projection';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -74,7 +77,7 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
   hiddenSessionIds: ReadonlySet<string>;
   projectScopes: readonly SessionNavigationProjectScope[];
   streamingSessionIds: ReadonlySet<string>;
-  staleSessionIds: ReadonlySet<string>;
+  sessionSendOutcomes?: Readonly<Record<string, SessionSendProjection>>;
   SessionBadge?: ComponentType<{ readonly sessionId: string }>;
   ports: SessionNavigationPorts;
   /**
@@ -99,6 +102,12 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
  */
 export function SessionNavigationProvider(props: SessionNavigationProviderProps) {
   const sessions = useExternalStoreSelector(props.catalog, selectSessions);
+  const staleSessionIds = useExternalStoreSelector(
+    props.catalog,
+    selectStaleSessionIds,
+    props.sessionSendOutcomes,
+    sessionIdSetsEqual,
+  );
   const rail = useMemo(
     () =>
       deriveSessionRail(sessions, props.activeSessionId, (session) =>
@@ -190,7 +199,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       sessions: rail.sessions,
       activeId: props.workHubActive ? undefined : rail.activeRowId,
       streamingSessionIds: props.streamingSessionIds,
-      staleSessionIds: props.staleSessionIds,
+      staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
       groupVariant: controller.layout.viewMode,
@@ -212,7 +221,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       projectActions,
       relinkableProjectIds,
       rail,
-      props.staleSessionIds,
+      staleSessionIds,
       props.streamingSessionIds,
       props.workHubActive,
       rowActions,
