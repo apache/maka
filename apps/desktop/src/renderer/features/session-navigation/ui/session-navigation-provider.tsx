@@ -50,7 +50,7 @@ import type {
 } from '../ports.js';
 import { selectSessions, type SessionCatalogController } from '../../../session-catalog-state.js';
 import { selectStaleSessionIds } from '../../../stale-sessions.js';
-import { sessionIdSetsEqual } from '../../conversation/model/live-turn-snapshot.js';
+import { sessionIdSetsEqual } from '../../../../shared/session-id-set.js';
 import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
 
