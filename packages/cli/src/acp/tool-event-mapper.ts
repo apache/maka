@@ -33,6 +33,7 @@ import {
 import type { StoredMessage } from '@maka/core/session';
 import { projectToolArgsPreview } from '@maka/core/tool-quiet-preview';
 import { toolResultActivityStatus } from '@maka/core/tool-result-status';
+import type { InteractionPendingSnapshot, InteractionSnapshot } from '@maka/runtime-host/protocol';
 import { BoundedChunkBuffer } from '../bounded-chunk-buffer.js';
 import { formatToolResultContent } from '../pi-transcript-format.js';
 
@@ -77,6 +78,7 @@ interface ToolState {
   resultDigest?: string;
   callDigest?: string;
   retainedChars: number;
+  synthetic?: boolean;
 }
 
 interface ToolCallProjection {
@@ -161,6 +163,60 @@ export class AcpToolEventMapper {
     }
   }
 
+  async pendingInteraction(pending: InteractionPendingSnapshot): Promise<void> {
+    const tool = this.#ensure(pending.turnId, interactionToolId(pending));
+    if (pending.request.kind === 'sandbox_boundary') tool.synthetic = true;
+    if (tool.terminal) return;
+    tool.status = 'pending';
+    tool.meta.interaction = {
+      id: pending.interactionId,
+      kind: pending.request.kind,
+      status: 'pending',
+    };
+    if (!tool.name) tool.title = `Awaiting ${pending.request.kind.replaceAll('_', ' ')}`;
+    await this.#publish(tool);
+  }
+
+  async resolvedInteraction(
+    resolved: InteractionSnapshot,
+    pending: InteractionPendingSnapshot,
+  ): Promise<void> {
+    if (resolved.status === 'pending') return;
+    const tool = this.#ensure(pending.turnId, interactionToolId(pending));
+    if (pending.request.kind === 'sandbox_boundary') tool.synthetic = true;
+    const outcome = resolved.outcome;
+    tool.meta.interaction = {
+      id: pending.interactionId,
+      kind: pending.request.kind,
+      status: resolved.status,
+      ...(outcome.kind === 'closure' ? { reason: outcome.reason } : {}),
+      ...('decision' in outcome ? { decision: outcome.decision } : {}),
+      ...('action' in outcome ? { action: outcome.action } : {}),
+    };
+    if (!tool.terminal) {
+      if (pending.request.kind === 'sandbox_boundary') {
+        tool.terminal = true;
+        tool.status =
+          outcome.kind === 'sandbox_boundary_decision' && outcome.decision === 'allow'
+            ? 'completed'
+            : 'failed';
+      } else tool.status = 'in_progress';
+    }
+    const closure =
+      outcome.kind === 'closure' ? `Interaction closed: ${outcome.reason}` : undefined;
+    if (closure && !tool.terminal) {
+      tool.progress ??= progressBuffer();
+      tool.progress.append(closure);
+    }
+    await this.#publish(
+      tool,
+      closure && pending.request.kind === 'sandbox_boundary'
+        ? { content: textContent(closure) }
+        : {},
+    );
+    if (tool.terminal) this.#release(tool);
+  }
+
   /** Called only after authoritative turn settlement and transcript reconciliation. */
   async finishTools(
     turnId: string,
@@ -179,8 +235,9 @@ export class AcpToolEventMapper {
       }
       // A live result announcement promises a durable result. A start, delta or
       // progress event alone does not: completed turns can contain unfinished
-      // tool calls, and those should remain visible as interrupted cards.
-      if (terminalStatus === 'completed' && tool.resultAnnounced) missingResult = true;
+      // tool calls, and synthetic interaction cards have no tool result.
+      if (terminalStatus === 'completed' && !tool.synthetic && tool.resultAnnounced)
+        missingResult = true;
       this.#release(tool);
     }
     if (missingResult)
@@ -406,6 +463,12 @@ function fixedStateChars(tool: ToolState): number {
 
 function digestValue(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function interactionToolId(pending: InteractionPendingSnapshot): string {
+  return pending.request.kind === 'sandbox_boundary'
+    ? pending.interactionId
+    : pending.request.toolUseId;
 }
 
 function rawInput(toolName: string, args: unknown): { rawInput?: unknown } {

@@ -22,6 +22,7 @@ import type { WorkbarServices } from './ports.js';
 export { WorkbarServicesProvider } from './services-context.js';
 export type {
   WorkbarServices,
+  WorkbarReviewService,
   SessionTracePage,
   SessionUsageSummary,
   WorkbarIngestInput,
@@ -56,6 +57,10 @@ export * from './tools/terminal/session-terminal-frame.js';
 export * from '../../application/contracts/session-inspector/use-session-trace.js';
 export * from './controller/use-workbar-controller.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';
+export {
+  useComposerGitBranch,
+  type ComposerGitBranch,
+} from './tools/composer-git-branch.js';
 
 const noopSubscription = (): (() => void) => () => undefined;
 
@@ -73,6 +78,7 @@ export function createFakeWorkbarServices(
       read: async () => {
         throw new Error('Fake review.read is not configured');
       },
+      branch: async () => ({ ok: false, isGitRepo: false }),
       subscribeSessionEvents: noopSubscription,
     },
     terminal: {

@@ -101,11 +101,17 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 165 as const;
-// 165: Agent Graph operator snapshots carry bounded output previews and metrics.
-// Epoch-164 peers reject the additional `output` field on strict operator shapes.
-// 164: Reserved for Client Capability tri-state results and interrupted tool
-// continuity, pending #5458.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 167 as const;
+// 167: Agent Graph operator snapshots carry bounded output previews and metrics.
+// Epoch-166 peers reject the additional `output` field on strict operator shapes.
+// 166: Connection usage reads add an operation, an accepted availability reason
+// (`unauthorized`), a report field (`partiallyUnauthorized`), and a bounded
+// window list. Peers older than this epoch take the added operation for an
+// unknown key and reject the new reason and field.
+// 165: WorkHub coordination resolve adds a model_required error code. Older
+// peers reject the new operation outcome rather than misdiagnosing prose.
+// 164: Client Plugin bundles, desktop-ui composition, generation-fenced Host
+// Remote calls, and pull streams are projected through strict Host contracts.
 // 163: Session reference quotes carry strict capture and truncation provenance.
 // Epoch-162 peers reject the added QuoteRef fields.
 // 162: Runtime Resource control and stop replies drop the unused resource

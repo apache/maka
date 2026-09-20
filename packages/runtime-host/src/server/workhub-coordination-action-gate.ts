@@ -51,11 +51,17 @@ import type {
 import { WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS } from '../protocol/index.js';
 import type { ConnectionContext } from './operation-dispatcher.js';
 import type { SessionAdmissionLease } from './session-admission-gate.js';
+import type {
+  WorkHubTargetExecutionAuthority,
+  WorkHubTargetExecutionPreparationInput,
+} from './workhub-target-execution-authority.js';
 
 /** User content is read from the active Host Turn before reaching this gate. */
 export interface WorkHubAdmittedAction extends Omit<WorkHubCoordinationActFromTurnInput, 'turnId'> {
   readonly userText: string;
   readonly attachments?: AttachmentRef[];
+  /** Active Coordination Run that owns any repair Form opened before admission. */
+  readonly coordinationRunId?: string;
   /** Only supplied by the Host after accepting an exact durable form option. Never a wire proposal. */
   readonly selectedTarget?: { readonly sessionId: string; readonly workspaceDigest: string };
 }
@@ -83,6 +89,7 @@ export type WorkHubActionGateSession = Pick<
 
 export interface WorkHubActionGateEffects {
   listSessions(): Promise<readonly WorkHubActionGateSession[]>;
+  readonly targetExecution?: WorkHubTargetExecutionAuthority;
   /**
    * Durably binds this action identity to one exact operation before any
    * effect. Every other WorkHub record is keyed by the delegation or the
@@ -165,6 +172,8 @@ export interface WorkHubDelegationRetirementClaim {
 export interface WorkHubDelegationResumeInput {
   /** Only fresh admission revalidates the target; replay acknowledges its existing Turn. */
   readonly validateFreshTarget: () => Promise<void>;
+  readonly prepareTargetExecution?: () => Promise<void>;
+  readonly assertTargetExecutionReady?: () => Promise<void>;
   readonly actionId: string;
   readonly source: WorkHubDelegationAssignedMessage;
 }
@@ -177,6 +186,7 @@ export interface WorkHubRetirementResult {
 export interface WorkHubDelegationAssignmentInput {
   /** Rechecked under the target admission lease, only before a fresh assignment. */
   readonly validateFreshTarget?: () => Promise<void>;
+  readonly targetExecutionPreparation?: WorkHubTargetExecutionPreparationInput;
   readonly coordinationTurnId?: string;
   readonly actionId: string;
   readonly actionFingerprint: `sha256:${string}`;
@@ -318,7 +328,7 @@ export class WorkHubCoordinationActionGate {
       );
     }
     const fingerprint = actionFingerprint(input);
-    const requestFingerprint = digest(input);
+    const requestFingerprint = actionRequestFingerprint(input);
     const replay = this.#actions.get(input.actionId);
     if (replay) {
       if (replay.requestFingerprint !== requestFingerprint) {
@@ -466,8 +476,25 @@ export class WorkHubCoordinationActionGate {
             'WorkHub resume target is unavailable',
           );
       };
+      const preparation = this.#targetExecutionPreparation(
+        input,
+        source.targetSessionId,
+        source.targetSessionName,
+      ).targetExecutionPreparation;
       return this.#effects.resume(
-        { actionId: input.actionId, source, validateFreshTarget },
+        {
+          actionId: input.actionId,
+          source,
+          validateFreshTarget,
+          ...(preparation && this.#effects.targetExecution
+            ? {
+                prepareTargetExecution: () =>
+                  this.#effects.targetExecution!.prepare(preparation, context),
+                assertTargetExecutionReady: () =>
+                  this.#effects.targetExecution!.assertReady(source.targetSessionId),
+              }
+            : {}),
+        },
         context,
       );
     }
@@ -519,6 +546,16 @@ export class WorkHubCoordinationActionGate {
           prepared.actionFingerprint,
           prepared.replacesDelegationId,
         );
+        await this.#prepareTargetExecution(
+          {
+            ...this.#targetExecutionPreparation(
+              input,
+              prepared.targetSessionId,
+              prepared.targetSessionName,
+            ),
+          },
+          context,
+        );
         return this.#replace(prepared, context);
       }
       const replacement = await this.#replacementAssignment(input, replaced);
@@ -528,6 +565,7 @@ export class WorkHubCoordinationActionGate {
         replacement.actionFingerprint,
         replacement.replacesDelegationId,
       );
+      await this.#prepareTargetExecution(replacement, context);
       const intent = await this.#effects.prepareReplacement(replacement);
       return this.#replace(intent, context);
     }
@@ -556,6 +594,7 @@ export class WorkHubCoordinationActionGate {
     return this.#assign(
       {
         ...delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
+        ...this.#targetExecutionPreparation(input, target.sessionId, target.sessionName),
         ...(input.selectedTarget
           ? {
               validateFreshTarget: async () => {
@@ -811,6 +850,7 @@ export class WorkHubCoordinationActionGate {
       replacesDelegationId: replaced.delegationId,
       replacedTargetSessionId: replaced.targetSessionId,
       replacedTargetMessageId: replaced.targetMessageId,
+      ...this.#targetExecutionPreparation(input, destination.sessionId, destination.sessionName),
     };
   }
 
@@ -977,7 +1017,18 @@ export class WorkHubCoordinationActionGate {
       assignment.actionFingerprint,
       assignment.replacesDelegationId ?? assignment.targetSessionId,
     );
-    const admitted = await this.#effects.assign(assignment, context);
+    await this.#prepareTargetExecution(assignment, context);
+    const validateFreshTarget =
+      assignment.disposition === 'delegate_existing' && this.#effects.targetExecution
+        ? async () => {
+            await assignment.validateFreshTarget?.();
+            await this.#effects.targetExecution!.assertReady(assignment.targetSessionId);
+          }
+        : assignment.validateFreshTarget;
+    const admitted = await this.#effects.assign(
+      validateFreshTarget ? { ...assignment, validateFreshTarget } : assignment,
+      context,
+    );
     if (assignment.replacesDelegationId) {
       return {
         disposition: 'replace',
@@ -1005,6 +1056,54 @@ export class WorkHubCoordinationActionGate {
         'Target Session is waiting for user input',
       );
     }
+  }
+
+  #targetExecutionPreparation(
+    input: AdmittedWorkHubAction,
+    targetSessionId: string,
+    targetSessionName: string,
+  ): Pick<WorkHubDelegationAssignmentInput, 'targetExecutionPreparation'> {
+    return input.coordinationTurnId && input.coordinationRunId
+      ? {
+          targetExecutionPreparation: {
+            actionId: input.actionId,
+            coordinationTurnId: input.coordinationTurnId,
+            coordinationRunId: input.coordinationRunId,
+            targetSessionId,
+            targetSessionName,
+          },
+        }
+      : {};
+  }
+
+  async #prepareTargetExecution(
+    input: Pick<WorkHubDelegationAssignmentInput, 'targetExecutionPreparation'> & {
+      readonly actionId?: string;
+      readonly targetSessionId?: string;
+      readonly targetSessionName?: string;
+      readonly coordinationTurnId?: string;
+      readonly coordinationRunId?: string;
+    },
+    context: ConnectionContext | undefined,
+  ): Promise<void> {
+    const authority = this.#effects.targetExecution;
+    const preparation =
+      input.targetExecutionPreparation ??
+      (input.actionId &&
+      input.targetSessionId &&
+      input.targetSessionName &&
+      input.coordinationTurnId &&
+      input.coordinationRunId
+        ? {
+            actionId: input.actionId,
+            targetSessionId: input.targetSessionId,
+            targetSessionName: input.targetSessionName,
+            coordinationTurnId: input.coordinationTurnId,
+            coordinationRunId: input.coordinationRunId,
+          }
+        : undefined);
+    if (!authority || !preparation || !context) return;
+    await authority.prepare(preparation, context);
   }
 
   #boundReplays(): void {
@@ -1166,6 +1265,14 @@ function actionFingerprint(input: WorkHubAdmittedAction): `sha256:${string}` {
     ...common,
     disposition: proposal.operation === 'stop' ? 'stop_work' : 'resume_work',
   });
+}
+
+function actionRequestFingerprint(input: WorkHubAdmittedAction): `sha256:${string}` {
+  // Coordination execution identity changes when the Host retries the same
+  // durable action after a process failure. It authorizes where a repair Form
+  // is shown, but is not part of the user's proposal or replay identity.
+  const { coordinationRunId: _coordinationRunId, ...proposal } = input;
+  return digest(proposal);
 }
 
 function replacementActionFingerprint(

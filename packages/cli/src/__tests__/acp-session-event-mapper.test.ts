@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
+import type { InteractionPendingSnapshot } from '@maka/runtime-host/protocol';
 import { AcpSessionEventMapper } from '../acp/session-event-mapper.js';
 
 describe('ACP Session event mapper', () => {
@@ -548,6 +549,53 @@ describe('ACP Session event mapper', () => {
       }),
     );
     assert.equal(notifications.length, 1);
+  });
+
+  test('interaction updates preserve Host closure reasons without reopening terminal tools', async () => {
+    const notifications: SessionNotification[] = [];
+    const mapper = eventMapper(notifications);
+    const pending: InteractionPendingSnapshot = {
+      schemaVersion: 1,
+      interactionId: 'interaction',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run',
+      revision: 1,
+      status: 'pending',
+      outcome: null,
+      request: { kind: 'question', toolUseId: 'tool', questions: [] },
+    };
+    await mapper.pendingInteraction(pending);
+    assert.equal(toolUpdate(notifications.at(-1)!).status, 'pending');
+    await mapper.resolvedInteraction(
+      {
+        ...pending,
+        revision: 2,
+        status: 'closed',
+        outcome: { kind: 'closure', reason: 'provider_disconnected', committedAt: 2 },
+      },
+      pending,
+    );
+    assert.equal(
+      (
+        toolUpdate(notifications.at(-1)!)._meta?.maka as
+          | { interaction: { reason: string } }
+          | undefined
+      )?.interaction.reason,
+      'provider_disconnected',
+    );
+    await mapper.accept(
+      event({
+        type: 'tool_result',
+        toolUseId: 'tool',
+        isError: true,
+        content: { kind: 'text', text: 'closed' },
+      }),
+    );
+    const count = notifications.length;
+    await mapper.pendingInteraction(pending);
+    assert.equal(notifications.length, count);
+    assert.equal(toolUpdate(notifications.at(-1)!).status, 'failed');
   });
 });
 

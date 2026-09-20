@@ -97,6 +97,7 @@ import {
 } from './tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from './tool-activity/copy.js';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
+import { MakaClientSlotOutlet } from './client-plugin-slots.js';
 
 /** Friendly card for tool-search and historical loader results. */
 function LoadToolResultPreview(props: {
@@ -508,6 +509,19 @@ function standardToolCall(
           item={item}
           activityObserved={activityObserved}
           onSwitchToBypassAndRetry={onSwitchToBypassAndRetry}
+        />
+        <MakaClientSlotOutlet
+          name="conversation.tool.detail"
+          owner={{
+            callId: item.toolUseId,
+            toolName: item.toolName,
+            status: toolActivityPresentationStatus(item),
+            ...(item.args === undefined ? {} : { args: item.args }),
+            ...(item.result === undefined ? {} : { result: item.result }),
+          }}
+          options={{
+            entryKey: item.toolName,
+          }}
         />
       </ToolDetailReveal>
     ),
