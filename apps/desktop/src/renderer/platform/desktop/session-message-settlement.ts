@@ -27,6 +27,11 @@ export interface RefreshMessagesOptions {
   requiredAssistantMessageId?: string;
   requiredTurnId?: string;
   signal?: AbortSignal;
+  /**
+   * A transcript open that outlives the deadline reports unsettled instead of
+   * failing, for callers whose work does not depend on the replica.
+   */
+  tolerateOpenTimeout?: boolean;
 }
 
 export type TranscriptSettlementSource = {
@@ -69,8 +74,16 @@ export async function readSettledMessagesFrom(
   const abort = () => cancel(new Error('Desktop transcript settlement was cancelled'));
   options.signal?.addEventListener('abort', abort, { once: true });
   if (options.signal?.aborted) abort();
+  let openLapsed = false;
   const openTimeout = globalThis.setTimeout(
-    () => cancel(new Error('Desktop transcript settlement timed out while opening')),
+    () => {
+      if (options.tolerateOpenTimeout) {
+        openLapsed = true;
+        cancelOpen();
+      } else {
+        cancel(new Error('Desktop transcript settlement timed out while opening'));
+      }
+    },
     Math.max(0, deadline - Date.now()),
   );
   const opening = source.transcripts.open(
@@ -90,7 +103,12 @@ export async function readSettledMessagesFrom(
   void opening.catch(() => undefined);
   let handle: Awaited<typeof opening> | undefined;
   try {
-    handle = await Promise.race([opening, cancellation]);
+    try {
+      handle = await Promise.race([opening, cancellation]);
+    } catch (error) {
+      if (openLapsed) return { messages: [], settled: false };
+      throw error;
+    }
     globalThis.clearTimeout(openTimeout);
     const requiredTurnId = options.requiredTurnId;
     /*

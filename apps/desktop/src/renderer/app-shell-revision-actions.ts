@@ -318,10 +318,13 @@ export function createAppShellRevisionActions(deps: {
       commitRevisionDraft(prepared);
       openSessionInChat(newSession.id);
       selectionIsCurrent = captureSelection();
+      // A transcript replica that is still opening must not eat the send: the
+      // Session view already fills from its own consumer, and the write
+      // boundary is Host admission, not read readiness.
       const { messages: preparedMessages, settled } = await readSettledMessages(newSession.id, {
         signal: preparationAbort.signal,
+        tolerateOpenTimeout: true,
       });
-      if (!settled) throw new Error('Revised Session transcript did not become ready');
       if (
         !selectionIsCurrent() || activeIdRef.current !== newSession.id ||
         revisionDraftRef.current !== prepared
@@ -329,28 +332,31 @@ export function createAppShellRevisionActions(deps: {
         await rollbackPreparedRevision(startedDraft, newSession.id, text, selectionIsCurrent);
         return false;
       }
-      setMessages(preparedMessages);
+      if (settled) setMessages(preparedMessages);
       composerRef.current?.focus();
       toastApi.info(copy.revisionReadyTitle, copy.revisionReadyDescription);
       await refreshSessions();
       return true;
     } catch (error) {
       if (preparationAbort.signal.aborted) return false;
+      // Rollback itself navigates back to the source Session, so the failure
+      // must be surfaced before it runs — checking after it is always stale.
+      if (selectionIsCurrent()) {
+        if (isSessionWorkspaceUnavailableError(error)) {
+          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
+            sessionId: sourceSessionId,
+          });
+        } else {
+          toastApi.error(
+            copy.operationFailedTitle,
+            localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+            undefined,
+            { sessionId: sourceSessionId },
+          );
+        }
+      }
       if (preparedSessionId) {
         await rollbackPreparedRevision(startedDraft, preparedSessionId, text, selectionIsCurrent);
-      }
-      if (!selectionIsCurrent()) return false;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
-          sessionId: sourceSessionId,
-        });
-      } else {
-        toastApi.error(
-          copy.operationFailedTitle,
-          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-          undefined,
-          { sessionId: sourceSessionId },
-        );
       }
       return false;
     } finally {
