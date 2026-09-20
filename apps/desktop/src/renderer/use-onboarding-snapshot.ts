@@ -98,19 +98,26 @@ export function getOnboardingActivationCandidate(
 /**
  * `sessions` is excluded: it is boot-time seed data (the session catalog is
  * the live authority) whose rows churn on every background message event,
- * so including it would publish a new snapshot per event.
+ * so including it would publish a new snapshot per event. The `satisfies`
+ * witness makes the key list exhaustive — a new `OnboardingSnapshot` field
+ * not added here fails to compile instead of silently dropping out of the
+ * dedup key.
  */
+const COMPARED_KEYS = {
+  defaultSlug: true,
+  state: true,
+  milestones: true,
+  connections: true,
+  chatModelChoices: true,
+  sessionSendOutcomes: true,
+} satisfies Record<Exclude<keyof OnboardingSnapshot, 'sessions'>, true>;
+
 export function onboardingSnapshotProjectionEqual(
   a: OnboardingSnapshot,
   b: OnboardingSnapshot,
 ): boolean {
-  return (
-    a.defaultSlug === b.defaultSlug &&
-    valuesEqual(a.state, b.state) &&
-    valuesEqual(a.milestones, b.milestones) &&
-    valuesEqual(a.connections, b.connections) &&
-    valuesEqual(a.chatModelChoices, b.chatModelChoices) &&
-    valuesEqual(a.sessionSendOutcomes, b.sessionSendOutcomes)
+  return (Object.keys(COMPARED_KEYS) as readonly (keyof typeof COMPARED_KEYS)[]).every(
+    (key) => valuesEqual(a[key], b[key]),
   );
 }
 
