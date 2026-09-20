@@ -68,6 +68,10 @@ describe('ToolRuntime durable boundary', () => {
         response?.kind === 'function_response' && response.isError === true,
         outcome !== 'success',
       );
+      assert.deepEqual(response?.kind === 'function_response' ? response.result : undefined, {
+        kind: 'json',
+        value: { content: [{ type: 'text', text: 'report' }] },
+      });
       const live = attempt.events.at(-1);
       assert.equal(live?.type === 'tool_result' && live.outcome, outcome);
       assert.equal(live?.type === 'tool_result' && live.isError, outcome !== 'success');

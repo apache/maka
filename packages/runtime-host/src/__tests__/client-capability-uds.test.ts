@@ -170,7 +170,12 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
         }
         await accept({ kind: 'none' });
         return {
-          outcome: frame.arguments.prefix === 'failure' ? 'error' : 'success',
+          outcome:
+            frame.arguments.prefix === 'failure'
+              ? 'error'
+              : frame.arguments.prefix === 'aborted'
+                ? 'aborted'
+                : 'success',
           content: [
             {
               type: 'text',
@@ -248,6 +253,11 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
     assert.deepEqual(failed, {
       outcome: 'error',
       content: [{ type: 'text', text: `failure:${largeValue}` }],
+    });
+    const aborted = await tool.impl({ prefix: 'aborted' }, toolContext);
+    assert.deepEqual(aborted, {
+      outcome: 'aborted',
+      content: [{ type: 'text', text: `aborted:${largeValue}` }],
     });
     await client.status();
     await assert.rejects(

@@ -1639,12 +1639,17 @@ export class ToolRuntime {
           ) {
             throw new ToolResultLimitError();
           }
-          const content = coerceResultContent(result);
+          const declaredOutcome = tool.resultOutcome
+            ? requireToolCallOutcome(tool.resultOutcome(result))
+            : undefined;
+          const content = coerceResultContent(
+            declaredOutcome === undefined
+              ? result
+              : stripDeclaredToolOutcome(result, declaredOutcome),
+          );
           const projected = this.projectToolResult(tool, turnId, toolUseId, executionArgs, result);
           const modelProjection = isPromiseLike(projected) ? await projected : projected;
-          const outcome = tool.resultOutcome
-            ? requireToolCallOutcome(tool.resultOutcome(result))
-            : deriveToolResultStatus(content, result);
+          const outcome = declaredOutcome ?? deriveToolResultStatus(content, result);
           return {
             result,
             content,
@@ -3299,6 +3304,14 @@ export function coerceResultContent(raw: unknown): ToolResultContent {
     return { kind: 'json', value: raw };
   }
   return { kind: 'text', text: String(raw ?? '') };
+}
+
+function stripDeclaredToolOutcome(raw: unknown, outcome: ToolCallOutcome): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  if (record.outcome !== outcome) return raw;
+  const { outcome: _outcome, ...content } = record;
+  return content;
 }
 
 function coerceTerminalFailure(
