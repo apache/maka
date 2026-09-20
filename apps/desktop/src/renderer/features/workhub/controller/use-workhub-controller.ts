@@ -36,7 +36,10 @@ import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared
 import type { AttachmentRef, FollowUpMode, MessageQueueEntryProjection, MessageQueuePlacement } from '@maka/core/events';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import { startWorkHubCoordinationLifecycle } from '../../../application/contracts/workhub-workspace/coordination-lifecycle.js';
+import {
+  startWorkHubCoordinationLifecycle,
+  WorkHubModelConfigurationRequiredError,
+} from '../../../application/contracts/workhub-workspace/coordination-lifecycle.js';
 import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 import type { WorkHubServices, WorkHubTranscript, WorkHubTranscriptSnapshot } from '../ports.js';
@@ -69,6 +72,7 @@ export function useWorkHubController(onSubmit?: () => void) {
   const [configuringModel, setConfiguringModel] = useState(false);
   const configuringModelRef = useRef(false);
   const [choices, setChoices] = useState<ChatModelChoice[]>([]);
+  const [modelSetupChoicesReady, setModelSetupChoicesReady] = useState(false);
   const [transcript, setTranscript] = useState(emptyTranscript);
   // Reconciliation reads the published view, never a source page held by input.
   const transcriptRef = useRef(emptyTranscript);
@@ -90,6 +94,7 @@ export function useWorkHubController(onSubmit?: () => void) {
   const [sending, setSending] = useState(false);
   const [stopPending, setStopPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [modelSetupRequired, setModelSetupRequired] = useState(false);
   const [readError, setReadError] = useState<string>();
   const [readRevision, setReadRevision] = useState(0);
   const retryResolution = useRef<() => void>(() => undefined);
@@ -216,15 +221,47 @@ export function useWorkHubController(onSubmit?: () => void) {
           setSessionId(undefined);
           setStopPending(false);
           setError(undefined);
+          setModelSetupRequired(false);
+          setModelSetupChoicesReady(false);
         },
         onResolved: setSessionId,
         reportFailure: (reason, action) => {
+          if (reason instanceof WorkHubModelConfigurationRequiredError) {
+            setError(undefined);
+            setModelSetupRequired(true);
+            retryResolution.current = action;
+            return;
+          }
+          setModelSetupRequired(false);
           report(reason);
           retryResolution.current = action;
         },
       }),
     [services],
   );
+
+  useEffect(() => {
+    if (!modelSetupRequired || sessionId) return;
+    let disposed = false;
+    const refresh = () => {
+      void services
+        .modelChoices()
+        .then((next) => {
+          if (disposed) return;
+          setChoices(next);
+          setModelSetupChoicesReady(true);
+        })
+        .catch((reason: unknown) => {
+          if (!disposed) report(reason);
+        });
+    };
+    const unsubscribe = services.subscribeAvailability(refresh);
+    refresh();
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [services, modelSetupRequired, sessionId]);
 
   useEffect(() => {
     let disposed = false;
@@ -576,6 +613,27 @@ export function useWorkHubController(onSubmit?: () => void) {
       setConfiguringModel(false);
     }
   }
+  async function selectSetupModel(input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }) {
+    if (!modelSetupRequired || sessionId || configuringModelRef.current) return;
+    configuringModelRef.current = true;
+    setConfiguringModel(true);
+    try {
+      await services.setDefaultModel({
+        llmConnectionSlug: input.llmConnectionSlug,
+        model: input.model,
+      });
+      setError(undefined);
+    } catch (reason) {
+      report(reason);
+    } finally {
+      configuringModelRef.current = false;
+      setConfiguringModel(false);
+    }
+  }
   async function mutateQueue(action: (target: string) => Promise<void>) {
     if (!sessionId) return;
     setError(undefined);
@@ -616,10 +674,13 @@ export function useWorkHubController(onSubmit?: () => void) {
     sending,
     stopPending,
     error: readError ?? error,
+    modelSetupRequired,
+    modelSetupChoicesReady,
     canRetry: Boolean(readError || (!sessionId && error) || (error && (pendingSend.current?.admission === 'unknown' || pendingSend.current?.admission === 'rejected'))),
     send,
     stop,
     changeModel,
+    selectSetupModel,
     configuringModel,
     changeThinkingLevel: async (level: ThinkingLevel | undefined) => {
       if (!session?.llmConnectionId || !session.llmConnectionSlug || !session.model) return;

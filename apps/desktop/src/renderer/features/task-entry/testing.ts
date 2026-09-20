@@ -53,6 +53,9 @@ export function createFakeTaskEntryServices(
       subscribeChanges: noopSubscription,
       addProject: async () => ({ ok: false, reason: 'cancelled' }),
       relinkProject: async () => ({ ok: false, reason: 'cancelled' }),
+      renameProject: async () => undefined,
+      archiveProject: async () => undefined,
+      restoreProject: async () => undefined,
     },
     ...overrides,
   };

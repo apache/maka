@@ -75,6 +75,7 @@ export function createFakeModuleHubHostModel(
     selectModule: () => undefined,
     skills: {
       skills: [],
+      skillLocations: [],
       managedSkillSources: [],
       bundledSkillCatalog: [],
       onRefreshSkills: async () => undefined,
@@ -137,6 +138,7 @@ export function createFakeModuleHubServices(
     },
     skills: {
       list: async () => [],
+      listLocations: async () => ({ contextIds: {}, locations: [] }),
       listManagedSources: async () => [],
       listBundledCatalog: async () => [],
       importManagedSource: async () =>
@@ -149,6 +151,7 @@ export function createFakeModuleHubServices(
       setPinned: async () => notConfigured("skills.setPinned"),
       delete: async () => notConfigured("skills.delete"),
       open: async () => notConfigured("skills.open"),
+      openLocation: async () => notConfigured("skills.openLocation"),
     },
     scheduledTasks: {
       list: async () => [],

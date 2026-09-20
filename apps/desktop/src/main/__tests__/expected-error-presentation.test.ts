@@ -173,10 +173,10 @@ test('every shell error-copy entry classifies, and keeps its contextual fallback
   assert.equal(messageRefreshErrorMessage(timeout, 'zh-CN'), '请求超时');
   assert.equal(messageRefreshErrorMessage(opaque, 'zh-CN'), copy.errors.messageRefresh);
 
-  assert.equal(openPathActionErrorMessage(timeout, 'skills', 'zh-CN'), '请求超时');
+  assert.equal(openPathActionErrorMessage(timeout, 'workspace', 'zh-CN'), '请求超时');
   assert.equal(
-    openPathActionErrorMessage(opaque, 'skills', 'zh-CN'),
-    copy.errors.openPath(copy.paths.skills),
+    openPathActionErrorMessage(opaque, 'workspace', 'zh-CN'),
+    copy.errors.openPath(copy.paths.workspace),
   );
 
   // The connection test derives its own category from the status code, so an

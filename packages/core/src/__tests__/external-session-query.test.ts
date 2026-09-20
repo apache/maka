@@ -50,6 +50,16 @@ describe('externalSessionMatchesQuery', () => {
     assert.equal(externalSessionMatchesQuery(summary(), { text: '/Users/z' }), true);
   });
 
+  test('a term matches the source Session id', () => {
+    assert.equal(externalSessionMatchesQuery(summary(), { text: 'SESS-1' }), true);
+    assert.equal(
+      externalSessionMatchesQuery(summary({ id: '01JY7W3FKJZKQ2G7A2P9V4M8NE' }), {
+        text: 'q2g7a2p9',
+      }),
+      true,
+    );
+  });
+
   test('a term that matches neither excludes the row', () => {
     assert.equal(externalSessionMatchesQuery(summary(), { text: 'kubernetes' }), false);
   });

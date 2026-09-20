@@ -363,6 +363,24 @@ describe('useWorkbarController', () => {
     assert.equal(controller().host.panelsState.bottom.activeTabId, 'workbar:inspector');
   });
 
+  it('opens a Side Chat for the active Session instead of toggling a hidden one', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    const authoritativeSessionIds = new Set(['a', 'b']);
+    const show = (id: string) => renderController(root, services, {
+      ...input(session(id)),
+      authoritativeSessionIds,
+    });
+
+    await act(async () => show('a'));
+    await act(async () => controller().commands.toggleTool('side-chat'));
+    assert.deepEqual(controller().host.quotes?.map((panel) => panel.sourceSessionId), ['a']);
+
+    await act(async () => show('b'));
+    await act(async () => controller().commands.toggleTool('side-chat'));
+    assert.deepEqual(controller().host.quotes?.map((panel) => panel.sourceSessionId), ['a', 'b']);
+  });
+
   it('keeps right-panel visibility independent across Session navigation', async () => {
     const { root } = installReactRenderer();
     const services = createFakeWorkbarServices();
@@ -957,7 +975,7 @@ describe('useWorkbarController', () => {
     assert.deepEqual(staleErrors, []);
   });
 
-  it('keeps Side Chat through collapse, confirms content close, and removes it on source switch', async () => {
+  it('keeps Side Chat through collapse and source switches, but confirms explicit content close', async () => {
     const { root } = installReactRenderer();
     const services = createFakeWorkbarServices();
     await act(async () => renderController(root, services, input(session('a'))));
@@ -993,13 +1011,88 @@ describe('useWorkbarController', () => {
     );
 
     await act(async () => controller().commands.openTool('side-chat'));
+    const retainedPanelId = controller().host.quotes?.[0]?.id;
+    assert.ok(retainedPanelId);
     await act(async () => renderController(root, services, input(session('b'))));
     assert.equal(
       controller().host.panelsState.right.tabs.some(
-        (candidate) => candidate.kind === 'side-chat',
+        (candidate) => candidate.id === `side-chat:${retainedPanelId}`,
+      ),
+      true,
+    );
+    assert.equal(
+      controller().host.quotes?.some((panel) => panel.id === retainedPanelId),
+      true,
+    );
+    await act(async () => renderController(root, services, input(session('a'))));
+    assert.equal(
+      controller().host.quotes?.some((panel) => panel.id === retainedPanelId),
+      true,
+    );
+  });
+
+  it('retains a Side Chat through a catalog gap and archive, then retires it on source deletion', async () => {
+    const { root } = installReactRenderer();
+    const defaults = createFakeWorkbarServices();
+    const sessionChangeHandlers = new Set<Parameters<WorkbarServices['sideChat']['subscribeSessionChanges']>[0]>();
+    const services = createFakeWorkbarServices({ sideChat: {
+      ...defaults.sideChat,
+      subscribeSessionChanges: (handler) => {
+        sessionChangeHandlers.add(handler);
+        return () => { sessionChangeHandlers.delete(handler); };
+      },
+    } });
+    const show = (id: string, authoritativeSessionIds: ReadonlySet<string>) =>
+      renderController(root, services, {
+        ...input(session(id)),
+        authoritativeSessionIds,
+      });
+
+    await act(async () => show('a', new Set(['a', 'b'])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+    await act(async () => controller().host.onContentStateChange?.(panelId, true));
+
+    await act(async () => show('b', new Set(['a', 'b'])));
+    await act(async () => controller().commands.toggleRight());
+    assert.equal(controller().host.rightCollapsed, false);
+    assert.equal(controller().host.quotes?.[0]?.sourceSessionId, 'a');
+
+    await act(async () => show('b', new Set(['b'])));
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (tab) => tab.id === `side-chat:${panelId}`,
+      ),
+      true,
+    );
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+    await act(async () => {
+      for (const handler of sessionChangeHandlers) handler({ reason: 'archived', sessionId: 'a', ts: Date.now() });
+    });
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+
+    await act(async () => show('b', new Set(['a', 'b'])));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+    await act(async () => {
+      for (const handler of sessionChangeHandlers) handler({ reason: 'deleted', sessionId: 'b', ts: Date.now() });
+    });
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+    await act(async () => {
+      for (const handler of sessionChangeHandlers) handler({ reason: 'deleted', sessionId: 'a', ts: Date.now() });
+    });
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (tab) => tab.id === `side-chat:${panelId}`,
       ),
       false,
     );
+    assert.equal(
+      controller().host.quotes?.some((panel) => panel.id === panelId),
+      false,
+    );
+    assert.equal(controller().host.closeConfirmation.open, false);
+    assert.equal(controller().host.rightCollapsed, false);
   });
 
   it('keeps a newly created companion hidden through panel changes and stale catalogs until cleanup', async () => {

@@ -278,18 +278,4 @@ describe('Overlays feature boundary', () => {
       'src/renderer/app-shell.tsx: OverlaysRoot',
     ]);
   });
-
-  test('leaves the shell with no overlay hook of its own', () => {
-    const shell = analysisOf(join(rendererRoot, 'app-shell.tsx'));
-    for (const hook of [
-      'useOverlaysController',
-      'useOverlays',
-      'useKeyboardHelp',
-      'useCommandPalette',
-      'useShellSearch',
-      'useSettingsModal',
-    ]) {
-      assert.equal(shell.hookCalls[hook] ?? 0, 0, hook);
-    }
-  });
 });

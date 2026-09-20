@@ -35,15 +35,15 @@ export const zhCN: Copy = {
     community: '社区',
     security: '安全',
     asf: 'ASF',
-    getMaka: '获取 Maka',
+    getMaka: '发布进展',
     menu: '菜单',
   },
   hero: {
     headline: ['一个高性能的 Agent 工作台，', '并完整记录', '它做过的每一件事。'],
     lede: 'Agent harness 的本职就是把任务做完。衡量它的标准只有一条：完成了多少，花了多少。我们公开每一次运行：同一个模型，同一个官方验证器，逐任务的完整记录。',
-    nightly: '体验 Desktop Nightly',
-    source: '从源码构建',
-    fine: 'Nightly 是开发者构建，不是 ASF release',
+    releases: '查看发布进展',
+    contribute: '参与开发',
+    fine: '首个 Apache 正式版本正在准备中',
     architecture: '阅读架构文档',
   },
   scene: {
@@ -96,17 +96,12 @@ export const zhCN: Copy = {
     more: 'Log Is the Runtime',
   },
   get: {
-    h3: '获取 Maka',
-    p: '三条路径，边界分明。',
-    nightly: {
-      title: '体验 Desktop Nightly',
-      body: '每天基于 main 构建，面向开发者和测试者，发布在 GitHub Releases。macOS 覆盖 Apple Silicon 与 Intel；Windows 和 Linux 是未签名预览。',
-      note: '不是 ASF RELEASE · 可能不稳定',
-    },
-    source: {
-      title: '从源码构建',
-      body: '克隆 apache/maka，然后 npm ci 和 npm run build。Desktop、TUI 和 CLI 共用同一个运行时宿主。',
-      note: 'APACHE-2.0',
+    h3: '发布与开发',
+    p: '关注正式版本的发布进展，或参与项目开发。',
+    contribute: {
+      title: '参与 Maka 开发',
+      body: '贡献指南介绍了开发环境搭建、测试和提交改动的方法。',
+      note: '面向贡献者',
     },
     releases: {
       title: 'Apache Releases',
@@ -157,7 +152,7 @@ export const zhCN: Copy = {
   },
   downloads: {
     title: '下载',
-    lede: '带签名的源码包才是正式 release。本页其余内容都是便利构建，并且都明确标注。',
+    lede: 'Apache Maka 尚未发布首个 Apache 正式版本。获批后，本页会提供发布文件和验证说明。',
     onThisPage: '本页目录',
     copy: '复制',
     copied: '已复制',
@@ -168,44 +163,25 @@ export const zhCN: Copy = {
         value: '暂未发布。首个 release 投票通过后会列在这里。',
         note: '暂无',
       },
-      nightly: {
-        label: 'Desktop Nightly',
-        value:
-          '每天基于 main 构建。macOS arm64 与 x64；Windows x64、Linux x64 与 arm64 为未签名预览。',
-        note: '不是 ASF RELEASE',
-      },
-      source: {
-        label: '源码',
-        value: 'GitHub 上的 apache/maka，Apache License 2.0。',
-        note: 'APACHE-2.0',
-      },
     },
     releases: {
       h2: 'Apache releases',
       note: '暂无 APACHE RELEASE',
       p: 'Apache Maka (Incubating) 尚未发布过 Apache release。首个 release 投票通过后会列在这里：源码包、ASF 分发目录中的 SHA-512 校验和与独立的 GPG 签名，以及签名对应的 KEYS 文件。',
-      distNote: '在此之前，分发目录尚未创建：',
+      distNote: '获批的正式版本将发布到：',
     },
     verify: {
       h2: '验证 release',
-      p: '所有 Apache release 的验证方式都一样，参与投票的每位 reviewer 在表决前都会走一遍这几步。',
+      p: '正式版本发布后，将以下命令中的 <version> 替换为对应版本号。',
       keys: '第 1 步：导入 release manager 的公钥',
       signature: '第 2 步：校验签名',
       checksum: '第 3 步：核对校验和',
     },
-    nightly: {
-      h2: 'Desktop Nightly',
-      note: '不是 ASF RELEASE',
-      p: 'Desktop Nightly 每天基于 main 构建，面向开发者和测试者，以 GitHub prerelease 形式发布。选择最新的 Maka Desktop Nightly；安装后应用会在 Nightly 渠道自动更新。它不是 ASF release，不适合生产环境。提供 macOS 的 Apple Silicon 与 Intel、Windows x64、Linux x64 与 arm64 构建。',
-      windows: 'Windows 和 Linux 构建是未签名预览，不属于受支持的发布层级。',
-    },
-    source: {
-      h2: '从源码构建',
-      prerequisites: ['Node.js 22.19 或更高版本', 'npm 11', 'Git', 'ripgrep，供 Grep 工具调用'],
-      clone: '第 1 步：克隆仓库',
-      build: '第 2 步：安装依赖并构建全部 workspace',
-      after:
-        'CONTRIBUTING 介绍了 workspace 的目录结构，以及如何从这份构建启动 Desktop、TUI 和 CLI。',
+    development: {
+      h2: '参与开发',
+      p: '如果希望贡献代码或协助测试，请阅读贡献指南并关注开发邮件列表。开发构建不是获批的 Apache 正式版本。',
+      contribute: '贡献指南',
+      discuss: '开发邮件列表',
     },
   },
 };

@@ -21,7 +21,7 @@ import type { ProviderType } from '@maka/core/llm-connections';
 import type { SettingsSection } from '@maka/core/settings';
 import type { OverlaySearchThread } from '../ports.js';
 import type { SearchScrollTarget } from './search-scroll-target.js';
-import type { SettingsSurface } from './settings-surface.js';
+import type { SettingsModalState } from './settings-modal-state.js';
 
 /** What the shell and the overlay layer may ask the overlays to do. */
 export interface OverlaysCommands {
@@ -51,7 +51,7 @@ export interface OverlaysSelectors {
   readonly searchOpen: boolean;
   /** Help, palette, or search: the modals that make the shell inert. */
   readonly anyModalOpen: boolean;
-  readonly settings: SettingsSurface;
+  readonly settings: SettingsModalState;
   readonly searchScrollTarget: SearchScrollTarget | null;
 }
 

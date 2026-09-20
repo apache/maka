@@ -48,7 +48,7 @@ import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { SettingsActions, SettingsRow, SettingsSection } from './settings-section';
 import { providerDisplay } from './provider-display';
-import { CapabilityEditor, AddModelDialog, ModelParametersDialog } from '../features/connection-settings';
+import { CapabilityEditor, AddModelDialog, ConnectionUsageSection, ModelParametersDialog } from '../features/connection-settings';
 import {
   RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
@@ -75,6 +75,7 @@ import {
   type RequestHeaderDraft,
 } from './request-customization-editor';
 import { endpointCarriesCredentials, providerEndpointPresentation } from './provider-endpoint-presentation';
+
 
 /** Past this many model rows the list needs a filter to be usable. */
 const MODEL_FILTER_THRESHOLD = 8;
@@ -434,10 +435,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
 
   return (
     <VStack gap={8}>
-      {needsOAuth && (
-        retired ? (
-          <Banner status="error" role="alert" title={copy.oauthRetired} description={copy.oauthRetiredDetail} />
-        ) : oauthLoginService ? (
+      {retired && (
+        <Banner status="error" role="alert" title={copy.providerRetired} description={copy.providerRetiredDetail} />
+      )}
+      {needsOAuth && !retired && (
+        oauthLoginService ? (
           <OAuthReloginNotice
             service={oauthLoginService}
             hasSecret={hasSecret}
@@ -479,7 +481,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         title={copy.credentials}
         /* One claim, not four phrasings of it: the credential never leaves this
            machine. The endpoint is not a secret, so it did not need a variant. */
-        description={supportsApiKey ? copy.credentialsHelp : copy.credentialsHelpAccount}
+        description={supportsApiKey ? copy.credentialsHelp : needsOAuth ? copy.credentialsHelpAccount : undefined}
       >
         {/* The name row is outside the key/endpoint guard below: a connection
             with neither — an OAuth subscription, say — still has a name, and
@@ -602,6 +604,19 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           />
         )}
       </SettingsSection>
+      {/* Read-only account usage, for the providers that report it. Sits after
+          the credentials (which is what a usage read needs) and before the
+          model list. */}
+      {!retired && props.bridge.usage ? (
+        <SettingsSection title={copy.usage.title}>
+          <ConnectionUsageSection
+            connectionId={connection.connectionId}
+            slug={connection.slug}
+            providerType={connection.providerType}
+            load={props.bridge.usage.bind(props.bridge)}
+          />
+        </SettingsSection>
+      ) : null}
       {/* Everything below writes to the connection, and a retired one accepts
           no writes: the catalog refuses a model or request-body change, and the
           credential vault refuses a request header. Rendering the editors would
@@ -709,6 +724,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           limitsConflict={limitsConflict}
           defaultContextWindow={modelEntry?.defaultContextWindow}
           defaultInputLimit={modelEntry?.defaultInputLimit}
+          thinkingLevels={modelEntry?.thinkingLevels ?? []}
           onChange={(patch) => setDraftParameters(editingModelId, patch)}
           contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
           contextWindowInputInvalid={contextWindowInputInvalid}

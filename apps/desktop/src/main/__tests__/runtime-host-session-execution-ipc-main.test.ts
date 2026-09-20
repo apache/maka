@@ -2315,7 +2315,6 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     openSession: unavailable,
-    regenerateTurn: unavailable,
     retractQueueEntry: unavailable,
     promoteQueueEntry: unavailable,
     updateQueueEntry: unavailable,
@@ -2427,6 +2426,10 @@ function ipcHarness() {
       assert.ok(handler, `missing handler: ${channel}`);
       return handler({ sender } as never, ...args);
     },
+    rendererNavigate(inPlace = false, mainFrame = true) {
+      sender.emit('did-start-navigation', {}, 'file:///index.html', inPlace, mainFrame);
+    },
+    rendererListenerCount() { return sender.listenerCount('destroyed'); },
     rendererGone() {
       sender.emit('render-process-gone');
     },
@@ -2523,4 +2526,48 @@ test('steers WorkHub through Host admission even though the ordinary Session cat
   });
   assert.deepEqual(submits, [{ sessionId: WORKHUB_COORDINATION_SESSION_ID, messageId: 'workhub-steering', placement: 'current_turn', content: { text: 'Change direction immediately', inlineReferences: [] } }]);
   assert.equal((result as { disposition: string }).disposition, 'steering');
+});
+
+
+test('renderer reload releases old observations without accumulating destroyed listeners', async () => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  const removed: string[] = [];
+  await registry.attach({ async observe() {}, async unobserve(id) { removed.push(id); } });
+  const ipc = observationIpcHarness(registry);
+  for (let i = 0; i < 20; i++) {
+    await ipc.invoke('sessions:observe', 'session-1', `observer-${i}`);
+    assert.equal(ipc.rendererListenerCount(), 2);
+    ipc.rendererNavigate(true); // Same-document navigation keeps live subscriptions.
+    ipc.rendererNavigate(false, false); // So do child-frame navigations.
+    assert.deepEqual(registry.observedSessionIds(), ['session-1']);
+    ipc.rendererNavigate();
+    assert.deepEqual(registry.observedSessionIds(), []);
+    assert.equal(ipc.rendererListenerCount(), 1);
+  }
+  assert.equal(removed.length, 20);
+  await registry.close();
+  assert.equal(ipc.rendererListenerCount(), 0);
+});
+
+test('an observation admitted across document replacement is cancelled before registration', async () => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  const ipc = ipcHarness();
+  const resolving = deferred();
+  registerRuntimeHostSessionObservationIpc({ observations: registry, resolveSideConversation: async () => { await resolving.promise; return false; } }, ipc);
+  const observing = ipc.invoke('sessions:observe', 'session-1', 'old-document');
+  ipc.rendererNavigate();
+  resolving.resolve();
+  assert.deepEqual(await observing, { kind: 'cancelled' });
+  assert.deepEqual(registry.observedSessionIds(), []);
+  await registry.close();
+});
+
+
+test('late transcript acknowledgement after renderer teardown is a no-op', async () => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  const ipc = observationIpcHarness(registry);
+  await ipc.invoke('sessions:transcript:acknowledge-tail', {
+    consumerId: 'released-consumer', sessionId: 'session-1', hostEpoch: 'epoch-1', through: 4,
+  });
+  await registry.close();
 });

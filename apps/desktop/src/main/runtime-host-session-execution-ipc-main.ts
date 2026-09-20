@@ -53,7 +53,6 @@ import {
 } from "./attachment-ingest.js";
 import {
   normalizeRuntimeHostBranchFromTurnInput,
-  normalizeRegenerateTurnInput,
   normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
   normalizeClientCapabilityResponse,
@@ -122,7 +121,6 @@ type RuntimeHostSessionExecutionClient = Pick<
   | 'queryMessages'
   | "queryTurnResume"
   | "readExecutionBoundary"
-  | "regenerateTurn"
   | "retractQueueEntry"
   | "promoteQueueEntry"
   | "updateQueueEntry"
@@ -237,6 +235,7 @@ export interface RuntimeHostSessionObservationIpcDeps {
     | 'acknowledgeTranscriptTail'
     | 'loadEarlierTranscript'
     | 'observe'
+    | 'trackRenderer'
     | 'openTranscript'
     | 'readTranscriptTurn'
   >;
@@ -253,20 +252,24 @@ export function registerRuntimeHostSessionObservationIpc(
     'sessions:observe',
     async (event, sessionId: unknown, observerId: unknown) => {
       const normalizedSessionId = requiredId(sessionId, 'Session');
+      const current = deps.observations.trackRenderer(event.sender);
+      const sideConversation = await deps.resolveSideConversation(normalizedSessionId);
+      if (!current()) return { kind: 'cancelled' };
       return observationIpcResult(
         deps.observations.observe(
           normalizedSessionId,
           requiredId(observerId, 'Session observer'),
           event.sender as RuntimeHostSessionObserverTarget,
-          await deps.resolveSideConversation(normalizedSessionId),
+          sideConversation,
         ),
       );
     },
   );
   ipcMain.handle(
     'sessions:transcript:open',
-    async (event, sessionId: unknown, consumerId: unknown, mode: unknown, resumeFrom: unknown) =>
-      observationIpcResult(
+    async (event, sessionId: unknown, consumerId: unknown, mode: unknown, resumeFrom: unknown) => {
+      deps.observations.trackRenderer(event.sender);
+      return observationIpcResult(
         deps.observations.openTranscript(
           requiredId(sessionId, 'Session'),
           requiredId(consumerId, 'Transcript consumer'),
@@ -274,7 +277,8 @@ export function registerRuntimeHostSessionObservationIpc(
           normalizeTranscriptOpenMode(mode),
           optionalSequence(resumeFrom, 'Desktop transcript resume position'),
         ),
-      ),
+      );
+    },
   );
   ipcMain.handle(
     'sessions:transcript:load-earlier',
@@ -837,20 +841,6 @@ export function registerRuntimeHostSessionExecutionIpc(
       turnId: result.turn.turnId,
     };
   });
-  ipcMain.handle(
-    "sessions:regenerateTurn",
-    async (_event, sessionId: string, input: unknown) => {
-      const normalized = normalizeRegenerateTurnInput(input);
-      const turnId = normalized.turnId ?? newId();
-      await deps.client.regenerateTurn({
-        sessionId,
-        sourceTurnId: normalized.sourceTurnId,
-        turnId,
-      });
-      deps.emitSessionsChanged("status-change", sessionId, { turnId });
-    },
-  );
-
   ipcMain.handle(
     "sessions:branchFromTurn",
     async (event, sessionId: string, input: unknown) => {

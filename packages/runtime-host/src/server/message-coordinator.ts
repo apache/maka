@@ -195,6 +195,22 @@ export type HostMessageExecutionDisposition =
   | HostMessageResolvedDisposition
   | { readonly kind: 'pending' };
 
+/**
+ * The wire shape one resolved identity reports. `not_admitted` is a positive
+ * statement that no durable record names the identity and no admission write
+ * is in flight — distinct from omission, which means the Host cannot say yet.
+ */
+type MessageExecutionResolutionOutcome =
+  | { readonly messageId: string; readonly state: 'pending' }
+  | { readonly messageId: string; readonly state: 'cancelled' }
+  | { readonly messageId: string; readonly state: 'not_admitted' }
+  | {
+      readonly messageId: string;
+      readonly state: 'owned';
+      readonly turnId: string;
+      readonly runId: string;
+    };
+
 /** Root execution operations that must share the message coordinator's Session gate. */
 export interface HostMessageRootPort {
   readLatestRootTurnLineage(identity: {
@@ -463,50 +479,55 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     return success({ cancelledMessageIds });
   }
 
-  async queryMessageExecutions(input: {
+  queryMessageExecutions(input: {
     sessionId: string;
     messageIds: readonly string[];
-  }): Promise<
-    MessageOutcome<{
-      resolutions: Array<
-        | { messageId: string; state: 'pending' }
-        | { messageId: string; state: 'cancelled' }
-        | { messageId: string; state: 'owned'; turnId: string; runId: string }
-      >;
-    }>
-  > {
-    const resolutions: Array<
-      | { messageId: string; state: 'pending' }
-      | { messageId: string; state: 'cancelled' }
-      | { messageId: string; state: 'owned'; turnId: string; runId: string }
-    > = [];
-    for (const messageId of input.messageIds) {
-      const disposition = await this.#resolveMessageExecution(input.sessionId, messageId);
-      if (disposition.kind === 'owned_root' || disposition.kind === 'shared_turn') {
-        // This read projects current execution, including safe-boundary
-        // continuations. The Message's durable admission ownership is unchanged.
-        const latest = await this.#root.readLatestRootTurnLineage({
-          sessionId: input.sessionId,
-          turnId: disposition.turnId,
-          runId: disposition.runId,
-        });
-        resolutions.push({
-          messageId,
-          state: 'owned',
-          turnId: latest.turnId,
-          runId: latest.runId,
-        });
-        continue;
+  }): Promise<MessageOutcome<{ resolutions: Array<MessageExecutionResolutionOutcome> }>> {
+    // Enter the Session admission the way every other admission reader does.
+    // `not_admitted` claims that no epoch ever admitted this identity, and it
+    // is only sound while no admission write can be in flight. WorkHub writes
+    // admission rows without an in-memory submit to observe, so the gate —
+    // not `#pendingSubmits` alone — is what makes the read atomic.
+    return this.#sessionAdmission.runOrJoin(input.sessionId, async () => {
+      const resolutions: Array<MessageExecutionResolutionOutcome> = [];
+      for (const messageId of input.messageIds) {
+        const disposition = await this.#resolveMessageExecution(input.sessionId, messageId);
+        if (disposition.kind === 'owned_root' || disposition.kind === 'shared_turn') {
+          // This read projects current execution, including safe-boundary
+          // continuations. The Message's durable admission ownership is unchanged.
+          const latest = await this.#root.readLatestRootTurnLineage({
+            sessionId: input.sessionId,
+            turnId: disposition.turnId,
+            runId: disposition.runId,
+          });
+          resolutions.push({
+            messageId,
+            state: 'owned',
+            turnId: latest.turnId,
+            runId: latest.runId,
+          });
+          continue;
+        }
+        if (disposition.kind === 'cancelled') {
+          resolutions.push({ messageId, state: 'cancelled' });
+          continue;
+        }
+        if (disposition.kind === 'pending') {
+          resolutions.push({ messageId, state: 'pending' });
+          continue;
+        }
+        // `recovering` means no durable receipt, steering proof, cancellation
+        // tombstone, or pending admission names this identity. Under the
+        // Session gate no admission write is in flight, so that silence is
+        // itself the proof: nothing in this epoch — or any prior one, since a
+        // stale epoch's submit can never commit here — ever admitted it.
+        // Report that fact positively instead of omitting the identity, so a
+        // missing entry stops meaning both "not admitted" and "cannot say yet".
+        if (this.#pendingSubmits.has(operationKey(input.sessionId, messageId))) continue;
+        resolutions.push({ messageId, state: 'not_admitted' });
       }
-      if (disposition.kind === 'cancelled') {
-        resolutions.push({ messageId, state: 'cancelled' });
-        continue;
-      }
-      if (disposition.kind === 'pending') {
-        resolutions.push({ messageId, state: 'pending' });
-      }
-    }
-    return success({ resolutions });
+      return success({ resolutions });
+    });
   }
 
   /**

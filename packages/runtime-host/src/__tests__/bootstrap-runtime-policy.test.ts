@@ -23,18 +23,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
-  OPENCODE_FREE_DEFAULT_MODEL,
-  defaultEnabledModelIdsWhenOmitted,
-} from '@maka/core/llm-connections';
-import {
   openInteractiveRuntimePolicyStoresForWrite,
   type RuntimePolicyStoresWriter,
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { ensureBootstrapRuntimePolicy } from '../server/bootstrap-runtime-policy.js';
-
-const OPENCODE_FREE_ENABLED_MODEL_IDS: readonly string[] =
-  defaultEnabledModelIdsWhenOmitted('opencode-free') ?? [];
 
 test('hosted initialization retries invalid input and rotates proxy credentials through the store', async () => {
   await withFixture(async ({ root, stores }) => {
@@ -65,122 +58,69 @@ test('hosted initialization retries invalid input and rotates proxy credentials 
   });
 });
 
-test('a fresh Host starts with one anonymous runnable target', async () => {
+test('a fresh Host without a user API key leaves provider selection to onboarding', async () => {
   await withFixture(async ({ root, stores }) => {
     await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
-
     const catalog = await stores.connectionCatalog.getSnapshot();
-    assert.equal(catalog.connections.length, 1);
-    const free = catalog.connections[0];
-    assert.equal(free?.slug, 'opencode-free');
-    assert.equal(free?.enabled, true);
-    // The free set is derived from the models.dev snapshot and rotates with
-    // refreshes; assert the structural contract, not today's ids.
-    assert.deepEqual(free?.enabledModelIds, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
-    assert.ok(free.enabledModelIds.length > 0);
-    assert.equal(free.enabledModelIds[0], OPENCODE_FREE_DEFAULT_MODEL);
-    assert.deepEqual(catalog.defaultTarget, {
-      connectionId: free?.connectionId,
-      modelId: OPENCODE_FREE_DEFAULT_MODEL,
-    });
-    assert.deepEqual(
-      catalog.connections.map(({ slug }) => slug),
-      ['opencode-free'],
-    );
+    assert.deepEqual(catalog.connections, []);
+    assert.equal(catalog.defaultTarget, null);
   });
 });
 
-test('reconciles retired OpenCode Free models without removing user models', async () => {
+test('an interrupted environment import resumes credential setup before selecting a default', async () => {
   await withFixture(async ({ root, stores }) => {
     const created = await stores.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
-        slug: 'opencode-free',
-        name: 'OpenCode Free',
-        providerType: 'opencode-free',
+        slug: 'env-anthropic',
+        name: 'Anthropic (env)',
+        providerType: 'anthropic',
         enabled: true,
-        enabledModelIds: ['nemotron-3-ultra-free', 'deepseek-v4-flash-free', 'user-model'],
-      },
-    });
-    assert.equal(created.kind, 'committed');
-    const connection = created.snapshot.connections[0]!;
-    const updated = await stores.connectionCatalog.update({
-      expected: { connectionId: connection.connectionId, revision: connection.revision },
-      changes: {
-        name: connection.name,
-        enabled: true,
-        enabledModelIds: connection.enabledModelIds,
-      },
-    });
-    assert.equal(updated.kind, 'committed');
-    const updatedConnection = updated.snapshot.connections[0]!;
-    const defaulted = await stores.connectionCatalog.setDefaultTarget({
-      expectedCatalogRevision: updated.snapshot.revision,
-      target: { connectionId: updatedConnection.connectionId, modelId: 'deepseek-v4-flash-free' },
-    });
-    assert.equal(defaulted.kind, 'committed');
-
-    await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
-
-    const migrated = (await stores.connectionCatalog.getSnapshot()).connections.find(
-      ({ slug }) => slug === 'opencode-free',
-    );
-    assert.deepEqual(migrated?.enabledModelIds, ['nemotron-3-ultra-free', 'user-model']);
-    // The row stores no inventory of its own: this provider ships one, and the
-    // resolver prepends the current build's list to whatever the row holds.
-    assert.deepEqual(migrated?.models, []);
-    assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, {
-      connectionId: migrated?.connectionId,
-      modelId: 'nemotron-3-ultra-free',
-    });
-  });
-});
-
-test('bootstrap resumes after interruption and prefers the supported environment key', async () => {
-  await withFixture(async ({ root, stores }) => {
-    const created = await stores.connectionCatalog.create({
-      expectedCatalogRevision: 0,
-      connection: {
-        slug: 'opencode-free',
-        name: 'OpenCode Free',
-        providerType: 'opencode-free',
-        enabled: true,
-        enabledModelIds: ['nemotron-3-ultra-free'],
+        enabledModelIds: ['claude-sonnet-4-5-20250929'],
       },
     });
     assert.equal(created.kind, 'committed');
     await writeFile(
       join(root, '.runtime-host-bootstrap.json'),
       '{"version":1,"state":"initializing"}\n',
-      'utf8',
     );
-
+    await assert.rejects(
+      ensureBootstrapRuntimePolicy({
+        workspaceRoot: root,
+        environment: { ANTHROPIC_API_KEY: 'anthropic-secret' },
+        stores: {
+          ...stores,
+          connectionCatalog: {
+            ...stores.connectionCatalog,
+            setDefaultTarget: async () => {
+              throw new Error('Interrupted default write');
+            },
+          },
+        },
+      }),
+      /Interrupted default write/,
+    );
     await ensureBootstrapRuntimePolicy({
       workspaceRoot: root,
       stores,
-      environment: {
-        ANTHROPIC_API_KEY: 'anthropic-secret',
-        OPENAI_API_KEY: 'openai-secret',
-      },
+      environment: { ANTHROPIC_API_KEY: 'anthropic-secret', OPENAI_API_KEY: 'unused' },
     });
-
     const catalog = await stores.connectionCatalog.getSnapshot();
-    assert.deepEqual(
-      catalog.connections.map(({ slug }) => slug),
-      ['opencode-free', 'env-anthropic'],
-    );
-    const anthropic = catalog.connections[1];
+    assert.equal(catalog.connections.length, 1);
+    const connection = catalog.connections[0]!;
     assert.deepEqual(catalog.defaultTarget, {
-      connectionId: anthropic?.connectionId,
+      connectionId: connection.connectionId,
       modelId: 'claude-sonnet-4-5-20250929',
     });
     const status = await stores.credentialVault.getStatus({
       scope: 'connection',
-      connectionId: anthropic!.connectionId,
+      connectionId: connection.connectionId,
       kind: 'api_key',
     });
     assert.equal(status.kind, 'status');
     if (status.kind === 'status') assert.equal(status.status.configured, true);
+    await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
+    assert.deepEqual(await stores.connectionCatalog.getSnapshot(), catalog);
   });
 });
 
@@ -233,7 +173,7 @@ test('bootstrap does not alter an existing user catalog', async () => {
   });
 });
 
-test('an invalid optional environment credential does not keep bootstrap active', async () => {
+test('a failed environment credential leaves no unusable default and can be retried', async () => {
   await withFixture(async ({ root, stores }) => {
     const errors: unknown[] = [];
     await ensureBootstrapRuntimePolicy({
@@ -242,143 +182,70 @@ test('an invalid optional environment credential does not keep bootstrap active'
       environment: { OPENAI_API_KEY: 'x'.repeat(64 * 1024 + 1) },
       onDeferredError: (error) => errors.push(error),
     });
-
     assert.equal(errors.length, 1);
-    const catalog = await stores.connectionCatalog.getSnapshot();
-    const free = catalog.connections.find(({ slug }) => slug === 'opencode-free');
-    assert.deepEqual(catalog.defaultTarget, {
-      connectionId: free?.connectionId,
-      modelId: 'nemotron-3-ultra-free',
-    });
+    const failed = await stores.connectionCatalog.getSnapshot();
+    assert.deepEqual(failed.connections, []);
+    assert.equal(failed.defaultTarget, null);
     await ensureBootstrapRuntimePolicy({
       workspaceRoot: root,
       stores,
-      environment: { OPENAI_API_KEY: 'x'.repeat(64 * 1024 + 1) },
-      onDeferredError: (error) => errors.push(error),
+      environment: { OPENAI_API_KEY: 'valid-key' },
     });
-    assert.equal(errors.length, 1);
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    assert.deepEqual(catalog.defaultTarget, {
+      connectionId: catalog.connections[0]!.connectionId,
+      modelId: 'gpt-4o-mini',
+    });
   });
 });
 
-test('a historical persisted seed migrates atomically, inventory and default included', async () => {
+test('an old Free default is released without deleting the connection or importing a paid replacement', async () => {
   await withFixture(async ({ root, stores }) => {
-    // An actual pre-#3409 persisted document: the three-model seed, the
-    // pinned four-model fallback inventory of that build, and a default
-    // target on a model the migration removes.
     const connectionId = '00000000-0000-4000-8000-000000000001';
+    const connection = {
+      connectionId,
+      revision: 3,
+      slug: 'opencode-free',
+      name: 'OpenCode Free',
+      providerType: 'opencode-free',
+      enabled: true,
+      enabledModelIds: ['nemotron-3-ultra-free'],
+      models: [{ id: 'nemotron-3-ultra-free' }],
+      modelSource: 'fallback',
+      modelsFetchedAt: 0,
+    };
     await writeFile(
       join(root, 'connection-catalog.json'),
-      `${JSON.stringify({
+      JSON.stringify({
         schemaVersion: 1,
         revision: 7,
-        defaultTarget: { connectionId, modelId: 'deepseek-v4-flash-free' },
-        connections: [
-          {
-            connectionId,
-            revision: 3,
-            slug: 'opencode-free',
-            name: 'OpenCode Free',
-            providerType: 'opencode-free',
-            enabled: true,
-            enabledModelIds: ['nemotron-3-ultra-free', 'mimo-v2.5-free', 'deepseek-v4-flash-free'],
-            models: [
-              { id: 'nemotron-3-ultra-free' },
-              { id: 'mimo-v2.5-free' },
-              { id: 'big-pickle' },
-              { id: 'deepseek-v4-flash-free' },
-            ],
-            modelSource: 'fallback',
-            modelsFetchedAt: 0,
-          },
-        ],
-      })}\n`,
+        defaultTarget: { connectionId, modelId: 'nemotron-3-ultra-free' },
+        connections: [connection],
+      }),
     );
-
-    await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
-
-    // One document write carried all three: enabled ids, the dropped static
-    // inventory, and the retargeted default.
+    await writeFile(
+      join(root, '.runtime-host-bootstrap.json'),
+      '{"version":1,"state":"initializing"}\n',
+    );
+    const initialize = () =>
+      ensureBootstrapRuntimePolicy({
+        workspaceRoot: root,
+        stores,
+        environment: { OPENAI_API_KEY: 'must-not-be-imported' },
+      });
+    await initialize();
     const catalog = await stores.connectionCatalog.getSnapshot();
-    const migrated = catalog.connections.find(({ slug }) => slug === 'opencode-free');
-    assert.deepEqual(migrated?.enabledModelIds, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
-    // The pinned copy goes rather than being re-pinned to this build's list:
-    // the resolver prepends the shipped inventory on every read, so a row that
-    // stores one can only go stale again.
-    assert.deepEqual(migrated?.models, []);
-    assert.deepEqual(catalog.defaultTarget, {
-      connectionId,
-      modelId: OPENCODE_FREE_DEFAULT_MODEL,
+    assert.equal(catalog.defaultTarget, null);
+    assert.deepEqual(catalog.connections, [connection]);
+    assert.deepEqual((await stores.credentialVault.getSnapshot()).entries, []);
+    const admission = await stores.operations.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: 'opencode-free',
     });
-
-    // Restart on the far side of the commit boundary: a second bootstrap is a
-    // byte-identical no-op. (On the near side the single write never happened,
-    // so the original document simply migrates on the next start.)
-    await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
+    assert.equal(admission.kind, 'provider_retired');
+    await initialize();
     assert.deepEqual(await stores.connectionCatalog.getSnapshot(), catalog);
   });
-});
-
-test('a historical seed with a user-cleared default migrates without inventing one', async () => {
-  await withFixture(async ({ root, stores }) => {
-    const connectionId = '00000000-0000-4000-8000-000000000002';
-    await writeFile(
-      join(root, 'connection-catalog.json'),
-      `${JSON.stringify({
-        schemaVersion: 1,
-        revision: 4,
-        defaultTarget: null,
-        connections: [
-          {
-            connectionId,
-            revision: 2,
-            slug: 'opencode-free',
-            name: 'OpenCode Free',
-            providerType: 'opencode-free',
-            enabled: true,
-            enabledModelIds: ['nemotron-3-ultra-free'],
-            models: [{ id: 'nemotron-3-ultra-free' }],
-            modelSource: 'fallback',
-            modelsFetchedAt: 0,
-          },
-        ],
-      })}\n`,
-    );
-
-    await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
-
-    const catalog = await stores.connectionCatalog.getSnapshot();
-    const migrated = catalog.connections.find(({ slug }) => slug === 'opencode-free');
-    assert.deepEqual(migrated?.enabledModelIds, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
-    assert.equal(catalog.defaultTarget, null);
-  });
-});
-
-test('a user-modified opencode-free inventory is never migrated', async () => {
-  // A reordered seed counts as user-modified too: exact sequence equality is
-  // the (documented, lossy) proof a row is still system-owned.
-  for (const enabledModelIds of [
-    ['nemotron-3-ultra-free', 'big-pickle'],
-    ['mimo-v2.5-free', 'nemotron-3-ultra-free', 'user-model'],
-  ]) {
-    await withFixture(async ({ root, stores }) => {
-      const created = await stores.connectionCatalog.create({
-        expectedCatalogRevision: 0,
-        connection: {
-          slug: 'opencode-free',
-          name: 'OpenCode Free',
-          providerType: 'opencode-free',
-          enabled: true,
-          enabledModelIds,
-        },
-      });
-      assert.equal(created.kind, 'committed');
-      const before = await stores.connectionCatalog.getSnapshot();
-
-      await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
-
-      assert.deepEqual(await stores.connectionCatalog.getSnapshot(), before);
-    });
-  }
 });
 
 async function withFixture(

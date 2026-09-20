@@ -337,7 +337,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 9,
-        "nonTriviaTokens": 3603
+        "nonTriviaTokens": 3596
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 2,
@@ -389,7 +389,7 @@
           "react": 1
         },
         "importSpecifiers": 9,
-        "nonTriviaTokens": 2299
+        "nonTriviaTokens": 2275
       },
       "src/renderer/app-shell-context-compaction.ts": {
         "importDeclarations": 0,
@@ -419,7 +419,7 @@
           "@maka/core/redaction": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 393
+        "nonTriviaTokens": 391
       },
       "src/renderer/app-shell-detail-panel.tsx": {
         "importDeclarations": 0,
@@ -538,7 +538,7 @@
       "src/renderer/app-shell-project-actions.ts": {
         "importDeclarations": 4,
         "bridgePaths": {
-          "window.maka.app.openPath": 4,
+          "window.maka.app.openPath": 3,
           "window.maka.app.resolveProjectGitInfo": 1,
           "window.maka.projects.add": 1,
           "window.maka.projects.archive": 1,
@@ -563,7 +563,7 @@
           "./session-workspace-errors": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2284
+        "nonTriviaTokens": 2157
       },
       "src/renderer/app-shell-revision-actions.ts": {
         "importDeclarations": 3,
@@ -669,8 +669,7 @@
       "src/renderer/app-shell-turn-actions.ts": {
         "importDeclarations": 2,
         "bridgePaths": {
-          "window.maka.sessions.branchFromTurn": 1,
-          "window.maka.sessions.regenerateTurn": 1
+          "window.maka.sessions.branchFromTurn": 1
         },
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -686,7 +685,7 @@
           "./session-workspace-errors.js": 1
         },
         "importSpecifiers": 3,
-        "nonTriviaTokens": 620
+        "nonTriviaTokens": 571
       },
       "src/renderer/app-shell-turn-view-model.ts": {
         "importDeclarations": 5,
@@ -709,7 +708,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 1273
+        "nonTriviaTokens": 1245
       },
       "src/renderer/app-shell.tsx": {
         "importDeclarations": 63,
@@ -862,7 +861,7 @@
           "react": 1
         },
         "importSpecifiers": 88,
-        "nonTriviaTokens": 13089
+        "nonTriviaTokens": 12957
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -2535,8 +2534,7 @@
           "./use-action-guard": 1,
           "./use-optimistic-settings-draft": 1,
           "@maka/core/chat-model-choice": 1,
-          "@maka/core/model-thinking": 1,
-          "@maka/ui": 2,
+          "@maka/ui": 1,
           "react": 1
         }
       },
@@ -4048,7 +4046,7 @@
         },
         "environmentCapabilities": {},
         "hookCalls": {
-          "useState": 6
+          "useState": 5
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,

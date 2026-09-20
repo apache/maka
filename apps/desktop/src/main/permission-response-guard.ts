@@ -19,7 +19,6 @@
 
 import type {
   BranchFromTurnInput,
-  RegenerateTurnInput,
   ReviseBeforeTurnInput,
   TurnOrchestration,
 } from '@maka/core/runtime-inputs';
@@ -133,18 +132,6 @@ export function normalizeUserQuestionResponse(input: unknown): UserQuestionRespo
     throw new Error('Invalid user question response answers');
   }
   return { requestId, answers: [...value.answers] as Array<string | null> };
-}
-
-export function normalizeRegenerateTurnInput(input: unknown): RegenerateTurnInput {
-  const value = requireObject(input, 'Invalid regenerate turn input');
-  return {
-    sourceTurnId: normalizeRequiredString(
-      value.sourceTurnId,
-      'Invalid regenerate turn sourceTurnId',
-      MAX_TURN_ID_LENGTH,
-    ),
-    ...normalizeOptionalTurnId(value.turnId),
-  };
 }
 
 export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInput {

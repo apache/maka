@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createClientPluginRouting } from './client-plugin-routing.js';
 import type {
   SessionBundleExportIpcResult,
   SessionBundleImportIpcResult,
@@ -169,7 +170,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 
-import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
+import type { TurnOrchestration, SessionListFilter } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchResult } from '@maka/core/search';
 import type {
@@ -1425,6 +1426,11 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 }, browserDocumentId);
 
 const makaBridge = {
+  clientPlugins: createClientPluginRouting({
+    activeScope: activeRuntimeHostRef,
+    sessionRef: runtimeHostSessionRef,
+    invoke: (channel, scope, input) => ipcRenderer.invoke(channel, scope, ...(input === undefined ? [] : [input])),
+  }),
   workHubControl: workHubControlBridge,
   workHubPresentation: workHubPresentationBridge,
   runtimeHost,
@@ -1513,17 +1519,11 @@ const makaBridge = {
       return ipcRenderer.invoke(
         'session-collaboration:turn-request:create',
         session.scope,
-        input.kind === 'start'
-          ? {
-              sessionId: session.sessionId,
-              turnId: input.turnId,
-              content: { text: input.text },
-            }
-          : {
-              sessionId: session.sessionId,
-              turnId: input.turnId,
-              sourceTurnId: input.sourceTurnId,
-            },
+        {
+          sessionId: session.sessionId,
+          turnId: input.turnId,
+          content: { text: input.text },
+        },
       );
     },
     async getTurnRequests(sessionId) {
@@ -2102,7 +2102,7 @@ const makaBridge = {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
       return ipcRenderer.invoke('workhub:configureModel', scope, input) as Promise<OperationOutput<'workhub.coordination.configureModel'>>;
     },
-    resolveCoordinationSession(): Promise<string> {
+    resolveCoordinationSession(): Promise<string | { readonly kind: 'model_required' }> {
       return resolveDesktopWorkHubCoordinationSession(
         activeRuntimeHostRef,
         (scope) => ipcRenderer.invoke('workhub:resolveCoordinationSession', scope),
@@ -2312,9 +2312,6 @@ const makaBridge = {
     },
     listTurnLandmarks(sessionId, turnId = null) {
       return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId, turnId);
-    },
-    regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:regenerateTurn', sessionId, input);
     },
     branchFromTurn: invokeBranchFromTurn,
     async reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<DesktopSessionSummary> {
@@ -3041,6 +3038,9 @@ const makaBridge = {
     hasSecret(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'connections:hasSecret', connection);
     },
+    usage(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/runtime-host/protocol').ConnectionUsageReadResult> {
+      return invokeSelectedRuntimeHost(host, 'connections:usage', connection);
+    },
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders> {
       return invokeSelectedRuntimeHost(host, 'connections:getRequestHeaders', connection);
     },
@@ -3724,7 +3724,7 @@ const makaBridge = {
       return invokeSessionRuntimeHost('app:sessionProjectInfo', sessionId);
     },
     openPath(
-      key: 'workspace' | 'skills' | 'memory' | 'project',
+      key: 'workspace' | 'memory' | 'project',
       sessionId?: string,
       host?: DesktopRuntimeHostRef,
     ): Promise<
@@ -3915,6 +3915,14 @@ const makaBridge = {
         | { ok: false; reason: 'cancelled' | 'invalid_skill' | 'already_exists' | 'blocked_path' | 'write_failed' }
       > {
         return invokeSelectedRuntimeHost(host, 'skills:sources:importLocalFile');
+      },
+    },
+    locations: {
+      list(host?: DesktopRuntimeHostRef) {
+        return invokeSelectedRuntimeHost(host, 'skills:locations:list');
+      },
+      open(ref: import('@maka/ui').SkillLocationRef, options: import('../shared/skill-locations.js').OpenSkillLocationOptions, host?: DesktopRuntimeHostRef) {
+        return invokeSelectedRuntimeHost(host, 'skills:locations:open', ref, options);
       },
     },
     installManaged(sourceId: string, host?: DesktopRuntimeHostRef): Promise<

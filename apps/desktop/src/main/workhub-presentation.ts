@@ -648,6 +648,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             parseDesktopSessionKey(payload);
             await navigateMain({ kind: 'session', sessionKey: payload }, revision);
             return;
+          case 'settings':
+            if (payload !== 'models') throw new Error('Invalid WorkHub settings section');
+            if (floating && !floating.isDestroyed()) hideFloating();
+            await navigateMain({ kind: 'settings', section: 'models' }, revision);
+            return;
           default: throw new Error('Unknown WorkHub presentation command');
         }
       });

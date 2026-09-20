@@ -37,7 +37,6 @@ import type {
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
-  OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
@@ -56,7 +55,6 @@ import {
 export { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS };
 export {
   CATALOG_PROVIDER_TYPES,
-  OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
@@ -145,6 +143,15 @@ export interface ModelDiscoveryResult {
 }
 
 export type ConnectionLastTestStatus = 'verified' | 'needs_reauth' | 'error';
+
+/** Stable client/Host value for one exact configured connection and model. */
+export function connectionModelChoiceValue(
+  connectionId: string,
+  connectionSlug: string,
+  model: string,
+): string {
+  return `${encodeURIComponent(connectionId)}:${encodeURIComponent(connectionSlug)}:${encodeURIComponent(model)}`;
+}
 
 /** Non-secret provider/model configuration required by runtime execution. */
 export interface RuntimeExecutionConnection {
@@ -236,7 +243,7 @@ export function connectionEnabledModelIds(connection: {
  *   3. the Host's entry says the connection can hold a chat on it.
  *
  * (3) already subsumes what clients used to re-derive locally: a retired
- * provider, a quarantined `brokenModelIds` id, and a model whose metadata says
+ * provider and a model whose metadata says
  * it cannot chat are all non-offerable before a client sees them. A client
  * re-testing any of those against its OWN registry answers for a build that is
  * not the one running the send.
@@ -327,12 +334,6 @@ export function authorizeConnectionModel(
 ): ModelInfo | undefined {
   const model = modelId.trim();
   if (!model || !connectionEnabledModelIds(connection).includes(model)) return undefined;
-  // The one veto: quarantined ids fail in a shape the send cannot surface
-  // (e.g. a billed 200 with an empty completion), so the request settling it
-  // is not available as the arbiter. See ProviderDefaults.brokenModelIds.
-  if (providerDefaultsOf(connection.providerType)?.brokenModelIds?.includes(model)) {
-    return undefined;
-  }
   // The observed row wins wherever it exists: it carries wire metadata such as
   // `apiProtocol`, and capabilities, which a synthesized entry cannot. Absent
   // capabilities already mean "unknown", not "unsupported".
@@ -520,20 +521,6 @@ export interface ConnectionTestResult {
   errorMessage?: string;
   statusCode?: number;
   errorClass?: ConnectionTestErrorClass;
-}
-
-/**
- * The models a connection created without an explicit selection starts with,
- * or undefined when the provider seeds nothing. Derived from the provider's
- * shipped baseline rather than listed a second time: the two can then never
- * disagree about what "all of them" means.
- */
-export function defaultEnabledModelIdsWhenOmitted(
-  providerType: ProviderType,
-): readonly string[] | undefined {
-  const defaults = providerDefaultsOf(providerType);
-  if (!defaults?.enableShippedModelsByDefault) return undefined;
-  return providerFallbackModelIds(defaults);
 }
 
 export function providerAuthRequiresSecret(providerType: ProviderType): boolean {

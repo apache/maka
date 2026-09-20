@@ -213,16 +213,53 @@
    the fix and is not obviously safe: it makes the pointer fall through to the
    ancestor whose `:hover` is what restores the button, so being clickable
    again depends on the browser redoing hit-testing on a later mouse event. */
-.maka-turn-footer-action,
-.maka-turn-footer-meta {
+.maka-turn-footer-action {
   opacity: 0;
   transition: opacity var(--duration-quick) var(--ease-out-strong);
 }
 .maka-chat-message:hover .maka-turn-footer-action,
-.maka-chat-message:focus-within .maka-turn-footer-action,
-.maka-chat-message:hover .maka-turn-footer-meta,
-.maka-chat-message:focus-within .maka-turn-footer-meta {
+.maka-chat-message:focus-within .maka-turn-footer-action {
   opacity: 1;
+}
+/*
+   The footer's meta row holds two facts of different weight, so it cannot fade
+   as one unit:
+     - the turn's STATE (running / done + when) is what the reader came for while
+       a reply grows, so it is always visible;
+     - the model name and cost are reference facts, quiet until asked for.
+   Fading the whole row hid the state behind a hover, which is the one thing the
+   row exists to show without one.
+*/
+.maka-turn-footer-meta-model {
+  opacity: 0;
+  transition: opacity var(--duration-quick) var(--ease-out-strong);
+}
+.maka-turn-footer-meta-separator {
+  opacity: 0;
+  transition: opacity var(--duration-quick) var(--ease-out-strong);
+}
+.maka-chat-message:hover .maka-turn-footer-meta-model,
+.maka-chat-message:focus-within .maka-turn-footer-meta-model,
+.maka-chat-message:hover .maka-turn-footer-meta-separator,
+.maka-chat-message:focus-within .maka-turn-footer-meta-separator {
+  opacity: 1;
+}
+/* The turn's state, inside the footer's meta row rather than on a line of its
+   own: one line reads as the turn's footer, two read as a stray paragraph
+   between the answer and the model name. Always visible — see the meta row's
+   rule above: a reader watching a long reply needs to know whether it is still
+   running, and after it settles, when it finished. */
+.maka-turn-status-line {
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+  font-variant-numeric: tabular-nums;
+}
+.maka-turn-status-line[data-turn-status='failed'] {
+  color: var(--destructive);
+}
+.maka-turn-footer-meta-separator,
+.maka-turn-footer-meta-model {
+  color: var(--muted-foreground);
 }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
@@ -267,15 +304,13 @@
    Product CSS keeps only what is layout: it is a block-level note under the
    bubble, so it needs its own line and the gap above it. */
 .maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
-/* One quiet disclosure above the answer, with no card chrome. Keep children
-   mounted so tool disclosures and streamed text retain their identities. */
 .maka-processing-sequence { min-width: 0; }
 .maka-processing-summary {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-block: 8px;
-  border-bottom: 1px solid var(--border);
+  padding-block: var(--space-0-5);
+  border-radius: var(--radius-control);
   color: var(--muted-foreground);
   font: var(--maka-text-body);
   list-style: none;
@@ -287,9 +322,14 @@
 .maka-processing-summary .maka-turn-processing { margin: 0; }
 .maka-processing-summary[aria-disabled='true']:hover { color: var(--muted-foreground); }
 .maka-processing-sequence[open] > .maka-processing-summary > svg { transform: rotate(90deg); }
-.maka-processing-content { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding-block: 12px 4px; }
-/* An empty disclosure is only its summary row. */
-.maka-processing-content:empty { display: none; }
+.maka-processing-body {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow: clip;
+}
+.maka-processing-body > :first-child { margin-top: var(--space-2); }
 /* Match Astryx ChatToolCalls' grid disclosure motion. The native details
    content remains rendered through exit, without a second open state or timer.
    Unsupported browsers retain the native immediate disclosure. */
@@ -301,7 +341,6 @@
       content-visibility var(--duration-medium) allow-discrete;
   }
   .maka-processing-sequence[open]::details-content { grid-template-rows: 1fr; }
-  .maka-processing-clip { min-height: 0; overflow: hidden; }
 }
 @media (prefers-reduced-motion: reduce) {
   .maka-processing-summary > svg { transition: none; }

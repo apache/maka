@@ -631,6 +631,12 @@ function cliEventsToStreamParts(input: {
   let reasoningId: string | undefined;
   let nextId = 0;
   let finished = false;
+  // The wire splits one call's usage across two events: `finish-step` carries
+  // the provider's OWN body (`prompt_tokens`, `prompt_cache_hit_tokens`, …)
+  // under `usage.raw`, and `finish` carries only the normalized totals. The
+  // provider keys are what telemetry's cache accounting reads, so keep the
+  // body here until the finish event can carry it out.
+  let providerUsageRaw: Record<string, unknown> | undefined;
   const closeText = (controller: TransformStreamDefaultController<LanguageModelV4StreamPart>) => {
     if (textId === undefined) return;
     controller.enqueue({ type: 'text-end', id: textId });
@@ -698,13 +704,19 @@ function cliEventsToStreamParts(input: {
           controller.enqueue({ type: 'tool-call', toolCallId: id, toolName, input: args });
           break;
         }
+        case 'finish-step': {
+          // Carries the provider's own usage body; `finish` normalizes it away.
+          const usage = isRecord(event.usage) ? event.usage : undefined;
+          if (isRecord(usage?.raw)) providerUsageRaw = usage.raw;
+          break;
+        }
         case 'finish': {
           closeText(controller);
           closeReasoning(controller);
           finished = true;
           controller.enqueue({
             type: 'finish',
-            usage: usageFromEvent(event.totalUsage),
+            usage: usageFromEvent(event.totalUsage, providerUsageRaw),
             finishReason: mapFinishReason(event.finishReason),
           });
           break;
@@ -740,7 +752,10 @@ function cliEventsToStreamParts(input: {
   });
 }
 
-function usageFromEvent(value: unknown): LanguageModelV4Usage {
+function usageFromEvent(
+  value: unknown,
+  providerRaw?: Record<string, unknown>,
+): LanguageModelV4Usage {
   if (!isRecord(value)) return emptyUsage();
   const inputDetails = isRecord(value.inputTokenDetails) ? value.inputTokenDetails : undefined;
   const outputDetails = isRecord(value.outputTokenDetails) ? value.outputTokenDetails : undefined;
@@ -757,7 +772,18 @@ function usageFromEvent(value: unknown): LanguageModelV4Usage {
       text: undefined,
       reasoning: numberValue(outputDetails?.reasoningTokens),
     },
-    raw: value as LanguageModelV4Usage['raw'],
+    // `raw` must stay the PROVIDER's own usage body, which is where the
+    // OpenAI/Anthropic cache keys live (`prompt_tokens`,
+    // `prompt_tokens_details.cached_tokens`, `cache_read_input_tokens`, …).
+    // Only `finish-step` carries that body; `finish.totalUsage` is already
+    // normalized, so carrying the envelope here left telemetry's strict reader
+    // looking for `prompt_tokens` on an object that had only `inputTokens` —
+    // every attempt settled as `usageBasis: 'missing'` and the composer's
+    // context gauge never moved.
+    //
+    // The fallback keeps a body-less event readable on the normalized keys
+    // rather than handing telemetry `undefined`.
+    raw: (providerRaw ?? value) as LanguageModelV4Usage['raw'],
   };
 }
 
