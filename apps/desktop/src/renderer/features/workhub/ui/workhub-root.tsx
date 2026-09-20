@@ -376,9 +376,9 @@ export function WorkHubRoot() {
                 metadataContextWindow: modelChoice?.contextWindow,
                 onOpen: () => call(services.presentation.openUsage()),
               } : undefined}
-              activeThinkingLevels={thinkingLevels}
-              activeThinkingLevel={thinkingLevel}
-              onThinkingLevelChange={controller.changeThinkingLevel}
+              activeThinkingLevels={progress ? [] : thinkingLevels}
+              activeThinkingLevel={progress ? undefined : thinkingLevel}
+              onThinkingLevelChange={progress ? undefined : controller.changeThinkingLevel}
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">

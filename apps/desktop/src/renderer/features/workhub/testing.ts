@@ -24,3 +24,4 @@ export { WorkHubConversation, WorkHubDelegationStatus } from './ui/workhub-conve
 export { WorkHubHighlightContext } from './ui/workhub-work-identity.js';
 export { workspaceNameFromCwd } from './model/workspace-name.js';
 export { allocateWorkHubHues } from './model/identity-colors.js';
+export { deriveWorkHubTurnPresentation } from './model/turn-presentation.js';

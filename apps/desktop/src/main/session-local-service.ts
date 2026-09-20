@@ -553,7 +553,9 @@ export function registerDesktopSessionLocalIpc(deps: {
         permissionMode: creation.permissionMode ?? 'bypass',
         collaborationMode: creation.collaborationMode,
         orchestrationMode: creation.orchestrationMode,
-        thinkingLevel: creation.thinkingLevel,
+        ...(creation.thinkingLevel === null
+          ? {}
+          : { thinkingLevel: creation.thinkingLevel }),
       };
       service.store.saveSession(target.partition, summary, creation);
       deps.changed(target.scope, creation.sessionId);

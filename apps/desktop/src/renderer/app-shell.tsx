@@ -745,7 +745,6 @@ function AppShellContent({
     newChatThinkingLevel,
     composerSupportsVision,
     setPendingNewChatModel,
-    pendingNewChatThinkingLevel,
     setPendingNewChatThinkingLevel,
     sessionHealthNotice,
   } = useShellChatModel({
@@ -762,7 +761,6 @@ function AppShellContent({
     sessionHealthSession: activeSession,
     persistedComposerDefaults,
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
-    defaultThinkingLevel: taskEntry.selectors.selectedHost?.chatDefaults.thinkingLevel,
     connectionSnapshotReady: activeId
       ? sessionHostConnections.projection.status === 'ready'
       : true,

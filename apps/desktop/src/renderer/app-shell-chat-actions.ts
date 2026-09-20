@@ -387,7 +387,7 @@ export function createAppShellChatActions(deps: {
                 model: newChatModel.model,
               }
             : {}),
-          ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
+          thinkingLevel: pendingNewChatThinkingLevel,
           ...(newChatPermissionChoice ? { permissionMode: newChatPermissionChoice } : {}),
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,
