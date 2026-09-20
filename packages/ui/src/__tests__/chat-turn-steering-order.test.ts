@@ -244,6 +244,50 @@ test('splits a completion across the boundary instead of duplicating the sealed 
   ]);
 });
 
+test('lands a divergent completion whole instead of slicing at the delta offset', () => {
+  // thinking_complete may carry a provider summary that replaces the streamed
+  // deltas outright — the accumulated delta length is not a safe cut point.
+  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+    type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'AAAA',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'steering_message', id: 's1', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'thinking_delta', id: 'e2', turnId: 'turn-1', messageId: 'm1', ts: 3, text: 'BBBB',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'thinking_complete', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, text: 'Short summary.',
+  });
+
+  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
+    'thinking:AAAA',
+    'user:steer',
+    'thinking:Short summary.',
+  ]);
+});
+
+test('lands a completion shorter than the delta offset whole', () => {
+  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+    type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'AAAA',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'steering_message', id: 's1', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'thinking_delta', id: 'e2', turnId: 'turn-1', messageId: 'm1', ts: 3, text: 'BBBB',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'thinking_complete', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, text: 'ABC',
+  });
+
+  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
+    'thinking:AAAA',
+    'user:steer',
+    'thinking:ABC',
+  ]);
+});
+
 test('keeps consecutive steering rows in arrival order', () => {
   let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
     type: 'text_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'before',

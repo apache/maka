@@ -371,7 +371,7 @@ function projectLiveTurnEvent(
     };
   } else if (event.type === 'thinking_complete') {
     const applied = applyThinkingComplete(
-      event.text.slice(step.continuedThinkingEndOffset ?? 0),
+      completionRemainder(prior, step, 'thinking', event.text),
       { locale },
     );
     nextStep = {
@@ -409,7 +409,7 @@ function projectLiveTurnEvent(
     };
   } else if (event.type === 'text_complete') {
     const applied = applyAssistantComplete(
-      event.text.slice(step.continuedTextEndOffset ?? 0),
+      completionRemainder(prior, step, 'text', event.text),
       { locale },
     );
     nextStep = {
@@ -588,6 +588,27 @@ function projectLiveTurnEvent(
 
 function liveSteeringMessages(current: LiveTurnProjection): LiveSteeringProjection[] {
   return current.steps.flatMap((step) => (step.steering ? [step.steering] : []));
+}
+
+/**
+ * A completion's full text shares the delta stream's coordinates only when it
+ * extends the already-rendered prefix — a provider summary replaces the
+ * streamed text outright (`reasoningSummaryText` adoption), so a bare offset
+ * would cut real content. Trim only on a verified prefix; otherwise land the
+ * payload whole.
+ */
+function completionRemainder(
+  prior: LiveTurnProjection,
+  step: LiveTurnStepProjection,
+  kind: 'thinking' | 'text',
+  fullText: string,
+): string {
+  const rendered = prior.steps.flatMap((candidate) =>
+    candidate !== step && candidate.stepId === step.stepId && candidate[kind]
+      ? [candidate[kind]!.text]
+      : []);
+  const prefix = rendered.join('');
+  return fullText.startsWith(prefix) ? fullText.slice(prefix.length) : fullText;
 }
 
 function replaySafeDelta(
