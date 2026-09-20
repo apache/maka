@@ -713,9 +713,13 @@ export const TurnView = memo(function TurnView(props: {
                     activityObserved={props.activityObserved}
                     entries={item.children}
                     running={!!props.liveStreaming || turn.status === 'running'}
-                    // No cue and no duration here: both belong to the footer row
-                    // (`TurnStatusLine`). Repeating the cue on a disclosure showed
-                    // it twice, once where a growing answer scrolls it away.
+                    durationMs={index === activityProcessIndex ? turn.durationMs : undefined}
+                    activity={
+                      index === activityProcessIndex && props.activityObserved !== false &&
+                      props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                        ? { startedAt: turn.startedAt || undefined, label: runningToolLabel }
+                        : undefined
+                    }
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
@@ -809,6 +813,7 @@ export const TurnView = memo(function TurnView(props: {
                         providerRetry={props.liveStreaming?.providerRetry !== undefined}
                         startedAt={turn.startedAt}
                         durationMs={turn.durationMs}
+                        elapsedInProcess={activityProcessIndex !== -1}
                         activityLabel={
                           props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
                             ? runningToolLabel
@@ -955,6 +960,7 @@ function TurnStatusLine(props: {
   status: TurnViewModel['status'];
   startedAt: number;
   durationMs?: number;
+  elapsedInProcess?: boolean;
   /** A concrete activity (e.g. driving an app) outranks the playful phrase. */
   activityLabel?: string;
   /** Work is actually arriving. Only consulted for the running arm. */
@@ -969,13 +975,13 @@ function TurnStatusLine(props: {
     // A retry is not progress: nothing is produced while the client waits, and
     // the retry indicator already says what is happening. A live turn whose
     // stream is not running has nothing to announce either.
-    if (props.providerRetry || props.running === false) return null;
+    if (props.elapsedInProcess || props.providerRetry || props.running === false) return null;
     return <TurnRunningStatus startedAt={props.startedAt || undefined} activityLabel={props.activityLabel} />;
   }
 
   // Localized duration, not the compact `3m 33s` the live counter uses: this
   // reads as prose in the transcript, and a Chinese UI must not show English units.
-  const elapsed = props.durationMs === undefined
+  const elapsed = props.durationMs === undefined || props.elapsedInProcess
     ? undefined
     : copy.processDuration(
         Math.floor(props.durationMs / 60_000),
@@ -992,16 +998,16 @@ function TurnStatusLine(props: {
 
   const label =
     props.status === 'completed'
-      ? elapsed !== undefined && finishedAt !== undefined
+      ? finishedAt !== undefined
         ? copy.turnStatusCompleted(elapsed, finishedAt)
         : elapsed !== undefined
           ? copy.turnStatusCompletedAloneWithDuration(elapsed)
           : copy.turnStatusCompletedAlone
       : props.status === 'aborted'
-        ? elapsed === undefined
+        ? props.durationMs === undefined
           ? undefined
           : copy.turnStatusAborted(elapsed)
-        : elapsed === undefined
+        : props.durationMs === undefined
           ? undefined
           : copy.turnStatusFailed(elapsed);
   if (label === undefined) return null;
@@ -1455,11 +1461,12 @@ export function ProcessingBlock(props: {
   // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = props.running || manualOpen === true;
-  // The title names WHAT the box holds. The elapsed clock and the settled
-  // duration live on the turn's footer row (`TurnStatusLine`), the one place
-  // under the answer that a growing reply cannot scroll out of view; restating
-  // them here said the same thing twice, once where it gets lost.
-  const label = copy.processDetails;
+  const seconds = !props.running && props.durationMs !== undefined && Number.isFinite(props.durationMs)
+    ? Math.floor(Math.max(0, props.durationMs) / 1000)
+    : undefined;
+  const label = seconds === undefined
+    ? copy.processDetails
+    : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
   return (
     <details
       className="maka-processing-sequence"
@@ -1477,13 +1484,6 @@ export function ProcessingBlock(props: {
           if (!props.running) setManualOpen(!open);
         }}
       >
-        {/*
-          The cue belongs on the turn's footer row (see `TurnStatusLine`), the
-          one place under the answer that a growing reply cannot push away. The
-          exception is the WAITING state: a turn the transcript does not contain
-          yet has no footer, and this box is what stands in for it — there the
-          cue is the only thing to show, so it renders here.
-        */}
         {props.activity ? (
           <TurnRunningStatus
             startedAt={props.activity.startedAt}

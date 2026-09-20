@@ -109,7 +109,7 @@ function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
 function renderTurn(
   root: ReturnType<typeof createRoot>,
   turn: TurnViewModel,
-  liveStreaming?: { onStreamingSettled?: (messageId?: string) => void },
+  liveStreaming?: { runningStatus?: boolean; onStreamingSettled?: (messageId?: string) => void },
 ): Promise<void> {
   return act(() => {
     root.render(
@@ -735,12 +735,10 @@ test('collapses the whole completed process and leaves the final answer outside'
   const summary = process?.querySelector('summary');
   assert.ok(process && summary);
   assert.equal(process.hasAttribute('open'), false);
-  // The summary names what the disclosure holds; the elapsed reads from the
-  // status line at the bottom of the turn, which a long answer cannot push away.
-  assert.equal(summary.textContent?.trim(), 'Execution process');
+  assert.equal(summary.textContent?.trim(), 'Worked for 3m 33s');
   const settledLine =
     container.querySelector('.maka-turn-footer-meta .maka-turn-status-line')?.textContent ?? '';
-  assert.match(settledLine, /Done · Worked for 3m 33s/);
+  assert.match(settledLine, /^Done · /);
   // The finish time is what makes a transcript reviewable after the fact: the
   // message's relative stamp says how long ago, not when. Local formatting, so
   // the assertion pins its presence rather than a clock string.
@@ -757,16 +755,35 @@ test('collapses the whole completed process and leaves the final answer outside'
   assert.equal(container.querySelectorAll('.maka-chat-message-bubble-assistant')[1]?.isSameNode(answer), true);
 });
 
-test('automatically folds a running process on completion without remounting the answer', async () => {
+test('moves the live clock into the process and settles it to recorded duration without remounting the answer', async (context) => {
+  const startedAt = Date.UTC(2026, 8, 20, 9);
+  context.mock.timers.enable({ apis: ['Date', 'setInterval'], now: startedAt + 12_000 });
   const { container, root } = domRoot();
-  const timeline = [PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }];
-  await renderTurn(root, turnWith(timeline));
+  await renderTurn(root, { ...turnWith([ANSWER]), startedAt }, { runningStatus: true });
+  assert.equal(container.querySelector('.maka-turn-footer-meta .maka-turn-elapsed')?.textContent, '12s');
+  const timeline = [PROCESS_TEXT, COMPLETED_TOOL, ANSWER];
+  await renderTurn(root, { ...turnWith(timeline), startedAt }, { runningStatus: true });
   const process = container.querySelector('details.maka-processing-sequence');
-  assert.ok(process);
+  const summary = process?.querySelector('summary');
+  assert.ok(process && summary);
   assert.equal(process.hasAttribute('open'), true);
+  assert.equal(summary.querySelector('.maka-turn-elapsed')?.textContent, '12s');
+  assert.equal(container.querySelectorAll('.maka-turn-elapsed').length, 1);
+  assert.equal(container.querySelector('.maka-turn-footer-meta .maka-turn-processing'), null);
+  await act(() => context.mock.timers.tick(5_000));
+  assert.equal(summary.querySelector('.maka-turn-elapsed')?.textContent, '17s');
   const answer = container.querySelectorAll('.maka-chat-message-bubble-assistant')[1];
-  await renderTurn(root, { ...turnWith(timeline), status: 'completed', durationMs: 2_000 });
+  await renderTurn(root, {
+    ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]),
+    startedAt, status: 'completed', durationMs: 21_000,
+  });
   assert.equal(process.hasAttribute('open'), false);
+  assert.equal(summary.textContent, 'Worked for 21s');
+  assert.equal(container.querySelector('.maka-turn-processing'), null);
+  assert.doesNotMatch(container.querySelector('.maka-turn-footer-meta')?.textContent ?? '', /Worked for/);
+  assert.match(container.querySelector('.maka-turn-status-line')?.textContent ?? '', /Done · .*\d{1,2}:\d{2}/);
+  await act(() => context.mock.timers.tick(5_000));
+  assert.equal(summary.textContent, 'Worked for 21s');
   assert.equal(container.querySelectorAll('.maka-chat-message-bubble-assistant')[1]?.isSameNode(answer!), true);
 });
 
@@ -816,7 +833,7 @@ test('keeps running work expanded and allows manual disclosure after settlement'
   assert.equal(process.hasAttribute('open'), true);
 });
 
-test('a newly failed tool reveals the process while turn recovery stays outside', async () => {
+test('keeps failed-tool details folded with duration while turn recovery stays outside', async () => {
   const { container, root } = domRoot();
   await renderTurn(root, turnWith([PROCESS_TEXT, RUNNING_TOOL]));
   const process = container.querySelector('details.maka-processing-sequence');
@@ -824,13 +841,14 @@ test('a newly failed tool reveals the process while turn recovery stays outside'
   assert.ok(process && summary);
   assert.equal(process.hasAttribute('open'), true);
   await act(() => root.render(<LocaleProvider locale="en"><TurnView
-    turn={{ ...turnWith([PROCESS_TEXT, { kind: 'tools', items: [{ toolUseId: 'tool-1', toolName: 'read', args: {}, status: 'errored' }] }]), status: 'failed' }}
+    turn={{ ...turnWith([PROCESS_TEXT, { kind: 'tools', items: [{ toolUseId: 'tool-1', toolName: 'read', args: {}, status: 'errored' }] }]), status: 'failed', durationMs: 2000 }}
     failedReasonLabel="Read failed"
     safeResumeAction={{ pending: false, onResume() {} }}
   /></LocaleProvider>));
   // A failed tool is an ordinary row: no label, no reveal.
   assert.doesNotMatch(summary.textContent ?? '', /Needs attention/);
-  assert.equal(summary.textContent, 'Execution process');
+  assert.equal(summary.textContent, 'Worked for 2s');
+  assert.equal(container.querySelector('.maka-turn-status-line')?.textContent, 'Failed');
   assert.equal(process.hasAttribute('open'), false);
   assert.doesNotMatch(process.textContent ?? '', /Continue this turn/);
   assert.match(container.textContent ?? '', /Continue this turn/);
@@ -852,7 +870,7 @@ test('uses a generic process label when no duration is recorded, and localizes t
   );
   await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={{ ...turn, durationMs: 213_000 }} /></LocaleProvider>));
   assert.match(
-    container.querySelector('.maka-turn-footer-meta .maka-turn-status-line')?.textContent ?? '',
-    /完成 · 用时 3 分 33 秒/,
+    container.querySelector('.maka-processing-summary')?.textContent ?? '',
+    /^用时 3 分 33 秒$/,
   );
 });
