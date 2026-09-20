@@ -52,6 +52,9 @@
   "runtime": {
     "entry": "index.mjs"
   },
+  "client": {
+    "entry": "client.js"
+  },
   "composition": {
     "patch": "maka.composition.yml",
     "structuralDependencies": []

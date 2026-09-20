@@ -2623,6 +2623,13 @@ const makaBridge = {
     }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
       return invokeSessionUpdate('sessions:setModelConfiguration', sessionId, input);
     },
+    setExecutorConfiguration(sessionId: string, input: {
+      executorId: string;
+      model?: string;
+      thinkingLevel: ThinkingLevel | null;
+    }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
+      return invokeSessionUpdate('sessions:setExecutorConfiguration', sessionId, input);
+    },
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
       return invokeSessionUpdate('sessions:setThinkingLevel', sessionId, level ?? undefined);
     },

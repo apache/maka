@@ -150,6 +150,11 @@ export type SessionModelTarget =
       readonly model: string;
     };
 
+export interface SessionExecutorTarget {
+  readonly executorId: string;
+  readonly model?: string;
+}
+
 export interface SessionCreateInput {
   readonly sessionId: string;
   readonly workspace: WorkspaceTarget;
@@ -160,6 +165,8 @@ export interface SessionCreateInput {
   readonly modelTarget?: SessionModelTarget;
   /** Named black-box executor contributed by a Host plugin. */
   readonly executorId?: string;
+  /** Optional executor-specific model. Only valid with executorId. */
+  readonly executorModel?: string;
   /** Omitted applies the model preference; null explicitly uses the provider default. */
   readonly thinkingLevel?: ThinkingLevel | null;
   readonly toolProfile?: SessionToolProfile;
@@ -182,6 +189,7 @@ export interface SessionMetadataUpdateInput {
 
 export interface SessionConfigurationPatch {
   readonly modelTarget?: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
+  readonly executorTarget?: SessionExecutorTarget;
   readonly thinkingLevel?: ThinkingLevel | null;
   readonly permissionMode?: PermissionMode;
   readonly collaborationMode?: CollaborationMode;
@@ -527,6 +535,7 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
       'labels',
       'modelTarget',
       'executorId',
+      'executorModel',
       'thinkingLevel',
       'toolProfile',
       'permissionMode',
@@ -538,8 +547,14 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
     ? executorIdValue(input.executorId)
     : undefined;
   const target = Object.hasOwn(input, 'modelTarget') ? modelTarget(input.modelTarget) : undefined;
+  const executorModel = Object.hasOwn(input, 'executorModel')
+    ? requireUtf8String(input.executorModel, 'Executor model', SESSION_CATALOG_MODEL_MAX_BYTES)
+    : undefined;
   if ((executorId === undefined) === (target === undefined)) {
     throw invalidProtocolFrame('Session creation requires exactly one model target or executor id');
+  }
+  if (executorModel !== undefined && executorId === undefined) {
+    throw invalidProtocolFrame('Executor model requires an executor id');
   }
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
@@ -549,6 +564,7 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
     ...(Object.hasOwn(input, 'labels') ? { labels: labels(input.labels) } : {}),
     ...(target ? { modelTarget: target } : {}),
     ...(executorId ? { executorId } : {}),
+    ...(executorModel ? { executorModel } : {}),
     ...(Object.hasOwn(input, 'thinkingLevel')
       ? { thinkingLevel: input.thinkingLevel === null ? null : thinkingLevel(input.thinkingLevel) }
       : {}),
@@ -617,10 +633,20 @@ export function decodeSessionConfigurationUpdateInput(
     input.patch,
     'Session configuration patch',
     [],
-    ['modelTarget', 'thinkingLevel', 'permissionMode', 'collaborationMode', 'orchestrationMode'],
+    [
+      'modelTarget',
+      'executorTarget',
+      'thinkingLevel',
+      'permissionMode',
+      'collaborationMode',
+      'orchestrationMode',
+    ],
   );
   if (Object.keys(patch).length === 0) {
     throw invalidProtocolFrame('Session configuration patch is empty');
+  }
+  if (Object.hasOwn(patch, 'modelTarget') && Object.hasOwn(patch, 'executorTarget')) {
+    throw invalidProtocolFrame('Session configuration cannot select two execution targets');
   }
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
@@ -628,6 +654,9 @@ export function decodeSessionConfigurationUpdateInput(
     patch: {
       ...(Object.hasOwn(patch, 'modelTarget')
         ? { modelTarget: explicitModelTarget(patch.modelTarget) }
+        : {}),
+      ...(Object.hasOwn(patch, 'executorTarget')
+        ? { executorTarget: executorTarget(patch.executorTarget) }
         : {}),
       ...(Object.hasOwn(patch, 'thinkingLevel')
         ? {
@@ -1030,6 +1059,18 @@ function executorIdValue(value: unknown): string {
     throw invalidProtocolFrame('Invalid Executor id');
   }
   return id;
+}
+
+function executorTarget(value: unknown): SessionExecutorTarget {
+  const exact = requireShapedRecord(value, 'Session executor target', ['executorId'], ['model']);
+  return {
+    executorId: executorIdValue(exact.executorId),
+    ...(Object.hasOwn(exact, 'model')
+      ? {
+          model: requireUtf8String(exact.model, 'Executor model', SESSION_CATALOG_MODEL_MAX_BYTES),
+        }
+      : {}),
+  };
 }
 
 function optionalExecutorId(

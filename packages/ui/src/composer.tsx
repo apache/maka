@@ -385,6 +385,8 @@ export const Composer = forwardRef<
     waitForSessionReference?(): Promise<boolean>;
     modelLabel?: string;
     activeSession?: SessionSummary;
+    executorTarget?: import('./client-plugin-slots.js').MakaClientExecutorTarget;
+    onExecutorTargetChange?(target: import('./client-plugin-slots.js').MakaClientExecutorTarget): void | Promise<void>;
     activeModelConnectionId?: string;
     activeModelConnectionSlug?: string;
     activeModel?: string;
@@ -2393,6 +2395,8 @@ export const Composer = forwardRef<
                     disabled: props.disabled === true,
                     streaming: props.streaming === true,
                     hasSession: props.activeSession !== undefined,
+                    executorTarget: props.executorTarget,
+                    onExecutorTargetChange: props.onExecutorTargetChange,
                   }}
                 />
               </MakaClientSessionScope>

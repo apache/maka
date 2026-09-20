@@ -15,9 +15,10 @@ protocol and stability status.
 - Codex for macOS or the official `codex` CLI, installed and authenticated by the local user.
 - Node.js 22.19 or newer in the Maka Runtime Host.
 
-Install this directory through Maka's Plugin Platform. The profile composition entry makes the
-executor available as `Codex App Server` with id `codex.app-server`; installing the package does not
-force existing or new Sessions to use it.
+Install this directory through Maka's Plugin Platform. Its profile entry registers `Codex App
+Server` with id `codex.app-server`, and its desktop entry adds model and reasoning controls to the
+Session and WorkHub composers. Selecting a Codex model switches that Session or the next new Session
+to the plugin executor; selecting a native Maka model switches it back.
 
 This is a repository-only example. Maka release packaging intentionally excludes `scripts/plugins`;
 install it from a complete Git checkout instead of expecting it in an ASF source or desktop release.
@@ -44,6 +45,8 @@ are intended.
 ## Behavior and current limits
 
 - One App Server process is shared by the plugin instance, with one Codex thread per Maka Session.
+- The Composer reads the authenticated local Codex model catalog through `model/list`; no static
+  model list or OpenAI credential is stored by Maka.
 - The Session model and reasoning effort are sent on every turn, so changes take effect immediately
   even when the Codex thread is reused. An explicit null reasoning effort restores that model's
   default instead of retaining the previous turn's setting.

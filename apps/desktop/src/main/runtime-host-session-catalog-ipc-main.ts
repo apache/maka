@@ -213,6 +213,25 @@ export function registerRuntimeHostSessionCatalogIpc(
       return updateConfiguration(deps, sessionId, { modelTarget, thinkingLevel }, 'updated');
     },
   );
+  ipcMain.handle(
+    'sessions:setExecutorConfiguration',
+    async (_event, sessionId: string, input: unknown) => {
+      if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+        throw new Error('Invalid executor configuration');
+      }
+      const record = input as Record<string, unknown>;
+      const executorId = normalizeOptionalString(record.executorId, 'executor id');
+      if (!executorId) throw new Error('Executor id is required');
+      const model = normalizeOptionalString(record.model, 'executor model');
+      const thinkingLevel = normalizeRequiredThinkingLevel(input);
+      return updateConfiguration(
+        deps,
+        sessionId,
+        { executorTarget: { executorId, ...(model ? { model } : {}) }, thinkingLevel },
+        'updated',
+      );
+    },
+  );
   ipcMain.handle('sessions:setThinkingLevel', async (_event, sessionId: string, level: unknown) => {
     if (level !== undefined && level !== null && !isThinkingLevel(level)) {
       throw new Error(`Invalid thinking level: ${String(level)}`);
@@ -391,20 +410,22 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
 export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInput | undefined, sessionId: string, workspace: WorkspaceTarget): SessionCreateInput {
   const request = resolveCreateSessionRequest(input);
   const executorId = normalizeOptionalString(input?.executorId, 'executor id');
-  if (
-    executorId &&
-    (input?.llmConnectionId !== undefined ||
-      input?.llmConnectionSlug !== undefined ||
-      input?.model !== undefined)
-  ) {
-    throw new Error('Plugin executor selection cannot include a model target');
+  if (executorId && (input?.llmConnectionId !== undefined || input?.llmConnectionSlug !== undefined)) {
+    throw new Error('Plugin executor selection cannot include a model connection');
   }
   return {
     sessionId, workspace,
     ...(request.mode === undefined ? {} : { mode: request.mode }),
     name: request.name,
     ...(request.labels === undefined ? {} : { labels: request.labels }),
-    ...(executorId ? { executorId } : { modelTarget: normalizeModelTarget(input) }),
+    ...(executorId
+      ? {
+          executorId,
+          ...(normalizeOptionalString(input?.model, 'executor model')
+            ? { executorModel: normalizeOptionalString(input?.model, 'executor model') }
+            : {}),
+        }
+      : { modelTarget: normalizeModelTarget(input) }),
     ...normalizeCreateThinkingLevel(input?.thinkingLevel),
     ...(request.mode !== undefined || request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
     collaborationMode: request.collaborationMode,

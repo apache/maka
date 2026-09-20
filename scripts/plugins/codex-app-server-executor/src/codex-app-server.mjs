@@ -27,6 +27,16 @@ export const EXECUTOR_ID = 'codex.app-server';
 
 const MAX_EVENT_TEXT = 8_000;
 const VALID_SANDBOXES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
+const VALID_REASONING_EFFORTS = new Set([
+  'none',
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]);
 
 export function normalizeConfig(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -123,6 +133,58 @@ export class CodexAppServerClient {
         recoverable: isRecoverable(error),
       });
     }
+  }
+
+  async models() {
+    await this.ensureStarted();
+    const result = [];
+    let cursor;
+    do {
+      const response = await this.request('model/list', {
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      const items = Array.isArray(response?.data) ? response.data : [];
+      for (const value of items) {
+        if (!value || typeof value !== 'object' || typeof value.model !== 'string') continue;
+        const efforts = Array.isArray(value.supportedReasoningEfforts)
+          ? value.supportedReasoningEfforts
+              .filter(
+                (effort) =>
+                  effort &&
+                  typeof effort === 'object' &&
+                  VALID_REASONING_EFFORTS.has(effort.reasoningEffort),
+              )
+              .map((effort) => ({
+                reasoningEffort: effort.reasoningEffort === 'none' ? 'off' : effort.reasoningEffort,
+                ...(typeof effort.description === 'string'
+                  ? { description: effort.description }
+                  : {}),
+              }))
+          : [];
+        result.push({
+          model: value.model,
+          displayName:
+            typeof value.displayName === 'string' && value.displayName.trim()
+              ? value.displayName
+              : value.model,
+          ...(typeof value.description === 'string' ? { description: value.description } : {}),
+          isDefault: value.isDefault === true,
+          ...(VALID_REASONING_EFFORTS.has(value.defaultReasoningEffort)
+            ? {
+                defaultReasoningEffort:
+                  value.defaultReasoningEffort === 'none' ? 'off' : value.defaultReasoningEffort,
+              }
+            : {}),
+          supportedReasoningEfforts: efforts,
+        });
+      }
+      cursor =
+        typeof response?.nextCursor === 'string' && response.nextCursor
+          ? response.nextCursor
+          : undefined;
+    } while (cursor && result.length < 500);
+    return result.slice(0, 500);
   }
 
   async close() {
@@ -225,6 +287,7 @@ export class CodexAppServerClient {
     }
     const completion = Promise.withResolvers();
     const active = {
+      conversationKey: request.conversationKey,
       turnId: undefined,
       output: '',
       finalText: undefined,
@@ -234,16 +297,20 @@ export class CodexAppServerClient {
       context,
       resolve: completion.resolve,
       settled: false,
+      interruptTimer: undefined,
     };
     this.activeTurns.set(threadId, active);
 
     const interrupt = () => {
-      if (active.turnId) {
-        void this.request('turn/interrupt', {
-          threadId,
-          turnId: active.turnId,
-        }).catch(() => {});
-      }
+      if (!active.turnId || active.settled || active.interruptTimer) return;
+      active.interruptTimer = setTimeout(() => {
+        this.forceCancelledTurn(threadId, active);
+      }, this.config.rpcTimeoutMs);
+      active.interruptTimer.unref?.();
+      void this.request('turn/interrupt', {
+        threadId,
+        turnId: active.turnId,
+      }).catch(() => this.forceCancelledTurn(threadId, active));
     };
     context.signal.addEventListener('abort', interrupt, { once: true });
     try {
@@ -252,7 +319,7 @@ export class CodexAppServerClient {
         input: [{ type: 'text', text: requestText(request), text_elements: [] }],
         cwd: request.cwd,
         model: request.model,
-        effort: request.reasoningEffort,
+        effort: request.reasoningEffort === 'off' ? 'none' : request.reasoningEffort,
       });
       active.turnId = requireString(started?.turn?.id, 'turn id');
       if (context.signal.aborted) interrupt();
@@ -324,6 +391,10 @@ export class CodexAppServerClient {
       this.logger.warn('Ignoring invalid JSON from Codex app-server');
       return;
     }
+    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+      this.logger.warn('Ignoring invalid message from Codex app-server');
+      return;
+    }
     if (Object.hasOwn(message, 'id') && !Object.hasOwn(message, 'method')) {
       const pending = this.pending.get(message.id);
       if (!pending) return;
@@ -342,14 +413,20 @@ export class CodexAppServerClient {
   }
 
   respondToServerRequest(message) {
+    let response;
     try {
       const result = declineServerRequest(message.method);
-      this.write({ id: message.id, result });
+      response = { id: message.id, result };
     } catch (error) {
-      this.write({
+      response = {
         id: message.id,
         error: { code: -32601, message: errorMessage(error) },
-      });
+      };
+    }
+    try {
+      this.write(response);
+    } catch {
+      this.logger.warn('Could not respond to Codex app-server request after transport closed');
     }
   }
 
@@ -447,8 +524,21 @@ export class CodexAppServerClient {
   finishTurn(threadId, active, result) {
     if (active.settled) return;
     active.settled = true;
+    if (active.interruptTimer) clearTimeout(active.interruptTimer);
+    active.interruptTimer = undefined;
     if (this.activeTurns.get(threadId) === active) this.activeTurns.delete(threadId);
     active.resolve(Object.freeze(result));
+  }
+
+  forceCancelledTurn(threadId, active) {
+    if (active.settled) return;
+    this.threads.delete(active.conversationKey);
+    this.finishTurn(threadId, active, {
+      status: 'cancelled',
+      reason: 'Maka cancelled the Codex turn',
+    });
+    const child = this.process;
+    if (child) void terminateChild(child, this.config.disposeGraceMs).catch(() => {});
   }
 
   handleExit(child, error) {
@@ -658,7 +748,18 @@ function declineServerRequest(method) {
   }
 }
 
-async function terminateChild(child, graceMs) {
+const childTerminations = new WeakMap();
+
+function terminateChild(child, graceMs) {
+  if (!child) return Promise.resolve();
+  const existing = childTerminations.get(child);
+  if (existing) return existing;
+  const termination = terminateChildOnce(child, graceMs);
+  childTerminations.set(child, termination);
+  return termination;
+}
+
+async function terminateChildOnce(child, graceMs) {
   if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise((resolve) => {
     child.once('exit', resolve);

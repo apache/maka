@@ -18,10 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { chmod } from 'node:fs/promises';
+import { chmod, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import plugin, { CodexAppServerClient, EXECUTOR_ID, normalizeConfig } from '../index.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -56,6 +57,11 @@ test('package registers the main-compatible executor and lifecycle order', () =>
         calls.push(`effect:${label}`);
         setup();
       },
+      clientBridge: {
+        rpc(definition) {
+          calls.push(`rpc:${definition.name}`);
+        },
+      },
       executors: {
         register(value) {
           calls.push('register');
@@ -65,12 +71,60 @@ test('package registers the main-compatible executor and lifecycle order', () =>
     },
     { codexPath: fakeCodex },
   );
-  assert.deepEqual(calls, ['effect:codex app-server process', 'register']);
+  assert.deepEqual(calls, [
+    'effect:codex app-server process',
+    'rpc:codex.app-server.models',
+    'register',
+  ]);
   assert.equal(provider.id, EXECUTOR_ID);
   assert.deepEqual(provider.capabilities, {
     thinking: true,
     toolActivity: true,
   });
+});
+
+test('client bundle registers Codex controls in the Composer toolbar', async () => {
+  let moduleFactory;
+  runInNewContext(await readFile(join(here, '..', 'client.js'), 'utf8'), {
+    window: {
+      __MakaModuleLoader__: {
+        load(definition) {
+          moduleFactory = definition.factory;
+        },
+      },
+    },
+  });
+  assert.equal(typeof moduleFactory, 'function');
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+    useEffect() {},
+    useState(value) {
+      return [value, () => {}];
+    },
+  };
+  const client = moduleFactory((id) => {
+    assert.equal(id, 'react');
+    return React;
+  });
+  let registration;
+  let css = '';
+  client.apply({
+    style(value) {
+      css = value;
+    },
+    remote: { call: async () => [] },
+    slots: {
+      register(options, component) {
+        registration = { options, component };
+        return () => {};
+      },
+    },
+  });
+  assert.equal(registration.options.name, 'conversation.composer.toolbar');
+  assert.match(css, /codexExecutorControls/u);
+  assert.doesNotThrow(() =>
+    registration.component({ disabled: false, streaming: false, hasSession: false }),
+  );
 });
 
 test('configuration validates safe unattended defaults', () => {
@@ -89,6 +143,27 @@ test('configuration validates safe unattended defaults', () => {
     () => normalizeConfig({ inheritEnvironmentCredentials: 'yes' }),
     /inheritEnvironmentCredentials/u,
   );
+});
+
+test('client lists Codex models and their supported reasoning efforts', async () => {
+  const client = new CodexAppServerClient({ codexPath: fakeCodex }, logger);
+  try {
+    assert.deepEqual(await client.models(), [
+      {
+        model: 'gpt-fake',
+        displayName: 'GPT Fake',
+        description: 'Fixture model',
+        isDefault: true,
+        defaultReasoningEffort: 'medium',
+        supportedReasoningEfforts: [
+          { reasoningEffort: 'low', description: 'Fast' },
+          { reasoningEffort: 'medium', description: 'Balanced' },
+        ],
+      },
+    ]);
+  } finally {
+    await client.close();
+  }
 });
 
 test('client reuses a thread and projects rich events while declining approvals', async () => {
@@ -178,6 +253,36 @@ test('client interrupts an active Codex turn on Maka cancellation', async () => 
   } finally {
     await client.close();
   }
+});
+
+test('client settles cancellation when App Server omits turn/completed', async () => {
+  const client = new CodexAppServerClient(
+    { codexPath: fakeCodex, rpcTimeoutMs: 1000, disposeGraceMs: 100 },
+    logger,
+  );
+  const abort = new AbortController();
+  try {
+    const execution = executionContext(abort.signal);
+    const resultPromise = client.execute(
+      request('WAIT_FOR_INTERRUPT OMIT_COMPLETION'),
+      execution.context,
+    );
+    setTimeout(() => abort.abort(new Error('cancel test')), 100);
+    const result = await resultPromise;
+    assert.equal(result.status, 'cancelled');
+  } finally {
+    await client.close();
+  }
+});
+
+test('malformed messages and closed response transports never throw into the Host', () => {
+  let warnings = 0;
+  const client = new CodexAppServerClient({}, { warn: () => warnings++ });
+  assert.doesNotThrow(() => client.acceptLine('null'));
+  assert.doesNotThrow(() =>
+    client.respondToServerRequest({ id: 1, method: 'unsupported/request' }),
+  );
+  assert.equal(warnings, 2);
 });
 
 test('attachments are rejected instead of being silently dropped', async () => {

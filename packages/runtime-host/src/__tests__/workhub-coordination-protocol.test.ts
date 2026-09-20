@@ -68,6 +68,18 @@ test('WorkHub model configuration accepts thinking levels without widening its a
       thinkingLevel,
     });
   }
+  assert.deepEqual(
+    decodeWorkHubCoordinationConfigureModelInput({
+      expectedRevision: 4,
+      thinkingLevel: 'xhigh',
+      executorTarget: { executorId: 'codex.app-server', model: 'gpt-6-astra' },
+    }),
+    {
+      expectedRevision: 4,
+      thinkingLevel: 'xhigh',
+      executorTarget: { executorId: 'codex.app-server', model: 'gpt-6-astra' },
+    },
+  );
   for (const invalid of [
     { expectedRevision: input.expectedRevision, modelTarget: input.modelTarget },
     { ...input, thinkingLevel: undefined },
@@ -76,6 +88,8 @@ test('WorkHub model configuration accepts thinking levels without widening its a
     { ...input, thinkingLevel: 'extreme' },
     { ...input, expectedRevision: -1 },
     { ...input, modelTarget: { kind: 'default' } },
+    { expectedRevision: 3, thinkingLevel: null },
+    { ...input, executorTarget: { executorId: 'codex.app-server' } },
   ])
     assert.throws(
       () => decodeWorkHubCoordinationConfigureModelInput(invalid),

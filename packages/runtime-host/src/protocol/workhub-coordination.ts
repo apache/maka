@@ -48,35 +48,47 @@ import {
   decodeSessionCatalogItem,
   SESSION_CATALOG_OPERATION_SPECS,
   type SessionModelTarget,
+  type SessionExecutorTarget,
   type SessionUpdateResult,
   type SessionCatalogItem,
 } from './session-catalog.js';
 
 export interface WorkHubCoordinationConfigureModelInput {
   readonly expectedRevision: number;
-  readonly modelTarget: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
+  readonly modelTarget?: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
+  readonly executorTarget?: SessionExecutorTarget;
   readonly thinkingLevel: ThinkingLevel | null;
 }
 
 export function decodeWorkHubCoordinationConfigureModelInput(
   value: unknown,
 ): WorkHubCoordinationConfigureModelInput {
-  const input = requireExactRecord(value, 'WorkHub model configuration', [
-    'expectedRevision',
-    'modelTarget',
-    'thinkingLevel',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'WorkHub model configuration',
+    ['expectedRevision', 'thinkingLevel'],
+    ['modelTarget', 'executorTarget'],
+  );
+  const hasModelTarget = Object.hasOwn(input, 'modelTarget');
+  const hasExecutorTarget = Object.hasOwn(input, 'executorTarget');
+  if (hasModelTarget === hasExecutorTarget) {
+    throw invalidProtocolFrame(
+      'WorkHub model configuration requires exactly one model or executor target',
+    );
+  }
   const decoded = decodeSessionConfigurationUpdateInput({
     sessionId: WORKHUB_COORDINATION_SESSION_ID,
     expectedRevision: input.expectedRevision,
     patch: {
-      modelTarget: input.modelTarget,
+      ...(hasModelTarget ? { modelTarget: input.modelTarget } : {}),
+      ...(hasExecutorTarget ? { executorTarget: input.executorTarget } : {}),
       thinkingLevel: input.thinkingLevel,
     },
   });
   return {
     expectedRevision: decoded.expectedRevision,
-    modelTarget: decoded.patch.modelTarget!,
+    ...(decoded.patch.modelTarget ? { modelTarget: decoded.patch.modelTarget } : {}),
+    ...(decoded.patch.executorTarget ? { executorTarget: decoded.patch.executorTarget } : {}),
     thinkingLevel: decoded.patch.thinkingLevel ?? null,
   };
 }
@@ -266,7 +278,8 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
           sessionId: WORKHUB_COORDINATION_SESSION_ID,
           expectedRevision: input.expectedRevision,
           patch: {
-            modelTarget: input.modelTarget,
+            ...(input.modelTarget ? { modelTarget: input.modelTarget } : {}),
+            ...(input.executorTarget ? { executorTarget: input.executorTarget } : {}),
             thinkingLevel: input.thinkingLevel,
           },
         },

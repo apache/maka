@@ -738,7 +738,8 @@ export class HostSessionCatalogCoordinator {
         sessionId: WORKHUB_COORDINATION_SESSION_ID,
         expectedRevision: input.expectedRevision,
         patch: {
-          modelTarget: input.modelTarget,
+          ...(input.modelTarget ? { modelTarget: input.modelTarget } : {}),
+          ...(input.executorTarget ? { executorTarget: input.executorTarget } : {}),
           thinkingLevel: input.thinkingLevel,
         },
       },
@@ -1257,7 +1258,11 @@ export class HostSessionCatalogCoordinator {
     current: SessionHeader,
     patch: SessionConfigurationUpdateInput['patch'],
   ): Promise<ResolvedSessionConfiguration> {
-    if (current.backend === 'fake' && patch.modelTarget === undefined) {
+    if (
+      current.backend === 'fake' &&
+      patch.modelTarget === undefined &&
+      patch.executorTarget === undefined
+    ) {
       throw new SessionOperationFailure(
         'operation_conflict',
         'Legacy test backend configuration requires an explicit account selection',
@@ -1266,7 +1271,8 @@ export class HostSessionCatalogCoordinator {
     if (
       current.backend !== 'plugin-executor' &&
       current.llmConnectionId === undefined &&
-      patch.modelTarget === undefined
+      patch.modelTarget === undefined &&
+      patch.executorTarget === undefined
     ) {
       throw new SessionOperationFailure(
         'operation_conflict',
@@ -1277,6 +1283,28 @@ export class HostSessionCatalogCoordinator {
       patch.thinkingLevel === undefined
         ? current.thinkingLevel
         : (patch.thinkingLevel ?? undefined);
+    if (patch.executorTarget !== undefined) {
+      try {
+        this.#assertExecutorAvailable?.(current.id, patch.executorTarget.executorId);
+      } catch {
+        throw new SessionOperationFailure(
+          'operation_unavailable',
+          `Plugin executor is unavailable: ${patch.executorTarget.executorId}`,
+        );
+      }
+      return {
+        backend: 'plugin-executor',
+        executorId: patch.executorTarget.executorId,
+        llmConnectionId: undefined,
+        llmConnectionSlug: `executor:${patch.executorTarget.executorId}`,
+        model: patch.executorTarget.model ?? patch.executorTarget.executorId,
+        thinkingLevel,
+        connectionLocked: current.connectionLocked,
+        permissionMode: patch.permissionMode ?? current.permissionMode,
+        collaborationMode: patch.collaborationMode ?? current.collaborationMode ?? 'agent',
+        orchestrationMode: patch.orchestrationMode ?? current.orchestrationMode ?? 'default',
+      };
+    }
     let model: {
       readonly connectionId?: string;
       readonly connectionSlug: string;
@@ -1333,7 +1361,7 @@ export class HostSessionCatalogCoordinator {
       return {
         executorId: input.executorId,
         connectionSlug: `executor:${input.executorId}`,
-        model: input.executorId,
+        model: input.executorModel ?? input.executorId,
       };
     }
     if (!input.modelTarget) {
@@ -1382,6 +1410,7 @@ function isPermissionModeOnlyPatch(patch: SessionConfigurationUpdateInput['patch
   return (
     patch.permissionMode !== undefined &&
     patch.modelTarget === undefined &&
+    patch.executorTarget === undefined &&
     patch.thinkingLevel === undefined &&
     patch.collaborationMode === undefined &&
     patch.orchestrationMode === undefined
@@ -1403,6 +1432,9 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
   }
   if (input.executorId !== undefined && !isExecutorId(input.executorId)) {
     throw new SessionOperationFailure('invalid_request', 'Session executor id is invalid');
+  }
+  if (input.executorModel !== undefined && input.executorId === undefined) {
+    throw new SessionOperationFailure('invalid_request', 'Executor model requires an executor id');
   }
   if (input.labels?.some(isExecutionSemanticLabel)) {
     throw new SessionOperationFailure(
@@ -1440,7 +1472,7 @@ function createRequestFingerprint(
     prepared.name,
     prepared.labels,
     input.executorId
-      ? ['executor', input.executorId]
+      ? ['executor', input.executorId, input.executorModel ?? null]
       : input.modelTarget?.kind === 'default'
         ? ['default']
         : [

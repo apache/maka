@@ -1384,6 +1384,11 @@ export interface MakaBridge {
       model: string;
       thinkingLevel: ThinkingLevel | null;
     }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    setExecutorConfiguration(sessionId: string, input: {
+      executorId: string;
+      model?: string;
+      thinkingLevel: ThinkingLevel | null;
+    }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * `requireArchived` holds the caller's premise through the deletion: a task

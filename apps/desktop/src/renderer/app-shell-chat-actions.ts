@@ -72,11 +72,10 @@ type RefBox<T> = { current: T };
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
-type PendingNewChatModel = {
-  llmConnectionId: string;
-  llmConnectionSlug: string;
-  model: string;
-} | null;
+type PendingNewChatModel =
+  | { llmConnectionId: string; llmConnectionSlug: string; model: string }
+  | { executorId: string; model: string }
+  | null;
 
 type PendingNewChatThinkingLevel = ThinkingLevel | null | undefined;
 type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
@@ -380,13 +379,7 @@ export function createAppShellChatActions(deps: {
         if (pending?.length) preflightAttachmentItems(pending);
         const session = await window.maka.newTasks.create(newTaskTarget, {
           name: DEFAULT_SESSION_NAME,
-          ...(newChatModel
-            ? {
-                llmConnectionId: newChatModel.llmConnectionId,
-                llmConnectionSlug: newChatModel.llmConnectionSlug,
-                model: newChatModel.model,
-              }
-            : {}),
+          ...(newChatModel !== null ? { ...newChatModel } : {}),
           thinkingLevel: pendingNewChatThinkingLevel,
           ...(newChatPermissionChoice ? { permissionMode: newChatPermissionChoice } : {}),
           collaborationMode: newChatCollaborationMode,

@@ -613,6 +613,40 @@ export function useWorkHubController(onSubmit?: () => void) {
       setConfiguringModel(false);
     }
   }
+  async function changeExecutor(input: {
+    executorId: string;
+    model?: string;
+    thinkingLevel?: ThinkingLevel;
+  }) {
+    if (!sessionId || !session || busy || configuringModelRef.current) return;
+    configuringModelRef.current = true;
+    setConfiguringModel(true);
+    try {
+      const result = await services.configureModel(sessionId, {
+        expectedRevision: session.revision,
+        thinkingLevel: input.thinkingLevel ?? null,
+        executorTarget: {
+          executorId: input.executorId,
+          ...(input.model ? { model: input.model } : {}),
+        },
+      });
+      if (result.kind === 'revision_conflict')
+        throw new Error(workHubLiveCopy[localeRef.current].modelConflict);
+      const updated = await services.getSession(sessionId);
+      if (currentSessionId.current !== sessionId) return;
+      setSessions((current) => current.map((entry) =>
+        entry.id === sessionId && entry.revision <= updated.revision ? updated : entry,
+      ));
+      setError(undefined);
+    } catch (reason) {
+      if (currentSessionId.current !== sessionId) return;
+      refreshSessions.current();
+      report(reason);
+    } finally {
+      configuringModelRef.current = false;
+      setConfiguringModel(false);
+    }
+  }
   async function selectSetupModel(input: {
     llmConnectionId: string;
     llmConnectionSlug: string;
@@ -680,9 +714,18 @@ export function useWorkHubController(onSubmit?: () => void) {
     send,
     stop,
     changeModel,
+    changeExecutor,
     selectSetupModel,
     configuringModel,
     changeThinkingLevel: async (level: ThinkingLevel | undefined) => {
+      if (session?.executorId) {
+        await changeExecutor({
+          executorId: session.executorId,
+          ...(session.model === session.executorId ? {} : { model: session.model }),
+          ...(level ? { thinkingLevel: level } : {}),
+        });
+        return;
+      }
       if (!session?.llmConnectionId || !session.llmConnectionSlug || !session.model) return;
       await changeModel({ llmConnectionId: session.llmConnectionId, llmConnectionSlug: session.llmConnectionSlug, model: session.model }, level ?? null);
     },

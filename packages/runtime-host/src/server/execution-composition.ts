@@ -1133,6 +1133,12 @@ export async function createExecutionRuntimeHostComposition(
             new PluginExecutorBackend({
               sessionId: factoryContext.sessionId,
               cwd: factoryContext.header.cwd,
+              ...(factoryContext.header.model === executorId
+                ? {}
+                : { model: factoryContext.header.model }),
+              ...(factoryContext.header.thinkingLevel
+                ? { thinkingLevel: factoryContext.header.thinkingLevel }
+                : {}),
               ...(factoryContext.systemPrompt ? { instructions: factoryContext.systemPrompt } : {}),
               binding,
             }),

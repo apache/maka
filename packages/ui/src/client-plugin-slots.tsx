@@ -104,6 +104,14 @@ export interface MakaClientComposerToolbarProps {
   readonly disabled: boolean;
   readonly streaming: boolean;
   readonly hasSession: boolean;
+  readonly executorTarget?: MakaClientExecutorTarget;
+  readonly onExecutorTargetChange?: (target: MakaClientExecutorTarget) => void | Promise<void>;
+}
+
+export interface MakaClientExecutorTarget {
+  readonly executorId: string;
+  readonly model?: string;
+  readonly thinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
 }
 
 /** Stable owner props for a keyed Tool detail renderer. */

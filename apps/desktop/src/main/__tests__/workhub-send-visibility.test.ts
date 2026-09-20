@@ -223,7 +223,7 @@ test('WorkHub model and thinking selection share versioned saves and reject stal
     configureModel: async (_id, input) => {
       requests.push(input);
       if (failSave) throw new Error('configuration failed');
-      snapshot = { ...snapshot, model: input.modelTarget.model, thinkingLevel: input.thinkingLevel ?? undefined, revision: snapshot.revision + 1 };
+      snapshot = { ...snapshot, model: input.modelTarget!.model, thinkingLevel: input.thinkingLevel ?? undefined, revision: snapshot.revision + 1 };
       return { kind: 'committed', session: snapshot } as unknown as Awaited<ReturnType<WorkHubServices['configureModel']>>;
     },
   });
@@ -255,7 +255,7 @@ test('WorkHub model and thinking selection share versioned saves and reject stal
   await act(async () => { await h.controller.changeThinkingLevel('high'); });
   assert.equal(h.controller.session?.thinkingLevel, 'high');
   assert.equal(requests.at(-1)?.expectedRevision, 3);
-  assert.equal(requests.at(-1)?.modelTarget.model, 'C', 'thinking changes preserve model identity');
+  assert.equal(requests.at(-1)?.modelTarget?.model, 'C', 'thinking changes preserve model identity');
   failSave = true;
   await act(async () => { await h.controller.changeThinkingLevel('low'); });
   assert.equal(h.controller.session?.thinkingLevel, 'high', 'failed writes retain the saved level');

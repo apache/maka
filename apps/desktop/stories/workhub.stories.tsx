@@ -161,7 +161,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
       publish(); return { kind: 'admitted', turnId: input.turnId };
     },
     configureModel: async (id, input) => {
-      writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget.model, thinkingLevel: input.thinkingLevel ?? undefined }; updateSessions?.();
+      writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget?.model ?? input.executorTarget?.model ?? session.model, thinkingLevel: input.thinkingLevel ?? undefined }; updateSessions?.();
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
     },
     observe: (_id, _event, _error, _phase, execution) => { updateExecution = execution; publishExecution(); return () => { updateExecution = undefined; }; },

@@ -352,6 +352,14 @@ export function WorkHubRoot() {
               }}
               onStop={controller.stop}
               activeSession={session}
+              executorTarget={session?.executorId
+                ? {
+                    executorId: session.executorId,
+                    ...(session.model === session.executorId ? {} : { model: session.model }),
+                    ...(session.thinkingLevel ? { thinkingLevel: session.thinkingLevel } : {}),
+                  }
+                : undefined}
+              onExecutorTargetChange={controller.changeExecutor}
               activeModel={session?.model}
               activeModelLabel={modelChoice?.label}
               activeProviderType={modelChoice?.providerType}

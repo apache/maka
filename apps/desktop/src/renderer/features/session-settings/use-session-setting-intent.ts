@@ -161,6 +161,23 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
         ? intent.request('modelConfiguration', sessionId, next)
         : Promise.resolve(false);
     },
+    setSessionExecutor: async (
+      sessionId: string,
+      target: { executorId: string; model?: string; thinkingLevel?: ThinkingLevel },
+    ) => {
+      try {
+        if (!services.setExecutorConfiguration) return false;
+        await services.setExecutorConfiguration(sessionId, {
+          ...target,
+          thinkingLevel: target.thinkingLevel ?? null,
+        });
+        await input.refreshCatalog();
+        return true;
+      } catch (error) {
+        reportWriteError(sessionId, error, 'model');
+        return false;
+      }
+    },
     setPermissionMode: async (mode: PermissionMode) => {
       if (!isChatDefaultPermissionMode(mode)) return false;
       const owner = input.captureOwner();

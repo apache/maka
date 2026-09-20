@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Experimental Maka executor backed by the local Codex app-server",
   "scripts": {
-    "check": "node --check index.mjs && node --check src/codex-app-server.mjs",
+    "check": "node --check index.mjs && node --check src/codex-app-server.mjs && node --check client.js",
     "test": "node --test test/plugin.test.mjs"
   },
   "engines": {

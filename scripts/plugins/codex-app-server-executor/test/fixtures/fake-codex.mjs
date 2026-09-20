@@ -101,6 +101,26 @@ for await (const line of lines) {
   const message = JSON.parse(line);
   if (message.method === 'initialize') {
     send({ id: message.id, result: { userAgent: 'fake-codex' } });
+  } else if (message.method === 'model/list') {
+    send({
+      id: message.id,
+      result: {
+        data: [
+          {
+            model: 'gpt-fake',
+            displayName: 'GPT Fake',
+            description: 'Fixture model',
+            isDefault: true,
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: [
+              { reasoningEffort: 'low', description: 'Fast' },
+              { reasoningEffort: 'medium', description: 'Balanced' },
+            ],
+          },
+        ],
+        nextCursor: null,
+      },
+    });
   } else if (message.method === 'thread/start') {
     threadStarts += 1;
     threadModel = message.params.model;
@@ -147,7 +167,7 @@ for await (const line of lines) {
     });
     const input = message.params.input[0].text;
     if (input.includes('WAIT_FOR_INTERRUPT')) {
-      interrupted = { turnId };
+      interrupted = { turnId, omitCompletion: input.includes('OMIT_COMPLETION') };
     } else {
       pendingApproval = { id: 10_000 + turnCount, input };
       send({
@@ -167,13 +187,15 @@ for await (const line of lines) {
   } else if (message.method === 'turn/interrupt') {
     send({ id: message.id, result: {} });
     const turnId = interrupted?.turnId ?? message.params.turnId;
-    send({
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: { id: turnId, status: 'interrupted', items: [], error: null },
-      },
-    });
+    if (!interrupted?.omitCompletion) {
+      send({
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: turnId, status: 'interrupted', items: [], error: null },
+        },
+      });
+    }
     interrupted = undefined;
   }
 }

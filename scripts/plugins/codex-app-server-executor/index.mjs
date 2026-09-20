@@ -36,6 +36,10 @@ export default Object.freeze({
       // Fiber effects unwind in reverse order. Own process cleanup first so the
       // executor retires and cancels its active calls before app-server closes.
       ctx.effect(() => () => client.close(), 'codex app-server process');
+      ctx.clientBridge.rpc({
+        name: 'codex.app-server.models',
+        invoke: () => client.models(),
+      });
       ctx.executors.register(
         Object.freeze({
           id: EXECUTOR_ID,
