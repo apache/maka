@@ -601,7 +601,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2687
+        "nonTriviaTokens": 2677
       },
       "src/renderer/app-shell-session-ui-state.ts": {
         "importDeclarations": 0,
@@ -694,11 +694,7 @@
           "window.maka.sessions.getPlanState": 1,
           "window.maka.sessions.listActiveInteractions": 1,
           "window.maka.sessions.listTurnLandmarks": 1,
-          "window.maka.sessions.promoteQueueEntry": 1,
-          "window.maka.sessions.reorderQueueEntries": 1,
-          "window.maka.sessions.retractQueueEntry": 1,
           "window.maka.sessions.subscribeActiveInteractions": 1,
-          "window.maka.sessions.updateQueueEntry": 1,
           "window.maka.settings.getClient": 1,
           "window.maka.settings.subscribeClientChanged": 1
         },

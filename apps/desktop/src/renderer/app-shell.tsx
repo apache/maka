@@ -67,7 +67,6 @@ import {
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { ChatMessageSurface } from './chat-message-surface';
-import { withQueuedSteeringTransients } from './application/contracts/transient-message-projection.js';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
@@ -332,6 +331,7 @@ function AppShellContent({
     sharedSessionActive,
     ownerActiveId,
     switchingSession,
+    queueSurface,
   } = useAppShellSessionWorkspace(toastApi);
   // The shell's own reading of the catalog rides the membership set the list
   // hook already publishes — background row churn belongs to the rail, which
@@ -600,17 +600,9 @@ function AppShellContent({
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
-  const composerRef = useRef<ComposerHandle>(null);
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
-  const restoreLocalMessageDraft = useCallback((sessionId: string, text: string) => {
-    const composer = composerRef.current;
-    if (!composer || activeIdRef.current !== sessionId) return;
-    if (composer.getText().trim()) composer.appendText(text);
-    else composer.setText(text);
-    composer.focus();
-  }, [activeIdRef]);
   const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
   const revisionDraftRef = useRef<TurnRevisionDraft | null>(null);
@@ -682,23 +674,15 @@ function AppShellContent({
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   // Queued steering is a thin projection of the Host queue snapshot — the
   // bubble appears and disappears with it, no bookkeeping of our own.
-  const transcriptTransientMessages = useMemo(
-    () => withQueuedSteeringTransients(transientMessages, activeMessageQueue, {
-      locale: uiLocale,
-      retract: async (entry, draftText) => {
-        const sessionId = activeId;
-        if (!sessionId) return false;
-        try {
-          await retractQueueEntry(sessionId, entry.entryId);
-        } catch {
-          return false;
-        }
-        if (draftText !== undefined) restoreLocalMessageDraft(sessionId, draftText);
-        return true;
-      },
-    }),
-    [transientMessages, activeMessageQueue, uiLocale, activeId],
-  );
+  const {
+    composer: composerRef,
+    transientMessages: transcriptTransientMessages,
+    restoreDraft: restoreLocalMessageDraft,
+    promoteQueuedEntry,
+    updateQueuedEntry,
+    deleteQueuedEntry,
+    reorderQueuedEntries,
+  } = queueSurface;
   const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
@@ -1718,74 +1702,7 @@ function AppShellContent({
     return ok;
   }
 
-  async function updateQueuedEntry(
-    entryId: string,
-    expectedQueueRevision: number,
-    text: string,
-  ): Promise<void> {
-    await runQueueEntryAction((sessionId) =>
-      window.maka.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text)
-    );
-  }
 
-  async function deleteQueuedEntry(entryId: string): Promise<void> {
-    await runQueueEntryAction((sessionId) =>
-      window.maka.sessions.retractQueueEntry(sessionId, entryId).then(() => undefined)
-    );
-  }
-
-  // Event handlers act per observed Session, not the active one — same failure
-  // surface as the plate's queue actions.
-  async function retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
-    try {
-      await window.maka.sessions.retractQueueEntry(sessionId, entryId);
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        const copy = getDesktopConversationCopy(uiLocale).actions;
-        showSessionError(
-          sessionId,
-          copy.operationFailedTitle,
-          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-        );
-      }
-      throw error;
-    }
-  }
-
-  // Surfaces the failure, then rethrows so the pending plate can settle its
-  // in-flight action state without guessing with a timer.
-  async function runQueueEntryAction(
-    action: (sessionId: string) => Promise<void>,
-  ): Promise<string | undefined> {
-    const sessionId = activeIdRef.current;
-    if (!sessionId) return;
-    try {
-      await action(sessionId);
-      return sessionId;
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        const copy = getDesktopConversationCopy(uiLocale).actions;
-        showSessionError(
-          sessionId,
-          copy.operationFailedTitle,
-          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-        );
-      }
-      throw error;
-    }
-  }
-
-  async function promoteQueuedEntry(entryId: string): Promise<void> {
-    await runQueueEntryAction((sessionId) =>
-      window.maka.sessions.promoteQueueEntry(sessionId, entryId).then(() => undefined)
-    );
-  }
-
-  async function reorderQueuedEntries(entryIds: readonly string[]): Promise<void> {
-    await runQueueEntryAction((sessionId) =>
-      window.maka.sessions.reorderQueueEntries(sessionId, entryIds).then(() => undefined)
-    );
-  }
 
   const stop = createAppShellStopAction({
     uiLocale,

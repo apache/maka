@@ -50,7 +50,7 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       subscribeChanges: (handler) => { changed = handler; return () => {}; },
       cancelMessage: async (sessionId, messageId) => { cancelled.push([sessionId, messageId]); },
       reconcileMessage: async (sessionId, messageId) => { reconciled.push([sessionId, messageId]); },
-      sessions: { list: async () => [], subscribeChanges: () => () => {}, readSnapshot: async () => { throw new Error('unexpected snapshot read'); } },
+      sessions: { list: async () => [], subscribeChanges: () => () => {}, readSnapshot: async () => { throw new Error('unexpected snapshot read'); }, promoteQueueEntry: async () => undefined, updateQueueEntry: async () => undefined, retractQueueEntry: async () => undefined, reorderQueueEntries: async () => undefined },
       skills: { listInvocable: async () => [] },
       workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
       newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },

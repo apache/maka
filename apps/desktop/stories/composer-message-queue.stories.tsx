@@ -95,6 +95,10 @@ function localDeliveryServices(state: DeliveryState): ConversationServices {
       readSnapshot: async () => {
         throw new Error('Session snapshots are not used in this story');
       },
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      retractQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
     },
     skills: { listInvocable: async () => [] },
     workspace: {
