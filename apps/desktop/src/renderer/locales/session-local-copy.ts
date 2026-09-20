@@ -24,33 +24,41 @@ interface SessionLocalCopy {
   unknown: string;
   failed: string;
   remove: string;
+  cancel: string;
   check: string;
+  waitingForPrevious: string;
   updateError: string;
 }
 
 const catalog = {
   en: {
-    saved: 'Saved locally · waiting to send',
-    unknown: 'Host outcome unknown',
-    failed: 'Not sent · local copy retained',
-    remove: 'Remove local copy',
-    check: 'Check status',
+    saved: 'Waiting to send',
+    unknown: 'Delivery unconfirmed. Do not send again.',
+    failed: 'Could not send · message kept',
+    remove: 'Delete unsent message',
+    cancel: 'Cancel sending',
+    check: 'Check delivery',
+    waitingForPrevious: 'Waiting for earlier messages to be delivered',
     updateError: 'Unable to update the saved message',
   },
   'zh-CN': {
-    saved: '已本地保存 · 等待发送',
-    unknown: 'Host 接受结果未知',
-    failed: '未发送 · 本地副本已保留',
-    remove: '移除本地副本',
-    check: '核对状态',
+    saved: '等待发送',
+    unknown: '暂时无法确认是否送达，请勿重复发送',
+    failed: '未能发送 · 消息已保留',
+    remove: '删除未发送的消息',
+    cancel: '取消发送',
+    check: '检查是否送达',
+    waitingForPrevious: '等待前面的消息送达',
     updateError: '无法更新已保存的消息',
   },
   'zh-TW': {
-    saved: '已儲存於本機 · 等待傳送',
-    unknown: 'Host 接受結果未知',
-    failed: '未傳送 · 本機副本已保留',
-    remove: '移除本機副本',
-    check: '核對狀態',
+    saved: '等待傳送',
+    unknown: '暫時無法確認是否送達，請勿重複傳送',
+    failed: '無法傳送 · 訊息已保留',
+    remove: '刪除未傳送的訊息',
+    cancel: '取消傳送',
+    check: '檢查是否送達',
+    waitingForPrevious: '等待前面的訊息送達',
     updateError: '無法更新已儲存的訊息',
   },
 } satisfies UiCatalog<SessionLocalCopy>;

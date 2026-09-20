@@ -19,6 +19,7 @@
 
 import { useEffect } from 'react';
 import { useUiLocale, type TransientUserMessageProjection } from '@maka/ui';
+import { ICON_SIZE, Search, Trash2, X } from '@maka/ui/icons';
 import { getSessionLocalCopy } from '../../../locales/session-local-copy.js';
 import { useConversationServices } from '../services.js';
 
@@ -42,6 +43,7 @@ export function SessionLocalMessages(props: {
         .listMessages(sessionId)
         .then((messages) => {
           if (disposed || revision !== admitted) return;
+          let waitingForPrevious = false;
           for (const message of messages) {
             if (message.state === 'accepted' && !message.turnId) {
               // The Host queue owns accepted steering and follow-ups. A local
@@ -49,12 +51,16 @@ export function SessionLocalMessages(props: {
               retire(sessionId, message.messageId);
               continue;
             }
+            const status = message.state === 'accepted' || message.state === 'sending'
+              || (message.state === 'saved' && message.delivering && !message.error)
+              ? undefined
+              : message.state === 'saved' && waitingForPrevious
+                ? copy.waitingForPrevious
+                : copy[message.state];
+            if (message.state !== 'accepted' && message.state !== 'failed') waitingForPrevious = true;
             const action = (operation: () => Promise<void>) => () => {
               void operation().catch(() => reportError(copy.updateError));
             };
-            const status = message.state === 'accepted' || message.state === 'sending'
-              || (message.state === 'saved' && message.delivering && !message.error)
-              ? undefined : copy[message.state];
             publish(sessionId, {
               id: message.messageId,
               text: message.text,
@@ -74,7 +80,10 @@ export function SessionLocalMessages(props: {
                 : message.canCancel
                 ? [
                     {
-                      label: copy.remove,
+                      label: message.state === 'failed' ? copy.remove : copy.cancel,
+                      icon: message.state === 'failed'
+                        ? <Trash2 size={ICON_SIZE.control} aria-hidden="true" />
+                        : <X size={ICON_SIZE.control} aria-hidden="true" />,
                       onClick: action(async () => {
                         await services.cancelMessage(sessionId, message.messageId);
                         retire(sessionId, message.messageId);
@@ -85,6 +94,7 @@ export function SessionLocalMessages(props: {
                   ? [
                       {
                         label: copy.check,
+                        icon: <Search size={ICON_SIZE.control} aria-hidden="true" />,
                         onClick: action(() =>
                           services.reconcileMessage(sessionId, message.messageId),
                         ),

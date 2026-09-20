@@ -65,19 +65,19 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     }) }),
   })));
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
-  assert.equal(transient.get('root')?.deliveryStatus, 'Host outcome unknown');
+  assert.equal(transient.get('root')?.deliveryStatus, 'Delivery unconfirmed. Do not send again.');
   const placements = () => Object.fromEntries([...transient].map(([id, message]) => [id, message.transientPlacement]));
   assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' });
   messages = messages.map((message) => ({ ...message, state: 'saved', canCancel: true }));
   await act(async () => changed('session-1'));
-  assert.equal(transient.get('root')?.deliveryStatus, 'Saved locally · waiting to send', 'Main cannot reach the Host');
+  assert.equal(transient.get('root')?.deliveryStatus, 'Waiting for earlier messages to be delivered', 'Main cannot reach the Host');
   messages = messages.map((message) => ({ ...message, delivering: true }));
   await act(async () => changed('session-1'));
   assert.equal(transient.get('root')?.deliveryStatus, undefined, 'a message Main will deliver shows nothing');
   assert.deepEqual(transient.get('root')?.deliveryActions, []);
   messages = messages.map((message) => ({ ...message, error: 'Saved locally. Waiting for the Host to become available.' }));
   await act(async () => changed('session-1'));
-  assert.equal(transient.get('root')?.deliveryStatus, 'Saved locally · waiting to send');
+  assert.equal(transient.get('root')?.deliveryStatus, 'Waiting for earlier messages to be delivered');
   assert.equal(transient.get('root')?.deliveryActions?.length, 1, 'a Host outage keeps the copy removable');
   messages = messages.map((message) => ({ ...message, state: 'failed' }));
   await act(async () => changed('session-1'));

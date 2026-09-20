@@ -20,10 +20,10 @@
 import { memo, useRef, useState } from 'react';
 import type { TransientUserMessageProjection } from './chat-view.js';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
-import { Button, IconButton, Tooltip } from '@astryxdesign/core';
+import { IconButton, Tooltip } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import type { ConversationCopy } from './conversation-copy.js';
-import { Check, GripVertical, HelpCircle, ICON_SIZE, Trash2, X } from './icons.js';
+import { Check, CornerDownLeft, GripVertical, HelpCircle, ICON_SIZE, Pencil, Trash2, X } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import { PlatformShortcutText } from './platform-shortcut-text.js';
 
@@ -205,7 +205,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                 </>
               )}
               style={{ minHeight: 28, paddingBlock: 0 }}
-              startContent={(
+              startContent={entry.localMessage ? undefined : (
                 <span
                   className="maka-composer-queue-grip"
                   draggable={reorderable}
@@ -225,8 +225,9 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
               )}
               endContent={(
                 <span className="maka-composer-queue-actions">
-                  {entry.localMessage?.deliveryActions?.length ? entry.localMessage.deliveryActions.map((action) => (
-                    <Button key={action.label} variant="ghost" size="sm" type="button" label={action.label} onClick={action.onClick} />
+                  {entry.localMessage ? entry.localMessage.deliveryActions?.map((action) => (
+                    <IconButton key={action.label} variant="ghost" size="sm" type="button"
+                      label={action.label} tooltip={action.label} icon={action.icon} clickAction={action.onClick} />
                   )) : editing ? (
                     <>
                       <IconButton
@@ -252,7 +253,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                     </>
                   ) : (
                     <>
-                      <Button
+                      <IconButton
                         variant="ghost"
                         size="sm"
                         type="button"
@@ -263,21 +264,25 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                           || !props.onUpdateEntry
                         }
                         label={copy.editQueuedEntry}
+                        tooltip={copy.editQueuedEntry}
                         onClick={() => beginEdit(entry)}
+                        icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
                       />
                       {entry.placement === 'next_turn' ? (
-                        <Button
+                        <IconButton
                           variant="ghost"
                           size="sm"
                           type="button"
-                          isDisabled={pendingEntryId !== null || entry.state !== 'queued'}
+                          isDisabled={pendingEntryId !== null || entry.state !== 'queued' || !props.onPromoteEntry}
                           label={copy.promoteQueuedEntry}
+                          tooltip={copy.promoteQueuedEntry}
                           onClick={() => void runEntryAction(
                             entry.entryId,
                             props.onPromoteEntry
                               ? () => props.onPromoteEntry?.(entry.entryId)
                               : undefined,
                           )}
+                          icon={<CornerDownLeft size={ICON_SIZE.control} aria-hidden="true" />}
                         />
                       ) : null}
                       <IconButton
