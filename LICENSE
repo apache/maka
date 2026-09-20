@@ -469,11 +469,11 @@ THE SOFTWARE.
 
 electron-builder dependency patches
 
-Source: https://www.npmjs.com/package/app-builder-lib/v/26.15.3
+Source: https://www.npmjs.com/package/app-builder-lib/v/26.16.1
         https://www.npmjs.com/package/electron-updater/v/6.8.9
 Repository: https://github.com/electron-userland/electron-builder
-Versions: app-builder-lib 26.15.3; electron-updater 6.8.9
-Dependency patch: patches/app-builder-lib+26.15.3.patch
+Versions: app-builder-lib 26.16.1; electron-updater 6.8.9
+Dependency patch: patches/app-builder-lib+26.16.1.patch
                   patches/electron-updater+6.8.9.patch
 License: MIT
 

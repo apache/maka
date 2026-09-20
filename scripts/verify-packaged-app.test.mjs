@@ -238,6 +238,31 @@ describe('asarLookupPath', () => {
 
 const roots = [];
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** An ICNS archive carrying `slots` verbatim, so a test can state the exact
+ *  entry shape a generator produced without shipping a binary fixture. */
+function icnsWith(slots) {
+  const entries = slots.map(([type, payload]) => {
+    const entry = Buffer.alloc(8 + payload.length);
+    entry.write(type, 0, 'latin1');
+    entry.writeUInt32BE(entry.length, 4);
+    payload.copy(entry, 8);
+    return entry;
+  });
+  const body = Buffer.concat(entries);
+  const header = Buffer.alloc(8);
+  header.write('icns', 0, 'latin1');
+  header.writeUInt32BE(header.length + body.length, 4);
+  return Buffer.concat([header, body]);
+}
+
+const RENDERABLE_ICNS = icnsWith([
+  ['ic04', Buffer.from('ARGBfixture')],
+  ['ic05', Buffer.from('ARGBfixture')],
+  ['ic07', Buffer.concat([PNG_SIGNATURE, Buffer.from('128px')])],
+]);
+
 const PTY_PACKAGES = ['@xterm/headless', '@xterm/addon-unicode11'];
 const COVERING_NOTICES = 'Header\n\nPackage: react@19.2.0\nDeclared license: MIT\n';
 
@@ -333,6 +358,7 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
     join(resources, 'app-update.yml'),
     'provider: github\nowner: apache\nrepo: maka\nchannel: dev\nupdaterCacheDirName: "@makadesktop-updater"\n',
   );
+  await writeFile(join(resources, 'icon.icns'), RENDERABLE_ICNS);
   const version = '0.2.0-dev.14.20260902';
   const app = join(dirname(resources), 'Maka.app');
   await mkdir(join(app, 'Contents'), { recursive: true });
@@ -364,6 +390,51 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
       }
       throw new Error(`Unexpected command: ${command}`);
     },
+  });
+});
+
+describe('assertRenderableAppIcon', () => {
+  const withIcon = async (t, icns) => {
+    const resources = await mkdtemp(join(tmpdir(), 'maka-icon-'));
+    t.after(() => rm(resources, { recursive: true, force: true }));
+    await writeFile(join(resources, 'icon.icns'), icns);
+    return resources;
+  };
+
+  test('accepts an icon whose small sizes are stored as ARGB', async (t) => {
+    const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
+    await assertRenderableAppIcon(await withIcon(t, RENDERABLE_ICNS));
+  });
+
+  test('rejects PNG data in the legacy slots macOS does not decode', async (t) => {
+    const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
+    // The shape electron-builder 26.15.2-26.15.3 produced: every size present,
+    // the large ones fine, and 16px/32px unreadable where a person sees them.
+    const resources = await withIcon(
+      t,
+      icnsWith([
+        ['icp4', Buffer.concat([PNG_SIGNATURE, Buffer.from('16px')])],
+        ['icp5', Buffer.concat([PNG_SIGNATURE, Buffer.from('32px')])],
+        ['ic07', Buffer.concat([PNG_SIGNATURE, Buffer.from('128px')])],
+      ]),
+    );
+    await assert.rejects(assertRenderableAppIcon(resources), /16x16 \(icp4\), 32x32 \(icp5\)/);
+  });
+
+  test('rejects an icon that carries no small sizes at all', async (t) => {
+    const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
+    const resources = await withIcon(
+      t,
+      icnsWith([['ic07', Buffer.concat([PNG_SIGNATURE, Buffer.from('128px')])]]),
+    );
+    await assert.rejects(assertRenderableAppIcon(resources), /missing the sizes/);
+  });
+
+  test('refuses to guess at a truncated entry instead of looping on it', async (t) => {
+    const { assertRenderableAppIcon } = await import('./verify-macos-dmg.mjs');
+    const icns = icnsWith([['ic04', Buffer.from('ARGBfixture')]]);
+    icns.writeUInt32BE(0, 12);
+    await assert.rejects(assertRenderableAppIcon(await withIcon(t, icns)), /unusable length/);
   });
 });
 
