@@ -39,7 +39,6 @@ import {
   ArrowUp,
   CircleGauge,
   FileText,
-  GitBranch,
   ListTodo,
   MessagesSquare,
   Network,
@@ -458,17 +457,6 @@ export const Composer = forwardRef<
       metadataContextWindow?: number;
       /** Open the Host-owned trace surface for this readout. */
       onOpen(): void;
-    };
-    /**
-     * The working tree's Git branch, beside the context-usage readout. Omitted
-     * entirely when the session's directory is not a Git repository, so the
-     * chip simply does not exist there rather than sitting empty.
-     */
-    gitBranch?: {
-      /** The branch name, or `undefined` on a detached HEAD. */
-      name?: string;
-      /** The short commit sha, set only when `name` is absent. */
-      shortSha?: string;
     };
     /**
      * Optional edit-and-resend banner above the composer. Desktop owns the
@@ -2336,7 +2324,6 @@ export const Composer = forwardRef<
                   />
                 )}
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
-                {props.gitBranch ? <GitBranchChip {...props.gitBranch} /> : null}
               </div>
               {/* The project decides where a NEW chat starts, which makes it a
                   parameter of this send like the model beside it — so it sits
@@ -2485,29 +2472,6 @@ function ContextUsageAction(props: {
     >
       {label}
     </UiButton>
-  );
-}
-
-function GitBranchChip(props: { name?: string; shortSha?: string }) {
-  const copy = getConversationCopy(useUiLocale()).messages.systemNotes;
-  // A detached HEAD has no branch name; the short sha is the honest label. Only
-  // one of the two is ever set (the host resolves it), and neither means the
-  // repository state is unknown — the chip stays off rather than guess.
-  const detached = props.name === undefined;
-  if (detached && props.shortSha === undefined) return null;
-  const label = props.name ?? props.shortSha!;
-  // The visible text is the branch; `title` names what it is and carries the
-  // full text, so a branch the row had to shorten is still readable on hover.
-  const title = detached ? copy.gitBranchDetached(props.shortSha!) : copy.gitBranchLabel;
-  // Readout, not a control: a `<span>`, so there is nothing to click or tab to.
-  // The class matches the ghost buttons beside it and widens past the model
-  // chip's 180px cap, so a usual branch shows whole; only a genuinely long one
-  // ellipsizes, and `title` carries it.
-  return (
-    <span className="maka-composer-git-branch" title={`${title}: ${label}`}>
-      <GitBranch size={ICON_SIZE.meta} aria-hidden="true" />
-      <span className="maka-composer-git-branch-text">{label}</span>
-    </span>
   );
 }
 

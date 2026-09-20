@@ -113,7 +113,7 @@ import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
 import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js";
 import { DesktopSessionLocalStore } from './session-local-store.js';
-import { DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
+import { createSessionLocalChangedEmitter, DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
@@ -436,10 +436,10 @@ mainWindowDelegates.onMainWindowClose = () => {
 };
 const attachmentApprovals = createAttachmentApprovalRegistry();
 const sessionLocalStore = new DesktopSessionLocalStore(join(userDataDir, 'session-experience.sqlite'));
-const localSessionChanged = (scope: DesktopTargetScope, sessionId?: string): void => {
-  mainWindowController.send('session-local:changed', scope, { sessionId });
-  mainWindowController.send('sessions:changed', scope, { reason: 'updated', ts: Date.now(), ...(sessionId ? { sessionId } : {}) });
-};
+const localSessionChanged = createSessionLocalChangedEmitter({
+  send: (channel, scope, payload) => mainWindowController.send(channel, scope, payload),
+  locallyOwned: (scope, sessionId) => sessionLocal.locallyOwned(scope, sessionId),
+});
 const sessionLocal = new DesktopSessionLocalService(sessionLocalStore, {
   targets: () => (runtimeHostManager?.entries() ?? []).flatMap((state) => {
     if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') return [];
