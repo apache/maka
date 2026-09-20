@@ -380,7 +380,7 @@ test('deduplicates pending steering against Host queue entries and keeps the pla
 });
 
 
-test('a locally saved follow-up keeps its delivery status and recovery actions in the pending list', () => {
+test('local queue rows keep recovery actions without stacking delivery text', () => {
   const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
     pendingMessages={[
       { id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'next_turn',
@@ -390,7 +390,10 @@ test('a locally saved follow-up keeps its delivery status and recovery actions i
         deliveryStatus: 'Sending…' },
     ]} /></LocaleProvider>);
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;
-  assert.equal(document.querySelector('.maka-composer-queue-delivery')?.textContent, 'Delivery uncertain');
+  assert.deepEqual(
+    [...document.querySelectorAll('.maka-composer-queue-list li')].map((row) => row.textContent),
+    ['offline follow-up', 'still sending'],
+  );
   assert.ok(document.querySelector('.maka-composer-queue-actions button[aria-label="Check delivery"]'),
     'the delivery action stays an accessible labelled icon control');
   const rows = [...document.querySelectorAll('li')];

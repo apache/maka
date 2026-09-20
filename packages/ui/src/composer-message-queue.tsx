@@ -197,12 +197,9 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                   }}
                 />
               ) : (
-                <>
-                  <span className="maka-composer-queue-text" title={entry.content.displayText ?? entry.content.text}>
-                    {entry.content.displayText ?? entry.content.text}
-                  </span>
-                  {entry.localMessage?.deliveryStatus && <span className="maka-composer-queue-delivery" role="status" title={entry.localMessage.deliveryDetail}>{entry.localMessage.deliveryStatus}</span>}
-                </>
+                <span className="maka-composer-queue-text" title={entry.content.displayText ?? entry.content.text}>
+                  {entry.content.displayText ?? entry.content.text}
+                </span>
               )}
               style={{ minHeight: 28, paddingBlock: 0 }}
               startContent={entry.localMessage ? undefined : (
@@ -227,7 +224,9 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                 <span className="maka-composer-queue-actions">
                   {entry.localMessage ? entry.localMessage.deliveryActions?.map((action) => (
                     <IconButton key={action.label} variant="ghost" size="sm" type="button"
-                      label={action.label} tooltip={action.label} icon={action.icon} clickAction={action.onClick} />
+                      label={action.label}
+                      tooltip={entry.localMessage?.deliveryStatus ? `${entry.localMessage.deliveryStatus} · ${action.label}` : action.label}
+                      icon={action.icon} clickAction={action.onClick} />
                   )) : editing ? (
                     <>
                       <IconButton

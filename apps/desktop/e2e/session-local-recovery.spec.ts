@@ -56,7 +56,7 @@ test('a locally saved message survives renderer and application restart, then ex
   await awaitSendReady(page);
   await page.locator(COMPOSER_INPUT).press('Enter');
   await expect(page.locator(COMPOSER_INPUT)).toHaveText('');
-  await expect(page.getByText('等待发送')).toBeVisible();
+  await expect(page.getByRole('button', { name: '取消发送', exact: true })).toBeVisible();
   const before = await page.evaluate((id) => window.maka.sessionLocal.listMessages(id), sessionId!);
   const message = before.find((item) => item.text === pending)!;
   expect(message.state).toBe('saved');
@@ -65,7 +65,7 @@ test('a locally saved message survives renderer and application restart, then ex
   await page.reload();
   await ensureSidebarExpanded(page);
   await page.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
-  await expect(page.getByText('等待发送')).toBeVisible();
+  await expect(page.getByRole('button', { name: '取消发送', exact: true })).toBeVisible();
   expect(
     (await page.evaluate((id) => window.maka.sessionLocal.listMessages(id), sessionId!)).find(
       (item) => item.text === pending,
@@ -146,7 +146,7 @@ test('a new task is readable locally before the Host session exists', async ({
   await awaitSendReady(page);
   await page.locator(COMPOSER_INPUT).press('Enter');
   await expect(page.locator(COMPOSER_INPUT)).toHaveText('');
-  await expect(page.getByText('等待发送')).toBeVisible();
+  await expect(page.getByRole('button', { name: '取消发送', exact: true })).toBeVisible();
   await ensureSidebarExpanded(page);
   const sessionId = await page
     .locator('[data-session-id]:has([aria-current="page"])')
@@ -157,7 +157,7 @@ test('a new task is readable locally before the Host session exists', async ({
   await page.reload();
   await ensureSidebarExpanded(page);
   await page.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
-  await expect(page.getByText('等待发送')).toBeVisible();
+  await expect(page.getByRole('button', { name: '取消发送', exact: true })).toBeVisible();
   await expect(page.getByText('读取任务失败', { exact: true })).toHaveCount(0);
   page = await sessionLocalWindow.restart();
   await ensureSidebarExpanded(page);

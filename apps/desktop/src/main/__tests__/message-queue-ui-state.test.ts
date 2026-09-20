@@ -66,8 +66,7 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   assert.deepEqual(steering?.deliveryActions?.map((action) => action.label), ['Check delivery'],
     'an unconfirmed send offers only its receipt check, never cancellation');
   const followup = transient.get('followup');
-  assert.equal(followup?.deliveryStatus, 'Waiting for earlier messages to be delivered',
-    'a saved row behind an unresolved predecessor explains the wait');
+  assert.equal(followup?.deliveryStatus, 'Waiting to send');
   assert.deepEqual(followup?.deliveryActions?.map((action) => action.label), ['Cancel sending']);
   await act(async () => { await steering?.deliveryActions?.[0]?.onClick(); });
   assert.deepEqual(reconciled, [['session-1', 'steering']]);
@@ -87,8 +86,6 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   const failed = transient.get('steering');
   assert.equal(failed?.deliveryStatus, 'Could not send · message kept');
   assert.deepEqual(failed?.deliveryActions?.map((action) => action.label), ['Delete unsent message']);
-  assert.equal(transient.get('later')?.deliveryStatus, 'Waiting to send',
-    'failed and accepted predecessors do not hold back a later saved row');
   assert.deepEqual([...transient.keys()], ['steering', 'root', 'later']);
   assert.equal(transient.get('root')?.transientPlacement, 'current_turn');
   await act(async () => changed('session-1'));

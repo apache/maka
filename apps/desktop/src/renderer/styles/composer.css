@@ -654,11 +654,3 @@
   font: var(--maka-text-body);
   white-space: nowrap;
 }
-
-.maka-composer-queue-delivery {
-  display: block;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  font: var(--maka-text-body);
-  color: var(--muted-foreground);
-}

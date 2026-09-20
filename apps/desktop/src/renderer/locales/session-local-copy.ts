@@ -28,7 +28,6 @@ interface SessionLocalCopy {
   remove: string;
   cancel: string;
   check: string;
-  waitingForPrevious: string;
   updateError: string;
 }
 
@@ -42,7 +41,6 @@ const catalog = {
     remove: 'Delete unsent message',
     cancel: 'Cancel sending',
     check: 'Check delivery',
-    waitingForPrevious: 'Waiting for earlier messages to be delivered',
     updateError: 'Unable to update the saved message',
   },
   'zh-CN': {
@@ -54,7 +52,6 @@ const catalog = {
     remove: '删除未发送的消息',
     cancel: '取消发送',
     check: '检查是否送达',
-    waitingForPrevious: '等待前面的消息送达',
     updateError: '无法更新已保存的消息',
   },
   'zh-TW': {
@@ -66,7 +63,6 @@ const catalog = {
     remove: '刪除未傳送的訊息',
     cancel: '取消傳送',
     check: '檢查是否送達',
-    waitingForPrevious: '等待前面的訊息送達',
     updateError: '無法更新已儲存的訊息',
   },
 } satisfies UiCatalog<SessionLocalCopy>;

@@ -43,7 +43,6 @@ export function SessionLocalMessages(props: {
         .listMessages(sessionId)
         .then((messages) => {
           if (disposed || revision !== admitted) return;
-          let waitingForPrevious = false;
           for (const message of messages) {
             if (message.state === 'accepted' && !message.turnId) {
               // The Host queue owns accepted steering and follow-ups. A local
@@ -51,10 +50,6 @@ export function SessionLocalMessages(props: {
               retire(sessionId, message.messageId);
               continue;
             }
-            const deliveryStatus = message.state === 'saved' && waitingForPrevious
-              ? copy.waitingForPrevious
-              : copy[message.state];
-            if (message.state !== 'accepted' && message.state !== 'failed') waitingForPrevious = true;
             const action = (operation: () => Promise<void>) => () =>
               operation().catch(() => reportError(copy.updateError));
             publish(sessionId, {
@@ -67,7 +62,7 @@ export function SessionLocalMessages(props: {
               quotes: message.quotes,
               inlineReferences: message.inlineReferences,
               hostTurnId: message.turnId,
-              deliveryStatus,
+              deliveryStatus: copy[message.state],
               deliveryDetail: message.error,
               deliveryActions: message.canCancel
                 ? [
