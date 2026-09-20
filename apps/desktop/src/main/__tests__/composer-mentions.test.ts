@@ -97,6 +97,10 @@ function installCatalogRenderer(t: TestContext) {
       readExecutionBoundary: async () => {
         throw new Error('Execution boundary is not used in catalog tests');
       },
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      retractQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
     },
     runtimeHosts: { subscribeChanges: () => () => undefined },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },

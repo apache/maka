@@ -47,10 +47,14 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     createElement(ConversationServicesProvider, { services: {
       listMessages: async () => messages,
       subscribeChanges: (handler) => { changed = handler; return () => {}; },
-      cancelMessage: async () => {}, reconcileMessage: async () => {},
+      cancelMessage: async (sessionId, messageId) => { cancelled.push([sessionId, messageId]); },
+      reconcileMessage: async (sessionId, messageId) => { reconciled.push([sessionId, messageId]); },
       sessions: {
+        list: async () => [], subscribeChanges: () => () => {},
         readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
         readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
+        promoteQueueEntry: async () => undefined, updateQueueEntry: async () => undefined,
+        retractQueueEntry: async () => undefined, reorderQueueEntries: async () => undefined,
       },
       runtimeHosts: { subscribeChanges: () => () => {} },
       skills: { listInvocable: async () => [] },

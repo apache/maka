@@ -160,6 +160,10 @@ const conversationServices: ConversationServices = {
     readExecutionBoundary: async () => {
       throw new Error('Execution boundaries are not used in slash menu stories');
     },
+    promoteQueueEntry: async () => undefined,
+    updateQueueEntry: async () => undefined,
+    retractQueueEntry: async () => undefined,
+    reorderQueueEntries: async () => undefined,
   },
   runtimeHosts: { subscribeChanges: () => () => undefined },
   skills: { listInvocable: loadProjection },

@@ -20,7 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
-import { LocaleProvider } from '@maka/ui';
+import { LocaleProvider, ToastProvider } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
@@ -28,6 +28,10 @@ import {
   SessionCatalogContext,
 } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { useAppShellSessionWorkspace } from '../../renderer/use-app-shell-session-workspace.js';
+import {
+  ConversationServicesProvider,
+  type ConversationServices,
+} from '../../renderer/features/conversation/index.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 
@@ -54,6 +58,32 @@ function actionKeys(workspace: Workspace): string[] {
   );
 }
 
+function stubConversationServices(): ConversationServices {
+  return {
+    listMessages: async () => [],
+    cancelMessage: async () => undefined,
+    reconcileMessage: async () => undefined,
+    subscribeChanges: () => () => undefined,
+    skills: { listInvocable: async () => [] },
+    sessions: {
+      readSnapshot: async () => {
+        throw new Error('Session snapshot is not used in this test');
+      },
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      retractQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
+    },
+    workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
+    newTasks: {
+      subscribeChanges: () => () => undefined,
+      listInvocableSkills: async () => [],
+      searchFiles: async () => ({ ok: false, reason: 'no_project' }),
+    },
+    mcp: { subscribeChanges: () => () => undefined },
+  };
+}
+
 describe('session workspace action identity', () => {
   afterEach(cleanupFakeDom);
 
@@ -65,6 +95,7 @@ describe('session workspace action identity', () => {
     const catalog = createSessionCatalogController();
     let workspace!: Workspace;
     const displays: Array<{ id: string | undefined; messages: StoredMessage[] }> = [];
+    const services = stubConversationServices();
     function Probe(): null {
       workspace = useAppShellSessionWorkspace({ error: () => {} });
       displays.push({ id: workspace.activeId, messages: workspace.messages });
@@ -72,8 +103,13 @@ describe('session workspace action identity', () => {
     }
     act(() => root.render(createElement(LocaleProvider, {
       locale: 'en',
-      children: createElement(SessionCatalogContext.Provider, {
-        value: catalog, children: createElement(Probe),
+      children: createElement(ToastProvider, {
+        children: createElement(ConversationServicesProvider, {
+          services,
+          children: createElement(SessionCatalogContext.Provider, {
+            value: catalog, children: createElement(Probe),
+          }),
+        }),
       }),
     })));
     act(() => workspace.seedSessions([sessionA, sessionB, sessionC].map((id) => ({
@@ -186,8 +222,13 @@ describe('session workspace action identity', () => {
       root.render(
         createElement(LocaleProvider, {
           locale: 'en',
-          children: createElement(SessionCatalogContext.Provider, {
-            value: catalog, children: createElement(Probe),
+          children: createElement(ToastProvider, {
+            children: createElement(ConversationServicesProvider, {
+              services: stubConversationServices(),
+              children: createElement(SessionCatalogContext.Provider, {
+                value: catalog, children: createElement(Probe),
+              }),
+            }),
           }),
         }),
       );
