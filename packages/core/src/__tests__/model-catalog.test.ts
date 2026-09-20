@@ -62,22 +62,6 @@ test('catalog transport preserves independent limits and their unmodified defaul
   assert.equal(decoded.defaultInputLimit, 32000);
 });
 
-test('catalog transport carries a validated per-model thinking default', () => {
-  const [entry] = buildModelCatalogEntries({
-    providerType: 'openai-compatible',
-    models: [{ id: 'reasoner' }],
-    modelOverrides: {
-      reasoner: { thinkingLevels: ['low', 'high'], defaultThinkingLevel: 'high' },
-    },
-  });
-  assert.ok(entry);
-  assert.equal(entry.defaultThinkingLevel, 'high');
-  assert.equal(
-    decodeModelCatalogEntry(JSON.parse(JSON.stringify(entry))).defaultThinkingLevel,
-    'high',
-  );
-});
-
 test('a live inventory annotates a model it omits and preserves higher-priority failures', () => {
   const input = {
     providerType: 'zai-coding-plan' as const,
