@@ -587,6 +587,40 @@ describe('AppUpdateService', () => {
     assert.deepEqual(order, ['host-prepared', 'install']);
   });
 
+  test('releases the Host handoff when the dispatched quit never happens', async () => {
+    let rollbacks = 0;
+    const updater = new FakeUpdater();
+    const { service } = createHarness({
+      updater,
+      prepareInstall: async () => ({
+        kind: 'prepared',
+        rollback: () => {
+          rollbacks += 1;
+        },
+      }),
+    });
+    updater.emit('update-downloaded', {
+      ...updateInfo('1.1.0'),
+      downloadedFile: '/tmp/maka-update.zip',
+    });
+    await settleUpdateVerification();
+
+    assert.deepEqual(await service.installUpdate({ allowInterruptActiveTasks: false }), {
+      ok: true,
+    });
+    assert.equal(rollbacks, 0);
+
+    // The installer was dispatched but the process stayed up. Nothing else
+    // observes a quit that did not happen, so the Host would stay retired
+    // with nothing left to restart it.
+    service.abandonPendingInstall();
+    assert.equal(rollbacks, 1);
+
+    // Releasing twice must not resume a Host a later install already owns.
+    service.abandonPendingInstall();
+    assert.equal(rollbacks, 1);
+  });
+
   test('reports synchronous and asynchronous installer failures through status', async () => {
     let synchronousRollbacks = 0;
     const synchronous = createHarness({
