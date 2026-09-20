@@ -33,9 +33,10 @@
        * CSS loads: a theme-matched background with the centered wordmark, in
        * the spirit of Codex's launch screen rather than a fake app skeleton.
        * It lives outside #root as a fixed overlay so React mounts underneath
-       * it; AppShell removes it once the app reports a usable frame (see
-       * launch-surface.ts). Until then no partial shell or skeleton state is
-       * ever visible.
+       * it; dismissal is pure CSS — once #root has children the overlay fades
+       * out, whichever surface (desktop, WorkHub) committed the frame. A
+       * zero-duration animation arms the same hidden state at 8s so a wedged
+       * bundle can never strand the logo over a live window.
        *
        * Colors are hardcoded (not CSS variables) because maka-tokens.css
        * (70KB) hasn't loaded yet. The background must equal the BrowserWindow
@@ -59,11 +60,20 @@
         align-items: center;
         justify-content: center;
         background: #ffffff;
-        transition: opacity 160ms ease-out;
+        transition: opacity 160ms ease-out, visibility 0s linear 160ms;
+        animation: maka-preload-timeout 0s linear 8s forwards;
       }
-      .maka-preload.maka-preload-exit {
+      body:has(#root > *) > .maka-preload {
         opacity: 0;
+        visibility: hidden;
         pointer-events: none;
+      }
+      @keyframes maka-preload-timeout {
+        to {
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
+        }
       }
       .maka-preload-mark {
         color: #71a8fd;

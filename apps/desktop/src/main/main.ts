@@ -25,6 +25,7 @@ import {
 } from '@maka/core/dev-single-instance';
 import { app, clipboard, dialog, ipcMain, protocol } from 'electron';
 import { join } from 'node:path';
+import { bootContext } from './boot-context.js';
 import { resolveBuildInfo } from './build-info.js';
 import { resolveUpdateTestUserDataDirectory } from './app-update-test-context.js';
 import { desktopDiagnosticUpdateChannel } from './app-update-attestation.js';
@@ -215,10 +216,15 @@ if (!app.requestSingleInstanceLock()) {
       // async prelude and Chromium plumbing.
       const earlyWindow = await import('./early-window.js');
       await earlyWindow.firstWindowConstructed;
-      return import('./runtime-host-boot.js');
+      const boot = await import('./runtime-host-boot.js');
+      // The boot module's top-level pass is where every persistent handler
+      // registers; only now may gated renderer invokes flow through.
+      bootContext.markIpcReady();
+      return boot;
     })
     .catch(async (error: unknown) => {
       console.error('[startup] fatal:', error);
+      bootContext.failIpcReady(error);
       try {
         // E2E runs must not hang on a modal error box (same reasoning as the
         // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).

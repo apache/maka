@@ -37,10 +37,7 @@ import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { type UiLocale } from '@maka/core/ui-locale';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import { useUiLocale } from '@maka/ui';
-import type {
-  DesktopRuntimeHostProfileEntry,
-  OnboardingSnapshot,
-} from '../preload/bridge-contract.js';
+import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { getOnboardingCopy } from './locales/onboarding-copy.js';
 
 /**
@@ -60,12 +57,6 @@ export interface UseOnboardingSnapshotResult {
 export interface UseOnboardingSnapshotDeps {
   /** Fetch the current snapshot. */
   getSnapshot: () => Promise<OnboardingSnapshot>;
-  /**
-   * Optional: a rejection that means "the backend is not up yet" rather than
-   * a real failure — the pull stays pending (no error surface) until an
-   * invalidation refires it.
-   */
-  shouldDeferError?: (error: unknown) => Promise<boolean>;
   /**
    * Subscribe to invalidation signals. The handler is fired
    * (debounced internally by the caller if needed) whenever an
@@ -95,22 +86,6 @@ export function getOnboardingActivationCandidate(
     llmConnectionSlug: snapshot.state.connectionSlug,
     model: snapshot.state.model,
   };
-}
-
-/**
- * Identity absence is pending only while the default Host is still coming
- * up; once it settles unavailable the snapshot error must surface so the
- * shell stops treating onboarding as loading.
- */
-export function isDeferrableOnboardingSnapshotError(
-  error: unknown,
-  defaultReadiness: DesktopRuntimeHostProfileEntry['readiness'] | undefined,
-): boolean {
-  return (
-    error instanceof Error &&
-    error.message.includes('identity is unavailable') &&
-    (defaultReadiness === 'connecting' || defaultReadiness === 'reconnecting')
-  );
 }
 
 /**
@@ -191,7 +166,7 @@ export interface OnboardingSnapshotPoller {
 }
 
 export function createOnboardingSnapshotPoller(
-  deps: Pick<UseOnboardingSnapshotDeps, 'getSnapshot' | 'shouldDeferError'>,
+  deps: Pick<UseOnboardingSnapshotDeps, 'getSnapshot'>,
   callbacks: OnboardingSnapshotPollerCallbacks,
   getLocale: () => UiLocale,
 ): OnboardingSnapshotPoller {
@@ -221,8 +196,6 @@ export function createOnboardingSnapshotPoller(
         emitSnapshot(next);
       } catch (err) {
         if (!active || ticket !== inflightTicket) return;
-        if (await deps.shouldDeferError?.(err)) return;
-        if (!active || ticket !== inflightTicket) return;
         emitError(onboardingSnapshotErrorMessage(err, getLocale()));
       }
     },
@@ -239,11 +212,10 @@ export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale)
 }
 
 /**
- * Default renderer binding: subscribes to `sessions:changed`,
- * `connections:event`, and Runtime Host profile changes so any session
- * lifecycle (create / delete / archive / rebound / message-appended),
- * connection change (verified / disabled / removed), or Host readiness
- * transition invalidates the snapshot.
+ * Default renderer binding: subscribes to `sessions:changed` and
+ * `connections:event` so any session lifecycle (create / delete / archive /
+ * rebound / message-appended) or connection change (verified / disabled /
+ * removed) invalidates the snapshot.
  *
  * Settings changes are NOT subscribed: there is no existing
  * settings-wide event channel and PR110c is not inventing one. If a
@@ -262,26 +234,12 @@ export function useOnboardingSnapshot(): UseOnboardingSnapshotResult {
 
 const LIVE_DEPS: UseOnboardingSnapshotDeps = {
   getSnapshot: () => window.maka.onboarding.getSnapshot(),
-  // The snapshot read goes through the default Host; while it is still
-  // connecting the pull is pending, not failed.
-  shouldDeferError: async (error) =>
-    isDeferrableOnboardingSnapshotError(
-      error,
-      (await window.maka.runtimeHostProfiles.getSnapshot().catch(() => null))
-        ?.entries.find((entry) => entry.isDefault)?.readiness,
-    ),
   subscribeInvalidations(onInvalidate) {
     const unsubscribeSessions = window.maka.sessions.subscribeChanges(() => onInvalidate());
     const unsubscribeConnections = window.maka.connections.subscribeEvents(() => onInvalidate());
-    // A deferred pending must re-pull when the default Host settles: the
-    // retried pull re-runs shouldDeferError against the new readiness, so
-    // connecting→unavailable releases the held error instead of pinning the
-    // skeleton.
-    const unsubscribeHosts = window.maka.runtimeHostProfiles.subscribeChanges(() => onInvalidate());
     return () => {
       unsubscribeSessions();
       unsubscribeConnections();
-      unsubscribeHosts();
     };
   },
 };

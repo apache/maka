@@ -51,7 +51,6 @@
     "src/renderer/error-boundary.tsx",
     "src/renderer/follow-up-submit-routing.ts",
     "src/renderer/interrupted-resume.ts",
-    "src/renderer/launch-surface.ts",
     "src/renderer/live-content-seed.ts",
     "src/renderer/local-memory-digest.ts",
     "src/renderer/locales/agent-graph-copy.ts",
@@ -712,7 +711,7 @@
         "nonTriviaTokens": 1245
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 65,
+        "importDeclarations": 64,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -751,7 +750,7 @@
           "useAppShellSessionWorkspace": 1,
           "useAppShellTurnPresentation": 1,
           "useComposerAttachments": 1,
-          "useEffect": 8,
+          "useEffect": 7,
           "useLayoutEffect": 1,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
@@ -818,7 +817,6 @@
           "./features/workbar": 1,
           "./features/workhub": 1,
           "./follow-up-submit-routing": 1,
-          "./launch-surface": 1,
           "./live-content-seed": 1,
           "./locales/conversation-copy": 1,
           "./locales/shell-copy": 1,
@@ -863,8 +861,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 101,
-        "nonTriviaTokens": 12958
+        "importSpecifiers": 100,
+        "nonTriviaTokens": 12901
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -1339,18 +1337,6 @@
       "src/renderer/interrupted-resume.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/launch-surface.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "document.getElementById": 1,
-          "setTimeout": 2
-        },
         "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -4007,7 +3993,6 @@
         "bridgePaths": {
           "window.maka.connections.subscribeEvents": 1,
           "window.maka.onboarding.getSnapshot": 1,
-          "window.maka.runtimeHostProfiles.getSnapshot": 1,
           "window.maka.sessions.subscribeChanges": 1
         },
         "environmentCapabilities": {},
@@ -4391,7 +4376,7 @@
       "nonTriviaTokens": 172
     },
     "src/renderer/main.tsx": {
-      "importDeclarations": 8,
+      "importDeclarations": 7,
       "bridgePaths": {},
       "environmentCapabilities": {
         "document.getElementById": 1
@@ -4404,14 +4389,13 @@
         "./app": 1,
         "./cached-theme-bootstrap": 1,
         "./composition/desktop-feature-services": 1,
-        "./launch-surface": 1,
         "./styles.css": 1,
         "./use-system-ui-locale": 1,
         "@maka/ui": 1,
         "react-dom/client": 1
       },
-      "importSpecifiers": 8,
-      "nonTriviaTokens": 113
+      "importSpecifiers": 7,
+      "nonTriviaTokens": 102
     }
   },
   "rootDebtClosure": {

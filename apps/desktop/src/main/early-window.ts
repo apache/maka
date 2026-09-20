@@ -271,6 +271,11 @@ app.on("before-quit", quitCoordinator.handleBeforeQuit);
 ipcMain.handle("window:notifyRendererReady", (event): void => {
   mainWindowController.notifyRendererReady(event.sender, event.senderFrame);
 });
+// The renderer's invoke gate: it resolves when the Runtime Host boot module's
+// registration pass has run, so a renderer call that lands while the heavy
+// module graph is still evaluating waits instead of hitting "No handler
+// registered". Rejects through `failIpcReady` if startup dies before then.
+ipcMain.handle("app:bootstrapReady", () => bootContext.ipcReady);
 // The window loads the renderer while the Runtime Host services assemble;
 // `ready-to-show` reveals the loading surface on the first painted frame.
 const firstWindowLaunch = quitCoordinator.focusOrCreateWindow();

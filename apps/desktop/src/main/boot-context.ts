@@ -21,6 +21,13 @@ import type { DesktopDiagnosticsDeps } from './main-process-diagnostics.js';
 import type { RuntimeHostDesktopManager } from './runtime-host-desktop-manager.js';
 import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
 
+let resolveIpcReady!: () => void;
+let rejectIpcReady!: (error: unknown) => void;
+const ipcReady = new Promise<void>((resolve, reject) => {
+  resolveIpcReady = resolve;
+  rejectIpcReady = reject;
+});
+
 // Cross-module late bindings between the early window path and the Runtime
 // Host boot: the window is created while the heavy module graph is still
 // evaluating, so pieces the window needs early (diagnostics, quit hooks) read
@@ -31,4 +38,16 @@ export const bootContext: {
   resolveRuntimeHostDiagnostics?: DesktopDiagnosticsDeps['resolveRuntimeHost'];
   prepareToQuit?: () => Promise<'ready' | 'cancelled'>;
   cleanup?: () => Promise<void>;
-} = {};
+  /**
+   * Settles once the Runtime Host boot module's registration pass has run.
+   * The preload gates renderer invokes on this so a call made before the
+   * handlers exist waits instead of hitting "No handler registered".
+   */
+  ipcReady: Promise<void>;
+  markIpcReady(): void;
+  failIpcReady(error: unknown): void;
+} = {
+  ipcReady,
+  markIpcReady: () => resolveIpcReady(),
+  failIpcReady: (error: unknown) => rejectIpcReady(error),
+};

@@ -23,7 +23,6 @@ import type { OnboardingState } from '@maka/core/onboarding';
 import {
   createOnboardingSnapshotPoller,
   getOnboardingActivationCandidate,
-  isDeferrableOnboardingSnapshotError,
 } from '../../renderer/use-onboarding-snapshot.js';
 import type { OnboardingSnapshot } from '../../preload/bridge-contract.js';
 
@@ -87,29 +86,6 @@ describe('getOnboardingActivationCandidate', () => {
 
   it('does not trust a stale ready-empty snapshot after local history appears', () => {
     assert.equal(getOnboardingActivationCandidate(READY_SNAPSHOT, true), undefined);
-  });
-});
-
-describe('isDeferrableOnboardingSnapshotError', () => {
-  const identityError = new Error('Desktop Runtime Host identity is unavailable');
-
-  it('defers only while the default Host is still coming up', () => {
-    assert.equal(isDeferrableOnboardingSnapshotError(identityError, 'connecting'), true);
-    assert.equal(isDeferrableOnboardingSnapshotError(identityError, 'reconnecting'), true);
-  });
-
-  it('surfaces the error once the Host settles unavailable or is absent', () => {
-    assert.equal(isDeferrableOnboardingSnapshotError(identityError, 'unavailable'), false);
-    assert.equal(isDeferrableOnboardingSnapshotError(identityError, 'disabled'), false);
-    assert.equal(isDeferrableOnboardingSnapshotError(identityError, 'ready'), false);
-    assert.equal(isDeferrableOnboardingSnapshotError(identityError, undefined), false);
-  });
-
-  it('does not defer unrelated failures even while the Host connects', () => {
-    assert.equal(
-      isDeferrableOnboardingSnapshotError(new Error('socket hangup'), 'connecting'),
-      false,
-    );
   });
 });
 
@@ -270,32 +246,6 @@ describe('createOnboardingSnapshotPoller', () => {
     assert.deepEqual(events, [], 'disposed poller must ignore pulls');
 
     poller.activate();
-    await poller.pull();
-    assert.deepEqual(events, [{ type: 'snap', payload: READY_SNAPSHOT }]);
-  });
-
-  it('shouldDeferError holds backend-pending rejections out of the error slot', async () => {
-    const events: Array<{ type: 'snap' | 'err'; payload: unknown }> = [];
-    let backendUp = false;
-    const poller = createOnboardingSnapshotPoller(
-      {
-        getSnapshot: async () => {
-          if (!backendUp) throw new Error('identity is unavailable');
-          return READY_SNAPSHOT;
-        },
-        shouldDeferError: async () => !backendUp,
-      },
-      {
-        onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
-        onError: (m) => events.push({ type: 'err', payload: m }),
-      },
-      () => 'zh-CN',
-    );
-
-    await poller.pull();
-    assert.deepEqual(events, [], 'a not-up backend must not surface an error');
-
-    backendUp = true;
     await poller.pull();
     assert.deepEqual(events, [{ type: 'snap', payload: READY_SNAPSHOT }]);
   });

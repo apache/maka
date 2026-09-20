@@ -1077,16 +1077,6 @@ function AppShellContent({
           onRetry: () => reloadActiveExecutionBoundary(activeId),
         }
       : undefined;
-  // The index.html launch overlay covers the window until the first usable
-  // frame exists — suppressing the partial-shell and skeleton beats in
-  // between. "Usable" means the bootstrap snapshot resolved (or failed into
-  // its own surface) and no session view or transcript read is still in
-  // flight. main.tsx arms a failsafe timer so a wedged read can never strand
-  // the logo.
-  const launchSurfaceReady =
-    (onboarding.snapshot !== null || onboarding.error !== null) &&
-    !switchingSession &&
-    !activeMessageLoading;
   const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
     () => {
       const availableCommands = slashCommandsForSurface('desktop').filter(
@@ -1851,7 +1841,7 @@ function AppShellContent({
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
     createSession,
     handleConnectionEvent,
-    launchSurfaceReady,
+
     openHelp,
     openSettings,
     clearPendingTurnActions: turnActionRegistry.clearAll,
