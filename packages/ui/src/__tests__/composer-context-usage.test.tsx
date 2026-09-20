@@ -23,6 +23,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { Composer } from '../composer.js';
+import type { ContextUsageReading } from '../context-usage-reading.js';
 import { LocaleProvider } from '../locale-context.js';
 
 test('the context usage action opens its host trace surface', async () => {
@@ -49,7 +50,7 @@ test('the context usage action opens its host trace surface', async () => {
     await act(() => root.render(
       <LocaleProvider locale="en">
         <Composer
-          contextUsage={{ onOpen: () => { opened = true; } }}
+          contextUsage={{ reading: { kind: 'unavailable' }, onOpen: () => { opened = true; } }}
           onSend={() => undefined}
           onStop={() => undefined}
         />
@@ -99,9 +100,8 @@ test('the context usage share resolves declared, then metered, then metadata win
 
   const render = async (
     contextUsage: {
-      usageTokens?: number;
+      reading: ContextUsageReading;
       declaredContextWindow?: number;
-      meteredContextWindow?: number;
       metadataContextWindow?: number;
     },
   ) => {
@@ -125,9 +125,8 @@ test('the context usage share resolves declared, then metered, then metadata win
     // The user's declaration wins over every reported window.
     assert.equal(
       await render({
-        usageTokens: 40_000,
+        reading: { kind: 'measured', tokens: 40_000, meteredWindow: 80_000 },
         declaredContextWindow: 100_000,
-        meteredContextWindow: 80_000,
         metadataContextWindow: 64_000,
       }),
       '40%',
@@ -135,13 +134,19 @@ test('the context usage share resolves declared, then metered, then metadata win
     // The metered window was frozen against the same request as the tokens,
     // so it outranks the catalog's metadata window.
     assert.equal(
-      await render({ usageTokens: 40_000, meteredContextWindow: 80_000, metadataContextWindow: 64_000 }),
+      await render({ reading: { kind: 'measured', tokens: 40_000, meteredWindow: 80_000 }, metadataContextWindow: 64_000 }),
       '50%',
     );
     // Metadata is the fallback…
-    assert.equal(await render({ usageTokens: 32_000, metadataContextWindow: 64_000 }), '50%');
+    assert.equal(await render({ reading: { kind: 'measured', tokens: 32_000 }, metadataContextWindow: 64_000 }), '50%');
     // …and with no window at all the usage stands alone, no invented share.
-    assert.equal(await render({ usageTokens: 40_000 }), 'Usage');
+    assert.equal(await render({ reading: { kind: 'measured', tokens: 40_000 } }), 'Usage');
+    // A superseded reading says so rather than showing the figure the fold
+    // replaced, even though a window is available to divide by.
+    assert.equal(await render({ reading: { kind: 'stale', reason: 'compaction' }, declaredContextWindow: 100_000 }), '?');
+    // A later successful measurement restores the share in the same mounted control.
+    assert.equal(await render({ reading: { kind: 'measured', tokens: 10_000, meteredWindow: 100_000 } }), '10%');
+    assert.equal(await render({ reading: { kind: 'unavailable' }, declaredContextWindow: 100_000 }), 'Usage');
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);

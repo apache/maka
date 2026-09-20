@@ -37,6 +37,7 @@ export type {
 export type { SessionMoveTarget } from './session-rail-context.js';
 export * from './session-status-presentation.js';
 export * from './composer-helpers.js';
+export type { ContextUsageReading } from './context-usage-reading.js';
 export * from './conversation-copy.js';
 export * from './shared-ui-copy.js';
 export * from './skills-copy.js';

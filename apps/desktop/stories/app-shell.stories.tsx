@@ -2492,7 +2492,7 @@ export const ReaderScrolledUpIsNotPulledBack: Story = {
       turns={12}
       composer={{
         contextUsage: {
-          usageTokens: 37_000,
+          reading: { kind: 'measured', tokens: 37_000 },
           declaredContextWindow: 100_000,
           onOpen: noop,
         },
