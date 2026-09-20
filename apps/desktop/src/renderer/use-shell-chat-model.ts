@@ -95,6 +95,8 @@ export function useShellChatModel(options: {
   newChatModelLabel: string | undefined;
   newChatThinkingLevels: readonly ThinkingLevel[];
   newChatThinkingLevel: ThinkingLevel | undefined;
+  /** Raw draft intent; unlike the display value above, undefined stays untouched. */
+  pendingNewChatThinkingLevel: ThinkingLevel | null | undefined;
   composerSupportsVision: boolean | undefined;
   pendingNewChatModel: NewChatModelCandidate | null;
   setPendingNewChatModel: (next: NewChatModelCandidate | null) => void;
@@ -319,6 +321,7 @@ export function useShellChatModel(options: {
     newChatModelLabel,
     newChatThinkingLevels,
     newChatThinkingLevel,
+    pendingNewChatThinkingLevel,
     composerSupportsVision,
     pendingNewChatModel,
     setPendingNewChatModel,
