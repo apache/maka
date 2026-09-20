@@ -326,7 +326,6 @@ export interface ConversationCopy {
       contextReportedWindowExceeded: (used: number, reported: number) => string;
       contextOverflowAfterCompaction: string;
       contextUsageLabel: string;
-      contextUsageUnknown: string;
       contextUsageShare: (used: number, window: number) => string;
       contextUsageNoWindow: (used: number) => string;
       contextUsageUnavailable: string;
@@ -538,13 +537,12 @@ const CONVERSATION_COPY = {
         contextOverflowAfterCompaction:
           '已经压缩过历史，供应商仍然说这次请求太大。剩下的部分还包含系统提示、工具定义、摘要和最近的原文，缩短这条消息是你能控制的那一半。',
         contextUsageLabel: '用量',
-        contextUsageUnknown: '?',
         contextUsageShare: (used, window) =>
           `上下文窗口：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) =>
           `已用 ${formatCompactTokenCount(used)} token；上下文窗口上限未知`,
         contextUsageUnavailable: '暂无用量数据',
-        contextUsageCompacted: '上下文刚刚压缩过，压缩前的用量已经作废；下一次请求完成后显示新的用量。',
+        contextUsageCompacted: '上下文已压缩，用量将在下一次请求完成后更新。',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
@@ -666,13 +664,12 @@ const CONVERSATION_COPY = {
         contextOverflowAfterCompaction:
           '已經壓縮過歷史，供應商仍然說這次請求太大。剩下的部分還包含系統提示、工具定義、摘要和最近的原文，縮短這則訊息是你能控制的那一半。',
         contextUsageLabel: '用量',
-        contextUsageUnknown: '?',
         contextUsageShare: (used, window) =>
           `上下文視窗：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) =>
           `已用 ${formatCompactTokenCount(used)} token；上下文視窗上限未知`,
         contextUsageUnavailable: '暫無用量資料',
-        contextUsageCompacted: '上下文剛剛壓縮過，壓縮前的用量已經作廢；下一次請求完成後顯示新的用量。',
+        contextUsageCompacted: '上下文已壓縮，用量將在下一次請求完成後更新。',
         contextUsageOpen: '開啟用量追蹤',
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
       },
@@ -791,14 +788,13 @@ const CONVERSATION_COPY = {
         contextOverflowAfterCompaction:
           'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.',
         contextUsageLabel: 'Usage',
-        contextUsageUnknown: '?',
         contextUsageShare: (used, window) =>
           `Context window: ${Math.round((used / window) * 100)}% used (${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} tokens).`,
         contextUsageNoWindow: (used) =>
           `This request used ${formatCompactTokenCount(used)} tokens; no context limit is available for this model.`,
         contextUsageUnavailable: 'No usage data is available for this request.',
         contextUsageCompacted:
-          'Context was just compacted, so the pre-compaction usage no longer applies; the new usage appears after the next request.',
+          'Context has been compacted. Usage will update when the next request completes.',
         contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },

@@ -2506,10 +2506,8 @@ function ContextUsageAction(props: {
   // at all the usage stands on its own.
   const window =
     props.declaredContextWindow ?? meteredWindow ?? props.metadataContextWindow;
-  // A stale measurement shows unknown even when the window is known.
-  const label = reading.kind === 'stale'
-    ? copy.systemNotes.contextUsageUnknown
-    : usageTokens !== undefined && window !== undefined && window > 0
+  // Without a current measurement, keep the usage entry label.
+  const label = usageTokens !== undefined && window !== undefined && window > 0
       ? `${Math.round((usageTokens / window) * 100)}%`
       : copy.systemNotes.contextUsageLabel;
   const tooltip = reading.kind === 'stale'

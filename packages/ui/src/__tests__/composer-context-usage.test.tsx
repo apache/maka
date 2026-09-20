@@ -141,9 +141,8 @@ test('the context usage share resolves declared, then metered, then metadata win
     assert.equal(await render({ reading: { kind: 'measured', tokens: 32_000 }, metadataContextWindow: 64_000 }), '50%');
     // …and with no window at all the usage stands alone, no invented share.
     assert.equal(await render({ reading: { kind: 'measured', tokens: 40_000 } }), 'Usage');
-    // A superseded reading says so rather than showing the figure the fold
-    // replaced, even though a window is available to divide by.
-    assert.equal(await render({ reading: { kind: 'stale', reason: 'compaction' }, declaredContextWindow: 100_000 }), '?');
+    // A superseded reading keeps the usage entry label even when a window is known.
+    assert.equal(await render({ reading: { kind: 'stale', reason: 'compaction' }, declaredContextWindow: 100_000 }), 'Usage');
     // A later successful measurement restores the share in the same mounted control.
     assert.equal(await render({ reading: { kind: 'measured', tokens: 10_000, meteredWindow: 100_000 } }), '10%');
     assert.equal(await render({ reading: { kind: 'unavailable' }, declaredContextWindow: 100_000 }), 'Usage');
