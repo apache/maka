@@ -55,7 +55,7 @@ afterEach(async () => {
   });
 });
 
-function domRoot({ clientHeight = 360, scrollHeight = 360 }: { clientHeight?: number; scrollHeight?: number } = {}) {
+function domRoot() {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
     document,
@@ -64,29 +64,7 @@ function domRoot({ clientHeight = 360, scrollHeight = 360 }: { clientHeight?: nu
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,
-    // The process body is measured through Astryx's `useScrollableArea`, which
-    // reads computed styles and a real (non-zero) client box. LinkeDOM supplies
-    // neither, so stand in for both; each case passes the numbers it is about.
-    getComputedStyle: () =>
-      new Proxy(
-        { display: 'block', writingMode: 'horizontal-tb', direction: 'ltr', overflowX: 'auto', overflowY: 'auto' },
-        {
-          get: (target, prop) =>
-            (target as Record<string | symbol, unknown>)[prop] ??
-            (prop === 'getPropertyValue' ? () => '' : ''),
-        },
-      ),
   });
-  const define = (name: string, value: number) => {
-    Object.defineProperty(window.HTMLElement.prototype, name, {
-      configurable: true,
-      get() { return value; },
-    });
-  };
-  define('clientWidth', 800);
-  define('clientHeight', clientHeight);
-  define('scrollWidth', 800);
-  define('scrollHeight', scrollHeight);
   const container = document.querySelector('#root');
   assert.ok(container);
   const root = createRoot(container);
