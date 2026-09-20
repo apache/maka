@@ -520,6 +520,12 @@ describe('thread search text projection', () => {
     assert.ok(capped.endsWith('…'));
   });
 
+  it('returns empty string for zero or negative cap (regression #5537)', () => {
+    assert.equal(capCodePoints('hello', 0), '');
+    assert.equal(capCodePoints('hello', -2), '');
+    assert.equal(capCodePoints('', 0), '');
+  });
+
   it('bounds and classifies serialized tool results', async () => {
     assert.equal(collectSearchableText(toolResult({ result: 'short' })), '{"result":"short"}');
     const extracted = collectSearchableText(toolResult({ data: 'X'.repeat(100_000) }));

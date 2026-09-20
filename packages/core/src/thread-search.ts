@@ -599,6 +599,6 @@ export function buildSnippet(text: string, matchIndex: number, halfWindow: numbe
 export function capCodePoints(value: string, maxCodePoints: number): string {
   const codePoints = Array.from(value);
   if (codePoints.length <= maxCodePoints) return value;
-  if (maxCodePoints <= 0) return codePoints.length === 0 ? value : '…';
+  if (maxCodePoints <= 0) return '';
   return codePoints.slice(0, maxCodePoints - 1).join('') + '…';
 }
