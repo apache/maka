@@ -2278,6 +2278,11 @@ export const Composer = forwardRef<
                   its explanation, so the footer never reflows when a turn
                   starts or ends. */}
               <div className="maka-model-selection-controls">
+                {/* A plugin Executor owns its model and thinking controls through
+                    the Composer slot below. Rendering the native AI-SDK pair at
+                    the same time presents two contradictory model targets. */}
+                {props.executorTarget ? null : (
+                  <>
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     presentation={props.pickerPresentation}
@@ -2341,6 +2346,8 @@ export const Composer = forwardRef<
                     isReadOnly={props.pickersReadOnly}
                     onChange={props.onNewChatThinkingLevelChange}
                   />
+                )}
+                  </>
                 )}
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
               </div>
