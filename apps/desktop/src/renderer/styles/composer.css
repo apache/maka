@@ -710,14 +710,6 @@
   white-space: nowrap;
 }
 
-.maka-composer-queue-delivery {
-  display: block;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  font: var(--maka-text-body);
-  color: var(--muted-foreground);
-}
-
 /* Share a grid cell so a wrapping suggestion reserves exactly the same height
    as the accepted draft, without measuring layout or mutating the editor. */
 .maka-composer-input-suggestion-wrap { display: grid; min-width: 0; }
