@@ -212,7 +212,12 @@ export function RecentTurnOverlay(props: {
     if (reading.turnId !== displayedTurnId) {
       Object.assign(reading, { turnId: displayedTurnId, top: 0, follow: running });
     }
-    el.scrollTop = running && reading.follow ? el.scrollHeight : reading.top;
+    // This child's layout effect runs before WorkbarHost applies the focused
+    // width. Restore after all layout effects, before paint, so a temporary
+    // split width cannot reflow Markdown and move the saved reading position.
+    queueMicrotask(() => {
+      el.scrollTop = running && reading.follow ? el.scrollHeight : reading.top;
+    });
   }, [showingContent, displayedTurnId, running, activeLive, settledText]);
 
   if (props.hidden) return <div ref={rootRef} hidden />;
