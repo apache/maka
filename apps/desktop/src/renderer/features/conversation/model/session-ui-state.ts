@@ -19,7 +19,12 @@
 
 import type { MessageQueueEntryProjection, ShellRunUpdate } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import { createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnBuffer } from '@maka/ui';
+import {
+  createTranscriptViewportNavigation,
+  valuesEqual,
+  type InteractionQueues,
+  type LiveTurnBuffer,
+} from '@maka/ui';
 import { createObservableState } from './observable-state.js';
 import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
 
@@ -200,7 +205,9 @@ export function createAppShellSessionUiStateController(
         const previous = current[sessionId];
         if (!projection) return previous?.available
           ? { ...current, [sessionId]: { ...previous, available: false } } : current;
-        if (previous === projection) return current;
+        // The observation channel re-publishes the projection on every frame —
+        // catalog metadata writes included — with a fresh object each time.
+        if (previous !== undefined && valuesEqual(previous, projection)) return current;
         return { ...current, [sessionId]: projection };
       });
     },

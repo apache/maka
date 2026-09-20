@@ -38,6 +38,8 @@ import {
   createTranscriptRestoreLifecycle,
   restoreSessionTranscriptRange,
 } from '../../renderer/features/conversation/testing.js';
+import { shellSessionRowEqual } from '../../renderer/features/conversation/controller/use-app-shell-session-ui-state.js';
+import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 
 function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
   return {
@@ -280,5 +282,53 @@ describe('app shell session UI state controller', () => {
     const projection = [armLiveTurn('turn-1')];
     controller.setLiveTurnBySession((current) => ({ ...current, session: projection }));
     assert.equal(controller.liveTurnBySessionRef.current.session, projection);
+  });
+});
+
+describe('shellSessionRowEqual', () => {
+  const row: DesktopSessionSummary = {
+    id: 'session-1',
+    revision: 7,
+    activityAt: 100,
+    name: 'session one',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'default',
+    connectionLocked: false,
+    model: 'model',
+    permissionMode: 'ask',
+    runtimeHostId: 'host',
+    profileId: 'profile',
+    profileName: 'Local',
+    profileKind: 'local',
+  };
+
+  it('holds identity across rail-only bookkeeping', () => {
+    const patched: DesktopSessionSummary = {
+      ...row,
+      revision: 8,
+      activityAt: 200,
+      isFlagged: true,
+      hasUnread: true,
+      lastMessagePreview: 'newest line',
+      statusUpdatedAt: 150,
+    };
+    assert.equal(shellSessionRowEqual(row, patched), true);
+    assert.equal(shellSessionRowEqual(row, row), true);
+  });
+
+  it('republishes when a rendered field moves', () => {
+    assert.equal(shellSessionRowEqual(row, { ...row, status: 'running' }), false);
+    assert.equal(shellSessionRowEqual(row, { ...row, name: 'renamed' }), false);
+    assert.equal(shellSessionRowEqual(row, { ...row, permissionMode: 'bypass' }), false);
+    assert.equal(
+      shellSessionRowEqual(row, { ...row, lastMessageAt: 200 }),
+      false,
+    );
+    assert.equal(shellSessionRowEqual(row, undefined), false);
   });
 });

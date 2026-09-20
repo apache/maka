@@ -33,6 +33,7 @@ import {
   ConversationServicesProvider,
   type ConversationServices,
 } from '../../renderer/features/conversation/index.js';
+import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 interface CatalogObservation {
   sessionId: string;
@@ -87,11 +88,9 @@ function installCatalogRenderer(t: TestContext) {
       }),
     },
     sessions: {
-      list: () => new Promise(() => undefined),
       readSnapshot: async () => {
         throw new Error('Session snapshot is not used in catalog tests');
       },
-      subscribeChanges: () => () => undefined,
     },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
     newTasks: {
@@ -102,6 +101,7 @@ function installCatalogRenderer(t: TestContext) {
     mcp: { subscribeChanges: () => () => undefined },
   };
 
+  const sessionCatalog = createSessionCatalogController();
   const observations: CatalogObservation[] = [];
   function Consumer({ sessionId }: { sessionId: string }) {
     const mentions = useComposerMentionsContext();
@@ -149,6 +149,7 @@ function installCatalogRenderer(t: TestContext) {
             sessionId,
             projectPath,
             skillCatalogRevision,
+            catalog: sessionCatalog,
             children: createElement(Consumer, { sessionId }),
           }),
         }),

@@ -18,6 +18,7 @@
  */
 
 import type { ReactNode } from 'react';
+import type { SessionCatalogController } from './application/contracts/session-catalog/session-catalog-state.js';
 import {
   ComposerMentionsProvider,
   type ComposerMentionsSurface,
@@ -37,9 +38,14 @@ export type ComposerMentionsSurfaceInput = Omit<
 
 export function renderComposerMentionsProvider(
   surface: ComposerMentionsSurfaceInput,
+  catalog: SessionCatalogController,
 ): (skillCatalogRevision: number, children: ReactNode) => ReactNode {
   return (skillCatalogRevision, children) => (
-    <ComposerMentionsProvider {...surface} skillCatalogRevision={skillCatalogRevision}>
+    <ComposerMentionsProvider
+      {...surface}
+      skillCatalogRevision={skillCatalogRevision}
+      catalog={catalog}
+    >
       {children}
     </ComposerMentionsProvider>
   );
