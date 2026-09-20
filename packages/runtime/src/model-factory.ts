@@ -800,11 +800,13 @@ function buildFamilyWire(
             : {},
       };
     case 'commandcode-cli':
-      // The CLI wire takes `reasoning_effort` as the CLI's own effort words;
-      // `max` has no counterpart there and rounds down to `high`.
+      // The CLI wire takes `reasoning_effort` as the CLI's own effort words.
+      // `max` is one of them (claude-fable-5-1, moonshotai/Kimi-K3, …), so the
+      // chosen level is forwarded verbatim — rounding it down would silently
+      // send a weaker request than the user asked for.
       return level === undefined || level === 'off'
         ? {}
-        : { 'commandcode-cli': { reasoningEffort: level === 'max' ? 'high' : level } };
+        : { 'commandcode-cli': { reasoningEffort: level } };
     default:
       return {};
   }

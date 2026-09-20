@@ -181,6 +181,14 @@ export class NoUsableImportModelError extends SessionOperationFailure {
   }
 }
 
+/** The WorkHub bootstrap path has no executable default selected by the user. */
+export class WorkHubDefaultModelRequiredError extends SessionOperationFailure {
+  constructor(message: string) {
+    super('operation_unavailable', message);
+    this.name = 'WorkHubDefaultModelRequiredError';
+  }
+}
+
 export interface HostSessionCatalogCoordinatorOptions {
   readonly stores: SessionCatalogStores;
   readonly turnIndex: SessionTurnIndexReader;
@@ -340,7 +348,17 @@ export class HostSessionCatalogCoordinator {
    * action.
    */
   async resolveDefaultCreateTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
-    return this.#composeCreateTarget(this.#resolveModel({ kind: 'default' }, undefined));
+    try {
+      return await this.#composeCreateTarget(this.#resolveModel({ kind: 'default' }, undefined));
+    } catch (error) {
+      if (
+        error instanceof SessionOperationFailure &&
+        (error.code === 'operation_unavailable' || error.code === 'invalid_request')
+      ) {
+        throw new WorkHubDefaultModelRequiredError(error.message);
+      }
+      throw error;
+    }
   }
 
   async #composeCreateTarget(

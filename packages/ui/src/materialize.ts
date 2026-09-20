@@ -527,7 +527,12 @@ export function overlayLiveTurn(
       ? turns[targetIndex]!
       : ({
           turnId: liveTurn.turnId,
-          status: "completed" as const,
+          // A Turn that exists only as live state has NOT ended — this is the
+          // very Turn whose steps are arriving. Saying "completed" here made the
+          // composer's turn-status line announce a finish mid-stream; the
+          // transcript has no record either way, so the honest reading is that
+          // it is still running.
+          status: "running" as const,
           tools: [],
           notes: [],
           timeline: [],

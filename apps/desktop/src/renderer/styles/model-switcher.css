@@ -86,6 +86,13 @@
   min-width: 0;
 }
 
+/* The prompt-cache notice leads the session switcher's list as an option
+   whose activation acknowledges it (chat-model-switcher.tsx). Its label wraps
+   because it is passed as a node; only the glyph needs the warning tone. */
+.modelPickerSwitchNoticeGlyph {
+  color: var(--warning-text);
+}
+
 /* Selector's popover stretches to its positioning context, not its content —
    left alone it renders far wider than the option labels. Hug the widest row
    instead, and cap it so one long id cannot stretch the popup past the

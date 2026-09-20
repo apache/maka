@@ -63,6 +63,7 @@ import {
   HostSessionCatalogCoordinator,
   NoUsableImportModelError,
   SessionOperationFailure,
+  WorkHubDefaultModelRequiredError,
   type HostSessionCatalogCoordinatorOptions,
 } from '../server/session-catalog-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
@@ -1995,7 +1996,7 @@ test('autonomous create target fails closed when no default is set, even with a 
   await assert.rejects(
     fixture.coordinator.resolveDefaultCreateTarget(),
     (error: unknown) =>
-      error instanceof SessionOperationFailure &&
+      error instanceof WorkHubDefaultModelRequiredError &&
       error.code === 'operation_unavailable' &&
       /No default Session model is configured/i.test(error.message),
   );
