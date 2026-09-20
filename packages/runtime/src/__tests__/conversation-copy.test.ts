@@ -4091,7 +4091,10 @@ test('conversation copy preserves a corrupt paging dispatch hash for the re-scan
     const tamperedPlan = {
       ...plan,
       inlineRuntimeEvents: plan.inlineRuntimeEvents.map(stampCorruptHash),
-      runs: plan.runs.map((run) => ({ ...run, runtimeEvents: run.runtimeEvents.map(stampCorruptHash) })),
+      runs: plan.runs.map((run) => ({
+        ...run,
+        runtimeEvents: run.runtimeEvents.map(stampCorruptHash),
+      })),
     };
     await assert.rejects(
       cloneConversationRuntimeLedger({
