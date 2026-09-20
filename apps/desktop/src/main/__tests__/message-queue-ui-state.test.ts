@@ -97,11 +97,9 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     'a retained local copy cannot resurrect a withdrawn queue entry');
 });
 
-test('queue_update keeps queued steering as a transcript bubble with retract actions', async () => {
+test('queue_update stores the snapshot and retires every listed local placeholder', async () => {
   const controller = createAppShellSessionUiStateController();
   const transientMessages = new Map<string, TransientUserMessageProjection>();
-  const retracted: string[][] = [];
-  const restored: string[][] = [];
   const handlers = createAppShellSessionEventHandlers({
     uiLocale: 'zh-CN',
     activeIdRef: { current: 'session-1' },
@@ -111,18 +109,8 @@ test('queue_update keeps queued steering as a transcript bubble with retract act
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setInteractionBySession: controller.setInteractionBySession,
     setMessageQueueBySession: controller.setMessageQueueBySession,
-    getMessageQueue: (sessionId) => controller.getState().messageQueueBySession[sessionId],
     removeTransientMessage: (_sessionId, messageId) => {
       transientMessages.delete(messageId);
-    },
-    upsertTransientMessage: (_sessionId, message) => {
-      transientMessages.set(message.id, message);
-    },
-    retractQueueEntry: async (sessionId, entryId) => {
-      retracted.push([sessionId, entryId]);
-    },
-    restoreMessageDraft: (sessionId, text) => {
-      restored.push([sessionId, text]);
     },
     showModelSetupToast() {},
     toastApi: { error() {} },
@@ -155,36 +143,21 @@ test('queue_update keeps queued steering as a transcript bubble with retract act
   transientMessages.set('message-next', {
     id: 'message-next', text: 'do this next', ts: 1, transientPlacement: 'next_turn',
   });
+  transientMessages.set('message-steer', {
+    id: 'message-steer', text: 'adjust this run', ts: 1, transientPlacement: 'current_turn',
+    pendingSteering: true,
+  });
 
   handlers.handleEvent('session-1', queueUpdate([steeringEntry]));
 
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
+    turnId: 'turn-1',
+    ts: 1,
     queueRevision: 3,
     entries: [steeringEntry, followupEntry],
   });
-  assert.equal(transientMessages.has('message-next'), false,
-    'a queued follow-up retires its placeholder — the plate row owns it');
-  const steering = transientMessages.get('message-steer');
-  assert.equal(steering?.pendingSteering, true);
-  assert.equal(steering?.hostTurnId, 'turn-1');
-  assert.equal(steering?.text, 'adjust this run');
-  assert.deepEqual(steering?.deliveryActions?.map((action) => action.label), ['编辑', '删除'],
-    'queued steering keeps edit and retract controls on its bubble');
-
-  await steering?.deliveryActions?.[0]?.onClick();
-  assert.deepEqual(retracted, [['session-1', 'entry-steer']]);
-  assert.deepEqual(restored, [['session-1', 'adjust this run']],
-    'editing a queued steering retracts it and returns the text to the composer');
-  assert.equal(transientMessages.has('message-steer'), false);
-
-  handlers.handleEvent('session-1', queueUpdate([steeringEntry]));
-  await transientMessages.get('message-steer')?.deliveryActions?.[1]?.onClick();
-  assert.deepEqual(retracted.at(-1), ['session-1', 'entry-steer']);
-  assert.equal(restored.length, 1, 'delete retracts without touching the draft');
-
-  handlers.handleEvent('session-1', queueUpdate([{ ...steeringEntry, state: 'in_flight' }]));
-  assert.equal(transientMessages.has('message-steer'), false,
-    'an in-flight queue entry must not re-add a transcript bubble');
+  assert.equal(transientMessages.size, 0,
+    'the store keeps no copy of entries the Host snapshot now owns — queued steering derives from it at render');
 
   handlers.handleEvent('session-1', {
     type: 'message_admission',

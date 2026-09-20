@@ -19,7 +19,7 @@
 
 import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
 import { deriveMessageQueueProjection } from '../../../application/contracts/message-queue-projection.js';
-import { mergeTransientMessageProjection, queuedSteeringDeliveryActions } from '../../../application/contracts/transient-message-projection.js';
+import { withQueuedSteeringTransients } from '../../../application/contracts/transient-message-projection.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnBufferEvent,
@@ -61,7 +61,7 @@ interface SendAttempt {
 }
 interface MessagePresentation {
   transientMessages: TransientUserMessageProjection[];
-  messageQueue: { entries: readonly MessageQueueEntryProjection[]; revision?: number };
+  messageQueue: { entries: readonly MessageQueueEntryProjection[]; revision?: number; turnId?: string; ts?: number };
 }
 export function useWorkHubController(
   onSubmit?: () => void,
@@ -391,64 +391,16 @@ export function useWorkHubController(
         if (terminal) setTurnStates((current) => Object.fromEntries([...Object.entries(current), [event.turnId, event.type === 'complete' ? 'completed' : event.type === 'abort' ? 'aborted' : 'failed']].slice(-64)));
         if (event.type === 'queue_update') {
           const queue = deriveMessageQueueProjection(event);
-          // Host evidence retires local submission placeholders — except queued
-          // steering, which keeps its transcript bubble until the Turn consumes
-          // it. Queue state itself lives only in messageQueue.
+          // Host evidence retires local submission placeholders; queued
+          // steering renders from the snapshot itself as transcript bubbles.
           const ids = new Set(
             [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])].map((entry) => entry.messageId),
           );
           if (pendingQueued.current && ids.has(pendingQueued.current.messageId)) pendingQueued.current.observed = true;
-          setMessagePresentation((previous) => {
-            const steering = queue.transientMessages
-              .filter((message) => message.pendingSteering === true)
-              .map((message) => {
-                const entry = queue.entries.find((candidate) => candidate.messageId === message.id);
-                if (!entry) return message;
-                return {
-                  ...message,
-                  deliveryActions: queuedSteeringDeliveryActions({
-                    locale: localeRef.current,
-                    draftText: entry.content.displayText ?? entry.content.text,
-                    retract: async (draftText) => {
-                      try { await services.retractQueueEntry(sessionId, entry.entryId); }
-                      catch (reason) { report(reason); return false; }
-                      setMessagePresentation((current) => ({
-                        ...current,
-                        transientMessages: current.transientMessages.filter((candidate) => candidate.id !== message.id),
-                      }));
-                      if (draftText !== undefined && currentSessionId.current === sessionId) {
-                        restoreDraftRef.current?.(sessionId, draftText);
-                      }
-                      return true;
-                    },
-                  }),
-                };
-              });
-            const steeringIds = new Set(steering.map((message) => message.id));
-            // A steering entry that left the queue without an admission event
-            // still retires its transcript bubble.
-            const departed = new Set(
-              previous.messageQueue.entries
-                .filter((entry) => entry.placement === 'current_turn')
-                .map((entry) => entry.messageId)
-                .filter((messageId) => !steeringIds.has(messageId)),
-            );
-            const retained = previous.transientMessages
-              .filter(
-                (message) => (!ids.has(message.id) || steeringIds.has(message.id)) && !departed.has(message.id),
-              )
-              .map((message) => {
-                const update = steering.find((candidate) => candidate.id === message.id);
-                return update ? mergeTransientMessageProjection(message, update) : message;
-              });
-            for (const message of steering) {
-              if (!retained.some((candidate) => candidate.id === message.id)) retained.push(message);
-            }
-            return {
-              messageQueue: { entries: queue.entries, revision: event.queueRevision },
-              transientMessages: retained,
-            };
-          });
+          setMessagePresentation((previous) => ({
+            messageQueue: { entries: queue.entries, revision: event.queueRevision, turnId: event.turnId, ts: event.ts },
+            transientMessages: previous.transientMessages.filter((message) => !ids.has(message.id)),
+          }));
         }
         if (event.type === 'message_admission') {
           if (event.outcome === 'admitted') {
@@ -756,7 +708,16 @@ export function useWorkHubController(
       if (!sessionId) throw new Error('WorkHub Session is unavailable');
       await services.respondToUserQuestion(sessionId, response);
     },
-    transientMessages,
+    transientMessages: withQueuedSteeringTransients(transientMessages, messageQueue, {
+      locale,
+      retract: async (entry, draftText) => {
+        if (!sessionId) return false;
+        try { await services.retractQueueEntry(sessionId, entry.entryId); }
+        catch (reason) { report(reason); return false; }
+        if (draftText !== undefined) restoreDraftRef.current?.(sessionId, draftText);
+        return true;
+      },
+    }),
     messageQueue,
     updateQueuedEntry: (entryId: string, revision: number, text: string) => mutateQueue((target) => services.updateQueueEntry(target, entryId, revision, text)),
     deleteQueuedEntry: (entryId: string) => mutateQueue((target) => services.retractQueueEntry(target, entryId)),

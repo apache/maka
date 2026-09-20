@@ -74,9 +74,8 @@ import { deriveMessageQueueProjection } from '../../../../application/contracts/
 import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import {
   mergeTransientMessageProjection,
-  projectQueuedTransientMessages,
-  queuedSteeringDeliveryActions,
   reconcileTransientMessages,
+  withQueuedSteeringTransients,
 } from '../../../../application/contracts/transient-message-projection.js';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import {
@@ -349,13 +348,21 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const pendingUserMessagesRef = useRef<Map<string, TransientUserMessageProjection>>(
     new Map(),
   );
-  const queuedSteeringRef = useRef<Set<string> | undefined>(undefined);
   const restoreDraftRef = useRef(input.restoreDraft);
   restoreDraftRef.current = input.restoreDraft;
   const [messageQueue, setMessageQueue] = useState<{
     readonly entries: readonly MessageQueueEntryProjection[];
     readonly queueRevision?: number;
+    readonly turnId?: string;
+    readonly ts?: number;
   }>({ entries: [] });
+  // Reseed reconciliation reads the queue between React flushes, so every
+  // writer goes through the ref; the state copy exists only for rendering.
+  const messageQueueRef = useRef(messageQueue);
+  const applyMessageQueue = useCallback((next: typeof messageQueue) => {
+    messageQueueRef.current = next;
+    setMessageQueue(next);
+  }, []);
   const [execution, setExecution] = useState<SessionExecutionProjection>();
   const [liveTurns, setLiveTurns] = useState<LiveTurnBuffer>();
   const liveTurnsRef = useRef(liveTurns);
@@ -475,11 +482,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   }, [syncPendingUserMessages]);
 
   const dropQueuedMessage = useCallback((messageId: string) => {
-    setMessageQueue((current) => {
-      const entries = current.entries.filter((entry) => entry.messageId !== messageId);
-      return entries.length === current.entries.length ? current : { ...current, entries };
-    });
-  }, []);
+    const current = messageQueueRef.current;
+    const entries = current.entries.filter((entry) => entry.messageId !== messageId);
+    if (entries.length !== current.entries.length) applyMessageQueue({ ...current, entries });
+  }, [applyMessageQueue]);
 
   // Bind presentation to canonical ownership before the caller reconciles and
   // publishes the pending Map. Recovery can bind a whole batch in one update.
@@ -509,46 +515,20 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const projectMessageQueue = useCallback(
     (forkId: string, event: Extract<SessionEvent, { type: 'queue_update' }>) => {
       const queue = deriveMessageQueueProjection(event);
-      setMessageQueue({ entries: queue.entries, queueRevision: event.queueRevision });
-      const steering = queue.transientMessages.filter((message) => message.pendingSteering === true);
-      // Queued steering waits as a transcript bubble; an entry that leaves the
-      // queue without an admission event still retires its bubble.
-      const steeringIds = new Set(steering.map((message) => message.id));
-      for (const messageId of queuedSteeringRef.current ?? []) {
-        if (!steeringIds.has(messageId)) pendingUserMessagesRef.current.delete(messageId);
+      applyMessageQueue({
+        entries: queue.entries,
+        queueRevision: event.queueRevision,
+        turnId: event.turnId,
+        ts: event.ts,
+      });
+      // Queued steering renders from this snapshot as transcript bubbles —
+      // every entry the Host lists retires its local transient copy.
+      for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
+        pendingUserMessagesRef.current.delete(entry.messageId);
       }
-      queuedSteeringRef.current = steeringIds;
-
-      projectQueuedTransientMessages(
-        pendingUserMessagesRef.current,
-        queue.transientMessages.map((message) => {
-          if (message.pendingSteering !== true) return message;
-          const entry = queue.entries.find((candidate) => candidate.messageId === message.id);
-          if (!entry) return message;
-          return {
-            ...message,
-            deliveryActions: queuedSteeringDeliveryActions({
-              locale: localeRef.current,
-              draftText: entry.content.displayText ?? entry.content.text,
-              retract: async (draftText) => {
-                try {
-                  await sideChat.retractQueueEntry(forkId, entry.entryId);
-                } catch {
-                  if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
-                  return false;
-                }
-                pendingUserMessagesRef.current.delete(message.id);
-                syncPendingUserMessages();
-                if (draftText !== undefined) restoreDraftRef.current?.(forkId, draftText);
-                return true;
-              },
-            }),
-          };
-        }),
-      );
       syncPendingUserMessages();
     },
-    [sideChat, syncPendingUserMessages],
+    [applyMessageQueue, syncPendingUserMessages],
   );
 
   const applyOwnedEvent = useCallback(
@@ -717,6 +697,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     );
     if (admittedMessage?.turnId) bindAdmittedTurn(forkId, admittedMessage.turnId);
     const messageIds = new Set(pendingUserMessagesRef.current.keys());
+    // Queue-owned ids are already retired from the pending map; reseed still
+    // needs them so a Host-retired entry leaves the plate too.
+    for (const entry of messageQueueRef.current.entries) messageIds.add(entry.messageId);
     if (pendingAdmissionRef.current) messageIds.add(pendingAdmissionRef.current.messageId);
     if (messageIds.size === 0) return;
     try {
@@ -767,15 +750,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       }
       reconcilePendingUserMessages();
       if (retired.size > 0) {
-        setMessageQueue((current) => ({
+        const current = messageQueueRef.current;
+        applyMessageQueue({
           ...current,
           entries: current.entries.filter((entry) => !retired.has(entry.messageId)),
-        }));
+        });
       }
     } catch {
       // A failed proof query leaves presentation intact until canonical proof arrives.
     }
-  }, [bindAdmittedTurn, bindPendingMessageTurn, mergeDurableMessages, mountedRef, reconcilePendingUserMessages, releaseAdmission, sideChat]);
+  }, [applyMessageQueue, bindAdmittedTurn, bindPendingMessageTurn, mergeDurableMessages, mountedRef, reconcilePendingUserMessages, releaseAdmission, sideChat]);
 
   const reconcileStartedFollowUpTurn = useCallback(async (
     forkId: string,
@@ -1003,9 +987,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           allMessagesRef.current = [];
           setAllMessages([]);
           pendingUserMessagesRef.current.clear();
-          queuedSteeringRef.current = undefined;
           setPendingUserMessages([]);
-          setMessageQueue({ entries: [] });
+          applyMessageQueue({ entries: [] });
           onForkVisibilityChangeRef.current?.({
             type: 'cleanup-succeeded',
             sessionId: existing.id,
@@ -1729,7 +1712,21 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const messages = allMessages.filter(
     (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
   );
-  const transientMessages = pendingUserMessages;
+  const transientMessages = withQueuedSteeringTransients(pendingUserMessages, messageQueue, {
+    locale: localeRef.current,
+    retract: async (entry, draftText) => {
+      const forkId = companionIdRef.current;
+      if (!forkId) return false;
+      try {
+        await sideChat.retractQueueEntry(forkId, entry.entryId);
+      } catch {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+        return false;
+      }
+      if (draftText !== undefined) restoreDraftRef.current?.(forkId, draftText);
+      return true;
+    },
+  });
   // Inherited model (read-only): the fork's once created, else the source's.
   const activeModel = companion
     ? { llmConnectionSlug: companion.llmConnectionSlug, model: companion.model }

@@ -67,6 +67,7 @@ import {
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { ChatMessageSurface } from './chat-message-surface';
+import { withQueuedSteeringTransients } from './application/contracts/transient-message-projection.js';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
@@ -679,6 +680,25 @@ function AppShellContent({
       }
     : undefined;
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
+  // Queued steering is a thin projection of the Host queue snapshot — the
+  // bubble appears and disappears with it, no bookkeeping of our own.
+  const transcriptTransientMessages = useMemo(
+    () => withQueuedSteeringTransients(transientMessages, activeMessageQueue, {
+      locale: uiLocale,
+      retract: async (entry, draftText) => {
+        const sessionId = activeId;
+        if (!sessionId) return false;
+        try {
+          await retractQueueEntry(sessionId, entry.entryId);
+        } catch {
+          return false;
+        }
+        if (draftText !== undefined) restoreLocalMessageDraft(sessionId, draftText);
+        return true;
+      },
+    }),
+    [transientMessages, activeMessageQueue, uiLocale, activeId],
+  );
   const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
@@ -1709,11 +1729,9 @@ function AppShellContent({
   }
 
   async function deleteQueuedEntry(entryId: string): Promise<void> {
-    const messageId = activeMessageQueue?.entries.find((entry) => entry.entryId === entryId)?.messageId;
-    const sessionId = await runQueueEntryAction((sessionId) =>
+    await runQueueEntryAction((sessionId) =>
       window.maka.sessions.retractQueueEntry(sessionId, entryId).then(() => undefined)
     );
-    if (sessionId && messageId) removeTransientMessage(sessionId, messageId);
   }
 
   // Event handlers act per observed Session, not the active one — same failure
@@ -1780,7 +1798,6 @@ function AppShellContent({
   const [sessionDisplayBatch] = useState(createAppShellSessionDisplayBatch);
   const {
     handleEvent,
-    isQueuedSteering,
     reconcilePersistedMessages,
     settleAssistantStreaming,
     flushDisplayEvents,
@@ -1796,11 +1813,7 @@ function AppShellContent({
     setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
     setInteractionBySession: sessionUiController.setInteractionBySession,
     setMessageQueueBySession: sessionUiController.setMessageQueueBySession,
-    getMessageQueue: (sessionId) => sessionUiController.getState().messageQueueBySession[sessionId],
     removeTransientMessage,
-    upsertTransientMessage: addTransientMessage,
-    retractQueueEntry,
-    restoreMessageDraft: restoreLocalMessageDraft,
     displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
@@ -2153,11 +2166,7 @@ function AppShellContent({
     <Conversation.SessionLocalMessages
       sessionId={activeId}
       publish={addTransientMessage}
-      retire={(sessionId, messageId) => {
-        // A queue-owned steering bubble is the Host's own placeholder; the
-        // local outbox accepting it must not retire the transcript copy.
-        if (!isQueuedSteering(sessionId, messageId)) removeTransientMessage(sessionId, messageId);
-      }}
+      retire={removeTransientMessage}
       reportError={toastApi.error}
       restoreDraft={restoreLocalMessageDraft}
     />
@@ -2559,7 +2568,7 @@ function AppShellContent({
                 onLoadTranscriptTurn={(turn) => transcriptReadingCommands.current?.loadEarlier(turn.sequence)}
                 liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
-                transientMessages={transientMessages}
+                transientMessages={transcriptTransientMessages}
                 messageLoading={activeMessageLoading}
                     onStreamingSettled={
                       activeId ? (messageId) => settleAssistantStreaming(activeId, messageId) : undefined

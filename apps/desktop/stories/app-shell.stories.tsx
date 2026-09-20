@@ -39,7 +39,7 @@ import {
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
-import { ICON_SIZE, Pencil, Trash2 } from '@maka/ui/icons';
+import { withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
 import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
 import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
@@ -711,9 +711,9 @@ export const PromptSentBeforeTurnLands: Story = {
   },
 };
 
-// Real path: a steering send the Host queued but has not consumed yet. It lives
-// in the transcript as a pending bubble — edit retracts it back into the draft,
-// delete retracts it outright. The composer plate is for follow-ups only.
+// Real path: a steering send the Host queued but has not consumed yet derives
+// from the queue snapshot at the render boundary — the transcript bubble is
+// that entry, with retract-backed edit/delete. The plate shows follow-ups only.
 export const QueuedSteeringInTranscript: Story = {
   render: () => (
     <ComposedShell
@@ -731,18 +731,17 @@ export const QueuedSteeringInTranscript: Story = {
             tools: [],
           }],
         }],
-        transientMessages: [{
-          id: 'msg-steer-queued',
-          text: '顺便确认一下 coverage 阈值没有变。',
+        transientMessages: withQueuedSteeringTransients([], {
+          turnId: 'turn-s',
           ts: NOW - 10_000,
-          transientPlacement: 'current_turn',
-          hostTurnId: 'turn-s',
-          pendingSteering: true,
-          deliveryActions: [
-            { label: '编辑', icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />, onClick: noop },
-            { label: '删除', icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />, onClick: noop },
-          ],
-        }],
+          entries: [{
+            entryId: 'entry-steer',
+            messageId: 'msg-steer-queued',
+            content: { text: '顺便确认一下 coverage 阈值没有变。' },
+            placement: 'current_turn',
+            state: 'queued',
+          }],
+        }, { locale: 'zh-CN', retract: async () => true }),
       }}
     />
   ),
