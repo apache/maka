@@ -706,10 +706,11 @@ export class MakaCompositionLoader {
           'package_not_found',
           `Plugin package is not installed: ${spec.packageId}`,
         );
-      if (!pkg.host)
+      const selectedPlugin = rootId === 'desktop-ui' ? pkg.client : pkg.host;
+      if (!selectedPlugin)
         throw new MakaPluginRuntimeError(
           'invalid_package',
-          `Plugin package has no Host plugin: ${spec.packageId}`,
+          `Plugin package has no ${rootId === 'desktop-ui' ? 'Client' : 'Host'} plugin: ${spec.packageId}`,
         );
       const generation = ++this.#fiberGeneration;
       const metadata: MakaPluginMetadata = Object.freeze({
@@ -723,7 +724,7 @@ export class MakaCompositionLoader {
       if (transaction) context = context.extend({ makaTransaction: transaction });
       live.context = context;
       live.generation = generation;
-      const plugin = entryPlugin(pkg.host, spec.inject);
+      const plugin = entryPlugin(selectedPlugin, spec.inject);
       live.fiber = context.plugin(plugin, spec.config);
       try {
         await live.fiber.await();

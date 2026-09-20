@@ -20,8 +20,9 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { IconButton } from '@astryxdesign/core/IconButton';
-import { TextQuote, X } from './icons.js';
+import { MessagesSquare, TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { QuoteRef } from '@maka/core/events';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -31,32 +32,46 @@ export function stripQuoteHeadingMarkers(text: string): string {
   return text.replace(/^#{1,6}[ \t]+/, '');
 }
 
+/** Human-readable provenance kept with a cross-session snapshot QuoteRef. */
+export function quoteProvenanceSummary(quote: QuoteRef, locale: UiLocale): string | undefined {
+  if (!quote.sourceSessionId || quote.sourceCapturedAt === undefined) return undefined;
+  if (!Number.isFinite(quote.sourceCapturedAt) || quote.sourceCapturedAt < 0 || quote.sourceCapturedAt > 8.64e15) return undefined;
+  const capturedAt = new Date(quote.sourceCapturedAt).toISOString();
+  return getConversationCopy(locale).messages.sessionSnapshotCaptured(capturedAt, quote.sourceTruncated === true);
+}
+
 /** Inline quote chip for the composer (removable) and sent user messages (read-only). */
 export function QuoteRefChip(props: {
   quote: QuoteRef;
   onRemove?: () => void;
   className?: string;
 }) {
-  const copy = getConversationCopy(useUiLocale()).messages;
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
   // Measure the clipped text node itself — Astryx Button wraps children in an
   // internal label span, so Button.root scrollWidth no longer reflects ellipsis.
   const measureRef = useRef<HTMLSpanElement>(null);
-  const label = props.quote.label;
+  const label = props.quote.sourceSessionId && props.quote.sourceSessionName
+    ? copy.sessionSnapshotLabel(props.quote.sourceSessionName)
+    : props.quote.label;
   const displayText = stripQuoteHeadingMarkers(props.quote.text);
   const full = label ? `${label}: ${displayText}` : displayText;
+  const provenance = quoteProvenanceSummary(props.quote, locale);
+  const fullWithProvenance = provenance ? `${full} · ${provenance}` : full;
 
   useLayoutEffect(() => {
     const el = measureRef.current;
     if (!el || expanded) return;
     setClipped(el.scrollWidth > el.clientWidth + 1);
-  }, [expanded, displayText, label]);
+  }, [expanded, displayText, label, provenance]);
 
   const canExpand = clipped || expanded;
   const a11yLabel = canExpand
-    ? (expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel)
-    : full;
+    ? `${expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel}: ${fullWithProvenance}`
+    : fullWithProvenance;
+  const SourceIcon = props.quote.sourceSessionId ? MessagesSquare : TextQuote;
 
   return (
     <span
@@ -66,9 +81,9 @@ export function QuoteRefChip(props: {
         props.onRemove ? 'maka-quote-chip-removable' : 'maka-quote-chip-readonly',
         props.className,
       )}
-      title={expanded ? undefined : full}
+      title={expanded ? undefined : fullWithProvenance}
     >
-      <TextQuote
+      <SourceIcon
         className={cn('maka-quote-chip-icon', expanded && 'maka-quote-chip-icon-expanded')}
         aria-hidden="true"
       />
@@ -94,6 +109,7 @@ export function QuoteRefChip(props: {
         >
           {label ? <span className="maka-quote-chip-label">{label} </span> : null}
           {displayText}
+          {provenance ? <span className="maka-quote-chip-provenance"> · {provenance}</span> : null}
         </span>
       </Button>
       {props.onRemove ? (

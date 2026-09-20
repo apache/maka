@@ -2252,9 +2252,19 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     };
   }
 
+  /** Internal composition seam for checks that must share fresh continuation admission. */
+  startTurnResumeWithValidation(
+    input: TurnResumeStartInput,
+    context: ConnectionContext,
+    beforeFreshAdmission?: () => Promise<void>,
+  ): Promise<TurnResumeStartOutcome> {
+    return this.startTurnResume(input, context, beforeFreshAdmission);
+  }
+
   private startTurnResume(
     input: TurnResumeStartInput,
     context: ConnectionContext,
+    beforeFreshAdmission?: () => Promise<void>,
   ): Promise<TurnResumeStartOutcome> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return Promise.resolve(
@@ -2364,6 +2374,15 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               reservation,
               reconstructed.continuation,
             );
+          }
+
+          try {
+            await beforeFreshAdmission?.();
+          } catch (error) {
+            return {
+              kind: 'complete',
+              outcome: operationConflict(errorMessage(error)),
+            };
           }
 
           reservation ??= this.reserveRootTurn(input.sessionId);

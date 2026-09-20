@@ -46,9 +46,13 @@ function statusHasSpinner(toolStatuses: readonly ('running' | 'completed')[]): b
     </LocaleProvider>,
   );
   const { document } = parseHTML(markup);
+  // Exactly one cue, and it lives on the turn's status line at the BOTTOM of the
+  // turn — the position that stays visible while a long answer streams.
   assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
-  assert.ok(document.querySelector('.maka-processing-summary .maka-turn-processing'));
-  assert.equal(document.querySelector('.maka-turn-footer .maka-turn-processing'), null);
+  // One cue, on the footer row (which also carries the model name) — never
+  // inside a process disclosure, where a growing answer would scroll it away.
+  assert.ok(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'));
+  assert.equal(document.querySelector('.maka-processing-summary .maka-turn-processing'), null);
   assert.doesNotMatch(markup, /Waiting for model output/);
   return document.querySelector('.maka-turn-processing .astryx-spinner') !== null;
 }
@@ -121,12 +125,15 @@ test('only the latest assistant segment owns live activity after a user instruct
   ));
   const summaries = document.querySelectorAll('.maka-processing-summary');
   assert.equal(summaries.length, 2);
+  // Every disclosure names itself; none of them hosts the live cue any more.
   assert.equal(summaries[0]?.textContent, 'Execution process');
-  assert.match(summaries[1]?.textContent ?? '', /Pondering/);
+  assert.equal(summaries[1]?.textContent, 'Execution process');
+  // Exactly one cue, on the turn status line at the bottom.
   assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
+  assert.ok(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'));
 });
 
-test('states the elapsed once, in the process header rather than the footer meta', () => {
+test('states the elapsed once, on the turn status line rather than the process header', () => {
   const tool = { toolUseId: 'read', toolName: 'Read', status: 'completed' as const, args: {} };
   const turn: TurnViewModel = {
     turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [tool], notes: [], startedAt: 1,
@@ -138,6 +145,21 @@ test('states the elapsed once, in the process header rather than the footer meta
       <TurnView turn={turn} footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]} />
     </LocaleProvider>,
   ));
-  assert.match(document.querySelector('.maka-processing-summary')?.textContent ?? '', /Worked for 3m 33s/);
-  assert.equal(document.querySelector('.maka-turn-footer-meta')?.textContent, 'fixture-model');
+  // The duration lives on the status line at the BOTTOM of the turn, where a
+  // growing answer cannot push it out of view. The top summary states only what
+  // the disclosure holds.
+  assert.equal(document.querySelector('.maka-processing-summary')?.textContent?.trim(), 'Execution process');
+  const statusLine = document.querySelector('.maka-turn-status-line')?.textContent ?? '';
+  // Localized duration (the same wording the copy owns), not the compact
+  // `3m 33s` the live counter uses.
+  assert.match(statusLine, /Done · Worked for 3m 33s/);
+  // This turn carries only the placeholder start (the fixture's `startedAt: 1`),
+  // so no finish time is printed rather than dating it to 1970.
+  assert.doesNotMatch(statusLine, /1970/);
+  // The footer's meta row carries the turn's state AND the model facts on one
+  // line, rather than the state taking a line of its own.
+  assert.equal(
+    document.querySelector('.maka-turn-footer-meta')?.textContent,
+    'Done · Worked for 3m 33s · fixture-model',
+  );
 });

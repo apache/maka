@@ -126,12 +126,13 @@
   grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: var(--space-4);
-  padding: var(--space-3) var(--space-5) var(--space-6);
+  /* LayoutContent owns the inline content-width gutters. Repeating the old
+     page inset here would move the rows one spacing step inside the title. */
+  padding: var(--space-3) 0 var(--space-6);
 }
 
-/* Rows keep the page inset rather than bleeding: the header, the control bar
-   and the rows then share one left edge, which is what makes the page read as
-   a single column. */
+/* LayoutContent supplies the page inset, so the header, control bar and rows
+   share one left edge and read as a single column. */
 .maka-module-page-rows {
   min-width: 0;
 }

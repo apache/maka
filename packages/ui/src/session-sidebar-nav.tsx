@@ -23,6 +23,7 @@ import { useSidebarUpdateProjection } from './sidebar-update-projection-context.
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { PlatformShortcutText } from './platform-shortcut-text.js';
+import { MakaClientSlotOutlet } from './client-plugin-slots.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
@@ -196,6 +197,10 @@ export function SessionSidebarFooter() {
           </Tooltip>
         )}
       </div>
+      <MakaClientSlotOutlet
+        name="sidebar.footer"
+        owner={{ collapsed: props.collapsed }}
+      />
     </SideNavSection>
   );
 }
