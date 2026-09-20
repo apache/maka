@@ -697,13 +697,10 @@ export async function cloneConversationRuntimeLedger(
             ),
           },
         };
-        rewrittenArgsIdentities.set(
-          `${event.invocationId}\u0000${event.content.id}`,
-          {
-            sourceArgsHash,
-            rewrittenArgsHash: tryCanonicalToolArgsHash(event.content.name, event.content.args),
-          },
-        );
+        rewrittenArgsIdentities.set(`${event.invocationId}\u0000${event.content.id}`, {
+          sourceArgsHash,
+          rewrittenArgsHash: tryCanonicalToolArgsHash(event.content.name, event.content.args),
+        });
       }
     }
     if (event.content?.kind === 'text')
@@ -716,13 +713,10 @@ export async function cloneConversationRuntimeLedger(
           ...event.content,
           args: { ...args, ref: rewriteLedgerArchiveText(args.ref, references) },
         };
-        rewrittenArgsIdentities.set(
-          `${event.invocationId}\u0000${event.content.id}`,
-          {
-            sourceArgsHash,
-            rewrittenArgsHash: tryCanonicalToolArgsHash(event.content.name, event.content.args),
-          },
-        );
+        rewrittenArgsIdentities.set(`${event.invocationId}\u0000${event.content.id}`, {
+          sourceArgsHash,
+          rewrittenArgsHash: tryCanonicalToolArgsHash(event.content.name, event.content.args),
+        });
       }
     }
   }
