@@ -142,6 +142,8 @@ export interface ChatViewGoalIndicatorProps {
  * plus `hostTurnId` for the grouping once the Host names one.
  */
 export interface TransientUserMessageProjection {
+  /** Held above the composer until Runtime emits steering_message. */
+  pendingSteering?: boolean;
   deliveryStatus?: string;
   deliveryDetail?: string;
   deliveryActions?: readonly { label: string; icon: ReactNode; onClick(): void | Promise<void> }[];
