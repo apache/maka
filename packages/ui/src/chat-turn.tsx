@@ -37,6 +37,7 @@ import {
   HStack,
   IconButton as UiIconButton,
   Spinner,
+  Text,
   Thumbnail,
   Timestamp,
   Token,
@@ -57,10 +58,14 @@ import type { TransientUserMessageProjection } from './chat-view.js';
 import { type LiveProviderRetry } from './live-turn-projection.js';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import {
+  isInFlightToolStatus,
+  toolActivityPresentationStatus,
   type TurnTimelineItem,
   type TurnViewModel,
 } from './materialize.js';
-import { foldTimeline, type FoldedTimelineChild, type FoldedTimelineEntry } from './timeline-fold.js';
+import { foldTimeline, foldProcessActivity, type FoldedTimelineChild, type FoldedTimelineEntry, type ProcessActivityFold } from './timeline-fold.js';
+import { Collapsible } from '@astryxdesign/core/Collapsible';
+import { resolveToolDisplayName } from './tool-activity/display-name.js';
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
@@ -1445,6 +1450,61 @@ function TurnTimelineEntry(props: {
   );
 }
 
+function ProcessActivityGroup(props: Omit<ComponentPropsWithoutRef<typeof TurnTimelineEntry>, 'item'> & {
+  entries: ProcessActivityFold['children'];
+  running: boolean;
+}) {
+  const { entries, running, ...entryProps } = props;
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+  const [open, setOpen] = useState(false);
+  const tools = entries.flatMap((entry) => entry.kind === 'tools' ? entry.items : []);
+  const hasThinking = entries.some((entry) => entry.kind === 'thinking');
+  const currentTool = running && props.activityObserved !== false
+    ? tools.findLast((tool) => isInFlightToolStatus(toolActivityPresentationStatus(tool)))
+    : undefined;
+  const thinking = running && props.activityObserved !== false &&
+    entries.some((entry) => entry.kind === 'thinking' && entry.live);
+  const failed = tools.some((tool) => toolActivityPresentationStatus(tool) === 'errored');
+  const previewTool = currentTool ?? tools.at(-1);
+  const previewThinking = entries.findLast((entry) => entry.kind === 'thinking');
+  const label = [
+    hasThinking ? copy.thinking : undefined,
+    tools.length > 0 ? copy.processToolCalls(tools.length) : undefined,
+    failed ? copy.turnStatusFailed() : undefined,
+    previewTool ? redactSecrets(resolveToolDisplayName(previewTool, locale))
+      : previewThinking?.kind === 'thinking' ? reasoningPreviewText(previewThinking.text) : undefined,
+  ].filter(Boolean).join(' · ');
+  const rows = entries.flatMap<FoldedTimelineChild>((entry) => entry.kind === 'tools'
+    ? entry.items.map((tool) => ({ kind: 'tools' as const, items: [tool] }))
+    : [entry]);
+  return (
+    <Collapsible
+      className="maka-process-activity"
+      data-maka-transcript-boundary=""
+      isOpen={open}
+      onOpenChange={setOpen}
+      trigger={
+        <HStack gap={2}>
+          {(currentTool || thinking) && <Spinner size="sm" shade="subtle" aria-hidden="true" />}
+          <Text type="body" color="secondary" maxLines={1}>{label}</Text>
+        </HStack>
+      }
+    >
+      <div className="maka-process-activity-items">
+        {rows.map((entry, index) => (
+          <TurnTimelineEntry
+            {...entryProps}
+            key={timelineEntryKey(entry, index)}
+            activityObserved={open && props.activityObserved !== false}
+            item={entry}
+          />
+        ))}
+      </div>
+    </Collapsible>
+  );
+}
+
 export function ProcessingBlock(props: {
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
@@ -1467,6 +1527,13 @@ export function ProcessingBlock(props: {
   const label = seconds === undefined
     ? copy.processDetails
     : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
+  const entries = foldProcessActivity(props.entries);
+  const entryProps = {
+    activityObserved: open && props.activityObserved !== false,
+    onStreamingSettled: props.onStreamingSettled,
+    onOpenLinkedSession: props.onOpenLinkedSession,
+    initialLiveContent: props.initialLiveContent,
+  };
   return (
     <details
       className="maka-processing-sequence"
@@ -1495,15 +1562,15 @@ export function ProcessingBlock(props: {
         {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}
       </summary>
       <div className="maka-processing-body">
-        {props.entries.map((entry, index) => (
-          <TurnTimelineEntry
-            key={timelineEntryKey(entry, index)}
-            activityObserved={open && props.activityObserved !== false}
-            item={entry}
-            onStreamingSettled={props.onStreamingSettled}
-            onOpenLinkedSession={props.onOpenLinkedSession}
-            initialLiveContent={props.initialLiveContent}
+        {entries.map((entry, index) => entry.kind === 'activity' ? (
+          <ProcessActivityGroup
+            {...entryProps}
+            key={`activity-${entry.id}`}
+            entries={entry.children}
+            running={props.running && props.activity !== undefined}
           />
+        ) : (
+          <TurnTimelineEntry {...entryProps} key={timelineEntryKey(entry, index)} item={entry} />
         ))}
       </div>
     </details>

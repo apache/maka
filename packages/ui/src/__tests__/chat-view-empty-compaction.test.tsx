@@ -75,7 +75,7 @@ test('retains tool and compaction evidence without activity after observation lo
   const compact: LiveTurnProjection = { turnId: 'compact', rootExecutionKind: 'context_compact', steps: [] };
   for (const observed of [true, false, true]) {
     const toolDocument = parseHTML(await renderChat(tool, { messages, activeTurn: observed ? { turnId: tool.turnId } : undefined })).document;
-    assert.equal(toolDocument.querySelector('.maka-tool-activity-card')?.getAttribute('data-activity-observed'), String(observed));
+    assert.equal(toolDocument.querySelectorAll('.maka-process-activity > button .astryx-spinner').length, observed ? 1 : 0);
     assert.match(toolDocument.querySelector('.maka-tool-activity-card')?.textContent ?? '', /echo retained/);
     const compactDocument = parseHTML(await renderChat(compact, { messages, activeTurn: observed ? { turnId: compact.turnId, compacting: true } : undefined })).document;
     assert.equal(compactDocument.querySelector('[data-compaction-state]')?.getAttribute('data-compaction-state'), observed ? 'running' : 'unavailable');

@@ -330,6 +330,13 @@
   overflow: clip;
 }
 .maka-processing-body > :first-child { margin-top: var(--space-2); }
+.maka-process-activity > .astryx-collapsible-trigger > span { min-width: 0; }
+.maka-process-activity-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-inline-start: var(--space-4);
+}
 /* Match Astryx ChatToolCalls' grid disclosure motion. The native details
    content remains rendered through exit, without a second open state or timer.
    Unsupported browsers retain the native immediate disclosure. */

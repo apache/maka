@@ -101,6 +101,7 @@ test('user input and provider retry suppress playful process activity', () => {
     const { document } = parseHTML(markup);
     assert.equal(document.querySelector('.maka-turn-processing'), null);
     assert.equal(document.querySelector('.maka-processing-summary')?.textContent, 'Execution process');
+    assert.equal(document.querySelector('.maka-process-activity > button .astryx-spinner'), null);
     assert.equal(document.querySelectorAll('.maka-turn-provider-retry').length, runningStatus ? 1 : 0);
   }
 });

@@ -34,6 +34,29 @@ export interface ProcessingFold {
 
 export type FoldedTimelineEntry = Extract<TurnTimelineItem, { kind: 'user' | 'text' }> | ProcessingFold;
 
+export interface ProcessActivityFold {
+  kind: 'activity';
+  id: string;
+  children: Exclude<FoldedTimelineChild, { kind: 'text' }>[];
+}
+
+export function foldProcessActivity(items: readonly FoldedTimelineChild[]):
+  Array<Extract<FoldedTimelineChild, { kind: 'text' }> | ProcessActivityFold> {
+  const out: Array<Extract<FoldedTimelineChild, { kind: 'text' }> | ProcessActivityFold> = [];
+  let anchor = 'start';
+  for (const item of items) {
+    if (item.kind === 'text') {
+      out.push(item);
+      anchor = `after:${item.messageId}`;
+    } else if (item.kind !== 'tools' || item.items.length > 0) {
+      const previous = out.at(-1);
+      if (previous?.kind === 'activity') previous.children.push(item);
+      else out.push({ kind: 'activity', id: anchor, children: [item] });
+    }
+  }
+  return out;
+}
+
 export function foldTimeline(items: readonly TurnTimelineItem[]): {
   entries: FoldedTimelineEntry[];
   finalReply: Extract<TurnTimelineItem, { kind: 'text' }> | undefined;
