@@ -22,6 +22,13 @@ import { describe, it } from 'node:test';
 import type { SessionChangedEvent, SessionSummary, StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
 import { handleSessionChangedEvent } from '../../renderer/application/contracts/session-catalog/session-change-effects.js';
+import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import {
+  annotateWatchedRows,
+  catalogWatchedRowsUsable,
+  selectWatchedCatalogRows,
+  type DesktopSessionSummary,
+} from '../../renderer/application/contracts/session-catalog/catalog-row-watch.js';
 import { createSessionWorkspaceActions } from '../../renderer/session-workspace-actions.js';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 
@@ -128,5 +135,62 @@ describe('session retirement sweep', () => {
     handleSessionChangedEvent({ reason: 'status-change', ts: 1 }, options);
     await flush();
     assert.deepEqual(retired, ['viewer']);
+  });
+});
+
+describe('revision-draft row watch fence', () => {
+  const sessionRow = (id: string): DesktopSessionSummary =>
+    ({ id, activityAt: 1, isArchived: false, revision: 1 }) as DesktopSessionSummary;
+  const emit = (
+    catalog: ReturnType<typeof createSessionCatalogController>,
+    ids: readonly (string | undefined)[],
+    seen: Set<string>,
+  ) => annotateWatchedRows(selectWatchedCatalogRows(catalog.getState(), ids), ids, seen);
+
+  it('fences retirement while a just-created owner is still unobserved', () => {
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions([sessionRow('a')]);
+    const seen = new Set<string>();
+    const ids = ['a', 'b'] as const;
+    // The draft's owner flips to B while the created-row read is in flight:
+    // the catalog holds [A] and B is absent, but that absence is pending.
+    const rows = emit(catalog, ids, seen);
+    assert.equal(rows[1]?.pending, true);
+    assert.equal(catalogWatchedRowsUsable(rows), true);
+  });
+
+  it('still retires a never-admitted row a targeted read reported gone', () => {
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions([sessionRow('a')]);
+    catalog.commitPatch('b', null);
+    const rows = emit(catalog, ['a', 'b'], new Set());
+    assert.equal(rows[1]?.pending, false);
+    assert.equal(catalogWatchedRowsUsable(rows), false);
+  });
+
+  it('keeps a patch-admitted row when a list observed before admission lands', () => {
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions([sessionRow('a')]);
+    const observedBeforePatch = catalog.getState().revision;
+    catalog.commitPatch('b', sessionRow('b'));
+    catalog.commitSessions([sessionRow('a')], { observedAtRevision: observedBeforePatch });
+    const rows = emit(catalog, ['a', 'b'], new Set());
+    assert.equal(rows[1]?.summary?.id, 'b');
+    assert.equal(catalogWatchedRowsUsable(rows), true);
+  });
+
+  it('retires the draft owner once an authoritative list omits it', () => {
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions([sessionRow('a')]);
+    catalog.commitPatch('b', sessionRow('b'));
+    const seen = new Set<string>();
+    const ids = ['a', 'b'] as const;
+    emit(catalog, ids, seen);
+    catalog.commitSessions([sessionRow('a')], {
+      observedAtRevision: catalog.getState().revision,
+    });
+    const rows = emit(catalog, ids, seen);
+    assert.equal(rows[1]?.pending, false);
+    assert.equal(catalogWatchedRowsUsable(rows), false);
   });
 });

@@ -26,7 +26,6 @@ import {
 } from './session-status-presentation.js';
 import {
   createSessionListRefresher,
-  type SessionListRefresher,
 } from './session-read-state.js';
 import {
   selectAuthoritativeSessionIds,
@@ -66,21 +65,26 @@ export function useAppShellSessionList(
     () => ({ get current() { return catalog.getState().sessions; } }),
     [catalog],
   );
-  const refresherRef = useRef<SessionListRefresher<DesktopSessionSummary> | null>(null);
-  refresherRef.current ??= createSessionListRefresher({
-    listSessions: () => window.maka.sessions.list(),
-    currentSessions: () => [...sessionsRef.current],
-    commitSessions: (next) =>
-      catalog.commitSessions(next.map(normalizeSessionSummaryForDisplay)),
-    onError: (error) => {
-      const locale = uiLocaleRef.current;
-      const copy = getDesktopConversationCopy(locale).actions;
-      toastApi.error(
-        copy.refreshSessionsFailedTitle,
-        localizedShellErrorMessage(error, copy.refreshSessionsFailedFallback, locale),
-      );
-    },
-  });
+  const refresher = useMemo(() => {
+    let observedAtRevision = 0;
+    return createSessionListRefresher({
+      listSessions: () => {
+        observedAtRevision = catalog.getState().revision;
+        return window.maka.sessions.list();
+      },
+      currentSessions: () => [...sessionsRef.current],
+      commitSessions: (next) =>
+        catalog.commitSessions(next.map(normalizeSessionSummaryForDisplay), { observedAtRevision }),
+      onError: (error) => {
+        const locale = uiLocaleRef.current;
+        const copy = getDesktopConversationCopy(locale).actions;
+        toastApi.error(
+          copy.refreshSessionsFailedTitle,
+          localizedShellErrorMessage(error, copy.refreshSessionsFailedFallback, locale),
+        );
+      },
+    });
+  }, [catalog, sessionsRef]);
 
   // Fixed identities for the renderer's lifetime: everything closes over ref
   // boxes or the stable controller, and consumers list the actions in dep
@@ -91,10 +95,10 @@ export function useAppShellSessionList(
     const drain = createSessionPatchDrain({
       normalize: normalizeSessionSummaryForDisplay,
       commitPatch: (sessionId, summary) => catalog.commitPatch(sessionId, summary),
-      onReadFailure: () => void refresherRef.current?.refresh().catch(() => undefined),
+      onReadFailure: () => void refresher.refresh().catch(() => undefined),
     });
     return {
-      refreshSessions: () => refresherRef.current!.refresh(),
+      refreshSessions: () => refresher.refresh(),
       refreshChangedSession: drain.request,
       seedSessions(snapshotSessions: readonly DesktopSessionSummary[]) {
         const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
@@ -102,7 +106,7 @@ export function useAppShellSessionList(
         return next;
       },
     };
-  }, [catalog]);
+  }, [catalog, refresher]);
 
   return { authoritativeSessionIds, sessionsRef, ...actions };
 }

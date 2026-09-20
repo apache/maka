@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useEffectEvent, useMemo } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef } from 'react';
 import type { DesktopSessionSummary } from '../../../../shared/desktop-session-projection.js';
 
 export type { DesktopSessionSummary };
@@ -28,17 +28,65 @@ import {
   type SessionCatalogState,
 } from './session-catalog-state.js';
 
-const selectRows = (
+/** What the catalog can currently prove about a watched id. */
+export interface ObservedCatalogRow {
+  readonly summary: DesktopSessionSummary | undefined;
+  /** A targeted read answered "gone" — authoritative absence, not admission lag. */
+  readonly removed: boolean;
+}
+
+export interface CatalogWatchedRow {
+  readonly summary: DesktopSessionSummary | undefined;
+  /**
+   * No row yet and neither an observation nor a removal covers this id — the
+   * catalog simply has not caught up. Absence here is not evidence of removal.
+   */
+  readonly pending: boolean;
+}
+
+export const selectWatchedCatalogRows = (
   state: SessionCatalogState,
   ids: readonly (string | undefined)[],
-): (DesktopSessionSummary | undefined)[] =>
-  ids.map((id) => selectSessionById(state, id));
+): ObservedCatalogRow[] =>
+  ids.map((id) => ({
+    summary: selectSessionById(state, id),
+    removed: id !== undefined && state.removedIds.has(id),
+  }));
 
-function rowsEqual(
-  a: readonly (DesktopSessionSummary | undefined)[],
-  b: readonly (DesktopSessionSummary | undefined)[],
+function observedRowsEqual(
+  a: readonly ObservedCatalogRow[],
+  b: readonly ObservedCatalogRow[],
 ): boolean {
-  return a.length === b.length && a.every((row, index) => row === b[index]);
+  return a.length === b.length
+    && a.every((row, index) => row.summary === b[index].summary && row.removed === b[index].removed);
+}
+
+/**
+ * Resolve an emitted observation against the ids this watch has already seen.
+ * Marks each id that produced a row — so an id whose row later disappears is
+ * a removal, while one that was never observed stays pending: created-but-not-
+ * yet-admitted is the edit-and-resend window, not a deletion.
+ */
+export function annotateWatchedRows(
+  observed: readonly ObservedCatalogRow[],
+  ids: readonly (string | undefined)[],
+  seen: Set<string>,
+): CatalogWatchedRow[] {
+  return ids.map((id, index) => {
+    const { summary, removed } = observed[index] ?? { summary: undefined, removed: false };
+    if (id !== undefined && summary !== undefined) seen.add(id);
+    return {
+      summary,
+      pending: id !== undefined && summary === undefined && !removed && !seen.has(id),
+    };
+  });
+}
+
+/** Every watched row is present and usable, or still pending its first observation. */
+export function catalogWatchedRowsUsable(rows: readonly CatalogWatchedRow[]): boolean {
+  return rows.every(
+    (row) => row.pending || (row.summary !== undefined && !row.summary.isArchived),
+  );
 }
 
 const EMPTY_IDS: readonly (string | undefined)[] = [];
@@ -51,19 +99,25 @@ const EMPTY_IDS: readonly (string | undefined)[] = [];
 export function CatalogRowWatch(props: {
   catalog: SessionCatalogController;
   sessionIds: readonly (string | undefined)[] | undefined;
-  onRows: (rows: readonly (DesktopSessionSummary | undefined)[]) => void;
+  onRows: (rows: readonly CatalogWatchedRow[]) => void;
 }) {
   const onRows = useEffectEvent(props.onRows);
   // The caller passes an inline array; the selector memo is keyed on the arg,
   // so the ids need a stable identity across renders that do not change them.
   const idsKey = (props.sessionIds ?? EMPTY_IDS).join('\0');
   const ids = useMemo(() => idsKey.split('\0').map((id) => id || undefined), [idsKey]);
-  const rows = useExternalStoreSelector(
+  const observed = useExternalStoreSelector(
     props.catalog,
-    selectRows,
+    selectWatchedCatalogRows,
     ids,
-    rowsEqual,
+    observedRowsEqual,
   );
-  useEffect(() => onRows(rows), [rows, onRows]);
+  // `seen` lives in an effect, not the selector: a snapshot can be read on a
+  // render React discards, and only rows actually reported count as observed.
+  const seenRef = useRef<Set<string>>(new Set());
+  useEffect(
+    () => onRows(annotateWatchedRows(observed, ids, seenRef.current)),
+    [observed, ids, onRows],
+  );
   return null;
 }

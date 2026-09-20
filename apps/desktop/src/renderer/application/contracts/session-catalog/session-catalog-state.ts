@@ -44,6 +44,13 @@ export interface SessionCatalogState {
   readonly sessions: readonly DesktopSessionSummary[];
   readonly revision: number;
   readonly activeSessionId: string | undefined;
+  /**
+   * Ids a targeted row read reported as gone (`sessions.get` → null). A list
+   * omission never lands here: a snapshot taken before a session existed
+   * cannot testify about it, so only the row-level answer counts as
+   * authoritative absence for an id the catalog never held.
+   */
+  readonly removedIds: ReadonlySet<string>;
 }
 
 export function createSessionCatalogController() {
@@ -51,12 +58,19 @@ export function createSessionCatalogController() {
     sessions: [],
     revision: 0,
     activeSessionId: undefined,
+    removedIds: new Set(),
   });
+  // Catalog revision at which each row's existence was last confirmed by a
+  // patch — the fence a stale list commit is measured against.
+  const existenceConfirmedAt = new Map<string, number>();
 
   return {
     getState: state.getState,
     subscribe: state.subscribe,
-    commitSessions(next: readonly DesktopSessionSummary[]): void {
+    commitSessions(
+      next: readonly DesktopSessionSummary[],
+      options?: { observedAtRevision?: number },
+    ): void {
       const current = state.getState();
       // Published references change iff values change: an unchanged row keeps
       // its identity so per-row readers and memos survive a re-list, and a
@@ -69,15 +83,38 @@ export function createSessionCatalogController() {
           ? prior
           : s;
       });
-      const sameRows = reconciled.length === current.sessions.length
-        && reconciled.every((s, i) => s === current.sessions[i]);
+      // A row whose existence a patch confirmed after this list was observed
+      // is newer than anything the list can claim about it — keep it. This is
+      // the membership-level analogue of the per-row staleness fence.
+      const inNext = new Set(next.map((s) => s.id));
+      const observedAt = options?.observedAtRevision;
+      const sessions = observedAt === undefined
+        ? reconciled
+        : reconciled.concat(
+            current.sessions.filter(
+              (s) => !inNext.has(s.id) && (existenceConfirmedAt.get(s.id) ?? -1) > observedAt,
+            ),
+          );
+      if (sessions.length !== reconciled.length)
+        sessions.sort(compareDesktopSessionCatalogSummaries);
+      let removedIds = current.removedIds;
+      if (removedIds.size > 0) {
+        const cleared = new Set(removedIds);
+        for (const s of sessions) cleared.delete(s.id);
+        if (cleared.size !== removedIds.size) removedIds = cleared;
+      }
+      for (const id of existenceConfirmedAt.keys())
+        if (!sessions.some((s) => s.id === id)) existenceConfirmedAt.delete(id);
+      const sameRows = sessions.length === current.sessions.length
+        && sessions.every((s, i) => s === current.sessions[i]);
       // A commit that changed nothing publishes nothing — except the first
       // one: revision 0 means "no authoritative observation yet", and even an
       // empty list is one.
-      if (sameRows && current.revision > 0) return;
+      if (sameRows && removedIds === current.removedIds && current.revision > 0) return;
       state.replaceState({
         ...current,
-        sessions: sameRows ? current.sessions : reconciled,
+        sessions: sameRows ? current.sessions : sessions,
+        removedIds,
         revision: current.revision + 1,
       });
     },
@@ -85,12 +122,22 @@ export function createSessionCatalogController() {
       const current = state.getState();
       const index = current.sessions.findIndex((s) => s.id === sessionId);
       const prior = index < 0 ? undefined : current.sessions[index];
+      const revision = current.revision + 1;
       if (summary === null) {
-        if (prior === undefined) return;
+        // A targeted "gone" answer tombstones the id even when the row was
+        // never admitted — watchers can then tell removal apart from
+        // admission still in flight.
+        if (prior === undefined && current.removedIds.has(sessionId)) return;
+        existenceConfirmedAt.delete(sessionId);
+        const removedIds = new Set(current.removedIds);
+        removedIds.add(sessionId);
         state.replaceState({
           ...current,
-          sessions: current.sessions.filter((s) => s.id !== sessionId),
-          revision: current.revision + 1,
+          sessions: prior === undefined
+            ? current.sessions
+            : current.sessions.filter((s) => s.id !== sessionId),
+          removedIds,
+          revision,
         });
         return;
       }
@@ -101,12 +148,15 @@ export function createSessionCatalogController() {
       sessions.sort(compareDesktopSessionCatalogSummaries);
       const sameRows = sessions.length === current.sessions.length
         && sessions.every((s, i) => s === current.sessions[i]);
-      if (sameRows) return;
-      state.replaceState({
-        ...current,
-        sessions,
-        revision: current.revision + 1,
-      });
+      const removedIds = current.removedIds.has(sessionId)
+        ? new Set([...current.removedIds].filter((id) => id !== sessionId))
+        : current.removedIds;
+      existenceConfirmedAt.set(
+        sessionId,
+        sameRows && removedIds === current.removedIds ? current.revision : revision,
+      );
+      if (sameRows && removedIds === current.removedIds) return;
+      state.replaceState({ ...current, sessions, removedIds, revision });
     },
     setActiveSessionId(next: string | undefined): void {
       const current = state.getState();

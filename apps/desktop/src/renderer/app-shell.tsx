@@ -86,7 +86,7 @@ import {
 } from './features/session-navigation';
 import {
   CatalogRowWatch,
-  type DesktopSessionSummary,
+  catalogWatchedRowsUsable,
 } from './application/contracts/session-catalog/catalog-row-watch.js';
 import * as TaskEntry from './features/task-entry';
 import type { TaskEntryShellProjection } from './features/task-entry';
@@ -625,11 +625,12 @@ function AppShellContent({
   // The draft survives on exactly two catalog rows; CatalogRowWatch below
   // selects them so their changes alone can retire it.
   const retireRevisionDraftIfRowsLeave = useCallback(
-    (rows: readonly (DesktopSessionSummary | undefined)[]) => {
+    (rows: Parameters<typeof catalogWatchedRowsUsable>[0]) => {
       const draft = revisionDraftRef.current;
       if (!draft) return;
-      const [source, owner] = rows;
-      if (source && owner && !source.isArchived && !owner.isArchived) return;
+      // A watched row that is merely pending — never observed, never reported
+      // removed — is admission lag, not a departure.
+      if (catalogWatchedRowsUsable(rows)) return;
       composerRef.current?.clearDraft(draft.draftSessionId);
       if (draft.sourceSessionId !== draft.draftSessionId)
         composerRef.current?.clearDraft(draft.sourceSessionId);
