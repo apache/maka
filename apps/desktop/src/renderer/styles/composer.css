@@ -134,8 +134,15 @@
   position: absolute;
   top: var(--space-1);
   right: var(--space-1);
+  z-index: 1;
   opacity: 0;
   transition: opacity 120ms ease;
+}
+
+/* The floating help icon sits over the top-right corner; keep every row's
+   actions clear of it so neither intercepts the other's pointer events. */
+.maka-composer-queue-actions {
+  margin-right: calc(var(--space-6) + var(--space-1));
 }
 
 .maka-composer-queue:hover .maka-composer-queue-help,
