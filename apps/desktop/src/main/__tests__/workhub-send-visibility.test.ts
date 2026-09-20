@@ -606,7 +606,7 @@ test('steering observed before its admission response renders once and outranks 
 });
 
 
-test('WorkHub Host queue owns restored, consumed and retracted rows without transient mirrors', async () => {
+test('WorkHub queued steering keeps a transcript bubble until consumed or retracted', async () => {
   const h = await mountController();
   await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
   const entry = { entryId: 'queued', messageId: 'queued', placement: 'current_turn' as const, state: 'queued' as const, content: { text: 'change direction' } };
@@ -616,12 +616,16 @@ test('WorkHub Host queue owns restored, consumed and retracted rows without tran
   });
   await act(() => project('queued'));
   assert.deepEqual(h.controller.messageQueue.entries, [entry]);
-  assert.deepEqual(h.controller.transientMessages, []);
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.id), ['queued'],
+    'queued steering waits in the transcript, not the follow-up plate');
+  assert.equal(h.controller.transientMessages[0]?.pendingSteering, true);
+  assert.equal(h.controller.transientMessages[0]?.hostTurnId, 'active-turn');
   await act(() => h.emit({ type: 'steering_message', id: 'consumed', turnId: 'active-turn', ts: 3, messageId: entry.messageId, content: entry.content }));
   await act(() => project('in_flight'));
   assert.deepEqual(h.controller.messageQueue.entries, []);
   assert.deepEqual(h.controller.transientMessages, [], 'an in-flight snapshot cannot resurrect consumed steering');
   await act(() => project('queued'));
+  assert.equal(h.controller.transientMessages.length, 1);
   await act(async () => { await h.controller.deleteQueuedEntry(entry.entryId); });
   await act(() => h.emit({ type: 'queue_update', id: 'removed', turnId: 'active-turn', ts: 4, steering: [], followup: [], steeringEntries: [] }));
   assert.deepEqual(h.controller.messageQueue.entries, []);
@@ -648,7 +652,8 @@ test('WorkHub sends queue edits, withdrawal and both queue orders to the Host an
   await act(() => h.emit({ type: 'queue_update', id: 'updated', turnId: 'active-turn', ts: 3,
     queueRevision: 10, steering: ['edited second'], followup: [], steeringEntries: [{ ...entries[1]!, content: { text: 'edited second' } }] }));
   assert.deepEqual(h.controller.messageQueue.entries.map((entry) => entry.content.text), ['edited second']);
-  assert.deepEqual(h.controller.transientMessages, []);
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.text), ['edited second'],
+    'the queue snapshot retires the edited-out steering bubble and republishes the edited one');
 });
 
 

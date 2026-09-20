@@ -33,10 +33,11 @@ type ComposerQueueEntry = Omit<MessageQueueEntryProjection, 'state'> & {
 };
 
 /**
- * The pending plate above the composer card. It lists both pending steering
- * and follow-up entries so a submitted message stays editable, reorderable and
- * deletable while it waits for the active Turn to reach a steering boundary.
- * Steering enters the transcript only when Runtime actually consumes it.
+ * The pending plate above the composer card. It lists follow-up entries —
+ * Host-queued and still in flight — so a queued message stays editable,
+ * reorderable and deletable until a Turn consumes it. Steering targets the
+ * active Turn and lives in the transcript instead, where its delivery state
+ * is message metadata rather than a queue row.
  */
 export interface ComposerMessageQueueProps {
   queuedMessages: readonly ComposerQueueEntry[];
@@ -48,15 +49,16 @@ export interface ComposerMessageQueueProps {
   onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
 }
 
-/** Host entries own queue actions; local sends remain visible before a receipt. */
+/** The plate owns next-turn sends only; steering renders in the transcript. */
 export function projectComposerMessageQueue(
   queued: readonly MessageQueueEntryProjection[],
   transient: readonly TransientUserMessageProjection[],
 ): readonly ComposerQueueEntry[] {
-  const ids = new Set(queued.map((entry) => entry.messageId));
-  const pending = transient.filter((message) => (message.pendingSteering || message.transientPlacement === 'next_turn') && !ids.has(message.id));
-  if (pending.length === 0) return queued;
-  return [...queued, ...pending.map((message): ComposerQueueEntry => ({
+  const followups = queued.filter((entry) => entry.placement === 'next_turn');
+  const ids = new Set(followups.map((entry) => entry.messageId));
+  const pending = transient.filter((message) => message.transientPlacement === 'next_turn' && !ids.has(message.id));
+  if (pending.length === 0) return followups;
+  return [...followups, ...pending.map((message): ComposerQueueEntry => ({
     entryId: message.id, messageId: message.id, content: { text: message.text },
     placement: message.transientPlacement, state: 'local', localMessage: message,
   }))];
@@ -98,10 +100,8 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     const fromId = dragEntryId.current;
     dragEntryId.current = null;
     if (!fromId || fromId === targetEntryId || !props.onReorderEntries) return;
-    const target = entries.find((entry) => entry.entryId === targetEntryId);
-    const source = entries.find((entry) => entry.entryId === fromId);
-    if (!target || source?.placement !== target.placement) return;
-    const ids = entries.filter((entry) => entry.placement === target.placement && entry.state === 'queued').map((entry) => entry.entryId);
+    if (!entries.some((entry) => entry.entryId === targetEntryId)) return;
+    const ids = entries.filter((entry) => entry.state === 'queued').map((entry) => entry.entryId);
     const from = ids.indexOf(fromId);
     const to = ids.indexOf(targetEntryId);
     if (from === -1 || to === -1) return;
@@ -163,7 +163,6 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
           return (
             <div
               key={entry.entryId}
-              data-queue-placement={entry.placement}
               data-maka-queue-drop-target={reorderable ? 'true' : undefined}
               onDragOver={(event) => {
                 if (reorderable && dragEntryId.current) event.preventDefault();
@@ -249,23 +248,21 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                     </>
                   ) : (
                     <>
-                      {entry.placement === 'next_turn' ? (
-                        <IconButton
-                          variant="ghost"
-                          size="sm"
-                          type="button"
-                          isDisabled={pendingEntryId !== null || entry.state !== 'queued' || !props.onPromoteEntry}
-                          label={copy.promoteQueuedEntry}
-                          tooltip={copy.promoteQueuedEntry}
-                          onClick={() => void runEntryAction(
-                            entry.entryId,
-                            props.onPromoteEntry
-                              ? () => props.onPromoteEntry?.(entry.entryId)
-                              : undefined,
-                          )}
-                          icon={<CornerDownLeft size={ICON_SIZE.control} aria-hidden="true" />}
-                        />
-                      ) : null}
+                      <IconButton
+                        variant="ghost"
+                        size="sm"
+                        type="button"
+                        isDisabled={pendingEntryId !== null || entry.state !== 'queued' || !props.onPromoteEntry}
+                        label={copy.promoteQueuedEntry}
+                        tooltip={copy.promoteQueuedEntry}
+                        onClick={() => void runEntryAction(
+                          entry.entryId,
+                          props.onPromoteEntry
+                            ? () => props.onPromoteEntry?.(entry.entryId)
+                            : undefined,
+                        )}
+                        icon={<CornerDownLeft size={ICON_SIZE.control} aria-hidden="true" />}
+                      />
                       <IconButton
                         variant="ghost"
                         size="sm"

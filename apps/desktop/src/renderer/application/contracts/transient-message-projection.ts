@@ -17,10 +17,31 @@
  * under the License.
  */
 
+import { createElement } from 'react';
 import type { StoredMessage } from '@maka/core/session';
-import type { TransientUserMessageProjection } from '@maka/ui';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { getConversationCopy, type TransientUserMessageProjection } from '@maka/ui';
+import { ICON_SIZE, Pencil, Trash2 } from '@maka/ui/icons';
 
 type TransientUserMessage = TransientUserMessageProjection;
+
+/**
+ * Edit/delete controls for steering the Host queued but has not consumed.
+ * Both retract the queue entry; edit also hands the text back to the caller's
+ * draft restore. `retract` resolves false when the Host call failed.
+ */
+export function queuedSteeringDeliveryActions(input: {
+  locale: UiLocale;
+  draftText: string;
+  retract: (draftText?: string) => Promise<boolean>;
+}): NonNullable<TransientUserMessage['deliveryActions']> {
+  const copy = getConversationCopy(input.locale).composer;
+  const icon = (glyph: typeof Pencil) => createElement(glyph, { size: ICON_SIZE.control, 'aria-hidden': true });
+  return [
+    { label: copy.editQueuedEntry, icon: icon(Pencil), onClick: async () => { await input.retract(input.draftText); } },
+    { label: copy.deleteQueuedEntry, icon: icon(Trash2), onClick: async () => { await input.retract(); } },
+  ];
+}
 
 /**
  * Replace the queue-backed subset in the exact order supplied by the Host.

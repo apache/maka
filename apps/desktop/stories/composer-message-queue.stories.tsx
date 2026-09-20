@@ -176,6 +176,9 @@ function followUpEntry(entryId: string, text: string): MessageQueueEntryProjecti
  */
 function QueuedComposer({ deliveryState }: { deliveryState: DeliveryState }) {
   const composerRef = useRef<ComposerHandle>(null);
+  // A production queue snapshot also carries queued steering; the plate filters
+  // it out — steering renders in the transcript instead (see the
+  // QueuedSteeringInTranscript story in app-shell).
   const [followup, setFollowup] = useState<MessageQueueEntryProjection[]>([
     {
       entryId: 'entry-steer',

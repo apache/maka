@@ -18,6 +18,8 @@
  */
 
 import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
+import { deriveMessageQueueProjection } from '../../../application/contracts/message-queue-projection.js';
+import { mergeTransientMessageProjection, queuedSteeringDeliveryActions } from '../../../application/contracts/transient-message-projection.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnBufferEvent,
@@ -59,13 +61,18 @@ interface SendAttempt {
 }
 interface MessagePresentation {
   transientMessages: TransientUserMessageProjection[];
-  messageQueue: { entries: MessageQueueEntryProjection[]; revision?: number };
+  messageQueue: { entries: readonly MessageQueueEntryProjection[]; revision?: number };
 }
-export function useWorkHubController(onSubmit?: () => void) {
+export function useWorkHubController(
+  onSubmit?: () => void,
+  restoreDraft?: (sessionId: string, text: string) => void,
+) {
   const services = useWorkHubServices();
   const locale = useUiLocale();
   const localeRef = useRef(locale);
   localeRef.current = locale;
+  const restoreDraftRef = useRef(restoreDraft);
+  restoreDraftRef.current = restoreDraft;
   const [sessionId, setSessionId] = useState<string>();
   const [sessions, setSessions] = useState<Awaited<ReturnType<WorkHubServices['listSessions']>>>(
     [],
@@ -383,15 +390,65 @@ export function useWorkHubController(onSubmit?: () => void) {
         setInteractions((current) => terminal ? clearInteractions(current, sessionId) : reduceInteractionQueues(current, sessionId, event));
         if (terminal) setTurnStates((current) => Object.fromEntries([...Object.entries(current), [event.turnId, event.type === 'complete' ? 'completed' : event.type === 'abort' ? 'aborted' : 'failed']].slice(-64)));
         if (event.type === 'queue_update') {
-          const entries = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])];
-          // Host evidence retires local submission placeholders. Queue state
-          // lives only in messageQueue, including after reconnect or withdrawal.
-          const ids = new Set(entries.map((entry) => entry.messageId));
+          const queue = deriveMessageQueueProjection(event);
+          // Host evidence retires local submission placeholders — except queued
+          // steering, which keeps its transcript bubble until the Turn consumes
+          // it. Queue state itself lives only in messageQueue.
+          const ids = new Set(
+            [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])].map((entry) => entry.messageId),
+          );
           if (pendingQueued.current && ids.has(pendingQueued.current.messageId)) pendingQueued.current.observed = true;
-          setMessagePresentation((previous) => ({
-            messageQueue: { entries: entries.filter((entry) => entry.state === 'queued'), revision: event.queueRevision },
-            transientMessages: previous.transientMessages.filter((message) => !ids.has(message.id)),
-          }));
+          setMessagePresentation((previous) => {
+            const steering = queue.transientMessages
+              .filter((message) => message.pendingSteering === true)
+              .map((message) => {
+                const entry = queue.entries.find((candidate) => candidate.messageId === message.id);
+                if (!entry) return message;
+                return {
+                  ...message,
+                  deliveryActions: queuedSteeringDeliveryActions({
+                    locale: localeRef.current,
+                    draftText: entry.content.displayText ?? entry.content.text,
+                    retract: async (draftText) => {
+                      try { await services.retractQueueEntry(sessionId, entry.entryId); }
+                      catch (reason) { report(reason); return false; }
+                      setMessagePresentation((current) => ({
+                        ...current,
+                        transientMessages: current.transientMessages.filter((candidate) => candidate.id !== message.id),
+                      }));
+                      if (draftText !== undefined && currentSessionId.current === sessionId) {
+                        restoreDraftRef.current?.(sessionId, draftText);
+                      }
+                      return true;
+                    },
+                  }),
+                };
+              });
+            const steeringIds = new Set(steering.map((message) => message.id));
+            // A steering entry that left the queue without an admission event
+            // still retires its transcript bubble.
+            const departed = new Set(
+              previous.messageQueue.entries
+                .filter((entry) => entry.placement === 'current_turn')
+                .map((entry) => entry.messageId)
+                .filter((messageId) => !steeringIds.has(messageId)),
+            );
+            const retained = previous.transientMessages
+              .filter(
+                (message) => (!ids.has(message.id) || steeringIds.has(message.id)) && !departed.has(message.id),
+              )
+              .map((message) => {
+                const update = steering.find((candidate) => candidate.id === message.id);
+                return update ? mergeTransientMessageProjection(message, update) : message;
+              });
+            for (const message of steering) {
+              if (!retained.some((candidate) => candidate.id === message.id)) retained.push(message);
+            }
+            return {
+              messageQueue: { entries: queue.entries, revision: event.queueRevision },
+              transientMessages: retained,
+            };
+          });
         }
         if (event.type === 'message_admission') {
           if (event.outcome === 'admitted') {

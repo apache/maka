@@ -75,6 +75,7 @@ import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import {
   mergeTransientMessageProjection,
   projectQueuedTransientMessages,
+  queuedSteeringDeliveryActions,
   reconcileTransientMessages,
 } from '../../../../application/contracts/transient-message-projection.js';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
@@ -158,6 +159,8 @@ export interface UseQuoteCompanionInput {
     outcome: ContextCompactionOutcome,
   ) => void;
   onContextCompactionError?: (sessionId: string, error: unknown) => void;
+  /** Returns a retracted message's text to the composer draft for editing. */
+  restoreDraft?: (sessionId: string, text: string) => void;
 }
 
 export async function requestPermissionModeWithConfirmation(
@@ -346,6 +349,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const pendingUserMessagesRef = useRef<Map<string, TransientUserMessageProjection>>(
     new Map(),
   );
+  const queuedSteeringRef = useRef<Set<string> | undefined>(undefined);
+  const restoreDraftRef = useRef(input.restoreDraft);
+  restoreDraftRef.current = input.restoreDraft;
   const [messageQueue, setMessageQueue] = useState<{
     readonly entries: readonly MessageQueueEntryProjection[];
     readonly queueRevision?: number;
@@ -501,13 +507,48 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   }, [bindPendingMessageTurn, reconcilePendingUserMessages]);
 
   const projectMessageQueue = useCallback(
-    (event: Extract<SessionEvent, { type: 'queue_update' }>) => {
+    (forkId: string, event: Extract<SessionEvent, { type: 'queue_update' }>) => {
       const queue = deriveMessageQueueProjection(event);
       setMessageQueue({ entries: queue.entries, queueRevision: event.queueRevision });
-      projectQueuedTransientMessages(pendingUserMessagesRef.current, queue.transientMessages);
+      const steering = queue.transientMessages.filter((message) => message.pendingSteering === true);
+      // Queued steering waits as a transcript bubble; an entry that leaves the
+      // queue without an admission event still retires its bubble.
+      const steeringIds = new Set(steering.map((message) => message.id));
+      for (const messageId of queuedSteeringRef.current ?? []) {
+        if (!steeringIds.has(messageId)) pendingUserMessagesRef.current.delete(messageId);
+      }
+      queuedSteeringRef.current = steeringIds;
+
+      projectQueuedTransientMessages(
+        pendingUserMessagesRef.current,
+        queue.transientMessages.map((message) => {
+          if (message.pendingSteering !== true) return message;
+          const entry = queue.entries.find((candidate) => candidate.messageId === message.id);
+          if (!entry) return message;
+          return {
+            ...message,
+            deliveryActions: queuedSteeringDeliveryActions({
+              locale: localeRef.current,
+              draftText: entry.content.displayText ?? entry.content.text,
+              retract: async (draftText) => {
+                try {
+                  await sideChat.retractQueueEntry(forkId, entry.entryId);
+                } catch {
+                  if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+                  return false;
+                }
+                pendingUserMessagesRef.current.delete(message.id);
+                syncPendingUserMessages();
+                if (draftText !== undefined) restoreDraftRef.current?.(forkId, draftText);
+                return true;
+              },
+            }),
+          };
+        }),
+      );
       syncPendingUserMessages();
     },
-    [syncPendingUserMessages],
+    [sideChat, syncPendingUserMessages],
   );
 
   const applyOwnedEvent = useCallback(
@@ -796,7 +837,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       (event: SessionEvent) => {
         if (!mountedRef.current || disposed || companionIdRef.current !== forkId) return;
         if (event.type === 'queue_update') {
-          projectMessageQueue(event);
+          projectMessageQueue(forkId, event);
           return;
         }
         const admission = pendingAdmissionRef.current;
@@ -962,6 +1003,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           allMessagesRef.current = [];
           setAllMessages([]);
           pendingUserMessagesRef.current.clear();
+          queuedSteeringRef.current = undefined;
           setPendingUserMessages([]);
           setMessageQueue({ entries: [] });
           onForkVisibilityChangeRef.current?.({

@@ -142,7 +142,7 @@ export interface ChatViewGoalIndicatorProps {
  * plus `hostTurnId` for the grouping once the Host names one.
  */
 export interface TransientUserMessageProjection {
-  /** Held above the composer until Runtime emits steering_message. */
+  /** Renders as a transcript bubble until Runtime emits steering_message. */
   pendingSteering?: boolean;
   deliveryStatus?: string;
   deliveryDetail?: string;
@@ -156,8 +156,9 @@ export interface TransientUserMessageProjection {
   inlineReferences?: readonly InlineReference[];
   /**
    * Presentation-only placement until canonical transcript grouping arrives.
-   * Pending steering and next-turn messages stay in the composer queue; an
-   * unresolved current-turn root prompt can render beside its live Turn.
+   * Next-turn messages stay in the composer queue; current-turn messages
+   * (steering in flight or queued, an unresolved root prompt) render in the
+   * transcript.
    */
   transientPlacement: 'current_turn' | 'next_turn';
   /** The Host Turn this Message is already bound to, once the Host named one. */
@@ -374,7 +375,7 @@ export function ChatView(props: {
     ),
     [visibleMessages],
   );
-  const transientMessages = (props.transientMessages ?? []).filter((message) => !message.pendingSteering && message.transientPlacement !== 'next_turn');
+  const transientMessages = (props.transientMessages ?? []).filter((message) => message.transientPlacement !== 'next_turn');
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
@@ -540,6 +541,9 @@ export function ChatView(props: {
     const turn = message.hostTurnId ? turnsById.get(message.hostTurnId) : undefined;
     if (
       message.transientPlacement !== 'current_turn'
+      // Queued steering is not the Turn's root prompt; it renders at the tail
+      // until steering_message carries it into the timeline.
+      || message.pendingSteering === true
       || turn === undefined
       || turn.user !== undefined
       || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)

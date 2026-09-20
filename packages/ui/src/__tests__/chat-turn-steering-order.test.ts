@@ -96,7 +96,7 @@ test('renders steering where it arrived in the assistant timeline', () => {
   }
 });
 
-test('holds steering above the composer while old output continues, then renders its real reply boundary', async () => {
+test('holds queued steering in the transcript while old output continues, then renders its real reply boundary', async () => {
   const messages: StoredMessage[] = [{ type: 'user', id: 'original', turnId: 'turn-1', ts: 1, text: 'request' }];
   const pending = { id: 'steer', hostTurnId: 'turn-1', ts: 2, text: 'inserted instruction', pendingSteering: true, transientPlacement: 'current_turn' as const };
   let live: import('../live-turn-projection.js').LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
@@ -113,7 +113,13 @@ test('holds steering above the composer while old output continues, then renders
     }) }),
   )}</body></html>`).document;
   const waiting = await render();
-  assert.equal(waiting.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
+  // Steering waits as a transcript bubble, not a plate row: the composer queue
+  // is the follow-up staging area, and this message is bound for the live Turn.
+  assert.equal(waiting.querySelector('.maka-composer-queue'), null);
+  assert.equal(
+    waiting.querySelector('[data-transient-message-id="steer"]')?.textContent?.includes(pending.text),
+    true,
+  );
   assert.equal(waiting.querySelectorAll('.maka-steering-message').length, 0);
   const timeline = () => createTranscriptProjection().project({ messages, liveTurns: live ? [live] : undefined, locale: 'en' })[0]!.timeline.map((item) => item.kind === 'user' ? item.message.text : item.kind === 'text' ? item.text : item.kind);
   assert.deepEqual(timeline(), ['old answer continues']);

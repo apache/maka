@@ -166,6 +166,13 @@ export function QuoteCompanionPanel(props: {
         { sessionId },
       );
     },
+    restoreDraft: (_sessionId, text) => {
+      const input = composerRef.current;
+      if (!input) return;
+      if (input.getText().trim()) input.appendText(text);
+      else input.setText(text);
+      input.focus();
+    },
   });
   useEffect(() => {
     props.onContentStateChange?.(props.panelId, companion.hasContent);

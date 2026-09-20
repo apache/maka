@@ -301,9 +301,15 @@ test('keeps Host order visible until the reordered projection arrives', async ()
     const deleteButtons = [
       ...container.querySelectorAll<HTMLButtonElement>('[aria-label="Delete"]'),
     ];
+    // Queued steering lives in the transcript, not the follow-up plate.
     assert.equal(container.querySelectorAll('[aria-label="Send now"]').length, 2);
-    assert.equal(editButtons.length, 3);
-    assert.equal(deleteButtons.length, 3);
+    assert.equal(editButtons.length, 2);
+    assert.equal(deleteButtons.length, 2);
+    assert.equal(
+      [...container.querySelectorAll('.maka-composer-queue-text')]
+        .every((row) => !row.textContent?.includes('steering')),
+      true,
+    );
     await act(async () => {
       editButtons[0]?.dispatchEvent(new window.Event('click', { bubbles: true }));
       await Promise.resolve();
@@ -313,7 +319,7 @@ test('keeps Host order visible until the reordered projection arrives', async ()
     );
     assert.ok(editInput);
     await act(() => {
-      editInput.value = 'updated steering\nsecond line';
+      editInput.value = 'updated first\nsecond line';
       editInput.dispatchEvent(new window.Event('input', { bubbles: true }));
     });
     await act(async () => {
@@ -329,23 +335,17 @@ test('keeps Host order visible until the reordered projection arrives', async ()
       await Promise.resolve();
     });
     assert.deepEqual(updatedEntries, [{
-      entryId: 'steering',
+      entryId: 'first',
       expectedQueueRevision: 7,
-      text: 'updated steering\nsecond line',
+      text: 'updated first\nsecond line',
     }]);
-    assert.deepEqual(deletedEntryIds, ['steering']);
-    const grips = [...container.querySelectorAll<HTMLElement>('[data-queue-placement="next_turn"] .maka-composer-queue-grip')];
+    assert.deepEqual(deletedEntryIds, ['first']);
+    const grips = [...container.querySelectorAll<HTMLElement>('.maka-composer-queue-grip')];
     assert.equal(grips.length, 2);
     const dragStart = new window.Event('dragstart', { bubbles: true });
     Object.defineProperty(dragStart, 'dataTransfer', {
       value: { effectAllowed: '', setData() {} },
     });
-    await act(() => grips[1]?.dispatchEvent(dragStart));
-    const rows = [...container.querySelectorAll('li')];
-    const steeringRow = rows[0]?.parentElement;
-    assert.ok(steeringRow);
-    await act(() => steeringRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
-    assert.equal(requestedOrder, undefined);
     await act(() => grips[1]?.dispatchEvent(dragStart));
     const firstRow = grips[0]?.closest('li')?.parentElement;
     assert.ok(firstRow);
@@ -353,11 +353,8 @@ test('keeps Host order visible until the reordered projection arrives', async ()
 
     assert.deepEqual(requestedOrder, ['second', 'first']);
     assert.deepEqual(
-      rows.map((row) => {
-        if (row.textContent?.includes('steering')) return 'steering';
-        return row.textContent?.includes('first') ? 'first' : 'second';
-      }),
-      ['steering', 'first', 'second'],
+      [...container.querySelectorAll('.maka-composer-queue-text')].map((row) => row.textContent),
+      ['first', 'second'],
     );
   } finally {
     await act(() => root.unmount());
@@ -366,15 +363,15 @@ test('keeps Host order visible until the reordered projection arrives', async ()
 });
 
 
-test('deduplicates pending steering against Host queue entries and keeps the plate through an empty queue snapshot', () => {
+test('steering stays out of the follow-up staging list entirely', () => {
   const pending = { id: 'steer', text: 'new direction', ts: 1, pendingSteering: true, transientPlacement: 'current_turn' as const };
   const queued = { entryId: 'host-entry', messageId: pending.id, placement: 'current_turn' as const, state: 'queued' as const, content: { text: pending.text } };
   for (const entries of [[queued], []]) {
     const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
       queuedMessages={entries} pendingMessages={[pending]} /></LocaleProvider>);
     const document = parseHTML(`<html><body>${markup}</body></html>`).document;
-    assert.equal(document.querySelectorAll('.maka-composer-queue-text').length, 1);
-    assert.equal(document.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
+    assert.equal(document.querySelector('.maka-composer-queue'), null,
+      'a steering send — queued or in flight — renders in the transcript, not the plate');
   }
 });
 
@@ -391,6 +388,8 @@ test('local sends share the flat staging list with icon-only delivery actions', 
         deliveryActions: [{ label: 'Check delivery', icon: <Search size={ICON_SIZE.control} aria-hidden="true" />, onClick() {} }] },
       { id: 'sending', text: 'still sending', ts: 2, transientPlacement: 'next_turn',
         deliveryStatus: 'Sending…' },
+      { id: 'local-steer', text: 'steering in flight', ts: 3, pendingSteering: true,
+        transientPlacement: 'current_turn', deliveryStatus: 'Sending…' },
     ]} /></LocaleProvider>);
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;
   assert.deepEqual(

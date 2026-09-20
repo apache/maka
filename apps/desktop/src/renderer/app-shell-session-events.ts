@@ -28,9 +28,10 @@ import {
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_TOTAL_CHARS,
 } from '@maka/ui';
-import type { LiveTurnBuffer, LiveTurnProjection, InteractionQueues } from '@maka/ui';
+import type { LiveTurnBuffer, LiveTurnProjection, InteractionQueues, TransientUserMessageProjection } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import { deriveMessageQueueProjection } from './application/contracts/message-queue-projection.js';
+import { queuedSteeringDeliveryActions } from './application/contracts/transient-message-projection.js';
 import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import * as modelConnectionErrors from './model-connection-errors.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -53,6 +54,9 @@ type ToastApi = {
 
 export interface AppShellSessionEventHandlers {
   handleEvent(sessionId: string, event: SessionEvent): void;
+  /** Whether the Host queue snapshot currently owns this steering bubble —
+   *  local-record retirement must not remove it. */
+  isQueuedSteering(sessionId: string, messageId: string): boolean;
   reconcilePersistedMessages(sessionId: string, messages: readonly StoredMessage[]): void;
   settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void>;
   flushDisplayEvents(sessionId: string): void;
@@ -80,7 +84,14 @@ export function createAppShellSessionEventHandlers(options: {
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnBuffer>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
   setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
+  /** Reads the last projected Host queue snapshot — the departed-entry diff. */
+  getMessageQueue?: (sessionId: string) => MessageQueueUiState | undefined;
   removeTransientMessage?: (sessionId: string, messageId: string) => void;
+  upsertTransientMessage?: (sessionId: string, message: TransientUserMessageProjection) => void;
+  /** Retract one Host-queued entry; the implementation surfaces the failure. */
+  retractQueueEntry?: (sessionId: string, entryId: string) => Promise<unknown>;
+  /** Put a retracted entry's text back into the composer for editing. */
+  restoreMessageDraft?: (sessionId: string, text: string) => void;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
@@ -108,7 +119,11 @@ export function createAppShellSessionEventHandlers(options: {
     setLiveTurnBySession,
     setInteractionBySession,
     setMessageQueueBySession,
+    getMessageQueue,
     removeTransientMessage,
+    upsertTransientMessage,
+    retractQueueEntry,
+    restoreMessageDraft,
     onInteractionChanged,
     onExecutionBoundaryChanged,
     onContextCompactionOutcome,
@@ -118,7 +133,6 @@ export function createAppShellSessionEventHandlers(options: {
   } = options;
   const scheduleFrame = options.scheduleFrame ?? createConversationDisplayFrameScheduler();
   const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
-
   function applyProjectionEvents(
     projection: LiveTurnBuffer | undefined,
     events: readonly SessionEvent[],
@@ -302,8 +316,46 @@ export function createAppShellSessionEventHandlers(options: {
     switch (event.type) {
       case 'queue_update': {
         const queue = deriveMessageQueueProjection(event);
+        // Queued steering stays on screen as a transcript bubble — the plate
+        // above the composer is for follow-ups only. An entry that leaves the
+        // queue without an admission event still retires its bubble.
+        const queuedSteering = new Map(
+          queue.transientMessages
+            .filter((message) => message.pendingSteering === true)
+            .map((message) => [message.id, message]),
+        );
         for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
-          removeTransientMessage?.(sessionId, entry.messageId);
+          if (!queuedSteering.has(entry.messageId)) removeTransientMessage?.(sessionId, entry.messageId);
+        }
+        for (const entry of getMessageQueue?.(sessionId)?.entries ?? []) {
+          if (entry.placement === 'current_turn' && !queuedSteering.has(entry.messageId)) {
+            removeTransientMessage?.(sessionId, entry.messageId);
+          }
+        }
+        if (upsertTransientMessage) {
+          for (const entry of event.steeringEntries ?? []) {
+            const transient = queuedSteering.get(entry.messageId);
+            if (!transient) continue;
+            upsertTransientMessage(sessionId, retractQueueEntry
+              ? {
+                  ...transient,
+                  deliveryActions: queuedSteeringDeliveryActions({
+                    locale: uiLocale,
+                    draftText: entry.content.displayText ?? entry.content.text,
+                    retract: async (draftText) => {
+                      try {
+                        await retractQueueEntry(sessionId, entry.entryId);
+                      } catch {
+                        return false;
+                      }
+                      removeTransientMessage?.(sessionId, entry.messageId);
+                      if (draftText !== undefined) restoreMessageDraft?.(sessionId, draftText);
+                      return true;
+                    },
+                  }),
+                }
+              : transient);
+          }
         }
         setMessageQueueBySession?.((current) => {
           if (!event.steering.length && !event.followup.length) {
@@ -419,6 +471,10 @@ export function createAppShellSessionEventHandlers(options: {
 
   return {
     handleEvent,
+    isQueuedSteering: (sessionId, messageId) =>
+      getMessageQueue?.(sessionId)?.entries.some(
+        (entry) => entry.placement === 'current_turn' && entry.messageId === messageId,
+      ) ?? false,
     reconcilePersistedMessages,
     settleAssistantStreaming,
     flushDisplayEvents,
