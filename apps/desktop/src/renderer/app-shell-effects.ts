@@ -165,6 +165,8 @@ export function useAppShellBootstrapSubscriptions(options: {
   rendererMountedRef: RefBox<boolean>;
   retireSession: (sessionId: string) => void;
   retiredSessionIds(sessions: readonly { id: string }[]): string[];
+  /** A targeted row read committed this id's authoritative absence. */
+  isSessionRemoved(sessionId: string): boolean;
   /** Mirrors the committed catalog; refresh promises resolve after commit. */
   sessionsRef: RefBox<readonly SessionSummary[]>;
   setSessionEventHealthBySession: SessionEventHealthUpdater;

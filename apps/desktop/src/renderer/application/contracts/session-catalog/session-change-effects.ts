@@ -38,6 +38,8 @@ export function handleSessionChangedEvent(
     refreshChangedSession: (sessionId: string) => Promise<SessionSummary | null>;
     retireSession: (sessionId: string) => void;
     retiredSessionIds(sessions: readonly { id: string }[]): string[];
+    /** A targeted row read committed this id's authoritative absence. */
+    isSessionRemoved(sessionId: string): boolean;
     /** Mirrors the committed catalog; refresh promises resolve after commit. */
     sessionsRef: RefBox<readonly SessionSummary[]>;
     /** Surfaces a model rebound; the caller owns the copy. */
@@ -45,12 +47,10 @@ export function handleSessionChangedEvent(
     setSessionEventHealthBySession: SessionEventHealthUpdater;
   },
 ): void {
-  // The sweep below reads the committed catalog (sessionsRef) rather than this
-  // result: on the single-row path the result is one row, not the complete
-  // list `retiredSessionIds` compares membership against.
-  const refreshedSessions: Promise<unknown> = event.sessionId === undefined
+  const changedSessionId = event.sessionId;
+  const refreshedSessions: Promise<unknown> = changedSessionId === undefined
     ? options.refreshSessions()
-    : options.refreshChangedSession(event.sessionId);
+    : options.refreshChangedSession(changedSessionId);
   if (event.reason === 'archived' && event.sessionId) options.retireSession(event.sessionId);
   if (event.reason === 'created' || event.reason === 'migrated') {
     void options.refreshProjects();
@@ -71,12 +71,17 @@ export function handleSessionChangedEvent(
   ) {
     options.clearPendingTurnActionsForSession(event.sessionId);
   }
-  const changedSessionId = event.sessionId;
   if (event.reason === 'message-appended' && changedSessionId && changedSessionId === options.activeIdRef.current) {
     void options.refreshMessages(changedSessionId);
   }
   if (event.reason === 'rebound') options.notifyModelRebound(event.modelId);
   void refreshedSessions.then(() => {
-    options.retiredSessionIds(options.sessionsRef.current).forEach(options.retireSession);
+    if (changedSessionId === undefined) {
+      // A list read is the catalog's membership authority.
+      options.retiredSessionIds(options.sessionsRef.current).forEach(options.retireSession);
+      return;
+    }
+    // A row-level read can only prove its own row's absence.
+    if (options.isSessionRemoved(changedSessionId)) options.retireSession(changedSessionId);
   });
 }

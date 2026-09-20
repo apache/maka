@@ -125,6 +125,15 @@ export class DesktopSessionLocalService {
     return target;
   }
 
+  /** True while the local store still owns the Session's creation intent. */
+  locallyOwned(scope: DesktopTargetScope, sessionId: string): boolean {
+    try {
+      return this.store.creation(this.target(scope).partition, sessionId) !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
   changed(scope?: DesktopTargetScope): void {
     if (scope) {
       const target = this.deps
@@ -677,4 +686,26 @@ function requiredId(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 256)
     throw new Error('Invalid local Session or Message identity');
   return value;
+}
+
+/**
+ * `session-local:changed` keeps the row id for message-level readers, while
+ * `sessions:changed` drops it for a Session the local store still owns: a
+ * targeted `sessions.get` can only answer for Host-owned rows, so a pending
+ * Session's change must signal a merged-list refresh instead.
+ */
+export function createSessionLocalChangedEmitter(deps: {
+  send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
+  locallyOwned(scope: DesktopTargetScope, sessionId: string): boolean;
+}): (scope: DesktopTargetScope, sessionId?: string) => void {
+  return (scope, sessionId) => {
+    deps.send('session-local:changed', scope, { sessionId });
+    const catalogSessionId =
+      sessionId !== undefined && !deps.locallyOwned(scope, sessionId) ? sessionId : undefined;
+    deps.send('sessions:changed', scope, {
+      reason: 'updated',
+      ts: Date.now(),
+      ...(catalogSessionId !== undefined ? { sessionId: catalogSessionId } : {}),
+    });
+  };
 }

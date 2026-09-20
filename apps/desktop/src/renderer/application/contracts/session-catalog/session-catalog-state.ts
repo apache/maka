@@ -163,6 +163,9 @@ export function createSessionCatalogController() {
       if (current.activeSessionId === next) return;
       state.replaceState({ ...current, activeSessionId: next });
     },
+    isRemoved(sessionId: string): boolean {
+      return state.getState().removedIds.has(sessionId);
+    },
   };
 }
 

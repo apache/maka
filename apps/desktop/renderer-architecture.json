@@ -496,7 +496,7 @@
           "react": 1
         },
         "importSpecifiers": 14,
-        "nonTriviaTokens": 3502
+        "nonTriviaTokens": 3512
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -854,7 +854,7 @@
           "react": 1
         },
         "importSpecifiers": 99,
-        "nonTriviaTokens": 12966
+        "nonTriviaTokens": 12972
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,

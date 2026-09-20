@@ -32,16 +32,26 @@ import {
 import { createSessionWorkspaceActions } from '../../renderer/session-workspace-actions.js';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 
-function row(id: string): SessionSummary {
-  return { id, name: id } as SessionSummary;
+function row(id: string): DesktopSessionSummary {
+  return { id, name: id, activityAt: 1, isArchived: false, revision: 1 } as DesktopSessionSummary;
 }
 
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function harness(activeId: string | undefined, catalog: SessionSummary[]) {
-  const sessionsRef = { current: [...catalog] };
+function harness(
+  activeId: string | undefined,
+  catalogRows: DesktopSessionSummary[],
+  source: Record<string, DesktopSessionSummary | null>,
+) {
+  const catalog = createSessionCatalogController();
+  catalog.commitSessions(catalogRows);
+  const sessionsRef = {
+    get current() {
+      return [...catalog.getState().sessions] as SessionSummary[];
+    },
+  };
   const activeIdRef = { current: activeId };
   const requestedRef = { current: activeId };
   const retired: string[] = [];
@@ -55,6 +65,7 @@ function harness(activeId: string | undefined, catalog: SessionSummary[]) {
     selectionRevisionRef: { current: 0 },
     setActiveIdState: (next) => {
       activeIdRef.current = next;
+      requestedRef.current = next;
     },
     setMessagesState: () => {},
     setTransientMessagesState: () => {},
@@ -67,14 +78,20 @@ function harness(activeId: string | undefined, catalog: SessionSummary[]) {
     sessionsRef,
     retireSession: (sessionId: string) => retired.push(sessionId),
     retiredSessionIds: workspace.retiredSessionIds,
+    isSessionRemoved: catalog.isRemoved,
     clearPendingTurnActionsForSession: () => {},
     refreshMessages: () => Promise.resolve(true),
     refreshProjects: () => Promise.resolve(),
-    refreshSessions: () => Promise.resolve(sessionsRef.current as SessionSummary[]),
+    refreshSessions: () => {
+      const next = Object.values(source).filter((s): s is DesktopSessionSummary => s !== null);
+      catalog.commitSessions(next);
+      return Promise.resolve(next as SessionSummary[]);
+    },
     // Mirrors the production drain: the committed catalog is updated before the
     // row read resolves, so a resolved promise means sessionsRef is current.
     refreshChangedSession: (sessionId: string) => {
-      const next = catalog.find((session) => session.id === sessionId) ?? null;
+      const next = source[sessionId] ?? null;
+      catalog.commitPatch(sessionId, next);
       return Promise.resolve(next);
     },
     setSessionEventHealthBySession: () => {},
@@ -85,12 +102,16 @@ function harness(activeId: string | undefined, catalog: SessionSummary[]) {
       toast: () => {},
     },
   };
-  return { options, retired, sessionsRef };
+  return { options, retired, sessionsRef, catalog };
 }
 
 describe('session retirement sweep', () => {
   it('keeps the selected session when an unrelated row changes', async () => {
-    const { options, retired } = harness('viewer', [row('viewer'), row('background')]);
+    const { options, retired } = harness(
+      'viewer',
+      [row('viewer'), row('background')],
+      { background: row('background') },
+    );
     const event: SessionChangedEvent = {
       reason: 'message-appended',
       sessionId: 'background',
@@ -101,12 +122,26 @@ describe('session retirement sweep', () => {
     assert.deepEqual(retired, []);
   });
 
+  it('keeps a selected session an unrelated row read cannot prove absent', async () => {
+    // The pending Session is selected before its row lands in the catalog; a
+    // targeted read proves only its own row, so the admission gap must not
+    // read as deletion.
+    const { options, retired } = harness('pending-task', [], {
+      background: row('background'),
+    });
+    handleSessionChangedEvent(
+      { reason: 'updated', sessionId: 'background', ts: 1 },
+      options,
+    );
+    await flush();
+    assert.deepEqual(retired, []);
+  });
+
   it('retires the selected session when its row leaves the catalog', async () => {
-    const { options, retired, sessionsRef } = harness('viewer', [row('viewer'), row('background')]);
-    options.refreshChangedSession = () => {
-      sessionsRef.current = [row('background')];
-      return Promise.resolve(null);
-    };
+    const { options, retired } = harness('viewer', [row('viewer'), row('background')], {
+      viewer: null,
+      background: row('background'),
+    });
     handleSessionChangedEvent(
       { reason: 'deleted', sessionId: 'viewer', ts: 1 },
       options,
@@ -115,11 +150,15 @@ describe('session retirement sweep', () => {
     assert.deepEqual(retired, ['viewer']);
   });
 
-  it('retires nothing when a row read fails and the catalog keeps the row', async () => {
-    const { options, retired } = harness('viewer', [row('viewer'), row('background')]);
+  it('keeps the selected session when its row read fails', async () => {
+    const { options, retired } = harness(
+      'viewer',
+      [row('viewer'), row('background')],
+      {},
+    );
     options.refreshChangedSession = () => Promise.resolve(null);
     handleSessionChangedEvent(
-      { reason: 'status-change', sessionId: 'background', ts: 1 },
+      { reason: 'status-change', sessionId: 'viewer', ts: 1 },
       options,
     );
     await flush();
@@ -127,11 +166,11 @@ describe('session retirement sweep', () => {
   });
 
   it('sweeps retired rows after a membership refresh', async () => {
-    const { options, retired, sessionsRef } = harness('viewer', [row('viewer'), row('background')]);
-    options.refreshSessions = () => {
-      sessionsRef.current = [row('background')];
-      return Promise.resolve(sessionsRef.current);
-    };
+    const { options, retired } = harness(
+      'viewer',
+      [row('viewer'), row('background')],
+      { background: row('background') },
+    );
     handleSessionChangedEvent({ reason: 'status-change', ts: 1 }, options);
     await flush();
     assert.deepEqual(retired, ['viewer']);
