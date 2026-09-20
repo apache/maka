@@ -85,7 +85,6 @@ import type {
   AppUpdateStatus,
 } from '../shared/app-update.js';
 import type {
-  GitBranchReadResult,
   GitReviewReadResult,
   GitReviewSource,
 } from '@maka/core/git-review';
@@ -1478,8 +1477,6 @@ export interface MakaBridge {
       source: GitReviewSource;
       baseBranch?: string;
     }): Promise<GitReviewReadResult>;
-    /** The working tree's branch (or short sha on a detached HEAD). */
-    branch(input: { sessionId: string }): Promise<GitBranchReadResult>;
   };
   goal: {
     /** The session's current goal (null when none is set). */

@@ -183,7 +183,6 @@ import type {
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
-  GitBranchReadResult,
   GitReviewReadResult,
   GitReviewSource,
 } from '@maka/core/git-review';
@@ -2975,9 +2974,6 @@ const makaBridge = {
       baseBranch?: string;
     }): Promise<GitReviewReadResult> {
       return invokeSessionInput('git-review:read', input);
-    },
-    branch(input: { sessionId: string }): Promise<GitBranchReadResult> {
-      return invokeSessionInput('git:branch', input);
     },
   },
   goal: {
