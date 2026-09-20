@@ -395,6 +395,8 @@ export const Composer = forwardRef<
     modelChoices?: ChatModelChoice[];
     /** Model-picker surface; 'wheel' is the collapsed WorkHub's inline picker, and any non-popover surface drops the thinking picker to a bottom sheet. */
     pickerPresentation?: 'popover' | 'bottom-sheet' | 'wheel';
+    /** Distinguishes the active Session model from defaults applied only to newly created WorkHub Sessions. */
+    modelSelectionPurpose?: 'session' | 'new-work-default';
     /**
      * Close the model/thinking pickers' open surfaces while an interaction
      * prompt occludes the composer — a bottom sheet stays a modal dialog even
@@ -2287,6 +2289,7 @@ export const Composer = forwardRef<
                       hasSession: props.activeSession !== undefined,
                       presentation: props.pickerPresentation,
                       isReadOnly: props.pickersReadOnly,
+                      purpose: props.modelSelectionPurpose,
                       modelChoices: props.modelChoices ?? [],
                       activeModel: props.activeModel,
                       activeModelLabel: props.activeModelLabel,

@@ -118,6 +118,7 @@ export interface MakaClientComposerModelSelectionProps {
   readonly hasSession: boolean;
   readonly presentation?: 'popover' | 'bottom-sheet' | 'wheel';
   readonly isReadOnly?: boolean;
+  readonly purpose?: 'session' | 'new-work-default';
   readonly modelChoices: readonly ChatModelChoice[];
   readonly activeModel?: string;
   readonly activeModelLabel?: string;

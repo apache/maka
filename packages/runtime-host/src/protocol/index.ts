@@ -101,14 +101,16 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 172 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 174 as const;
+// 174: WorkHub new-Work defaults may select an executor-specific model and
+// thinking level. Epoch-173 peers reject these fields on strict action shapes.
+// 173: Plugin executor Sessions may select an executor-specific model at
+// creation and configuration time, and propagate its reasoning effort.
 // 172: Usage screen requests and results accept fractional timestamps in the
 // persisted domain. Older peers reject these otherwise valid wire values.
 // 171: Removed the `connection.usage.read` operation along with the Command
 // Code GO provider it served. A peer older than this epoch may still advertise
 // or submit that operation, which this Host no longer answers.
-// 170: Plugin executor Sessions may select an executor-specific model at
-// creation and configuration time, and propagate its reasoning effort.
 // 169: The message execution query reports an identity the Host can prove was
 // never admitted as a positive `not_admitted` resolution instead of omitting
 // it, so silence stops meaning both "not admitted" and "cannot say yet".

@@ -137,7 +137,12 @@ test('WorkHub new Sessions accept a plugin executor as their creation default', 
     proposal: { disposition: 'create_new', title: 'External audit' },
     delegationText: 'Inspect the login retries',
     create: { workspace: { kind: 'project', projectId: 'maka' } },
-    newWorkDefaults: { executorId: 'codex.app-server', permissionMode: 'ask' },
+    newWorkDefaults: {
+      executorId: 'codex.app-server',
+      executorModel: 'gpt-6-astra',
+      thinkingLevel: 'high',
+      permissionMode: 'ask',
+    },
   };
   assert.deepEqual(decodeWorkHubCoordinationActFromTurnInput(input), input);
   for (const newWorkDefaults of [
@@ -145,6 +150,8 @@ test('WorkHub new Sessions accept a plugin executor as their creation default', 
       executorId: 'codex',
       model: { llmConnectionId: 'conn', llmConnectionSlug: 'test', model: 'model' },
     },
+    { executorModel: 'gpt-6-astra' },
+    { executorId: 'codex.app-server', executorModel: '' },
     { executorId: 'invalid executor' },
   ]) {
     assert.throws(

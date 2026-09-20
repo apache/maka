@@ -148,6 +148,7 @@ window.__MakaModuleLoader__.load({
       const currentLabel = selectedModel
         ? selected?.displayName || selectedModel
         : currentNative?.label || owner.activeModelLabel || owner.activeModel || 'Choose model';
+      const controlLabel = owner.purpose === 'new-work-default' ? 'New work model' : 'Model';
 
       const onModelChange = async (value) => {
         if (value.startsWith(CODEX_PREFIX)) {
@@ -186,9 +187,9 @@ window.__MakaModuleLoader__.load({
               options: wheelOptions,
               value: currentValue,
               label: currentLabel,
-              ariaLabel: `Model: ${currentLabel}`,
+              ariaLabel: `${controlLabel}: ${currentLabel}`,
               icon: selectedModel ? codexMark() : providerMark(owner, currentNative?.providerType),
-              tooltip: 'Model',
+              tooltip: controlLabel,
               triggerClassName: 'maka-model-switcher-trigger',
               disabled: owner.disabled || owner.streaming || wheelOptions.length === 0,
               open: wheelOpen,
@@ -196,7 +197,7 @@ window.__MakaModuleLoader__.load({
               onValueChange: onModelChange,
             })
           : React.createElement(Selector, {
-              label: `Model: ${currentLabel}`,
+              label: `${controlLabel}: ${currentLabel}`,
               isLabelHidden: true,
               options: choices,
               value: currentValue,

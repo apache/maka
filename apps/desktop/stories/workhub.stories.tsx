@@ -85,6 +85,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let updateExecution: Parameters<WorkHubServices['observe']>[4];
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
+  let newWorkDefaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'> = {};
   const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
   const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, ready: true }); };
   return {
@@ -163,6 +164,10 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     configureModel: async (id, input) => {
       writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget?.model ?? input.executorTarget?.model ?? session.model, thinkingLevel: input.thinkingLevel ?? undefined }; updateSessions?.();
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
+    },
+    getNewWorkDefaults: async () => newWorkDefaults,
+    setNewWorkDefaults: async (_id, defaults) => {
+      newWorkDefaults = defaults;
     },
     observe: (_id, _event, _error, _phase, execution) => { updateExecution = execution; publishExecution(); return () => { updateExecution = undefined; }; },
     openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, loadEarlier: async () => {}, close: async () => { updateTranscript = undefined; } }; },

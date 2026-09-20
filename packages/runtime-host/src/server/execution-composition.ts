@@ -2278,7 +2278,12 @@ export async function createExecutionRuntimeHostComposition(
                   workspace: input.create.workspace,
                   name: input.create.title,
                   ...(input.create.defaults?.executorId
-                    ? { executorId: input.create.defaults.executorId }
+                    ? {
+                        executorId: input.create.defaults.executorId,
+                        ...(input.create.defaults.executorModel
+                          ? { executorModel: input.create.defaults.executorModel }
+                          : {}),
+                      }
                     : {
                         modelTarget: input.create.defaults?.model
                           ? {
@@ -2291,6 +2296,9 @@ export async function createExecutionRuntimeHostComposition(
                       }),
                   ...(input.create.defaults?.permissionMode
                     ? { permissionMode: input.create.defaults.permissionMode }
+                    : {}),
+                  ...(input.create.defaults?.thinkingLevel
+                    ? { thinkingLevel: input.create.defaults.thinkingLevel }
                     : {}),
                   collaborationMode: 'agent',
                   orchestrationMode: 'default',

@@ -19,6 +19,7 @@
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isExecutorId } from './executor-id.js';
+import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 
 import {
   MODEL_FAILURE_MESSAGE_MAX_BYTES,
@@ -967,11 +968,14 @@ export type WorkHubDelegationWorkspace =
 export interface WorkHubCreateDefaults {
   /** Named plugin executor for the new Session. Mutually exclusive with model. */
   readonly executorId?: string;
+  /** Executor-specific model forwarded only when executorId is selected. */
+  readonly executorModel?: string;
   readonly model?: {
     readonly llmConnectionId: string;
     readonly llmConnectionSlug: string;
     readonly model: string;
   };
+  readonly thinkingLevel?: ThinkingLevel;
   readonly permissionMode?: PermissionMode;
 }
 
@@ -979,13 +983,27 @@ export function isWorkHubCreateDefaults(value: unknown): value is WorkHubCreateD
   if (
     !isRecord(value) ||
     Object.keys(value).some(
-      (key) => key !== 'executorId' && key !== 'model' && key !== 'permissionMode',
+      (key) =>
+        key !== 'executorId' &&
+        key !== 'executorModel' &&
+        key !== 'model' &&
+        key !== 'thinkingLevel' &&
+        key !== 'permissionMode',
     )
   )
     return false;
   if (value.permissionMode !== undefined && !isPermissionMode(value.permissionMode)) return false;
   if (value.executorId !== undefined && !isExecutorId(value.executorId)) return false;
+  if (
+    value.executorModel !== undefined &&
+    (typeof value.executorModel !== 'string' ||
+      value.executorModel.trim().length === 0 ||
+      value.executorModel.length > 512)
+  )
+    return false;
+  if (value.executorModel !== undefined && value.executorId === undefined) return false;
   if (value.executorId !== undefined && value.model !== undefined) return false;
+  if (value.thinkingLevel !== undefined && !isThinkingLevel(value.thinkingLevel)) return false;
   if (value.model === undefined) return true;
   const model = value.model;
   return (
