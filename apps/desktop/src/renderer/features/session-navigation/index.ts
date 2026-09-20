@@ -22,7 +22,6 @@ export { SessionNavigationProvider } from './ui/session-navigation-provider.js';
 export { createSessionOpenCommand } from './controller/session-open-command.js';
 export { useSessionNavigationReads } from './controller/use-session-navigation-reads.js';
 export { deriveSessionRail } from './model/session-rail.js';
-export { sessionMatchesRail } from './model/session-nav-filter.js';
 export { sessionRailLayoutStore } from './model/session-rail-layout-store.js';
 export type {
   SessionNavigationRowActions,

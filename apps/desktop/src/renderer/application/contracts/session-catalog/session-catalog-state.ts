@@ -130,8 +130,6 @@ export const selectSessionById = (
   sessionId: string | undefined,
 ): DesktopSessionSummary | undefined =>
   sessionId === undefined ? undefined : state.sessions.find((s) => s.id === sessionId);
-export const selectSessionCount = (state: SessionCatalogState): number => state.sessions.length;
-export const selectCatalogRevision = (state: SessionCatalogState): number => state.revision;
 export const selectActiveSessionId = (state: SessionCatalogState): string | undefined =>
   state.activeSessionId;
 

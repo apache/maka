@@ -32,7 +32,7 @@ import {
 } from './default-runtime-host-operation.js';
 import { buildCommandList } from "./command-palette-commands.js";
 import type { Command } from './features/overlays/index.js';
-import type { SessionCatalogController } from './session-catalog-state.js';
+import type { SessionCatalogController } from './application/contracts/session-catalog/session-catalog-state.js';
 import { renderConversationMarkdown } from "./conversation-markdown.js";
 import {
   commandPaletteActionErrorMessage,

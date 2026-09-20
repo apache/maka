@@ -22,8 +22,8 @@ import * as Conversation from './features/conversation/index.js';
 import {
   selectActiveSessionId,
   useSessionCatalogController,
-} from './session-catalog-state.js';
-import { useExternalStoreSelector } from './use-external-store-selector.js';
+} from './application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { useAppShellSessionList } from './use-app-shell-session-list.js';
 import { createBootstrapSelectionLease } from './bootstrap-selection-lease.js';
 import { hasNewTaskReloadIntent } from './new-task-reload-intent.js';

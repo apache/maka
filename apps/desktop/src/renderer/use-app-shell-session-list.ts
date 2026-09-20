@@ -31,7 +31,7 @@ import {
 import {
   selectAuthoritativeSessionIds,
   type SessionCatalogController,
-} from './session-catalog-state.js';
+} from './application/contracts/session-catalog/session-catalog-state.js';
 import { sessionIdSetsEqual } from './application/contracts/session-catalog/session-id-set.js';
 import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { createSessionPatchDrain } from './platform/desktop/session-catalog-sync.js';

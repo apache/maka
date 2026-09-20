@@ -90,7 +90,7 @@ import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-sett
 import {
   createSessionCatalogController,
   type SessionCatalogController,
-} from '../../src/renderer/session-catalog-state.js';
+} from '../../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type {
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
   DesktopRuntimeHostProfileChangedEvent,
