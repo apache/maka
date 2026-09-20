@@ -40,10 +40,23 @@ here too.
 - The palette's command list stays a shell concern: the shell builds the rows
   from its own actions and passes them to `CommandPalette`.
 
+## Destination
+
+The ledger's `commands-and-overlays` ownership entry originally named
+`application/overlays` as the home for this code. It now names
+`features/overlays`: the `controllerOwners` guard records the owner component
+in `features/overlays/ui/overlays-root.tsx` and requires production consumers
+to import it through `features/<slice>/index.ts`, which must not export the
+controller itself. Neither the application nor the feature zone may import
+legacy code, so the state, shortcuts, and the portable modals live here while
+`app-shell-overlays.tsx` and
+`app-shell-command-actions.ts` stay on the entry's legacy list until the
+Settings modal and the command builders can follow.
+
 ## Model
 
-`model/settings-surface.ts` is the Settings surface as data: every opener is
-an intent, `openSettingsSurface` applies it, and the section an intent lands
+`model/settings-modal-state.ts` is the Settings modal state as data: every
+opener is an intent, `openSettingsModal` applies it, and the section it lands
 on is what the adapter persists. `model/search-scroll-target.ts` records the
 turn a Search result asked the transcript to scroll to; the transcript
 reading-position owner clears the target when navigation finishes.

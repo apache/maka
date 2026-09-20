@@ -298,7 +298,10 @@ function runRendererEntryBundleContract(directImports) {
   );
 }
 
-function canonicalRendererEntryHtml(extraBody = '', policy = "script-src 'self'") {
+function canonicalRendererEntryHtml(
+  extraBody = '',
+  policy = "script-src 'self' maka-client-plugin:",
+) {
   return `
     <!doctype html>
     <html>

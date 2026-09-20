@@ -198,6 +198,8 @@ export interface ConversationCopy {
     model: string;
     switchAriaLabel: string;
     switchWarning: string;
+    /** Secondary line on the cache warning row: activating the row dismisses it. */
+    switchWarningDismiss: string;
     newChatAriaLabel: (label: string) => string;
     newChatTitle: (label: string) => string;
     configureAriaLabel: (label: string) => string;
@@ -295,7 +297,15 @@ export interface ConversationCopy {
     continuing: string;
     workingPhrases: readonly string[];
     processDetails: string;
+    processExpandAll: string;
+    processRestore: string;
     processDuration: (minutes: number, seconds: number) => string;
+    turnStatusRunning: (elapsed: string) => string;
+    turnStatusCompleted: (elapsed: string, at: string) => string;
+    turnStatusCompletedAlone: string;
+    turnStatusCompletedAloneWithDuration: (elapsed: string) => string;
+    turnStatusAborted: (elapsed: string) => string;
+    turnStatusFailed: (elapsed: string) => string;
     providerRetryScheduled: (seconds: number, attempt: number, maxAttempts: number) => string;
     providerRetryStarted: (attempt: number, maxAttempts: number) => string;
     providerRetryWaiting: (attempt: number, maxAttempts: number) => string;
@@ -356,6 +366,8 @@ export interface ConversationCopy {
       contextUsageNoWindow: (used: number) => string;
       contextUsageUnavailable: string;
       contextUsageOpen: string;
+      gitBranchLabel: string;
+      gitBranchDetached: (sha: string) => string;
       stepLimit: string;
     };
   };
@@ -527,6 +539,7 @@ const CONVERSATION_COPY = {
       level: { off: '关', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
       switching: '切换中', model: '模型', switchAriaLabel: '切换当前任务模型',
       switchWarning: '切换模型可能需要重建服务商提示缓存，使下一次请求更慢或成本更高。',
+      switchWarningDismiss: '选择即可关闭',
       newChatAriaLabel: (label) => `选择新任务模型，当前 ${label}`, newChatTitle: (label) => `新任务使用的模型：${label}`,
       configureAriaLabel: (label) => `配置模型连接，当前 ${label}`, configureTitle: '配置模型连接',
     },
@@ -565,7 +578,7 @@ const CONVERSATION_COPY = {
       chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], processDetails: '执行过程', processDuration: (minutes, seconds) => `用时 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小时', minute: '分', second: '秒' })}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '响应中途断开', network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, failureDetailsUnavailable: '无可用诊断详情。', safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
+      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], processDetails: '执行过程', processExpandAll: '放大查看完整过程', processRestore: '恢复固定高度', processDuration: (minutes, seconds) => `用时 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusRunning: (elapsed: string) => `进行中 · 已用 ${elapsed}`, turnStatusCompleted: (elapsed: string, at: string) => `完成 · ${elapsed} · ${at}`, turnStatusCompletedAlone: '已完成', turnStatusCompletedAloneWithDuration: (elapsed: string) => `完成 · ${elapsed}`, turnStatusAborted: (elapsed: string) => `已中止 · ${elapsed}`, turnStatusFailed: (elapsed: string) => `失败 · ${elapsed}`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小时', minute: '分', second: '秒' })}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '响应中途断开', network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, failureDetailsUnavailable: '无可用诊断详情。', safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
       editMessageDisabledDirectoryReferences: '包含文件夹引用的历史消息暂不支持编辑并重发',
       userAriaLabel: '你发送的消息', systemAriaLabel: '系统消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}消息${context ? `：${context}` : ''}`, sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', scheduledTaskTriggered: '定时任务触发', scheduledTaskTitle: (id) => `由定时任务触发 · ${id}`, legacyAutomationTriggered: '旧版自动化（仅历史）', legacyAutomationTitle: (id) => `由旧版自动化触发 · ${id} · 仅保留历史，不会再次执行`, goalContinued: 'Goal 自动继续', goalTitle: (id) => `由 Goal 继续执行 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
       thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `会话：${name}`, sessionSnapshotPending: '发送时截取快照', sessionSnapshotCaptured: (iso, truncated) => `快照时间 ${iso}${truncated ? ' · 内容已截断' : ''}`, quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '已中断', abortedByStop: '已中断 · 由停止按钮触发',
@@ -591,9 +604,11 @@ const CONVERSATION_COPY = {
           `上下文窗口：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) =>
           `已用 ${formatCompactTokenCount(used)} token；上下文窗口上限未知`,
-        contextUsageUnavailable: '暂无用量数据',
-        contextUsageOpen: '打开用量追踪',
-        stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
+      contextUsageUnavailable: '暂无用量数据',
+      contextUsageOpen: '打开用量追踪',
+      gitBranchLabel: '当前 Git 分支',
+      gitBranchDetached: (sha: string) => `游离 HEAD（${sha}）`,
+      stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
     },
     chat: {
@@ -685,6 +700,7 @@ const CONVERSATION_COPY = {
       level: { off: '關', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
       switching: '切換中', model: '模型', switchAriaLabel: '切換目前任務模型',
       switchWarning: '切換模型可能需要重建服務商提示快取，使下一次請求更慢或成本更高。',
+      switchWarningDismiss: '選擇即可關閉',
       newChatAriaLabel: (label) => `選擇新任務模型，目前 ${label}`, newChatTitle: (label) => `新任務使用的模型：${label}`,
       configureAriaLabel: (label) => `設定模型連線，目前 ${label}`, configureTitle: '設定模型連線',
     },
@@ -723,7 +739,7 @@ const CONVERSATION_COPY = {
       chooseAriaLabel: (label, branch) => branch ? `選擇專案：${label}，目前分支 ${branch}` : `選擇專案：${label}`,
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在處理…', continuing: '繼續中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盤算…', '正在鑽研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓搗…', '正在醞釀…', '正在攻堅…', '正在權衡…', '正在拾掇…'], processDetails: '執行過程', processDuration: (minutes, seconds) => `用時 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小時', minute: '分', second: '秒' })}後重試（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重試（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重試（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '回應中途斷開', network: '網路中斷', provider_capacity: '模型服務暫時滿載', provider_unavailable: '模型服務暫時不可用', rate_limit: '觸發模型速率限制', timeout: '請求超時', unknown: '模型請求失敗' }, failureDetailsUnavailable: '無可用診斷詳情。', safeResumePending: '正在檢查…', safeResume: '繼續這一輪', thinking: '深度思考', truncated: '已截斷', copied: '已複製', copying: '複製中', copyFailed: '複製失敗', copy: '複製', editMessage: '編輯並重發', editMessageDisabledRunning: '目前回答仍在進行中，結束後再編輯', editMessageDisabledTransformedText: '包含已展開上下文的歷史訊息暫不支援編輯並重發',
+      you: '你', assistant: 'Maka', processing: '正在處理…', continuing: '繼續中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盤算…', '正在鑽研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓搗…', '正在醞釀…', '正在攻堅…', '正在權衡…', '正在拾掇…'], processDetails: '執行過程', processExpandAll: '放大檢視完整過程', processRestore: '恢復固定高度', processDuration: (minutes, seconds) => `用時 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusRunning: (elapsed: string) => `進行中 · 已用 ${elapsed}`, turnStatusCompleted: (elapsed: string, at: string) => `完成 · ${elapsed} · ${at}`, turnStatusCompletedAlone: '已完成', turnStatusCompletedAloneWithDuration: (elapsed: string) => `完成 · ${elapsed}`, turnStatusAborted: (elapsed: string) => `已中止 · ${elapsed}`, turnStatusFailed: (elapsed: string) => `失敗 · ${elapsed}`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小時', minute: '分', second: '秒' })}後重試（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重試（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重試（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '回應中途斷開', network: '網路中斷', provider_capacity: '模型服務暫時滿載', provider_unavailable: '模型服務暫時不可用', rate_limit: '觸發模型速率限制', timeout: '請求超時', unknown: '模型請求失敗' }, failureDetailsUnavailable: '無可用診斷詳情。', safeResumePending: '正在檢查…', safeResume: '繼續這一輪', thinking: '深度思考', truncated: '已截斷', copied: '已複製', copying: '複製中', copyFailed: '複製失敗', copy: '複製', editMessage: '編輯並重發', editMessageDisabledRunning: '目前回答仍在進行中，結束後再編輯', editMessageDisabledTransformedText: '包含已展開上下文的歷史訊息暫不支援編輯並重發',
       editMessageDisabledDirectoryReferences: '包含資料夾引用的歷史訊息暫不支援編輯並重發',
       userAriaLabel: '你傳送的訊息', systemAriaLabel: '系統訊息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}訊息${context ? `：${context}` : ''}`, sourceAriaLabel: '本輪迴答的來源', derivativesAriaLabel: '本輪迴答的衍生', scheduledTaskTriggered: '定時任務觸發', scheduledTaskTitle: (id) => `由定時任務觸發 · ${id}`, legacyAutomationTriggered: '舊版自動化（僅歷史）', legacyAutomationTitle: (id) => `由舊版自動化觸發 · ${id} · 僅保留歷史，不會再次執行`, goalContinued: 'Goal 自動繼續', goalTitle: (id) => `由 Goal 繼續執行 · ${id}`, agentGraphTriggered: 'Agent Graph 自動繼續', agentGraphTitle: (graphId) => `由 Agent Graph 排程器觸發 · ${graphId}`,
       thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `作業階段：${name}`, sessionSnapshotPending: '傳送時擷取快照', sessionSnapshotCaptured: (iso, truncated) => `快照時間 ${iso}${truncated ? ' · 內容已截斷' : ''}`, quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中斷)', abortedByStop: '(已中斷 · 由停止按鈕觸發)',
@@ -751,6 +767,8 @@ const CONVERSATION_COPY = {
           `已用 ${formatCompactTokenCount(used)} token；上下文視窗上限未知`,
         contextUsageUnavailable: '暫無用量資料',
         contextUsageOpen: '開啟用量追蹤',
+        gitBranchLabel: '目前 Git 分支',
+        gitBranchDetached: (sha: string) => `游離 HEAD（${sha}）`,
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
       },
     },
@@ -869,6 +887,7 @@ const CONVERSATION_COPY = {
       level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
       switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this task',
       switchWarning: 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.',
+      switchWarningDismiss: 'Select to dismiss',
       newChatAriaLabel: (label) => `Choose a model for the new task, currently ${label}`, newChatTitle: (label) => `Model for the new task: ${label}`,
       configureAriaLabel: (label) => `Configure model connections, currently ${label}`, configureTitle: 'Configure model connections',
     },
@@ -907,7 +926,7 @@ const CONVERSATION_COPY = {
       chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
     },
     messages: {
-      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], processDetails: 'Execution process', processDuration: (minutes, seconds) => `Worked for ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, { day: 'd', hour: 'h', minute: 'm', second: 's' })} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { stream_truncated: 'Response stream ended before completion', network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, failureDetailsUnavailable: 'No diagnostic details are available.', safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
+      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], processDetails: 'Execution process', processExpandAll: 'Show the full process', processRestore: 'Restore the capped view', processDuration: (minutes, seconds) => `Worked for ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`, turnStatusRunning: (elapsed: string) => `Running · ${elapsed} elapsed`, turnStatusCompleted: (elapsed: string, at: string) => `Done · ${elapsed} · ${at}`, turnStatusCompletedAlone: 'Done', turnStatusCompletedAloneWithDuration: (elapsed: string) => `Done · ${elapsed}`, turnStatusAborted: (elapsed: string) => `Stopped · ${elapsed}`, turnStatusFailed: (elapsed: string) => `Failed · ${elapsed}`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, { day: 'd', hour: 'h', minute: 'm', second: 's' })} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { stream_truncated: 'Response stream ended before completion', network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, failureDetailsUnavailable: 'No diagnostic details are available.', safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
       editMessageDisabledDirectoryReferences: 'Edit & resend does not yet support messages with folder references',
       userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: (context) => `Response actions${context ? `: ${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action} response${context ? `: ${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action} message${context ? `: ${context}` : ''}`, sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', scheduledTaskTriggered: 'Triggered by scheduled task', scheduledTaskTitle: (id) => `Triggered by scheduled task · ${id}`, legacyAutomationTriggered: 'Legacy Automation (history only)', legacyAutomationTitle: (id) => `Triggered by legacy Automation · ${id} · Historical only; it will not run again`, goalContinued: 'Continued by Goal', goalTitle: (id) => `Continued by Goal · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
       thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', sessionSnapshotLabel: (name) => `Session: ${name}`, sessionSnapshotPending: 'snapshot captured when sent', sessionSnapshotCaptured: (iso, truncated) => `captured ${iso}${truncated ? ' · truncated' : ''}`, quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
@@ -935,6 +954,8 @@ const CONVERSATION_COPY = {
           `This request used ${formatCompactTokenCount(used)} tokens; no context limit is available for this model.`,
         contextUsageUnavailable: 'No usage data is available for this request.',
         contextUsageOpen: 'Open usage trace',
+        gitBranchLabel: 'Current Git branch',
+        gitBranchDetached: (sha: string) => `detached HEAD (${sha})`,
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },
     },

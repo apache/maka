@@ -25,17 +25,24 @@ import { describe, test } from 'node:test';
 import { resolveOpenPath } from '../open-path-guard.js';
 
 describe('open path guard', () => {
+  test('rejects the retired Skills key even when the compatibility folder exists', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      await mkdir(join(workspaceRoot, 'skills'));
+      assert.deepEqual(await resolveOpenPath({ key: 'skills', workspaceRoot }), {
+        ok: false,
+        reason: 'unknown-key',
+      });
+    });
+  });
+
   test('resolves known allowlisted keys inside workspace', async () => {
     await withWorkspace(async (workspaceRoot) => {
-      await mkdir(join(workspaceRoot, 'skills'), { recursive: true });
       await mkdir(join(workspaceRoot, 'memory'), { recursive: true });
 
       const workspace = await resolveOpenPath({ key: 'workspace', workspaceRoot });
-      const skills = await resolveOpenPath({ key: 'skills', workspaceRoot });
       const memory = await resolveOpenPath({ key: 'memory', workspaceRoot });
 
       assert.equal(workspace.ok, true);
-      assert.equal(skills.ok, true);
       assert.equal(memory.ok, true);
     });
   });
@@ -58,11 +65,11 @@ describe('open path guard', () => {
   test('rejects unknown keys, missing targets, and files', async () => {
     await withWorkspace(async (workspaceRoot) => {
       assert.deepEqual(await resolveOpenPath({ key: 'unknown', workspaceRoot }), { ok: false, reason: 'unknown-key' });
-      assert.deepEqual(await resolveOpenPath({ key: 'skills', workspaceRoot }), { ok: false, reason: 'missing' });
+      assert.deepEqual(await resolveOpenPath({ key: 'memory', workspaceRoot }), { ok: false, reason: 'missing' });
 
-      await writeFile(join(workspaceRoot, 'skills'), 'not a directory', 'utf8');
-      assert.deepEqual(await resolveOpenPath({ key: 'skills', workspaceRoot }), { ok: false, reason: 'not-a-directory' });
-      assert.deepEqual(await resolveOpenPath({ key: 'project', workspaceRoot, projectRoot: join(workspaceRoot, 'skills') }), { ok: false, reason: 'not-a-directory' });
+      await writeFile(join(workspaceRoot, 'memory'), 'not a directory', 'utf8');
+      assert.deepEqual(await resolveOpenPath({ key: 'memory', workspaceRoot }), { ok: false, reason: 'not-a-directory' });
+      assert.deepEqual(await resolveOpenPath({ key: 'project', workspaceRoot, projectRoot: join(workspaceRoot, 'memory') }), { ok: false, reason: 'not-a-directory' });
     });
   });
 
@@ -77,9 +84,9 @@ describe('open path guard', () => {
   test('rejects symlink escapes from inside an allowed directory', async () => {
     await withWorkspace(async (workspaceRoot, outsideRoot) => {
       await mkdir(outsideRoot, { recursive: true });
-      await symlink(outsideRoot, join(workspaceRoot, 'skills'));
+      await symlink(outsideRoot, join(workspaceRoot, 'memory'));
 
-      assert.deepEqual(await resolveOpenPath({ key: 'skills', workspaceRoot }), { ok: false, reason: 'not-allowed' });
+      assert.deepEqual(await resolveOpenPath({ key: 'memory', workspaceRoot }), { ok: false, reason: 'not-allowed' });
     });
   });
 
@@ -88,10 +95,10 @@ describe('open path guard', () => {
     const linkRoot = await mkdtemp(join(tmpdir(), 'maka-open-path-link-parent-'));
     const workspaceLink = join(linkRoot, 'workspace-link');
     try {
-      await mkdir(join(realRoot, 'skills'), { recursive: true });
+      await mkdir(join(realRoot, 'memory'), { recursive: true });
       await symlink(realRoot, workspaceLink);
 
-      const result = await resolveOpenPath({ key: 'skills', workspaceRoot: workspaceLink });
+      const result = await resolveOpenPath({ key: 'memory', workspaceRoot: workspaceLink });
 
       assert.equal(result.ok, true);
     } finally {

@@ -46,4 +46,3 @@ export interface SessionInspectorService {
     handler: () => void,
   ): () => void;
 }
-

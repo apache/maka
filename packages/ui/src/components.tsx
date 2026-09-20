@@ -43,7 +43,7 @@ export {
   useSidebarUpdateProjection,
   type SidebarUpdateProjection,
 } from './sidebar-update-projection-context.js';
-export type { BundledSkillCatalogEntry, DailyReviewMarkdownActionInput, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';
+export type { BundledSkillCatalogEntry, DailyReviewMarkdownActionInput, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails, SkillLocation, SkillLocationRef } from './module-panel-types.js';
 export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolDisplayName } from './tool-format.js';
 export { formatBytes, ToolCallDetail, ToolTrow } from './tool-activity.js';
 export { ToolResultPreview } from './tool-activity/tool-result-preview.js';

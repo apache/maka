@@ -90,6 +90,10 @@ for (const accept of [false, true]) {
       // the native dialog are replaced. Stop before opening post-repair stores.
       const deps = {
         app,
+        protocol: { handle: () => undefined },
+        ClientPluginTransport: class {},
+        MAKA_CLIENT_PLUGIN_SCHEME: 'maka-plugin',
+        registerClientPluginIpc: () => undefined,
         resolveSystemUiLocale,
         resolveShellEnv: async () => {},
         resolveBuildInfo: () => ({ mode: 'packaged' }),

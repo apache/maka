@@ -55,7 +55,7 @@ afterEach(async () => {
   });
 });
 
-function domRoot() {
+function domRoot({ clientHeight = 360, scrollHeight = 360 }: { clientHeight?: number; scrollHeight?: number } = {}) {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
     document,
@@ -64,7 +64,29 @@ function domRoot() {
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
     IS_REACT_ACT_ENVIRONMENT: true,
+    // The process body is measured through Astryx's `useScrollableArea`, which
+    // reads computed styles and a real (non-zero) client box. LinkeDOM supplies
+    // neither, so stand in for both; each case passes the numbers it is about.
+    getComputedStyle: () =>
+      new Proxy(
+        { display: 'block', writingMode: 'horizontal-tb', direction: 'ltr', overflowX: 'auto', overflowY: 'auto' },
+        {
+          get: (target, prop) =>
+            (target as Record<string | symbol, unknown>)[prop] ??
+            (prop === 'getPropertyValue' ? () => '' : ''),
+        },
+      ),
   });
+  const define = (name: string, value: number) => {
+    Object.defineProperty(window.HTMLElement.prototype, name, {
+      configurable: true,
+      get() { return value; },
+    });
+  };
+  define('clientWidth', 800);
+  define('clientHeight', clientHeight);
+  define('scrollWidth', 800);
+  define('scrollHeight', scrollHeight);
   const container = document.querySelector('#root');
   assert.ok(container);
   const root = createRoot(container);
@@ -582,7 +604,10 @@ test('rotates working phrases on the elapsed clock without announcing each phras
     <LocaleProvider locale="en"><TurnView turn={next} liveStreaming={{ runningStatus: true }} /></LocaleProvider>,
   ));
   await render(turn);
-  const status = container.querySelector('[role="status"]')!;
+  // The running cue now lives on the turn's status line at the BOTTOM of the
+  // turn; scope the query to it rather than "the first role=status", which other
+  // surfaces also use.
+  const status = container.querySelector('.maka-turn-footer-meta [role="status"]')!;
   assert.match(status.textContent, /Pondering/);
   assert.equal(status.getAttribute('aria-label'), 'Working…');
   await act(() => context.mock.timers.tick(20_000));
@@ -781,13 +806,24 @@ const COMPLETED_TOOL: TurnTimelineItem = {
 
 test('collapses the whole completed process and leaves the final answer outside', async () => {
   const { container, root } = domRoot();
-  const turn = { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' as const, durationMs: 213_000 };
+  // A real start (not the placeholder 0): the settled line states the finish
+  // time, which needs a timestamp the transcript could actually have carried.
+  const turn = { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' as const, durationMs: 213_000, startedAt: Date.UTC(2026, 8, 19, 9, 0) };
   await renderTurn(root, turn);
   const process = container.querySelector('details.maka-processing-sequence');
   const summary = process?.querySelector('summary');
   assert.ok(process && summary);
   assert.equal(process.hasAttribute('open'), false);
-  assert.equal(summary.textContent, 'Worked for 3m 33s');
+  // The summary names what the disclosure holds; the elapsed reads from the
+  // status line at the bottom of the turn, which a long answer cannot push away.
+  assert.equal(summary.textContent?.trim(), 'Execution process');
+  const settledLine =
+    container.querySelector('.maka-turn-footer-meta .maka-turn-status-line')?.textContent ?? '';
+  assert.match(settledLine, /Done · Worked for 3m 33s/);
+  // The finish time is what makes a transcript reviewable after the fact: the
+  // message's relative stamp says how long ago, not when. Local formatting, so
+  // the assertion pins its presence rather than a clock string.
+  assert.match(settledLine, / · [^·]+\d{1,2}:\d{2}/);
   assert.match(process.textContent ?? '', /Checking the login state/);
   assert.doesNotMatch(process.textContent ?? '', /the answer/);
   const answer = container.querySelectorAll('.maka-chat-message-bubble-assistant')[1];
@@ -882,11 +918,84 @@ test('a newly failed tool reveals the process while turn recovery stays outside'
   assert.equal(container.querySelectorAll('.maka-processing-summary').length, 1);
 });
 
-test('uses a generic process label when no duration is recorded, and localizes known duration', async () => {
+test('uses a generic process label when no duration is recorded, and localizes the settled duration', async () => {
   const { container, root } = domRoot();
   const turn = { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' as const };
   await renderTurn(root, turn);
-  assert.equal(container.querySelector('.maka-processing-summary')?.textContent, 'Execution process');
+  assert.equal(container.querySelector('.maka-processing-summary')?.textContent?.trim(), 'Execution process');
+  // No recorded duration: the status line still states that the turn is done,
+  // rather than inventing a duration or a finish time it does not have.
+  assert.equal(
+    container.querySelector('.maka-turn-footer-meta .maka-turn-status-line')?.textContent,
+    'Done',
+  );
   await act(() => root.render(<LocaleProvider locale="zh-CN"><TurnView turn={{ ...turn, durationMs: 213_000 }} /></LocaleProvider>));
-  assert.equal(container.querySelector('.maka-processing-summary')?.textContent, '用时 3 分 33 秒');
+  assert.match(
+    container.querySelector('.maka-turn-footer-meta .maka-turn-status-line')?.textContent ?? '',
+    /完成 · 用时 3 分 33 秒/,
+  );
+});
+
+const clickOn = (element: Element) =>
+  act(() => { element.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
+
+test('the zoom switch unclamps the body, rides the body corner, and survives folding', async () => {
+  // jsdom has no layout: hand the hook a body taller than its client box so it
+  // measures one overflowing process (the fixture values are the real story's).
+  const { container, root } = domRoot({ clientHeight: 360, scrollHeight: 900 });
+  const thinking: TurnTimelineItem = {
+    kind: 'thinking',
+    text: 'weighing the options',
+    messageId: 'thought-1',
+    live: true,
+  };
+  const turn = { ...turnWith([thinking, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' as const };
+  await renderTurn(root, turn);
+  const process = container.querySelector('details.maka-processing-sequence');
+  assert.ok(process);
+  const summary = process.querySelector('summary')!;
+  const body = process.querySelector('.maka-processing-body')!;
+  // Geometry comes from `domRoot` (a body taller than its client box): the
+  // switch is offered only when there is something to unclamp.
+  await clickOn(summary);
+  assert.equal(process.hasAttribute('open'), true);
+  // Default: the reading cap is on, so no unclamped flag.
+  assert.equal(body.getAttribute('data-unclamped'), null);
+  // The switch rides the body's corner, never the header.
+  assert.equal(summary.querySelector('.maka-processing-zoom'), null);
+  const corner = body.querySelector('.maka-processing-zoom');
+  assert.ok(corner, 'the zoom switch sits in the body');
+  const toggle = corner.querySelector('button')!;
+  assert.equal(toggle.getAttribute('aria-label'), 'Show the full process');
+  assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+  await clickOn(toggle);
+  // Unclamped: the body lists in full and the switch now offers the reverse.
+  assert.equal(body.getAttribute('data-unclamped'), 'true');
+  assert.equal(toggle.getAttribute('aria-label'), 'Restore the capped view');
+  assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+  // Fold priority: folding still collapses the whole frame while unclamped, and
+  // reopening keeps the zoom the reader chose (the two are independent).
+  await clickOn(summary);
+  assert.equal(process.hasAttribute('open'), false);
+  await clickOn(summary);
+  assert.equal(process.hasAttribute('open'), true);
+  assert.equal(body.getAttribute('data-unclamped'), 'true');
+});
+
+test('the zoom switch follows overflow, not entry kind', async () => {
+  const rendered = () => turnWith([PROCESS_TEXT, { ...ANSWER, live: false }]);
+  // A process that fits under the cap offers nothing to unclamp.
+  const fits = domRoot({ clientHeight: 360, scrollHeight: 280 });
+  await renderTurn(fits.root, { ...rendered(), status: 'completed' as const });
+  const fitsProcess = fits.container.querySelector('details.maka-processing-sequence')!;
+  await clickOn(fitsProcess.querySelector('summary')!);
+  assert.equal(fitsProcess.querySelector('.maka-processing-zoom'), null);
+
+  // ...even a text-only process that DOES overflow gets the way out, because the
+  // cap it escapes is about height, not about which kinds of entries fill it.
+  const over = domRoot({ clientHeight: 360, scrollHeight: 900 });
+  await renderTurn(over.root, { ...rendered(), status: 'completed' as const });
+  const overProcess = over.container.querySelector('details.maka-processing-sequence')!;
+  await clickOn(overProcess.querySelector('summary')!);
+  assert.ok(overProcess.querySelector('.maka-processing-zoom button'));
 });

@@ -18,7 +18,7 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { ICON_SIZE, Ban, ChevronRight, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, ChevronRight, GitBranch, Maximize2, Minimize2, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
@@ -42,6 +42,7 @@ import {
   Token,
   useLightbox,
   useMediaQuery,
+  useScrollableArea,
 } from '@astryxdesign/core';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
@@ -75,6 +76,7 @@ import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
+import { MakaClientSlotOutlet, useMakaClientSlotOccupied } from './client-plugin-slots.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -476,6 +478,7 @@ export const TurnView = memo(function TurnView(props: {
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
+  const hasTurnFooterContribution = useMakaClientSlotOccupied('conversation.turn.footer');
   const { turn } = props;
   // Derive disclosure entries and reply identity together, only when this
   // turn's timeline changes. Rendering and copy share the original reply item.
@@ -690,15 +693,15 @@ export const TurnView = memo(function TurnView(props: {
                 Intermediate text, reasoning and tools share a disclosure;
                 the final reply and inserted user instructions stay outside. */}
               {liveWorkOwnsDisclosure && (
+                // An empty work log for a Turn that IS rendered: the cue lives
+                // on the footer row, so passing `activity` here would show it
+                // twice. This disclosure only holds the turn's process entries,
+                // and it has none yet.
                 <ProcessingBlock
                   key="processing-status"
                   activityObserved={props.activityObserved}
                   entries={[]}
                   running={!!props.liveStreaming || turn.status === 'running'}
-                  durationMs={turn.durationMs}
-                  activity={props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
-                    ? { startedAt: turn.startedAt, label: runningToolLabel }
-                    : undefined}
                 />
               )}
               {segment.items.map((item, index) =>
@@ -708,12 +711,9 @@ export const TurnView = memo(function TurnView(props: {
                     activityObserved={props.activityObserved}
                     entries={item.children}
                     running={!!props.liveStreaming || turn.status === 'running'}
-                    durationMs={ownsTurnChrome ? turn.durationMs : undefined}
-                    activity={index === activityProcessIndex
-                      && props.liveStreaming?.runningStatus
-                      && !props.liveStreaming.providerRetry
-                      ? { startedAt: turn.startedAt, label: runningToolLabel }
-                      : undefined}
+                    // No cue and no duration here: both belong to the footer row
+                    // (`TurnStatusLine`). Repeating the cue on a disclosure showed
+                    // it twice, once where a growing answer scrolls it away.
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
                     onSwitchToBypassAndRetry={
@@ -797,10 +797,36 @@ export const TurnView = memo(function TurnView(props: {
                 ))}
               </Marker>
             )}
-            {ownsTurnChrome && (props.liveStreaming || props.footerActions?.length) ? (
+            {ownsTurnChrome ? (
               <TurnFooter
+                turnId={turn.turnId}
                 actions={props.liveStreaming ? [] : props.footerActions ?? []}
-                meta={props.liveStreaming ? undefined : turnMetaSummary(turn)}
+                meta={
+                  // The turn's state and the model facts share this row: one line
+                  // reads as the turn's footer, two read as a stray paragraph
+                  // between the answer and the model name. The state leads.
+                  <TurnFooterMeta
+                    status={
+                      <TurnStatusLine
+                        // The live STREAM decides whether work is happening: a turn
+                        // record can still say `running` while nothing is arriving
+                        // (a retry is scheduled, input is awaited), and announcing
+                        // activity then is a claim the reader watches fail.
+                        status={props.liveStreaming ? 'running' : turn.status}
+                        running={props.liveStreaming?.runningStatus === true}
+                        providerRetry={props.liveStreaming?.providerRetry !== undefined}
+                        startedAt={turn.startedAt}
+                        durationMs={turn.durationMs}
+                        activityLabel={
+                          props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                            ? runningToolLabel
+                            : undefined
+                        }
+                      />
+                    }
+                    model={turnMetaSummary(turn)}
+                  />
+                }
                 live={!!props.liveStreaming}
                 activity={props.liveStreaming?.providerRetry ? (
                   <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
@@ -921,10 +947,104 @@ export interface TurnPresentation {
 
 export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnPresentation;
 
+/**
+ * The turn's state, rendered as part of the turn's footer row.
+ *
+ * It shares that row rather than taking a line of its own: a second line between
+ * the answer and the model name read as a stray paragraph, and the row it joins
+ * is the one place guaranteed to be under the answer when the turn ends — a
+ * growing reply cannot push it out of view the way the process disclosure at the
+ * top is pushed. Running keeps the working cue (phrase + ticking clock) the
+ * disclosure used to host; settled states the duration and the wall-clock time
+ * the turn finished, which is what makes a transcript reviewable later — the
+ * message's relative stamp says how long ago, not when.
+ */
+function TurnStatusLine(props: {
+  status: TurnViewModel['status'];
+  startedAt: number;
+  durationMs?: number;
+  /** A concrete activity (e.g. driving an app) outranks the playful phrase. */
+  activityLabel?: string;
+  /** Work is actually arriving. Only consulted for the running arm. */
+  running?: boolean;
+  /** A scheduled retry is waiting, not working. */
+  providerRetry?: boolean;
+}): ReactNode {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+
+  if (props.status === 'running') {
+    // A retry is not progress: nothing is produced while the client waits, and
+    // the retry indicator already says what is happening. A live turn whose
+    // stream is not running has nothing to announce either.
+    if (props.providerRetry || props.running === false) return null;
+    return <TurnRunningStatus startedAt={props.startedAt || undefined} activityLabel={props.activityLabel} />;
+  }
+
+  // Localized duration, not the compact `3m 33s` the live counter uses: this
+  // reads as prose in the transcript, and a Chinese UI must not show English units.
+  const elapsed = props.durationMs === undefined
+    ? undefined
+    : copy.processDuration(
+        Math.floor(props.durationMs / 60_000),
+        Math.floor(props.durationMs / 1_000) % 60,
+      );
+  // `startedAt + durationMs` is the same arithmetic the projection used to
+  // derive the duration, so the two cannot disagree. A placeholder start (the
+  // projection yields 0 for a turn whose messages carried none) would date the
+  // turn to 1970, so an implausibly early value suppresses the time instead.
+  const finishedAt =
+    props.durationMs !== undefined && props.startedAt > MIN_PLAUSIBLE_TURN_TS
+      ? formatAbsoluteTimestamp(props.startedAt + props.durationMs, locale)
+      : undefined;
+
+  const label =
+    props.status === 'completed'
+      ? elapsed !== undefined && finishedAt !== undefined
+        ? copy.turnStatusCompleted(elapsed, finishedAt)
+        : elapsed !== undefined
+          ? copy.turnStatusCompletedAloneWithDuration(elapsed)
+          : copy.turnStatusCompletedAlone
+      : props.status === 'aborted'
+        ? elapsed === undefined
+          ? undefined
+          : copy.turnStatusAborted(elapsed)
+        : elapsed === undefined
+          ? undefined
+          : copy.turnStatusFailed(elapsed);
+  if (label === undefined) return null;
+  return <span className="maka-turn-status-line" data-turn-status={props.status}>{label}</span>;
+}
+
+/**
+ * Below this, a `startedAt` is a placeholder rather than a time (the projection
+ * yields 0 for a turn whose messages carried no timestamp). 2001-09-09 in millis:
+ * comfortably after every real timestamp, comfortably before any clock a
+ * transcript could predate.
+ */
+const MIN_PLAUSIBLE_TURN_TS = 1_000_000_000_000;
+
+/** The turn's state, then the quieter model/cost facts, in one row. */
+function TurnFooterMeta(props: { status: ReactNode; model?: string }): ReactNode {
+  if (props.status === null && props.model === undefined) return undefined;
+  return (
+    <>
+      {props.status}
+      {props.status !== null && props.model !== undefined ? <span className="maka-turn-footer-meta-separator"> · </span> : null}
+      {props.model !== undefined ? <span className="maka-turn-footer-meta-model">{props.model}</span> : null}
+    </>
+  );
+}
+
 export function TurnFooter(props: {
+  turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
-  /** One-line turn meta (model · duration · cost) shown beside the actions. */
-  meta?: string;
+  /**
+   * The turn's one-line meta, beside the actions. A node rather than a string so
+   * the turn's state can share this row with the model name: two lines where one
+   * will do reads as a stray paragraph between the answer and the footer.
+   */
+  meta?: ReactNode;
   live?: boolean;
   activity?: ReactNode;
   context: string;
@@ -950,45 +1070,55 @@ export function TurnFooter(props: {
       role={props.live ? undefined : 'toolbar'}
       aria-label={props.live ? undefined : copy.answerActionsAriaLabel(props.context)}
       footer={
-        props.activity ?? <>
-          {props.meta ? <span className="maka-turn-footer-meta">{props.meta}</span> : null}
-          {props.actions.map((action) => {
-            const isCopyAction = action.id === 'copy';
-            const copyFeedbackLabel = copyPhase === 'pending'
-              ? `${copy.copying}…`
-              : copyPhase === 'copied'
-                ? copy.copied
-                : copyPhase === 'failed'
-                  ? copy.copyFailed
-                  : action.label;
-            const tooltipText = isCopyAction
-              ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
-              : (action.tooltip ?? action.label);
-            const icon = isCopyAction && copyPhase === 'copied'
-              ? <Icon icon="check" size="sm" />
-              : STATUS_FOOTER_ICON[action.id];
-            return (
-              <UiIconButton
-                key={action.id}
-                label={copy.answerActionAriaLabel(
-                  action.label,
-                  props.context,
-                )}
-                tooltip={tooltipText}
-                icon={icon}
-                variant="ghost"
-                size="sm"
-                className={markerVariants({ variant: 'footer-action' })}
-                data-action={action.id}
-                data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-                isDisabled={!action.enabled}
-                isLoading={
-                  isCopyAction ? copyPhase === 'pending' : action.tooltip === copy.processing
-                }
-                onClick={() => void handleClick(action)}
-              />
-            );
-          })}
+        <>
+          {props.activity ?? <>
+            {props.meta ? <span className="maka-turn-footer-meta">{props.meta}</span> : null}
+            {props.actions.map((action) => {
+              const isCopyAction = action.id === 'copy';
+              const copyFeedbackLabel = copyPhase === 'pending'
+                ? `${copy.copying}…`
+                : copyPhase === 'copied'
+                  ? copy.copied
+                  : copyPhase === 'failed'
+                    ? copy.copyFailed
+                    : action.label;
+              const tooltipText = isCopyAction
+                ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
+                : (action.tooltip ?? action.label);
+              const icon = isCopyAction && copyPhase === 'copied'
+                ? <Icon icon="check" size="sm" />
+                : STATUS_FOOTER_ICON[action.id];
+              return (
+                <UiIconButton
+                  key={action.id}
+                  label={copy.answerActionAriaLabel(
+                    action.label,
+                    props.context,
+                  )}
+                  tooltip={tooltipText}
+                  icon={icon}
+                  variant="ghost"
+                  size="sm"
+                  className={markerVariants({ variant: 'footer-action' })}
+                  data-action={action.id}
+                  data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
+                  isDisabled={!action.enabled}
+                  isLoading={
+                    isCopyAction ? copyPhase === 'pending' : action.tooltip === copy.processing
+                  }
+                  onClick={() => void handleClick(action)}
+                />
+              );
+            })}
+          </>}
+          <MakaClientSlotOutlet
+            name="conversation.turn.footer"
+            owner={{
+              turnId: props.turnId,
+              live: props.live === true,
+              assistantText: props.assistantText,
+            }}
+          />
         </>
       }
     />
@@ -1320,6 +1450,19 @@ function TurnTimelineEntry(props: {
   );
 }
 
+/**
+ * The turn's whole execution process (reasoning, intermediate commentary, tool
+ * activity) as ONE bounded, scrollable card: a titled header row and, when
+ * open, a body that grows with its content up to a cap and then scrolls. The
+ * container's border is the card's frame, so a collapsed box keeps its outline
+ * and shows only the title row.
+ *
+ * The body owns its own scroll, not the transcript: a turn with hundreds of
+ * steps scrolls here instead of becoming an unreadable wall the reader has to
+ * traverse. While the body overflows, its top and/or bottom edge fades the
+ * content out, so the clipped rows read as "more above/below" rather than
+ * abruptly cut off.
+ */
 export function ProcessingBlock(props: {
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
@@ -1337,11 +1480,32 @@ export function ProcessingBlock(props: {
   // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = props.running || manualOpen === true;
-  const seconds = props.durationMs !== undefined && Number.isFinite(props.durationMs)
-    ? Math.floor(Math.max(0, props.durationMs) / 1000)
-    : undefined;
-  const label = props.running || seconds === undefined ? copy.processDetails
-    : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
+  // The title names WHAT the box holds. The elapsed clock and the settled
+  // duration live on the turn's footer row (`TurnStatusLine`), the one place
+  // under the answer that a growing reply cannot scroll out of view; restating
+  // them here said the same thing twice, once where it gets lost.
+  const label = copy.processDetails;
+  // The whole box's height switch: false keeps the reading cap (the default
+  // frame), true raises it so more of the process shows at once — the reader's
+  // "show me more" for a turn they want to read end to end.
+  const [unclamped, setUnclamped] = useState(false);
+  // Astryx measures the body for us: `isScrollable` is the "taller than it
+  // shows" condition (what offers the switch, independent of what KIND of
+  // entries fill the body), and `atStart` / `atEnd` are the edge-fade flags.
+  // It also sets `overscroll-behavior: auto`, so reaching an edge chains the
+  // wheel to the transcript instead of dead-stopping. `stickyContainment`
+  // leaves a fitting body a non-scroll-container so the corner switch resolves
+  // against the transcript; a scrollable body (capped or magnified) is the
+  // switch's scrollport, which is what keeps it pinned to the visible edge.
+  const scrollable = useScrollableArea({
+    axis: 'block',
+    // The transcript owns keyboard scrolling (it handles it in the capture
+    // phase); the body stays a native scroll target, not a second tab stop.
+    keyboardAccess: { owner: 'content' },
+    overscroll: 'allow',
+    stickyContainment: 'whenScrollable',
+  });
+  const overflows = scrollable.state.block.isScrollable;
   return (
     <details
       className="maka-processing-sequence"
@@ -1359,27 +1523,71 @@ export function ProcessingBlock(props: {
           if (!props.running) setManualOpen(!open);
         }}
       >
+        {/*
+          The cue belongs on the turn's footer row (see `TurnStatusLine`), the
+          one place under the answer that a growing reply cannot push away. The
+          exception is the WAITING state: a turn the transcript does not contain
+          yet has no footer, and this box is what stands in for it — there the
+          cue is the only thing to show, so it renders here.
+        */}
         {props.activity ? (
           <TurnRunningStatus
             startedAt={props.activity.startedAt}
             activityLabel={props.activity.label}
           />
-        ) : <span>{label}</span>}
+        ) : (
+          <span className="maka-processing-title">{label}</span>
+        )}
         {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}
       </summary>
-      <div className="maka-processing-clip"><div className="maka-processing-content">
-        {props.entries.map((entry, index) => (
-          <TurnTimelineEntry
-            key={timelineEntryKey(entry, index)}
-            activityObserved={open && props.activityObserved !== false}
-            item={entry}
-            onStreamingSettled={props.onStreamingSettled}
-            onOpenLinkedSession={props.onOpenLinkedSession}
-            onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
-            initialLiveContent={props.initialLiveContent}
-          />
-        ))}
-      </div></div>
+      {/* The body owns its own scroll, capped at a reading height, and carries
+          the zoom switch in a zero-height sticky wrapper pinned to its visible
+          bottom edge — inside the body, not floating, so it never drifts with
+          the content and never takes flow space (which would change the
+          content's height and the overflow measure). The body is a scroll
+          container in BOTH states (capped, or a taller magnified cap), which is
+          what the sticky wrapper needs to resolve to; an unbounded body would
+          stop being one and the switch would strand at the end of the content.
+          The switch is a real Astryx `IconButton`, not a disclosure control, so
+          activating it never toggles the frame — a folded box stays folded, and
+          reopening keeps whichever height the reader last chose. It appears
+          only when the body actually overflows (nothing to unclamp otherwise),
+          and stays put while magnified so the reader can take the cap back. */}
+      <div
+        // The class goes INTO the getter, not after the spread: the returned
+        // props already carry the primitive's overflow class, and a later
+        // `className` would replace it (keeping only the inline vars) and leave
+        // the overflow — including `stickyContainment` — up to product CSS.
+        {...scrollable.getViewportProps<HTMLDivElement>({ className: 'maka-processing-body' })}
+        data-unclamped={unclamped ? 'true' : undefined}
+      >
+        <div {...scrollable.getContentProps<HTMLDivElement>()} className="maka-processing-content">
+          {props.entries.map((entry, index) => (
+            <TurnTimelineEntry
+              key={timelineEntryKey(entry, index)}
+              activityObserved={open && props.activityObserved !== false}
+              item={entry}
+              onStreamingSettled={props.onStreamingSettled}
+              onOpenLinkedSession={props.onOpenLinkedSession}
+              onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
+              initialLiveContent={props.initialLiveContent}
+            />
+          ))}
+        </div>
+        {(overflows || unclamped) && (
+          <div className="maka-processing-zoom">
+            <UiIconButton
+              label={unclamped ? copy.processRestore : copy.processExpandAll}
+              tooltip={unclamped ? copy.processRestore : copy.processExpandAll}
+              icon={<Icon icon={unclamped ? Minimize2 : Maximize2} size="sm" aria-hidden="true" />}
+              variant="secondary"
+              size="sm"
+              aria-pressed={unclamped}
+              onClick={() => setUnclamped((previous) => !previous)}
+            />
+          </div>
+        )}
+      </div>
     </details>
   );
 }
