@@ -36,7 +36,7 @@ export interface BrowserState {
   hasPage: boolean;
 }
 
-/** Where the embedded view sits, in renderer CSS px (1:1 with the window's content DIP). */
+/** Where the embedded view sits, in renderer CSS px; native hosts must apply renderer zoom. */
 export interface BrowserViewRect {
   x: number;
   y: number;

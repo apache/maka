@@ -287,6 +287,135 @@ describe('Runtime Host connection effects protocol', () => {
       test: { ...failedResult.test, statusCode: 600 },
     });
   });
+  test('keeps one exact and bounded connection usage report', () => {
+    const report = response('connection.usage.read', {
+      kind: 'report',
+      report: {
+        accountLabel: 'joob1nhk13d9',
+        planLabel: 'Go',
+        stats: {
+          requests: 3552,
+          failed: 5,
+          successRate: 99.86,
+          cost: 5.85,
+          tokensIn: 428_987_308,
+          tokensOut: 2_971_687,
+        },
+        windows: [
+          {
+            id: 'fiveHour',
+            label: null,
+            used: 0.25,
+            cap: 3,
+            unit: 'credits',
+            resetsAt: 1_789_746_210_944,
+            unlimited: null,
+          },
+          {
+            id: 'weekly',
+            label: 'Weekly',
+            used: 0.38,
+            cap: 6,
+            unit: 'credits',
+            resetsAt: null,
+            unlimited: true,
+          },
+        ],
+        periodEnd: 1_790_310_000_000,
+        partiallyUnauthorized: false,
+        fetchedAt: 1_789_000_000_000,
+      },
+    });
+    assert.deepEqual(decodeHostFrame(report), report);
+
+    // Read-only: the only non-report shapes are an explicit unavailability and
+    // a rejection. A committed/superseded shape has no meaning here.
+    const unavailable = response('connection.usage.read', {
+      kind: 'unavailable',
+      reason: 'unsupported',
+    });
+    assert.deepEqual(decodeHostFrame(unavailable), unavailable);
+    const rejected = response('connection.usage.read', {
+      kind: 'rejected',
+      reason: 'credential_not_configured',
+    });
+    assert.deepEqual(decodeHostFrame(rejected), rejected);
+
+    assertInvalidResponse('connection.usage.read', {
+      kind: 'report',
+      report: {
+        accountLabel: null,
+        planLabel: null,
+        stats: null,
+        windows: [
+          {
+            id: 'w',
+            label: null,
+            used: -1,
+            cap: 1,
+            unit: 'credits',
+            resetsAt: null,
+            unlimited: null,
+          },
+        ],
+        periodEnd: null,
+        fetchedAt: 1,
+      },
+    });
+    assertInvalidResponse('connection.usage.read', {
+      kind: 'unavailable',
+      reason: 'made-up',
+    });
+    // `unauthorized` is an accepted reason: a rejected credential is reported as
+    // itself, not folded into `network`.
+    const unauthorized = response('connection.usage.read', {
+      kind: 'unavailable',
+      reason: 'unauthorized',
+    });
+    assert.deepEqual(decodeHostFrame(unauthorized), unauthorized);
+    // The window array is capped like every other array in this package.
+    assertInvalidResponse('connection.usage.read', {
+      kind: 'report',
+      report: {
+        accountLabel: null,
+        planLabel: null,
+        stats: null,
+        windows: Array.from({ length: 32 }, (_unused, index) => ({
+          id: `w-${index}`,
+          label: null,
+          used: 1,
+          cap: 2,
+          unit: 'credits',
+          resetsAt: null,
+          unlimited: null,
+        })),
+        periodEnd: null,
+        partiallyUnauthorized: false,
+        fetchedAt: 1,
+      },
+    });
+    assertInvalidResponse('connection.usage.read', {
+      kind: 'report',
+      report: {
+        accountLabel: null,
+        planLabel: null,
+        stats: null,
+        windows: [
+          {
+            id: 'w',
+            label: null,
+            used: 1,
+            cap: 1,
+            unit: 'bananas',
+            resetsAt: null,
+            unlimited: null,
+          },
+        ],
+        periodEnd: null,
+        fetchedAt: 1,
+      },
+    });
+  });
 });
 
 function request(operation: string, input: unknown) {

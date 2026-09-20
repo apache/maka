@@ -26,7 +26,7 @@ export interface SettingsNavigationRequest {
 }
 
 /** What the Settings modal is asked to show, and whether it is showing. */
-export interface SettingsSurface {
+export interface SettingsModalState {
   readonly open: boolean;
   readonly request: SettingsNavigationRequest;
   readonly providerCatalogOpen: boolean;
@@ -35,7 +35,7 @@ export interface SettingsSurface {
 }
 
 /** Every way the shell opens Settings, as data. */
-export type SettingsSurfaceIntent =
+export type SettingsModalIntent =
   | { readonly kind: 'settings' }
   | { readonly kind: 'section'; readonly section: SettingsSection }
   | { readonly kind: 'project'; readonly profileId: string }
@@ -43,7 +43,7 @@ export type SettingsSurfaceIntent =
   | { readonly kind: 'connection-detail'; readonly slug: string }
   | { readonly kind: 'provider-create'; readonly providerType: ProviderType };
 
-export const CLOSED_SETTINGS_SURFACE: SettingsSurface = {
+export const CLOSED_SETTINGS_MODAL: SettingsModalState = {
   open: false,
   request: {},
   providerCatalogOpen: false,
@@ -52,7 +52,7 @@ export const CLOSED_SETTINGS_SURFACE: SettingsSurface = {
 };
 
 /** The section an intent lands on; `undefined` keeps the remembered one. */
-export function settingsIntentSection(intent: SettingsSurfaceIntent): SettingsSection | undefined {
+export function settingsIntentSection(intent: SettingsModalIntent): SettingsSection | undefined {
   switch (intent.kind) {
     case 'section':
       return intent.section;
@@ -72,10 +72,10 @@ export function settingsIntentSection(intent: SettingsSurfaceIntent): SettingsSe
  * then raises its own; a project intent replaces the whole request so a stale
  * profile from an earlier open cannot leak into the Projects page.
  */
-export function openSettingsSurface(
-  current: SettingsSurface,
-  intent: SettingsSurfaceIntent,
-): SettingsSurface {
+export function openSettingsModal(
+  current: SettingsModalState,
+  intent: SettingsModalIntent,
+): SettingsModalState {
   const section = settingsIntentSection(intent);
   const request: SettingsNavigationRequest =
     intent.kind === 'project'
@@ -93,15 +93,15 @@ export function openSettingsSurface(
 }
 
 /** Closes Settings and its catalog; the other sub-surfaces reset on the next open. */
-export function closeSettingsSurface(current: SettingsSurface): SettingsSurface {
+export function closeSettingsModal(current: SettingsModalState): SettingsModalState {
   if (!current.open && !current.providerCatalogOpen) return current;
   return { ...current, open: false, providerCatalogOpen: false };
 }
 
 export function withSettingsProfileId(
-  current: SettingsSurface,
+  current: SettingsModalState,
   profileId: string | undefined,
-): SettingsSurface {
+): SettingsModalState {
   if (current.request.profileId === profileId) return current;
   return { ...current, request: { ...current.request, profileId } };
 }

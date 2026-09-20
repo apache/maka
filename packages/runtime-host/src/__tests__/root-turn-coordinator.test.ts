@@ -963,6 +963,50 @@ test('a failed exact Capability retry does not poison the parked continuation bi
   }
 });
 
+test('a failed WorkHub final target check rejects continuation without draining the Host', async () => {
+  const workspaceIdentity = 'workspace-workhub-final-target-check';
+  const fixture = await createFailureFixture({
+    continuationSafety: { workspaceIdentity, availableToolNames: [] },
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  try {
+    const pending = await seedPendingSafeBoundaryContinuation(
+      fixture,
+      workspaceIdentity,
+      'workhub-final-target-check',
+      undefined,
+      false,
+    );
+
+    const started = await fixture.coordinator.startTurnResumeWithValidation(
+      {
+        sessionId: fixture.sessionId,
+        turnId: pending.targetTurnId,
+        sourceRunId: pending.sourceRunId,
+        sourceRuntimeEventHighWater: pending.sourceRuntimeEventHighWater,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      async () => {
+        throw new Error('Target model is no longer executable');
+      },
+    );
+
+    assert.deepEqual(started, {
+      ok: false,
+      error: {
+        code: 'operation_conflict',
+        message: 'Target model is no longer executable',
+      },
+    });
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('resume query preserves Session-before-activation lock ordering', async () => {
   const activation = new RuntimePolicyActivationGate();
   const capabilities = new HostClientCapabilityCoordinator({
@@ -5561,6 +5605,7 @@ async function seedPendingSafeBoundaryContinuation(
   workspaceIdentity: string,
   identitySuffix: string,
   sourceOrchestrationMode?: 'graph' | 'swarm',
+  admitTarget = true,
 ): Promise<{
   sourceRunId: string;
   sourceRuntimeEventHighWater: number;
@@ -5643,29 +5688,31 @@ async function seedPendingSafeBoundaryContinuation(
   if (!continuation?.claimId || !continuation.boundary || !continuation.providerReplayDigest) {
     throw new Error('Unable to plan the safe-boundary continuation fixture');
   }
-  const admission = await fixture.stores.agentRunStore.admitRootTurn({
-    sessionId: fixture.sessionId,
-    turnId: targetTurnId,
-    proposedRunId: continuation.runId,
-    proposedUserMessageId: null,
-    execution: {
-      kind: 'safe_boundary_continuation',
-      sourceInvocationId,
-      sourceRunId,
-      sourceTurnId,
-      sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
-      claimId: continuation.claimId,
-      boundaryDigest: continuation.boundary.manifestDigest,
-      providerReplayDigest: continuation.providerReplayDigest,
-      safetyDigest: continuationSafetyDigest(continuation),
-      targetInvocationId: continuation.invocationId,
-    },
-    previousRootTurnId: null,
-    normalizedInput: null,
-    sourceMessages: [],
-    admittedAt: Date.now(),
-  });
-  assert.equal(admission.kind, 'admitted');
+  if (admitTarget) {
+    const admission = await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId: targetTurnId,
+      proposedRunId: continuation.runId,
+      proposedUserMessageId: null,
+      execution: {
+        kind: 'safe_boundary_continuation',
+        sourceInvocationId,
+        sourceRunId,
+        sourceTurnId,
+        sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+        claimId: continuation.claimId,
+        boundaryDigest: continuation.boundary.manifestDigest,
+        providerReplayDigest: continuation.providerReplayDigest,
+        safetyDigest: continuationSafetyDigest(continuation),
+        targetInvocationId: continuation.invocationId,
+      },
+      previousRootTurnId: null,
+      normalizedInput: null,
+      sourceMessages: [],
+      admittedAt: Date.now(),
+    });
+    assert.equal(admission.kind, 'admitted');
+  }
   return {
     sourceRunId,
     sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
