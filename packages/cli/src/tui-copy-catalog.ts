@@ -1208,6 +1208,8 @@ export const TUI_COPY_RESOURCES = {
       busy: 'Cannot rewind: another action is in progress — wait for it to finish, or interrupt (Esc) and retry.',
       quotesRestored:
         'The rewound turn carried quoted context. It is restored and will be submitted with your next message — run /quotes clear to discard it.',
+      quotesRestoredUnknown:
+        'Submit outcome unknown; the staged quotes are restored and will ride your next message — run /quotes clear to discard.',
       quotesCleared: 'Restored quotes discarded; the next message submits without them.',
       quotesNone: 'No restored quotes are staged.',
       quotesUsage: 'Usage: /quotes [clear]',
@@ -1230,6 +1232,8 @@ export const TUI_COPY_RESOURCES = {
       busy: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
       quotesRestored:
         '回退的这一轮带有引用内容：已恢复，并将随你的下一条消息一起提交——用 /quotes clear 丢弃。',
+      quotesRestoredUnknown:
+        '发送结果未知：暂存的引用已恢复，将随你的下一条消息一起提交——用 /quotes clear 丢弃。',
       quotesCleared: '已丢弃恢复的引用；下一条消息不再携带。',
       quotesNone: '当前没有暂存的恢复引用。',
       quotesUsage: '用法：/quotes [clear]',
@@ -1251,6 +1255,8 @@ export const TUI_COPY_RESOURCES = {
       busy: '無法回退：目前有正在進行的操作 — 請等待完成，或中斷（Esc）後重試。',
       quotesRestored:
         '回退的這一輪帶有引用內容：已恢復，並將隨你的下一則訊息一併送出——用 /quotes clear 捨棄。',
+      quotesRestoredUnknown:
+        '傳送結果未知：暫存的引用已恢復，將隨你的下一則訊息一併送出——用 /quotes clear 捨棄。',
       quotesCleared: '已捨棄恢復的引用；下一則訊息不再攜帶。',
       quotesNone: '目前沒有暫存的恢復引用。',
       quotesUsage: '用法：/quotes [clear]',

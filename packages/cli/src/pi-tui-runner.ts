@@ -410,6 +410,7 @@ interface TuiRewindCopy {
   readonly noTargets: string;
   readonly busy: string;
   readonly quotesRestored: string;
+  readonly quotesRestoredUnknown: string;
   readonly quotesCleared: string;
   readonly quotesNone: string;
   readonly quotesUsage: string;
@@ -1443,7 +1444,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             state.entries.push({
               kind: 'notice',
               level: 'info',
-              text: 'Submit outcome unknown; staged quotes restored for retry.',
+              text: TUI_REWIND_COPY[locale].quotesRestoredUnknown,
             });
           }
           return;

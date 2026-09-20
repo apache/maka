@@ -7730,9 +7730,7 @@ Slug openai-work<cursor>
     // a notice naming the uncertainty (#5109 review).
     driver.resolveUnknown();
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes(
-        'Submit outcome unknown; staged quotes restored for retry.',
-      ),
+      plainTerminalOutput(terminal.output()).includes('Submit outcome unknown'),
     );
 
     terminal.input('retry then');
