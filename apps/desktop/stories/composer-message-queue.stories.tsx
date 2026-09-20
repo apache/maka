@@ -17,20 +17,103 @@
  * under the License.
  */
 
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { ComponentProps } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer } from '@maka/ui';
-import type { ChatModelChoice } from '@maka/ui';
+import type { ChatModelChoice, TransientUserMessageProjection } from '@maka/ui';
+import {
+  ConversationServicesProvider,
+  SessionLocalMessages,
+  type ConversationServices,
+} from '../src/renderer/features/conversation';
+import type { DesktopLocalMessage } from '../src/shared/session-local-contract.js';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
+const SESSION_ID = 's';
+
+type DeliveryState = 'queued' | 'unconfirmed' | 'failed';
+
+function localDeliveryMessages(state: DeliveryState): DesktopLocalMessage[] {
+  const base = {
+    sessionId: SESSION_ID,
+    attachments: [],
+    inlineReferences: [],
+    placement: 'next_turn' as const,
+  };
+  if (state === 'unconfirmed') {
+    return [
+      {
+        ...base,
+        messageId: 'local-unconfirmed',
+        createdAt: NOW - 60_000,
+        state: 'unknown',
+        canCancel: false,
+        text: 'Check whether the queue drained before retrying the compaction audit.',
+        error: 'Connection dropped before the receipt arrived',
+      },
+      {
+        ...base,
+        messageId: 'local-waiting',
+        createdAt: NOW - 30_000,
+        state: 'saved',
+        canCancel: true,
+        text: 'Summarize the retry budget for the pending follow-ups.',
+      },
+    ];
+  }
+  if (state === 'failed') {
+    return [
+      {
+        ...base,
+        messageId: 'local-failed',
+        createdAt: NOW - 60_000,
+        state: 'failed',
+        canCancel: true,
+        text: 'Attach the runtime.sqlite compaction log to the report.',
+        error: 'Message preparation failed. The local copy is retained.',
+      },
+    ];
+  }
+  return [];
+}
+
+function localDeliveryServices(state: DeliveryState): ConversationServices {
+  let messages = localDeliveryMessages(state);
+  return {
+    listMessages: async () => messages,
+    cancelMessage: async (_sessionId, messageId) => {
+      messages = messages.filter((message) => message.messageId !== messageId);
+    },
+    reconcileMessage: async () => undefined,
+    subscribeChanges: () => () => undefined,
+    sessions: {
+      list: async () => [],
+      subscribeChanges: () => () => undefined,
+      readSnapshot: async () => {
+        throw new Error('Session snapshots are not used in this story');
+      },
+    },
+    skills: { listInvocable: async () => [] },
+    workspace: {
+      searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }),
+    },
+    newTasks: {
+      subscribeChanges: () => () => undefined,
+      listInvocableSkills: async () => [],
+      searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }),
+    },
+    mcp: { subscribeChanges: () => () => undefined },
+  };
+}
 
 const meta = {
   title: 'Product/Composer Message Queue',
+  component: QueuedComposer,
   parameters: { layout: 'fullscreen' },
-} satisfies Meta;
+} satisfies Meta<typeof QueuedComposer>;
 
 export default meta;
 
@@ -91,7 +174,7 @@ function followUpEntry(entryId: string, text: string): MessageQueueEntryProjecti
  * (projection in, mutations
  * out) is the real one; only the authority is simulated.
  */
-function QueuedComposer() {
+function QueuedComposer({ deliveryState }: { deliveryState: DeliveryState }) {
   const [followup, setFollowup] = useState<MessageQueueEntryProjection[]>([
     {
       entryId: 'entry-steer',
@@ -120,43 +203,72 @@ function QueuedComposer() {
     streaming: true,
   };
 
+  const [published, setPublished] = useState(new Map<string, TransientUserMessageProjection>());
+  const publish = useCallback((_sessionId: string, message: TransientUserMessageProjection) => {
+    setPublished((current) => new Map(current).set(message.id, message));
+  }, []);
+  const retire = useCallback((_sessionId: string, messageId: string) => {
+    setPublished((current) => {
+      const next = new Map(current);
+      next.delete(messageId);
+      return next;
+    });
+  }, []);
+  const services = useMemo(() => localDeliveryServices(deliveryState), [deliveryState]);
+
   return (
-    <Composer
-      {...base}
-      queuedMessages={followup}
-      queuedMessageRevision={1}
-      onPromoteQueuedEntry={(entryId) => {
-        setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
-      }}
-      onUpdateQueuedEntry={(entryId, _expectedQueueRevision, text) => {
-        setFollowup((current) =>
-          current.map((candidate) =>
-            candidate.entryId === entryId
-              ? { ...candidate, content: { ...candidate.content, text, displayText: text } }
-              : candidate,
-          ),
-        );
-      }}
-      onDeleteQueuedEntry={(entryId) => {
-        setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
-      }}
-      onReorderQueuedEntries={(entryIds) => {
-        setFollowup((current) =>
-          entryIds.flatMap((entryId) =>
-            current.filter((candidate) => candidate.entryId === entryId),
-          ),
-        );
-      }}
-    />
+    <ConversationServicesProvider services={services}>
+      <SessionLocalMessages
+        sessionId={SESSION_ID}
+        publish={publish}
+        retire={retire}
+        reportError={noop}
+      />
+      <Composer
+        {...base}
+        queuedMessages={deliveryState === 'queued' ? followup : []}
+        pendingMessages={[...published.values()]}
+        queuedMessageRevision={1}
+        onPromoteQueuedEntry={(entryId) => {
+          setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
+        }}
+        onUpdateQueuedEntry={(entryId, _expectedQueueRevision, text) => {
+          setFollowup((current) =>
+            current.map((candidate) =>
+              candidate.entryId === entryId
+                ? { ...candidate, content: { ...candidate.content, text, displayText: text } }
+                : candidate,
+            ),
+          );
+        }}
+        onDeleteQueuedEntry={(entryId) => {
+          setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
+        }}
+        onReorderQueuedEntries={(entryIds) => {
+          setFollowup((current) =>
+            entryIds.flatMap((entryId) =>
+              current.filter((candidate) => candidate.entryId === entryId),
+            ),
+          );
+        }}
+      />
+    </ConversationServicesProvider>
   );
 }
 
 // Real path: mid-turn sends stay visible above the composer until consumed.
 // Drag follow-ups to reorder; 调整方向 promotes one, 编辑 updates it in place.
 export const PendingPlate: Story = {
-  render: () => (
+  args: { deliveryState: 'queued' },
+  argTypes: {
+    deliveryState: {
+      options: ['queued', 'unconfirmed', 'failed'],
+      control: { type: 'radio' },
+    },
+  },
+  render: (args) => (
     <div style={{ padding: '24px 24px 48px', maxWidth: 840 }}>
-      <QueuedComposer />
+      <QueuedComposer key={args.deliveryState} deliveryState={args.deliveryState} />
     </div>
   ),
 };

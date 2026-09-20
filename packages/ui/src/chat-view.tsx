@@ -146,7 +146,7 @@ export interface TransientUserMessageProjection {
   pendingSteering?: boolean;
   deliveryStatus?: string;
   deliveryDetail?: string;
-  deliveryActions?: readonly { label: string; onClick(): void }[];
+  deliveryActions?: readonly { label: string; icon: ReactNode; onClick(): void | Promise<void> }[];
   id: string;
   text: string;
   ts: number;

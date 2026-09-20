@@ -651,11 +651,14 @@
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
   color: var(--muted-foreground);
-  font-size: 11px;
+  font: var(--maka-text-body);
   white-space: nowrap;
 }
 
 .maka-composer-queue-delivery {
-  font-size: 11px;
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font: var(--maka-text-body);
   color: var(--muted-foreground);
 }

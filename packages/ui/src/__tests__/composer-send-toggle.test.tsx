@@ -34,6 +34,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
+import { ICON_SIZE, Search } from '../icons.js';
 
 function renderComposer(streaming: boolean): string {
   return renderToStaticMarkup(
@@ -294,12 +295,13 @@ test('keeps Host order visible until the reordered projection arrives', async ()
         />
       </LocaleProvider>,
     ));
-    const buttons = [...container.querySelectorAll<HTMLButtonElement>('button')];
-    const editButtons = buttons.filter((button) => button.textContent === 'Edit');
+    const editButtons = [
+      ...container.querySelectorAll<HTMLButtonElement>('[aria-label="Edit"]'),
+    ];
     const deleteButtons = [
       ...container.querySelectorAll<HTMLButtonElement>('[aria-label="Delete"]'),
     ];
-    assert.equal(buttons.filter((button) => button.textContent === 'Steer').length, 2);
+    assert.equal(container.querySelectorAll('[aria-label="Steer"]').length, 2);
     assert.equal(editButtons.length, 3);
     assert.equal(deleteButtons.length, 3);
     await act(async () => {
@@ -373,17 +375,27 @@ test('deduplicates pending steering against Host queue entries and keeps the pla
     const document = parseHTML(`<html><body>${markup}</body></html>`).document;
     assert.equal(document.querySelectorAll('.maka-composer-queue-text').length, 1);
     assert.equal(document.querySelector('.maka-composer-queue-text')?.textContent, pending.text);
-    assert.equal(document.querySelector('.maka-composer-queue-status')?.textContent, 'Steering · Applied together');
+    assert.equal(document.querySelector('.maka-composer-queue-status')?.textContent, 'Steering');
   }
 });
 
 
 test('a locally saved follow-up keeps its delivery status and recovery actions in the pending list', () => {
   const markup = renderToStaticMarkup(<LocaleProvider locale="en"><Composer onSend={() => undefined} onStop={() => undefined}
-    pendingMessages={[{ id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'next_turn',
-      deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
-      deliveryActions: [{ label: 'Check delivery', onClick() {} }] }]} /></LocaleProvider>);
+    pendingMessages={[
+      { id: 'local', text: 'offline follow-up', ts: 1, transientPlacement: 'next_turn',
+        deliveryStatus: 'Delivery uncertain', deliveryDetail: 'Connection interrupted',
+        deliveryActions: [{ label: 'Check delivery', icon: <Search size={ICON_SIZE.control} aria-hidden="true" />, onClick() {} }] },
+      { id: 'sending', text: 'still sending', ts: 2, transientPlacement: 'next_turn',
+        deliveryStatus: 'Sending…' },
+    ]} /></LocaleProvider>);
   const document = parseHTML(`<html><body>${markup}</body></html>`).document;
   assert.equal(document.querySelector('.maka-composer-queue-delivery')?.textContent, 'Delivery uncertain');
-  assert.ok([...document.querySelectorAll('.maka-composer-queue-actions button')].some((button) => button.textContent === 'Check delivery'));
+  assert.ok(document.querySelector('.maka-composer-queue-actions button[aria-label="Check delivery"]'),
+    'the delivery action stays an accessible labelled icon control');
+  const rows = [...document.querySelectorAll('li')];
+  const sendingRow = rows.find((row) => row.textContent?.includes('still sending'));
+  assert.ok(sendingRow);
+  assert.equal(sendingRow.querySelectorAll('.maka-composer-queue-actions button').length, 0,
+    'a local row without delivery actions offers no Host edit/steer/delete operations');
 });

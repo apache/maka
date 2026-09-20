@@ -33,17 +33,23 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   const { root } = installReactRenderer();
   const transient = new Map<string, TransientUserMessageProjection>();
   let changed!: (sessionId: string) => void;
-  let messages: DesktopLocalMessage[] = ['steering', 'followup', 'root'].map((messageId) => ({
-    sessionId: 'session-1', messageId, createdAt: 1, state: 'unknown', canCancel: false,
-    text: messageId, attachments: [], inlineReferences: [],
-    placement: messageId === 'steering' ? 'current_turn' : 'next_turn',
-  }));
+  const cancelled: string[][] = [];
+  const reconciled: string[][] = [];
+  let messages: DesktopLocalMessage[] = [
+    { sessionId: 'session-1', messageId: 'steering', createdAt: 1, state: 'unknown', canCancel: false,
+      text: 'steering', attachments: [], inlineReferences: [], placement: 'current_turn' },
+    { sessionId: 'session-1', messageId: 'followup', createdAt: 2, state: 'saved', canCancel: true,
+      text: 'followup', attachments: [], inlineReferences: [], placement: 'next_turn' },
+    { sessionId: 'session-1', messageId: 'root', createdAt: 3, state: 'unknown', canCancel: false,
+      text: 'root', attachments: [], inlineReferences: [], placement: 'next_turn' },
+  ];
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(ConversationServicesProvider, { services: {
       listMessages: async () => messages,
       subscribeChanges: (handler) => { changed = handler; return () => {}; },
-      cancelMessage: async () => {}, reconcileMessage: async () => {},
-      sessions: { readSnapshot: async () => { throw new Error('unexpected snapshot read'); } },
+      cancelMessage: async (sessionId, messageId) => { cancelled.push([sessionId, messageId]); },
+      reconcileMessage: async (sessionId, messageId) => { reconciled.push([sessionId, messageId]); },
+      sessions: { list: async () => [], subscribeChanges: () => () => {}, readSnapshot: async () => { throw new Error('unexpected snapshot read'); } },
       skills: { listInvocable: async () => [] },
       workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
       newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
@@ -55,13 +61,39 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       reportError: (message) => { throw new Error(message); },
     }) }),
   })));
-  assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
-  messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn' } : {}) }));
+  const steering = transient.get('steering');
+  assert.equal(steering?.deliveryStatus, 'Delivery unconfirmed. Do not send again.');
+  assert.deepEqual(steering?.deliveryActions?.map((action) => action.label), ['Check delivery'],
+    'an unconfirmed send offers only its receipt check, never cancellation');
+  const followup = transient.get('followup');
+  assert.equal(followup?.deliveryStatus, 'Waiting for earlier messages to be delivered',
+    'a saved row behind an unresolved predecessor explains the wait');
+  assert.deepEqual(followup?.deliveryActions?.map((action) => action.label), ['Cancel sending']);
+  await act(async () => { await steering?.deliveryActions?.[0]?.onClick(); });
+  assert.deepEqual(reconciled, [['session-1', 'steering']]);
+  assert.equal(transient.has('steering'), true, 'checking delivery does not retire the row');
+  await act(async () => { await followup?.deliveryActions?.[0]?.onClick(); });
+  assert.deepEqual(cancelled, [['session-1', 'followup']]);
+  assert.equal(transient.has('followup'), false, 'cancel retires the local row');
+  messages = [
+    { ...messages[0]!, state: 'failed', canCancel: true },
+    { sessionId: 'session-1', messageId: 'settled', createdAt: 4, state: 'accepted', canCancel: false,
+      text: 'settled', attachments: [], inlineReferences: [], placement: 'next_turn' },
+    { ...messages[2]!, state: 'accepted', turnId: 'started-turn' },
+    { sessionId: 'session-1', messageId: 'later', createdAt: 5, state: 'saved', canCancel: true,
+      text: 'later', attachments: [], inlineReferences: [], placement: 'next_turn' },
+  ];
   await act(async () => changed('session-1'));
-  assert.deepEqual([...transient.keys()], ['root']);
+  const failed = transient.get('steering');
+  assert.equal(failed?.deliveryStatus, 'Could not send · message kept');
+  assert.deepEqual(failed?.deliveryActions?.map((action) => action.label), ['Delete unsent message']);
+  assert.equal(transient.get('later')?.deliveryStatus, 'Waiting to send',
+    'failed and accepted predecessors do not hold back a later saved row');
+  assert.deepEqual([...transient.keys()], ['steering', 'root', 'later']);
   assert.equal(transient.get('root')?.transientPlacement, 'current_turn');
   await act(async () => changed('session-1'));
-  assert.deepEqual([...transient.keys()], ['root'], 'a retained local copy cannot resurrect a withdrawn queue entry');
+  assert.deepEqual([...transient.keys()], ['steering', 'root', 'later'],
+    'a retained local copy cannot resurrect a withdrawn queue entry');
 });
 
 test('queue_update events drive the independent desktop queue projection', () => {
