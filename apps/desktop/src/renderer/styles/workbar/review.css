@@ -23,10 +23,14 @@
   overflow-y: auto;
 }
 
-/* The comparison header: `<current> -> <base picker>`. The current branch
-   ellipsizes so a long name cannot push the picker past the panel edge. */
+/* The comparison header: `<current> -> <base picker>`. Both branches can
+   shrink for long names while the arrow keeps its size. */
 .maka-session-review-branch-row {
   justify-content: flex-start;
+}
+
+.maka-session-review-branch-row > svg {
+  flex-shrink: 0;
 }
 
 /* A switch re-reads the whole branch diff and can take a while on a diverged
@@ -37,9 +41,13 @@
   pointer-events: none;
 }
 
-.maka-session-review-current-branch {
+.maka-session-review-current-branch,
+.maka-session-review-base-branch {
   min-width: 0;
   flex-shrink: 1;
+}
+
+.maka-session-review-current-branch {
   margin-right: var(--space-3);
 }
 

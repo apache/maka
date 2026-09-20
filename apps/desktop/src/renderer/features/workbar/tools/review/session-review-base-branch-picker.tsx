@@ -20,6 +20,7 @@
 import { useMemo } from 'react';
 import type { GitReviewBaseBranchOption } from '@maka/core/git-review';
 import { Selector } from '@astryxdesign/core/Selector';
+import { Text } from '@astryxdesign/core/Text';
 
 /**
  * Picks the branch the review panel diffs against. Pure props: the panel owns
@@ -52,12 +53,18 @@ export function SessionReviewBaseBranchPicker(props: {
         isLoading={props.isLoading}
         options={options}
         value={props.baseBranch ?? undefined}
+        renderValue={(option) => (
+          <Text type="inherit" maxLines={1}>
+            {option.label}
+          </Text>
+        )}
         onChange={props.onSelect}
         placeholder={props.label}
         // The trigger names a branch, it is not a call to action: read like
         // the current branch it sits beside, not like a primary button.
         style={{
           color: 'var(--color-text-secondary)',
+          fontSize: 'var(--text-supporting-size)',
           fontWeight: 'var(--font-weight-normal)',
         }}
       />
