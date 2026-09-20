@@ -163,13 +163,7 @@ export class RuntimeHostSessionProjector {
 
   seedActive(includeAssistantText: boolean): SessionEvent[] {
     const root = this.#snapshot.rootTurn;
-    if (!root) {
-      // The queue mirror is authoritative even with no live Turn: a subscriber
-      // (re)attaching to an idle session must still learn the current queue —
-      // including an empty one, so a queued card it rendered earlier is cleared
-      // instead of surviving as a phantom (apache/maka#5520).
-      return [projectQueueUpdate(this.#snapshot.queue, '', this.#now())];
-    }
+    if (!root) return [];
     const events: SessionEvent[] = [];
     const queueEvents =
       this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)

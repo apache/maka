@@ -434,7 +434,9 @@ test('reseeds an empty queue after queued successors completed while disconnecte
 test('projects a queue drain that lands while no root Turn is live', () => {
   // apache/maka#5520: a drain observed after the root Turn is gone must still
   // reach the renderer, or a phantom queued card survives whose retract fails
-  // with not_found forever.
+  // with not_found forever. Seeding stays silent for rootless snapshots — the
+  // Desktop observer pins an empty seed there — because a client that never
+  // observed the session has no stale card to clear.
   const projector = new RuntimeHostSessionProjector(
     snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
     createRuntimeHostSessionProjectionSeed([], snapshot()),
@@ -459,23 +461,6 @@ test('projects a queue drain that lands while no root Turn is live', () => {
   assert.ok(update, 'the drained queue must be projected');
   assert.deepEqual(update.steering, []);
   assert.deepEqual(update.followup, []);
-});
-
-test('reseeds the queue mirror even when no root Turn is live', () => {
-  // apache/maka#5520: resubscribing to an idle session whose queue drained
-  // must still seed the authoritative (empty) queue, so a stale renderer card
-  // is cleared on session switch instead of surviving forever.
-  const current = snapshot({ rootTurn: null, queue: queue(7, []) });
-  const projector = new RuntimeHostSessionProjector(
-    current,
-    createRuntimeHostSessionProjectionSeed([], current),
-    () => 10,
-  );
-  const seeded = projector.seedActive(false).find((event) => event.type === 'queue_update');
-  assert.ok(seeded, 'an idle session must still seed its authoritative queue state');
-  assert.equal(seeded.queueRevision, 7);
-  assert.deepEqual(seeded.steeringEntries, []);
-  assert.deepEqual(seeded.followupEntries, []);
 });
 
 test('reseeds the latest provider retry when the active Turn still carries one', () => {
