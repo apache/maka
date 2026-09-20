@@ -146,9 +146,9 @@ const zhCopy = {
     oauthLoadingDetail: '正在读取本机 OAuth 登录状态，读取完成前不会把未知状态显示成未登录。',
     oauthUnknownDetail: '暂时无法读取本机 OAuth 登录状态；请刷新页面或重新打开设置。',
     oauthWaitingDetail: '请到账号连接完成登录；登录成功后会自动出现在模型连接里。',
-    oauthRetired: '此登录方式已停用',
-    oauthRetiredDetail:
-      '这条连接使用的登录方式已从 Maka 移除，无法再登录，也无法用于对话。改用 Anthropic API Key 连接即可继续使用 Claude 模型；删除这条连接会一并清除本机保存的登录凭据。',
+    providerRetired: '此模型服务已停用',
+    providerRetiredDetail:
+      '这条连接已无法用于对话。请添加其他模型连接，并选择新的默认模型；原有对话记录会保留。',
     credentialLoadingDetail: '正在读取模型凭据状态，读取完成前暂不测试连接或刷新模型。',
     credentialUnknownDetail: '模型凭据状态暂时没刷新成功，已避免把未知状态显示成未登录或未配置。',
     testConnection: '测试连接',
@@ -372,9 +372,9 @@ const zhTwCopy = {
     oauthLoadingDetail: '正在讀取本機 OAuth 登入狀態，讀取完成前不會把未知狀態顯示成未登入。',
     oauthUnknownDetail: '暫時無法讀取本機 OAuth 登入狀態；請重新整理頁面或重新開啟設定。',
     oauthWaitingDetail: '請到帳號連線完成登入；登入成功後會自動出現在模型連線裡。',
-    oauthRetired: '此登入方式已停用',
-    oauthRetiredDetail:
-      '這條連線使用的登入方式已從 Maka 移除，無法再登入，也無法用於對話。改用 Anthropic API Key 連線即可繼續使用 Claude 模型；刪除這條連線會一併清除本機儲存的登入憑據。',
+    providerRetired: '此模型服務已停用',
+    providerRetiredDetail:
+      '這條連線已無法用於對話。請新增其他模型連線，並選擇新的預設模型；原有對話記錄會保留。',
     credentialLoadingDetail: '正在讀取模型憑據狀態，讀取完成前暫不測試連線或重新整理模型。',
     credentialUnknownDetail: '模型憑據狀態暫時沒重新整理成功，已避免把未知狀態顯示成未登入或未設定。',
     testConnection: '測試連線',
@@ -598,9 +598,9 @@ const enCopy: ProviderSettingsCopy = {
     oauthLoadingDetail: 'Reading the local OAuth status. An unknown state will not be shown as signed out.',
     oauthUnknownDetail: 'The local OAuth status is temporarily unavailable. Refresh the page or reopen Settings.',
     oauthWaitingDetail: 'Complete sign-in under account connections. The model connection appears automatically afterward.',
-    oauthRetired: 'This sign-in path is retired',
-    oauthRetiredDetail:
-      'The sign-in this connection uses was removed from Maka. It can no longer be signed into or used in a conversation. Add an Anthropic API key connection to keep using Claude models; deleting this connection also clears the sign-in credential stored on this machine.',
+    providerRetired: 'This provider is retired',
+    providerRetiredDetail:
+      'This connection can no longer be used for conversations. Add another provider and choose a new default model. Existing conversations are kept.',
     credentialLoadingDetail: 'Reading model credential status. Connection tests and model refresh are paused until it finishes.',
     credentialUnknownDetail: 'Model credential status could not be refreshed, so the connection is not being mislabeled as signed out or unconfigured.',
     testConnection: 'Test connection',
