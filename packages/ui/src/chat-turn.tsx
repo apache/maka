@@ -717,7 +717,8 @@ export const TurnView = memo(function TurnView(props: {
                     durationMs={index === activityProcessIndex ? turn.durationMs : undefined}
                     activity={
                       index === activityProcessIndex && props.activityObserved !== false &&
-                      props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                      props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry &&
+                      !props.liveStreaming.providerQueue
                         ? { startedAt: turn.startedAt || undefined, label: runningToolLabel }
                         : undefined
                     }

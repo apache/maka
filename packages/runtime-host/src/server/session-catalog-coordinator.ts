@@ -1187,6 +1187,7 @@ export class HostSessionCatalogCoordinator {
             {
               providerType: connection.providerType,
               modelOverrides: connection.modelOverrides,
+              models: connection.models,
             },
             selected.modelId,
           )

@@ -795,6 +795,58 @@ test('Trae creation and thinking updates use the exact variant capabilities show
   assert.equal(fixture.header().model, 'sol:max');
 });
 
+test('Trae creation applies configured defaults from the selected variant inventory', async () => {
+  for (const mode of ['standard', 'max'] as const) {
+    const modelId = `sol:${mode}`;
+    const expectedLevel = mode === 'max' ? 'xhigh' : 'high';
+    let persistedThinkingLevel: unknown;
+    const fixture = createFixture({
+      connection: {
+        providerType: 'trae',
+        enabledModelIds: [modelId],
+        models: [
+          {
+            id: modelId,
+            capabilities: { reasoning: true },
+            trae: {
+              configName: 'sol',
+              modelName: `sol__${mode}`,
+              mode,
+              reasoningEfforts: mode === 'max' ? ['high', 'xhigh'] : ['high'],
+              toolResponseImages: false,
+            },
+          },
+        ],
+        modelOverrides: { [modelId]: { defaultThinkingLevel: expectedLevel } },
+      },
+      stores: {
+        createStableSession: async (args) => {
+          persistedThinkingLevel = args.input.thinkingLevel;
+          return {
+            kind: 'existing' as const,
+            record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
+          };
+        },
+      },
+    });
+    const outcome = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        modelTarget: {
+          kind: 'explicit',
+          connectionId: 'connection-1',
+          connectionSlug: 'test',
+          model: modelId,
+        },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    assert.equal(persistedThinkingLevel, expectedLevel, mode);
+  }
+});
+
 test('creation on a relay connection honours declared levels via the catalog projection', async () => {
   // The catalog entry carries the typed modelOverrides projection (never
   // the extras bag), so a declared relay level passes the gate — and what
