@@ -28,6 +28,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { sessionExpectsEventStream } from '@maka/core/session-event-health';
 import { type ShellRunUpdate } from '@maka/core/events';
 import type { LiveTurnProjection, NavSelection } from '@maka/ui';
+import { dismissLaunchSurface } from './launch-surface';
 import type { TranscriptPublisher } from './features/conversation/index.js';
 import { messageReadErrorMessage } from './app-shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -150,6 +151,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   /** Releases a send's pending claim once the authority names that turn. */
   createSession: () => Promise<void> | void;
   handleConnectionEvent: (event: ConnectionEvent) => void;
+  launchSurfaceReady: boolean;
   openHelp: () => void;
   openSettings: () => void;
   clearPendingTurnActions: () => void;
@@ -253,6 +255,9 @@ export function useAppShellBootstrapSubscriptions(options: {
       },
     },
   ]);
+  useEffect(() => {
+    if (options.launchSurfaceReady) dismissLaunchSurface();
+  }, [options.launchSurfaceReady]);
   const markRendererMounted = useEffectEvent(() => {
     options.rendererMountedRef.current = true;
   });

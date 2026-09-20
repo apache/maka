@@ -93,7 +93,6 @@ import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
-import { dismissLaunchSurface } from './launch-surface';
 import {
   desktopSlashCommandAvailability,
   parseDesktopSlashCommand,
@@ -1088,9 +1087,6 @@ function AppShellContent({
     (onboarding.snapshot !== null || onboarding.error !== null) &&
     !switchingSession &&
     !activeMessageLoading;
-  useEffect(() => {
-    if (launchSurfaceReady) dismissLaunchSurface();
-  }, [launchSurfaceReady]);
   const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
     () => {
       const availableCommands = slashCommandsForSurface('desktop').filter(
@@ -1855,6 +1851,7 @@ function AppShellContent({
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
     createSession,
     handleConnectionEvent,
+    launchSurfaceReady,
     openHelp,
     openSettings,
     clearPendingTurnActions: turnActionRegistry.clearAll,

@@ -118,7 +118,7 @@ export const ALLOWED = {
     useAppShellTurnPresentation: 1,
     useComposerAttachments: 1,
     useEffect: 7,
-    useLayoutEffect: 2,
+    useLayoutEffect: 1,
     useNewTaskChoice: 1,
     useOnboardingSnapshot: 1,
     usePlanModeState: 1,
