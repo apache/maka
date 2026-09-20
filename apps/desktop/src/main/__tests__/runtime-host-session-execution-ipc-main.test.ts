@@ -2315,7 +2315,6 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     openSession: unavailable,
-    regenerateTurn: unavailable,
     retractQueueEntry: unavailable,
     promoteQueueEntry: unavailable,
     updateQueueEntry: unavailable,

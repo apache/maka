@@ -235,7 +235,7 @@ test('returning to a live conversation settles output accumulated while away', a
     'Fake backend received: temporary second conversation',
     { timeout: 20_000 },
   );
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, {
     timeout: 20_000,
   });
   const backgroundSteering = 'background output accumulated while away';

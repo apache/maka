@@ -1178,64 +1178,6 @@ test('turn.start durably binds a Guest request approval to the admitted Turn', a
   }
 });
 
-test('turn.regenerate durably binds a Guest request approval to the admitted Turn', async () => {
-  const fixture = await createFailureFixture({
-    registerBackend: (backends) =>
-      backends.register('ai-sdk', (context) => new FakeBackend(context)),
-  });
-  const authorization = {
-    kind: 'session_turn_access_request' as const,
-    requestId: 'request-regenerate-1',
-    principalId: 'session_guest:guest-1',
-    grantId: 'grant-1',
-    approvedAt: 1_788_000_000_000,
-    approvedBy: 'local_owner',
-  };
-  const input = {
-    sessionId: fixture.sessionId,
-    sourceTurnId: 'turn-regenerate-source',
-    turnId: 'turn-regenerate-approved',
-  };
-  try {
-    assertStartedTurn(
-      await fixture.interactiveTurns.handlers['turn.start'](
-        {
-          sessionId: fixture.sessionId,
-          turnId: input.sourceTurnId,
-          content: { text: 'Regenerate this approved request.' },
-        },
-        operationContext(fixture.hostEpoch, fixture.acquireResidency),
-      ),
-    );
-    await fixture.coordinator.whenIdle(fixture.sessionId);
-
-    const regenerated = await fixture.interactiveTurns.handlers['turn.regenerate'](input, {
-      ...operationContext(fixture.hostEpoch, fixture.acquireResidency),
-      principal: authorization.principalId,
-      turnAdmissionAuthorization: authorization,
-    });
-    assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
-    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
-      fixture.sessionId,
-      input.turnId,
-    );
-    assert.deepEqual(admission?.execution, {
-      kind: 'regenerate',
-      sourceTurnId: input.sourceTurnId,
-    });
-    assert.deepEqual(admission?.authorization, authorization);
-
-    const conflictingRetry = await fixture.interactiveTurns.handlers['turn.regenerate'](
-      input,
-      operationContext(fixture.hostEpoch, fixture.acquireResidency),
-    );
-    assert.equal(conflictingRetry.ok, false);
-    if (!conflictingRetry.ok) assert.equal(conflictingRetry.error.code, 'operation_conflict');
-  } finally {
-    await fixture.dispose();
-  }
-});
-
 test('turn.start resolves explicit Skills once before durable admission and replays the result', async () => {
   let preparationCount = 0;
   let blocked = false;
@@ -3097,7 +3039,6 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const interactiveTurns = new HostInteractiveTurnCoordinator({
       executions: coordinator,
       turns: stores.agentRunStore,
-      runtime: manager,
     });
 
     const parentSink = new RecordingContinuitySink();
@@ -6433,7 +6374,6 @@ async function createFailureFixture(options: {
   let interactiveTurns = new HostInteractiveTurnCoordinator({
     executions: coordinator,
     turns: stores.agentRunStore,
-    runtime: manager,
   });
 
   return {
@@ -6478,7 +6418,6 @@ async function createFailureFixture(options: {
       interactiveTurns = new HostInteractiveTurnCoordinator({
         executions: coordinator,
         turns: stores.agentRunStore,
-        runtime: manager,
       });
       return coordinator;
     },
@@ -6545,66 +6484,6 @@ test('directory references enforce Host identity without reading the filesystem'
     assert.equal(user.displayText, undefined);
     assert.deepEqual(user.directoryReferences, [reference]);
     assert.equal(fixture.drainRequested(), false);
-  } finally {
-    await fixture.coordinator.close();
-    await fixture.messages.close();
-    await fixture.dispose();
-  }
-});
-
-test('turn start and regeneration preserve one Host-bound directory reference', async () => {
-  const reference = { hostId: 'host-a', path: '/workspace/source' };
-  const sendInputs: BackendSendInput[] = [];
-  const fixture = await createFailureFixture({
-    registerBackend: (backends) =>
-      backends.register(
-        'ai-sdk',
-        (context) =>
-          new (class extends FakeBackend {
-            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-              sendInputs.push(input);
-              yield* super.send(input);
-            }
-          })(context),
-      ),
-    directoryHostId: reference.hostId,
-  });
-  try {
-    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
-    assertStartedTurn(
-      await fixture.interactiveTurns.handlers['turn.start'](
-        {
-          sessionId: fixture.sessionId,
-          turnId: 'directory-start',
-          content: { text: 'inspect', directoryReferences: [reference] },
-        },
-        context,
-      ),
-    );
-    await fixture.coordinator.whenIdle(fixture.sessionId);
-    const regenerated = await fixture.interactiveTurns.handlers['turn.regenerate'](
-      {
-        sessionId: fixture.sessionId,
-        sourceTurnId: 'directory-start',
-        turnId: 'directory-regenerated',
-      },
-      context,
-    );
-    assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
-    await fixture.coordinator.whenIdle(fixture.sessionId);
-
-    assert.equal(sendInputs.length, 2);
-    for (const input of sendInputs) {
-      assert.equal(input.text, 'inspect');
-      assert.deepEqual(input.directoryReferences, [reference]);
-    }
-    const regeneratedUser = (
-      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
-    ).find((message) => message.type === 'user' && message.turnId === 'directory-regenerated');
-    assert.equal(regeneratedUser?.type, 'user');
-    if (regeneratedUser?.type !== 'user') throw new Error('Expected regenerated user message');
-    assert.equal(regeneratedUser.text, 'inspect');
-    assert.deepEqual(regeneratedUser.directoryReferences, [reference]);
   } finally {
     await fixture.coordinator.close();
     await fixture.messages.close();
