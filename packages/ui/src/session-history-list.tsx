@@ -419,6 +419,13 @@ function SessionListGroups(props: {
   // would redraw for a switch that changed two of them (#4109). This component
   // is one fiber; the rows below it are ~1,000.
   const selection = useSessionRailSelection();
+  const projectActionsWithoutRelink = useMemo<
+    ProjectRowActions | undefined
+  >(() => {
+    if (!rail.projectActions) return undefined;
+    const { onRelink: _onRelink, ...actions } = rail.projectActions;
+    return actions;
+  }, [rail.projectActions]);
   const selectedIds = selection?.selectedIds;
   const pickedCount = selectedIds?.size ?? 0;
   // Whether a set-wide pin should read 置顶 or 取消置顶. Every row already
@@ -431,6 +438,13 @@ function SessionListGroups(props: {
     );
     return [...selectedIds].every((sessionId) => pinned.has(sessionId));
   }, [rail.sessions, selectedIds]);
+
+  // Pins follow the same rail membership in both views. Archiving a project
+  // folds its unpinned tasks without hiding its pins.
+  const pinnedGroup = useMemo(() => {
+    if (rail.groupVariant !== 'project') return undefined;
+    return groupSessionsForHistory(rail.sessions, locale).find((group) => group.id === 'pinned');
+  }, [locale, rail.groupVariant, rail.sessions]);
 
   const startRename = useCallback((target: SessionRenameTarget, opener: HTMLElement | null) => {
     renameOpenerRef.current = opener;
@@ -516,19 +530,16 @@ function SessionListGroups(props: {
   if (rail.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
     const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
-    const pinnedGroup = groupSessionsForHistory(
-      activeGroups.flatMap((group) => group.sessions),
-      locale,
-    ).find((group) => group.id === 'pinned');
 
-    function renderProjectGroup(
-      group: (typeof props.groups)[number],
-      includePinned = false,
-    ): ReactNode {
+    function renderProjectGroup(group: (typeof props.groups)[number]): ReactNode {
       const project = group.project;
-      const sessions = includePinned
-        ? group.sessions
-        : group.sessions.filter((session) => !session.isFlagged);
+      const sessions = group.sessions.filter((session) => !session.isFlagged);
+      const actions =
+        project &&
+        (rail.relinkableProjectIds === undefined ||
+          rail.relinkableProjectIds.has(project.id))
+          ? rail.projectActions
+          : projectActionsWithoutRelink;
       return (
         <ProjectNavRow
           key={group.key}
@@ -537,7 +548,7 @@ function SessionListGroups(props: {
           project={project}
           sessions={sessions}
           streamingSessionIds={rail.streamingSessionIds}
-          projectActions={rail.projectActions}
+          projectActions={actions}
           onStartRename={(opener) => {
             if (project) {
               startRename({ kind: 'project', id: project.id, name: project.name }, opener);
@@ -575,7 +586,7 @@ function SessionListGroups(props: {
                 {/* Always mount children: Astryx derives collapsible chrome from
                     !!children. Nulling on collapse removes the chevron and makes
                     the controlled isCollapsed prop a no-op. */}
-                {archivedGroups.map((group) => renderProjectGroup(group, true))}
+                {archivedGroups.map((group) => renderProjectGroup(group))}
               </SideNavItem>
             )}
           </SideNavSection>

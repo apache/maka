@@ -44,7 +44,7 @@ export function commandPaletteActionErrorMessage(
 
 export function openPathActionErrorMessage(
   error: unknown,
-  key: 'workspace' | 'project' | 'skills',
+  key: 'workspace' | 'project',
   locale: UiLocale,
 ): string {
   const copy = getShellCopy(locale);

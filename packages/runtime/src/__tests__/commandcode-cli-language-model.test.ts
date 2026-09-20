@@ -259,6 +259,58 @@ describe('request building', () => {
 });
 
 describe('streaming against a CLI-shaped server', () => {
+  test('carries the provider usage body from finish-step into the finish part', async () => {
+    // The wire splits one call across two events: `finish-step` holds the
+    // provider's OWN usage body, `finish` holds only normalized totals. The
+    // provider keys are what telemetry's strict reader looks for, so losing
+    // them settles every attempt as `usageBasis: 'missing'` — which is what
+    // left the composer's context gauge stuck at a stale number.
+    const server = await startJsonServer(async (_request, response) => {
+      respondCliStream(response, [
+        { type: 'text-delta', text: 'ok' },
+        {
+          type: 'finish-step',
+          finishReason: 'stop',
+          usage: {
+            inputTokens: 7611,
+            outputTokens: 2,
+            raw: {
+              prompt_tokens: 7611,
+              completion_tokens: 2,
+              prompt_cache_hit_tokens: 7424,
+              prompt_cache_miss_tokens: 187,
+              total_tokens: 7613,
+            },
+          },
+        },
+        {
+          type: 'finish',
+          finishReason: 'stop',
+          totalUsage: {
+            inputTokens: 7611,
+            inputTokenDetails: { noCacheTokens: 187, cacheReadTokens: 7424 },
+            outputTokens: 2,
+            totalTokens: 7613,
+          },
+        },
+      ]);
+    });
+    const model = new CommandCodeCliLanguageModel({
+      modelId: 'deepseek/deepseek-v4.1-flash',
+      apiKey: 'user_k',
+      apiBase: server.url,
+      workingDir: '/repo',
+    });
+    const { stream } = await model.doStream(USER_HI);
+    const parts = await collect(stream);
+    const finish = parts.find((p) => p.type === 'finish');
+    assert.ok(finish && finish.type === 'finish');
+    assert.equal(finish.usage.inputTokens.total, 7611);
+    // The provider body, not the normalized envelope: telemetry reads
+    // `prompt_tokens` off this to decide the attempt reported usage at all.
+    assert.equal((finish.usage.raw as Record<string, unknown>).prompt_tokens, 7611);
+  });
+
   test('maps reasoning, text, a tool call, and usage onto AI SDK stream parts', async () => {
     let seenHeaders: Record<string, string | string[] | undefined> = {};
     let seenBody: Record<string, unknown> = {};

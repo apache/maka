@@ -57,6 +57,7 @@ function session(
     profileId: 'local',
     profileName: 'Local',
     profileKind: 'local',
+    runtimeHostId: 'local-host',
     ...overrides,
   };
 }
@@ -130,7 +131,36 @@ function input(
       activeSessionId,
       (candidate) => !hiddenSessionIds.has(candidate.id) && sessionMatchesRail(candidate),
     ),
-    projects: [project],
+    projectScopes: [
+      {
+        key: JSON.stringify(['local-host', project.id]),
+        profileId: 'local',
+        hostId: 'local-host',
+        profileName: 'Local',
+        profileKind: 'local',
+        project,
+        capabilities: {
+          chooseClientDirectory: true,
+          chooseHostDirectory: false,
+          selectNoProject: true,
+        },
+      },
+      ...sessions
+        .filter((session) => session.profileKind !== 'local')
+        .map((session) => ({
+          key: JSON.stringify([session.runtimeHostId, project.id]),
+          profileId: session.profileId,
+          hostId: session.runtimeHostId,
+          profileName: session.profileName,
+          profileKind: session.profileKind,
+          project: { ...project },
+          capabilities: {
+            chooseClientDirectory: false,
+            chooseHostDirectory: true,
+            selectNoProject: false,
+          },
+        })),
+    ],
     ports: ports(sessions, activeSessionId, calls),
   };
 }
@@ -151,14 +181,24 @@ const linkedCatalog = [
     },
   }),
   session('remote', {
+    runtimeHostId: 'remote-host',
     profileId: 'remote-profile',
     profileName: 'Remote Mac',
     profileKind: 'remote',
+    projectId: 'project',
+    cwd: '/srv/project',
   }),
   session('environment', {
+    runtimeHostId: 'wsl-host',
     profileId: 'wsl-ubuntu',
     profileName: 'Ubuntu',
     profileKind: 'environment',
+    projectId: 'project',
+    cwd: '/home/user/project',
+  }),
+  session('side-conversation', {
+    parentSessionId: 'root',
+    labels: ['mode:side_conversation'],
   }),
   session('archived', { isArchived: true }),
   session('hidden'),
@@ -170,13 +210,29 @@ afterEach(() => {
 });
 
 describe('useSessionNavigationController', () => {
-  it('groups the rail by Project and Runtime Host, and names Host-workspace rows', async () => {
+  it('keeps same-named Projects from each Runtime Host at the same level', async () => {
     const { root } = installReactRenderer();
     await act(async () => renderController(root, input(linkedCatalog, 'child')));
 
     assert.deepEqual(
       controller().selectors.groups.map(({ id }) => id),
-      ['project:project', 'runtime-host:remote-profile', 'runtime-host:wsl-ubuntu'],
+      [
+        'project:["local-host","project"]',
+        'project:["remote-host","project"]',
+        'project:["wsl-host","project"]',
+      ],
+    );
+    assert.deepEqual(
+      controller().selectors.groups.map(({ label }) => label),
+      ['Project · Local', 'Project · Remote Mac', 'Project · Ubuntu'],
+    );
+    assert.equal(
+      controller().selectors.sessionMeta(linkedCatalog[2]!),
+      'Remote Mac',
+    );
+    assert.equal(
+      controller().selectors.sessionMeta(linkedCatalog[3]!),
+      'Ubuntu',
     );
     assert.equal(controller().selectors.sessionMeta(linkedCatalog[2]!), 'Remote Mac');
     assert.equal(controller().selectors.sessionMeta(linkedCatalog[3]!), 'Ubuntu');
@@ -205,7 +261,7 @@ describe('useSessionNavigationReads', () => {
     latestReads = undefined;
   });
 
-  it('projects linked, archived, hidden, Project, and Runtime Host Sessions once', async () => {
+  it('projects linked, archived, hidden, side-conversation, Project, and Runtime Host Sessions once', async () => {
     const { root } = installReactRenderer();
     await act(async () =>
       root.render(

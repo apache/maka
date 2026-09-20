@@ -138,6 +138,7 @@ export interface TurnMessageExecutionQueryResult {
 export type TurnMessageExecutionResolution =
   | { readonly messageId: string; readonly state: 'pending' }
   | { readonly messageId: string; readonly state: 'cancelled' }
+  | { readonly messageId: string; readonly state: 'not_admitted' }
   | {
       readonly messageId: string;
       readonly state: 'owned';
@@ -399,6 +400,16 @@ function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecu
       return {
         messageId: requireEntityId(resolution.messageId, 'messageId'),
         state: 'cancelled',
+      };
+    }
+    if (resolution.state === 'not_admitted') {
+      assertExactKeys(resolution, 'turn.message.execution.query not_admitted resolution', [
+        'messageId',
+        'state',
+      ]);
+      return {
+        messageId: requireEntityId(resolution.messageId, 'messageId'),
+        state: 'not_admitted',
       };
     }
     if (resolution.state === 'owned') {

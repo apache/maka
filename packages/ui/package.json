@@ -10,6 +10,8 @@
     ".": "./dist/index.js",
     "./artifact-preview-registry": "./dist/artifact-preview-registry.js",
     "./assistant-stream": "./dist/assistant-stream.js",
+    "./client-plugin": "./dist/client-plugin-slots.js",
+    "./client-plugin-runtime": "./dist/client-plugin-runtime.js",
     "./icons": "./dist/icons.js",
     "./maka-uri": "./dist/maka-uri.js",
     "./testing": "./dist/testing.js",
@@ -26,7 +28,7 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@astryxdesign/core": "0.6.1",
+    "@astryxdesign/core": "0.6.2",
     "@maka/core": "0.1.0",
     "clsx": "^2.1.1",
     "katex": "0.18.7",

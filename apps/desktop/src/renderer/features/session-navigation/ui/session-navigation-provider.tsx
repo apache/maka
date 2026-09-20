@@ -24,7 +24,6 @@ import {
   type ComponentType,
   type ReactNode,
 } from 'react';
-import type { ProjectRecord } from '@maka/core/project';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
   SessionRailProvider,
@@ -43,7 +42,11 @@ import {
 } from '../model/session-list-layout.js';
 import type { SessionRailProjection } from '../model/session-rail.js';
 import { sessionRailLayoutStore } from '../model/session-rail-layout-store.js';
-import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.js';
+import type {
+  SessionNavigationPorts,
+  SessionNavigationProjectScope,
+  SessionNavigationSession,
+} from '../ports.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -63,7 +66,7 @@ export interface SessionNavigationChromeInput {
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
   rail: SessionRailProjection<SessionNavigationSession>;
-  projects: readonly ProjectRecord[];
+  projectScopes: readonly SessionNavigationProjectScope[];
   streamingSessionIds: ReadonlySet<string>;
   staleSessionIds: ReadonlySet<string>;
   SessionBadge?: ComponentType<{ readonly sessionId: string }>;
@@ -91,7 +94,7 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
 export function SessionNavigationProvider(props: SessionNavigationProviderProps) {
   const controller = useSessionNavigationController({
     rail: props.rail,
-    projects: props.projects,
+    projectScopes: props.projectScopes,
     ports: props.ports,
   });
 
@@ -158,6 +161,15 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     const SessionBadge = props.SessionBadge;
     return SessionBadge ? (session) => <SessionBadge sessionId={session.id} /> : undefined;
   }, [props.SessionBadge]);
+  const relinkableProjectIds = useMemo(
+    () =>
+      new Set(
+        props.projectScopes
+          .filter((scope) => scope.capabilities.chooseClientDirectory)
+          .map((scope) => scope.key),
+      ),
+    [props.projectScopes],
+  );
 
   const data = useMemo<SessionRailData>(
     () => ({
@@ -174,6 +186,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       onSelectSession: props.onSelectSession,
       rowActions,
       projectActions,
+      relinkableProjectIds,
     }),
     [
       controller.layout.viewMode,
@@ -183,6 +196,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       controller.selectors.worktreeSessionIds,
       props.onSelectSession,
       projectActions,
+      relinkableProjectIds,
       props.rail,
       props.staleSessionIds,
       props.streamingSessionIds,

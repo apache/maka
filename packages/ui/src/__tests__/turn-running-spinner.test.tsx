@@ -48,7 +48,7 @@ function statusHasSpinner(toolStatuses: readonly ('running' | 'completed')[]): b
   const { document } = parseHTML(markup);
   assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
   assert.ok(document.querySelector('.maka-processing-summary .maka-turn-processing'));
-  assert.equal(document.querySelector('.maka-turn-footer .maka-turn-processing'), null);
+  assert.equal(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'), null);
   assert.doesNotMatch(markup, /Waiting for model output/);
   return document.querySelector('.maka-turn-processing .astryx-spinner') !== null;
 }
@@ -122,22 +122,44 @@ test('only the latest assistant segment owns live activity after a user instruct
   const summaries = document.querySelectorAll('.maka-processing-summary');
   assert.equal(summaries.length, 2);
   assert.equal(summaries[0]?.textContent, 'Execution process');
-  assert.match(summaries[1]?.textContent ?? '', /Pondering/);
+  assert.equal(summaries[1]?.textContent, 'Pondering…');
   assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
+  assert.equal(document.querySelector('.maka-turn-footer-meta .maka-turn-processing'), null);
+  const settled = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en"><TurnView turn={{ ...turn, status: 'completed', durationMs: 213_000 }} /></LocaleProvider>,
+  )).document;
+  const settledSummaries = settled.querySelectorAll('.maka-processing-summary');
+  assert.equal(settledSummaries[0]?.textContent, 'Execution process');
+  assert.equal(settledSummaries[1]?.textContent, 'Worked for 3m 33s');
+  assert.equal(settled.querySelector('.maka-turn-status-line')?.textContent, 'Done');
 });
 
-test('states the elapsed once, in the process header rather than the footer meta', () => {
-  const tool = { toolUseId: 'read', toolName: 'Read', status: 'completed' as const, args: {} };
+test('keeps elapsed and model metadata in the footer for a reply without process entries', () => {
   const turn: TurnViewModel = {
-    turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [tool], notes: [], startedAt: 1,
+    turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [], notes: [], startedAt: 1,
     durationMs: 213_000,
-    timeline: [{ kind: 'tools', items: [tool] }, { kind: 'text', messageId: 'answer', text: 'the answer' }],
+    timeline: [{ kind: 'text', messageId: 'answer', text: 'the answer' }],
   };
   const { document } = parseHTML(renderToStaticMarkup(
     <LocaleProvider locale="en">
       <TurnView turn={turn} footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]} />
     </LocaleProvider>,
   ));
-  assert.match(document.querySelector('.maka-processing-summary')?.textContent ?? '', /Worked for 3m 33s/);
-  assert.equal(document.querySelector('.maka-turn-footer-meta')?.textContent, 'fixture-model');
+  // The duration lives on the status line at the BOTTOM of the turn, where a
+  // growing answer cannot push it out of view. The top summary states only what
+  // the disclosure holds.
+  assert.equal(document.querySelector('.maka-processing-summary')?.textContent?.trim(), 'Execution process');
+  const statusLine = document.querySelector('.maka-turn-status-line')?.textContent ?? '';
+  // Localized duration (the same wording the copy owns), not the compact
+  // `3m 33s` the live counter uses.
+  assert.match(statusLine, /Done · Worked for 3m 33s/);
+  // This turn carries only the placeholder start (the fixture's `startedAt: 1`),
+  // so no finish time is printed rather than dating it to 1970.
+  assert.doesNotMatch(statusLine, /1970/);
+  // The footer's meta row carries the turn's state AND the model facts on one
+  // line, rather than the state taking a line of its own.
+  assert.equal(
+    document.querySelector('.maka-turn-footer-meta')?.textContent,
+    'Done · Worked for 3m 33s · fixture-model',
+  );
 });

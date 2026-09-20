@@ -504,22 +504,14 @@ export function overlayLiveTurn(
       } satisfies TurnViewModel,
     ];
   }
-  if (
-    targetIndex >= 0
-    && liveTurn.steps.length === 0
-    && (liveTurn.pendingSteering?.length ?? 0) === 0
-  ) {
+  if (targetIndex >= 0 && liveTurn.steps.length === 0) {
     return turns;
   }
   // A send arm is only a presentation claim that the next message may still
   // arrive. It is not a Turn record and must not manufacture one while the
   // canonical transcript is catching up. A real live step (or steering
   // message) is sufficient evidence to project a missing external Turn.
-  if (
-    targetIndex < 0
-    && liveTurn.steps.length === 0
-    && (liveTurn.pendingSteering?.length ?? 0) === 0
-  ) {
+  if (targetIndex < 0 && liveTurn.steps.length === 0) {
     return turns;
   }
   const current =
@@ -527,7 +519,12 @@ export function overlayLiveTurn(
       ? turns[targetIndex]!
       : ({
           turnId: liveTurn.turnId,
-          status: "completed" as const,
+          // A Turn that exists only as live state has NOT ended — this is the
+          // very Turn whose steps are arriving. Saying "completed" here made the
+          // composer's turn-status line announce a finish mid-stream; the
+          // transcript has no record either way, so the honest reading is that
+          // it is still running.
+          status: "running" as const,
           tools: [],
           notes: [],
           timeline: [],
@@ -555,22 +552,20 @@ export function overlayLiveTurn(
     }
   }
   const liveTimeline: TurnTimelineItem[] = [];
-  const emittedSteeringIds = new Set<string>();
-  const appendLiveSteering = (
-    messages: readonly LiveSteeringProjection[],
-  ): void => {
-    for (const message of messages) {
-      if (emittedSteeringIds.has(message.id)) continue;
-      emittedSteeringIds.add(message.id);
-      liveTimeline.push({
-        kind: "user",
-        message: chatItemFromContent(message.id, message.ts, message.content),
-        messageId: message.id,
-      });
-    }
+  const liveItemTs: number[] = [];
+  const pushLive = (item: TurnTimelineItem, ts: number | undefined): void => {
+    liveTimeline.push(item);
+    liveItemTs.push(ts ?? 0);
+  };
+  const appendLiveSteering = (message: LiveSteeringProjection): void => {
+    pushLive({
+      kind: "user",
+      message: chatItemFromContent(message.id, message.ts, message.content),
+      messageId: message.id,
+    }, message.ts);
   };
   for (const step of liveTurn.steps) {
-    appendLiveSteering(step.leadingSteering ?? []);
+    if (step.steering !== undefined) appendLiveSteering(step.steering);
     const contentOrder = step.contentOrder ?? [
       ...(step.thinking ? ["thinking" as const] : []),
       ...(step.text ? ["text" as const] : []),
@@ -578,15 +573,15 @@ export function overlayLiveTurn(
     ];
     for (const kind of contentOrder) {
       if (kind === "thinking" && step.thinking?.text) {
-        liveTimeline.push({
+        pushLive({
           kind: "thinking",
           text: step.thinking.text,
           messageId: step.stepId,
           live: step.thinking.complete !== true,
           truncated: step.thinking.truncated,
-        });
+        }, step.startedAt);
       } else if (kind === "text" && step.text && (step.text.text || step.text.interrupted)) {
-        liveTimeline.push({
+        pushLive({
           kind: "text",
           text: step.text.text,
           ...(step.text.interrupted ? { interrupted: true } : {}),
@@ -594,36 +589,48 @@ export function overlayLiveTurn(
           live: true,
           complete: step.text.complete,
           truncated: step.text.truncated,
-        });
+        }, step.startedAt);
       } else if (kind === "tools") {
         const stepTools = step.tools.flatMap((tool) => {
           const projected = toolByUseId.get(tool.toolUseId);
           return projected ? [projected] : [];
         });
         if (stepTools.length > 0)
-          liveTimeline.push({ kind: "tools", items: stepTools });
+          pushLive({ kind: "tools", items: stepTools }, step.startedAt);
       }
     }
   }
-  appendLiveSteering(liveTurn.pendingSteering ?? []);
   // Shared entries are handoff points: replace them in place while preserving
   // live production order. Appending all live content after settled rows moved
   // an earlier answer (and its steering anchor) behind later persisted steps.
-  const liveEntries = flattenTimelineTools(liveTimeline);
-  const liveIndex = new Map(liveEntries.map((item, index) => [timelineItemKey(item), index]));
+  const liveEntries = liveTimeline.flatMap((item, index) =>
+    flattenTimelineTools([item]).map((entry) => ({ entry, ts: liveItemTs[index]! })));
+  const lastSettledContentIndex = current.timeline.findLastIndex((item) => item.kind !== 'user');
+  const liveKeys = new Set(liveEntries.map(({ entry }) => timelineItemKey(entry)));
+  // A steering the live stream missed is position-ambiguous once it sits at
+  // the settled tail; splice it into the live order where its own ts falls
+  // instead of blindly trailing content that followed it. Missing ts sorts
+  // conservatively on both sides: a live entry without one keeps the deferred
+  // steering behind it, and a settled steering without one trails the live
+  // order rather than leaping ahead of known content.
+  const deferredSettled = new Set<number>();
+  for (const [index, item] of current.timeline.entries()) {
+    if (item.kind !== 'user' || item.steeringEventId === undefined
+      || index <= lastSettledContentIndex || liveKeys.has(timelineItemKey(item))) continue;
+    deferredSettled.add(index);
+    const ts = item.message.ts ?? Number.MAX_SAFE_INTEGER;
+    const at = liveEntries.findIndex((entry) => entry.ts > ts);
+    if (at < 0) liveEntries.push({ entry: item, ts });
+    else liveEntries.splice(at, 0, { entry: item, ts });
+  }
+  const liveIndex = new Map(liveEntries.map(({ entry }, index) => [timelineItemKey(entry), index]));
   const timeline: TurnTimelineItem[] = [];
   let nextLive = 0;
   const appendLiveThrough = (index: number) => {
-    while (nextLive <= index) timeline.push(liveEntries[nextLive++]!);
+    while (nextLive <= index) timeline.push(liveEntries[nextLive++]!.entry);
   };
-  const lastSettledContentIndex = current.timeline.findLastIndex((item) => item.kind !== 'user');
-  const deferredSteering: TurnTimelineItem[] = [];
   for (const [index, item] of current.timeline.entries()) {
-    if (item.kind === 'user' && item.steeringEventId !== undefined
-      && !liveIndex.has(timelineItemKey(item)) && index > lastSettledContentIndex) {
-      deferredSteering.push(item);
-      continue;
-    }
+    if (deferredSettled.has(index)) continue;
     for (const entry of flattenTimelineTools([item])) {
       const key = timelineItemKey(entry);
       const livePosition = liveIndex.get(key);
@@ -632,7 +639,6 @@ export function overlayLiveTurn(
     }
   }
   appendLiveThrough(liveEntries.length - 1);
-  timeline.push(...deferredSteering);
   const mergedTimeline = mergeAdjacentTimeline(timeline);
   const next = {
     ...current,

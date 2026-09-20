@@ -334,7 +334,10 @@ describe('Maka ACP child process', () => {
         assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
         assert.equal(harness.stderr, '');
       },
-      { startRuntimeHost: true },
+      {
+        startRuntimeHost: true,
+        model: { id: 'acp-session-fixture', thinkingLevels: [] },
+      },
     );
   });
 

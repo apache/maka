@@ -740,7 +740,8 @@ test('reports conversion errors before persistence and store uncertainty after e
   assert.equal(canonicalizationFailure.drainRequests(), 0);
 
   const persistenceFailure = coordinatorFixture([adapterFixture()], {
-    createImportedSession: async () => {
+    createImportedSession: async (_input, _messages, _externalOrigin, options) => {
+      options?.onCommitStarted?.();
       throw new Error('commit acknowledgement lost');
     },
   });
@@ -759,6 +760,26 @@ test('reports conversion errors before persistence and store uncertainty after e
     },
   );
   assert.equal(persistenceFailure.drainRequests(), 1);
+
+  const projectionFailure = coordinatorFixture([adapterFixture()], {
+    createImportedSession: async () => {
+      throw new Error('forced projection failure');
+    },
+  });
+  assert.deepEqual(
+    await projectionFailure.coordinator.handlers['external-session.import'](
+      { adapterId: 'codex', sourceSessionId: 'source-0' },
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'source_unreadable',
+        message: 'External Session could not be read or converted',
+      },
+    },
+  );
+  assert.equal(projectionFailure.drainRequests(), 0);
 });
 
 test('classifies source absence only through the adapter error authority', async () => {
@@ -882,7 +903,8 @@ test('does not classify untyped source errors or errors after persistence as sou
     },
   );
   const committed = coordinatorFixture([adapterFixture()], {
-    createImportedSession: async () => {
+    createImportedSession: async (_input, _messages, _externalOrigin, options) => {
+      options?.onCommitStarted?.();
       throw new ExternalSessionLimitError('record_bytes', 100, 'private persistence details');
     },
   });
@@ -1155,7 +1177,6 @@ function coordinatorFixture(
       if (!storeOverrides.createImportedSession) {
         return defaultCreate(input, messages, externalOrigin, options);
       }
-      options?.onCommitStarted?.();
       return storeOverrides.createImportedSession(input, messages, externalOrigin, options);
     },
     lookupExternalSessionImports: async (adapterId, sourceSessionIds, recentSessionIdLimit) => {

@@ -24,7 +24,6 @@ const main = `${repo}/blob/main`;
 
 export const links = {
   repo,
-  releases: `${repo}/releases`,
   discussions: `${repo}/discussions`,
   devList: 'https://lists.apache.org/list.html?dev@maka.apache.org',
   docs: `${main}/docs/README.md`,
@@ -32,7 +31,6 @@ export const links = {
   nineArm: `${main}/docs/eval/terminal-bench-2.1-deepseek-v4-flash-nine-arm.md`,
   paired: `${main}/docs/eval/terminal-bench-2.1-deepseek-v4-flash-maka-vs-opencode.md`,
   security: `${main}/SECURITY.md`,
-  windows: `${main}/docs/windows-support.md`,
   asf: 'https://www.apache.org/',
   incubator: 'https://incubator.apache.org/',
   conduct: 'https://www.apache.org/foundation/policies/conduct.html',

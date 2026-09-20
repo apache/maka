@@ -541,6 +541,12 @@ export class DesktopRuntimeHostClient {
     });
   }
 
+  readConnectionUsage(
+    connectionId: string,
+  ): Promise<OperationOutput<"connection.usage.read">> {
+    return this.request("connection.usage.read", { connectionId });
+  }
+
   verifyConnectionOnboarding(
     input: OperationInput<"connection.onboarding.verify">,
   ): Promise<OperationOutput<"connection.onboarding.verify">> {
@@ -1385,12 +1391,6 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"turn.stop">,
   ): Promise<OperationOutput<"turn.stop">> {
     return this.request("turn.stop", input);
-  }
-
-  regenerateTurn(
-    input: OperationInput<"turn.regenerate">,
-  ): Promise<OperationOutput<"turn.regenerate">> {
-    return this.request("turn.regenerate", input);
   }
 
   queryTurnResume(

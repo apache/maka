@@ -660,8 +660,51 @@ test('message execution query reports the Turn that durably owns each Message', 
           turnId: ROOT.turnId,
           runId: ROOT.runId,
         },
+        {
+          // No receipt, steering proof, tombstone, or admission names it, so
+          // the Host reports the absence positively rather than omitting it.
+          messageId: 'unknown-message',
+          state: 'not_admitted',
+        },
       ],
     },
+  });
+});
+
+test('message execution query never observes a submit mid-admission', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  // Hold admission open inside the submit so the query must queue behind it.
+  const preparing = deferred<void>();
+  const release = deferred<void>();
+  fixture.setMessagePreparation(async () => {
+    preparing.resolve(undefined);
+    await release.promise;
+    return { kind: 'ready', content: { text: 'raced' }, skillInvocation: EMPTY_SKILL_INVOCATION };
+  });
+  const submit = fixture.coordinator.handlers['turn.message.submit'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId: 'in-flight-message',
+      content: { text: 'raced' },
+      placement: 'next_turn',
+    } as const,
+    operationContext(),
+  );
+  await preparing.promise;
+  // Issued while the submit holds the Session admission. If the read were not
+  // gated it would see no admission row and answer `not_admitted`, handing the
+  // user a resend for a Message this Host is in the middle of admitting.
+  const query = fixture.coordinator.handlers['turn.message.execution.query'](
+    { sessionId: ROOT.sessionId, messageIds: ['in-flight-message'] },
+    operationContext(),
+  );
+  release.resolve(undefined);
+  await submit;
+  assert.deepEqual(await query, {
+    ok: true,
+    result: { resolutions: [{ messageId: 'in-flight-message', state: 'pending' }] },
   });
 });
 
