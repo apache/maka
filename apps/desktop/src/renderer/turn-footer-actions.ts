@@ -27,7 +27,6 @@
  * Footer actions (icon + Chinese text — see the TurnFooterActions
  * component for the actual buttons):
  *
- *   - regenerate     🔁 重新生成 → for any non-running turn (failed / aborted / completed)
  *   - branch         🌿 分支     → for any non-running turn (incl. aborted)
  *   - copy           📋 复制     → always available when there's content
  *
@@ -49,7 +48,7 @@ import type { TurnStatus } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
-export type TurnFooterActionId = 'regenerate' | 'branch' | 'copy';
+export type TurnFooterActionId = 'branch' | 'copy';
 
 export interface TurnFooterAction {
   id: TurnFooterActionId;
@@ -78,12 +77,6 @@ export interface TurnFooterContext {
    */
   hasContent: boolean;
   /**
-   * True when there's already a regenerate sibling for this turn.
-   * Used to hint at "已重新生成" in the tooltip so the user
-   * understands a parallel answer already exists.
-   */
-  alreadyRegenerated?: boolean;
-  /**
    * Per @kenji review: prevent double-click duplicate sibling turns.
    * The renderer marks an action `pending` from click time until
    * `sessions:changed` (or timeout) clears it; the footer renders that
@@ -96,7 +89,7 @@ export interface TurnFooterContext {
 
 /**
  * Derive the ordered list of footer actions to render for a turn.
- * The order is fixed at the matrix level (regenerate → branch → copy)
+ * The order is fixed at the matrix level (branch → copy)
  * so adjacent buttons line up across rows even when some are disabled.
  *
  * @kenji gate: returned `enabled` flags depend only on `TurnStatus`
@@ -104,25 +97,12 @@ export interface TurnFooterContext {
  * optimistic guesses.
  */
 export function deriveTurnFooterActions(input: TurnFooterContext): TurnFooterAction[] {
-  const { status, hasContent, alreadyRegenerated, pendingActions } = input;
+  const { status, hasContent, pendingActions } = input;
   const copyText = getDesktopConversationCopy(input.locale).footer;
   const actionLabel = copyText.labels;
   const isPending = (id: TurnFooterActionId) => pendingActions?.has(id) ?? false;
   const PENDING_TOOLTIP = copyText.pending;
 
-  const regenerate: TurnFooterAction = isPending('regenerate')
-    ? { id: 'regenerate', label: actionLabel.regenerate, enabled: false, tooltip: PENDING_TOOLTIP }
-    : {
-        id: 'regenerate',
-        label: actionLabel.regenerate,
-        enabled: status !== 'running',
-        tooltip:
-          status === 'running'
-            ? copyText.regenerateRunning
-            : alreadyRegenerated
-            ? copyText.regenerateAgain
-            : copyText.regenerate,
-      };
   const branch: TurnFooterAction = isPending('branch')
     ? { id: 'branch', label: actionLabel.branch, enabled: false, tooltip: PENDING_TOOLTIP }
     : {
@@ -143,5 +123,5 @@ export function deriveTurnFooterActions(input: TurnFooterContext): TurnFooterAct
     tooltip: hasContent ? copyText.copy : copyText.copyEmpty,
   };
 
-  return [regenerate, branch, copy];
+  return [branch, copy];
 }

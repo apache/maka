@@ -71,7 +71,6 @@ import type {
   TurnOrchestration,
   SessionListFilter,
   BranchFromTurnInput,
-  RegenerateTurnInput,
   ReviseBeforeTurnInput,
 } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
@@ -850,13 +849,7 @@ export interface MakaBridge {
     renameMount(mountId: string, name: string): Promise<void>;
     requestTurn(
       sessionId: string,
-      input:
-        | { readonly kind: 'start'; readonly turnId: string; readonly text: string }
-        | {
-            readonly kind: 'regenerate';
-            readonly turnId: string;
-            readonly sourceTurnId: string;
-          },
+      input: { readonly kind: 'start'; readonly turnId: string; readonly text: string },
     ): Promise<SessionTurnAccessRequest>;
     getTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult>;
     /** Pending Owner decisions across every connected Owner Runtime Host. */
@@ -1289,7 +1282,6 @@ export interface MakaBridge {
       | { disposition: 'started'; runId: string; turnId: string }
       | { disposition: 'park'; rejectionReasons: string[]; diagnostics: unknown[] }
     >;
-    regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void>;
     branchFromTurn(
       sessionId: string,
       input: DesktopBranchFromTurnInput & { sideConversation: true },

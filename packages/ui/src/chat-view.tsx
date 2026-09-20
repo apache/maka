@@ -338,8 +338,6 @@ export function ChatView(props: {
    * reconciliation on the hot streaming path (ChatView also ref-wraps this).
    */
   onOpenLinkedSession?(sessionId: string): void;
-  /** Resolve a requires-bypass tool refusal, then regenerate its owning turn. */
-  onSwitchToBypassAndRetry?(turnId: string): void | Promise<void>;
   onNew(): void;
   onPromptSuggestion?(prompt: string): void;
   /**
@@ -514,12 +512,6 @@ export function ChatView(props: {
   onOpenLinkedSessionRef.current = props.onOpenLinkedSession;
   const stableOpenLinkedSession = useCallback(
     (sessionId: string) => onOpenLinkedSessionRef.current?.(sessionId),
-    [],
-  );
-  const onSwitchToBypassAndRetryRef = useRef(props.onSwitchToBypassAndRetry);
-  onSwitchToBypassAndRetryRef.current = props.onSwitchToBypassAndRetry;
-  const stableSwitchToBypassAndRetry = useCallback(
-    (turnId: string) => onSwitchToBypassAndRetryRef.current?.(turnId),
     [],
   );
   const conversationItemPlacement = useMemo(() => placeChatConversationItems(
@@ -887,11 +879,6 @@ export function ChatView(props: {
                           onLineageBadgeClick={stableLineageBadgeClick}
                           onOpenLinkedSession={
                             props.onOpenLinkedSession ? stableOpenLinkedSession : undefined
-                          }
-                          onSwitchToBypassAndRetry={
-                            props.onSwitchToBypassAndRetry
-                              ? stableSwitchToBypassAndRetry
-                              : undefined
                           }
                           searchHighlighted={highlightedTurnId === turn.turnId}
                           liveStreaming={

@@ -124,11 +124,6 @@ export interface UserMessageInput extends MessageContent {
   origin?: TurnOrigin;
 }
 
-export interface RegenerateTurnInput {
-  sourceTurnId: string;
-  turnId?: string;
-}
-
 export interface BranchFromTurnInput {
   /**
    * Settled turn to branch through. Absent forks with an empty context — a side
