@@ -193,6 +193,7 @@ import type {
 } from "./runtime-host-desktop-candidate.js";
 import {
   createRuntimeHostDesktopManager,
+  type DesktopLocalHostRetirement,
   type RuntimeHostDesktopManager,
   type RuntimeHostDesktopTargetState,
 } from "./runtime-host-desktop-manager.js";
@@ -935,9 +936,20 @@ const updateService = createAppUpdateService({
         }),
   prepareInstall: async (input) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
-    const retirement = await runtimeHostManager.retireOwnedLocalHost(
-      input.allowInterruptActiveTasks ? "interrupt_active_work" : "refuse_active_work",
-    );
+    let retirement: DesktopLocalHostRetirement;
+    try {
+      retirement = await runtimeHostManager.retireOwnedLocalHost(
+        input.allowInterruptActiveTasks ? "interrupt_active_work" : "refuse_active_work",
+      );
+    } catch {
+      // installUpdate is reachable while the local Host is still starting —
+      // its admission deadline expires mid-launch and the retire throws. The
+      // install hands off to quitAndInstall immediately, and the launch-owner
+      // guard closes the half-started Host on exit, so a Host that could not
+      // be quiesced in time must not fail the install — same degrade the quit
+      // path applies to an unreachable Host.
+      retirement = { kind: "not_owned" };
+    }
     if (retirement.kind === "active_tasks") return retirement;
     return {
       kind: "prepared",
