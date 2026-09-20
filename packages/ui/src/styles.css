@@ -1342,3 +1342,32 @@
 .maka-choice-panel:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
 
 .maka-choice-hint { margin: 8px 0; }
+
+/* ---------------------------------------------------------------------------
+   Session rail working cue.
+
+   The 8px dot's own opacity breathe reads as "settled" in peripheral vision,
+   and `prefers-reduced-motion` removes even that (apache/maka#5519). While a
+   turn is working, the signal gutter wraps the dot in a spinning arc — the
+   rotation is the in-progress cue when motion is fine, and the arc itself is
+   the non-motion mark when it is not.
+--------------------------------------------------------------------------- */
+
+.maka-session-row-signal { display: inline-flex; position: relative; }
+
+.maka-session-row-signal[data-working='true']::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  border: 1.5px solid transparent;
+  border-top-color: var(--accent);
+  animation: maka-spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-session-row-signal[data-working='true']::after {
+    animation: none;
+    border-color: color-mix(in oklch, var(--accent) 55%, transparent);
+  }
+}

@@ -797,7 +797,14 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         // whether or not it has a dot, so state reads as one column down the
         // rail instead of a mark that drifts with each title's length.
         icon={
-          <span className="maka-session-row-signal">
+          <span
+            className="maka-session-row-signal"
+            // The working cue's hook: `styles.css` wraps the dot in a spinning
+            // arc keyed on this attribute (static ring under reduced motion).
+            // `isPulsing` is exactly "a turn is working" — live responding and
+            // the persisted running fallback both set it.
+            data-working={signal?.isPulsing ? 'true' : undefined}
+          >
             {signal ? (
               <StatusDot
                 variant={signal.variant}
