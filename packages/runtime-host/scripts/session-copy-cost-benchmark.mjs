@@ -28,6 +28,9 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import { createExecutionRuntimeHostComposition } from '../dist/server/execution-composition.js';
 
 const HISTORY_SIZES = [4, 16, 64, 128];
+const COPY_SAMPLE_COUNT = 5;
+const COPY_RETRY_ATTEMPTS = 20;
+const COPY_RETRY_DELAY_MS = 25;
 const CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const operationContext = {
   hostEpoch: 'session-copy-cost-benchmark',
@@ -95,24 +98,24 @@ async function runFixture(historySize) {
       await waitForCompletedTurn(manager, source.id, sourceTurnId);
     }
 
-    const beforeBytes = await directoryBytes(root);
     const sourceSummary = (await manager.listSessions()).find((item) => item.id === source.id);
-    const sourceRecord = await manager.deps.store.readHeaderRecordSnapshot(source.id);
     if (!sourceSummary || !sourceTurnId) throw new Error('Benchmark source did not settle');
-    const targetSessionId = randomUUID();
-    const startedAt = performance.now();
-    const copied = await composition.handlers['session.branch.create'](
-      {
+
+    await copySession({ composition, manager, sourceSessionId: source.id, sourceTurnId });
+    const beforeBytes = await directoryBytes(root);
+    const copyDurations = [];
+    let targetSessionId;
+    for (let sample = 0; sample < COPY_SAMPLE_COUNT; sample += 1) {
+      targetSessionId = randomUUID();
+      const startedAt = performance.now();
+      await copySession({
+        composition,
+        manager,
         sourceSessionId: source.id,
-        targetSessionId,
         sourceTurnId,
-        expectedSourceRevision: sourceRecord.revision,
-      },
-      operationContext,
-    );
-    const copyMs = performance.now() - startedAt;
-    if (!copied.ok || copied.result.kind !== 'committed') {
-      throw new Error(`Session copy failed: ${JSON.stringify(copied)}`);
+        targetSessionId,
+      });
+      copyDurations.push(performance.now() - startedAt);
     }
     const afterBytes = await directoryBytes(root);
     const sourceMessages = await manager.getMessages(source.id);
@@ -122,8 +125,8 @@ async function runFixture(historySize) {
 
     return {
       historySize,
-      copyMs: copyMs.toFixed(1),
-      addedMiB: ((afterBytes - beforeBytes) / (1024 * 1024)).toFixed(3),
+      copyMsMedian: median(copyDurations).toFixed(1),
+      addedMiB: ((afterBytes - beforeBytes) / COPY_SAMPLE_COUNT / (1024 * 1024)).toFixed(3),
       sourceMessages: sourceMessages.length,
       childMessages: childMessages.length,
       sourceRuns: sourceInvocations.length,
@@ -137,6 +140,37 @@ async function runFixture(historySize) {
     await owner.close();
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function copySession({
+  composition,
+  manager,
+  sourceSessionId,
+  sourceTurnId,
+  targetSessionId = randomUUID(),
+}) {
+  let lastOutcome;
+  for (let attempt = 0; attempt < COPY_RETRY_ATTEMPTS; attempt += 1) {
+    const sourceRecord = await manager.deps.store.readHeaderRecordSnapshot(sourceSessionId);
+    const copied = await composition.handlers['session.branch.create'](
+      {
+        sourceSessionId,
+        targetSessionId,
+        sourceTurnId,
+        expectedSourceRevision: sourceRecord.revision,
+      },
+      operationContext,
+    );
+    if (copied.ok && copied.result.kind === 'committed') return copied.result;
+
+    lastOutcome = copied;
+    const retryable =
+      (copied.ok && copied.result.kind === 'source_revision_conflict') ||
+      (!copied.ok && copied.error.code === 'session_busy');
+    if (!retryable) break;
+    await sleep(COPY_RETRY_DELAY_MS);
+  }
+  throw new Error(`Session copy failed after retries: ${JSON.stringify(lastOutcome)}`);
 }
 
 async function waitForCompletedTurn(manager, sessionId, turnId) {
@@ -153,6 +187,15 @@ async function waitForCompletedTurn(manager, sessionId, turnId) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`Timed out waiting for benchmark turn ${turnId}`);
+}
+
+function median(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function sleep(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 async function directoryBytes(root) {

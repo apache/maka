@@ -59,7 +59,8 @@ npm --workspace @maka/runtime-host run benchmark:session-copy
 The benchmark creates real settled turns through the Runtime Host, invokes the
 production `session.branch.create` handler, and reports:
 
-- copy latency in milliseconds;
+- median copy latency in milliseconds after one warmup copy and five measured
+  samples;
 - storage bytes added under the temporary interactive root;
 - source and child projected message counts;
 - source and child invocation counts;
@@ -70,11 +71,12 @@ The default fixtures use 4, 16, 64, and 128 settled turns. Each turn contains a
 transcript/runtime-ledger baseline; it intentionally does not claim artifact or
 context-offload coverage until fixtures for those payload classes are added.
 
-The byte delta is measured after the source has settled and immediately before
-and after the copy. It includes SQLite journaling and metadata writes, so the
-number is an operational write-volume proxy rather than a logical row-size
-estimate. Run the same command on a clean machine and record the output with
-the commit, Node version, filesystem, and platform.
+The byte delta is measured after the warmup copy and immediately before and
+after the measured copies, then reported per measured copy. It includes SQLite
+journaling and metadata writes, so the number is an operational write-volume
+proxy rather than a logical row-size estimate. Run the same command on a clean
+machine and record the output with the commit, Node version, filesystem, and
+platform.
 
 ## Interpretation
 
