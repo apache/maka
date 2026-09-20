@@ -119,11 +119,18 @@ test('client bundle merges Codex and native models in the Composer model selecto
   };
   const client = moduleFactory((id) => {
     if (id === 'react') return React;
-    if (id === '@maka/ui/client-plugin') return { Selector: 'Selector' };
+    if (id === '@maka/ui/client-plugin') {
+      return {
+        ModelWheelPicker: 'ModelWheelPicker',
+        Selector: 'Selector',
+        SelectorOption: 'SelectorOption',
+      };
+    }
     assert.fail(`unexpected module: ${id}`);
   });
   let registration;
   client.apply({
+    style() {},
     remote: { call: async () => [] },
     slots: {
       register(options, component) {
@@ -155,13 +162,25 @@ test('client bundle merges Codex and native models in the Composer model selecto
   assert.equal(selector.type, 'Selector');
   assert.equal(
     JSON.stringify(
-      selector.props.options.map(({ label, description }) => ({ label, description })),
+      selector.props.options.map(({ title, options }) => ({
+        title,
+        options: options.map(({ label, description }) => ({ label, description })),
+      })),
     ),
     JSON.stringify([
-      { label: 'Native model', description: 'OpenAI' },
-      { label: 'GPT-6-Astra', description: 'Codex' },
+      {
+        title: 'OpenAI',
+        options: [{ label: 'Native model' }],
+      },
+      {
+        title: 'Codex',
+        options: [{ label: 'GPT-6-Astra' }],
+      },
     ]),
   );
+  assert.equal(selector.props.className, 'maka-new-chat-model-selector');
+  assert.equal(typeof selector.props.renderOption, 'function');
+  assert.equal(typeof selector.props.renderValue, 'function');
 });
 
 test('configuration validates safe unattended defaults', () => {

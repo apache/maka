@@ -67,6 +67,7 @@ import {
 } from '@astryxdesign/core';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { ProviderType } from '@maka/core/llm-connections';
+import { ModelWheelPicker } from './model-wheel-picker.js';
 
 /** Stable owner props for a frame-wide overlay contribution. */
 export interface MakaClientShellOverlayProps {}
@@ -123,6 +124,7 @@ export interface MakaClientComposerModelSelectionProps {
   readonly activeModelConnectionId?: string;
   readonly activeModelConnectionSlug?: string;
   readonly activeProviderType?: ProviderType;
+  readonly renderProviderMark?: (type: ProviderType) => ReactNode;
   readonly newChatModel?: {
     readonly llmConnectionId: string;
     readonly llmConnectionSlug: string;
@@ -998,6 +1000,7 @@ export {
   LayoutFooter,
   LayoutHeader,
   LayoutPanel,
+  ModelWheelPicker,
   NumberInput,
   RadioList,
   RadioListItem,
@@ -1044,6 +1047,7 @@ export const MakaClientPluginSdkModule = Object.freeze({
   LayoutFooter,
   LayoutHeader,
   LayoutPanel,
+  ModelWheelPicker,
   MakaClientSlotFragment: Fragment,
   MakaClientSlotOutlet,
   NumberInput,

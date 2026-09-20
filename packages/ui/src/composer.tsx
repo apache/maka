@@ -2293,6 +2293,7 @@ export const Composer = forwardRef<
                       activeModelConnectionId: props.activeModelConnectionId,
                       activeModelConnectionSlug: props.activeModelConnectionSlug,
                       activeProviderType: props.activeProviderType,
+                      renderProviderMark: props.renderProviderMark,
                       newChatModel: props.newChatModel,
                       executorTarget: props.executorTarget,
                       onNativeModelChange: props.activeSession
