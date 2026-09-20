@@ -104,7 +104,7 @@ describe('Maka Pi TUI transcript', () => {
     }
   });
 
-  test('traces restored quotes on the durable user entry', () => {
+  test('traces quotes on the durable user entry', () => {
     const state = createMakaPiTranscriptState();
     const excerpt = {
       text: 'a large pasted excerpt',
@@ -133,11 +133,11 @@ describe('Maka Pi TUI transcript', () => {
       { type: 'user', id: 'message-3', turnId: 'turn-1', ts: 3, text: 'plain' },
     ] as StoredMessage[]);
     const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /· 2 restored quotes/);
-    assert.match(rendered, /· 1 restored quote/);
+    assert.match(rendered, /· 2 quotes/);
+    assert.match(rendered, /· 1 quote/);
     assert.match(rendered, /with words/);
     assert.equal(
-      (rendered.match(/restored quote/g) ?? []).length,
+      (rendered.match(/· \d+ quotes?/g) ?? []).length,
       2,
       'messages without quotes render no hint',
     );

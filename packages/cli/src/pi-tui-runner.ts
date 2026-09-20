@@ -1408,11 +1408,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // flight has since bumped it and must not inherit context meant for the
     // original conversation (#5109 review).
     const originGeneration = stagedGeneration;
-    const restageForRetry = () => {
-      if (!staged.length) return;
-      if (input.driver.getSessionId() !== originSessionId) return;
-      if (stagedGeneration !== originGeneration) return;
+    const restageForRetry = (): boolean => {
+      if (!staged.length) return false;
+      if (input.driver.getSessionId() !== originSessionId) return false;
+      if (stagedGeneration !== originGeneration) return false;
       setStagedQuotes(staged, originSessionId);
+      return true;
     };
     const task = input.driver
       .submitMessage(text, {
@@ -1428,6 +1429,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           removeTransientUserMessage(messageId);
           restageForRetry();
           showSkillInvocation(result.skillInvocation);
+          return;
+        }
+        // A resolved-but-receipt-less submit is the real driver's outcome
+        // unknown path (`outcome_unknown`, or an interruption after the
+        // dispatch went out): admission cannot be proven either way. The
+        // dispatch already consumed the staging, so restage it — losing the
+        // user's explicit context to an unproven outcome is worse than a
+        // visible duplicate ride, which the status line surfaces and
+        // `/quotes clear` discards (#5109 review).
+        if (!result) {
+          if (restageForRetry()) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: 'Submit outcome unknown; staged quotes restored for retry.',
+            });
+          }
           return;
         }
         // It admitted them instead. The receipt says what was loaded and what

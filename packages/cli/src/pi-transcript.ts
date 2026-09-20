@@ -177,7 +177,7 @@ export type MakaPiTranscriptEntry =
       messageId: string;
       text: string;
       transient?: boolean;
-      /** Restored-quote count the message rode in on; rendered as a trace line. */
+      /** Quote count the message rode in on; rendered as a trace line. */
       quotes?: number;
     }
   | { kind: 'legacy_automation'; text: string }
@@ -1096,12 +1096,12 @@ function storedMessagesToTranscriptEntries(
         } else if (message.origin?.kind === 'goal') {
           entries.push({ kind: 'goal_continuation', text: message.displayText ?? message.text });
         } else {
-          const restoredQuotes = message.quotes?.length;
+          const quoteCount = message.quotes?.length;
           entries.push({
             kind: 'user',
             messageId: message.id,
             text: message.displayText ?? message.text,
-            ...(restoredQuotes ? { quotes: restoredQuotes } : {}),
+            ...(quoteCount ? { quotes: quoteCount } : {}),
           });
         }
         break;
@@ -1593,9 +1593,11 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
         const lines = renderUserBlock(entry.text, contentWidth);
         // A quote-only submit stores no text: without this trace the sent
         // context would leave no row at all — an answer to an invisible
-        // prompt (#5109 review).
+        // prompt (#5109 review). The wording stays neutral: every quoted
+        // user message carries this field, desktop plain quotes included,
+        // not just a rewind's restaged ones.
         if (entry.quotes === undefined) return lines;
-        const hint = `· ${entry.quotes} restored quote${entry.quotes === 1 ? '' : 's'}`;
+        const hint = `· ${entry.quotes} quote${entry.quotes === 1 ? '' : 's'}`;
         return [...lines, ...renderUserBlock(hint, contentWidth)];
       }
       case 'legacy_automation':

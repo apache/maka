@@ -7700,6 +7700,57 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('restages quotes when a submit resolves without a receipt (outcome unknown)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UnknownOutcomeSubmitDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [storedUserMessage('user-1', 'turn-1', 'first question')],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+    terminal.input('resend this');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // The dispatch consumed the staging and the Host then resolved without a
+    // receipt: the quotes must come back instead of vanishing silently, with
+    // a notice naming the uncertainty (#5109 review).
+    driver.resolveUnknown();
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes(
+        'Submit outcome unknown; staged quotes restored for retry.',
+      ),
+    );
+
+    terminal.input('retry then');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 2);
+    assert.deepEqual(driver.submittedQuotes[1], [
+      { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+    ]);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('a newer rewind displaces an in-flight quote submit restage', async () => {
     const terminal = new FakeTerminal();
     const driver = new PerRewindQuotedDriver(
@@ -13259,6 +13310,25 @@ class HeldSubmitQuotedDriver extends QuotedRewindDriver {
     this.submittedQuotes.push(options.quotes);
     return new Promise((_, reject) => {
       this.hold = () => reject(new Error('admission outcome unknown'));
+    });
+  }
+}
+
+/**
+ * The submit hangs until the test resolves it without a receipt: the real
+ * driver resolves `undefined` for `outcome_unknown` and for an interruption
+ * after the dispatch went out, instead of rejecting (#5109 review).
+ */
+class UnknownOutcomeSubmitDriver extends HeldSubmitQuotedDriver {
+  resolveUnknown!: () => void;
+
+  override submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    this.submittedQuotes.push(options.quotes);
+    return new Promise((resolve) => {
+      this.resolveUnknown = () => resolve(undefined);
     });
   }
 }
