@@ -1897,6 +1897,7 @@ function AppShellContent({
     rendererMountedRef,
     retireSession: clearSessionRendererState,
     retiredSessionIds,
+    sessionsRef,
     setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
