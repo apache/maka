@@ -7729,9 +7729,7 @@ Slug openai-work<cursor>
     // receipt: the quotes must come back instead of vanishing silently, with
     // a notice naming the uncertainty (#5109 review).
     driver.resolveUnknown();
-    await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('Submit outcome unknown'),
-    );
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Submit outcome unknown'));
 
     terminal.input('retry then');
     terminal.input('\r');
