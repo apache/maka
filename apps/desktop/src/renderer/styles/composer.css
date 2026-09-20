@@ -130,26 +130,6 @@
   cursor: grabbing;
 }
 
-.maka-composer-queue-help {
-  position: absolute;
-  top: var(--space-1);
-  right: var(--space-1);
-  z-index: 1;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-/* The floating help icon sits over the top-right corner; keep every row's
-   actions clear of it so neither intercepts the other's pointer events. */
-.maka-composer-queue-actions {
-  margin-right: calc(var(--space-6) + var(--space-1));
-}
-
-.maka-composer-queue:hover .maka-composer-queue-help,
-.maka-composer-queue-help:focus-visible {
-  opacity: 1;
-}
-
 @media (max-width: 640px) {
   .maka-composer-queue {
     width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-3))));
