@@ -431,6 +431,53 @@ test('reseeds an empty queue after queued successors completed while disconnecte
   assert.deepEqual(queue.followupEntries, []);
 });
 
+test('projects a queue drain that lands while no root Turn is live', () => {
+  // apache/maka#5520: a drain observed after the root Turn is gone must still
+  // reach the renderer, or a phantom queued card survives whose retract fails
+  // with not_found forever.
+  const projector = new RuntimeHostSessionProjector(
+    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const drained = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({ projectionRevision: 2, rootTurn: null, queue: queue(3, []) }),
+  });
+  assert.deepEqual(
+    drained.events.map((event) => event.type),
+    ['queue_update'],
+  );
+  const update = drained.events.find(
+    (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
+      event.type === 'queue_update',
+  );
+  assert.ok(update, 'the drained queue must be projected');
+  assert.deepEqual(update.steering, []);
+  assert.deepEqual(update.followup, []);
+});
+
+test('reseeds the queue mirror even when no root Turn is live', () => {
+  // apache/maka#5520: resubscribing to an idle session whose queue drained
+  // must still seed the authoritative (empty) queue, so a stale renderer card
+  // is cleared on session switch instead of surviving forever.
+  const current = snapshot({ rootTurn: null, queue: queue(7, []) });
+  const projector = new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed([], current),
+    () => 10,
+  );
+  const seeded = projector.seedActive(false).find((event) => event.type === 'queue_update');
+  assert.ok(seeded, 'an idle session must still seed its authoritative queue state');
+  assert.equal(seeded.queueRevision, 7);
+  assert.deepEqual(seeded.steeringEntries, []);
+  assert.deepEqual(seeded.followupEntries, []);
+});
+
 test('reseeds the latest provider retry when the active Turn still carries one', () => {
   const retry = {
     phase: 'scheduled' as const,
