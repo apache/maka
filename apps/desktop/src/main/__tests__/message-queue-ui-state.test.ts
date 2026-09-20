@@ -34,6 +34,9 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   const { root } = installReactRenderer();
   const transient = new Map<string, TransientUserMessageProjection>();
   let changed!: (sessionId: string) => void;
+  const cancelled: string[][] = [];
+  const reconciled: string[][] = [];
+  const restored: string[][] = [];
   let messages: DesktopLocalMessage[] = ['steering', 'followup', 'root'].map((messageId) => ({
     sessionId: 'session-1', messageId, createdAt: 1, state: 'unknown', canCancel: false,
     text: messageId, attachments: [], inlineReferences: [],
@@ -62,26 +65,40 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       },
       retire: (_id, messageId) => { transient.delete(messageId); },
       reportError: (message) => { throw new Error(message); },
+      restoreDraft: (sessionId, text) => { restored.push([sessionId, text]); },
     }) }),
   })));
-  assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
-  assert.equal(transient.get('root')?.deliveryStatus, 'Delivery unconfirmed. Do not send again.');
+  const steering = transient.get('steering');
+  assert.equal(steering?.deliveryStatus, 'Delivery unconfirmed. Do not send again.');
+  assert.deepEqual(steering?.deliveryActions?.map((action) => action.label), ['Check delivery'],
+    'an unconfirmed send offers only its receipt check, never cancellation');
   const placements = () => Object.fromEntries([...transient].map(([id, message]) => [id, message.transientPlacement]));
   assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' });
+  await act(async () => { await steering?.deliveryActions?.[0]?.onClick(); });
+  assert.deepEqual(reconciled, [['session-1', 'steering']]);
+  assert.equal(transient.has('steering'), true, 'checking delivery does not retire the row');
   messages = messages.map((message) => ({ ...message, state: 'saved', canCancel: true }));
   await act(async () => changed('session-1'));
-  assert.equal(transient.get('root')?.deliveryStatus, 'Waiting for earlier messages to be delivered', 'Main cannot reach the Host');
-  messages = messages.map((message) => ({ ...message, delivering: true }));
+  const followup = transient.get('followup');
+  assert.equal(followup?.deliveryStatus, 'Waiting for earlier messages to be delivered');
+  assert.deepEqual(followup?.deliveryActions?.map((action) => action.label), ['Edit', 'Cancel sending']);
+  await act(async () => { await followup?.deliveryActions?.[0]?.onClick(); });
+  assert.deepEqual(cancelled, [['session-1', 'followup']]);
+  assert.deepEqual(restored, [['session-1', 'followup']],
+    'editing a never-dispatched message returns its text to the composer');
+  assert.equal(transient.has('followup'), false, 'edit retires the local row');
+  messages = messages.filter((message) => message.messageId !== 'followup')
+    .map((message) => ({ ...message, delivering: true }));
   await act(async () => changed('session-1'));
   assert.equal(transient.get('root')?.deliveryStatus, undefined, 'a message Main will deliver shows nothing');
   assert.deepEqual(transient.get('root')?.deliveryActions, []);
   messages = messages.map((message) => ({ ...message, error: 'Saved locally. Waiting for the Host to become available.' }));
   await act(async () => changed('session-1'));
   assert.equal(transient.get('root')?.deliveryStatus, 'Waiting for earlier messages to be delivered');
-  assert.equal(transient.get('root')?.deliveryActions?.length, 1, 'a Host outage keeps the copy removable');
+  assert.equal(transient.get('root')?.deliveryActions?.length, 2, 'a Host outage keeps the copy editable and removable');
   messages = messages.map((message) => ({ ...message, state: 'failed' }));
   await act(async () => changed('session-1'));
-  assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' }, 'failed delivery moves nothing');
+  assert.deepEqual(placements(), { steering: 'steering', root: 'transcript' }, 'failed delivery moves nothing');
   messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn' } : {}) }));
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root']);

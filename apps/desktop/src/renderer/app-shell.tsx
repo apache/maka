@@ -613,6 +613,13 @@ function AppShellContent({
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
+  const restoreLocalMessageDraft = useCallback((sessionId: string, text: string) => {
+    const composer = composerRef.current;
+    if (!composer || activeIdRef.current !== sessionId) return;
+    if (composer.getText().trim()) composer.appendText(text);
+    else composer.setText(text);
+    composer.focus();
+  }, [activeIdRef]);
   const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
   const revisionDraftRef = useRef<TurnRevisionDraft | null>(null);
@@ -2071,7 +2078,7 @@ function AppShellContent({
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
-    <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} />
+    <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} restoreDraft={restoreLocalMessageDraft} />
     <CatalogRowWatch
       catalog={sessionCatalogController}
       sessionIds={[revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId]}

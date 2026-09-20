@@ -23,7 +23,7 @@ import type { MessageQueueEntryProjection } from '@maka/core/events';
 import { IconButton, Tooltip } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import type { ConversationCopy } from './conversation-copy.js';
-import { AlertCircle, AlertTriangle, Check, CornerDownLeft, GripVertical, HelpCircle, Hourglass, ICON_SIZE, Pencil, Trash2, X } from './icons.js';
+import { Check, CornerDownLeft, GripVertical, HelpCircle, ICON_SIZE, Pencil, Trash2, X } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import { PlatformShortcutText } from './platform-shortcut-text.js';
 
@@ -74,14 +74,6 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   const copy = props.copy;
 
   const entries = props.queuedMessages;
-  // The groups hold Host-admitted entries only. A local message still waiting
-  // for its receipt is an outgoing send, not a queued item — mixing it into
-  // "next turn" claims an admission the Host never gave.
-  const localEntries = entries.filter((entry) => entry.localMessage !== undefined);
-  const groups = (['current_turn', 'next_turn'] as const).map((placement) => ({
-    placement,
-    entries: entries.filter((entry) => entry.placement === placement && entry.localMessage === undefined),
-  })).filter((group) => group.entries.length > 0);
 
   async function runEntryAction(
     entryId: string,
@@ -153,25 +145,25 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
       role="region"
       aria-label={copy.queuedMessagesAriaLabel(entries.length)}
     >
-      {groups.map((group, index) => <section key={group.placement} data-queue-placement={group.placement}>
-        <div className="maka-composer-queue-status">
-          <span>{group.placement === 'current_turn' ? copy.steeringPending : copy.followupPending}</span>
-          {index === 0 && <Tooltip alignment="end" content={<span style={{ whiteSpace: 'pre-line' }}><PlatformShortcutText {...copy.queueShortcuts} /></span>}>
-            <IconButton variant="ghost" size="sm" type="button" label={copy.queueShortcutsLabel}
-              icon={<HelpCircle size={ICON_SIZE.control} aria-hidden="true" />} />
-          </Tooltip>}
-        </div>
-        <List className="maka-composer-queue-list" density="compact">
-        {group.entries.map((entry) => {
+      <Tooltip alignment="end" content={<span style={{ whiteSpace: 'pre-line' }}><PlatformShortcutText {...copy.queueShortcuts} /></span>}>
+        <IconButton className="maka-composer-queue-help" variant="ghost" size="sm" type="button"
+          label={copy.queueShortcutsLabel}
+          icon={<HelpCircle size={ICON_SIZE.control} aria-hidden="true" />} />
+      </Tooltip>
+      <List className="maka-composer-queue-list" density="compact">
+        {entries.map((entry) => {
           const editing = editingEntryId === entry.entryId;
+          const local = entry.localMessage;
           const reorderable =
             entry.state === 'queued'
+            && !local
             && !editing
             && Boolean(props.onReorderEntries)
             && pendingEntryId === null;
           return (
             <div
               key={entry.entryId}
+              data-queue-placement={entry.placement}
               data-maka-queue-drop-target={reorderable ? 'true' : undefined}
               onDragOver={(event) => {
                 if (reorderable && dragEntryId.current) event.preventDefault();
@@ -207,7 +199,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                 </span>
               )}
               style={{ minHeight: 28, paddingBlock: 0 }}
-              startContent={(
+              startContent={local ? undefined : (
                 <span
                   className="maka-composer-queue-grip"
                   draggable={reorderable}
@@ -227,7 +219,12 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
               )}
               endContent={(
                 <span className="maka-composer-queue-actions">
-                  {editing ? (
+                  {local ? local.deliveryActions?.map((action) => (
+                    <IconButton key={action.label} variant="ghost" size="sm" type="button"
+                      label={action.label}
+                      tooltip={local.deliveryStatus ? `${local.deliveryStatus} · ${action.label}` : action.label}
+                      icon={action.icon} clickAction={action.onClick} />
+                  )) : editing ? (
                     <>
                       <IconButton
                         variant="ghost"
@@ -252,21 +249,6 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                     </>
                   ) : (
                     <>
-                      <IconButton
-                        variant="ghost"
-                        size="sm"
-                        type="button"
-                        isDisabled={
-                          pendingEntryId !== null
-                          || entry.state !== 'queued'
-                          || props.queueRevision === undefined
-                          || !props.onUpdateEntry
-                        }
-                        label={copy.editQueuedEntry}
-                        tooltip={copy.editQueuedEntry}
-                        onClick={() => beginEdit(entry)}
-                        icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
-                      />
                       {entry.placement === 'next_turn' ? (
                         <IconButton
                           variant="ghost"
@@ -284,6 +266,21 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                           icon={<CornerDownLeft size={ICON_SIZE.control} aria-hidden="true" />}
                         />
                       ) : null}
+                      <IconButton
+                        variant="ghost"
+                        size="sm"
+                        type="button"
+                        isDisabled={
+                          pendingEntryId !== null
+                          || entry.state !== 'queued'
+                          || props.queueRevision === undefined
+                          || !props.onUpdateEntry
+                        }
+                        label={copy.editQueuedEntry}
+                        tooltip={copy.editQueuedEntry}
+                        onClick={() => beginEdit(entry)}
+                        icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
+                      />
                       <IconButton
                         variant="ghost"
                         size="sm"
@@ -307,59 +304,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
             </div>
           );
         })}
-        </List>
-      </section>)}
-      {localEntries.length > 0 && (
-        <section className="maka-composer-queue-local">
-          <List className="maka-composer-queue-list" density="compact">
-            {localEntries.map((entry) => {
-              const local = entry.localMessage;
-              const tone = local?.deliveryState ?? 'pending';
-              const text = entry.content.displayText ?? entry.content.text;
-              return (
-                <ListItem
-                  key={entry.entryId}
-                  style={{ minHeight: 28, paddingBlock: 0 }}
-                  label={(
-                    <span className="maka-composer-queue-text" title={text}>
-                      {text}
-                    </span>
-                  )}
-                  startContent={local?.deliveryStatus ? (
-                    <Tooltip alignment="end" content={local.deliveryStatus} focusTrigger="always" touchTrigger="tap">
-                      <span
-                        className="maka-composer-queue-delivery"
-                        data-tone={tone}
-                        role="img"
-                        tabIndex={0}
-                        aria-label={local.deliveryStatus}
-                      >
-                        {tone === 'failed' ? (
-                          <AlertCircle size={ICON_SIZE.control} aria-hidden="true" />
-                        ) : tone === 'unconfirmed' ? (
-                          <AlertTriangle size={ICON_SIZE.control} aria-hidden="true" />
-                        ) : (
-                          <Hourglass size={ICON_SIZE.control} aria-hidden="true" />
-                        )}
-                      </span>
-                    </Tooltip>
-                  ) : undefined}
-                  endContent={(
-                    <span className="maka-composer-queue-actions">
-                      {local?.deliveryActions?.map((action) => (
-                        <IconButton key={action.label} variant="ghost" size="sm" type="button"
-                          label={action.label}
-                          tooltip={local.deliveryStatus ? `${local.deliveryStatus} · ${action.label}` : action.label}
-                          icon={action.icon} clickAction={action.onClick} />
-                      ))}
-                    </span>
-                  )}
-                />
-              );
-            })}
-          </List>
-        </section>
-      )}
+      </List>
     </div>
   );
 });

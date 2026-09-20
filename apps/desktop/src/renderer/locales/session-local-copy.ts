@@ -23,6 +23,7 @@ interface SessionLocalCopy {
   saved: string;
   unknown: string;
   failed: string;
+  edit: string;
   remove: string;
   cancel: string;
   check: string;
@@ -34,6 +35,7 @@ const catalog = {
     saved: 'Waiting to send',
     unknown: 'Delivery unconfirmed. Do not send again.',
     failed: 'Could not send · message kept',
+    edit: 'Edit',
     remove: 'Delete unsent message',
     cancel: 'Cancel sending',
     check: 'Check delivery',
@@ -43,6 +45,7 @@ const catalog = {
     saved: '等待发送',
     unknown: '暂时无法确认是否送达，请勿重复发送',
     failed: '未能发送 · 消息已保留',
+    edit: '编辑',
     remove: '删除未发送的消息',
     cancel: '取消发送',
     check: '检查是否送达',
@@ -52,6 +55,7 @@ const catalog = {
     saved: '等待傳送',
     unknown: '暫時無法確認是否送達，請勿重複傳送',
     failed: '無法傳送 · 訊息已保留',
+    edit: '編輯',
     remove: '刪除未傳送的訊息',
     cancel: '取消傳送',
     check: '檢查是否送達',

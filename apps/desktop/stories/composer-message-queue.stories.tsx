@@ -17,13 +17,13 @@
  * under the License.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { ComponentProps } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer } from '@maka/ui';
-import type { ChatModelChoice, TransientUserMessageProjection } from '@maka/ui';
+import type { ChatModelChoice, ComposerHandle, TransientUserMessageProjection } from '@maka/ui';
 import {
   ConversationServicesProvider,
   SessionLocalMessages,
@@ -175,6 +175,7 @@ function followUpEntry(entryId: string, text: string): MessageQueueEntryProjecti
  * out) is the real one; only the authority is simulated.
  */
 function QueuedComposer({ deliveryState }: { deliveryState: DeliveryState }) {
+  const composerRef = useRef<ComposerHandle>(null);
   const [followup, setFollowup] = useState<MessageQueueEntryProjection[]>([
     {
       entryId: 'entry-steer',
@@ -223,9 +224,14 @@ function QueuedComposer({ deliveryState }: { deliveryState: DeliveryState }) {
         publish={publish}
         retire={retire}
         reportError={noop}
+        restoreDraft={(_id, text) => {
+          composerRef.current?.setText(text);
+          composerRef.current?.focus();
+        }}
       />
       <Composer
         {...base}
+        ref={composerRef}
         queuedMessages={deliveryState === 'queued' ? followup : []}
         pendingMessages={[...published.values()]}
         queuedMessageRevision={1}
