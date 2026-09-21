@@ -68,8 +68,8 @@ export function createDesktopFeatureServices() {
   return {
     // The session catalog is renderer-owned shared state, not a bridge
     // service — it is created once with the other app singletons and read
-    // through `useSessionCatalog` so providers below do not need it drilled
-    // through the shell.
+    // through `useSessionCatalogController` so providers below do not need it
+    // drilled through the shell.
     sessionCatalog: createSessionCatalogController(),
     appUpdate: createDesktopAppUpdateServices(),
     clientPlugins: createDesktopClientPluginServices(),
