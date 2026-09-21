@@ -108,6 +108,51 @@ test('a still-starting default Host keeps scoped reads pending until it settles'
   assert.equal(resolved.hostId, 'owner-host');
 });
 
+test('a profiles:changed push landing inside the readiness probe still wakes the read', async () => {
+  let identityCalls = 0;
+  const snapshotGate = deferred<unknown>();
+  let probeReached!: () => void;
+  const probeInFlight = new Promise<void>((resolve) => { probeReached = resolve; });
+  const { bridge, events } = await preloadHarness(async (channel) => {
+    if (channel === 'app:bootstrapReady') return;
+    if (channel === 'runtime-host:activeIdentity') {
+      identityCalls += 1;
+      if (identityCalls === 1) {
+        throw new Error('Desktop Runtime Host identity is unavailable');
+      }
+      return { ...owner };
+    }
+    if (channel === 'runtime-host-profiles:getSnapshot') {
+      probeReached();
+      await snapshotGate.promise;
+      return {
+        entries: [{ profileId: 'local', isDefault: true, readiness: 'connecting' }],
+        defaultProfileId: 'local',
+      };
+    }
+    throw new Error('Unexpected channel: ' + channel);
+  });
+
+  let outcome: { resolved?: unknown; error?: unknown } = {};
+  const call = bridge.runtimeHostProfiles
+    .getDefaultHost()
+    .then((value) => { outcome.resolved = value; }, (error) => { outcome.error = error; });
+  // Hold the readiness probe open and land the transition push inside it. A
+  // waiter registered only after the probe resolves would miss this event
+  // and park the read forever.
+  await probeInFlight;
+  events.emit('runtime-host-profiles:changed', {}, {
+    epoch: 'e1', profileId: 'local', profileName: 'Local', profileKind: 'local',
+    profileAccess: 'owner', readiness: 'ready', hostId: 'owner-host', isDefault: true,
+  });
+  snapshotGate.resolve(undefined);
+  await call;
+  // Cross-realm objects fail deepStrictEqual prototype checks; compare fields.
+  const resolved = outcome.resolved as { profileId: string; hostId: string };
+  assert.equal(resolved.profileId, 'local');
+  assert.equal(resolved.hostId, 'owner-host');
+});
+
 test('module-level sends queue behind the gate until listeners exist', async () => {
   const bootGate = deferred<unknown>();
   const { sent } = await preloadHarness(async (channel) => {

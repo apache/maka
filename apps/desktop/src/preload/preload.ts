@@ -394,14 +394,16 @@ ipcRenderer.on(
 // Resolves on the next `runtime-host-profiles:changed` push. Waiters are
 // registered while a default-scope invoke is parked on a still-starting Host.
 const runtimeHostProfileChangeWaiters = new Set<() => void>();
-function nextRuntimeHostProfileChange(): Promise<void> {
-  return new Promise((resolve) => {
-    const waiter = () => {
+function nextRuntimeHostProfileChange(): { promise: Promise<void>; cancel: () => void } {
+  let waiter!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    waiter = () => {
       runtimeHostProfileChangeWaiters.delete(waiter);
       resolve();
     };
     runtimeHostProfileChangeWaiters.add(waiter);
   });
+  return { promise, cancel: () => runtimeHostProfileChangeWaiters.delete(waiter) };
 }
 
 function isRuntimeHostIdentityUnavailable(error: unknown): boolean {
@@ -623,13 +625,20 @@ async function activeRuntimeHostRef(): Promise<DesktopTargetScope> {
     try {
       identity = await invokeWhenReady('runtime-host:activeIdentity');
     } catch (error) {
-      if (
-        !isRuntimeHostIdentityUnavailable(error) ||
-        !(await defaultRuntimeHostIsStarting())
-      ) {
+      if (!isRuntimeHostIdentityUnavailable(error)) throw error;
+      // The waiter must exist before the readiness probe's round trip: a
+      // profiles:changed push landing inside it would otherwise fire an
+      // empty waiter set and this loop would sleep through the transition.
+      const profileChange = nextRuntimeHostProfileChange();
+      const starting = await defaultRuntimeHostIsStarting().catch((probeError: unknown) => {
+        profileChange.cancel();
+        throw probeError;
+      });
+      if (!starting) {
+        profileChange.cancel();
         throw error;
       }
-      await nextRuntimeHostProfileChange();
+      await profileChange.promise;
       continue;
     }
     if (generation !== activeRuntimeHostGeneration) continue;
