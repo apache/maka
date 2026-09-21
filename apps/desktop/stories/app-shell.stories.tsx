@@ -3599,7 +3599,7 @@ export const TitlebarWithWideWorkbar: Story = {
 };
 
 // Real path: hover the conversation/Workbar edge → collapse → restore from the
-// window edge. The native conversation and browser occupy neither hit target.
+// window edge. The full curved edge stays inside the toggle's activation area.
 export const WorkbarEdgeRevealAndCollapse: Story = {
   render: () => <WorkbarInShell withConversation />,
   play: async ({ canvasElement }) => {
@@ -3640,14 +3640,10 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
       const glassBox = glass.getBoundingClientRect();
       expect(Math.abs(glassBox.right - boundary)).toBeLessThan(1);
       expect(glassBox.width).toBe(28);
-      // The decoration bridges the scrollbar/resize lane, but only the
-      // inner body is a button. With the panel collapsed, presses in that
-      // lane must reach the scrollport rather than the restore control.
-      const scrollbarTarget = document.elementFromPoint(boundary - 4, glassBox.y + glassBox.height / 2);
-      expect(scrollbarTarget).not.toBeNull();
-      expect(edge.contains(scrollbarTarget)).toBe(false);
-      if (edge.getAttribute('aria-expanded') === 'false') {
-        expect(scroller.contains(scrollbarTarget)).toBe(true);
+      // Moving from the arrow toward the scrollbar, including the ends of
+      // the arc, must not leave the toggle and make its decoration retract.
+      for (const y of [glassBox.top + 4, glassBox.y + glassBox.height / 2, glassBox.bottom - 4]) {
+        expect(document.elementFromPoint(boundary - 4, y)?.closest('button')).toBe(edge);
       }
     };
     await waitFor(expectAttachedEdge);
@@ -3664,7 +3660,6 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     expect(frame.getBoundingClientRect().width).toBe(width);
     const conversation = canvasElement.querySelector('.maka-detail-with-artifacts > .mainColumn')!.getBoundingClientRect();
     expect(edge.getBoundingClientRect().left).toBeGreaterThan(conversation.left);
-    expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(conversation.right - 16);
     expect(frame.getBoundingClientRect().left - conversation.right).toBeLessThanOrEqual(8);
     expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(frame.getBoundingClientRect().left);
     const separator = canvas.getByRole('separator', { name: '调整工作栏宽度' });
