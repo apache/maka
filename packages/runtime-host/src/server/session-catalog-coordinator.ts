@@ -738,8 +738,7 @@ export class HostSessionCatalogCoordinator {
         sessionId: WORKHUB_COORDINATION_SESSION_ID,
         expectedRevision: input.expectedRevision,
         patch: {
-          ...(input.modelTarget ? { modelTarget: input.modelTarget } : {}),
-          ...(input.executorTarget ? { executorTarget: input.executorTarget } : {}),
+          modelTarget: input.modelTarget,
           thinkingLevel: input.thinkingLevel,
         },
       },
@@ -1362,6 +1361,7 @@ export class HostSessionCatalogCoordinator {
         executorId: input.executorId,
         connectionSlug: `executor:${input.executorId}`,
         model: input.executorModel ?? input.executorId,
+        thinkingLevel: input.thinkingLevel ?? undefined,
       };
     }
     if (!input.modelTarget) {

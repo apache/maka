@@ -26,6 +26,7 @@ import { createInterface } from 'node:readline';
 export const EXECUTOR_ID = 'codex.app-server';
 
 const MAX_EVENT_TEXT = 8_000;
+const MAX_MODEL_LIST_PAGES = 10;
 const VALID_SANDBOXES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 const VALID_REASONING_EFFORTS = new Set([
   'none',
@@ -139,7 +140,10 @@ export class CodexAppServerClient {
     await this.ensureStarted();
     const result = [];
     let cursor;
+    let pages = 0;
+    const seenCursors = new Set();
     do {
+      pages += 1;
       const response = await this.request('model/list', {
         limit: 100,
         ...(cursor ? { cursor } : {}),
@@ -179,11 +183,13 @@ export class CodexAppServerClient {
           supportedReasoningEfforts: efforts,
         });
       }
-      cursor =
+      const nextCursor =
         typeof response?.nextCursor === 'string' && response.nextCursor
           ? response.nextCursor
           : undefined;
-    } while (cursor && result.length < 500);
+      cursor = nextCursor && !seenCursors.has(nextCursor) ? nextCursor : undefined;
+      if (cursor) seenCursors.add(cursor);
+    } while (cursor && result.length < 500 && pages < MAX_MODEL_LIST_PAGES);
     return result.slice(0, 500);
   }
 

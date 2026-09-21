@@ -734,7 +734,6 @@ function AppShellContent({
     newChatThinkingLevels,
     newChatThinkingLevel,
     newChatExecutionThinkingLevel,
-    pendingNewChatThinkingLevel,
     composerSupportsVision,
     setPendingNewChatModel,
     setPendingNewChatThinkingLevel,
@@ -762,7 +761,7 @@ function AppShellContent({
     openSettingsSection,
     openModelPicker: openComposerModelPicker,
     refreshModelChoices: sessionHostConnections.refreshConnections,
-    setSessionExecutor: setSessionExecutor!,
+    setSessionExecutor,
   });
   // PR109d-b: turn footer actions per turn. Derived from the
   // materialized turn list (status + lineage descendants) + pending
@@ -1379,7 +1378,7 @@ function AppShellContent({
     newChatPermissionChoice: newTaskPermissionChoice,
     clearNewChatPermissionChoice: clearNewTaskPermissionChoice,
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
-    newChatOrchestrationMode: newChatOrchestrationMode,
+    newChatOrchestrationMode,
     newTaskTarget: taskEntry.selectors.target,
   });
 

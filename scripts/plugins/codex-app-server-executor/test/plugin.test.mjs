@@ -222,6 +222,19 @@ test('client lists Codex models and their supported reasoning efforts', async ()
   }
 });
 
+test('client bounds model paging even when every App Server page is malformed', async () => {
+  const client = new CodexAppServerClient({}, logger);
+  let requests = 0;
+  client.ensureStarted = async () => {};
+  client.request = async () => {
+    requests += 1;
+    return { data: [{}], nextCursor: `cursor-${requests}` };
+  };
+
+  assert.deepEqual(await client.models(), []);
+  assert.equal(requests, 10);
+});
+
 test('client reuses a thread and projects rich events while declining approvals', async () => {
   const client = new CodexAppServerClient({ codexPath: fakeCodex }, logger);
   try {

@@ -101,7 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 174 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 175 as const;
+// 175: WorkHub coordinator model configuration again accepts only native
+// explicit targets. Epoch-174 peers may send an executor target it must reject.
 // 174: WorkHub new-Work defaults may select an executor-specific model and
 // thinking level. Epoch-173 peers reject these fields on strict action shapes.
 // 173: Plugin executor Sessions may select an executor-specific model at
