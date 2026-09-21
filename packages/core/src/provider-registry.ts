@@ -502,6 +502,16 @@ const openrouterModelIds = toolCallingModelIds(
   GENERATED_MODELS_DEV_METADATA.openrouter,
   ['anthropic/claude-sonnet-5', 'openai/gpt-5.6-sol', 'x-ai/grok-4.5', 'deepseek/deepseek-v4-pro'],
 ).filter((id) => GENERATED_MODELS_DEV_METADATA.openrouter[id]?.lifecycle !== 'deprecated');
+const opper = GENERATED_MODELS_DEV_PROVIDER_FACTS.opper;
+if (opper.id !== 'opper' || opper.api !== 'https://api.opper.ai/v3/compat') {
+  throw new Error('models.dev Opper provider facts are missing the stable id or API');
+}
+const opperModelIds = toolCallingModelIds('Opper', GENERATED_MODELS_DEV_METADATA.opper, [
+  'anthropic/claude-sonnet-4-6',
+  'openai/gpt-5.5',
+  'gemini/gemini-3.5-flash',
+  'moonshot/kimi-k3',
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.opper[id]?.lifecycle !== 'deprecated');
 const alibaba = GENERATED_MODELS_DEV_PROVIDER_FACTS.alibaba;
 if (
   alibaba.id !== 'alibaba' ||
@@ -1380,6 +1390,19 @@ const providerRegistry = {
     catalogGroup: 'aggregators',
     signupUrl: 'https://openrouter.ai/settings/keys',
     catalogOrder: 40,
+  },
+  opper: {
+    label: opper.name,
+    baseUrl: opper.api,
+    authKind: 'api_key',
+    fallbackModels: opperModelIds,
+    status: 'ready',
+    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    modelDiscovery: { kind: 'protocol' },
+    category: 'overseas',
+    catalogGroup: 'aggregators',
+    signupUrl: 'https://platform.opper.ai',
+    catalogOrder: 40.5,
   },
   alibaba: {
     label: alibaba.name,

@@ -68,6 +68,7 @@ export const MODELS_DEV_PROVIDERS = {
   opencode: 'opencode',
   'opencode-go': 'opencode-go',
   openrouter: 'openrouter',
+  opper: 'opper',
   siliconflow: 'siliconflow',
   stepfun: 'stepfun',
   'stepfun-ai': 'stepfun-ai',

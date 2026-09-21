@@ -51,6 +51,7 @@ import togetherBrandMark from '../assets/provider-brands/together.svg';
 import nvidiaMarkUrl from '../assets/provider-brands/nvidia.svg';
 import opencodeBrandMark from '../assets/provider-brands/opencode.svg';
 import openrouterBrandMark from '../assets/provider-brands/openrouter.svg';
+import opperBrandMark from '../assets/provider-brands/opper.svg';
 import stepfunBrandMark from '../assets/provider-brands/stepfun.svg';
 import vercelBrandMark from '../assets/provider-brands/vercel.svg';
 import volcengineBrandMark from '../assets/provider-brands/volcengine.svg';
@@ -58,6 +59,14 @@ import xaiMarkUrl from '../assets/provider-brands/xai.svg';
 import xiaomiMiMoMarkUrl from '../assets/provider-brands/xiaomimimo.svg';
 import zaiMarkUrl from '../assets/provider-brands/zai.svg';
 import zenmuxBrandMark from '../assets/provider-brands/zenmux.svg';
+
+// Opper mark contributed by Opper AI AB (the trademark owner) for this
+// catalog entry, under this repository's Apache-2.0 license:
+// - source: Opper brand assets (https://opper.ai), monochrome variant
+// - variant: single-colour path, rendered through ProviderAssetMask so it
+//   follows the current text colour like the other monochrome marks
+// - license: Apache-2.0 as part of this contribution; the Opper trademark
+//   remains Opper AI AB's
 
 // ZenMux mark vendored byte-for-byte from Lobe Icons:
 // - repository: https://github.com/lobehub/lobe-icons
@@ -443,6 +452,8 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
       return <img src={huggingfaceBrandMark} alt="" />;
     case 'zenmux':
       return <ProviderAssetMask src={zenmuxBrandMark} />;
+    case 'opper':
+      return <ProviderAssetMask src={opperBrandMark} />;
     case 'tencent-tokenhub':
       return <img src={hunyuanBrandMark} alt="" />;
     case 'tencent-coding-plan':

@@ -64,6 +64,21 @@ describe('Moonshot provider regions', () => {
   });
 });
 
+describe('Opper provider', () => {
+  it('offers the EU-hosted gateway as an aggregator backed by the models.dev snapshot', () => {
+    const opper = PROVIDER_REGISTRY.opper;
+    assert.equal(opper.baseUrl, 'https://api.opper.ai/v3/compat');
+    assert.equal(opper.authKind, 'api_key');
+    assert.equal(opper.category, 'overseas');
+    assert.equal(opper.catalogGroup, 'aggregators');
+    assert.deepEqual(opper.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
+    assert.deepEqual(opper.modelDiscovery, { kind: 'protocol' });
+    assert.ok(opper.fallbackModels.includes('anthropic/claude-sonnet-4-6'));
+    assert.ok(opper.fallbackModels.includes('openai/gpt-5.5'));
+    assert.ok(opper.fallbackModels.every((id) => id.includes('/')));
+  });
+});
+
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
   it('exposes an endpoint source that passes the production baseUrl gate', () => {
     for (const type of CATALOG_PROVIDER_TYPES) {
