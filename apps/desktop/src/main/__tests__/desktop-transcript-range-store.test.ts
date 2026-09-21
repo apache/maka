@@ -1345,6 +1345,8 @@ test('cached fallback remains readable and retries once per observation generati
   await settle();
   assert.equal(opens, 1);
   assert.equal(store.range().generation, 'cached:generation');
+  assert.equal(store.range().hasOlder, false, 'a cached transcript offers no earlier history to load');
+  assert.equal(store.snapshot().hasOlder, false);
   await controller.loadEarlier();
   assert.equal(earlierReads, 0, 'a cached transcript has no Host to read earlier history from');
   controller.observationChanged('ready');
@@ -1359,6 +1361,7 @@ test('cached fallback remains readable and retries once per observation generati
   await settle();
   assert.equal(opens, 3);
   assert.equal(store.range().generation, 'live-generation');
+  assert.equal(store.range().hasOlder, true);
   assert.deepEqual(errors, []);
   await controller.close();
 });
