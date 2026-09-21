@@ -2191,7 +2191,7 @@ function AppShellContent({
       <header
         className="maka-window-titlebar"
         aria-hidden={shellObscured ? 'true' : undefined}
-        inert={hasModalOpen ? true : undefined}
+        inert={hasModalOpen || undefined}
       >
         {/* Settings owns the full window chrome. Keep this empty header mounted
             as the frameless window's drag authority, but remove every control
@@ -2262,7 +2262,7 @@ function AppShellContent({
         contentPadding={0}
         mobileNav={{ breakpoint: 'none', hasToggle: false }}
         aria-hidden={shellObscured ? 'true' : undefined}
-        inert={shellObscured ? true : undefined}
+        inert={shellObscured || undefined}
         sideNav={
           <ModuleHub.ModuleHubScheduledTasksBoundary
             render={(scheduledTasks) => (

@@ -831,7 +831,7 @@
           "react": 1
         },
         "importSpecifiers": 98,
-        "nonTriviaTokens": 12731
+        "nonTriviaTokens": 12730
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -1085,7 +1085,6 @@
           "./features/conversation/index.js": 1,
           "./locales/shell-copy": 1,
           "./onboarding-hero": 1,
-          "@astryxdesign/core": 1,
           "@maka/ui": 1,
           "react": 1
         }
