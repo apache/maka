@@ -184,10 +184,10 @@ index 3c457d1..7d5a11a 100644
            }, getToolCallKey(call)))
          })
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js b/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js
-index 97b1a3b..8581890 100644
+index 97b1a3b..e50f680 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js
-@@ -66,6 +66,41 @@ export function restoreSelectionRange(range) {
+@@ -66,6 +66,51 @@ export function restoreSelectionRange(range) {
    selection.addRange(range);
  }
  
@@ -202,8 +202,10 @@ index 97b1a3b..8581890 100644
 + * programmatic caret move arrived as pinyin. The two boundaries are the same
 + * visual caret; only the text-node one composes.
 + *
-+ * Tokens are `contenteditable="false"`, so a trailing token is not entered: the
-+ * walk stops there and the element boundary stands.
++ * Tokens are `contenteditable="false"`, so a trailing token is not entered;
++ * and when nothing landable remains (a trailing token, a `<br>`, an empty
++ * editable) an empty text node appended at the boundary gives the composition
++ * a text anchor at the same visual caret.
 + */
 +export function landInsideTrailingTextNode(range) {
 +  // A DOM shim can implement `selectNodeContents` without exposing the
@@ -220,16 +222,24 @@ index 97b1a3b..8581890 100644
 +      return;
 +    }
 +    if (!(node instanceof HTMLElement) || !node.isContentEditable) {
-+      return;
++      break;
 +    }
 +    node = node.lastChild;
++  }
++  // An empty text node serializes to ''. Only at the end — a mid-content
++  // boundary keeps its element anchor rather than jump to the tail.
++  if (range.startOffset === container.childNodes.length) {
++    const text = document.createTextNode('');
++    container.appendChild(text);
++    range.setStart(text, 0);
++    range.collapse(true);
 +  }
 +}
 +
  /**
   * Collapse the Selection to the very end of `editable`'s content,
   * replacing whatever the Selection held before.
-@@ -86,6 +121,7 @@ export function placeCaretAtEnd(editable) {
+@@ -86,6 +131,7 @@ export function placeCaretAtEnd(editable) {
    const range = document.createRange();
    range.selectNodeContents(editable);
    range.collapse(false); // collapse to end
@@ -237,7 +247,7 @@ index 97b1a3b..8581890 100644
    selection.removeAllRanges();
    selection.addRange(range);
    return true;
-@@ -118,6 +154,7 @@ export function ensureCaretInside(editable) {
+@@ -118,6 +164,7 @@ export function ensureCaretInside(editable) {
    const range = document.createRange();
    range.selectNodeContents(editable);
    range.collapse(false); // collapse to end
@@ -245,7 +255,7 @@ index 97b1a3b..8581890 100644
    selection.removeAllRanges();
    selection.addRange(range);
    return selection;
-@@ -220,7 +257,11 @@ export function insertTextAtCursor(editable, text) {
+@@ -220,7 +267,11 @@ export function insertTextAtCursor(editable, text) {
    range.deleteContents();
    const textNode = document.createTextNode(text);
    range.insertNode(textNode);
@@ -258,6 +268,30 @@ index 97b1a3b..8581890 100644
    range.collapse(true);
    selection.removeAllRanges();
    selection.addRange(range);
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/index.d.ts b/node_modules/@astryxdesign/core/dist/Chat/index.d.ts
+index a650ae4..aafef4b 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/index.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/index.d.ts
+@@ -31,6 +31,7 @@ export { useChatPasteAsToken } from './useChatPasteAsToken';
+ export type { UseChatPasteAsTokenOptions, UseChatPasteAsTokenReturn, } from './useChatPasteAsToken';
+ export { useChatComposerTokens } from './useChatComposerTokens';
+ export type { UseChatComposerTokensOptions, UseChatComposerTokensReturn, TokenPortal, } from './useChatComposerTokens';
++export { placeCaretAtEnd } from './chatComposerSelection';
+ export type { ChatMessageSender, ChatDensity } from './ChatContext';
+ export { useChatLayoutContext, useChatComposerContext } from './ChatContext';
+ export type { ChatComposerContextValue, ChatComposerInputControl, } from './ChatContext';
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/index.js b/node_modules/@astryxdesign/core/dist/Chat/index.js
+index 47cf976..8fb9241 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/index.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/index.js
+@@ -21,6 +21,7 @@ export { useChatStreamScroll } from "./useChatStreamScroll.js";
+ export { useChatNewMessages } from "./useChatNewMessages.js";
+ export { useChatPasteAsToken } from "./useChatPasteAsToken.js";
+ export { useChatComposerTokens } from "./useChatComposerTokens.js";
++export { placeCaretAtEnd } from "./chatComposerSelection.js";
+ export { useChatLayoutContext, useChatComposerContext } from "./ChatContext.js";
+ export { ChatToolCalls } from "./ChatToolCalls.js";
+ export { ChatLayout } from "./ChatLayout.js";
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js b/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
 index bee6075..378af1e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
@@ -1222,10 +1256,10 @@ index 68a424e..d4f0c5e 100644
          </div>
        </div>
 diff --git a/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts b/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts
-index 0f31ca8..61ee6ff 100644
+index 0f31ca8..7fa3a89 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts
 +++ b/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts
-@@ -69,6 +69,42 @@ export function restoreSelectionRange(range: Range): void {
+@@ -69,6 +69,52 @@ export function restoreSelectionRange(range: Range): void {
    selection.addRange(range);
  }
  
@@ -1240,8 +1274,10 @@ index 0f31ca8..61ee6ff 100644
 + * programmatic caret move arrived as pinyin. The two boundaries are the same
 + * visual caret; only the text-node one composes.
 + *
-+ * Tokens are `contenteditable="false"`, so a trailing token is not entered: the
-+ * walk stops there and the element boundary stands.
++ * Tokens are `contenteditable="false"`, so a trailing token is not entered;
++ * and when nothing landable remains (a trailing token, a `<br>`, an empty
++ * editable) an empty text node appended at the boundary gives the composition
++ * a text anchor at the same visual caret.
 + */
 +export function landInsideTrailingTextNode(range: Range): void {
 +  // A DOM shim can implement `selectNodeContents` without exposing the
@@ -1259,16 +1295,24 @@ index 0f31ca8..61ee6ff 100644
 +      return;
 +    }
 +    if (!(node instanceof HTMLElement) || !node.isContentEditable) {
-+      return;
++      break;
 +    }
 +    node = node.lastChild;
++  }
++  // An empty text node serializes to ''. Only at the end — a mid-content
++  // boundary keeps its element anchor rather than jump to the tail.
++  if (range.startOffset === container.childNodes.length) {
++    const text = document.createTextNode('');
++    container.appendChild(text);
++    range.setStart(text, 0);
++    range.collapse(true);
 +  }
 +}
 +
  /**
   * Collapse the Selection to the very end of `editable`'s content,
   * replacing whatever the Selection held before.
-@@ -89,6 +125,7 @@ export function placeCaretAtEnd(editable: HTMLElement): boolean {
+@@ -89,6 +135,7 @@ export function placeCaretAtEnd(editable: HTMLElement): boolean {
    const range = document.createRange();
    range.selectNodeContents(editable);
    range.collapse(false); // collapse to end
@@ -1276,7 +1320,7 @@ index 0f31ca8..61ee6ff 100644
    selection.removeAllRanges();
    selection.addRange(range);
    return true;
-@@ -123,6 +160,7 @@ export function ensureCaretInside(editable: HTMLElement): Selection | null {
+@@ -123,6 +170,7 @@ export function ensureCaretInside(editable: HTMLElement): Selection | null {
    const range = document.createRange();
    range.selectNodeContents(editable);
    range.collapse(false); // collapse to end
@@ -1284,7 +1328,7 @@ index 0f31ca8..61ee6ff 100644
    selection.removeAllRanges();
    selection.addRange(range);
    return selection;
-@@ -262,7 +300,11 @@ export function insertTextAtCursor(
+@@ -262,7 +310,11 @@ export function insertTextAtCursor(
    const textNode = document.createTextNode(text);
    range.insertNode(textNode);
  
@@ -1297,6 +1341,18 @@ index 0f31ca8..61ee6ff 100644
    range.collapse(true);
    selection.removeAllRanges();
    selection.addRange(range);
+diff --git a/node_modules/@astryxdesign/core/src/Chat/index.ts b/node_modules/@astryxdesign/core/src/Chat/index.ts
+index 7239e18..db3ca04 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/index.ts
++++ b/node_modules/@astryxdesign/core/src/Chat/index.ts
+@@ -80,6 +80,7 @@ export type {
+   UseChatComposerTokensReturn,
+   TokenPortal,
+ } from './useChatComposerTokens';
++export {placeCaretAtEnd} from './chatComposerSelection';
+ export type {ChatMessageSender, ChatDensity} from './ChatContext';
+ export {useChatLayoutContext, useChatComposerContext} from './ChatContext';
+ export type {
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts b/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
 index 071303f..d28601a 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
