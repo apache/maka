@@ -12,7 +12,7 @@ index 90022b3..36c0637 100644
       * Search source providing items for this trigger.
       * Reuses the same SearchSource interface as Typeahead \u2014
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
-index 87dfdea..e2041ce 100644
+index 87dfdea..e3982e9 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
 @@ -22,7 +22,7 @@
@@ -24,6 +24,15 @@ index 87dfdea..e2041ce 100644
  import { createPortal } from 'react-dom';
  import * as stylex from '@stylexjs/stylex';
  import "../theme/tokens.stylex.js";
+@@ -30,7 +30,7 @@ import { colorVars, spacingVars, typeScaleVars, typographyVars } from "../theme/
+ import { mergeProps, isImeKeyEvent } from "../utils/index.js";
+ import { useTriggerMenu } from "./useTriggerMenu.js";
+ import { useChatComposerTokens, isCustomToken } from "./useChatComposerTokens.js";
+-import { ensureCaretInside, insertTextAtCursor, isSelectionAtStart, isSelectionAtEnd, placeCaretAtEnd, getSelectionRangeInside, restoreSelectionRange } from "./chatComposerSelection.js";
++import { ensureCaretInside, insertTextAtCursor, isSelectionAtStart, isSelectionAtEnd, landInsideTrailingTextNode, placeCaretAtEnd, getSelectionRangeInside, restoreSelectionRange } from "./chatComposerSelection.js";
+ import { ChatPastedTextToken } from "./ChatPastedTextToken.js";
+ import { useChatPasteAsToken } from "./useChatPasteAsToken.js";
+ import { Badge } from "../Badge/index.js";
 @@ -261,7 +261,7 @@ export function ChatComposerInput(props) {
        inputControlRef.current = null;
      };
@@ -33,6 +42,14 @@ index 87dfdea..e2041ce 100644
      if (controlledValue === undefined || !editableRef.current) {
        return;
      }
+@@ -293,6 +293,7 @@ export function ChatComposerInput(props) {
+           const range = document.createRange();
+           range.selectNodeContents(editable);
+           range.collapse(false);
++          landInsideTrailingTextNode(range);
+           selection.removeAllRanges();
+           selection.addRange(range);
+         }
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
 index ff34874..28aaaab 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
@@ -166,8 +183,83 @@ index 3c457d1..7d5a11a 100644
              call: call
            }, getToolCallKey(call)))
          })
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js b/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js
+index 97b1a3b..8581890 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js
+@@ -66,6 +66,41 @@ export function restoreSelectionRange(range) {
+   selection.addRange(range);
+ }
+ 
++/**
++ * Move a collapsed range that sits on an element boundary into the text node it
++ * visually points at.
++ *
++ * `selectNodeContents` + `collapse(false)` leaves the caret on the *editable's*
++ * child offset. Chromium anchors an IME composition to the boundary it starts
++ * from, and from an element boundary the first preedit commits as its raw
++ * letters instead of the composed character — the first CJK word typed after a
++ * programmatic caret move arrived as pinyin. The two boundaries are the same
++ * visual caret; only the text-node one composes.
++ *
++ * Tokens are `contenteditable="false"`, so a trailing token is not entered: the
++ * walk stops there and the element boundary stands.
++ */
++export function landInsideTrailingTextNode(range) {
++  // A DOM shim can implement `selectNodeContents` without exposing the
++  // container (linkedom); there is no element boundary to move away from.
++  const container = range.startContainer;
++  if (!container || container.nodeType === Node.TEXT_NODE) {
++    return;
++  }
++  let node = container.childNodes[range.startOffset - 1] ?? null;
++  while (node) {
++    if (node.nodeType === Node.TEXT_NODE) {
++      range.setStart(node, node.data.length);
++      range.collapse(true);
++      return;
++    }
++    if (!(node instanceof HTMLElement) || !node.isContentEditable) {
++      return;
++    }
++    node = node.lastChild;
++  }
++}
++
+ /**
+  * Collapse the Selection to the very end of `editable`'s content,
+  * replacing whatever the Selection held before.
+@@ -86,6 +121,7 @@ export function placeCaretAtEnd(editable) {
+   const range = document.createRange();
+   range.selectNodeContents(editable);
+   range.collapse(false); // collapse to end
++  landInsideTrailingTextNode(range);
+   selection.removeAllRanges();
+   selection.addRange(range);
+   return true;
+@@ -118,6 +154,7 @@ export function ensureCaretInside(editable) {
+   const range = document.createRange();
+   range.selectNodeContents(editable);
+   range.collapse(false); // collapse to end
++  landInsideTrailingTextNode(range);
+   selection.removeAllRanges();
+   selection.addRange(range);
+   return selection;
+@@ -220,7 +257,11 @@ export function insertTextAtCursor(editable, text) {
+   range.deleteContents();
+   const textNode = document.createTextNode(text);
+   range.insertNode(textNode);
+-  range.setStartAfter(textNode);
++  // Inside the inserted text node, not on the editable's child offset that
++  // setStartAfter produces: Chromium anchors an IME composition to the boundary
++  // it starts from, and from an element boundary the first preedit commits as
++  // its raw letters (see landInsideTrailingTextNode).
++  range.setStart(textNode, text.length);
+   range.collapse(true);
+   selection.removeAllRanges();
+   selection.addRange(range);
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js b/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
-index bee6075..228510a 100644
+index bee6075..378af1e 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
 @@ -79,8 +79,14 @@ export function useChatComposerTokens({
@@ -186,6 +278,49 @@ index bee6075..228510a 100644
      range.deleteContents();
      range.insertNode(span);
  
+@@ -88,7 +94,11 @@ export function useChatComposerTokens({
+     const space = document.createTextNode('\u00A0');
+     span.after(space);
+     const newRange = document.createRange();
+-    newRange.setStartAfter(space);
++    // Inside the NBSP rather than on the editable's child offset that
++    // setStartAfter produces: Chromium anchors an IME composition to the
++    // boundary it starts from, and from an element boundary the first preedit
++    // commits as its raw letters instead of the composed character.
++    newRange.setStart(space, space.data.length);
+     newRange.collapse(true);
+     selection.removeAllRanges();
+     selection.addRange(newRange);
+@@ -158,11 +168,12 @@ export function useChatComposerTokens({
+       e.preventDefault();
+       const text = e.clipboardData.getData('text/plain');
+ 
+-      // Move cursor after the token's trailing space
++      // Move cursor after the token's trailing space — inside the text node,
++      // not on the editable's child offset (see insertToken).
+       const space = tokenEl.nextSibling;
+       const newRange = document.createRange();
+       if (space && space.nodeType === Node.TEXT_NODE) {
+-        newRange.setStartAfter(space);
++        newRange.setStart(space, space.data.length);
+       } else {
+         newRange.setStartAfter(tokenEl);
+       }
+@@ -199,11 +210,12 @@ export function useChatComposerTokens({
+     }
+     span.replaceWith(textNode);
+ 
+-    // Place cursor at end of inserted text
++    // Place cursor at end of inserted text — inside the text node, not on the
++    // editable's child offset (see insertToken).
+     const selection = window.getSelection();
+     if (selection) {
+       const range = document.createRange();
+-      range.setStartAfter(textNode);
++      range.setStart(textNode, value.length);
+       range.collapse(true);
+       selection.removeAllRanges();
+       selection.addRange(range);
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 index 47d4e52..d705783 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
@@ -902,7 +1037,7 @@ index 693d728..7d5724e 100644
  }
 \ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
-index a45cc2f..75d0bf4 100644
+index a45cc2f..f676118 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
 @@ -28,6 +28,7 @@ import {
@@ -913,7 +1048,15 @@ index a45cc2f..75d0bf4 100644
    useImperativeHandle,
    type ReactNode,
    type KeyboardEvent,
-@@ -114,6 +115,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+@@ -51,6 +52,7 @@ import {
+   insertTextAtCursor,
+   isSelectionAtStart,
+   isSelectionAtEnd,
++  landInsideTrailingTextNode,
+   placeCaretAtEnd,
+   getSelectionRangeInside,
+   restoreSelectionRange,
+@@ -114,6 +116,8 @@ export type ChatComposerTriggerItem = SearchableItem;
  export type ChatComposerTrigger = {
    /** Character that activates this trigger menu (e.g. '@', '/') */
    character: string;
@@ -922,7 +1065,7 @@ index a45cc2f..75d0bf4 100644
    /**
     * Search source providing items for this trigger.
     * Reuses the same SearchSource interface as Typeahead \u2014
-@@ -465,7 +468,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+@@ -465,7 +469,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
      };
    }, [inputControlRef, focusEditableAtEnd]);
  
@@ -931,6 +1074,14 @@ index a45cc2f..75d0bf4 100644
      if (controlledValue === undefined || !editableRef.current) {
        return;
      }
+@@ -497,6 +501,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+           const range = document.createRange();
+           range.selectNodeContents(editable);
+           range.collapse(false);
++          landInsideTrailingTextNode(range);
+           selection.removeAllRanges();
+           selection.addRange(range);
+         }
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
 index d45a912..7dba080 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
@@ -1070,8 +1221,84 @@ index 68a424e..d4f0c5e 100644
            </div>
          </div>
        </div>
+diff --git a/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts b/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts
+index 0f31ca8..61ee6ff 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts
++++ b/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts
+@@ -69,6 +69,42 @@ export function restoreSelectionRange(range: Range): void {
+   selection.addRange(range);
+ }
+ 
++/**
++ * Move a collapsed range that sits on an element boundary into the text node it
++ * visually points at.
++ *
++ * `selectNodeContents` + `collapse(false)` leaves the caret on the *editable's*
++ * child offset. Chromium anchors an IME composition to the boundary it starts
++ * from, and from an element boundary the first preedit commits as its raw
++ * letters instead of the composed character — the first CJK word typed after a
++ * programmatic caret move arrived as pinyin. The two boundaries are the same
++ * visual caret; only the text-node one composes.
++ *
++ * Tokens are `contenteditable="false"`, so a trailing token is not entered: the
++ * walk stops there and the element boundary stands.
++ */
++export function landInsideTrailingTextNode(range: Range): void {
++  // A DOM shim can implement `selectNodeContents` without exposing the
++  // container (linkedom); there is no element boundary to move away from.
++  const container = range.startContainer;
++  if (!container || container.nodeType === Node.TEXT_NODE) {
++    return;
++  }
++  let node: Node | null = container.childNodes[range.startOffset - 1] ?? null;
++  while (node) {
++    if (node.nodeType === Node.TEXT_NODE) {
++      const text = node as Text;
++      range.setStart(text, text.data.length);
++      range.collapse(true);
++      return;
++    }
++    if (!(node instanceof HTMLElement) || !node.isContentEditable) {
++      return;
++    }
++    node = node.lastChild;
++  }
++}
++
+ /**
+  * Collapse the Selection to the very end of `editable`'s content,
+  * replacing whatever the Selection held before.
+@@ -89,6 +125,7 @@ export function placeCaretAtEnd(editable: HTMLElement): boolean {
+   const range = document.createRange();
+   range.selectNodeContents(editable);
+   range.collapse(false); // collapse to end
++  landInsideTrailingTextNode(range);
+   selection.removeAllRanges();
+   selection.addRange(range);
+   return true;
+@@ -123,6 +160,7 @@ export function ensureCaretInside(editable: HTMLElement): Selection | null {
+   const range = document.createRange();
+   range.selectNodeContents(editable);
+   range.collapse(false); // collapse to end
++  landInsideTrailingTextNode(range);
+   selection.removeAllRanges();
+   selection.addRange(range);
+   return selection;
+@@ -262,7 +300,11 @@ export function insertTextAtCursor(
+   const textNode = document.createTextNode(text);
+   range.insertNode(textNode);
+ 
+-  range.setStartAfter(textNode);
++  // Inside the inserted text node, not on the editable's child offset that
++  // setStartAfter produces: Chromium anchors an IME composition to the boundary
++  // it starts from, and from an element boundary the first preedit commits as
++  // its raw letters (see landInsideTrailingTextNode).
++  range.setStart(textNode, text.length);
+   range.collapse(true);
+   selection.removeAllRanges();
+   selection.addRange(range);
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts b/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
-index 071303f..8f8938b 100644
+index 071303f..d28601a 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
 +++ b/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
 @@ -119,8 +119,14 @@ export function useChatComposerTokens({
@@ -1090,6 +1317,41 @@ index 071303f..8f8938b 100644
  
        range.deleteContents();
        range.insertNode(span);
+@@ -130,7 +136,11 @@ export function useChatComposerTokens({
+       span.after(space);
+ 
+       const newRange = document.createRange();
+-      newRange.setStartAfter(space);
++      // Inside the NBSP rather than on the editable's child offset that
++      // setStartAfter produces: Chromium anchors an IME composition to the
++      // boundary it starts from, and from an element boundary the first preedit
++      // commits as its raw letters instead of the composed character.
++      newRange.setStart(space, space.data.length);
+       newRange.collapse(true);
+       selection.removeAllRanges();
+       selection.addRange(newRange);
+@@ -219,7 +229,9 @@ export function useChatComposerTokens({
+         const space = tokenEl.nextSibling;
+         const newRange = document.createRange();
+         if (space && space.nodeType === Node.TEXT_NODE) {
+-          newRange.setStartAfter(space);
++          // Inside the text node, not on the editable's child offset (see
++          // insertToken).
++          newRange.setStart(space as Text, (space as Text).data.length);
+         } else {
+           newRange.setStartAfter(tokenEl);
+         }
+@@ -266,7 +278,9 @@ export function useChatComposerTokens({
+       const selection = window.getSelection();
+       if (selection) {
+         const range = document.createRange();
+-        range.setStartAfter(textNode);
++        // Inside the text node, not on the editable's child offset (see
++        // insertToken).
++        range.setStart(textNode, value.length);
+         range.collapse(true);
+         selection.removeAllRanges();
+         selection.addRange(range);
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 index 764be45..10a2de9 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx

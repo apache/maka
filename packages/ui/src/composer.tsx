@@ -201,6 +201,42 @@ function commandPrimaryText(command: ComposerSlashCommandOption): string {
 }
 
 /**
+ * Move a collapsed range that sits on an element boundary into the text node it
+ * visually points at.
+ *
+ * `selectNodeContents` + `collapse(false)` leaves the caret on the *editable's*
+ * child offset, and Astryx's `insertToken` anchors it the same way with
+ * `setStartAfter`. Chromium's IME anchors a composition to the boundary it
+ * starts from, and from an element boundary the first preedit commits as its
+ * raw letters instead of the composed character — the first CJK word typed
+ * after a Skill chip, or after a restored draft, arrived as pinyin. The two
+ * boundaries are the same visual caret; only the text-node one composes.
+ *
+ * A chip is `contenteditable="false"`, so a trailing token is not entered: the
+ * walk stops there and the element boundary stands.
+ *
+ * Astryx's own `chatComposerSelection` helpers (`placeCaretAtEnd`,
+ * `ensureCaretInside`, which the input's focus and imperative-insert paths use)
+ * carry the same guard; both are in the dependency patch and have to move
+ * together.
+ */
+function landCaretInsideTextNode(range: Range): void {
+  const container = range.startContainer;
+  if (!container || container.nodeType === Node.TEXT_NODE) return;
+  let node: Node | null = container.childNodes[range.startOffset - 1] ?? null;
+  while (node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node as Text;
+      range.setStart(text, text.textContent?.length ?? 0);
+      range.collapse(true);
+      return;
+    }
+    if (!(node instanceof HTMLElement) || !node.isContentEditable) return;
+    node = node.lastChild;
+  }
+}
+
+/**
  * Rows the input grows to before it scrolls. `ChatComposerInput` prices this in
  * its own hardcoded 22px line, so the cap is 220px — one line under the 240px
  * the hand-rolled textarea auto-resize enforced. Our type override sets a
@@ -681,6 +717,7 @@ export const Composer = forwardRef<
     const range = document.createRange();
     range.selectNodeContents(editable);
     range.collapse(false);
+    landCaretInsideTextNode(range);
     selection?.removeAllRanges();
     selection?.addRange(range);
   }
