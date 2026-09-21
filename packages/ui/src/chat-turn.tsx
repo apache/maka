@@ -1456,16 +1456,10 @@ const TurnTimelineEntry = memo(function TurnTimelineEntry(props: {
 
 /**
  * The turn's whole execution process (reasoning, intermediate commentary, tool
- * activity) as ONE bounded, scrollable card: a titled header row and, when
- * open, a body that grows with its content up to a cap and then scrolls. The
- * container's border is the card's frame, so a collapsed box keeps its outline
- * and shows only the title row.
- *
- * The body owns its own scroll, not the transcript: a turn with hundreds of
- * steps scrolls here instead of becoming an unreadable wall the reader has to
- * traverse. While the body overflows, its top and/or bottom edge fades the
- * content out, so the clipped rows read as "more above/below" rather than
- * abruptly cut off.
+ * activity) as one in-flow disclosure: a titled header row and, when open, the
+ * full body laid out in the transcript's own scroll path. The container's
+ * border is the frame, so a collapsed box keeps its outline and shows only the
+ * title row.
  */
 export const ProcessingBlock = memo(function ProcessingBlock(props: {
   activityObserved?: boolean;
