@@ -23,6 +23,10 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { applyTheme } from './theme';
 import type { SessionWorkbarTabKind } from './features/workbar';
+import {
+  waitForCatalogSession,
+  type SessionCatalogController,
+} from './application/contracts/session-catalog/session-catalog-state.js';
 
 export interface AppShellE2eFixtureActions {
   applyE2eFixture(): Promise<void>;
@@ -31,10 +35,7 @@ export interface AppShellE2eFixtureActions {
 export function createAppShellE2eFixtureActions(options: {
   openSettingsSection: (section: SettingsSection) => void;
   refreshSessions: () => Promise<unknown>;
-  sessionCatalog: {
-    getState(): { sessions: readonly { id: string }[] };
-    subscribe(listener: () => void): () => void;
-  };
+  sessionCatalog: SessionCatalogController;
   setActiveId: (sessionId: string | undefined) => void;
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
   openSearchModal(): void;
@@ -119,18 +120,7 @@ export function createAppShellE2eFixtureActions(options: {
       // active Session missing from the committed catalog. With the Host
       // still starting, that sweep can land before the seeded row reaches the
       // catalog — activate only once the catalog has observed it.
-      await new Promise<void>((resolve) => {
-        const check = () => {
-          if (
-            sessionCatalog.getState().sessions.some((s) => s.id === state.activeSessionId)
-          ) {
-            unsubscribe();
-            resolve();
-          }
-        };
-        const unsubscribe = sessionCatalog.subscribe(check);
-        check();
-      });
+      await waitForCatalogSession(sessionCatalog, state.activeSessionId);
       setActiveId(state.activeSessionId);
     }
     // Workbar collapse state is keyed per Session and drops writes issued
@@ -143,13 +133,7 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.workbarCollapsed !== undefined) {
       workbar.setWorkbarCollapsed(state.workbarCollapsed);
     }
-    if (
-      state.workbarTab === 'review' ||
-      state.workbarTab === 'terminal' ||
-      state.workbarTab === 'browser' ||
-      state.workbarTab === 'files' ||
-      state.workbarTab === 'inspector'
-    ) {
+    if (state.workbarTab && state.workbarTab !== 'tasks') {
       workbar.openTool(state.workbarTab, 'right');
     }
     if (state.openSettingsSection) {
@@ -163,16 +147,18 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.searchModalOpen) {
       openSearchModal();
     }
-    if (state.sidebarSection === 'automations') {
-      setNavSelection({ section: 'automations', module: 'scheduled-tasks' });
-    } else if (state.sidebarSection === 'skills') {
-      setNavSelection({ section: 'extensions', module: 'skills' });
-    } else if (state.sidebarSection === 'mcp') {
-      setNavSelection({ section: 'extensions', module: 'mcp' });
-    } else if (state.sidebarSection === 'daily-review') {
-      setNavSelection({ section: 'automations', module: 'daily-review' });
-    } else if (state.sidebarSection === 'sessions') {
-      setNavSelection({ section: 'sessions' });
+    if (state.sidebarSection) {
+      const navForSidebarSection: Record<
+        NonNullable<typeof state.sidebarSection>,
+        NavSelection
+      > = {
+        automations: { section: 'automations', module: 'scheduled-tasks' },
+        skills: { section: 'extensions', module: 'skills' },
+        mcp: { section: 'extensions', module: 'mcp' },
+        'daily-review': { section: 'automations', module: 'daily-review' },
+        sessions: { section: 'sessions' },
+      };
+      setNavSelection(navForSidebarSection[state.sidebarSection]);
     }
   }
 

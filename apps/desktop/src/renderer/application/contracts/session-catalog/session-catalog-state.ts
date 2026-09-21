@@ -171,6 +171,23 @@ export function createSessionCatalogController() {
 
 export type SessionCatalogController = ReturnType<typeof createSessionCatalogController>;
 
+/** Resolve once the catalog holds `sessionId` — a selection is only durable after the authority has observed the row. */
+export function waitForCatalogSession(
+  catalog: Pick<SessionCatalogController, 'getState' | 'subscribe'>,
+  sessionId: string,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const check = () => {
+      if (catalog.getState().sessions.some((s) => s.id === sessionId)) {
+        unsubscribe();
+        resolve();
+      }
+    };
+    const unsubscribe = catalog.subscribe(check);
+    check();
+  });
+}
+
 /** A committed row at a newer revision is authoritative over an older snapshot of it. */
 function isStaleSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): boolean {
   return prior.revision > next.revision;

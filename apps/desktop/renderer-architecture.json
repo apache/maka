@@ -438,10 +438,11 @@
           "createAppShellE2eFixtureActions"
         ],
         "dependencyPaths": {
+          "./application/contracts/session-catalog/session-catalog-state.js": 1,
           "./theme": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 750
+        "nonTriviaTokens": 623
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 9,
