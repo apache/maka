@@ -295,9 +295,9 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'OpenCode Go', description: 'Low-cost subscription to curated open coding models.', badge: 'Plan' },
   },
   'opencode-free': {
-    'zh-CN': { name: 'OpenCode Free', description: '免费匿名 OpenCode Zen 模型，无需密钥，按 IP 限速', badge: 'Free' },
-    'zh-TW': { name: 'OpenCode Free', description: '免費匿名 OpenCode Zen 模型，無需金鑰，按 IP 限速', badge: 'Free' },
-    en: { name: 'OpenCode Free', description: 'Free anonymous OpenCode Zen models — no API key, IP-limited.', badge: 'Free' },
+    'zh-CN': { name: 'OpenCode Free', description: '已停用：OpenCode 免费服务仅限其官方客户端使用。', badge: 'Free' },
+    'zh-TW': { name: 'OpenCode Free', description: '已停用：OpenCode 免費服務僅限其官方用戶端使用。', badge: 'Free' },
+    en: { name: 'OpenCode Free', description: 'Retired: OpenCode restricts its free tier to its own client.', badge: 'Free' },
   },
   commandcode: {
     'zh-CN': { name: 'Command Code', description: '使用 Command Code 套餐额度，连接后自动获取模型。', badge: 'Coding' },

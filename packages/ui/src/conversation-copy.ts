@@ -366,8 +366,6 @@ export interface ConversationCopy {
       contextUsageNoWindow: (used: number) => string;
       contextUsageUnavailable: string;
       contextUsageOpen: string;
-      gitBranchLabel: string;
-      gitBranchDetached: (sha: string) => string;
       stepLimit: string;
     };
   };
@@ -604,11 +602,9 @@ const CONVERSATION_COPY = {
           `上下文窗口：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) =>
           `已用 ${formatCompactTokenCount(used)} token；上下文窗口上限未知`,
-      contextUsageUnavailable: '暂无用量数据',
-      contextUsageOpen: '打开用量追踪',
-      gitBranchLabel: '当前 Git 分支',
-      gitBranchDetached: (sha: string) => `游离 HEAD（${sha}）`,
-      stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
+        contextUsageUnavailable: '暂无用量数据',
+        contextUsageOpen: '打开用量追踪',
+        stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
     },
     chat: {
@@ -767,8 +763,6 @@ const CONVERSATION_COPY = {
           `已用 ${formatCompactTokenCount(used)} token；上下文視窗上限未知`,
         contextUsageUnavailable: '暫無用量資料',
         contextUsageOpen: '開啟用量追蹤',
-        gitBranchLabel: '目前 Git 分支',
-        gitBranchDetached: (sha: string) => `游離 HEAD（${sha}）`,
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
       },
     },
@@ -954,8 +948,6 @@ const CONVERSATION_COPY = {
           `This request used ${formatCompactTokenCount(used)} tokens; no context limit is available for this model.`,
         contextUsageUnavailable: 'No usage data is available for this request.',
         contextUsageOpen: 'Open usage trace',
-        gitBranchLabel: 'Current Git branch',
-        gitBranchDetached: (sha: string) => `detached HEAD (${sha})`,
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },
     },

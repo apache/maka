@@ -941,7 +941,6 @@ function bridge(options: {
         if (options.reviewFail) throw new Error('读取变更失败：无法运行 git diff');
         return options.review ?? { ok: true, snapshot: gitReviewSnapshot };
       },
-      branch: async () => ({ ok: true, snapshot: { branch: 'main', shortSha: null } }),
       subscribeSessionEvents: unsubscribe,
     },
     terminal: {
@@ -1213,7 +1212,6 @@ function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boole
       ? <Composer draftKey={SESSION_ID} streaming={props.streaming ?? true} onSend={noop} onStop={props.onStop ?? noop}
           activeSession={TOOL_PICKER_SOURCE_SESSION} activeModel="claude-sonnet-4-5" activeModelLabel="Sonnet 4.5"
           onPickAttachments={noop} permissionMode="ask" onPermissionModeChange={noop}
-          gitBranch={{ name: 'codex/desktop-focused-preview' }}
           pendingAttachments={props.stagedFile ? [{ displayName: 'reference.md', kind: 'doc', size: 1024 }] : undefined}
           onRemoveAttachment={noop} />
       : <textarea aria-label="Session draft"

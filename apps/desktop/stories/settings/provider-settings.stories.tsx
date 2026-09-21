@@ -62,6 +62,7 @@ type AutoOpenTarget =
   | 'detail-static'
   | 'detail-relay'
   | 'detail-large'
+  | 'detail-retired'
   | 'add'
   | 'catalog'
   | 'oauth'
@@ -700,12 +701,15 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
     || target === 'detail-static'
     || target === 'detail-relay'
     || target === 'detail-large'
+    || target === 'detail-retired'
   ) {
     // ListItem's clickable surface is an invisible button inside the row, so
     // the row is located by its slug hook and the button taken from within it.
     const slug =
       target === 'detail'
         ? 'zai-live'
+        : target === 'detail-retired'
+          ? 'opencode-free'
         : target === 'detail-alibaba'
           ? 'alibaba-token-plan-cn'
           : target === 'detail-static'
@@ -790,7 +794,8 @@ export const EmptyProviders: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: [] })} />,
   play: async ({ canvasElement }) => {
     await waitFor(() => {
-      expect(canvasElement.querySelector('.providerCatalogRow[data-provider="opencode-free"]')).not.toBeNull();
+      expect(canvasElement.querySelector('.providerCatalogRow[data-provider="opencode-go"]')).not.toBeNull();
+      expect(canvasElement.querySelector('.providerCatalogRow[data-provider="opencode-free"]')).toBeNull();
     }, { timeout: 5_000 });
     expect(canvasElement.querySelector('[data-maka-contract="provider-catalog"]')).toBeNull();
   },
@@ -804,6 +809,25 @@ export const ConnectionDetailPage: Story = {
       autoOpen="detail"
     />
   ),
+};
+
+// Real path: after upgrading, open the retained OpenCode Free connection in Settings.
+export const RetiredFreeConnection: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: [makeConnection({
+        slug: 'opencode-free', name: 'OpenCode Free', providerType: 'opencode-free',
+        defaultModel: 'nemotron-3-ultra-free', models: [{ id: 'nemotron-3-ultra-free' }],
+      })] })}
+      autoOpen="detail-retired"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(within(canvasElement).getByRole('alert')).toHaveTextContent(/已停用|retired/);
+    });
+    expect(within(canvasElement).queryByRole('button', { name: /测试连接|測試連線|Test connection/ })).toBeNull();
+  },
 };
 
 // Real path: 设置 → 模型 → an OpenRouter connection after fetching hundreds of models.

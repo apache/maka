@@ -38,7 +38,7 @@ import { type LlmConnection } from '@maka/core/llm-connections';
 import { type SessionSummary } from '@maka/core/session';
 import { type UiLocale } from '@maka/core/ui-locale';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
-import { useUiLocale } from '@maka/ui';
+import { useUiLocale, valuesEqual } from '@maka/ui';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { getOnboardingCopy } from './locales/onboarding-copy.js';
 
@@ -96,14 +96,40 @@ export function getOnboardingActivationCandidate(
 }
 
 /**
+ * `sessions` is excluded: it is boot-time seed data (the session catalog is
+ * the live authority) whose rows churn on every background message event,
+ * so including it would publish a new snapshot per event. The `satisfies`
+ * witness makes the key list exhaustive — a new `OnboardingSnapshot` field
+ * not added here fails to compile instead of silently dropping out of the
+ * dedup key.
+ */
+const COMPARED_KEYS = {
+  defaultSlug: true,
+  state: true,
+  milestones: true,
+  connections: true,
+  chatModelChoices: true,
+  sessionSendOutcomes: true,
+} satisfies Record<Exclude<keyof OnboardingSnapshot, 'sessions'>, true>;
+
+export function onboardingSnapshotProjectionEqual(
+  a: OnboardingSnapshot,
+  b: OnboardingSnapshot,
+): boolean {
+  return (Object.keys(COMPARED_KEYS) as readonly (keyof typeof COMPARED_KEYS)[]).every(
+    (key) => valuesEqual(a[key], b[key]),
+  );
+}
+
+/**
  * Pure-deps form. Renderer code uses `useOnboardingSnapshot()` (no
  * args); tests pass injected `deps` to drive the hook with fakes
  * (no IPC required).
  *
  * The hook is a thin React shell over `createOnboardingSnapshotPoller`
- * — the React-less helper that owns the ticket-based stale-response
- * defense. Tests target the pure poller directly so they don't need
- * a DOM / React runtime.
+ * — the React-less helper that owns pull serialization and the
+ * stale-response defense. Tests target the pure poller directly so they
+ * don't need a DOM / React runtime.
  */
 export function useOnboardingSnapshotImpl(
   deps: UseOnboardingSnapshotDeps,
@@ -122,11 +148,13 @@ export function useOnboardingSnapshotImpl(
   if (pollerRef.current === null) {
     pollerRef.current = createOnboardingSnapshotPoller(deps, {
       onSnapshot: (next) => {
-        setSnapshot(next);
-        setError(null);
         if (next.sessions) sessionsRef.current = next.sessions;
         if (next.connections) connectionsRef.current = next.connections;
         defaultSlugRef.current = next.defaultSlug;
+        setSnapshot((prev) =>
+          prev !== null && onboardingSnapshotProjectionEqual(prev, next) ? prev : next,
+        );
+        setError(null);
       },
       onError: (message) => {
         setError(message);
@@ -166,11 +194,12 @@ export function useOnboardingSnapshotImpl(
 }
 
 /**
- * React-less poller. Tracks an inflight ticket so older getSnapshot
- * responses can't overwrite newer state, and owns a lifecycle gate so
- * pending IPC responses cannot write after the first-run surface
- * unmounts. Extracted from `useOnboardingSnapshotImpl` so the stale
- * response defense is testable without a DOM / React.
+ * React-less poller. Serializes getSnapshot IPCs — an invalidation while a
+ * pull is in flight schedules a single follow-up — and gates callbacks on
+ * the active flag plus a dispose-bumped ticket so pending responses cannot
+ * write after the first-run surface unmounts. Extracted from
+ * `useOnboardingSnapshotImpl` so the pull discipline is testable without a
+ * DOM / React.
  */
 export interface OnboardingSnapshotPollerCallbacks {
   onSnapshot(snapshot: OnboardingSnapshot): void;
@@ -193,6 +222,8 @@ export function createOnboardingSnapshotPoller(
 ): OnboardingSnapshotPoller {
   let inflightTicket = 0;
   let active = true;
+  let inflight: Promise<void> | null = null;
+  let pullAgain = false;
 
   function emitSnapshot(snapshot: OnboardingSnapshot): void {
     if (!active) return;
@@ -204,21 +235,39 @@ export function createOnboardingSnapshotPoller(
     callbacks.onError(message);
   }
 
+  async function runPull(): Promise<void> {
+    const ticket = ++inflightTicket;
+    try {
+      const next = await deps.getSnapshot();
+      if (!active || ticket !== inflightTicket) return; // unmounted or re-disposed
+      emitSnapshot(next);
+    } catch (err) {
+      if (!active || ticket !== inflightTicket) return;
+      emitError(onboardingSnapshotErrorMessage(err, getLocale()));
+    }
+  }
+
   return {
     activate(): void {
       active = true;
     },
-    async pull(): Promise<void> {
-      if (!active) return;
-      const ticket = ++inflightTicket;
-      try {
-        const next = await deps.getSnapshot();
-        if (!active || ticket !== inflightTicket) return; // newer pull won or unmounted
-        emitSnapshot(next);
-      } catch (err) {
-        if (!active || ticket !== inflightTicket) return;
-        emitError(onboardingSnapshotErrorMessage(err, getLocale()));
+    pull(): Promise<void> {
+      if (!active) return Promise.resolve();
+      // Invalidations arriving while a pull is in flight collapse into one
+      // follow-up, so the IPC rate tracks pull latency, not event rate.
+      if (inflight !== null) {
+        pullAgain = true;
+        return inflight;
       }
+      const loop = (async () => {
+        do {
+          pullAgain = false;
+          await runPull();
+        } while (pullAgain && active);
+        inflight = null;
+      })();
+      inflight = loop;
+      return loop;
     },
     dispose(): void {
       active = false;

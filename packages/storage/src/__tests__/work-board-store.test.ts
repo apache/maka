@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -730,12 +730,14 @@ describe('Work Board store', () => {
     const databasePath = join(stateRoot, 'runtime.sqlite');
     await mkdir(stateRoot, { recursive: true });
     try {
-      await copyFile(
-        new URL('../../test-fixtures/v0.1.6-operational-state/runtime.sqlite', import.meta.url),
-        databasePath,
-      );
       const v8 = new DatabaseSync(databasePath);
       try {
+        v8.exec(
+          readFileSync(
+            new URL('../../test-fixtures/v0.1.6-operational-state/runtime.sql', import.meta.url),
+            'utf8',
+          ),
+        );
         v8.exec(
           readFileSync(
             new URL('../../test-fixtures/workflow-schema-v8.sql', import.meta.url),

@@ -435,10 +435,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
 
   return (
     <VStack gap={8}>
-      {needsOAuth && (
-        retired ? (
-          <Banner status="error" role="alert" title={copy.oauthRetired} description={copy.oauthRetiredDetail} />
-        ) : oauthLoginService ? (
+      {retired && (
+        <Banner status="error" role="alert" title={copy.providerRetired} description={copy.providerRetiredDetail} />
+      )}
+      {needsOAuth && !retired && (
+        oauthLoginService ? (
           <OAuthReloginNotice
             service={oauthLoginService}
             hasSecret={hasSecret}
@@ -480,7 +481,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         title={copy.credentials}
         /* One claim, not four phrasings of it: the credential never leaves this
            machine. The endpoint is not a secret, so it did not need a variant. */
-        description={supportsApiKey ? copy.credentialsHelp : copy.credentialsHelpAccount}
+        description={supportsApiKey ? copy.credentialsHelp : needsOAuth ? copy.credentialsHelpAccount : undefined}
       >
         {/* The name row is outside the key/endpoint guard below: a connection
             with neither — an OAuth subscription, say — still has a name, and
