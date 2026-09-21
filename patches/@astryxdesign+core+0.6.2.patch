@@ -111,6 +111,29 @@ index ff9b9fa..28afe4e 100644
    });
    const newMsgs = useChatNewMessages({
      isLocked: scroll.isLocked,
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatTokenizedText.js b/node_modules/@astryxdesign/core/dist/Chat/ChatTokenizedText.js
+index 5edb8f6..d80a970 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatTokenizedText.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatTokenizedText.js
+@@ -109,8 +109,16 @@ function renderTokens(text, tokens) {
+     const token = tokenMap.get(matched);
+     if (token) {
+       parts.push(/*#__PURE__*/_jsx("span", {
+-        ...{
+-          className: "x3nfvp2 xxymvpz"
++        // One line box tall with the chip centered inside it, so the chip
++        // centers on the line rather than on the x-height midline (which leaves
++        // a 20px chip ~1px low against CJK and mixed-case text). Must stay
++        // equal to `insertToken`'s span in useChatComposerTokens, or a token
++        // moves when the message is sent.
++        style: {
++          display: 'inline-flex',
++          alignItems: 'center',
++          height: '1lh',
++          verticalAlign: 'top'
+         },
+         children: isCustomToken(token) ? token.render() : /*#__PURE__*/_jsx(Badge, {
+           label: token.label,
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
 index 3c457d1..7d5a11a 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
@@ -143,6 +166,26 @@ index 3c457d1..7d5a11a 100644
              call: call
            }, getToolCallKey(call)))
          })
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js b/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
+index bee6075..228510a 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
+@@ -79,8 +79,14 @@ export function useChatComposerTokens({
+     span.setAttribute('data-astryx-token-value', token.value);
+     span.setAttribute('data-astryx-token-id', id);
+     span.contentEditable = 'false';
++    // One line box tall with the chip centered inside it, so the chip centers on
++    // the line rather than on the x-height midline (which leaves a 20px chip
++    // ~1px low against CJK and mixed-case text). `vertical-align: middle` would
++    // ignore the height; `top` puts this box on the line box itself.
+     span.style.display = 'inline-flex';
+-    span.style.verticalAlign = 'middle';
++    span.style.alignItems = 'center';
++    span.style.height = '1lh';
++    span.style.verticalAlign = 'top';
+     range.deleteContents();
+     range.insertNode(span);
+ 
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 index 47d4e52..d705783 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
@@ -968,6 +1011,28 @@ index d45a912..7dba080 100644
    const newMsgs = useChatNewMessages({
      isLocked: scroll.isLocked,
      onResize: scroll.scrollIfLocked,
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatTokenizedText.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatTokenizedText.tsx
+index 7b6bf87..c9943bf 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatTokenizedText.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatTokenizedText.tsx
+@@ -36,8 +36,16 @@ const styles = stylex.create({
+     display: 'inline',
+   },
+   token: {
++    // One line box tall with the chip centered inside it, so the chip centers
++    // on the line rather than on the x-height midline (which leaves a 20px chip
++    // ~1px low against CJK and mixed-case text). `vertical-align: middle` would
++    // ignore the height; `top` puts this box on the line box itself. Must stay
++    // equal to `insertToken`'s span in useChatComposerTokens, or a token moves
++    // when the message is sent.
+     display: 'inline-flex',
+-    verticalAlign: 'middle',
++    alignItems: 'center',
++    height: '1lh',
++    verticalAlign: 'top',
+   },
+ });
+ 
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 index 68a424e..d4f0c5e 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
@@ -1005,6 +1070,26 @@ index 68a424e..d4f0c5e 100644
            </div>
          </div>
        </div>
+diff --git a/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts b/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
+index 071303f..8f8938b 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
++++ b/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
+@@ -119,8 +119,14 @@ export function useChatComposerTokens({
+       span.setAttribute('data-astryx-token-value', token.value);
+       span.setAttribute('data-astryx-token-id', id);
+       span.contentEditable = 'false';
++      // One line box tall with the chip centered inside it, so the chip centers
++      // on the line rather than on the x-height midline (which leaves a 20px
++      // chip ~1px low against CJK and mixed-case text). `vertical-align:
++      // middle` would ignore the height; `top` puts this box on the line box.
+       span.style.display = 'inline-flex';
+-      span.style.verticalAlign = 'middle';
++      span.style.alignItems = 'center';
++      span.style.height = '1lh';
++      span.style.verticalAlign = 'top';
+ 
+       range.deleteContents();
+       range.insertNode(span);
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 index 764be45..10a2de9 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
