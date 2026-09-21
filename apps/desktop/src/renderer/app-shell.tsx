@@ -1344,8 +1344,7 @@ function AppShellContent({
     openSearchModal: openSearch,
     setSessionListCollapsed: sessionRailLayoutStore.setCollapsed,
     workbar: {
-      rightCollapsed: selectors.rightCollapsed,
-      toggleRight: commands.toggleRight,
+      setWorkbarCollapsed: commands.setWorkbarCollapsed,
       openTool: commands.openTool,
     },
     setThemePref,

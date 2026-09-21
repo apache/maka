@@ -36,8 +36,7 @@ export function createAppShellE2eFixtureActions(options: {
   openSearchModal(): void;
   setSessionListCollapsed(collapsed: boolean): void;
   workbar: {
-    rightCollapsed: boolean;
-    toggleRight(): void;
+    setWorkbarCollapsed(collapsed: boolean): void;
     openTool(
       kind: SessionWorkbarTabKind,
       placement?: 'right' | 'bottom',
@@ -110,18 +109,18 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.timezone) {
       document.documentElement.setAttribute('data-maka-e2e-fixture-tz', state.timezone);
     }
-    await refreshSessions();
     if (state.activeSessionId) {
       setActiveId(state.activeSessionId);
     }
+    // Workbar collapse state is keyed per Session and drops writes issued
+    // before the reducer has activated that Session — the IPC round trip
+    // inside refreshSessions lets the selection commit render first.
+    await refreshSessions();
     if (state.sidebarCollapsed !== undefined) {
       setSessionListCollapsed(state.sidebarCollapsed);
     }
-    if (
-      state.workbarCollapsed !== undefined &&
-      state.workbarCollapsed !== workbar.rightCollapsed
-    ) {
-      workbar.toggleRight();
+    if (state.workbarCollapsed !== undefined) {
+      workbar.setWorkbarCollapsed(state.workbarCollapsed);
     }
     if (
       state.workbarTab === 'review' ||
