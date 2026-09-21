@@ -98,7 +98,7 @@ export interface ConversationCopy {
     steeringPending: string;
     followupPending: string;
     queueShortcutsLabel: string;
-    queueShortcuts: string;
+    queueShortcuts: { apple: string; other: string };
     promoteQueuedEntry: string;
     editQueuedEntry: string;
     saveQueuedEntry: string;
@@ -461,7 +461,7 @@ const CONVERSATION_COPY = {
       steeringPending: '调整方向 · 等待整批生效',
       followupPending: '下一轮 · 每轮一条',
       queueShortcutsLabel: '发送快捷键',
-      queueShortcuts: 'Shift+Enter：转向（Steering）\nEnter：下一轮（Follow-up）',
+      queueShortcuts: { apple: 'Cmd+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行', other: 'Ctrl+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行' },
       promoteQueuedEntry: '调整方向', editQueuedEntry: '编辑', saveQueuedEntry: '保存', cancelQueuedEntryEdit: '取消编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
@@ -588,7 +588,7 @@ const CONVERSATION_COPY = {
       steeringPending: '調整方向 · 等待整批生效',
       followupPending: '下一輪 · 每輪一條',
       queueShortcutsLabel: '傳送快速鍵',
-      queueShortcuts: 'Shift+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）',
+      queueShortcuts: { apple: 'Cmd+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）\nShift+Enter：換行', other: 'Ctrl+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）\nShift+Enter：換行' },
       promoteQueuedEntry: '調整方向', editQueuedEntry: '編輯', saveQueuedEntry: '儲存', cancelQueuedEntryEdit: '取消編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',
       stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在處理…', continuing: 'Maka 繼續中…',
@@ -715,7 +715,7 @@ const CONVERSATION_COPY = {
       steeringPending: 'Steering · Applied together',
       followupPending: 'Follow-up · One per turn',
       queueShortcutsLabel: 'Send shortcuts',
-      queueShortcuts: 'Shift+Enter: Steering\nEnter: Follow-up',
+      queueShortcuts: { apple: 'Cmd+Enter: Steering\nEnter: Follow-up\nShift+Enter: New line', other: 'Ctrl+Enter: Steering\nEnter: Follow-up\nShift+Enter: New line' },
       promoteQueuedEntry: 'Steer', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',

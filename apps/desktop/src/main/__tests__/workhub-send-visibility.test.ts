@@ -564,7 +564,7 @@ test('uncertain steering retains its identity across Turn completion and rejecti
   await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), false); });
   const messageId = h.steers[1]![1];
   await act(async () => { assert.equal(await h.controller.send('change direction', []), false); });
-  assert.match(h.controller.error!, /Shift\+Enter/);
+  assert.match(h.controller.error!, /Cmd\/Ctrl\+Enter/);
   assert.equal(h.steers.length, 2, 'Enter cannot silently replay uncertain steering or duplicate it');
   for (const [text, attachments] of [
     ['edited direction', []],

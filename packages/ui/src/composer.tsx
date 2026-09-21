@@ -34,6 +34,7 @@ import {
 } from 'react';
 import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
+import { isAppleShortcutPlatform } from './utils.js';
 import {
   ICON_SIZE,
   ArrowUp,
@@ -1430,7 +1431,7 @@ export const Composer = forwardRef<
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     // Mid-turn the host queues the draft as a follow-up by default; only
-    // Shift+Enter (see onInputKeyDown) steers it into the active Turn.
+    // Cmd/Ctrl+Enter (see onInputKeyDown) steers it into the active Turn.
     void sendCurrent();
   }
 
@@ -1493,15 +1494,18 @@ export const Composer = forwardRef<
       if (handleArrowKey(event)) return;
     }
     if (event.key !== 'Enter') return;
-    // Alt+Enter always inserts a line break. During a running turn, Shift+Enter
-    // steers this one draft into the active Turn; plain Enter queues it.
-    if (event.altKey || (event.shiftKey && !props.streaming)) {
+    // Shift+Enter and Alt+Enter always insert a line break. The platform
+    // primary modifier steers this one draft mid-turn; plain Enter queues it.
+    if (event.altKey || event.shiftKey) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
       return;
     }
     event.preventDefault();
-    void sendCurrent(props.streaming && event.shiftKey ? 'steer' : undefined);
+    const primaryModifier = isAppleShortcutPlatform(navigator.platform)
+      ? event.metaKey
+      : event.ctrlKey;
+    void sendCurrent(props.streaming && primaryModifier ? 'steer' : undefined);
   }
 
   function onInputChange(next: string) {

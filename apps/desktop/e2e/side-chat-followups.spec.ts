@@ -125,7 +125,7 @@ test('Side Chat queue survives a native reorder and a Desktop reconnect', async 
     // its own Turns in the Host-observed order and the panel clears.
     await sideComposer.fill('release the held response');
     await awaitSendReady(companion);
-    await sideComposer.press('Shift+Enter');
+    await sideComposer.press('ControlOrMeta+Enter');
     await expect(companion).toContainText('Acknowledged steering: release the held response');
     await expect(companion).toContainText('Fake backend received: second follow-up', { timeout: 20_000 });
     await expect(companion).toContainText('Fake backend received: first follow-up');
