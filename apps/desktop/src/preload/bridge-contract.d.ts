@@ -71,11 +71,9 @@ import type {
   TurnOrchestration,
   SessionListFilter,
   BranchFromTurnInput,
-  RegenerateTurnInput,
   ReviseBeforeTurnInput,
 } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
-import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
 import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -86,7 +84,6 @@ import type {
   AppUpdateStatus,
 } from '../shared/app-update.js';
 import type {
-  GitBranchReadResult,
   GitReviewReadResult,
   GitReviewSource,
 } from '@maka/core/git-review';
@@ -272,6 +269,48 @@ import type {
   RuntimeHostProfile,
   RuntimeHostProfileAccess,
 } from '@maka/runtime-host/client';
+/**
+ * A recall query as the Search modal issues it, and the envelope it accepts.
+ *
+ * Defined here rather than imported from the preload implementation so the
+ * bridge contract does not depend on that module: the renderer architecture
+ * check prices every preload file this contract reaches, and a new entry in
+ * that debt ledger is forbidden. The implementation imports these instead.
+ */
+export interface RecallSearchRequest {
+  readonly terms: readonly string[];
+  readonly limit?: number;
+  readonly sessionId?: string;
+  readonly since?: number;
+  readonly until?: number;
+}
+
+export interface RecallSearchPassage {
+  readonly sessionId: string;
+  readonly sessionTitle: string;
+  readonly turnId?: string;
+  readonly anchorMessageId: string;
+  /** The anchor's index in its Session transcript; what navigation scrolls to. */
+  readonly sequence: number;
+  readonly messages: readonly {
+    readonly messageId: string;
+    readonly role: 'user' | 'assistant' | 'tool';
+    readonly matchKind: string;
+    readonly text: string;
+    readonly timestamp: number;
+    readonly isAnchor: boolean;
+  }[];
+  readonly matchedTerms: readonly string[];
+  readonly score: number;
+  readonly lastMessageAt?: number;
+}
+
+export interface RecallSearchResult {
+  readonly passages: readonly RecallSearchPassage[];
+  readonly gaps: string;
+  readonly searchedEverySession: boolean;
+}
+
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
@@ -850,13 +889,7 @@ export interface MakaBridge {
     renameMount(mountId: string, name: string): Promise<void>;
     requestTurn(
       sessionId: string,
-      input:
-        | { readonly kind: 'start'; readonly turnId: string; readonly text: string }
-        | {
-            readonly kind: 'regenerate';
-            readonly turnId: string;
-            readonly sourceTurnId: string;
-          },
+      input: { readonly kind: 'start'; readonly turnId: string; readonly text: string },
     ): Promise<SessionTurnAccessRequest>;
     getTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult>;
     /** Pending Owner decisions across every connected Owner Runtime Host. */
@@ -997,12 +1030,17 @@ export interface MakaBridge {
   newTasks: {
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
-    addProject(host: DesktopNewTaskHostRef): Promise<
+    addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
       { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
     >;
     relinkProject(host: DesktopNewTaskHostRef, projectId: string): Promise<
       { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
     >;
+    renameProject(
+      host: DesktopNewTaskHostRef,
+      projectId: string,
+      name: string,
+    ): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }>;
     getConnections(host: DesktopNewTaskHostRef): Promise<DesktopConnectionSnapshot>;
     listInvocableSkills(
       target: DesktopNewTaskTarget,
@@ -1130,6 +1168,7 @@ export interface MakaBridge {
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
+    get(sessionId: string): Promise<DesktopSessionSummary | null>;
     listWithCoverage(): Promise<{
       sessions: DesktopSessionSummary[];
       completeHostIds: string[];
@@ -1289,7 +1328,6 @@ export interface MakaBridge {
       | { disposition: 'started'; runId: string; turnId: string }
       | { disposition: 'park'; rejectionReasons: string[]; diagnostics: unknown[] }
     >;
-    regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void>;
     branchFromTurn(
       sessionId: string,
       input: DesktopBranchFromTurnInput & { sideConversation: true },
@@ -1324,6 +1362,15 @@ export interface MakaBridge {
     unarchive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     setFlagged(sessionId: string, isFlagged: boolean, options?: { revisionFamily?: boolean }): Promise<void>;
     rename(sessionId: string, name: string, options?: { revisionFamily?: boolean }): Promise<void>;
+    /**
+     * Re-file an existing Session into another Project, or out of every Project
+     * when `projectId` is `null`. The Host resolves a Project to its preferred
+     * directory, so the Session's working directory follows the Project; a
+     * `null` target keeps the current directory and drops the association.
+     * Rejects with `operation_conflict` while a Turn is running and for an
+     * archived Session.
+     */
+    moveToProject(sessionId: string, projectId: string | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * Enter or leave Plan — a temporary collaboration excursion Runtime ends
@@ -1430,7 +1477,13 @@ export interface MakaBridge {
     subscribeChanges(handler: () => void, sessionId?: string, host?: DesktopRuntimeHostRef): () => void;
     getLocalSnapshot(): Promise<DesktopProjectSnapshot>;
     subscribeLocalChanges(handler: () => void): () => void;
-    add(host?: DesktopRuntimeHostRef): Promise<
+    /**
+     * Register a directory the user picks as a project, optionally naming it in
+     * the same step. The folder picker still decides the directory; `name` is
+     * what the New project dialog collected, applied before the call returns so
+     * the caller never sees the folder-derived placeholder.
+     */
+    add(host?: DesktopRuntimeHostRef, options?: { readonly name?: string }): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;
     getDirectoryRoots(host: DesktopRuntimeHostRef): Promise<readonly DesktopProjectDirectoryRoot[]>;
@@ -1486,8 +1539,6 @@ export interface MakaBridge {
       source: GitReviewSource;
       baseBranch?: string;
     }): Promise<GitReviewReadResult>;
-    /** The working tree's branch (or short sha on a detached HEAD). */
-    branch(input: { sessionId: string }): Promise<GitBranchReadResult>;
   };
   goal: {
     /** The session's current goal (null when none is set). */
@@ -1664,14 +1715,11 @@ export interface MakaBridge {
     readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   };
   search: {
-    thread(
-      request: SearchRequest,
+    recall(
+      request: RecallSearchRequest,
       requestId?: string,
-    ): Promise<
-      | SearchResult[]
-      | { ok: false; reason: SearchErrorReason; message: string }
-    >;
-    cancelThread(requestId: string): Promise<void>;
+    ): Promise<RecallSearchResult | { ok: false; reason: string; message: string }>;
+    cancelRecall(requestId: string): Promise<void>;
   };
   openAiCodex: {
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;

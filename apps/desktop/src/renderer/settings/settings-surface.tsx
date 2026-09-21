@@ -100,6 +100,7 @@ import { SettingRow } from './settings-rows';
 import { SettingsPage, SettingsSection as SettingsSectionBlock } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SessionBundleTasks } from '../features/session-bundle';
+import { CatalogSessions } from '../application/contracts/session-catalog/catalog-sessions.js';
 import { ImportTasksSettingsPage } from './import-tasks-settings-page';
 import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
 import { UsageScopeMount, UsageSettingsPage, type UsageScopeHandle } from './usage-settings-page';
@@ -1240,13 +1241,17 @@ function SettingsPageBody(props: {
         />
       );
     case 'archived-tasks':
-      return <TasksSettingsPage {...props.archivedTasks} />;
+      return (
+        <CatalogSessions catalog={props.archivedTasks.catalog}>
+          {(sessions) => <TasksSettingsPage {...props.archivedTasks} sessions={sessions} />}
+        </CatalogSessions>
+      );
     case 'import-tasks':
       return (
         <SettingsPage as="section">
           <SessionBundleTasks
             isLocalTarget={props.isLocalRuntimeHost}
-            sessions={props.archivedTasks.sessions}
+            catalog={props.archivedTasks.catalog}
             renderSection={({ children, ...section }) => (
               <SettingsSectionBlock {...section}>{children}</SettingsSectionBlock>
             )}

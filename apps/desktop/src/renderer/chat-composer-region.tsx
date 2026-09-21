@@ -150,7 +150,6 @@ interface ChatComposerRegionProps
      */
     children: (
       usage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
-      gitBranch: { readonly name?: string; readonly shortSha?: string } | undefined,
     ) => ReactNode;
   }>;
   directoryComposerProps: Pick<
@@ -267,14 +266,12 @@ export function ChatComposerRegion({
   // the anchor prop remains the reading it falls back to.
   const renderComposer = (
     liveContextUsage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
-    gitBranch: { name?: string; shortSha?: string } | undefined,
   ) => (
     <ComposerGoalProjectionConsumer>
       {(goalProjection) => (
         <Composer
           ref={composerRef}
           {...composerRest}
-          gitBranch={gitBranch}
           contextUsage={contextUsage && liveContextUsage
             ? {
                 ...contextUsage,
@@ -378,10 +375,10 @@ export function ChatComposerRegion({
           model={composerRest.activeModel}
           providerType={composerRest.activeProviderType}
         >
-          {(usage, gitBranch) => renderComposer(usage, gitBranch)}
+          {renderComposer}
         </LiveContextUsageProbe>
       ) : (
-        renderComposer(undefined, undefined)
+        renderComposer(undefined)
       )}
     </>
   );

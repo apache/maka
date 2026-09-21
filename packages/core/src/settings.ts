@@ -513,15 +513,7 @@ export interface ChatDefaultsSettings {
   permissionMode: ChatDefaultPermissionMode;
   /** Applies only when a new task is created. */
   codeModeEnabled?: boolean;
-  /**
-   * Seeds new sessions' thinking level. `undefined` means "whatever the model
-   * does on its own" — the absence of a preference, not a level.
-   *
-   * A chosen level is a wish, not a guarantee: models expose different ladders,
-   * so one that does not offer the chosen rung falls back to its own default
-   * for that session rather than being forced to the nearest neighbour. The
-   * composer already resolves it that way for the per-session picker.
-   */
+  /** @deprecated Read-only compatibility for older settings; new tasks ignore it. */
   thinkingLevel?: ThinkingLevel;
 }
 
@@ -1150,9 +1142,8 @@ function defaultChatDefaultsSettings(): ChatDefaultsSettings {
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
     ...(settings.codeModeEnabled === true ? { codeModeEnabled: true } : {}),
-    // Same fail-closed reasoning as the mode below: a garbage persisted level
-    // drops to "no preference" (the model's own default) rather than reaching
-    // session creation as a rung no picker recognizes.
+    // Preserve the retired field while older settings documents still carry it.
+    // No task creation path consumes it; defaults now live on model overrides.
     thinkingLevel: isThinkingLevel(settings.thinkingLevel) ? settings.thinkingLevel : undefined,
     // A retired mode is decoded (not rejected) so an existing settings file
     // keeps working; knowing which modes are retired lives in one place.

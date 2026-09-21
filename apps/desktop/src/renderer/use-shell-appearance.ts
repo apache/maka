@@ -24,7 +24,6 @@ import {
   type ThemePalette,
   type ThemePreference,
 } from '@maka/core/settings';
-import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { createUiLocaleUpdateGate } from './settings/ui-locale-update-gate';
 import { applyTerminalFontSize, applyTheme, applyThemePalette, applyUiFontSize } from './theme';
@@ -65,8 +64,6 @@ export function useShellAppearance({
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
   const [userLabel, setUserLabel] = useState<string>('');
   const [appearanceHydrated, setAppearanceHydrated] = useState(false);
-  // undefined = the user expressed no preference, so each model uses its own.
-  const [defaultThinkingLevel, setDefaultThinkingLevel] = useState<ThinkingLevel | undefined>(undefined);
 
   async function refreshShellSettings() {
     const uiLocaleHydration = uiLocaleUpdateGate.beginHydration();
@@ -120,7 +117,6 @@ export function useShellAppearance({
     if (runtimeHostResult.ok) {
       const next = runtimeHostResult.settings;
       setUserLabel(next.personalization.displayName ?? '');
-      setDefaultThinkingLevel(next.chatDefaults.thinkingLevel);
     }
   }
 
@@ -133,7 +129,6 @@ export function useShellAppearance({
     appearanceHydrated,
     userLabel,
     setUserLabel,
-    defaultThinkingLevel,
     refreshShellSettings,
   };
 }

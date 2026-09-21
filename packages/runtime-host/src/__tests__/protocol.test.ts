@@ -1832,43 +1832,6 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => decodeHostFrame(oversized), isInvalidFrame);
   });
 
-  test('decodes a closed regenerate identity without accepting replacement content', () => {
-    assert.deepEqual(
-      decodeClientFrame({
-        requestId: 'request-regenerate',
-        operation: 'turn.regenerate',
-        input: {
-          sessionId: 'session-1',
-          sourceTurnId: 'turn-source',
-          turnId: 'turn-regenerated',
-        },
-      }),
-      {
-        requestId: 'request-regenerate',
-        operation: 'turn.regenerate',
-        input: {
-          sessionId: 'session-1',
-          sourceTurnId: 'turn-source',
-          turnId: 'turn-regenerated',
-        },
-      },
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          requestId: 'request-regenerate',
-          operation: 'turn.regenerate',
-          input: {
-            sessionId: 'session-1',
-            sourceTurnId: 'turn-source',
-            turnId: 'turn-regenerated',
-            content: { text: 'replacement' },
-          },
-        }),
-      isInvalidFrame,
-    );
-  });
-
   test('bounds canonical MessageContent attachments, directory references and quotes', () => {
     const submit = (content: unknown) =>
       decodeClientFrame({

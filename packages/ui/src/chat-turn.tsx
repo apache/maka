@@ -60,7 +60,7 @@ import {
   type TurnTimelineItem,
   type TurnViewModel,
 } from './materialize.js';
-import { foldTimeline, type FoldedTimelineChild, type FoldedTimelineEntry } from './timeline-fold.js';
+import { foldTimeline, reconcileFoldedEntries, type FoldedTimelineChild, type FoldedTimelineEntry } from './timeline-fold.js';
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
@@ -472,8 +472,6 @@ export const TurnView = memo(function TurnView(props: {
    * linked subagent tool rows; omitted when the host has no navigation.
    */
   onOpenLinkedSession?(sessionId: string): void;
-  /** Resolve a requires-bypass tool refusal, then regenerate this turn. */
-  onSwitchToBypassAndRetry?(turnId: string): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
@@ -481,7 +479,16 @@ export const TurnView = memo(function TurnView(props: {
   const { turn } = props;
   // Derive disclosure entries and reply identity together, only when this
   // turn's timeline changes. Rendering and copy share the original reply item.
-  const { entries: foldedTimeline, finalReply } = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
+  const folded = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
+  // The live turn's timeline moves on every event; the fold re-runs but its
+  // entries are reconciled back to the previous objects, so the entry-level
+  // memo boundaries below see only what actually moved.
+  const foldedEntriesRef = useRef(folded.entries);
+  if (foldedEntriesRef.current !== folded.entries) {
+    foldedEntriesRef.current = reconcileFoldedEntries(foldedEntriesRef.current, folded.entries);
+  }
+  const foldedTimeline = foldedEntriesRef.current;
+  const finalReply = folded.finalReply;
   const forwardBadges = props.lineageBadges?.filter((b) => b.direction === 'forward') ?? [];
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
   const answerContext = accessibleActionContext(
@@ -715,16 +722,15 @@ export const TurnView = memo(function TurnView(props: {
                     activityObserved={props.activityObserved}
                     entries={item.children}
                     running={!!props.liveStreaming || turn.status === 'running'}
-                    // No cue and no duration here: both belong to the footer row
-                    // (`TurnStatusLine`). Repeating the cue on a disclosure showed
-                    // it twice, once where a growing answer scrolls it away.
-                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
-                    onOpenLinkedSession={props.onOpenLinkedSession}
-                    onSwitchToBypassAndRetry={
-                      props.onSwitchToBypassAndRetry
-                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
+                    durationMs={index === activityProcessIndex ? turn.durationMs : undefined}
+                    activity={
+                      index === activityProcessIndex && props.activityObserved !== false &&
+                      props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                        ? { startedAt: turn.startedAt || undefined, label: runningToolLabel }
                         : undefined
                     }
+                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
+                    onOpenLinkedSession={props.onOpenLinkedSession}
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ) : (
@@ -734,11 +740,6 @@ export const TurnView = memo(function TurnView(props: {
                     item={item}
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
-                    onSwitchToBypassAndRetry={
-                      props.onSwitchToBypassAndRetry
-                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
-                        : undefined
-                    }
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ),
@@ -821,6 +822,7 @@ export const TurnView = memo(function TurnView(props: {
                         providerRetry={props.liveStreaming?.providerRetry !== undefined}
                         startedAt={turn.startedAt}
                         durationMs={turn.durationMs}
+                        elapsedInProcess={activityProcessIndex !== -1}
                         activityLabel={
                           props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
                             ? runningToolLabel
@@ -906,7 +908,7 @@ function splitTimelineAtUserMessages(
 }
 
 export interface TurnFooterActionMeta {
-  id: 'regenerate' | 'branch' | 'copy';
+  id: 'branch' | 'copy';
   label: string;
   enabled: boolean;
   tooltip?: string;
@@ -967,6 +969,7 @@ function TurnStatusLine(props: {
   status: TurnViewModel['status'];
   startedAt: number;
   durationMs?: number;
+  elapsedInProcess?: boolean;
   /** A concrete activity (e.g. driving an app) outranks the playful phrase. */
   activityLabel?: string;
   /** Work is actually arriving. Only consulted for the running arm. */
@@ -981,13 +984,13 @@ function TurnStatusLine(props: {
     // A retry is not progress: nothing is produced while the client waits, and
     // the retry indicator already says what is happening. A live turn whose
     // stream is not running has nothing to announce either.
-    if (props.providerRetry || props.running === false) return null;
+    if (props.elapsedInProcess || props.providerRetry || props.running === false) return null;
     return <TurnRunningStatus startedAt={props.startedAt || undefined} activityLabel={props.activityLabel} />;
   }
 
   // Localized duration, not the compact `3m 33s` the live counter uses: this
   // reads as prose in the transcript, and a Chinese UI must not show English units.
-  const elapsed = props.durationMs === undefined
+  const elapsed = props.durationMs === undefined || props.elapsedInProcess
     ? undefined
     : copy.processDuration(
         Math.floor(props.durationMs / 60_000),
@@ -1004,16 +1007,16 @@ function TurnStatusLine(props: {
 
   const label =
     props.status === 'completed'
-      ? elapsed !== undefined && finishedAt !== undefined
+      ? finishedAt !== undefined
         ? copy.turnStatusCompleted(elapsed, finishedAt)
         : elapsed !== undefined
           ? copy.turnStatusCompletedAloneWithDuration(elapsed)
           : copy.turnStatusCompletedAlone
       : props.status === 'aborted'
-        ? elapsed === undefined
+        ? props.durationMs === undefined
           ? undefined
           : copy.turnStatusAborted(elapsed)
-        : elapsed === undefined
+        : props.durationMs === undefined
           ? undefined
           : copy.turnStatusFailed(elapsed);
   if (label === undefined) return null;
@@ -1138,7 +1141,6 @@ function turnMetaSummary(turn: TurnViewModel): string | undefined {
 }
 
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
-  regenerate: <Icon icon={RefreshCcw} size="sm" />,
   branch: <Icon icon={GitBranch} size="sm" />,
   copy: <Icon icon="copy" size="sm" />,
 };
@@ -1411,12 +1413,11 @@ function timelineEntryKey(item: TurnTimelineItem, index: number): string {
 }
 
 /** Render one timeline entry: reasoning disclosure / answer bubble / tool group. */
-function TurnTimelineEntry(props: {
+const TurnTimelineEntry = memo(function TurnTimelineEntry(props: {
   activityObserved?: boolean;
   item: Exclude<TurnTimelineItem, { kind: 'user' }>;
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
-  onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const { item } = props;
@@ -1436,7 +1437,6 @@ function TurnTimelineEntry(props: {
         items={item.items}
         activityObserved={props.activityObserved}
         onOpenLinkedSession={props.onOpenLinkedSession}
-        onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
       />
     );
   }
@@ -1452,9 +1452,22 @@ function TurnTimelineEntry(props: {
       onSettled={() => props.onStreamingSettled?.(item.messageId)}
     />
   );
-}
+});
 
-export function ProcessingBlock(props: {
+/**
+ * The turn's whole execution process (reasoning, intermediate commentary, tool
+ * activity) as ONE bounded, scrollable card: a titled header row and, when
+ * open, a body that grows with its content up to a cap and then scrolls. The
+ * container's border is the card's frame, so a collapsed box keeps its outline
+ * and shows only the title row.
+ *
+ * The body owns its own scroll, not the transcript: a turn with hundreds of
+ * steps scrolls here instead of becoming an unreadable wall the reader has to
+ * traverse. While the body overflows, its top and/or bottom edge fades the
+ * content out, so the clipped rows read as "more above/below" rather than
+ * abruptly cut off.
+ */
+export const ProcessingBlock = memo(function ProcessingBlock(props: {
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
   running: boolean;
@@ -1462,7 +1475,6 @@ export function ProcessingBlock(props: {
   activity?: { startedAt?: number; label?: string };
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
-  onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
@@ -1471,11 +1483,12 @@ export function ProcessingBlock(props: {
   // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = props.running || manualOpen === true;
-  // The summary names WHAT the disclosure holds. The elapsed clock and the
-  // settled duration live on the turn's footer row (`TurnStatusLine`), the one
-  // place under the answer that a growing reply cannot scroll out of view;
-  // restating them here said the same thing twice, once where it gets lost.
-  const label = copy.processDetails;
+  const seconds = !props.running && props.durationMs !== undefined && Number.isFinite(props.durationMs)
+    ? Math.floor(Math.max(0, props.durationMs) / 1000)
+    : undefined;
+  const label = seconds === undefined
+    ? copy.processDetails
+    : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
   return (
     <details
       className="maka-processing-sequence"
@@ -1493,22 +1506,17 @@ export function ProcessingBlock(props: {
           if (!props.running) setManualOpen(!open);
         }}
       >
-        {/*
-          The cue belongs on the turn's footer row (see `TurnStatusLine`), the
-          one place under the answer that a growing reply cannot push away. The
-          exception is the WAITING state: a turn the transcript does not contain
-          yet has no footer, and this empty disclosure is what stands in for it —
-          there the cue is the only thing to show, so it renders here.
-        */}
         {props.activity ? (
           <TurnRunningStatus
             startedAt={props.activity.startedAt}
             activityLabel={props.activity.label}
           />
-        ) : <span>{label}</span>}
+        ) : (
+          <span>{label}</span>
+        )}
         {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}
       </summary>
-      <div className="maka-processing-clip"><div className="maka-processing-content">
+      <div className="maka-processing-body">
         {props.entries.map((entry, index) => (
           <TurnTimelineEntry
             key={timelineEntryKey(entry, index)}
@@ -1516,14 +1524,13 @@ export function ProcessingBlock(props: {
             item={entry}
             onStreamingSettled={props.onStreamingSettled}
             onOpenLinkedSession={props.onOpenLinkedSession}
-            onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
             initialLiveContent={props.initialLiveContent}
           />
         ))}
-      </div></div>
+      </div>
     </details>
   );
-}
+});
 
 function DeepThinking(props: { text: string; live: boolean; settledText?: string; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;

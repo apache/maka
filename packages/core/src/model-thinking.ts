@@ -123,6 +123,8 @@ export interface ModelOverride {
   readonly capabilities?: Omit<NonNullable<ModelInfo['capabilities']>, 'vision'>;
   readonly modalities?: ModelInfo['modalities'];
   readonly thinkingLevels?: readonly ThinkingLevel[];
+  /** Thinking level used when a new Session starts on this exact model. */
+  readonly defaultThinkingLevel?: ThinkingLevel;
   readonly vision?: boolean;
   readonly contextWindow?: number;
   readonly compactionThreshold?: number;
@@ -149,6 +151,7 @@ function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
     capabilities?: ModelOverride['capabilities'];
     modalities?: ModelOverride['modalities'];
     thinkingLevels?: readonly ThinkingLevel[];
+    defaultThinkingLevel?: ThinkingLevel;
     vision?: boolean;
     contextWindow?: number;
     compactionThreshold?: number;
@@ -178,6 +181,9 @@ function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
         declaredSet.has(level),
       );
     }
+  }
+  if (isThinkingLevel(entry.defaultThinkingLevel)) {
+    declared.defaultThinkingLevel = entry.defaultThinkingLevel;
   }
   if (typeof entry.vision === 'boolean') declared.vision = entry.vision;
   for (const field of [
@@ -308,6 +314,22 @@ export function thinkingVariantsForConnection(
 }
 
 /**
+ * Resolve the configured new-Session default against the model's effective
+ * capability ladder. A stale declaration falls back to the provider default
+ * instead of reaching Session creation as an unsupported level.
+ */
+export function defaultThinkingLevelForConnection(
+  connection: ConnectionThinkingContext,
+  modelId: string,
+): ThinkingLevel | undefined {
+  const configured = modelOverride(connection, modelId)?.defaultThinkingLevel;
+  return configured !== undefined &&
+    thinkingVariantsForConnection(connection, modelId).includes(configured)
+    ? configured
+    : undefined;
+}
+
+/**
  * Discard-semantics gate: returns the level when the model offers it,
  * `undefined` otherwise. Callers that must *reject* a bad level (IPC/session
  * boundaries with an error channel) keep their own `includes` branch — the
@@ -361,6 +383,7 @@ export function applyModelOverride(
   if (!override) return model;
   const {
     thinkingLevels: _thinking,
+    defaultThinkingLevel: _defaultThinking,
     serviceTier: _tier,
     compactionThreshold: _threshold,
     maxOutputTokens: _outputBudget,

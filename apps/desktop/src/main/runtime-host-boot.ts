@@ -102,7 +102,7 @@ import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
 import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js";
 import { DesktopSessionLocalStore } from './session-local-store.js';
-import { DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
+import { createSessionLocalChangedEmitter, DesktopSessionLocalService, desktopSessionLocalPartition, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from './session-local-service.js';
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
@@ -254,7 +254,7 @@ import {
   MAKA_CLIENT_PLUGIN_SCHEME,
   registerClientPluginIpc,
 } from './client-plugin-transport.js';
-import { registerRuntimeHostSearchIpc } from "./runtime-host-search-ipc-main.js";
+import { registerRuntimeHostRecallIpc } from "./runtime-host-recall-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
 import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
@@ -602,10 +602,10 @@ onMainWindowClose = () => {
 };
 const attachmentApprovals = createAttachmentApprovalRegistry();
 const sessionLocalStore = new DesktopSessionLocalStore(join(userDataDir, 'session-experience.sqlite'));
-const localSessionChanged = (scope: DesktopTargetScope, sessionId?: string): void => {
-  mainWindowController.send('session-local:changed', scope, { sessionId });
-  mainWindowController.send('sessions:changed', scope, { reason: 'updated', ts: Date.now(), ...(sessionId ? { sessionId } : {}) });
-};
+const localSessionChanged = createSessionLocalChangedEmitter({
+  send: (channel, scope, payload) => mainWindowController.send(channel, scope, payload),
+  locallyOwned: (scope, sessionId) => sessionLocal.locallyOwned(scope, sessionId),
+});
 const sessionLocal = new DesktopSessionLocalService(sessionLocalStore, {
   targets: () => (runtimeHostManager?.entries() ?? []).flatMap((state) => {
     if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') return [];
@@ -1603,7 +1603,11 @@ function registerHostClientIpc(
     chooseDirectory: async () => {
       const result = await mainWindowController.showOpenDialog({
         title: projectPickerTitle(await desktopLocale.resolve()),
-        properties: ["openDirectory"],
+        // `createDirectory` is what puts the New Folder button in the macOS
+        // sheet. Without it, a project can only point at a folder that already
+        // exists — and "create a project" then means "find somewhere to put it
+        // yourself first", which is not a creation flow.
+        properties: ["openDirectory", "createDirectory"],
       });
       return result.canceled ? undefined : result.filePaths[0];
     },
@@ -1796,7 +1800,7 @@ function registerHostClientIpc(
     openPath: (path) => shell.openPath(path),
     allowLocalPaths: !usesHostWorkspace,
   });
-  registerRuntimeHostSearchIpc({ ipcMain: scopedIpc, client });
+  registerRuntimeHostRecallIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostUsageIpc({
     ipcMain: scopedIpc,
     client,

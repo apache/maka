@@ -96,6 +96,33 @@ describe('incremental transcript projection', () => {
     assert.strictEqual(projection.project({ locale: 'en', sessionId: SESSION, messages: appended }), after);
   });
 
+  test('a durable append keeps unchanged timeline items inside the affected turn', () => {
+    const projection = createTranscriptProjection();
+    const messages = history();
+    const before = projection.project({ locale: 'en', sessionId: SESSION, messages });
+    const appended: StoredMessage[] = [...messages, {
+      type: 'assistant', id: 'a1-next', turnId: 'turn-1', ts: 7,
+      text: 'still running', modelId: 'model-1',
+    }];
+    const after = projection.project({ locale: 'en', sessionId: SESSION, messages: appended });
+
+    assert.deepEqual(after, materializeTurns(appended, 'en'));
+    assert.notStrictEqual(after[0], before[0], 'the appended answer changes its turn');
+    assert.strictEqual(after[1], before[1], 'the unrelated turn keeps its identity');
+    const beforeTools = before[0]!.timeline.find((item) => item.kind === 'tools');
+    const afterTools = after[0]!.timeline.find((item) => item.kind === 'tools');
+    assert.ok(beforeTools);
+    assert.strictEqual(afterTools, beforeTools, 'the existing tool row keeps its identity');
+    assert.strictEqual(
+      after[0]!.timeline.find((item) => item.kind === 'text'),
+      before[0]!.timeline.find((item) => item.kind === 'text'),
+      'the earlier answer keeps its identity',
+    );
+    assert.deepEqual(after[0]!.timeline.at(-1), {
+      kind: 'text', text: 'still running', messageId: 'a1-next', ts: 7,
+    });
+  });
+
   test('durable appends preserve cross-turn tool ownership and storage order', () => {
     const projection = createTranscriptProjection();
     let messages: StoredMessage[] = history();
@@ -562,6 +589,42 @@ describe('incremental transcript projection', () => {
     const tool = turns[0]?.tools[0];
     assert.equal(tool?.result?.kind, 'shell_run');
     assert.equal(tool?.shellRunSource, 'owned');
+  });
+
+  test('a streaming delta moves only the timeline item it grew', () => {
+    // The live turn rebuilds its whole timeline per event. The turn object
+    // moves, but a finished tool row inside it did not — the item-level
+    // reconcile is what lets the memoized entry skip its re-render, so the
+    // identity has to survive here, not just at the fold.
+    const projection = createTranscriptProjection();
+    const live = (text: string): LiveTurnProjection => ({
+      turnId: 'turn-3',
+      steps: [
+        {
+          stepId: 'step-tool',
+          contentOrder: ['tools'],
+          tools: [{ toolUseId: 'bash-9', toolName: 'Bash', status: 'completed', args: { command: 'job' } }],
+        },
+        {
+          stepId: 'step-answer',
+          contentOrder: ['text'],
+          text: { text, truncated: false, complete: false },
+          tools: [],
+        },
+      ],
+    });
+    const before = projection.project({ locale: 'en', sessionId: SESSION, messages: history(), liveTurns: [live('he')] });
+    const after = projection.project({ locale: 'en', sessionId: SESSION, messages: history(), liveTurns: [live('hel')] });
+
+    const liveTurn = (turns: readonly TurnViewModel[]) => turns.find((turn) => turn.turnId === 'turn-3')!;
+    const beforeLive = liveTurn(before);
+    const afterLive = liveTurn(after);
+    assert.notStrictEqual(afterLive, beforeLive, 'the turn moved with its text');
+
+    const item = (turn: TurnViewModel, kind: string) => turn.timeline.find((entry) => entry.kind === kind);
+    assert.strictEqual(item(afterLive, 'tools'), item(beforeLive, 'tools'), 'the finished tool row keeps identity');
+    assert.notStrictEqual(item(afterLive, 'text'), item(beforeLive, 'text'), 'the growing text is a new object');
+    assert.strictEqual(after[0], before[0], 'the settled sibling turn stays untouched');
   });
 });
 

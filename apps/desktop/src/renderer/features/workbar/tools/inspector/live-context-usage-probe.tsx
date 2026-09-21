@@ -21,12 +21,6 @@ import { useWorkbarServices } from '../../services-context.js';
 import type { ReactElement, ReactNode } from 'react';
 import type { LiveContextUsage } from '../../../../application/contracts/session-inspector/live-context-usage.js';
 import { useLiveContextUsage } from '../../../../application/contracts/session-inspector/use-live-context-usage.js';
-import {
-  useComposerGitBranch,
-  type ComposerGitBranch,
-} from '../composer-git-branch.js';
-
-export type { ComposerGitBranch } from '../composer-git-branch.js';
 
 /**
  * Render-prop boundary for the composer context gauge (#4717).
@@ -42,10 +36,7 @@ export function LiveContextUsageProbe(props: {
   readonly sessionId: string | undefined;
   readonly model: string | undefined;
   readonly providerType: string | undefined;
-  readonly children: (
-    usage: LiveContextUsage | undefined,
-    gitBranch: ComposerGitBranch | undefined,
-  ) => ReactNode;
+  readonly children: (usage: LiveContextUsage | undefined) => ReactNode;
 }): ReactElement {
   const { inspector } = useWorkbarServices();
   const usage = useLiveContextUsage({
@@ -54,13 +45,5 @@ export function LiveContextUsageProbe(props: {
     model: props.model,
     providerType: props.providerType,
   });
-  // Two independent hooks (each in its own module), composed here only because
-  // this is the single injection point the shell can offer: `app-shell.tsx` is
-  // token-frozen by the architecture ratchet and `chat-composer-region.tsx` is
-  // capability-frozen, so a second probe prop cannot be threaded through without
-  // growing recorded debt. The branch logic is not coupled to the usage reading —
-  // `useComposerGitBranch` is standalone and tested on its own; only the carrier
-  // is shared.
-  const gitBranch = useComposerGitBranch(props.sessionId);
-  return <>{props.children(usage, gitBranch)}</>;
+  return <>{props.children(usage)}</>;
 }

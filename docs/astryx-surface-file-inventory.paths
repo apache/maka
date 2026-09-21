@@ -5,6 +5,8 @@ apps/desktop/src/renderer/app-shell-overlays.tsx
 apps/desktop/src/renderer/app-shell.tsx
 apps/desktop/src/renderer/app.tsx
 apps/desktop/src/renderer/application/contracts/feature-services.tsx
+apps/desktop/src/renderer/application/contracts/session-catalog/catalog-row-watch.tsx
+apps/desktop/src/renderer/application/contracts/session-catalog/catalog-sessions.tsx
 apps/desktop/src/renderer/application/contracts/session-inspector/session-inspector-panel.tsx
 apps/desktop/src/renderer/application/contracts/settings-presentation/runtime-host-settings-target.tsx
 apps/desktop/src/renderer/application/contracts/settings-presentation/settings-navigation.tsx
@@ -256,6 +258,7 @@ packages/ui/src/model-picker.tsx
 packages/ui/src/model-wheel-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
+packages/ui/src/new-project-dialog.tsx
 packages/ui/src/permission-mode-menu.tsx
 packages/ui/src/platform-shortcut-text.tsx
 packages/ui/src/primitives/chat.tsx

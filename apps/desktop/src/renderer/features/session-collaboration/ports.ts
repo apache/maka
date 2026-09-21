@@ -54,13 +54,7 @@ export interface SessionCollaborationServices {
   renamePrincipal(sessionId: string, principalId: string, displayName: string): Promise<{ readonly renamed: boolean }>;
   requestTurn(
     sessionId: string,
-    input:
-      | { readonly kind: 'start'; readonly turnId: string; readonly text: string }
-      | {
-          readonly kind: 'regenerate';
-          readonly turnId: string;
-          readonly sourceTurnId: string;
-        },
+    input: { readonly kind: 'start'; readonly turnId: string; readonly text: string },
   ): Promise<SessionTurnAccessRequest>;
   getTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult>;
   acknowledgeTurnRequest(

@@ -67,7 +67,13 @@ const EMPTY_CONTROLLER: TaskEntryController = {
   commands: {
     async refresh() {},
     selectLocalProject: () => false,
+    selectProject: () => false,
+    async renameProject() {},
+    async archiveProject() {},
+    async restoreProject() {},
+    async relinkProject() {},
     addProject() {},
+    openNewProject() {},
     async chooseProjectForProfile() {},
     resolveWorkBoardTarget: (
       _item: Parameters<TaskEntryControllerCommands['resolveWorkBoardTarget']>[0],
@@ -87,6 +93,7 @@ const EMPTY_CONTROLLER: TaskEntryController = {
     usesDefaultHost: true,
     workspacePicker: EMPTY_WORKSPACE_PICKER,
     canAddProject: false,
+    projectScopes: [],
   },
 };
 
@@ -109,7 +116,18 @@ function createTaskEntryOwner(): TaskEntryOwner & {
       refresh: () => current.commands.refresh(),
       selectLocalProject: (projectId: string) =>
         current.commands.selectLocalProject(projectId),
-      addProject: () => current.commands.addProject(),
+      selectProject: (projectKey: string) =>
+        current.commands.selectProject(projectKey),
+      renameProject: (projectKey: string, name: string) =>
+        current.commands.renameProject(projectKey, name),
+      archiveProject: (projectKey: string) =>
+        current.commands.archiveProject(projectKey),
+      restoreProject: (projectKey: string) =>
+        current.commands.restoreProject(projectKey),
+      relinkProject: (projectKey: string) =>
+        current.commands.relinkProject(projectKey),
+      addProject: (name?: string) => current.commands.addProject(name),
+      openNewProject: () => current.commands.openNewProject(),
       chooseProjectForProfile: (profileId: string) =>
         current.commands.chooseProjectForProfile(profileId),
       resolveWorkBoardTarget: (
@@ -176,9 +194,15 @@ function sameSelectedHost(
       previous.hostId === next.hostId &&
       previous.name === next.name &&
       previous.kind === next.kind &&
-      previous.chatDefaults.permissionMode === next.chatDefaults.permissionMode &&
-      previous.chatDefaults.thinkingLevel === next.chatDefaults.thinkingLevel,
+      previous.chatDefaults.permissionMode === next.chatDefaults.permissionMode,
   );
+}
+
+function sameProjectScopes(
+  previous: TaskEntryControllerSelectors['projectScopes'],
+  next: TaskEntryControllerSelectors['projectScopes'],
+): boolean {
+  return previous === next || JSON.stringify(previous) === JSON.stringify(next);
 }
 
 const selectShellSelectors = (
@@ -200,7 +224,8 @@ function sameShellSelectors(
     previous.selectedProfileId === next.selectedProfileId &&
     previous.defaultProfileId === next.defaultProfileId &&
     previous.usesDefaultHost === next.usesDefaultHost &&
-    previous.canAddProject === next.canAddProject
+    previous.canAddProject === next.canAddProject &&
+    sameProjectScopes(previous.projectScopes, next.projectScopes)
   );
 }
 
@@ -210,6 +235,7 @@ const selectHost = (controller: TaskEntryController): TaskEntryHostModel => cont
 
 function sameHost(previous: TaskEntryHostModel, next: TaskEntryHostModel): boolean {
   return (
+    previous.newProjectDialog === next.newProjectDialog &&
     previous.directoryHost?.profileId === next.directoryHost?.profileId &&
     previous.directoryHost?.hostId === next.directoryHost?.hostId &&
     previous.directoryHost?.name === next.directoryHost?.name &&

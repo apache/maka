@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { MAIN_WINDOW_DROP_GUARD_SCRIPT } from './main-window-drop-guard.js';
 import { app, BrowserWindow, dialog, nativeTheme, screen, shell, type View, webFrameMain } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -488,22 +489,11 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // BrowserWindow tries to navigate to its `file://` URL; the `will-navigate`
     // handler above stops the navigation, but the visual flash + dropEffect
     // ambiguity is still confusing. Suppressing dragover/drop at the document
-    // level keeps the chat surface immutable to accidental drops.
+    // level blocks accidental drops while designated application targets remain usable.
     mainWindow.webContents.on('did-finish-load', () => {
-      mainWindow?.webContents.executeJavaScript(`
-        (() => {
-          const block = (e) => {
-            const target = e.target instanceof Element ? e.target : e.target?.parentElement;
-            if (target?.closest('[data-maka-file-drop-target="true"]')) return;
-            if (target?.closest('[data-maka-queue-drop-target="true"]')
-              && e.dataTransfer?.types.includes('application/x-maka-queue-entry')) return;
-            e.preventDefault();
-            e.stopPropagation();
-          };
-          window.addEventListener('dragover', block, true);
-          window.addEventListener('drop', block, true);
-        })();
-      `).catch(() => { /* renderer may not be ready; ignore */ });
+      mainWindow?.webContents.executeJavaScript(MAIN_WINDOW_DROP_GUARD_SCRIPT).catch(() => {
+        /* renderer may not be ready; ignore */
+      });
     });
 
     // Restore maximized state after construction (BrowserWindow constructor

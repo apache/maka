@@ -17,42 +17,107 @@
  * under the License.
  */
 
-import type { ProjectRecord } from '@maka/core/project';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import type { SessionHistoryGroup } from '@maka/ui';
-import type { SessionNavigationSession } from '../ports.js';
-import { deriveProjectGroups } from './session-project-grouping.js';
+import type {
+  SessionNavigationProjectScope,
+  SessionNavigationSession,
+} from '../ports.js';
+import { getShellRemainingCopy } from '../../../locales/shell-remaining-copy.js';
+import { runtimeHostProjectKey } from '../../../application/contracts/runtime-host-project-key.js';
 
-/** Groups native-local Sessions by Project and other Sessions by Runtime Host. */
+const UNGROUPED_KEY = '__ungrouped__';
+
+/** The rail row a Project scope is drawn as. */
+export function projectGroupId(scopeKey: string): string {
+  return `project:${scopeKey}`;
+}
+
+/** The rail row a Host's project-less Sessions are drawn as. */
+export function ungroupedGroupId(hostId: string): string {
+  return `${UNGROUPED_KEY}:${hostId}`;
+}
+
+function scopedProjectLabel(projectName: string, profileName: string): string {
+  return `${projectName} · ${profileName}`;
+}
+
+/** Groups every Session by its owning Runtime Host and Project at one level. */
 export function deriveSessionNavigationGroups(
   sessions: readonly SessionNavigationSession[],
-  projects: readonly ProjectRecord[],
+  projectScopes: readonly SessionNavigationProjectScope[],
   locale: UiLocale,
 ): SessionHistoryGroup[] {
-  const local: SessionNavigationSession[] = [];
-  const hosts = new Map<
-    string,
-    { label: string; sessions: SessionNavigationSession[] }
-  >();
+  const canonicalKeys = new Map<string, string>();
+  const sessionsByProject = new Map<string, SessionNavigationSession[]>();
+  for (const scope of projectScopes) {
+    canonicalKeys.set(
+      runtimeHostProjectKey(scope.hostId, scope.project.id),
+      scope.key,
+    );
+    for (const alias of scope.project.aliases ?? []) {
+      canonicalKeys.set(runtimeHostProjectKey(scope.hostId, alias), scope.key);
+    }
+  }
+
+  const ungroupedByHost = new Map<string, SessionNavigationSession[]>();
   for (const session of sessions) {
-    if (!runtimeHostProfileUsesHostWorkspace(session.profileKind)) {
-      local.push(session);
+    if (!session.projectId) {
+      const bucket = ungroupedByHost.get(session.runtimeHostId) ?? [];
+      bucket.push(session);
+      ungroupedByHost.set(session.runtimeHostId, bucket);
       continue;
     }
-    const group = hosts.get(session.profileId) ?? {
-      label: session.profileName,
-      sessions: [],
-    };
-    group.sessions.push(session);
-    hosts.set(session.profileId, group);
+    const observed = runtimeHostProjectKey(
+      session.runtimeHostId,
+      session.projectId,
+    );
+    const key = canonicalKeys.get(observed) ?? `missing:${observed}`;
+    const bucket = sessionsByProject.get(key) ?? [];
+    bucket.push(session);
+    sessionsByProject.set(key, bucket);
   }
-  return [
-    ...deriveProjectGroups(local, projects, locale),
-    ...[...hosts].map(([id, group]) => ({
-      id: `runtime-host:${id}`,
-      label: group.label,
-      sessions: group.sessions,
-    })),
-  ];
+
+  const groups = projectScopes.map((scope): SessionHistoryGroup => {
+    const key = scope.key;
+    return {
+      id: projectGroupId(key),
+      label: scopedProjectLabel(scope.project.name, scope.profileName),
+      sessions: sessionsByProject.get(key) ?? [],
+      // The UI treats this id as an opaque action target. Scope it here so
+      // equal Host-local UUIDs can never route a mutation to another Host.
+      project: { ...scope.project, id: key },
+    };
+  });
+
+  const known = new Set(projectScopes.map((scope) => scope.key));
+  for (const [key, missingSessions] of sessionsByProject) {
+    if (known.has(key)) continue;
+    const first = missingSessions[0]!;
+    const pathName = first.cwd
+      ?.replace(/[/\\]+$/, '')
+      .split(/[/\\]/)
+      .at(-1);
+    groups.push({
+      id: projectGroupId(key),
+      label: scopedProjectLabel(
+        pathName || first.projectId || 'Project',
+        first.profileName,
+      ),
+      sessions: missingSessions,
+    });
+  }
+
+  for (const [hostId, ungrouped] of ungroupedByHost) {
+    const profileName = ungrouped[0]!.profileName;
+    groups.push({
+      id: ungroupedGroupId(hostId),
+      label: scopedProjectLabel(
+        getShellRemainingCopy(locale).projects.ungrouped,
+        profileName,
+      ),
+      sessions: ungrouped,
+    });
+  }
+  return groups;
 }

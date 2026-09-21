@@ -27,8 +27,10 @@ import {
   foldShellRunUpdates,
   overlayLiveTurn,
   projectTurnTools,
+  timelineItemKey,
   type ShellRunOverlayEntry,
   type ToolActivityItem,
+  type TurnTimelineItem,
   type TurnViewModel,
 } from './materialize.js';
 
@@ -230,11 +232,39 @@ export function reconcileTurnIdentities(
       }
       prior = previousById?.get(turn.turnId);
     }
-    const value = prior && valuesEqual(prior, turn) ? prior : turn;
+    let value = prior && valuesEqual(prior, turn) ? prior : turn;
+    if (prior && value !== prior) {
+      // The turn moved, but usually only its tail did: hand the previous
+      // timeline entry back for every item whose value did not change, so the
+      // entry-level memo boundaries downstream see what actually moved.
+      value = { ...turn, timeline: reconcileTimelineItems(prior.timeline, turn.timeline) };
+    }
     if (value !== atIndex) changed = true;
     return value;
   });
   return changed ? reconciled : previous;
+}
+
+/**
+ * Keep the previous object for every timeline item whose projected value is
+ * unchanged. `overlayLiveTurn` rebuilds a live turn's whole timeline from its
+ * steps on every event, so nothing upstream carries item identity — matching
+ * by `timelineItemKey` survives mid-timeline inserts (steering messages),
+ * which a positional compare would report as a change of everything after.
+ */
+export function reconcileTimelineItems(
+  previous: TurnTimelineItem[],
+  next: TurnTimelineItem[],
+): TurnTimelineItem[] {
+  if (previous.length === 0) return next;
+  const previousByKey = new Map(previous.map((item) => [timelineItemKey(item), item]));
+  const reconciled = next.map((item) => {
+    const prior = previousByKey.get(timelineItemKey(item));
+    return prior !== undefined && valuesEqual(prior, item) ? prior : item;
+  });
+  return reconciled.length === previous.length && reconciled.every((item, index) => item === previous[index])
+    ? previous
+    : reconciled;
 }
 
 /**
