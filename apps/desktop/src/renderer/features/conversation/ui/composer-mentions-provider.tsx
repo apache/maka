@@ -27,7 +27,7 @@ import { useConversationServices } from '../services.js';
 import {
   selectSessionById,
   selectSessions,
-  type SessionCatalogController,
+  useSessionCatalogController,
   type SessionCatalogState,
 } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
@@ -122,13 +122,11 @@ function conversationSessionListsEqual(
   });
 }
 
-function useConversationMentions(
-  surface: ComposerMentionsSurface,
-  sessionCatalog: SessionCatalogController,
-): ComposerMentions {
+function useConversationMentions(surface: ComposerMentionsSurface): ComposerMentions {
   const services = useConversationServices();
   const locale = useUiLocale();
   const mentionCopy = getConversationCopy(locale).mentions;
+  const sessionCatalog = useSessionCatalogController();
   const sessions = useExternalStoreSelector(
     sessionCatalog,
     selectMentionableSessions,
@@ -313,12 +311,9 @@ function useConversationMentions(
 }
 
 export function ComposerMentionsProvider(
-  props: ComposerMentionsSurface & {
-    readonly catalog: SessionCatalogController;
-    readonly children: ReactNode;
-  },
+  props: ComposerMentionsSurface & { readonly children: ReactNode },
 ) {
-  const mentions = useConversationMentions(props, props.catalog);
+  const mentions = useConversationMentions(props);
   return <ComposerMentionsContext.Provider value={mentions}>{props.children}</ComposerMentionsContext.Provider>;
 }
 

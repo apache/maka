@@ -33,7 +33,10 @@ import {
   ConversationServicesProvider,
   type ConversationServices,
 } from '../../renderer/features/conversation/index.js';
-import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import {
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 interface CatalogObservation {
   sessionId: string;
@@ -145,12 +148,14 @@ function installCatalogRenderer(t: TestContext) {
         locale: 'en',
         children: createElement(ConversationServicesProvider, {
           services,
-          children: createElement(ComposerMentionsProvider, {
-            sessionId,
-            projectPath,
-            skillCatalogRevision,
-            catalog: sessionCatalog,
-            children: createElement(Consumer, { sessionId }),
+          children: createElement(SessionCatalogContext.Provider, {
+            value: sessionCatalog,
+            children: createElement(ComposerMentionsProvider, {
+              sessionId,
+              projectPath,
+              skillCatalogRevision,
+              children: createElement(Consumer, { sessionId }),
+            }),
           }),
         }),
       })));

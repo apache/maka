@@ -2183,7 +2183,7 @@ function AppShellContent({
       commandPort={moduleHubCommands}
     >
     <ModuleHub.ModuleHubSkillCatalogRevisionBoundary
-      render={renderComposerMentionsProvider(composerMentionsSurface, sessionCatalogController)}
+      render={renderComposerMentionsProvider(composerMentionsSurface)}
     >
     <SessionCollaboration.SessionTurnRequestInboxProvider
       catalog={sessionCatalogController}
