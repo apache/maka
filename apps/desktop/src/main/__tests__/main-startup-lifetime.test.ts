@@ -46,6 +46,10 @@ const appSource = readFileSync(
   fileURLToPath(new URL('../../../src/renderer/app.tsx', import.meta.url)),
   'utf8',
 );
+const indexHtmlSource = readFileSync(
+  fileURLToPath(new URL('../../../src/renderer/index.html', import.meta.url)),
+  'utf8',
+);
 
 test('retains process lifetime before a standalone startup dialog can close', () => {
   const retentionPolicy = mainSource.search(
@@ -204,4 +208,35 @@ test('routes the first-paint IPC only to the active Renderer recovery listener',
     /if \(rendererRecoveryReadiness === readiness\) \{\s*if \(loaded\) rendererRecoveryReadiness = undefined;\s*else readiness\.listener = undefined;\s*\}/u,
   );
   assert.match(readyHandler, /revealGate\.markReady\(mainWindow\)/u);
+});
+
+test('retires the launch overlay only when a surface marks ready content', () => {
+  // The overlay's dismissal and its emitters live in different files; pinning
+  // both sides keeps the attribute from drifting into a permanent logo.
+  const readRenderer = (path: string) =>
+    readFileSync(
+      fileURLToPath(new URL(`../../../src/renderer/${path}`, import.meta.url)),
+      'utf8',
+    );
+  const workHubRoot = readRenderer('features/workhub/ui/workhub-root.tsx');
+  const handoffOverlay = readRenderer(
+    'features/runtime-host-management/ui/runtime-host-handoff-overlay.tsx',
+  );
+  const errorBoundary = readRenderer('error-boundary.tsx');
+  const chatMessageSurface = readRenderer('chat-message-surface.tsx');
+
+  assert.match(
+    indexHtmlSource,
+    /body:has\(#root \[data-maka-content-ready\]\) > \.maka-preload/u,
+  );
+  assert.doesNotMatch(indexHtmlSource, /body:has\(#root > \*\)/u);
+  // The shell marks ready only once the first snapshot settles; the floating
+  // composer is content-complete at mount; a pending handoff decision and the
+  // error surface must not wait on either.
+  assert.match(appShellSource, /data-maka-content-ready=\{!isOnboardingLoading/u);
+  assert.match(workHubRoot, /data-maka-content-ready/u);
+  assert.match(handoffOverlay, /data-maka-content-ready/u);
+  assert.match(errorBoundary, /data-maka-content-ready/u);
+  // The second loading surface is deleted: the overlay alone covers the gap.
+  assert.doesNotMatch(chatMessageSurface, /maka-onboarding-loading/u);
 });

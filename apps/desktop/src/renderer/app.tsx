@@ -24,13 +24,13 @@ import { AppShell } from './composition/legacy-desktop-region';
 import { useAstryxThemeMode } from './astryx-theme-mode';
 
 export function App() {
-  // The launch overlay (`#maka-preload` in index.html) hides itself once this
-  // commit lands children into #root; this signal is only a backstop for the
-  // main-process reveal gate — `ready-to-show` normally beats it. A layout
-  // effect is too early: it runs after the DOM commit but before Chromium
-  // paints, so two animation frames put the signal after at least one paint
-  // of the committed AppShell. `window.maka` is undefined outside Electron
-  // (storybook), so guard it.
+  // The launch overlay (`#maka-preload` in index.html) retires on its own once
+  // a surface commits `data-maka-content-ready`; this signal's live job is the
+  // crash-recovery reload, where `ready-to-show` does not re-fire and the
+  // re-hidden window waits on it. A layout effect is too early: it runs after
+  // the DOM commit but before Chromium paints, so two animation frames put the
+  // signal after at least one paint of the committed AppShell. `window.maka`
+  // is undefined outside Electron (storybook), so guard it.
   useEffect(() => {
     let secondFrame = 0;
     const firstFrame = requestAnimationFrame(() => {

@@ -65,7 +65,11 @@ export function RuntimeHostHandoffOverlay() {
   };
 
   return (
-    <Dialog isOpen onOpenChange={() => {}} purpose="required" width={480}>
+    <>
+      {/* Retires the launch overlay: the data it waits on may be blocked
+          behind this very decision, so the dialog cannot wait for it. */}
+      <span data-maka-content-ready hidden />
+      <Dialog isOpen onOpenChange={() => {}} purpose="required" width={480}>
       <Layout
         header={(
           <DialogHeader
@@ -111,5 +115,6 @@ export function RuntimeHostHandoffOverlay() {
         )}
       />
     </Dialog>
+    </>
   );
 }

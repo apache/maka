@@ -552,7 +552,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // PR-SHOW-AFTER-FIRST-COMMIT: reveal fallback. Start this budget only once
     // the renderer document has loaded. Starting it before loadURL/loadFile
     // let a cold Vite transform or slow disk consume the whole timeout and
-    // reveal index.html's preload skeleton before React had a chance to paint.
+    // reveal index.html's launch overlay before React had a chance to paint.
     // If renderer-ready arrived while loadURL/loadFile was resolving, the
     // window is already visible and no timer is needed. E2e-fixture windows
     // remain hidden for their whole lifecycle.
@@ -830,7 +830,7 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
         bodyTextSample: document.body?.innerText?.trim().slice(0, 240) ?? '',
         stylesheetCount: document.styleSheets.length,
         rootChildren: document.getElementById('root')?.children.length ?? 0,
-        elements: ['body', '#root', '.appFrame', '.app', '.maka-panel-detail', '.mainColumn', '.maka-onboarding-loading'].map((selector) => {
+        elements: ['body', '#root', '.appFrame', '.app', '.maka-panel-detail', '.mainColumn', '.maka-preload'].map((selector) => {
           const element = document.querySelector(selector);
           if (!element) return { selector, present: false };
           const rect = element.getBoundingClientRect();
