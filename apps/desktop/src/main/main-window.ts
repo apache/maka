@@ -40,7 +40,6 @@ import { isDarkAppearance, isThemePreference, toNativeThemeSource } from './them
 import { createWindowRevealGate, type WindowRevealMode } from './window-reveal.js';
 import { createWindowsMaximizeRendererSync } from './windows-maximize-renderer-sync.js';
 import { auxiliaryWindowRegistry } from './auxiliary-window-registry.js';
-import { auxiliaryWindowRegistry } from './auxiliary-window-registry.js';
 import {
   parseDesktopSessionResourceKey,
 } from '../shared/runtime-host-identity.js';
