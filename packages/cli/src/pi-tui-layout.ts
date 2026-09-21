@@ -159,6 +159,13 @@ export class MakaPiLayoutComponent extends Container {
   private previousLines: string[] | undefined;
   private previousRows: number | undefined;
   private previousWidth: number | undefined;
+  /**
+   * An in-turn question is live chrome, not a modal picker: reserving its rows
+   * keeps the transcript tail above it instead of compositing the prompt over
+   * model output. The runner owns the interaction lifecycle; this component
+   * owns the resulting terminal geometry.
+   */
+  private blockingInteraction: Component | undefined;
 
   constructor(
     private readonly state: MakaPiTranscriptState,
@@ -179,11 +186,20 @@ export class MakaPiLayoutComponent extends Container {
     this.addChild(statusLine);
   }
 
+  setBlockingInteraction(interaction: Component | undefined): void {
+    if (this.blockingInteraction === interaction) return;
+    if (this.blockingInteraction) this.removeChild(this.blockingInteraction);
+    this.blockingInteraction = interaction;
+    if (interaction) this.addChild(interaction);
+  }
+
   render(width: number): string[] {
     const transcriptLines = this.transcript.render(width);
     const activityLines = this.activityStrip.render(width);
     const allPendingLines = this.pendingQueue.render(width);
     const statusLines = this.statusLine.render(width);
+    const blockingInteraction = this.blockingInteraction;
+    const blockingInteractionLines = blockingInteraction?.render(width) ?? [];
     // Supplementary information must not steal the composer's minimum space.
     const todoLines =
       this.terminal.rows >
@@ -204,14 +220,17 @@ export class MakaPiLayoutComponent extends Container {
         )
       : allPendingLines.length;
     const pendingLines = fitPendingQueueLines(allPendingLines, pendingRowsAvailable);
-    this.editor.setViewportRows(
-      this.terminal.rows -
-        activityLines.length -
-        pendingLines.length -
-        statusLines.length -
-        todoLines.length,
-    );
-    const editorLines = this.editor.render(width);
+    let editorLines: string[] = [];
+    if (blockingInteraction === undefined) {
+      this.editor.setViewportRows(
+        this.terminal.rows -
+          activityLines.length -
+          pendingLines.length -
+          statusLines.length -
+          todoLines.length,
+      );
+      editorLines = this.editor.render(width);
+    }
     // #1064: when the activity strip is showing (a turn is running), separate
     // it from the last transcript line with a blank row. Without this, a
     // thinking or tool row (the agent-work stack, which has no internal blank
@@ -226,7 +245,9 @@ export class MakaPiLayoutComponent extends Container {
       activityLines.length +
       pendingLines.length +
       todoLines.length +
-      editorLines.length +
+      (blockingInteraction === undefined
+        ? editorLines.length
+        : blockingInteractionLines.length + 1) +
       statusLines.length;
     const viewportRows = Math.max(0, this.terminal.rows - chromeRows);
     const paddingRows = Math.max(0, viewportRows - paddedTranscript.length);
@@ -236,7 +257,7 @@ export class MakaPiLayoutComponent extends Container {
       ...activityLines,
       ...pendingLines,
       ...todoLines,
-      ...editorLines,
+      ...(blockingInteraction === undefined ? editorLines : [...blockingInteractionLines, '']),
       ...statusLines,
     ];
     // #1097: record where pi-tui's live viewport starts for this render, in
