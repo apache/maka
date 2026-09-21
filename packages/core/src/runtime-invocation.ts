@@ -35,6 +35,13 @@ import type {
 import { isTerminalRuntimeEvent } from './runtime-event.js';
 import type { WorkHubRoutingDecision } from './workhub-routing.js';
 
+/** Persisted namespace used only by deterministic legacy-transcript conversion runs. */
+export const TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX = 'transcript-' as const;
+
+export function mayBeTranscriptLedgerInvocationId(invocationId: string): boolean {
+  return invocationId.startsWith(TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX);
+}
+
 export interface RuntimeInvocationRecord {
   sessionId: string;
   invocationId: string;

@@ -18,7 +18,9 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
+import { DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES } from '@maka/core/durable-tool-result-projection';
 import { readLogicalRuntimeExecution } from '@maka/core/runtime-logical-execution';
+import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import {
   runtimeInvocationOutcome,
   type RootExecutionDescriptor,
@@ -38,8 +40,28 @@ import {
 } from '@maka/runtime/message-authority';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import type { ExecutionStoresWriter, RootTurnAdmission } from '@maka/storage/execution-stores';
+import {
+  ROOT_TURN_ADMISSION_MAX_RECORD_BYTES,
+  ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES,
+} from '@maka/storage/agent-run-store';
 import type { RootAdmissionOwner } from './root-admission-owner.js';
 import type { HostedExecutionProjectionReader } from './hosted-execution-projection.js';
+
+const RECOVERY_MESSAGE_EVIDENCE_MIN_RECORDS = 16;
+const RECOVERY_MESSAGE_EVIDENCE_MAX_RECORDS = 65_536;
+// One admission is capped at 1 MiB including the normalized prompt and every
+// folded source. A second admission-sized allowance covers RuntimeEvent
+// envelopes and the separately stored canonical prompt without inventing a
+// smaller read ceiling than the write contract permits.
+const RECOVERY_MESSAGE_EVIDENCE_BYTES_PER_ADMISSION = ROOT_TURN_ADMISSION_MAX_RECORD_BYTES * 2;
+const RECOVERY_MESSAGE_EVIDENCE_MIN_BYTES = 2 * 1024 * 1024;
+const RECOVERY_MESSAGE_EVIDENCE_MAX_BYTES = 256 * 1024 * 1024;
+const RECOVERY_HANDOFF_PREFIX_PROOF_BUDGET = Object.freeze({
+  maxEvents: 65_536,
+  maxBytes: 256 * 1024 * 1024,
+  // A RuntimeEvent can carry both a raw Tool Result and its durable model projection.
+  maxRecordBytes: DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES * 2 + 256 * 1024,
+});
 
 export interface HostedExecutionRecoveryPlan {
   readonly sessionId: string;
@@ -67,30 +89,65 @@ export async function prepareHostedExecutionRecovery(
   // own RuntimeEvents: the ledger is where a Turn's user message is committed,
   // so it is also the only place a missing one can be detected.
   const sessions = await input.stores.sessionStore.listHeaders();
+  const logicalMembershipStore = {
+    listSessionInvocations: input.stores.runtimeEventStore.listSessionInvocations,
+    readRunInvocation: input.stores.runtimeEventStore.readRunInvocation,
+    readContinuationClaimStateByBoundary:
+      input.stores.runtimeEventStore.readContinuationClaimStateByBoundary,
+    readImmutableRuntimePrefixProof: (proofInput: {
+      sessionId: string;
+      runId: string;
+      upToEventSeq?: number;
+    }) =>
+      input.stores.runtimeEventStore.readImmutableRuntimePrefixProof(
+        proofInput,
+        RECOVERY_HANDOFF_PREFIX_PROOF_BUDGET,
+      ),
+  };
   const prepared: PreparedRecoverySession[] = [];
   for (const session of sessions) {
     const admissions = await input.rootAdmissions.recoverSession(session.id);
+    if (admissions.length === 0) continue;
+    const pendingMessageIds = new Set(
+      (await input.stores.sessionStore.listMessageAdmissions(session.id)).map(
+        (admission) => admission.messageId,
+      ),
+    );
     const runs = await input.stores.runtimeEventStore.listSessionInvocations(session.id);
     const runsById = new Map(runs.map((run) => [run.runId, run]));
-    for (const run of runs) {
-      await input.stores.agentRunStore.readEventsForRecovery(session.id, run.runId);
-      await input.stores.runtimeEventStore.readRuntimeEvents(session.id, run.runId);
+    const recoveryMessageEvidence = await input.stores.runtimeEventStore.readRecoveryMessageEvents({
+      sessionId: session.id,
+      turnIds: admissions.map((admission) => admission.turnId),
+      eventIds: admissions.flatMap((admission) => [
+        admittedPromptEventId(admission.runId, admission.userMessageId),
+        ...admission.sourceMessages.map((source) => source.messageId),
+      ]),
+      budget: recoveryMessageEvidenceBudget(admissions),
+    });
+    if (recoveryMessageEvidence.status === 'limit_exceeded') {
+      throw new RuntimeMessageAuthorityInvariantError(
+        `Recovery message evidence exceeds the bounded read budget for Session ${session.id}`,
+      );
     }
     const messageIndex = indexRecoveryMessages(
-      recoveryUserMessagesFromLedger(
-        await input.stores.runtimeEventStore.readSessionRuntimeEvents(session.id),
-      ),
+      recoveryUserMessagesFromLedger(recoveryMessageEvidence.records),
     );
     const replayAdmissions: RootTurnAdmission[] = [];
     const rootReplayAdmissions: RootTurnAdmission[] = [];
     const pendingRecoveryClosures: PendingRecoveryClosure[] = [];
+    const pendingHandoffRunIds = new Set<string>();
     for (const admission of admissions) {
       const run = runsById.get(admission.runId);
       const logical =
-        run && (await readLogicalRuntimeExecution(input.stores.runtimeEventStore, admission, run));
+        run?.terminalEvent && runtimeHandoffPause(run.terminalEvent)
+          ? await readLogicalRuntimeExecution(logicalMembershipStore, admission, run, {
+              mode: 'membership',
+            })
+          : undefined;
       if (logical?.pendingHandoff) {
         replayAdmissions.push(admission);
         rootReplayAdmissions.push(admission);
+        pendingHandoffRunIds.add(admission.runId);
       }
       const admittedMessageId = admittedPromptEventId(admission.runId, admission.userMessageId);
       // Whether the prompt is on the ledger is a question about the Turn, not
@@ -106,7 +163,7 @@ export async function prepareHostedExecutionRecovery(
       const executionContract = recoveryExecutionContract(admission.execution);
       if (
         admission.execution.kind === 'scheduled_task' &&
-        (!logical || runtimeInvocationOutcome(logical.tip) === undefined)
+        (!run || runtimeInvocationOutcome(logical?.tip ?? run) === undefined)
       ) {
         if (!input.assertScheduledTaskAdmission) {
           throw new RuntimeMessageAuthorityInvariantError(
@@ -200,9 +257,27 @@ export async function prepareHostedExecutionRecovery(
     if (replayAdmissions[0] && session.isArchived) {
       throw new Error(`Archived Session ${session.id} has an admitted Turn without a Run`);
     }
+    const pendingRecoveryClosureTurnIds = new Set(
+      pendingRecoveryClosures.map(({ admission }) => admission.turnId),
+    );
+    const rootRecoveryAdmissions = admissions.filter((admission) => {
+      const run = runsById.get(admission.runId);
+      if (!run) {
+        return (
+          rootReplayAdmissions[0] === admission ||
+          pendingRecoveryClosureTurnIds.has(admission.turnId)
+        );
+      }
+      return (
+        !run.terminalEvent ||
+        admission.sourceMessages.some((source) => pendingMessageIds.has(source.messageId)) ||
+        pendingHandoffRunIds.has(run.runId)
+      );
+    });
     prepared.push({
       sessionId: session.id,
       admissions,
+      rootRecoveryAdmissions,
       ...(rootReplayAdmissions[0] ? { rootReplayAdmission: rootReplayAdmissions[0] } : {}),
       pendingRecoveryClosures,
     });
@@ -232,11 +307,13 @@ export async function prepareHostedExecutionRecovery(
       });
     }
   }
-  return prepared.map(({ sessionId, admissions, rootReplayAdmission }) => ({
-    sessionId,
-    admissions,
-    ...(rootReplayAdmission ? { rootReplayAdmission } : {}),
-  }));
+  return prepared
+    .map(({ sessionId, rootRecoveryAdmissions, rootReplayAdmission }) => ({
+      sessionId,
+      admissions: rootRecoveryAdmissions,
+      ...(rootReplayAdmission ? { rootReplayAdmission } : {}),
+    }))
+    .filter((plan) => plan.admissions.length > 0 || plan.rootReplayAdmission !== undefined);
 }
 
 /**
@@ -323,6 +400,7 @@ export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor)
 
 interface PreparedRecoverySession extends HostedExecutionRecoveryPlan {
   readonly pendingRecoveryClosures: readonly PendingRecoveryClosure[];
+  readonly rootRecoveryAdmissions: readonly RootTurnAdmission[];
 }
 
 interface PendingRecoveryClosure {
@@ -537,6 +615,29 @@ function appendIndexed<K, V>(index: Map<K, V[]>, key: K, value: V): void {
   const values = index.get(key);
   if (values) values.push(value);
   else index.set(key, [value]);
+}
+
+function recoveryMessageEvidenceBudget(admissions: readonly RootTurnAdmission[]) {
+  const citedEventIds = admissions.reduce(
+    (count, admission) =>
+      count +
+      1 +
+      Math.min(admission.sourceMessages.length, ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES),
+    0,
+  );
+  return {
+    maxRecords: Math.min(
+      RECOVERY_MESSAGE_EVIDENCE_MAX_RECORDS,
+      Math.max(RECOVERY_MESSAGE_EVIDENCE_MIN_RECORDS, admissions.length * 2 + citedEventIds),
+    ),
+    maxBytes: Math.min(
+      RECOVERY_MESSAGE_EVIDENCE_MAX_BYTES,
+      Math.max(
+        RECOVERY_MESSAGE_EVIDENCE_MIN_BYTES,
+        admissions.length * RECOVERY_MESSAGE_EVIDENCE_BYTES_PER_ADMISSION,
+      ),
+    ),
+  };
 }
 
 function assertNever(value: never): never {

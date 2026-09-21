@@ -19,7 +19,10 @@
 
 import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
-import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeContinuationAuthorityStore,
+  RuntimeInvocationRecoveryInventoryEntry,
+} from '@maka/core/runtime-event-store';
 import type { ImmutableRuntimePrefixProofV1 } from '@maka/core/runtime-boundary';
 import type { RuntimeTranscriptQueries } from './runtime-transcript-query.js';
 import type {
@@ -68,6 +71,7 @@ import type {
   SessionRuntimeEventEntry,
   ToolCommitResult,
   ToolOperationRecord,
+  UnsettledToolOperationRecord,
   ImmutableRuntimePrefixProofReadBudget,
 } from './runtime-event-store-contract.js';
 
@@ -166,7 +170,9 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
     readonly toolBoundaryProtocol: ToolBoundaryProtocol;
     commitToolPrepared(input: CommitToolPreparedInput): Promise<ToolCommitResult>;
     commitToolOutcome(input: CommitToolOutcomeInput): Promise<ToolCommitResult>;
-    listUnsettledToolOperations(sessionId: string): Promise<ToolOperationRecord[]>;
+    listUnsettledToolOperations(
+      sessionIds: string | readonly string[],
+    ): Promise<UnsettledToolOperationRecord[]>;
     appendRuntimePartialBatch(
       sessionId: string,
       runId: string,
@@ -246,6 +252,9 @@ export interface ExecutionRuntimeEventReader {
    * repairs it.
    */
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  listInvocationRecoveryInventory(
+    sessionIds: readonly string[],
+  ): Promise<RuntimeInvocationRecoveryInventoryEntry[]>;
   readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
   listSessionInvocationsBounded(
     sessionId: string,
@@ -506,6 +515,12 @@ async function createExecutionStoresForWrite(
   ) as Omit<ExecutionGraphStore, 'close'>;
   const graphControlStore: ExecutionGraphStore = Object.freeze({
     ...graphMethods,
+    ...(persistence.graphControlStore.listAgentGraphScheduleRecoveryGraphIds
+      ? {
+          listAgentGraphScheduleRecoveryGraphIds: () =>
+            run(() => persistence.graphControlStore.listAgentGraphScheduleRecoveryGraphIds!()),
+        }
+      : {}),
     close: () => {},
   });
 
@@ -721,12 +736,16 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
+      readRecoveryMessageEvents: (input) =>
+        run(() => runtimeEventStore.readRecoveryMessageEvents(input)),
       readImmutableRuntimePrefix: (input) =>
         run(() => runtimeEventStore.readImmutableRuntimePrefix(input)),
       readImmutableRuntimePrefixProof: (input, budget) =>
         run(() => runtimeEventStore.readImmutableRuntimePrefixProof(input, budget)),
       listSessionInvocations: (sessionId) =>
         run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      listInvocationRecoveryInventory: (sessionIds) =>
+        run(() => runtimeEventStore.listInvocationRecoveryInventory(sessionIds)),
       readRunInvocation: (sessionId, runId) =>
         run(() => runtimeEventStore.readRunInvocation(sessionId, runId)),
       listSessionInvocationsBounded: (sessionId, limit) =>
@@ -770,6 +789,12 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.readContinuationClaimByBoundary(boundaryDigest)),
       readContinuationClaimStateByBoundary: (boundaryDigest) =>
         run(() => runtimeEventStore.readContinuationClaimStateByBoundary(boundaryDigest)),
+      ...(runtimeEventStore.listUnsettledContinuationClaimsForRecovery
+        ? {
+            listUnsettledContinuationClaimsForRecovery: (sessionIds: readonly string[]) =>
+              run(() => runtimeEventStore.listUnsettledContinuationClaimsForRecovery!(sessionIds)),
+          }
+        : {}),
       listContinuationClaimsForRecovery: (sessionId) =>
         run(() => runtimeEventStore.listContinuationClaimsForRecovery(sessionId)),
       commitContinuationStart: (input) =>
@@ -778,14 +803,12 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.commitContinuationRepairStart(input)),
       readImmutableSteeringMessageProof: (sessionId, messageId) =>
         run(() => runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId)),
-      repairImmutableSteeringMessageProofsForRecovery: (sessionId) =>
-        run(() => runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(sessionId)),
       commitToolPrepared: (input) =>
         run(() => runtimePersistence.runtimeCommitStore.commitToolPrepared(input)),
       commitToolOutcome: (input) =>
         run(() => runtimePersistence.runtimeCommitStore.commitToolOutcome(input)),
-      listUnsettledToolOperations: (sessionId) =>
-        run(() => runtimePersistence.runtimeCommitStore.listUnsettledToolOperations(sessionId)),
+      listUnsettledToolOperations: (sessionIds) =>
+        run(() => runtimePersistence.runtimeCommitStore.listUnsettledToolOperations(sessionIds)),
     },
   };
   freezeExecutionStoresFacade(stores);
@@ -872,6 +895,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
       listSessionInvocations: (sessionId) =>
         run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      listInvocationRecoveryInventory: (sessionIds) =>
+        run(() => runtimeEventStore.listInvocationRecoveryInventory(sessionIds)),
       readRunInvocation: (sessionId, runId) =>
         run(() => runtimeEventStore.readRunInvocation(sessionId, runId)),
       listSessionInvocationsBounded: (sessionId, limit) =>

@@ -22,14 +22,8 @@ import type { RuntimeHostMessageTransport } from '../transport/message-transport
 import type { SignedPeerReachabilityLeaseV1 } from '../peer-reachability/index.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
-import {
-  startRuntimeHostPeerListener,
-  type RuntimeHostPeerListenerEndpointOptions,
-} from './peer-listener.js';
-import {
-  startRuntimeHostWebSocketListener,
-  type StartRuntimeHostWebSocketListenerOptions,
-} from './websocket-listener.js';
+import type { RuntimeHostPeerListenerEndpointOptions } from './peer-listener.js';
+import type { StartRuntimeHostWebSocketListenerOptions } from './websocket-listener.js';
 
 export interface RuntimeHostListenerConnection {
   readonly transport: RuntimeHostMessageTransport;
@@ -94,6 +88,7 @@ export async function startRuntimeHostAuthenticatedListenerSet(
   const additional: RuntimeHostListener[] = [];
   try {
     if (options.websocket) {
+      const { startRuntimeHostWebSocketListener } = await import('./websocket-listener.js');
       additional.push(
         await startRuntimeHostWebSocketListener({
           ...options.websocket,
@@ -103,6 +98,7 @@ export async function startRuntimeHostAuthenticatedListenerSet(
       );
     }
     if (options.peer) {
+      const { startRuntimeHostPeerListener } = await import('./peer-listener.js');
       additional.push(
         startRuntimeHostPeerListener({
           ...options.peer,

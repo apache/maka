@@ -29,7 +29,10 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
-import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeEventStore,
+  RuntimeInvocationRecoveryInventoryEntry,
+} from '@maka/core/runtime-event-store';
 import type {
   RuntimeInvocationPageInput,
   RuntimeInvocationPageResult,
@@ -245,8 +248,23 @@ export interface RuntimeEventScanBudget {
 
 export type RuntimeEventScanResult = { readonly status: 'complete' | 'limit_exceeded' };
 
+/**
+ * The immutable rows needed to authenticate admitted prompts during recovery.
+ * Turn ids select text events that can be a root prompt; event ids select the
+ * exact cited row regardless of kind so identity reuse is still observable.
+ */
+export interface RecoveryMessageEventQuery {
+  readonly sessionId: string;
+  readonly turnIds: readonly string[];
+  readonly eventIds: readonly string[];
+  readonly budget: EvidenceReadBudget;
+}
+
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  listInvocationRecoveryInventory(
+    sessionIds: readonly string[],
+  ): Promise<RuntimeInvocationRecoveryInventoryEntry[]>;
   readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
   listSessionInvocationsBounded(
     sessionId: string,
@@ -273,12 +291,14 @@ export interface DurableRuntimeEventStore extends RuntimeEventStore {
     sessionId: string,
     batches: readonly ConversationCopyRuntimeEventBatch[],
   ): Promise<void>;
+  readRecoveryMessageEvents(
+    input: RecoveryMessageEventQuery,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readImmutableSteeringMessageProof(
     sessionId: string,
     messageId: string,
   ): Promise<ImmutableSteeringMessageProof | undefined>;
-  repairImmutableSteeringMessageProofsForRecovery(sessionId: string): Promise<void>;
 }
 
 export function normalizeRootTurnStartRejection(

@@ -561,13 +561,36 @@ export class AgentGraphCoordinator {
    */
   async recover(): Promise<string[]> {
     const recovered: string[] = [];
+    const listedRecoveryGraphIds = this.#input.controlStore.listAgentGraphScheduleRecoveryGraphIds
+      ? await this.#input.controlStore.listAgentGraphScheduleRecoveryGraphIds()
+      : undefined;
+    const recoveryGraphIds = listedRecoveryGraphIds ? new Set(listedRecoveryGraphIds) : undefined;
+    if (recoveryGraphIds?.size === 0) return recovered;
+    const recoveryRootSessionIds = new Set<string>();
+    if (recoveryGraphIds && this.#input.epochStore) {
+      for (const graphId of recoveryGraphIds) {
+        const binding = await this.#input.epochStore.readAgentGraphEpochByGraphId(graphId);
+        if (binding) recoveryRootSessionIds.add(binding.rootSessionId);
+      }
+    }
     for (const header of await this.#input.sessionStore.listForRecovery()) {
       if (this.#input.rootSessionId && header.id !== this.#input.rootSessionId) continue;
       if (header.subagentParent || header.isArchived) continue;
+      if (
+        recoveryGraphIds &&
+        !recoveryGraphIds.has(agentGraphIdForRootSession(header.id)) &&
+        !recoveryRootSessionIds.has(header.id)
+      ) {
+        continue;
+      }
       const graphId = await this.currentGraphId(header.id);
-      const updates = await this.#input.controlStore.listAgentGraphScheduleUpdates(graphId);
-      if (updates.length === 0) continue;
-      updates.forEach((update) => this.#assertScheduleOwnedByRoot(update, header.id, graphId));
+      if (recoveryGraphIds) {
+        if (!recoveryGraphIds.has(graphId)) continue;
+      } else {
+        const updates = await this.#input.controlStore.listAgentGraphScheduleUpdates(graphId);
+        if (updates.length === 0) continue;
+        updates.forEach((update) => this.#assertScheduleOwnedByRoot(update, header.id, graphId));
+      }
       await this.reconcile(header.id);
       recovered.push(header.id);
     }
