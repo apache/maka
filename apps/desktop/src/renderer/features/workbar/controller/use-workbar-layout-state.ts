@@ -20,9 +20,11 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
+  type RefObject,
   type SetStateAction,
 } from 'react';
 import type { ResizableProps } from '@astryxdesign/core/Resizable';
@@ -31,9 +33,11 @@ import {
   isSessionWorkbarCollapsed,
   persistWorkbarLayout,
   reduceWorkbarLayout,
+  sessionWorkbarCeiling,
+  sessionWorkbarDisplayWidth,
+  sessionWorkbarMaxWidth,
   SESSION_BOTTOM_PANEL_MAX_HEIGHT,
   SESSION_BOTTOM_PANEL_MIN_HEIGHT,
-  SESSION_WORKBAR_MAX_WIDTH,
   SESSION_WORKBAR_MIN_WIDTH,
 } from '../model/workbar-layout.js';
 import {
@@ -47,11 +51,17 @@ const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
  * Owns the application-level Workbar topology, dimensions and persistence.
  * Right-panel visibility belongs to each Session; topology and sizes stay global.
  * `compact` is the shell's narrow-window reading; see `withCompact`.
+ *
+ * `layoutContainerRef` is the grid holding both the conversation column and the
+ * rail; `layoutGap` is the spacing between them. Measuring one and knowing the
+ * other is what makes the rail's ceiling a function of the available space.
  */
 export function useWorkbarLayoutState(
   activeSessionId: string | undefined,
   authoritativeSessionIds: ReadonlySet<string> | undefined,
   compact: boolean,
+  layoutContainerRef?: RefObject<HTMLElement | null>,
+  layoutGap = 0,
 ) {
   const [state, dispatch] = useReducer(
     reduceWorkbarLayout,
@@ -76,17 +86,39 @@ export function useWorkbarLayoutState(
   }, [authoritativeSessionIds, activeSessionId, state.panels]);
   const stateRef = useRef(state);
   stateRef.current = state;
-  const rightDragStartRef = useRef(state.rightWidth);
+  const rightWidth = sessionWorkbarDisplayWidth(state);
+  const rightWidthMax = sessionWorkbarMaxWidth(state);
+  const rightDragStartRef = useRef(rightWidth);
   const bottomDragStartRef = useRef(state.bottomHeight);
+  // The measured input to the width policy. Observed is the parent grid, never a
+  // child whose width the ceiling sets — that would feed the measurement back
+  // into its own result. The synchronous pass matters as much as the observer: it
+  // lands in this commit, so the first painted frame already has the ceiling.
+  useLayoutEffect(() => {
+    const container = layoutContainerRef?.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const available = container.getBoundingClientRect().width;
+      if (available <= 0) return;
+      dispatch({
+        type: 'measure-right-ceiling',
+        ceiling: sessionWorkbarCeiling(available, layoutGap),
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [layoutContainerRef, layoutGap]);
   // The Workbar reducer is the controlled size authority. These props adapt it
   // to Astryx's ResizeHandle contract without introducing useResizable state;
   // snapping and handle-driven collapse are deliberately disabled here.
   const workbarResizable = useMemo<ResizableProps>(
     () => ({
-      _size: state.rightWidth,
+      _size: rightWidth,
       _isCollapsed: false,
       _onResizeStart: () => {
-        rightDragStartRef.current = state.rightWidth;
+        rightDragStartRef.current = rightWidth;
       },
       _onResizeMove: (delta) =>
         dispatch({
@@ -95,14 +127,16 @@ export function useWorkbarLayoutState(
           size: rightDragStartRef.current + Math.round(delta),
         }),
       _onResizeEnd: () => undefined,
-      _minSizePx: SESSION_WORKBAR_MIN_WIDTH,
-      _maxSizePx: SESSION_WORKBAR_MAX_WIDTH,
+      _minSizePx: Math.min(SESSION_WORKBAR_MIN_WIDTH, rightWidthMax),
+      // The handle and the reducer hold the same ceiling, so the drag stops
+      // where the state machine would stop it instead of snapping back.
+      _maxSizePx: rightWidthMax,
       _snaps: [],
       _collapsedSize: 40,
       _collapsible: false,
       _isResizableProps: true,
     }),
-    [state.rightWidth],
+    [rightWidth, rightWidthMax],
   );
   const bottomPanelResizable = useMemo<ResizableProps>(
     () => ({
@@ -197,7 +231,9 @@ export function useWorkbarLayoutState(
       persistWorkbarLayout(stateRef.current, 'right-size');
     }, LAYOUT_PERSIST_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [state.rightWidth]);
+  // Only the preference is persisted: a ceiling that narrowed the display is a
+  // property of this window, not of what the user asked for.
+  }, [state.rightWidthPreference]);
   useEffect(() => {
     persistWorkbarLayout(stateRef.current, 'right-visibility');
   }, [state.collapsedBySession]);
@@ -251,7 +287,9 @@ export function useWorkbarLayoutState(
     setSpaceCollapsed,
     bottomPanelOpen: state.bottomOpen,
     setBottomPanelOpen,
-    workbarWidth: state.rightWidth,
+    // What the frame publishes to CSS is the width the rail displays at, not
+    // the stored preference the ceiling holds back.
+    workbarWidth: rightWidth,
     workbarResizable,
     bottomPanelHeight: state.bottomHeight,
     bottomPanelResizable,

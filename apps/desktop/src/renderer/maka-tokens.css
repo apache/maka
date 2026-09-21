@@ -960,7 +960,8 @@
      6 → 12 so the floating surface's bottom corners actually read.
      6px was geometrically present but optically invisible against a
      same-color shell. */
-  --agents-content-area-gap: 4px;
+  /* appShellFrameStyle publishes the Workbar seam from
+     APP_SHELL_CONTENT_AREA_GAP; Storybook publishes the same value at root. */
 
   /* === conversation layout contract =====================================
      The Desktop and WorkHub renderers are separate documents, but both load

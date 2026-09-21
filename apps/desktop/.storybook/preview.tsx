@@ -23,6 +23,7 @@ import { Theme } from '@astryxdesign/core/theme';
 import { THEME_PALETTES } from '../../../packages/core/src/settings.js';
 import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import { makaTheme } from '../src/renderer/astryx-theme/maka';
+import { APP_SHELL_CONTENT_AREA_GAP } from '../src/renderer/shell/frame-style';
 
 const PALETTE_LABELS: Record<string, string> = {
   default: 'Default',
@@ -47,6 +48,18 @@ const withMakaRoot: Decorator = (Story, context) => {
 
   root.classList.toggle('dark', colorScheme === 'dark');
   root.style.colorScheme = colorScheme;
+  /**
+   * The shell's own seam width, from the module that owns it.
+   *
+   * AppShell publishes this on `.appFrame`, which every shipped surface sits
+   * inside. A story that renders a shell-like subtree on its own — the Workbar
+   * story mounts `.maka-detail-with-artifacts` directly — has no `.appFrame`
+   * above it, so the variable would be absent and each `calc()` reading it
+   * would fail whole, silently dropping the reservation and the margins. The
+   * same import as `appShellFrameStyle` keeps this one number, not a second
+   * copy of it.
+   */
+  root.style.setProperty('--agents-content-area-gap', `${APP_SHELL_CONTENT_AREA_GAP}px`);
 
   if (palette === 'default') {
     root.removeAttribute('data-maka-theme');
