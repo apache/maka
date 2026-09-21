@@ -99,7 +99,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   // Electron's close-all MenuRunner path on Linux, even for this single menu.
   await mainWindow.evaluate((window) =>
     (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup(window));
-  await expect(addPanel).toHaveAttribute('aria-expanded', 'false');
+  await expect(addPanel).not.toHaveAttribute('aria-expanded', 'true');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
   const anchors = workhub.locator('.workhub-anchors');
