@@ -22,6 +22,10 @@ import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider, ToastProvider } from '@maka/ui';
+import {
+  createDesktopTaskEntryServices,
+  type DesktopTaskEntryBridge,
+} from '../../renderer/platform/desktop/create-task-entry-services.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeTaskEntryServices,
@@ -202,6 +206,7 @@ describe('useTaskEntryController', () => {
         },
         restoreProject: async (host) => {
           calls.push({ action: 'restore', ...host });
+          return { ok: true, project: project('project-a') };
         },
       },
     });
@@ -337,7 +342,7 @@ describe('useTaskEntryController', () => {
     assert.equal(controller().selectors.workspacePicker.pending, false);
   });
 
-  it('prompts to restore an archived Project and selects it after confirmation', async () => {
+  it('prompts to restore an archived Project and selects it through the Desktop adapter after confirmation', async () => {
     const { root } = installReactRenderer();
     let reads = 0;
     let restoreCalls = 0;
@@ -353,16 +358,26 @@ describe('useTaskEntryController', () => {
         addProject: async () => ({
           ok: false as const,
           reason: 'archived' as const,
-          projectId: 'project-a',
+          projectId: 'project-b',
         }),
         restoreProject: async () => {
           restoreCalls += 1;
-          return { ok: true as const, project: project('project-a') };
+          return { ok: true as const, project: project('project-b') };
         },
       },
     });
 
-    await act(async () => renderController(root, services, [], async () => true));
+    const errors: unknown[] = [];
+    const desktopServices = createDesktopTaskEntryServices({
+      newTasks: services.catalog,
+      projects: {
+        restore: async () => {
+          throw new Error('Unexpected legacy restore call');
+        },
+      },
+    } as unknown as DesktopTaskEntryBridge);
+    await act(async () => renderController(root, desktopServices, errors, async () => true));
+    assert.equal(controller().selectors.target?.projectId, 'project-a');
     await act(async () => {
       controller().commands.addProject();
       await Promise.resolve();
@@ -370,7 +385,9 @@ describe('useTaskEntryController', () => {
     await act(async () => {});
 
     assert.equal(restoreCalls, 1);
-    assert.equal(controller().selectors.target?.projectId, 'project-a');
+    assert.deepEqual(errors, []);
+    assert.equal(controller().selectors.workspacePicker.pending, false);
+    assert.equal(controller().selectors.target?.projectId, 'project-b');
   });
 
   it('reports restore failure and releases the pending state so the user can retry', async () => {

@@ -128,7 +128,6 @@ export interface TaskEntryCatalogService {
     name: string,
   ): Promise<void>;
   archiveProject(host: TaskEntryHostRef, projectId: string): Promise<void>;
-  restoreProject(host: TaskEntryHostRef, projectId: string): Promise<void>;
 }
 
 export interface TaskEntrySessionService {
