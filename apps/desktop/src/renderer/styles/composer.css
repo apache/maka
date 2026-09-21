@@ -56,6 +56,15 @@
    visibly hops by a device pixel. Keep the fading control in its own small
    paint/compositing boundary. `astryx-chat-layout-scroll-button` is Astryx's
    published theme class; the child is its fixed 32px transition container. */
+/* Astryx's dock is [scroll button, blur layer, composer]. Its 36px mask
+   finishes before Maka's card: the button reserves 32px + spacing-3, then
+   .composer adds space-2. Fade all the way to the card instead of leaving
+   a fully blurred strip above it. Scope this to docks with the scroll control;
+   floating WorkHub presentations can omit that control entirely. */
+.maka-chat-layout > div:has(> .astryx-chat-layout-scroll-button) > div:nth-last-child(2) {
+  mask-image: linear-gradient(to bottom, transparent, black calc(32px + var(--spacing-3) + var(--space-2)));
+}
+
 .astryx-chat-layout-scroll-button > div {
   contain: layout style paint;
   will-change: opacity, transform;

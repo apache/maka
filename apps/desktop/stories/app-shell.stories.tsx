@@ -3573,6 +3573,12 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     const panel = canvasElement.querySelector<HTMLElement>('.maka-session-workbar-panel[data-overlay][data-placement="right"]')!;
     const edge = canvas.getByRole('button', { name: '收起任务工作栏' });
     const glass = edge.querySelector<HTMLElement>('.maka-workbar-edge-glass')!;
+    const scrollButton = canvasElement.querySelector('.astryx-chat-layout-scroll-button')!;
+    const blur = scrollButton.nextElementSibling!;
+    const composer = canvasElement.querySelector('.maka-composer-astryx')!;
+    const fadeEnd = Number(getComputedStyle(blur).maskImage.match(/([\d.]+)px\)/)?.[1]);
+    expect(fadeEnd).toBeGreaterThanOrEqual(composer.getBoundingClientRect().top - blur.getBoundingClientRect().top);
+
     expect(canvas.queryByRole('toolbar', { name: '工作区辅助操作' })).toBeNull();
     expect(frame.querySelector('.maka-workbar-edge')).toBeNull();
     const width = frame.getBoundingClientRect().width;
