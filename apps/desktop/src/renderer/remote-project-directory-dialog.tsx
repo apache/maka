@@ -25,7 +25,7 @@ import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu'
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
-import { useUiLocale } from '@maka/ui';
+import { useToast, useUiLocale } from '@maka/ui';
 import { reportUnexpectedError } from './application/contracts/operation-diagnostics.js';
 import { Check, Eye, EyeOff, FolderOpen } from '@maka/ui/icons';
 import type {
@@ -53,6 +53,7 @@ export function RemoteProjectDirectoryDialog(props: {
   onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef): void;
 }) {
   const locale = useUiLocale();
+  const toast = useToast();
   const copy = getShellCopy(locale).projectActions;
   const [roots, setRoots] = useState<readonly DesktopProjectDirectoryRoot[]>([]);
   const [root, setRoot] = useState<DesktopProjectDirectoryRoot>();
@@ -97,6 +98,7 @@ export function RemoteProjectDirectoryDialog(props: {
     const sequence = ++request.current;
     lastLoad.current = target;
     if (target.kind === 'initial') {
+      setRegistering(false);
       setRoots([]);
       setRoot(undefined);
       setSegments([]);
@@ -162,11 +164,22 @@ export function RemoteProjectDirectoryDialog(props: {
     setRegistering(true);
     setError(undefined);
     try {
-      const project = await window.maka.projects.registerDirectory({
+      let project = await window.maka.projects.registerDirectory({
         rootId: root.id,
         segments,
       }, host);
       if (request.current !== sequence) return;
+      if (project.archivedAt !== undefined) {
+        const confirmed = await toast.confirm({
+          title: copy.archivedProjectTitle,
+          description: copy.archivedProjectDescription,
+          confirmLabel: copy.archivedProjectRestore,
+          cancelLabel: copy.archivedProjectCancel,
+        });
+        if (!confirmed || request.current !== sequence) return;
+        project = await window.maka.projects.restore(project.id, host);
+        if (request.current !== sequence) return;
+      }
       props.onRegistered(project, host);
     } catch (cause) {
       if (request.current !== sequence) return;
