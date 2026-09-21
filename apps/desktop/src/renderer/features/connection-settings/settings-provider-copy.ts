@@ -45,6 +45,9 @@ const zhCapabilitiesCopy = {
   thinkingEffortHelp: '勾选服务商支持的强度，供对话时选择。留空时按模型资料设置。',
   thinkingUndeclared: '自动',
   thinkingSelectedCount: (count: number) => `已选 ${count} 项`,
+  defaultThinkingLevel: '默认思考级别',
+  defaultThinkingLevelHelp: '新任务使用此模型时采用的思考级别；任务内仍可单独切换。',
+  providerDefaultThinking: '服务商默认',
   visionInput: '图片识别',
   visionInputHelp: '此服务商的模型是否支持图片。自动按模型资料判断，缺少资料时不发送图片。',
   visionDefaultOption: (supported: boolean | undefined) =>
@@ -74,6 +77,9 @@ const zhTwCapabilitiesCopy = {
   thinkingEffortHelp: '勾選服務商支援的強度，供對話時選擇。留空時依模型資料設定。',
   thinkingUndeclared: '自動',
   thinkingSelectedCount: (count: number) => `已選 ${count} 項`,
+  defaultThinkingLevel: '預設思考級別',
+  defaultThinkingLevelHelp: '新任務使用此模型時採用的思考級別；任務內仍可單獨切換。',
+  providerDefaultThinking: '服務商預設',
   visionInput: '圖片辨識',
   visionInputHelp: '此服務商的模型是否支援圖片。自動依模型資料判斷，缺少資料時不傳送圖片。',
   visionDefaultOption: (supported: boolean | undefined) =>
@@ -102,6 +108,9 @@ const enCapabilitiesCopy = {
   thinkingEffortHelp: 'These levels appear in the conversation’s thinking selector. Select only levels supported by this provider. Leave all unchecked to use existing model information.',
   thinkingUndeclared: 'Use model options',
   thinkingSelectedCount: (count: number) => `${count} levels available`,
+  defaultThinkingLevel: 'Default thinking level',
+  defaultThinkingLevelHelp: 'Thinking level for new tasks that use this model. It can still be changed per task.',
+  providerDefaultThinking: 'Provider default',
   visionInput: 'Send images to the model',
   visionInputHelp: 'Use provider and model information to decide whether to send images. Images are not sent when information is missing. Before choosing “Allow images”, confirm this provider supports images for this model.',
   visionDefaultOption: (supported: boolean | undefined) =>

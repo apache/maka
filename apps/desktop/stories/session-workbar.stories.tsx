@@ -1027,7 +1027,6 @@ function bridge(options: {
         ...SIDE_CHAT_SESSION,
         permissionMode: mode,
       }),
-      regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
@@ -1191,7 +1190,7 @@ const storyResizable = {
   _collapsedSize: 40, _collapsible: false, _isResizableProps: true,
 } as WorkbarHostModel['rightResizable'];
 
-function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boolean; streaming?: boolean; stagedFile?: boolean; frameWidth?: number; onStop?: () => void; onOpenConversation?: (sessionId: string, turnId?: string) => void }) {
+function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boolean; streaming?: boolean; stagedFile?: boolean; frameWidth?: number; missingComposerHost?: boolean; onStop?: () => void; onOpenConversation?: (sessionId: string, turnId?: string) => void }) {
   const layout = useWorkbarLayoutState(SESSION_ID, undefined);
   const [panels, setPanels] = useState(() => createSessionWorkbarPanelsState(
     openStaticSessionWorkbarTab(createSessionWorkbarTabsState(), props.tab),
@@ -1210,7 +1209,7 @@ function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boole
     height: '100dvh', width: props.frameWidth, '--maka-plate-titlebar-clearance': 'calc(var(--h-titlebar) - var(--agents-content-area-gap))',
     '--maka-session-workbar-width': `${layout.workbarWidth}px`,
   } as CSSProperties}>
-    <div className="mainColumn"><ChatSurfaceLayout composer={props.realComposer
+    <div className="mainColumn">{props.missingComposerHost ? null : <ChatSurfaceLayout composer={props.realComposer
       ? <Composer draftKey={SESSION_ID} streaming={props.streaming ?? true} onSend={noop} onStop={props.onStop ?? noop}
           activeSession={TOOL_PICKER_SOURCE_SESSION} activeModel="claude-sonnet-4-5" activeModelLabel="Sonnet 4.5"
           onPickAttachments={noop} permissionMode="ask" onPermissionModeChange={noop}
@@ -1221,7 +1220,7 @@ function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boole
         style={{ display: 'block', position: 'relative', zIndex: 5, boxSizing: 'border-box', width: '100%', minHeight: 72, padding: 16,
           border: '1px solid var(--border)', borderRadius: 8, background: 'var(--background)', color: 'var(--foreground)' }} />}>
       <div className="maka-chatContent">Conversation remains mounted while reading.</div>
-    </ChatSurfaceLayout></div>
+    </ChatSurfaceLayout>}</div>
     <WorkbarHost model={model} />
   </div></ToastProvider>;
 }
@@ -1743,6 +1742,38 @@ export const BrowserDividerFocus: Story = {
     await waitFor(() => expect(panel.getBoundingClientRect().width).toBe(initialWidth));
     expect(frame).not.toHaveAttribute('data-preview-focused');
     expect(draft).toHaveValue('Keep my divider draft');
+  },
+};
+
+// Keyboard resizing remains a normal panel operation; the explicit focus
+// button is the discoverable keyboard path into focused preview mode.
+export const BrowserKeyboardResizeDoesNotFocus: Story = {
+  decorators: [bridge({ browserState: EMPTY_BROWSER_STATE })],
+  render: () => <FocusedHostFlow tab="browser" frameWidth={800} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole('textbox', { name: '浏览器地址' });
+    const frame = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts')!;
+    const separator = canvas.getByRole('separator', { name: '调整任务工作栏宽度' });
+    separator.focus();
+    await userEvent.keyboard('{End}');
+    expect(frame).not.toHaveAttribute('data-preview-focused');
+    expect(frame).not.toHaveAttribute('data-preview-collapse-ready');
+    expect(canvas.queryByText('松开以聚焦网页')).not.toBeVisible();
+    await userEvent.click(canvas.getByRole('button', { name: '聚焦网页' }));
+    await waitFor(() => expect(frame).toHaveAttribute('data-preview-focused', 'browser'));
+  },
+};
+
+// A missing main composer cannot leave the panel claiming to be focused.
+export const FocusedPreviewRequiresComposerHost: Story = {
+  decorators: [bridge({ artifactRecords: artifacts.map((record) => ({ ...record, source: 'subagent_writeback' })) })],
+  render: () => <FocusedHostFlow tab="files" missingComposerHost />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText('conversation-review-notes-with-a-deliberately-long-name.md'));
+    expect(canvas.queryByRole('button', { name: '聚焦文件' })).toBeNull();
+    expect(canvasElement.querySelector('[data-preview-focused]')).toBeNull();
   },
 };
 

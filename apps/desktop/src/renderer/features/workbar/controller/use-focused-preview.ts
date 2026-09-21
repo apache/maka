@@ -35,9 +35,10 @@ export function useFocusedPreview(input: {
     frame: HTMLElement; kind: PreviewKind; sessionId: string;
     startWidth: number; width: number; previousWidth: string;
   } | null>(null);
+  const pointerResizePendingRef = useRef(false);
   const rightPanel = input.host.panelsState.right;
   const activeRightTab = rightPanel.tabs.find((tab) => tab.id === rightPanel.activeTabId);
-  const focusedPreview = request && request.sessionId === input.host.activeId &&
+  const focusedPreview = composerTarget && request && request.sessionId === input.host.activeId &&
     activeRightTab?.kind === request.kind && !rightPanel.launcherOpen &&
     !input.host.rightCollapsed && !input.host.hidden && input.host.workspace !== 'workhub'
       ? request.kind : null;
@@ -51,7 +52,7 @@ export function useFocusedPreview(input: {
 
   useLayoutEffect(() => {
     const frame = surfaceRef.current?.closest('.maka-detail-with-artifacts');
-    setComposerTarget(frame?.querySelector<HTMLElement>(':scope > .mainColumn .maka-chat-layout > :last-child > :last-child') ?? null);
+    setComposerTarget(frame?.querySelector<HTMLElement>(':scope > .mainColumn > .maka-chat-layout [data-maka-composer-dock]') ?? null);
   }, [input.host.activeId]);
 
   useLayoutEffect(() => {
@@ -83,7 +84,7 @@ export function useFocusedPreview(input: {
   }, [focusedPreview, composerTarget, overlayHeight, minimized]);
 
   function toggle(kind: PreviewKind) {
-    if (!input.host.activeId) return;
+    if (!input.host.activeId || !composerTarget) return;
     setMinimized(false);
     const sessionId = input.host.activeId;
     setRequest((current) => current?.sessionId === sessionId && current.kind === kind
@@ -119,9 +120,12 @@ export function useFocusedPreview(input: {
     ...input.host.rightResizable,
     _onResizeStart: () => {
       input.host.rightResizable._onResizeStart();
+      const pointerResize = pointerResizePendingRef.current;
+      pointerResizePendingRef.current = false;
+      if (!pointerResize) return;
       const frame = surfaceRef.current?.closest<HTMLElement>('.maka-detail-with-artifacts');
       const kind = activeRightTab?.kind;
-      if (!frame || !input.host.activeId || focusedPreview || input.host.workspace === 'workhub' ||
+      if (!frame || !composerTarget || !input.host.activeId || focusedPreview || input.host.workspace === 'workhub' ||
         rightPanel.launcherOpen || input.host.hidden || input.host.rightCollapsed ||
         (kind !== 'browser' && kind !== 'files') ||
         (kind === 'files' && !frame.querySelector('.maka-artifact-preview-screen'))) return;
@@ -163,6 +167,10 @@ export function useFocusedPreview(input: {
 
   return {
     focusedPreview, minimized, activeRightTab, composerTarget, surfaceRef, setOverlayHeight, toggle, rightResizable,
+    markPointerResize: () => {
+      pointerResizePendingRef.current = true;
+      queueMicrotask(() => { pointerResizePendingRef.current = false; });
+    },
     minimize: () => {
       setMinimized(true);
       requestAnimationFrame(() => composerTarget?.querySelector<HTMLElement>('.maka-progress-card-primary')?.focus());

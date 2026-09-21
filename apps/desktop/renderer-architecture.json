@@ -337,7 +337,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3603
+        "nonTriviaTokens": 3596
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -669,8 +669,7 @@
       "src/renderer/app-shell-turn-actions.ts": {
         "importDeclarations": 2,
         "bridgePaths": {
-          "window.maka.sessions.branchFromTurn": 1,
-          "window.maka.sessions.regenerateTurn": 1
+          "window.maka.sessions.branchFromTurn": 1
         },
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -686,7 +685,7 @@
           "./session-workspace-errors.js": 1
         },
         "importSpecifiers": 3,
-        "nonTriviaTokens": 620
+        "nonTriviaTokens": 571
       },
       "src/renderer/app-shell-turn-view-model.ts": {
         "importDeclarations": 6,
@@ -709,7 +708,7 @@
           "react": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 1273
+        "nonTriviaTokens": 1245
       },
       "src/renderer/app-shell.tsx": {
         "importDeclarations": 64,
@@ -862,7 +861,7 @@
           "react": 1
         },
         "importSpecifiers": 100,
-        "nonTriviaTokens": 13127
+        "nonTriviaTokens": 13003
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -2535,8 +2534,7 @@
           "./use-action-guard": 1,
           "./use-optimistic-settings-draft": 1,
           "@maka/core/chat-model-choice": 1,
-          "@maka/core/model-thinking": 1,
-          "@maka/ui": 2,
+          "@maka/ui": 1,
           "react": 1
         }
       },
@@ -4048,7 +4046,7 @@
         },
         "environmentCapabilities": {},
         "hookCalls": {
-          "useState": 6
+          "useState": 5
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,

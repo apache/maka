@@ -72,10 +72,6 @@
   pointer-events: none;
 }
 
-.maka-detail-with-artifacts > .mainColumn .maka-chat-layout > :last-child > :last-child {
-  position: relative;
-}
-
 .maka-composer-drag-handle {
   position: absolute;
   z-index: 2;
@@ -222,7 +218,7 @@
   visibility: hidden;
 }
 
-.maka-detail-with-artifacts[data-preview-focused] > .mainColumn .maka-chat-layout > :last-child > :last-child {
+.maka-detail-with-artifacts[data-preview-focused] > .mainColumn .maka-chat-layout [data-maka-composer-dock] {
   position: absolute;
   inset: auto auto var(--space-4) 50%;
   transform: translateX(-50%);

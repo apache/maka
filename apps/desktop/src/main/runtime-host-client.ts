@@ -1393,12 +1393,6 @@ export class DesktopRuntimeHostClient {
     return this.request("turn.stop", input);
   }
 
-  regenerateTurn(
-    input: OperationInput<"turn.regenerate">,
-  ): Promise<OperationOutput<"turn.regenerate">> {
-    return this.request("turn.regenerate", input);
-  }
-
   queryTurnResume(
     input: OperationInput<"turn.resume.query">,
   ): Promise<OperationOutput<"turn.resume.query">> {

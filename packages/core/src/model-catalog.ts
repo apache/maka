@@ -24,7 +24,11 @@ import type {
   ProviderDefaults,
   ProviderType,
 } from './llm-connections.js';
-import { applyModelOverride, resolveModelLimits } from './model-thinking.js';
+import {
+  applyModelOverride,
+  defaultThinkingLevelForConnection,
+  resolveModelLimits,
+} from './model-thinking.js';
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_REGISTRY,
@@ -81,6 +85,8 @@ export interface ModelCatalogEntry {
    * thinking projection honoured.
    */
   thinkingLevels: readonly ThinkingLevel[];
+  /** Host-owned preference used when a new Session starts on this model. */
+  defaultThinkingLevel?: ThinkingLevel;
   contextWindow?: number;
   inputLimit?: number;
   defaultContextWindow?: number;
@@ -394,6 +400,10 @@ function makeEntry(
       capabilities,
       ...(modalities !== undefined ? { modalities } : {}),
     });
+  const defaultThinkingLevel = defaultThinkingLevelForConnection(
+    thinkingContext,
+    normalizedModel.id,
+  );
   return {
     id: normalizedModel.id,
     ...displayNameForModel(input.providerType, normalizedModel),
@@ -408,6 +418,7 @@ function makeEntry(
       ? {}
       : { compactionThreshold: input.modelOverrides[normalizedModel.id]!.compactionThreshold }),
     thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
+    ...(defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel }),
     ...limits,
     ...(defaults.contextWindow === undefined
       ? {}

@@ -176,6 +176,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
         <ResizeHandle
           className="maka-workbar-resize-handle maka-workbar-resize-handle-right"
           resizable={previewFocus.rightResizable}
+          onPointerDownCapture={previewFocus.markPointerResize}
           direction="horizontal"
           isReversed
           isAlwaysVisible={false}
@@ -219,7 +220,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               panelsState={props.panelsState}
               rightCollapsed={props.rightCollapsed}
               focusedPreview={previewFocus.focusedPreview}
-              onTogglePreviewFocus={previewFocus.toggle}
+              onTogglePreviewFocus={previewFocus.composerTarget ? previewFocus.toggle : undefined}
               onPreviewExit={previewFocus.clear}
               bottomOpen={props.bottomOpen}
               onActivateTab={props.onActivateTab}

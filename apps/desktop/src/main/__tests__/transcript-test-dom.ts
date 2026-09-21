@@ -100,26 +100,7 @@ export async function renderTranscriptMarkup(element: ReactElement): Promise<str
     ResizeObserver: MeasuringResizeObserver,
     cancelAnimationFrame: () => undefined,
     document,
-    getComputedStyle: () =>
-      new Proxy(
-        {
-          display: 'block',
-          writingMode: 'horizontal-tb',
-          direction: 'ltr',
-          // The process body owns a capped scroll; Astryx's `useScrollableArea`
-          // reads these and asks whether the axis is scroll-capable.
-          overflowX: 'auto',
-          overflowY: 'auto',
-        },
-        {
-          // Other components read properties this stand-in does not list. Return
-          // `''` for them (and a `''`-returning `getPropertyValue`) so a caller's
-          // `.toLowerCase()` never reads `undefined`.
-          get: (target, prop) =>
-            (target as Record<string | symbol, unknown>)[prop] ??
-            (prop === 'getPropertyValue' ? () => '' : ''),
-        },
-      ),
+    getComputedStyle: () => ({ overflowY: 'visible' }),
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     requestAnimationFrame: () => 0,
     window,
