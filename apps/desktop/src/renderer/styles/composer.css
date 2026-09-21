@@ -270,6 +270,14 @@
   min-width: 0;
 }
 
+/* Chromium can omit an empty editable's line box when it mounts beneath
+   an inert ancestor, then keep that collapsed layout until the first edit.
+   Generate the empty line in CSS so its height and caret space exist from
+   the first paint, without adding a character to the draft or undo history. */
+.maka-composer-editor > [contenteditable]:empty::before {
+  content: "\200b";
+}
+
 .maka-composer-left-controls {
   display: flex;
   align-items: center;

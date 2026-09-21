@@ -1302,6 +1302,15 @@ export const EmptyHome: Story = {
 // no other story, so without this one nothing renders the picker a user meets
 // before their first send.
 export const NewChatComposer: Story = {
+  beforeEach: () => {
+    // AppShell can mount the composer beneath an inert ancestor while a
+    // session is loading or a modal is open. Establish that state BEFORE
+    // mount: making an already laid-out editor inert does not reproduce it.
+    const root = document.documentElement;
+    const wasInert = root.inert;
+    root.inert = true;
+    return () => { root.inert = wasInert; };
+  },
   render: () => (
     <ComposedShell
       session={null}
@@ -1313,6 +1322,27 @@ export const NewChatComposer: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const editor = canvasElement.querySelector<HTMLElement>('.maka-composer-editor [contenteditable="true"]')!;
+    const card = canvasElement.querySelector<HTMLElement>('.maka-composer-astryx')!;
+    // Read layout while inert, just as the loading frame is painted. A DOM
+    // shim cannot expose Chromium's missing empty line box on this path.
+    const initialEditorHeight = editor.getBoundingClientRect().height;
+    const initialCardHeight = card.getBoundingClientRect().height;
+    document.documentElement.inert = false;
+    await userEvent.click(editor);
+    await expect(editor).toHaveFocus();
+    await expect(editor.innerText).toBe('');
+    document.execCommand('insertText', false, 'x');
+    await waitFor(() => expect(editor.innerText).toBe('x'));
+    await expect(initialEditorHeight).toBe(editor.getBoundingClientRect().height);
+    await expect(initialCardHeight).toBe(card.getBoundingClientRect().height);
+    document.execCommand('selectAll');
+    document.execCommand('delete');
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    await expect(editor.getBoundingClientRect().height).toBe(initialEditorHeight);
+    await expect(card.getBoundingClientRect().height).toBe(initialCardHeight);
+  },
 };
 
 // A ready Local Host with no registered Projects must still expose its two
