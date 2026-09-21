@@ -33,9 +33,8 @@ import { Virtualizer, type CustomContainerComponentProps, type VirtualizerHandle
 import {
   ICON_SIZE,
   AlertTriangle,
-  ArrowRight,
 } from './icons.js';
-import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
+import { EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import {
   mergePromptAnchorRailTurns,
@@ -43,7 +42,6 @@ import {
   type PromptAnchorRailTurn,
 } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
-import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type {
@@ -52,7 +50,6 @@ import type {
   QuoteRef,
   ShellRunUpdate,
 } from '@maka/core/events';
-import { isDeepResearchSession } from '@maka/core/deep-research';
 import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
@@ -184,10 +181,6 @@ export function ChatView(props: {
    */
   activeTurn?: { readonly turnId: string; readonly awaitingInput?: boolean; readonly compacting?: boolean };
   activeSession?: SessionSummary;
-  /** Durable Deep Research projection supplied by the host for visible progress and resume state. */
-  deepResearchRun?: DeepResearchClientProgress;
-  /** Explicitly starts a normal implementation task from a completed read-only research run. */
-  onContinueDeepResearchHandoff?(run: DeepResearchClientProgress): void;
   activeConnectionLabel?: string;
   activeModel?: string;
   activeModelLabel?: string;
@@ -652,7 +645,7 @@ export function ChatView(props: {
             left controls so the new-session screen and active-session
             screen share the same "create / pick mode / send" rhythm. */}
         {/* No status strip on the empty-session screen: it has no session, so
-            none of the chips (memory / deep-research / goal) can apply. The
+            none of the chips (memory / goal) can apply. The
             header used to be rendered here anyway, holding a lone spacer, to
             occupy the window titlebar line — which the shell's titlebar row now
             owns. */}
@@ -700,8 +693,6 @@ export function ChatView(props: {
       </section>
     );
   }
-
-  const deepResearchActive = isDeepResearchSession(props.activeSession.labels);
   const hasVisibleConversationItem =
     conversationItemPlacement.byTurn.size > 0 || conversationItemPlacement.orphan !== undefined;
   const showEmptyState =
@@ -735,11 +726,7 @@ export function ChatView(props: {
           />
         )
       : props.emptyOverride ?? (
-          deepResearchActive ? (
-            <DeepResearchEmptyHero onPromptSuggestion={props.onPromptSuggestion} />
-          ) : (
-            <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
-          )
+          <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
         );
   /**
    * Nothing to show is exactly when this matters most: WorkHub filters the
@@ -781,7 +768,6 @@ export function ChatView(props: {
         onRevisionNavigate={props.onRevisionNavigate}
         memoryActive={props.memoryActive}
         onOpenMemorySettings={props.onOpenMemorySettings}
-        deepResearchActive={deepResearchActive}
         goal={props.goalIndicator}
         actions={hasConversationHeaderActions ? (
           <MakaClientSlotOutlet
@@ -790,13 +776,6 @@ export function ChatView(props: {
           />
         ) : undefined}
       />
-      {deepResearchActive && props.deepResearchRun && (
-        <DeepResearchProgressPanel
-          run={props.deepResearchRun}
-          onContinue={props.onContinueDeepResearchHandoff}
-          copy={copy.deepResearchProgress}
-        />
-      )}
       <div className="maka-chat-shell">
         {/* ChatSurfaceLayout hosts the rail outside bounded transcript columns. */}
         <PromptAnchorRail
@@ -1077,103 +1056,6 @@ function useTurnsHoldingInteraction(scrollRef: RefObject<HTMLElement | null>): {
     };
   }, [scrollRef]);
   return held;
-}
-
-export function DeepResearchProgressPanel({
-  run,
-  onContinue,
-  copy,
-}: {
-  run: DeepResearchClientProgress;
-  onContinue?: (run: DeepResearchClientProgress) => void;
-  copy: ReturnType<typeof getConversationCopy>['chat']['deepResearchProgress'];
-}) {
-  const completedItems = run.checklist.filter(
-    (item) => item.status === 'completed' || item.status === 'skipped',
-  ).length;
-
-  return (
-    <section
-      className="maka-deep-research-run-panel"
-      aria-label={copy.ariaLabel}
-      data-status={run.status}
-    >
-      <div className="maka-deep-research-run-summary">
-        <div>
-          <strong>{copy.title}</strong>
-          <span>
-            {run.status === 'completed'
-              ? copy.completedSummary
-              : copy.activeSummary(run.stage, run.scopeLevel, run.round)}
-          </span>
-        </div>
-        <div className="maka-deep-research-run-actions">
-          <span className="maka-deep-research-run-count">
-            {completedItems}/{run.checklist.length}
-          </span>
-          {run.status === 'completed' && run.implementationPrompt && onContinue && (
-            <Button
-              type="button"
-              label={copy.handoffAction}
-              endContent={<ArrowRight size={ICON_SIZE.meta} aria-hidden="true" />}
-              variant="secondary"
-              size="sm"
-              className="maka-deep-research-handoff-button"
-              onClick={() => onContinue(run)}
-              tooltip={copy.handoffTitle}
-            />
-          )}
-        </div>
-      </div>
-      <div className="maka-deep-research-run-grid">
-        <div>
-          <h3>{copy.checklistTitle}</h3>
-          <ul>
-            {run.checklist.map((item) => (
-              <li key={item.itemId} data-status={item.status}>
-                <span>{item.status === 'completed' ? '✓' : item.status === 'blocked' ? '!' : '·'}</span>
-                {item.title}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <h3>{copy.reportTitle}</h3>
-          <ul>
-            {run.reportSections.map((section) => (
-              <li key={section.key} data-status={section.status}>
-                <span>{section.status === 'completed' ? '✓' : section.status === 'drafted' ? '◐' : '·'}</span>
-                {copy.sectionLabels[section.key]}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <h3>{copy.inspectedTitle}</h3>
-          {run.recentInspectedRefs.length > 0 ? (
-            <ul>
-              {run.recentInspectedRefs.map((ref, index) => (
-                <li key={`${ref.kind}-${ref.locator}-${index}`}>
-                  <span>{ref.kind}</span>
-                  <code>{ref.locator}</code>
-                </li>
-              ))}
-            </ul>
-          ) : <p>{copy.inspectedEmpty}</p>}
-        </div>
-        <div>
-          <h3>{copy.executionTitle}</h3>
-          <p>{copy.executionSummary(run.stepsCount, run.artifactsCount)}</p>
-          {run.workerRunIds.length > 0 && <p>{copy.workersLabel}: {run.workerRunIds.join(', ')}</p>}
-          {run.blockers.length > 0 ? (
-            <ul className="maka-deep-research-run-blockers">
-              {run.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
-            </ul>
-          ) : <p>{copy.noBlockers}</p>}
-        </div>
-      </div>
-    </section>
-  );
 }
 /**
  * Locale-aware copy bundle for the empty-chat hero. Mirrors the

@@ -1653,7 +1653,7 @@ function GoalContextStory(props: { goal: NonNullable<ChatViewProps['goalIndicato
 }
 
 // Real path: open a derived revision that is running an autonomous goal with
-// local memory and Deep Research enabled. Session metadata stays in one context
+// local memory and a legacy research label. Session metadata stays in one context
 // layer above the transcript instead of splitting across header pills and
 // standalone branch/revision rows. The long session name is the point: it is
 // what forces that layer to collapse rather than wrap.
@@ -3607,7 +3607,6 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     expect(canvas.queryByRole('list', { name: '打开工具' })).toBeNull();
   },
 };
-
 
 const narrowWorkbarShare = fn();
 

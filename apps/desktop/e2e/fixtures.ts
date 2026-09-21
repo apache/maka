@@ -117,6 +117,28 @@ export async function waitForInvocableSkills(
 }
 
 /**
+ * Wait for Runtime's projection to stop offering a Skill.
+ *
+ * A Skill is toggled through the raw bridge here rather than the Skills page, so
+ * nothing re-fetches the composer's `/` source on its own. Pressing Enter before
+ * Runtime has dropped the Skill lets the send resolve it and succeed, and the
+ * rejection the journey expects never renders — the composer keeps offering a
+ * Skill that is already disabled.
+ */
+export async function waitForSkillNotInvocable(
+  page: Page,
+  absentIds: readonly string[],
+): Promise<void> {
+  await expect
+    .poll(async () =>
+      page.evaluate(async () =>
+        (await window.maka.skills.listInvocable(undefined)).map((skill) => skill.id),
+      ),
+    )
+    .not.toEqual(expect.arrayContaining(absentIds));
+}
+
+/**
  * Pre-seed a real-looking connection into the throwaway workspace so onboarding
  * clears and the composer is enabled. Actual sessions still run on the fake
  * backend (BackendRegistry override in main); this only satisfies the UI
@@ -277,7 +299,7 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
     mkdir(path.join(projectSkillRoot, 'project-only'), { recursive: true }),
     mkdir(path.join(projectSkillRoot, 'host-incompatible'), { recursive: true }),
     mkdir(path.join(projectSkillRoot, 'agent-write'), { recursive: true }),
-    mkdir(path.join(projectSkillRoot, 'deep-research-only'), { recursive: true }),
+    mkdir(path.join(projectSkillRoot, 'unavailable-tool'), { recursive: true }),
     mkdir(path.join(workspaceSkillRoot, 'workspace-only'), { recursive: true }),
     mkdir(path.join(userSkillRoot, 'user-only'), { recursive: true }),
   ]);
@@ -303,8 +325,8 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
       'utf8',
     ),
     writeFile(
-      path.join(projectSkillRoot, 'deep-research-only', 'SKILL.md'),
-      `---\nname: Deep Research Only\ndescription: Requires a tool available only in Deep Research mode.\nrequired-tools: [deep_research_status]\n---\n# Deep Research Only`,
+      path.join(projectSkillRoot, 'unavailable-tool', 'SKILL.md'),
+      `---\nname: Unavailable Tool\ndescription: Requires a tool unavailable on this Host.\nrequired-tools: [unavailable_fixture_tool]\n---\n# Unavailable Tool`,
       'utf8',
     ),
     writeFile(

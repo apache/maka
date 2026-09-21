@@ -316,8 +316,8 @@ describe('useTaskEntryController', () => {
 
     await act(async () => renderController(root, services));
     await act(async () => {
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
     });
     assert.equal(addCalls, 1);
     assert.equal(controller().selectors.workspacePicker.pending, true);
@@ -725,7 +725,7 @@ describe('useTaskEntryController', () => {
 
     await act(async () => renderController(root, services, errors));
     await act(async () => {
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
       await Promise.resolve();
     });
     assert.equal(controller().selectors.workspacePicker.pending, true);

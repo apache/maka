@@ -23,7 +23,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { createSqliteDeepResearchStore } from '../deep-research-store.js';
 import {
   createOperationalStateBackup,
   restoreOperationalStateBackup,
@@ -669,38 +668,6 @@ describe('SQLite workflow stores', () => {
           proposals: [],
           executions: [],
         });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  test('persists Deep Research events', async () => {
-    await withRoot(async (root) => {
-      const store = createSqliteDeepResearchStore(root, {
-        newId: () => 'research-1',
-        now: () => 200,
-      });
-      await store.start(SESSION_ID, 'Map the SQLite authority', 'deep');
-      store.close();
-
-      const reopened = createSqliteDeepResearchStore(root);
-      try {
-        assert.equal((await reopened.read(SESSION_ID))?.objective, 'Map the SQLite authority');
-      } finally {
-        reopened.close();
-      }
-    });
-  });
-
-  test('purges Deep Research events for retired Sessions', async () => {
-    await withRoot(async (root) => {
-      const store = createSqliteDeepResearchStore(root);
-      try {
-        await store.start(SESSION_ID, 'Remove the retired research workspace', 'standard');
-        await store.purgeSessionState(SESSION_ID);
-        assert.equal(await store.read(SESSION_ID), undefined);
-        assert.deepEqual(await store.readEvents(SESSION_ID), []);
       } finally {
         store.close();
       }

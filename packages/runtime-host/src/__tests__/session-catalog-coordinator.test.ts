@@ -31,7 +31,6 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { type ModelOverride } from '@maka/core/model-thinking';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -264,7 +263,7 @@ test('read marker pages past a hidden tail to reach the newest visible message',
 
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
   const fixture = createFixture({
-    labels: ['old-user-label', DEEP_RESEARCH_SESSION_LABEL],
+    labels: ['old-user-label', 'mode:deep_research'],
     manager: {
       runningTurnIds: () => ['turn-live'],
     },
@@ -275,7 +274,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
       sessionId: fixture.sessionId,
       expectedRevision: fixture.revision(),
       patch: {
-        labels: ['new-user-label', DEEP_RESEARCH_SESSION_LABEL],
+        labels: ['new-user-label', 'mode:deep_research'],
       },
     },
     context,
@@ -288,7 +287,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
   if ('kind' in outcome.result.session) {
     assert.fail('Metadata replacement returned an unsupported Session projection');
   }
-  assert.deepEqual(outcome.result.session.labels, ['new-user-label', DEEP_RESEARCH_SESSION_LABEL]);
+  assert.deepEqual(outcome.result.session.labels, ['new-user-label', 'mode:deep_research']);
   assert.equal(Object.hasOwn(outcome.result.session, 'liveRunState'), false);
   assert.equal(fixture.drainRequests(), 0);
 });
@@ -547,7 +546,7 @@ test('creation rejects reserved execution labels before claiming a Session ident
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      labels: [DEEP_RESEARCH_SESSION_LABEL],
+      labels: ['mode:deep_research'],
       modelTarget: { kind: 'default' },
     },
     context,
@@ -1305,41 +1304,6 @@ test('new tasks snapshot the current global Code Mode setting', async () => {
     'direct',
   );
   assert.deepEqual(modes.slice(2), ['code_mode', 'direct']);
-});
-
-test('creation materializes Deep Research semantics inside the Host transaction', async () => {
-  let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
-  const fixture = createFixture({
-    stores: {
-      createStableSession: async (request) => {
-        created = request;
-        return {
-          kind: 'existing',
-          record: headerSnapshot(sessionHeader(request.sessionId, request.input.labels ?? []), 3),
-        };
-      },
-    },
-  });
-
-  const outcome = await fixture.coordinator.handlers['session.create'](
-    {
-      sessionId: fixture.sessionId,
-      workspace: { kind: 'host_path', path: process.cwd() },
-      mode: 'deep_research',
-      name: 'Caller override',
-      labels: ['customer-label'],
-      modelTarget: { kind: 'default' },
-      permissionMode: 'ask',
-    },
-    context,
-  );
-
-  assert.equal(outcome.ok, true);
-  assert.ok(created);
-  assert.equal(created.input.name, DEEP_RESEARCH_SESSION_NAME);
-  assert.deepEqual(created.input.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
-  assert.equal(created.input.permissionMode, 'explore');
-  assert.equal(fixture.drainRequests(), 0);
 });
 
 test('bot mode grants explore while keeping the Bot-supplied Session name', async () => {

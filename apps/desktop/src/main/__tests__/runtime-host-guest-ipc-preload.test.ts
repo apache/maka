@@ -62,11 +62,11 @@ test('onboarding and workspace search never fan out Owner IPC to a ready Guest',
           },
         }];
         case 'sessions:list': return [];
-        case 'search:thread':
+        case 'search:recall':
           searchRequestId = requestId;
           searchStarted.resolve();
           return pendingSearch.promise;
-        case 'search:thread:cancel':
+        case 'search:recall:cancel':
           cancelRequestId = payload;
           return;
         default: throw new Error('Unexpected channel: ' + channel);
@@ -94,14 +94,14 @@ test('onboarding and workspace search never fan out Owner IPC to a ready Guest',
   assert.equal(snapshot.sessions.length, 1);
   assert.equal(snapshot.sessions[0]!.shared, true);
   assert.equal(snapshot.sessions[0]!.name, 'Shared Session');
-  const search = bridge.search.thread({ query: 'hello', limit: 10, source: 'thread' }, 'search-owner');
+  const search = bridge.search.recall({ terms: ['hello'], limit: 10 }, 'search-owner');
   await searchStarted.promise;
-  await bridge.search.cancelThread('search-owner');
+  await bridge.search.cancelRecall('search-owner');
   assert.equal((await search as { reason: string }).reason, 'aborted');
   assert.equal(searchRequestId, 'search-owner');
   assert.equal(cancelRequestId, searchRequestId);
   assert.equal(calls.some(call => call.hostId === guest.hostId), false);
-  for (const channel of ['onboarding:getSnapshot', 'search:thread', 'search:thread:cancel']) {
+  for (const channel of ['onboarding:getSnapshot', 'search:recall', 'search:recall:cancel']) {
     assert.equal(calls.filter(call => call.channel === channel && call.hostId === owner.hostId).length, 1);
   }
 });

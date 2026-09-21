@@ -17,15 +17,20 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { buildDeepResearchSystemPromptFragment } from '../deep-research.js';
-
-test('Deep Research directs inspection through the standard read-only tool surface', () => {
-  const prompt = buildDeepResearchSystemPromptFragment();
-
-  for (const toolName of ['Read', 'Glob', 'Grep', 'WebSearch']) {
-    assert.match(prompt, new RegExp(`\\b${toolName}\\b`));
-  }
-  assert.doesNotMatch(prompt, /ExploreAgent/);
-});
+/** Installed in the renderer before any application drop handlers run. */
+export const MAIN_WINDOW_DROP_GUARD_SCRIPT = `
+(() => {
+  const block = (e) => {
+    const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+    if (target?.closest('[data-maka-file-drop-target="true"]')) return;
+    if (target?.closest('[data-maka-queue-drop-target="true"]')
+      && e.dataTransfer?.types.includes('application/x-maka-queue-entry')) return;
+    if (target?.closest('[data-maka-session-drop-target="true"]')
+      && e.dataTransfer?.types.includes('application/x-maka-session')) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  window.addEventListener('dragover', block, true);
+  window.addEventListener('drop', block, true);
+})();
+`;

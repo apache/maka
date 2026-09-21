@@ -17,12 +17,14 @@
  * under the License.
  */
 
+import { NewProjectDialog } from '@maka/ui';
 import type { ProjectRecord } from '@maka/core/project';
 import { RemoteProjectDirectoryDialog } from '../../../remote-project-directory-dialog.js';
 import type { TaskEntryHostRef } from '../ports.js';
 import { useTaskEntryHostModel } from './task-entry-provider.js';
 
 export interface TaskEntryHostModel {
+  newProjectDialog?: { close(): void; submit(name: string): void };
   directoryHost?: TaskEntryHostRef & { readonly name?: string };
   directoryOpener?: HTMLElement | null;
   closeDirectoryPicker(): void;
@@ -38,6 +40,7 @@ export function TaskEntryHost() {
 
 export function TaskEntryHostView({ model }: { model: TaskEntryHostModel }) {
   return (
+    <>
     <RemoteProjectDirectoryDialog
       host={model.directoryHost}
       returnFocusTo={model.directoryOpener}
@@ -46,5 +49,12 @@ export function TaskEntryHostView({ model }: { model: TaskEntryHostModel }) {
         void model.acceptRegisteredProject(project, host);
       }}
     />
+    {model.newProjectDialog ? (
+      <NewProjectDialog
+        onOpenChange={(open) => { if (!open) model.newProjectDialog?.close(); }}
+        onSubmit={model.newProjectDialog.submit}
+      />
+    ) : null}
+    </>
   );
 }

@@ -19,7 +19,7 @@
 
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SettingsSection } from '@maka/core/settings';
-import type { OverlaySearchThread } from '../ports.js';
+import type { OverlaySearchRecall } from '../ports.js';
 import type { SearchScrollTarget } from './search-scroll-target.js';
 import type { SettingsModalState } from './settings-modal-state.js';
 
@@ -31,11 +31,11 @@ export interface OverlaysCommands {
   closePalette(): void;
   openSearch(): void;
   closeSearch(): void;
-  searchThread: OverlaySearchThread;
-  cancelSearchThread(requestId: string): Promise<void>;
+  searchRecall: OverlaySearchRecall;
+  cancelSearchRecall(requestId: string): Promise<void>;
   setSearchScrollTarget(target: SearchScrollTarget | null): void;
   openSettings(): void;
-  openSettingsSection(section: SettingsSection): void;
+  openSettingsSection(section?: SettingsSection): void;
   openProjectSettings(profileId: string): void;
   openProviderCatalog(): void;
   openConnectionDetail(slug: string): void;

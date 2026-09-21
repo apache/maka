@@ -37,7 +37,6 @@ import type { DesktopSessionUpdateFailureCode } from '../../shared/desktop-sessi
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
   'action:side-chat',
-  'action:new-deep-research',
   'action:new-scheduled-task',
   'action:open-settings',
   'action:keyboard-help',
@@ -86,7 +85,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
     '任务',
     '追问',
   ],
-  'action:new-deep-research': ['deep', 'research', 'explore', 'readonly', '研究', '深度', '探索', '只读'],
   'action:new-scheduled-task': ['plan', 'task', 'schedule', 'new', 'create', '计划', '提醒', '新建', '创建'],
   'action:open-settings': ['settings', 'preferences', '设置', 'options'],
   'action:keyboard-help': ['shortcuts', 'keyboard', 'help', '快捷键', '帮助'],
@@ -267,6 +265,13 @@ type ShellCopy = {
     unarchiveFailedTitle: string;
     renameFailedTitle: string;
     deleteFailedTitle: string;
+    /** Toast title when a task cannot be re-filed into another project. */
+    moveFailedTitle: string;
+    /** Why a re-file was refused, keyed by the Host's failure code. */
+    moveFailures: Record<
+      'session_busy' | 'operation_conflict' | 'operation_unavailable' | 'not_found',
+      string
+    >;
     currentConversation: string;
     deleteTitle(name: string): string;
     deleteDescription: string;
@@ -541,11 +546,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
-  'action:new-deep-research': {
-    label: '新建深度研究',
-    hint: '只读探索',
-    group: '操作',
-  },
   'action:new-scheduled-task': {
     label: '新建定时任务',
     hint: '打开定时任务表单',
@@ -629,11 +629,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:side-chat': {
     label: 'Open side chat',
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
-    group: 'Actions',
-  },
-  'action:new-deep-research': {
-    label: 'New deep research',
-    hint: 'Read-only exploration',
     group: 'Actions',
   },
   'action:new-scheduled-task': {
@@ -891,6 +886,13 @@ const SHELL_COPY_BY_LOCALE = {
       unarchiveFailedTitle: '恢复任务失败',
       renameFailedTitle: '重命名任务失败',
       deleteFailedTitle: '删除任务失败',
+      moveFailedTitle: '移动任务失败',
+      moveFailures: {
+        session_busy: '任务正在运行，结束后再移动。',
+        operation_conflict: '该项目当前不可用，无法移入。',
+        operation_unavailable: '当前无法移动这个任务。',
+        not_found: '找不到该项目或任务。',
+      },
       currentConversation: '当前任务',
       deleteTitle: (name: string) => `删除 "${name}"`,
       deleteDescription: '任务和全部消息会从磁盘上永久移除。该操作不可撤销。',
@@ -1409,6 +1411,13 @@ const SHELL_COPY_BY_LOCALE = {
       unarchiveFailedTitle: '恢復任務失敗',
       renameFailedTitle: '重新命名任務失敗',
       deleteFailedTitle: '刪除任務失敗',
+      moveFailedTitle: '移動任務失敗',
+      moveFailures: {
+        session_busy: '任務正在執行，結束後再移動。',
+        operation_conflict: '該專案目前無法使用，無法移入。',
+        operation_unavailable: '目前無法移動這個任務。',
+        not_found: '找不到該專案或任務。',
+      },
       currentConversation: '目前任務',
       deleteTitle: (name: string) => `刪除 "${name}"`,
       deleteDescription: '任務和全部訊息會從磁碟上永久移除。該操作不可撤銷。',
@@ -1929,6 +1938,13 @@ const SHELL_COPY_BY_LOCALE = {
       unarchiveFailedTitle: 'Could not restore task',
       renameFailedTitle: 'Could not rename task',
       deleteFailedTitle: 'Could not delete task',
+      moveFailedTitle: 'Could not move task',
+      moveFailures: {
+        session_busy: 'A task is running. Wait for it to finish before moving this one.',
+        operation_conflict: 'That project is unavailable right now, so the task cannot move into it.',
+        operation_unavailable: 'This task cannot be moved right now.',
+        not_found: 'That project or task could not be found.',
+      },
       currentConversation: 'Current task',
       deleteTitle: (name: string) => `Delete "${name}"`,
       deleteDescription:

@@ -285,7 +285,7 @@ describe('Volcengine Agent Plan official catalog mirror', () => {
 });
 
 describe('Command Code static reasoning metadata', () => {
-  const commandCodeProviders = ['commandcode', 'commandcode-go'] as const;
+  const commandCodeProviders = ['commandcode'] as const;
   // The reference table this is ported from (dsh-commandcode-provider's
   // KNOWN_EFFORTS, re-verified against command-code@1.53.0).
   const expectedEfforts: Record<string, readonly ThinkingLevel[]> = {
@@ -306,7 +306,7 @@ describe('Command Code static reasoning metadata', () => {
     'zai-org/GLM-5.2': ['high', 'max'],
   };
 
-  it('serves the same table to both Command Code providers', () => {
+  it('serves the effort table to the Command Code provider', () => {
     for (const providerType of commandCodeProviders) {
       for (const [modelId, efforts] of Object.entries(expectedEfforts)) {
         assert.deepEqual(
@@ -329,9 +329,6 @@ describe('Command Code static reasoning metadata', () => {
   });
 
   it('leaves a model without a declared level uncovered', () => {
-    assert.equal(
-      lookupModelMetadata('commandcode-go', 'tencent/hy3-paid').thinkingOptions,
-      undefined,
-    );
+    assert.equal(lookupModelMetadata('commandcode', 'tencent/hy3-paid').thinkingOptions, undefined);
   });
 });

@@ -29,6 +29,11 @@ import { LiveTurnReconciler } from '../../renderer/features/conversation/index.j
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
 import {
+  createSessionCatalogController,
+  selectSessionById,
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../renderer/application/contracts/session-catalog/use-external-store-selector.js';
+import {
   clearAppShellSessionUiStateForSession,
   createAppShellSessionUiStateController,
   createInitialAppShellSessionUiState,
@@ -37,7 +42,9 @@ import {
 import {
   createTranscriptRestoreLifecycle,
   restoreSessionTranscriptRange,
+  shellSessionRowEqual,
 } from '../../renderer/features/conversation/testing.js';
+import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 
 function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
   return {
@@ -147,6 +154,33 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(next.messageLoadErrorBySession, { session: 'failed' });
     assert.equal(next.stopPendingBySession, state.stopPendingBySession);
     assert.equal(next.liveTurnBySession, state.liveTurnBySession);
+  });
+
+  it('does not republish a fresh-but-equal execution projection', () => {
+    const controller = createAppShellSessionUiStateController();
+    const projection = {
+      type: 'host_execution' as const,
+      available: true,
+      rootTurn: { sessionId: 'session', turnId: 'turn', runId: 'run', status: 'running' as const },
+    };
+    controller.setExecution('session', projection);
+    const state = controller.getState();
+    let notifications = 0;
+    controller.subscribe(() => {
+      notifications += 1;
+    });
+
+    // The observation channel resends an equivalent projection on unrelated
+    // metadata events — a fresh identity carrying the same content.
+    controller.setExecution('session', { ...projection, rootTurn: { ...projection.rootTurn } });
+    assert.equal(controller.getState(), state);
+    assert.equal(notifications, 0);
+
+    controller.setExecution('session', {
+      ...projection,
+      rootTurn: { ...projection.rootTurn, status: 'completed' as const, terminalEventId: 'evt-1' },
+    });
+    assert.equal(notifications, 1);
   });
 
   it('records event-stream health without notifying render subscribers', () => {
@@ -280,5 +314,103 @@ describe('app shell session UI state controller', () => {
     const projection = [armLiveTurn('turn-1')];
     controller.setLiveTurnBySession((current) => ({ ...current, session: projection }));
     assert.equal(controller.liveTurnBySessionRef.current.session, projection);
+  });
+});
+
+describe('shellSessionRowEqual', () => {
+  const row: DesktopSessionSummary = {
+    id: 'session-1',
+    revision: 7,
+    activityAt: 100,
+    name: 'session one',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'default',
+    connectionLocked: false,
+    model: 'model',
+    permissionMode: 'ask',
+    runtimeHostId: 'host',
+    profileId: 'profile',
+    profileName: 'Local',
+    profileKind: 'local',
+  };
+
+  it('holds identity across rail-only bookkeeping', () => {
+    const patched: DesktopSessionSummary = {
+      ...row,
+      revision: 8,
+      activityAt: 200,
+      isFlagged: true,
+      hasUnread: true,
+      lastMessagePreview: 'newest line',
+      statusUpdatedAt: 150,
+    };
+    assert.equal(shellSessionRowEqual(row, patched), true);
+    assert.equal(shellSessionRowEqual(row, row), true);
+  });
+
+  it('republishes when a rendered field moves', () => {
+    assert.equal(shellSessionRowEqual(row, { ...row, status: 'running' }), false);
+    assert.equal(shellSessionRowEqual(row, { ...row, name: 'renamed' }), false);
+    assert.equal(shellSessionRowEqual(row, { ...row, permissionMode: 'bypass' }), false);
+    assert.equal(
+      shellSessionRowEqual(row, { ...row, lastMessageAt: 200 }),
+      false,
+    );
+    assert.equal(shellSessionRowEqual(row, undefined), false);
+  });
+
+  it('republishes for a field the rail-only list does not know about', () => {
+    // A row field added later is not in NON_RENDERED_ROW_KEYS, so it must
+    // fail closed: compare, differ, republish — never silently keep identity.
+    const future = { ...row, fieldAddedNextMonth: 'a' } as DesktopSessionSummary;
+    const later = { ...row, fieldAddedNextMonth: 'b' } as DesktopSessionSummary;
+    assert.equal(shellSessionRowEqual(future, later), false);
+    assert.equal(shellSessionRowEqual(future, row), false);
+  });
+
+  it('keeps a catalog row subscriber mounted through rail-only patches', async () => {
+    const { root } = installReactRenderer();
+    try {
+      const catalog = createSessionCatalogController();
+      catalog.commitSessions([row]);
+      let renders = 0;
+      function Probe() {
+        useExternalStoreSelector(catalog, selectSessionById, row.id, shellSessionRowEqual);
+        renders += 1;
+        return null;
+      }
+      await act(async () => { root.render(createElement(Probe)); });
+      assert.equal(renders, 1);
+
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 8,
+          isFlagged: true,
+          hasUnread: true,
+          lastMessagePreview: 'newest line',
+          activityAt: 200,
+        });
+      });
+      assert.equal(renders, 1, 'rail-only bookkeeping must not republish a row subscriber');
+
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 9,
+          isFlagged: true,
+          hasUnread: true,
+          lastMessagePreview: 'newest line',
+          activityAt: 200,
+          name: 'renamed',
+        });
+      });
+      assert.equal(renders, 2, 'a rendered-field change still republishes');
+    } finally { cleanupFakeDom(); }
   });
 });

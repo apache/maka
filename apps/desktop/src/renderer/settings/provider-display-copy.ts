@@ -304,10 +304,13 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'Command Code', description: '使用 Command Code 方案額度，連線後自動取得模型。', badge: 'Coding' },
     en: { name: 'Command Code', description: 'Use your Command Code plan credits. Models are fetched when you connect.', badge: 'Coding' },
   },
+  // Retired: its transport reached a private endpoint under the official CLI's
+  // identity. Kept so an existing connection stays identifiable and readable;
+  // the connection card states that nothing can send through it any more.
   'commandcode-go': {
-    'zh-CN': { name: 'Command Code GO', description: 'GO 套餐专用：走官方 CLI 的私有通道发送请求。连接后自动获取模型。', badge: 'Coding' },
-    'zh-TW': { name: 'Command Code GO', description: 'GO 方案專用：走官方 CLI 的私有通道傳送請求。連線後自動取得模型。', badge: 'Coding' },
-    en: { name: 'Command Code GO', description: 'For the GO plan: sends through the official CLI\'s private transport. Models are fetched when you connect.', badge: 'Coding' },
+    'zh-CN': { name: 'Command Code GO', description: '已停用：该套餐通过官方 CLI 的私有通道访问，已不再支持。', badge: 'Coding' },
+    'zh-TW': { name: 'Command Code GO', description: '已停用：該方案透過官方 CLI 的私有通道存取，已不再支援。', badge: 'Coding' },
+    en: { name: 'Command Code GO', description: 'Retired: this plan reached a private endpoint under the official CLI\u2019s identity.', badge: 'Coding' },
   },
   groq: {
     'zh-CN': { name: 'Groq', description: 'LPU 高速推理托管开源模型', badge: 'API' },
