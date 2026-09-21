@@ -21,7 +21,11 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { StoredMessage } from '@maka/core/session';
-import { createAppShellRevisionActions } from '../../renderer/app-shell-revision-actions.js';
+import {
+  createAppShellRevisionActions,
+  type TurnRevisionDraft,
+} from '../../renderer/app-shell-revision-actions.js';
+import { installWindow } from './app-shell-chat-actions-fixture.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
 const SESSION_2 = JSON.stringify(['host-1', 'session-2']);
@@ -222,5 +226,114 @@ describe('prepareRevisionSend transcript settlement', () => {
         assert.equal(h.composerState.text, 'edited');
       },
     );
+  });
+});
+
+describe('revision draft lifecycle over a prepared send', () => {
+  // The revision child can land in the catalog before reviseBeforeTurn
+  // resolves; the world below models the deferred handoff by letting
+  // openSessionInChat settle the active Session.
+  function createRevisionWorld(options: { composerText?: string } = {}) {
+    const activeIdRef: { current: string | undefined } = { current: SESSION_1 };
+    let selectionRevision = 0;
+    let reviseCalls = 0;
+    const abandonedCopies: string[] = [];
+    const sessionDrafts = new Map<string, string>();
+    const clearedDrafts: string[] = [];
+    let composerText = options.composerText ?? '';
+    const revisionDraftRef: { current: TurnRevisionDraft | null } = { current: null };
+    const actions = createAppShellRevisionActions({
+      uiLocale: 'en' as never,
+      activeIdRef,
+      captureSelection: () => {
+        const revision = selectionRevision;
+        return () => selectionRevision === revision;
+      },
+      composerRef: {
+        current: {
+          getText: () => composerText,
+          setText: (text: string) => { composerText = text; },
+          focus: () => {},
+          setDraft: (sessionId: string, text: string) => { sessionDrafts.set(sessionId, text); },
+          clearDraft: (sessionId: string) => {
+            clearedDrafts.push(sessionId);
+            sessionDrafts.delete(sessionId);
+          },
+        },
+      },
+      messages: [userMessage('turn-1', 'original message')],
+      hasPendingAttachments: () => false,
+      openSessionInChat: (sessionId: string) => {
+        selectionRevision += 1;
+        activeIdRef.current = sessionId;
+      },
+      refreshSessions: async () => [],
+      commitRevisionDraft: (draft: TurnRevisionDraft | null) => {
+        revisionDraftRef.current = draft;
+      },
+      revisionDraftRef,
+      toastApi: { info: () => {}, error: () => {} },
+    } as never);
+    const restoreWindow = installWindow({
+      sessions: {
+        reviseBeforeTurn: async () => {
+          reviseCalls += 1;
+          return { id: SESSION_2 };
+        },
+        abandonSessionCopy: async (_sessionId: string, copyId: string) => {
+          abandonedCopies.push(copyId);
+        },
+      },
+    });
+    return {
+      actions,
+      activeIdRef,
+      abandonedCopies,
+      sessionDrafts,
+      clearedDrafts,
+      revisionDraftRef,
+      restoreWindow,
+      get reviseCalls() { return reviseCalls; },
+      get composerText() { return composerText; },
+    };
+  }
+
+  it('retries a refused send inside the prepared child instead of opening another revision', async () => {
+    const world = createRevisionWorld();
+    try {
+      world.actions.beginEditUserMessage('turn-1');
+      assert.equal(await world.actions.prepareRevisionSend('edited text'), true);
+      // The refused send never reaches these actions: the draft keeps the
+      // child it already prepared, so the next send only has to not fork again.
+      assert.equal(await world.actions.prepareRevisionSend('edited text'), true);
+      assert.equal(world.reviseCalls, 1);
+      assert.equal(world.revisionDraftRef.current?.draftSessionId, SESSION_2);
+      assert.equal(world.sessionDrafts.get(SESSION_2), 'edited text');
+    } finally {
+      world.restoreWindow();
+    }
+  });
+
+  it('restores the complete pre-edit draft when a refused revision is cancelled', async () => {
+    const world = createRevisionWorld({
+      composerText: 'previous unsent draft /skill:project-only',
+    });
+    try {
+      world.actions.beginEditUserMessage('turn-1');
+      assert.equal(await world.actions.prepareRevisionSend('edited with skill /skill:workspace-only'), true);
+      await world.actions.cancelRevisionDraft();
+      assert.equal(world.revisionDraftRef.current, null);
+      assert.equal(
+        world.sessionDrafts.get(SESSION_1),
+        'previous unsent draft /skill:project-only',
+        'the pre-edit draft returns to its source Session, Skill token included',
+      );
+      assert.deepEqual(world.clearedDrafts, [SESSION_2]);
+      assert.equal(world.abandonedCopies.length, 1);
+      assert.equal(world.activeIdRef.current, SESSION_1);
+      assert.equal(world.composerText, 'previous unsent draft /skill:project-only');
+    } finally {
+      world.restoreWindow();
+    }
   });
 });
