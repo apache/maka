@@ -86,6 +86,7 @@ test('package registers the main-compatible executor and lifecycle order', () =>
 test('client bundle merges Codex and native models in the Composer model selector', async () => {
   let moduleFactory;
   runInNewContext(await readFile(join(here, '..', 'client.js'), 'utf8'), {
+    AbortController,
     window: {
       __MakaModuleLoader__: {
         load(definition) {
@@ -99,6 +100,12 @@ test('client bundle merges Codex and native models in the Composer model selecto
     Fragment: Symbol('Fragment'),
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
     useEffect() {},
+    useCallback(callback) {
+      return callback;
+    },
+    useRef(value) {
+      return { current: value };
+    },
     useState(value) {
       if (Array.isArray(value)) {
         return [
@@ -129,9 +136,15 @@ test('client bundle merges Codex and native models in the Composer model selecto
     assert.fail(`unexpected module: ${id}`);
   });
   let registration;
+  let modelCalls = 0;
   client.apply({
     style() {},
-    remote: { call: async () => [] },
+    remote: {
+      call: async () => {
+        modelCalls += 1;
+        return [];
+      },
+    },
     slots: {
       register(options, component) {
         registration = { options, component };
@@ -156,9 +169,12 @@ test('client bundle merges Codex and native models in the Composer model selecto
       },
     ],
     onExecutorTargetChange() {},
+    renderNativeThinkingControl: () => 'native-thinking',
   });
   const controls = rendered.type(rendered.props);
-  const selector = controls.children[0];
+  const modelPicker = controls.children[0];
+  assert.equal(modelPicker.type, 'span');
+  const selector = modelPicker.children[0];
   assert.equal(selector.type, 'Selector');
   assert.equal(
     JSON.stringify(
@@ -181,6 +197,11 @@ test('client bundle merges Codex and native models in the Composer model selecto
   assert.equal(selector.props.className, 'maka-new-chat-model-selector');
   assert.equal(typeof selector.props.renderOption, 'function');
   assert.equal(typeof selector.props.renderValue, 'function');
+  assert.equal(controls.children[1], 'native-thinking');
+  assert.equal(modelCalls, 0, 'mounting the Composer must not start Codex');
+  modelPicker.props.onPointerDownCapture();
+  modelPicker.props.onPointerDownCapture();
+  assert.equal(modelCalls, 1, 'the first open intent loads models exactly once');
 });
 
 test('configuration validates safe unattended defaults', () => {

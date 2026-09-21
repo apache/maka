@@ -964,6 +964,9 @@ export type WorkHubDelegationWorkspace =
   | { readonly kind: 'project'; readonly projectId: string }
   | { readonly kind: 'host_path'; readonly path: string };
 
+/** UTF-8 wire limit shared by persisted and protocol Session model identifiers. */
+export const SESSION_MODEL_ID_MAX_BYTES = 512;
+
 /** User-selected creation defaults; never applied to an existing Work. */
 export interface WorkHubCreateDefaults {
   /** Named plugin executor for the new Session. Mutually exclusive with model. */
@@ -998,7 +1001,7 @@ export function isWorkHubCreateDefaults(value: unknown): value is WorkHubCreateD
     value.executorModel !== undefined &&
     (typeof value.executorModel !== 'string' ||
       value.executorModel.trim().length === 0 ||
-      value.executorModel.length > 512)
+      new TextEncoder().encode(value.executorModel).byteLength > SESSION_MODEL_ID_MAX_BYTES)
   )
     return false;
   if (value.executorModel !== undefined && value.executorId === undefined) return false;

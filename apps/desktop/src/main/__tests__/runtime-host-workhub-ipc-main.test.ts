@@ -45,7 +45,9 @@ test('registers the WorkHub Session projection as a reconnectable read', () => {
 
 test('stores new-work execution defaults separately from the coordination Session', async () => {
   const handlers = new Map<string, IpcHandler>();
-  const client = {} as Parameters<typeof registerRuntimeHostWorkHubIpc>[0];
+  const client = { hostId: 'host-defaults' } as Parameters<
+    typeof registerRuntimeHostWorkHubIpc
+  >[0];
   registerRuntimeHostWorkHubIpc(
     client,
     {
@@ -71,6 +73,24 @@ test('stores new-work execution defaults separately from the coordination Sessio
   assert.throws(
     () => write(event, { ...defaults, permissionMode: 'bypass' }),
     /Invalid WorkHub new-work defaults/u,
+  );
+
+  const replacementHandlers = new Map<string, IpcHandler>();
+  registerRuntimeHostWorkHubIpc(
+    { hostId: client.hostId } as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
+    {
+      handle(channel, handler) {
+        replacementHandlers.set(channel, handler);
+      },
+    },
+    {},
+  );
+  const replacementRead = replacementHandlers.get('workhub:getNewWorkDefaults');
+  assert.ok(replacementRead);
+  assert.deepEqual(
+    await replacementRead(event),
+    defaults,
+    'replacement clients for the same Host retain the execution defaults',
   );
 });
 

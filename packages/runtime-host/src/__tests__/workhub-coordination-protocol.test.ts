@@ -138,6 +138,15 @@ test('WorkHub new Sessions accept a plugin executor as their creation default', 
     },
   };
   assert.deepEqual(decodeWorkHubCoordinationActFromTurnInput(input), input);
+  assert.doesNotThrow(() =>
+    decodeWorkHubCoordinationActFromTurnInput({
+      ...input,
+      newWorkDefaults: {
+        executorId: 'codex.app-server',
+        executorModel: '界'.repeat(170),
+      },
+    }),
+  );
   for (const newWorkDefaults of [
     {
       executorId: 'codex',
@@ -145,6 +154,7 @@ test('WorkHub new Sessions accept a plugin executor as their creation default', 
     },
     { executorModel: 'gpt-6-astra' },
     { executorId: 'codex.app-server', executorModel: '' },
+    { executorId: 'codex.app-server', executorModel: '界'.repeat(171) },
     { executorId: 'invalid executor' },
   ]) {
     assert.throws(

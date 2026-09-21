@@ -748,7 +748,7 @@ const workHubRuntime = createWorkHubRuntime({
       workspace: await currentDesktopWorkspaceTarget(target.policy),
       defaults: {
         permissionMode: (await settingsStore.get()).chatDefaults.permissionMode,
-        ...readWorkHubNewWorkDefaults(target.client),
+        ...readWorkHubNewWorkDefaults(target.client.hostId),
       },
     };
   },

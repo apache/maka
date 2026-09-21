@@ -24,6 +24,7 @@ import { isSessionStartMode, type SessionStartMode } from '@maka/core/session-st
 import {
   isSessionBlockedReason,
   isSessionToolProfile,
+  SESSION_MODEL_ID_MAX_BYTES,
   type PersistedBackendKind,
   type SessionBlockedReason,
   type SessionStatus,
@@ -65,7 +66,7 @@ export const SESSION_CATALOG_NAME_MAX_BYTES = 320;
 export const SESSION_CATALOG_LABEL_MAX_ITEMS = 32;
 export const SESSION_CATALOG_LABEL_MAX_BYTES = 128;
 export const SESSION_CATALOG_PREVIEW_MAX_BYTES = 4 * 1024;
-export const SESSION_CATALOG_MODEL_MAX_BYTES = 512;
+export const SESSION_CATALOG_MODEL_MAX_BYTES = SESSION_MODEL_ID_MAX_BYTES;
 export const SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES = 256;
 export const SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION = 1 as const;
 export const SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS = 64;

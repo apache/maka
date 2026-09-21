@@ -137,6 +137,12 @@ export interface MakaClientComposerModelSelectionProps {
     readonly llmConnectionSlug: string;
     readonly model: string;
   }) => void | Promise<void>;
+  /**
+   * Renders the Maka-owned thinking control for the selected native model.
+   * A contribution replacing the complete model-selection pair must use this
+   * instead of copying native model capability and mutation semantics.
+   */
+  readonly renderNativeThinkingControl: () => ReactNode;
   readonly onExecutorTargetChange?: (target: MakaClientExecutorTarget) => void | Promise<void>;
 }
 

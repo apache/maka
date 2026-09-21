@@ -92,7 +92,8 @@ window.__MakaModuleLoader__.load({
     function CodexControls(owner) {
       const [models, setModels] = React.useState([]);
       const [error, setError] = React.useState('');
-      const [loading, setLoading] = React.useState(true);
+      const [loading, setLoading] = React.useState(false);
+      const modelLoad = React.useRef({ started: false, controller: null });
       const selectedModel =
         owner.executorTarget?.executorId === EXECUTOR_ID ? (owner.executorTarget.model ?? '') : '';
       const selected = models.find((model) => model.model === selectedModel);
@@ -113,8 +114,10 @@ window.__MakaModuleLoader__.load({
               choice.model === owner.newChatModel?.model,
           );
 
-      React.useEffect(() => {
+      const loadModels = React.useCallback(() => {
+        if (modelLoad.current.started) return;
         const controller = new AbortController();
+        modelLoad.current = { started: true, controller };
         setLoading(true);
         ctx.remote
           .call('codex.app-server.models', {}, { signal: controller.signal })
@@ -130,8 +133,14 @@ window.__MakaModuleLoader__.load({
           .finally(() => {
             if (!controller.signal.aborted) setLoading(false);
           });
-        return () => controller.abort();
       }, []);
+      React.useEffect(() => {
+        // A selected Codex model needs its display metadata immediately. When
+        // Maka has no native choices, loading is also required to avoid a
+        // disabled empty picker that the user cannot open to trigger loading.
+        if (selectedModel || nativeChoices.length === 0) loadModels();
+      }, [selectedModel, nativeChoices.length, loadModels]);
+      React.useEffect(() => () => modelLoad.current.controller?.abort(), []);
 
       const choose = (model, thinkingLevel) => {
         if (!owner.onExecutorTargetChange || !model) return;
@@ -194,7 +203,7 @@ window.__MakaModuleLoader__.load({
       ];
       const [wheelOpen, setWheelOpen] = React.useState(false);
       React.useEffect(() => setWheelOpen(false), [owner.sessionId]);
-      const modelPicker =
+      const modelPickerControl =
         owner.presentation === 'wheel'
           ? React.createElement(ModelWheelPicker, {
               options: wheelOptions,
@@ -206,7 +215,10 @@ window.__MakaModuleLoader__.load({
               triggerClassName: 'maka-model-switcher-trigger',
               disabled: owner.disabled || owner.streaming || wheelOptions.length === 0,
               open: wheelOpen,
-              onOpenChange: setWheelOpen,
+              onOpenChange: (open) => {
+                if (open) loadModels();
+                setWheelOpen(open);
+              },
               onValueChange: onModelChange,
             })
           : React.createElement(Selector, {
@@ -230,6 +242,26 @@ window.__MakaModuleLoader__.load({
               renderOption,
               renderValue,
             });
+      const modelPicker =
+        owner.presentation === 'wheel'
+          ? modelPickerControl
+          : React.createElement(
+              'span',
+              {
+                style: { display: 'contents' },
+                onPointerDownCapture: loadModels,
+                onKeyDownCapture: (event) => {
+                  if (
+                    event.key === 'Enter' ||
+                    event.key === ' ' ||
+                    event.key === 'ArrowDown' ||
+                    event.key === 'ArrowUp'
+                  )
+                    loadModels();
+                },
+              },
+              modelPickerControl,
+            );
       return React.createElement(
         React.Fragment,
         null,
@@ -256,7 +288,9 @@ window.__MakaModuleLoader__.load({
               onChange: (value) =>
                 choose(selectedModel, value === '__default__' ? undefined : value),
             })
-          : null,
+          : selectedModel
+            ? null
+            : (owner.renderNativeThinkingControl?.() ?? null),
       );
     }
 

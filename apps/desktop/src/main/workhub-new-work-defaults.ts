@@ -21,15 +21,20 @@ import type { WorkHubCreateDefaults } from '@maka/core/session';
 
 type WorkHubExecutionDefaults = Omit<WorkHubCreateDefaults, 'permissionMode'>;
 
-const defaultsByClient = new WeakMap<object, WorkHubExecutionDefaults>();
+// A transport reconnect replaces the client object but preserves the logical
+// Host identity. Keep this Desktop-owned preference on that stable boundary so
+// the renderer and the WorkHub creation path cannot disagree after reconnect.
+// This remains process-local by design: persisting a user preference across
+// app restarts is a separate product decision.
+const defaultsByHost = new Map<string, WorkHubExecutionDefaults>();
 
-export function readWorkHubNewWorkDefaults(client: object): WorkHubExecutionDefaults {
-  return defaultsByClient.get(client) ?? {};
+export function readWorkHubNewWorkDefaults(hostId: string): WorkHubExecutionDefaults {
+  return defaultsByHost.get(hostId) ?? {};
 }
 
 export function writeWorkHubNewWorkDefaults(
-  client: object,
+  hostId: string,
   defaults: WorkHubExecutionDefaults,
 ): void {
-  defaultsByClient.set(client, Object.freeze({ ...defaults }));
+  defaultsByHost.set(hostId, Object.freeze({ ...defaults }));
 }

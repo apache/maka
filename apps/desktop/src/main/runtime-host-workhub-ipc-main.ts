@@ -47,6 +47,7 @@ type RuntimeHostWorkHubClient = Pick<
   | 'resolveWorkHubCoordinationSession'
   | 'getWorkHubSession'
   | 'queryTurn'
+  | 'hostId'
   | 'hostEpoch'
 >;
 
@@ -127,12 +128,15 @@ export function registerRuntimeHostWorkHubIpc(
     reconciliationUnavailable: async (attempt) => unknown(attempt),
   });
   ipcMain.handle('workhub:configureModel', (_event, input) => client.configureWorkHubModel(input));
-  ipcMain.handle('workhub:getNewWorkDefaults', () => readWorkHubNewWorkDefaults(client));
+  ipcMain.handle('workhub:getNewWorkDefaults', () => readWorkHubNewWorkDefaults(client.hostId));
   ipcMain.handle('workhub:setNewWorkDefaults', (_event, value: unknown) => {
     if (!isWorkHubCreateDefaults(value) || value.permissionMode !== undefined) {
       throw new Error('Invalid WorkHub new-work defaults');
     }
-    writeWorkHubNewWorkDefaults(client, value as Omit<WorkHubCreateDefaults, 'permissionMode'>);
+    writeWorkHubNewWorkDefaults(
+      client.hostId,
+      value as Omit<WorkHubCreateDefaults, 'permissionMode'>,
+    );
   });
   ipcMain.handle('workhub:prepareAttachments', async (event, items: unknown): Promise<WorkHubPrepareAttachmentsResult> => {
     if (!options.attachmentIngest) throw new Error('WorkHub attachments are unavailable');

@@ -1788,6 +1788,26 @@ export const Composer = forwardRef<
   );
   const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
   const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes);
+  const renderNativeThinkingControl = (): ReactNode =>
+    props.activeSession ? (
+      <ThinkingLevelSelector
+        levels={props.activeThinkingLevels ?? []}
+        current={props.activeThinkingLevel}
+        presentation={thinkingPresentation}
+        isReadOnly={props.pickersReadOnly}
+        onChange={props.onThinkingLevelChange}
+        disabled={!modelSwitchAvailability.available}
+        disabledReason={thinkingSwitcherDisabledReason}
+      />
+    ) : (
+      <ThinkingLevelSelector
+        levels={props.newChatThinkingLevels ?? []}
+        current={props.newChatThinkingLevel}
+        presentation={thinkingPresentation}
+        isReadOnly={props.pickersReadOnly}
+        onChange={props.onNewChatThinkingLevelChange}
+      />
+    );
 
   return (
     <>
@@ -2302,6 +2322,7 @@ export const Composer = forwardRef<
                       onNativeModelChange: props.activeSession
                         ? props.onModelChange
                         : props.onPickNewChatModel,
+                      renderNativeThinkingControl,
                       onExecutorTargetChange: props.onExecutorTargetChange,
                     }}
                     options={{
@@ -2352,25 +2373,7 @@ export const Composer = forwardRef<
                     showUnavailableStatus={props.showStaticModelUnavailableStatus}
                   />
                 )}
-                {props.activeSession ? (
-                  <ThinkingLevelSelector
-                    levels={props.activeThinkingLevels ?? []}
-                    current={props.activeThinkingLevel}
-                    presentation={thinkingPresentation}
-                    isReadOnly={props.pickersReadOnly}
-                    onChange={props.onThinkingLevelChange}
-                    disabled={!modelSwitchAvailability.available}
-                    disabledReason={thinkingSwitcherDisabledReason}
-                  />
-                ) : (
-                  <ThinkingLevelSelector
-                    levels={props.newChatThinkingLevels ?? []}
-                    current={props.newChatThinkingLevel}
-                    presentation={thinkingPresentation}
-                    isReadOnly={props.pickersReadOnly}
-                    onChange={props.onNewChatThinkingLevelChange}
-                  />
-                )}
+                {renderNativeThinkingControl()}
                         </>
                       ),
                     }}
