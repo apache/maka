@@ -171,7 +171,11 @@ test('queue actions stay disabled until the entry is Host-admitted', async () =>
       (button) => (button.getAttribute('aria-label') ?? button.textContent) === copy.editQueuedEntry,
     );
     assert.equal(edits.length, 2);
-    assert.ok(edits.every((button) => button.disabled), 'no row is editable without a queue revision');
+    // Buttons carrying a tooltip render aria-disabled instead of the native
+    // attribute so the tooltip stays reachable — accept either form.
+    const isDisabled = (button: HTMLButtonElement) =>
+      button.disabled || button.getAttribute('aria-disabled') === 'true';
+    assert.ok(edits.every(isDisabled), 'no row is editable without a queue revision');
   } finally {
     await view.close();
   }

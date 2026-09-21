@@ -90,8 +90,6 @@ function localDeliveryServices(state: DeliveryState): ConversationServices {
     reconcileMessage: async () => undefined,
     subscribeChanges: () => () => undefined,
     sessions: {
-      list: async () => [],
-      subscribeChanges: () => () => undefined,
       readSnapshot: async () => {
         throw new Error('Session snapshots are not used in this story');
       },
