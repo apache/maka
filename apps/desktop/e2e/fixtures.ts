@@ -507,6 +507,12 @@ export async function withE2eWindow(
       rendererLogs.push(`[pageerror] ${error.stack ?? error.message}`);
       if (rendererLogs.length > 30) rendererLogs.shift();
     });
+    const watchCrash = (crashed: Page) => crashed.on('crash', () => {
+      rendererLogs.push(`[crash] ${crashed.url()}`);
+      if (rendererLogs.length > 30) rendererLogs.shift();
+    });
+    for (const existing of app.context().pages()) watchCrash(existing);
+    app.context().on('page', watchCrash);
     if (tracePath) {
       await mkdir(path.dirname(tracePath), { recursive: true });
       await app.context().tracing.start({ snapshots: true });
@@ -533,6 +539,11 @@ export async function withE2eWindow(
         env: buildFixtureEnv(userDataDir, homeDir, { scenario: e2eFixtureScenario, locale, platform, showWindow: visibleWindow }),
       });
       const restored = await app.firstWindow();
+      restored.on('crash', () => {
+        rendererLogs.push(`[crash] ${restored.url()}`);
+        if (rendererLogs.length > 30) rendererLogs.shift();
+      });
+      app.context().on('page', watchCrash);
       await restored.waitForSelector(readinessSelector, { timeout: readinessTimeoutMs });
       return restored;
     } });

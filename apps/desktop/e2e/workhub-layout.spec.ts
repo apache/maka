@@ -95,7 +95,12 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub')));
     return container?.getVisible();
   })).toBe(true);
-  await app.evaluate(() => (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup());
+  // aria-expanded tracks the popup IPC resolution, so a menu that already
+  // auto-dismissed (Linux closes popups after window resizes) must not be
+  // closed again — closePopup on a dead popup crashes the main process.
+  if ((await addPanel.getAttribute('aria-expanded')) === 'true') {
+    await app.evaluate(() => (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup());
+  }
   await expect(addPanel).toHaveAttribute('aria-expanded', 'false');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
