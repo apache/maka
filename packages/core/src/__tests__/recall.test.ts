@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SessionSummary, StoredMessage } from '../session.js';
-import { foldForMatch } from '../thread-search.js';
+import { foldForMatch } from '../transcript-search.js';
 import {
   expandRecallPassage,
   fetchRecallMaterial,
@@ -746,6 +746,31 @@ test('expansion widens a passage around an anchor recall reported', async () => 
   assert.ok(expanded.ok);
   assert.ok(expanded.passage.messages.length >= passage.messages.length);
   assert.equal(expanded.passage.anchorMessageId, passage.anchorMessageId);
+  // Expansion rebuilds the passage from the same transcript, so the
+  // navigation coordinate has to survive the round trip unchanged: a UI that
+  // recalled a passage and then widened it must land on the same message.
+  assert.equal(expanded.passage.sequence, passage.sequence);
+});
+
+test('a passage reports the anchor index within its own transcript', async () => {
+  const data = mixedCorpus();
+  // `m6` is the ninth entry of `s-pet` in insertion order, which is the order
+  // `readMessages` returns and therefore the sequence the transcript reader
+  // addresses. Matching a term unique to it pins the anchor without relying on
+  // ranking.
+  const result = await runRecall({ terms: ['再查一下浮窗的显示条件'], limit: 1 }, scanDeps(data));
+  assert.ok(result.ok);
+  const passage = result.passages[0];
+  assert.ok(passage, 'a term unique to one message must produce a passage');
+  assert.equal(passage.sessionId, 's-pet');
+  assert.equal(passage.anchorMessageId, 'm6');
+  const transcript = data.messages.get('s-pet') ?? [];
+  const index = transcript.findIndex((message) => message.id === passage.anchorMessageId);
+  assert.equal(
+    passage.sequence,
+    index,
+    'sequence must be the anchor index in the transcript recall read, not a message count',
+  );
 });
 
 test('expansion refuses an anchor inside the active turn', async () => {

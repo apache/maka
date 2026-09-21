@@ -29,7 +29,7 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import { readLogicalRuntimeExecutionForRun } from '@maka/core/runtime-logical-execution';
-import { foldForMatch } from '@maka/core/thread-search';
+import { foldForMatch } from '@maka/core/transcript-search';
 import type { PermissionMode } from '@maka/core/permission';
 import {
   runtimeInvocationOutcome,
@@ -54,9 +54,10 @@ import {
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
-import { buildRecallTools } from '@maka/runtime/recall-tools';
+import { buildRecallTools, type RecallToolDeps } from '@maka/runtime/recall-tools';
 import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
 import { createRecallMaterialFetch } from './recall-material-fetch.js';
+import { HostRecallCoordinator } from './recall-coordinator.js';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
@@ -691,7 +692,10 @@ export async function createExecutionRuntimeHostComposition(
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
       fetch: (input) => webFetchService.fetch(input),
     });
-    const recallTools = buildRecallTools({
+    // The recall surface is built once and shared: the model's tools and the
+    // Host's `recall.query` operation answer from the same dependency graph, so
+    // a UI search and a model recall cannot diverge in what they can see.
+    const recallDeps: RecallToolDeps = {
       listSessions: () => requireSessionManager(manager).listSessions(),
       readMessages: async (sessionId, abortSignal) => {
         if (abortSignal?.aborted) return null;
@@ -744,7 +748,9 @@ export async function createExecutionRuntimeHostComposition(
         incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
           .incognitoActive,
       }),
-    });
+    };
+    const recallTools = buildRecallTools(recallDeps);
+    const recall = new HostRecallCoordinator(recallDeps);
     const childHostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
@@ -2672,6 +2678,7 @@ export async function createExecutionRuntimeHostComposition(
           oauth.handlers,
           externalAgentSetup.handlers,
           webSearch.handlers,
+          recall.handlers,
           networkProxy.handlers,
           configuration.handlers,
         ],

@@ -138,7 +138,7 @@ export function buildCommandList(args: {
   /**
    * PR-CMD-PALETTE-ENRICH-0: jump to an app module (会话 / 计划 /
    * 技能 / 每日回顾) directly from the palette. Search itself is
-   * already covered by the existing thread-search hookup, so the
+   * already covered by the existing recall-search hookup, so the
    * `search` module nav id is intentionally omitted here.
    */
   onSelectModule?(selection: NavSelection): void;

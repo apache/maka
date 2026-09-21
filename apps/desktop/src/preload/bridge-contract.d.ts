@@ -74,7 +74,6 @@ import type {
   ReviseBeforeTurnInput,
 } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
-import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
 import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -276,6 +275,48 @@ export interface DesktopHostHandoffPayload {
   readonly view: HostHandoffView;
   readonly presentation: HostHandoffPresentation;
 }
+/**
+ * A recall query as the Search modal issues it, and the envelope it accepts.
+ *
+ * Defined here rather than imported from the preload implementation so the
+ * bridge contract does not depend on that module: the renderer architecture
+ * check prices every preload file this contract reaches, and a new entry in
+ * that debt ledger is forbidden. The implementation imports these instead.
+ */
+export interface RecallSearchRequest {
+  readonly terms: readonly string[];
+  readonly limit?: number;
+  readonly sessionId?: string;
+  readonly since?: number;
+  readonly until?: number;
+}
+
+export interface RecallSearchPassage {
+  readonly sessionId: string;
+  readonly sessionTitle: string;
+  readonly turnId?: string;
+  readonly anchorMessageId: string;
+  /** The anchor's index in its Session transcript; what navigation scrolls to. */
+  readonly sequence: number;
+  readonly messages: readonly {
+    readonly messageId: string;
+    readonly role: 'user' | 'assistant' | 'tool';
+    readonly matchKind: string;
+    readonly text: string;
+    readonly timestamp: number;
+    readonly isAnchor: boolean;
+  }[];
+  readonly matchedTerms: readonly string[];
+  readonly score: number;
+  readonly lastMessageAt?: number;
+}
+
+export interface RecallSearchResult {
+  readonly passages: readonly RecallSearchPassage[];
+  readonly gaps: string;
+  readonly searchedEverySession: boolean;
+}
+
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
@@ -1668,14 +1709,11 @@ export interface MakaBridge {
     readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   };
   search: {
-    thread(
-      request: SearchRequest,
+    recall(
+      request: RecallSearchRequest,
       requestId?: string,
-    ): Promise<
-      | SearchResult[]
-      | { ok: false; reason: SearchErrorReason; message: string }
-    >;
-    cancelThread(requestId: string): Promise<void>;
+    ): Promise<RecallSearchResult | { ok: false; reason: string; message: string }>;
+    cancelRecall(requestId: string): Promise<void>;
   };
   openAiCodex: {
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;

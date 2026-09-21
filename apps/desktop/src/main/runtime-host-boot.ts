@@ -244,7 +244,7 @@ import {
   MAKA_CLIENT_PLUGIN_SCHEME,
   registerClientPluginIpc,
 } from './client-plugin-transport.js';
-import { registerRuntimeHostSearchIpc } from "./runtime-host-search-ipc-main.js";
+import { registerRuntimeHostRecallIpc } from "./runtime-host-recall-ipc-main.js";
 import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.js";
 import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
@@ -1649,7 +1649,7 @@ function registerHostClientIpc(
     openPath: (path) => shell.openPath(path),
     allowLocalPaths: !usesHostWorkspace,
   });
-  registerRuntimeHostSearchIpc({ ipcMain: scopedIpc, client });
+  registerRuntimeHostRecallIpc({ ipcMain: scopedIpc, client });
   registerRuntimeHostUsageIpc({
     ipcMain: scopedIpc,
     client,

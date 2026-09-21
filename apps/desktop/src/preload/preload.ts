@@ -39,7 +39,7 @@ import {
 } from '@maka/runtime-host/profile-kind';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
-import { createThreadSearchClient } from './multi-host-thread-search.js';
+import { createRecallSearchClient } from './multi-host-recall-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
 import {
   resolveDesktopWorkHubCoordinationCreateScope,
@@ -174,7 +174,6 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 
 import type { TurnOrchestration, SessionListFilter } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
-import type { SearchErrorReason, SearchResult } from '@maka/core/search';
 import type {
   SessionCatalogSummary,
   SessionChangedEvent,
@@ -3295,28 +3294,36 @@ const makaBridge = {
       return invokeSessionRuntimeHost('attachments:readBytes', sessionId, artifactId);
     },
   },
-  search: createThreadSearchClient({
+  search: createRecallSearchClient({
     // Search each ready Owner Host independently; Guests cannot search a workspace.
     scopes: readyOwnerRuntimeHostScopes,
     async search(scope, request, requestId) {
-      const result = await invokeWhenReady('search:thread', scope, request, requestId) as
-        | SearchResult[]
-        | { ok: false; reason: SearchErrorReason; message: string };
-      return Array.isArray(result)
-        ? result.map((entry) =>
-            entry.target?.kind === 'thread'
+      const result = await invokeWhenReady('search:recall', scope, request, requestId);
+      if (typeof result !== 'object' || result === null) return result;
+      const envelope = result as { ok?: unknown; result?: { ok?: unknown; passages?: unknown } };
+      if (envelope.ok !== true || envelope.result?.ok !== true) return result;
+      if (!Array.isArray(envelope.result.passages)) return result;
+      // A passage's sessionId is meaningful only inside its own Host, so it is
+      // qualified here, exactly as the previous scan lane did for its results.
+      return {
+        ok: true,
+        result: {
+          ...envelope.result,
+          passages: envelope.result.passages.map((passage) =>
+            typeof passage === 'object' && passage !== null
               ? {
-                  ...entry,
-                  target: {
-                    ...entry.target,
-                    sessionId: recordRuntimeHostSessionScope(scope, entry.target.sessionId),
-                  },
+                  ...passage,
+                  sessionId: recordRuntimeHostSessionScope(
+                    scope,
+                    (passage as { sessionId: string }).sessionId,
+                  ),
                 }
-              : entry,
-          )
-        : result;
+              : passage,
+          ),
+        },
+      };
     },
-    cancel: (scope, requestId) => invokeWhenReady('search:thread:cancel', scope, requestId),
+    cancel: (scope, requestId) => invokeWhenReady('search:recall:cancel', scope, requestId),
   }),
   // Browser-assisted Codex account bridge. NEVER returns raw OAuth
   // credentials; the renderer only sees account state and action results.
