@@ -616,11 +616,32 @@ test('Jev is an optional strict policy field and has a dedicated credential scop
   assert.deepEqual(decodeCanonicalRuntimePolicy(legacy), legacy);
   const enabled = { ...legacy, jev: { enabled: true } };
   assert.deepEqual(decodeCanonicalRuntimePolicy(enabled), enabled);
-  assert.throws(() => decodeCanonicalRuntimePolicy({ ...legacy, jev: { enabled: 'true' } }), RuntimePolicyDomainDecodeError);
-  assert.throws(() => decodeCanonicalRuntimePolicy({ ...legacy, jev: { enabled: true, apiKey: 'secret' } }), RuntimePolicyDomainDecodeError);
-  const mutation = normalizeRuntimePolicyMutation({ expectedRevision: 0, operation: { kind: 'set_jev', value: { enabled: false } } });
+  assert.throws(
+    () => decodeCanonicalRuntimePolicy({ ...legacy, jev: { enabled: 'true' } }),
+    RuntimePolicyDomainDecodeError,
+  );
+  assert.throws(
+    () => decodeCanonicalRuntimePolicy({ ...legacy, jev: { enabled: true, apiKey: 'secret' } }),
+    RuntimePolicyDomainDecodeError,
+  );
+  const mutation = normalizeRuntimePolicyMutation({
+    expectedRevision: 0,
+    operation: { kind: 'set_jev', value: { enabled: false } },
+  });
   assert.deepEqual(mutation.operation, { kind: 'set_jev', value: { enabled: false } });
-  const credential = normalizeSetCredentialInput({ locator: { scope: 'jev', kind: 'api_key' }, expected: null, secret: 'key' });
+  const credential = normalizeSetCredentialInput({
+    locator: { scope: 'jev', kind: 'api_key' },
+    expected: null,
+    secret: 'key',
+  });
   assert.deepEqual(credential.locator, { scope: 'jev', kind: 'api_key' });
-  assert.throws(() => normalizeSetCredentialInput({ locator: { scope: 'jev', kind: 'password' }, expected: null, secret: 'key' }), RuntimePolicyDomainDecodeError);
+  assert.throws(
+    () =>
+      normalizeSetCredentialInput({
+        locator: { scope: 'jev', kind: 'password' },
+        expected: null,
+        secret: 'key',
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
 });

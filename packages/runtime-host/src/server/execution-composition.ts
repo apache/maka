@@ -2180,7 +2180,8 @@ export async function createExecutionRuntimeHostComposition(
       },
     });
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
-      routingModel: dependencies.workHubRoutingModel ?? createJevRoutingModel({ stores: runtimePolicyStores }),
+      routingModel:
+        dependencies.workHubRoutingModel ?? createJevRoutingModel({ stores: runtimePolicyStores }),
       requestForm: (input) => interactions.requestForm(input),
       targetExecution: workHubTargetExecution,
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),

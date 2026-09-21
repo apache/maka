@@ -175,19 +175,35 @@ export function normalizeNetworkProxyCredentialTarget(
 }
 
 function normalizeRuntimePolicy(value: unknown): RuntimePolicy {
-  const policy = exactRecord(value, 'runtime policy', [
-    'networkProxy',
-    'personalization',
-    'memory',
-    'workspaceInstructions',
-    'privacy',
-    'chatDefaults',
-    'webSearch',
-    'subagents',
-    'shell',
-    'externalAgents',
-    'jev',
-  ], ['networkProxy', 'personalization', 'memory', 'workspaceInstructions', 'privacy', 'chatDefaults', 'webSearch', 'subagents', 'shell', 'externalAgents']);
+  const policy = exactRecord(
+    value,
+    'runtime policy',
+    [
+      'networkProxy',
+      'personalization',
+      'memory',
+      'workspaceInstructions',
+      'privacy',
+      'chatDefaults',
+      'webSearch',
+      'subagents',
+      'shell',
+      'externalAgents',
+      'jev',
+    ],
+    [
+      'networkProxy',
+      'personalization',
+      'memory',
+      'workspaceInstructions',
+      'privacy',
+      'chatDefaults',
+      'webSearch',
+      'subagents',
+      'shell',
+      'externalAgents',
+    ],
+  );
   return normalizeRuntimePolicyFields(
     policy,
     normalizeSubagentSettings(policy.subagents),
