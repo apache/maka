@@ -108,7 +108,6 @@ export function createDesktopWorkbarServices(
     popupMenu: (input) => bridge.appWindow.popupMenu(input),
     review: {
       read: (input) => bridge.gitReview.read(input),
-      branch: (sessionId) => bridge.gitReview.branch({ sessionId }),
       subscribeSessionEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
     },

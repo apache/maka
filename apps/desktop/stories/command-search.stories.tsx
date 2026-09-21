@@ -24,7 +24,6 @@ import { SearchModal } from '@maka/ui';
 import {
   Download,
   FolderOpen,
-  MessageSquare,
   Plus,
   Settings,
   Sparkles,
@@ -36,6 +35,8 @@ import {
   type Command,
 } from '../src/renderer/features/overlays/index.js';
 import { createFakeOverlaysServices } from '../src/renderer/features/overlays/testing.js';
+import { createSessionCatalogController } from '../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
+import type { DesktopSessionSummary } from '../src/shared/desktop-session-projection.js';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -55,6 +56,7 @@ type SearchModalDeps = NonNullable<Parameters<typeof SearchModal>[0]['deps']>;
 
 const noop = () => undefined;
 const noopNavigate = (_sessionId: string, _turnId?: string) => undefined;
+const EMPTY_HIDDEN_SESSIONS: ReadonlySet<string> = new Set();
 
 const threadResults: SearchResult[] = [
   {
@@ -132,17 +134,31 @@ const paletteCommands: Command[] = [
     keywords: ['export', 'markdown', '导出'],
     run: noop,
   },
-  {
-    id: 'session:benchmark',
-    kind: 'session',
-    label: '生成本周 benchmark 对比表',
-    hint: '当前',
-    group: '任务',
-    Icon: MessageSquare,
-    keywords: ['benchmark', '任务'],
-    run: noop,
-  },
 ];
+
+// Session rows come from the catalog, not the base list — seed one.
+const storyCatalog = createSessionCatalogController();
+const benchmarkSession = {
+  id: 'session-benchmark',
+  name: '生成本周 benchmark 对比表',
+  revision: 1,
+  activityAt: 1,
+  isArchived: false,
+  isFlagged: false,
+  hasUnread: false,
+  labels: [],
+  status: 'active',
+  backend: 'ai-sdk',
+  llmConnectionSlug: 'openai-live',
+  connectionLocked: true,
+  model: 'gpt-5',
+  permissionMode: 'ask',
+  runtimeHostId: 'local',
+  profileId: 'local',
+  profileName: 'Local',
+  profileKind: 'local',
+} satisfies DesktopSessionSummary;
+storyCatalog.commitSessions([benchmarkSession]);
 
 function searchModalDeps(response: SearchResponse): SearchModalDeps {
   return {
@@ -176,7 +192,13 @@ function CommandPaletteFrame(props: { commands: Command[] }) {
           {(overlays) => (
             <>
               <OpenPaletteOnMount openPalette={overlays.commands.openPalette} />
-              <CommandPalette commands={props.commands} />
+              <CommandPalette
+                commands={props.commands}
+                sessionCatalog={storyCatalog}
+                hiddenSessionIds={EMPTY_HIDDEN_SESSIONS}
+                activeSessionId="session-benchmark"
+                onSelectSession={noop}
+              />
             </>
           )}
         </OverlaysRoot>

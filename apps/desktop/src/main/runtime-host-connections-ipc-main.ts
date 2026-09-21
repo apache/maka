@@ -29,7 +29,6 @@ import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import {
   connectionEnabledModelIds,
-  defaultEnabledModelIdsWhenOmitted,
   PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
@@ -222,7 +221,6 @@ export function registerRuntimeHostConnectionsIpc(
       enabled: true,
       enabledModelIds: connectionEnabledModelIds({
         defaultModel: input.defaultModel,
-        enabledModelIds: defaultEnabledModelIdsWhenOmitted(input.providerType),
       }),
       ...(modelOverrides === undefined ? {} : { modelOverrides }),
       ...(input.requestBodyOverlay === undefined

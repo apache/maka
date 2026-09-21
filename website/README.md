@@ -29,7 +29,7 @@ npm --workspace @maka/website run test:dist
 
 ## Content
 
-- The positioning sentence, the page structure and the three download paths follow the consensus in [#4307](https://github.com/apache/maka/discussions/4307). The homepage direction (Astryx Centered Hero) was chosen by vote in the same thread.
+- The positioning sentence and homepage direction (Astryx Centered Hero) follow the consensus in [#4307](https://github.com/apache/maka/discussions/4307). Public download calls to action lead to approved releases, or the current release status until one is available. Contributor setup and testing instructions live in CONTRIBUTING; the site does not promote Nightly installers to general users. See the [ASF publication policy](https://www.apache.org/legal/release-policy.html#publication).
 - English and Chinese are one page each in `src/copy/`. Both share the `Copy` type in `src/copy/types.ts`, so a section, claim or link added to one language fails to type-check until the other has it too, and `test/site.test.mjs` asserts the built pages link the same documents. Yuhan Lei (@Astro-Han) keeps the two in sync.
 - Numbers on the homepage are drawn from the reports in [`docs/eval/`](../docs/eval/) and link to them. The reports own the numbers.
 - Fact-check cadence: the homepage is re-read against the product at every release, and whenever the positioning, the primary journey, platform support or the trust boundary changes. The README's *Get Maka* section, `SECURITY.md` and `docs/eval/` are the sources to check against.

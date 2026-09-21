@@ -122,6 +122,8 @@ export {
 } from './remote-compatibility-error.js';
 export {
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
+  subscriptionClosedError,
   type DecodedSessionTranscriptPage,
   type RuntimeHostSessionSubscription,
 } from './session-subscription.js';

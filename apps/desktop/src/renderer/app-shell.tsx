@@ -84,6 +84,10 @@ import {
   type SessionNavigationPorts,
   type SessionNavigationRowActions,
 } from './features/session-navigation';
+import {
+  CatalogRowWatch,
+  catalogWatchedRowsUsable,
+} from './application/contracts/session-catalog/catalog-row-watch.js';
 import * as TaskEntry from './features/task-entry';
 import type { TaskEntryShellProjection } from './features/task-entry';
 import * as Overlays from './features/overlays/index.js';
@@ -107,7 +111,6 @@ import {
 } from './plan-mode-panel';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import type {
-  DesktopSessionSummary,
   OnboardingSnapshot,
 } from '../preload/bridge-contract.js';
 import { ProviderLogo } from './settings/provider-display';
@@ -124,7 +127,6 @@ import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { useSessionSettingIntent } from './features/session-settings';
-import { deriveStaleSessionIds } from './stale-sessions';
 import { pendingSessionView } from './pending-session-view';
 import { useAppShellTurnPresentation } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
@@ -212,6 +214,7 @@ type ComposerImportOwner = {
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const { useSessionCollaborationDialog } = SessionCollaboration;
+
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
@@ -300,11 +303,10 @@ function AppShellContent({
   const sharedSessionDialog = useSessionCollaborationDialog();
   const previousInterruptionShownRef = useRef(false);
   const {
-    sessions,
-    catalogRevision,
     authoritativeSessionIds,
     sessionsRef,
     refreshSessions,
+    refreshChangedSession,
     seedSessions,
     activeId,
     activeIdRef,
@@ -332,6 +334,7 @@ function AppShellContent({
     messageLoadPending,
     setMessageLoadPending,
     sessionUiController,
+    sessionCatalogController,
     activeCatalogSession,
     activeHostSession,
     requestedCatalogSession,
@@ -340,6 +343,10 @@ function AppShellContent({
     ownerActiveId,
     switchingSession,
   } = useAppShellSessionWorkspace(toastApi);
+  // The shell's own reading of the catalog rides the membership set the list
+  // hook already publishes — background row churn belongs to the rail, which
+  // subscribes the catalog inside SessionNavigationProvider (#4109).
+  const sessionCount = authoritativeSessionIds?.size ?? 0;
   // Only the outstanding read needs a fence; past Sessions leave no hydration metadata.
   const interactionHydrationRef = useRef<{ sessionId: string } | null>(null);
   const markInteractionChanged = useCallback((sessionId: string) => {
@@ -366,7 +373,7 @@ function AppShellContent({
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   // The owner bridge keeps commands stable while TaskEntryRoot swaps the
   // current feature-owned implementation below the shell.
-  const { selectLocalProject, resolveWorkBoardTarget, prepareWorkBoardDraft } = taskEntry.commands;
+  const { resolveWorkBoardTarget, prepareWorkBoardDraft } = taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
   // Staged files and quotes do NOT take the target-scoped key: they belong to
   // the composer the user is looking at, and an in-flight send needs an owner
@@ -537,7 +544,7 @@ function AppShellContent({
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
   const onboardingActivationCandidate = getOnboardingActivationCandidate(
     onboarding.snapshot,
-    sessions.length > 0,
+    sessionCount > 0,
   );
   const {
     themePref,
@@ -615,19 +622,24 @@ function AppShellContent({
     revisionDraftRef.current = draft;
     setRevisionDraft(draft);
   }, []);
-  useEffect(() => {
-    const draft = revisionDraftRef.current;
-    if (!draft) return;
-    const source = sessions.find((session) => session.id === draft.sourceSessionId);
-    const owner = sessions.find((session) => session.id === draft.draftSessionId);
-    if (source && owner && !source.isArchived && !owner.isArchived) return;
-    composerRef.current?.clearDraft(draft.draftSessionId);
-    if (draft.sourceSessionId !== draft.draftSessionId)
-      composerRef.current?.clearDraft(draft.sourceSessionId);
-    if (draft.copyPhase === 'reserved') completeTurnRevisionCopyAttempt(draft);
-    else void abandonTurnRevisionCopyAttempt(draft);
-    commitRevisionDraft(null);
-  }, [sessions, commitRevisionDraft]);
+  // The draft survives on exactly two catalog rows; CatalogRowWatch below
+  // selects them so their changes alone can retire it.
+  const retireRevisionDraftIfRowsLeave = useCallback(
+    (rows: Parameters<typeof catalogWatchedRowsUsable>[0]) => {
+      const draft = revisionDraftRef.current;
+      if (!draft) return;
+      // A watched row that is merely pending — never observed, never reported
+      // removed — is admission lag, not a departure.
+      if (catalogWatchedRowsUsable(rows)) return;
+      composerRef.current?.clearDraft(draft.draftSessionId);
+      if (draft.sourceSessionId !== draft.draftSessionId)
+        composerRef.current?.clearDraft(draft.sourceSessionId);
+      if (draft.copyPhase === 'reserved') completeTurnRevisionCopyAttempt(draft);
+      else void abandonTurnRevisionCopyAttempt(draft);
+      commitRevisionDraft(null);
+    },
+    [commitRevisionDraft],
+  );
 
   const {
     resumePendingSessionId,
@@ -635,24 +647,11 @@ function AppShellContent({
     resumeInterruptedSession,
   } = useShellResume({ activeId: ownerActiveId, toastApi, shellCopy, uiLocale });
   const rendererMountedRef = useRef(true);
-  // Set of session ids whose backend / connection is no longer usable —
-  // drives the sidebar "已过期" pill (PR108g, paired with the PR108e chat
-  // header banner). Derivation is pure (see `stale-sessions.ts`) so the
-  // classifier is testable without a DOM.
-  const staleSessionIds = useMemo(
-    () =>
-      deriveStaleSessionIds({
-        sessions,
-        sendOutcomes: onboarding.snapshot?.sessionSendOutcomes ?? {},
-      }),
-    [sessions, onboarding.snapshot?.sessionSendOutcomes],
-  );
   const activeInteraction = activeInteractionFor(interactionBySession, ownerActiveId);
   const activeSession = activeCatalogSession;
   const sessionSettingIntent = useSessionSettingIntent({
-    catalogRevision,
+    catalog: sessionCatalogController,
     isActiveSession: (sessionId) => activeIdRef.current === sessionId,
-    sessions,
     newSessionPermissionMode,
     refreshCatalog: refreshSessions,
     saveComposerDefaults: (model) => saveComposerDefaults({ model }),
@@ -743,9 +742,9 @@ function AppShellContent({
     newChatModelLabel,
     newChatThinkingLevels,
     newChatThinkingLevel,
+    pendingNewChatThinkingLevel,
     composerSupportsVision,
     setPendingNewChatModel,
-    pendingNewChatThinkingLevel,
     setPendingNewChatThinkingLevel,
     sessionHealthNotice,
   } = useShellChatModel({
@@ -762,7 +761,6 @@ function AppShellContent({
     sessionHealthSession: activeSession,
     persistedComposerDefaults,
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
-    defaultThinkingLevel: taskEntry.selectors.selectedHost?.chatDefaults.thinkingLevel,
     connectionSnapshotReady: activeId
       ? sessionHostConnections.projection.status === 'ready'
       : true,
@@ -1073,12 +1071,12 @@ function AppShellContent({
   // while the initial snapshot is in flight. Otherwise sessions.length===0
   // + snapshot===null flashes the prompt-suggestion EmptyChatHero before
   // the state-routed OnboardingHero mounts.
-  const isOnboardingLoading = sessions.length === 0 && onboardingState === undefined && !onboardingSettled;
+  const isOnboardingLoading = sessionCount === 0 && onboardingState === undefined && !onboardingSettled;
   // Only unfinished setup takes the chat surface over. A configured user with
   // no sessions is not onboarding: they land on the normal empty chat and use
   // the one real Composer, which creates the session on its first send.
   const showOnboardingHero =
-    sessions.length === 0 &&
+    sessionCount === 0 &&
     !onboardingSettled &&
     onboardingState !== undefined &&
     onboardingState.kind !== 'ready_with_history' &&
@@ -1227,44 +1225,17 @@ function AppShellContent({
 
   // Stable, because the rail's Project rows carry it: a fresh identity here
   // rebuilt the whole list on every AppShell commit (#4109).
-  const createSessionInProject = useCallback(
-    async (projectId: string) => {
-      if (!selectLocalProject(projectId)) return;
-      openNewTaskSurface();
-    },
-    [openNewTaskSurface, selectLocalProject],
-  );
-
-  // Sidebar Project groups are Local. Their catalog mutations remain on the
-  // default-scoped bridge until Settings receives its own Host selector.
-  //
-  // Memoized because the rail reads it: rebuilt per render, this one object
-  // would put the whole list back on every AppShell commit (#4109).
   const projectRowActions = useMemo<ProjectRowActions | undefined>(
-    () =>
-      projectCapabilities.setLocalDefault
-        ? {
-            onNew: createSessionInProject,
-            onRename: renameProject,
-            onArchive: archiveProject,
-            onRestore: restoreProject,
-            ...(projectCapabilities.chooseClientDirectory
-              ? {
-                  onRelink: (projectId: string) =>
-                    relinkProject(projectId).then(() => undefined),
-                }
-              : {}),
-          }
-        : undefined,
-    [
-      archiveProject,
-      createSessionInProject,
-      projectCapabilities.chooseClientDirectory,
-      projectCapabilities.setLocalDefault,
-      relinkProject,
-      renameProject,
-      restoreProject,
-    ],
+    () => taskEntry.selectors.projectScopes.length === 0 ? undefined : {
+      onNew: (key) => {
+        if (taskEntry.commands.selectProject(key)) openNewTaskSurface();
+      },
+      onRename: taskEntry.commands.renameProject,
+      onArchive: taskEntry.commands.archiveProject,
+      onRestore: taskEntry.commands.restoreProject,
+      onRelink: taskEntry.commands.relinkProject,
+    },
+    [openNewTaskSurface, taskEntry.commands, taskEntry.selectors.projectScopes.length],
   );
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
@@ -1356,32 +1327,28 @@ function AppShellContent({
     toastApi,
   };
   const {
-    rail: sessionRail,
     branchBanner,
     revisionNavigation,
+    activeParentSession,
     layout: railLayout,
   } = useSessionNavigationReads({
-    sessions,
+    catalog: sessionCatalogController,
     activeSessionId: activeId,
-    activeSession,
-    hiddenSessionIds: selectors.hiddenSessionIds,
   });
-  const visibleSessions = sessionRail.sessions;
   const sessionListCollapsed = railLayout.collapsed;
   const sessionListWidth = railLayout.width;
   const sessionSideNavHandleRef = sessionRailLayoutStore.collapseHandleRef;
   const titlebarParentSession = useMemo(() => {
-    const parent = sessionRail.activeParentSession;
-    if (!parent) return undefined;
-    const parentId = parent.id;
+    if (!activeParentSession) return undefined;
+    const parentId = activeParentSession.id;
     return {
-      name: parent.name,
+      name: activeParentSession.name,
       onOpen: () => openSessionInChatRef.current(parentId),
     };
-  }, [sessionRail.activeParentSession]);
+  }, [activeParentSession]);
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
     () => ({
-      sessions,
+      catalog: sessionCatalogController,
       projects: localProjects,
       onRestore: (sessionId) =>
         void sessionNavigationCommandsRef.current?.unarchiveSession(sessionId),
@@ -1390,7 +1357,7 @@ function AppShellContent({
       onPurge: (sessionIds) =>
         sessionNavigationCommandsRef.current!.purgeSessions(sessionIds),
     }),
-    [sessions, localProjects],
+    [sessionCatalogController, localProjects],
   );
 
   const activateSessionForFirstSend = useCallback((sessionId: string): Promise<void> => {
@@ -1453,7 +1420,7 @@ function AppShellContent({
     showModelSetupToast,
     toastApi,
     newChatModel: newChatModel ?? null,
-    pendingNewChatThinkingLevel: newChatThinkingLevel ?? null,
+    pendingNewChatThinkingLevel,
     newChatPermissionChoice: newTaskPermissionChoice,
     clearNewChatPermissionChoice: clearNewTaskPermissionChoice,
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
@@ -1907,9 +1874,12 @@ function AppShellContent({
     refreshProjects,
     refreshShellSettings,
     refreshSessions,
+    refreshChangedSession,
     rendererMountedRef,
     retireSession: clearSessionRendererState,
     retiredSessionIds,
+    isSessionRemoved: sessionCatalogController.isRemoved,
+    sessionsRef,
     setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
@@ -2148,9 +2118,9 @@ function AppShellContent({
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
     settingsProfileId: overlays.selectors.settings.request.profileId,
-    sessions,
+    sessionCatalog: sessionCatalogController,
     themePref,
-    visibleSessions,
+    hiddenSessionIds: selectors.hiddenSessionIds,
     captureComposerImportOwner,
     createSession,
     startModeSession,
@@ -2197,6 +2167,11 @@ function AppShellContent({
       reportError={showSessionError}
     >
     <Conversation.SessionLocalMessages sessionId={activeId} publish={addTransientMessage} retire={removeTransientMessage} reportError={toastApi.error} />
+    <CatalogRowWatch
+      catalog={sessionCatalogController}
+      sessionIds={[revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId]}
+      onRows={retireRevisionDraftIfRowsLeave}
+    />
     <ModuleHub.ModuleHubProvider
       selection={navSelection}
       selectModule={setNavSelection}
@@ -2211,7 +2186,7 @@ function AppShellContent({
       render={renderComposerMentionsProvider(composerMentionsSurface)}
     >
     <SessionCollaboration.SessionTurnRequestInboxProvider
-      sessions={sessions}
+      catalog={sessionCatalogController}
       onOpenSession={openSession}
     >
     <div
@@ -2341,10 +2316,12 @@ function AppShellContent({
             render={(scheduledTasks) => (
               <SessionNavigationProvider
                 scheduledTasks={scheduledTasks}
-                rail={sessionRail}
-                projects={localProjects}
+                catalog={sessionCatalogController}
+                activeSessionId={activeId}
+                hiddenSessionIds={selectors.hiddenSessionIds}
+                projectScopes={taskEntry.selectors.projectScopes}
                 streamingSessionIds={streamingSessionIds}
-                staleSessionIds={staleSessionIds}
+                sessionSendOutcomes={onboarding.snapshot?.sessionSendOutcomes}
                 SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
                 NavigationExtras={SessionCollaboration.SessionCollaborationNavigation}
                 ports={sessionNavigationPorts}

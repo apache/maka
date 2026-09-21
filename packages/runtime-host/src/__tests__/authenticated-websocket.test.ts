@@ -60,6 +60,36 @@ const KNOWN_EMPTY_LIVE_RUN_STATE = {
   runningTurnIds: [],
 } as const;
 
+async function configureTestModel(local: RuntimeHostConnection): Promise<void> {
+  const catalog = await local.request('connection.catalog.query', { kind: 'start' });
+  assert.equal(catalog.kind, 'page');
+  if (catalog.kind !== 'page') assert.fail('Expected the initial catalog page');
+  const created = await local.request('connection.catalog.create', {
+    expectedCatalogRevision: catalog.revision,
+    connection: {
+      slug: 'websocket-fixture',
+      name: 'WebSocket fixture',
+      providerType: 'openai-compatible',
+      baseUrl: 'https://websocket-model.invalid/v1',
+      enabled: true,
+      enabledModelIds: ['websocket-test-model'],
+    },
+  });
+  if (created.kind !== 'committed') assert.fail('Test connection must commit');
+  const connectionId = created.connection.connectionId;
+  const credential = await local.request('credential.vault.set', {
+    locator: { scope: 'connection', connectionId, kind: 'api_key' },
+    expected: null,
+    secret: 'websocket-fixture-key',
+  });
+  assert.equal(credential.kind, 'committed');
+  const selected = await local.request('connection.catalog.set-default-target', {
+    expectedCatalogRevision: created.catalogRevision,
+    target: { connectionId, modelId: 'websocket-test-model' },
+  });
+  assert.equal(selected.kind, 'committed');
+}
+
 test('one Local IPC owner and one authenticated WebSocket Client control the same Session', {
   timeout: 120_000,
 }, async () => {
@@ -75,6 +105,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
   let guest: RuntimeHostConnection | undefined;
   try {
     local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
+    await configureTestModel(local);
     const issued = await local.request('access.credential.issue', {
       principalKind: 'remote_owner',
       principalId: 'remote-device',
@@ -513,6 +544,7 @@ test('an authenticated WebSocket Client reconnects after service restart to cano
   let remote: Awaited<ReturnType<typeof createRuntimeHostReconnectingConnection>> | undefined;
   try {
     local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
+    await configureTestModel(local);
     const issued = await local.request('access.credential.issue', {
       principalKind: 'remote_owner',
       principalId: 'restart-client',

@@ -243,6 +243,22 @@ describe('ASF source release verification', () => {
     }
   });
 
+  test('rejects inventoried SQLite databases even with a text extension', async () => {
+    const fixture = createFixtureCandidate({
+      'docs/code-origin-audit.md':
+        '### Source archive non-text inventory\n\n- `fixtures/database.sql`: historical fixture.\n',
+      'fixtures/database.sql': Buffer.from('SQLite format 3\0'),
+    });
+    try {
+      await assert.rejects(
+        () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+        /SQLite database.*fixtures\/database\.sql.*textual SQL fixture/,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('accepts an inventoried source image', async () => {
     const fixture = createFixtureCandidate({
       'docs/code-origin-audit.md':

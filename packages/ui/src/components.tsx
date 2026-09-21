@@ -28,7 +28,7 @@ export { ModuleHubSelector } from './module-hub-selector.js';
 export type { ModuleHubHeader } from './module-hub-selector.js';
 export { SearchModal } from './search-modal.js';
 export { SessionListPanel } from './session-list-panel.js';
-export { SessionRailProvider } from './session-rail-context.js';
+export { SessionRailProvider, useSessionRailData } from './session-rail-context.js';
 export type {
   SessionRailChrome,
   SessionRailData,

@@ -27,6 +27,7 @@ import {
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
 import type {
+  TurnMessageExecutionResolution,
   TurnMessageSubmitInput,
   TurnMessageSubmitResult,
   WorkspaceTarget,
@@ -57,6 +58,9 @@ import {
 } from './session-local-store.js';
 import type { DesktopTranscriptReplicaSnapshot } from './desktop-transcript-replica.js';
 
+/** The Host resolved no Skill for a Message that is settled from durable facts. */
+const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
+
 export interface DesktopSessionLocalTarget {
   readonly partition: string;
   readonly scope: DesktopTargetScope;
@@ -64,7 +68,10 @@ export interface DesktopSessionLocalTarget {
   readonly client?: Pick<
     DesktopRuntimeHostClient,
     'hostEpoch' | 'createSession' | 'getSession' | 'listSessions' | 'ingestAttachment'
-  >;
+  > & {
+    /** Absent only in narrow test doubles; production clients always provide it. */
+    readonly queryMessageExecutions?: DesktopRuntimeHostClient['queryMessageExecutions'];
+  };
   readonly submit?: (input: TurnMessageSubmitInput) => Promise<TurnMessageSubmitResult>;
 }
 
@@ -123,6 +130,15 @@ export class DesktopSessionLocalService {
     if (!target || this.#revoked.has(target.partition))
       throw new Error('The local intent belongs to a removed or different Host authority');
     return target;
+  }
+
+  /** True while the local store still owns the Session's creation intent. */
+  locallyOwned(scope: DesktopTargetScope, sessionId: string): boolean {
+    try {
+      return this.store.creation(this.target(scope).partition, sessionId) !== undefined;
+    } catch {
+      return false;
+    }
   }
 
   changed(scope?: DesktopTargetScope): void {
@@ -383,6 +399,19 @@ export class DesktopSessionLocalService {
     const stillOwned = () =>
       this.#current(target) && this.store.get(record.partition, record.messageId) !== undefined;
     try {
+      // A Message whose immutable dispatch epoch is gone cannot be replayed:
+      // the running Host has no in-memory submit for it and answers
+      // `outcome_unknown` for any identity lacking durable proof, so retrying
+      // the same submit loops forever and blocks the Session's queue. Settle it
+      // from the Host's durable facts instead.
+      if (
+        record.intent.originHostEpoch !== undefined &&
+        record.intent.originHostEpoch !== client.hostEpoch &&
+        client.queryMessageExecutions !== undefined
+      ) {
+        await this.#settleDispatchedEpoch(target, record);
+        return;
+      }
       const creation = this.store.creation(target.partition, record.sessionId);
       if (creation) {
         // session.create already has a durable request fingerprint. Replaying
@@ -476,6 +505,106 @@ export class DesktopSessionLocalService {
     }
     this.deps.changed(target.scope, record.sessionId);
   }
+
+  /**
+   * Settles a Message whose immutable dispatch epoch is no longer the running
+   * Host's. The running Host released the previous epoch's in-memory submits,
+   * so replaying this submit can never be proven and answers `outcome_unknown`
+   * forever, which held the Session's queue behind it. The identity's real fate
+   * is still on record: the Host resolves it from its durable receipts,
+   * steering proofs, cancellation tombstones, and pending admissions. Read that
+   * instead of replaying the doomed submit.
+   */
+  async #settleDispatchedEpoch(
+    target: DesktopSessionLocalTarget,
+    record: LocalOutboxRecord,
+  ): Promise<void> {
+    const client = target.client!;
+    const key = `${target.partition}:${record.messageId}`;
+    const stillOwned = () => this.#current(target) && this.store.get(target.partition, record.messageId) !== undefined;
+    let resolution: TurnMessageExecutionResolution | undefined;
+    try {
+      const resolved = await client.queryMessageExecutions!({
+        sessionId: record.sessionId,
+        messageIds: [record.messageId],
+      });
+      resolution = resolved.resolutions.find((entry) => entry.messageId === record.messageId);
+    } catch {
+      // The running Host cannot answer yet. Keep the copy unresolved rather
+      // than guess: a wrong "never delivered" would let the user resend a
+      // Message the Host may already own.
+      if (!stillOwned()) return;
+      this.store.update({
+        ...record,
+        state: 'unknown',
+        error: 'Host outcome is unknown; the running Host has not confirmed the original message.',
+      });
+      if (!this.#closed && !this.#retries.has(key)) this.#scheduleRetry(key);
+      this.deps.changed(target.scope, record.sessionId);
+      return;
+    }
+    if (!stillOwned()) return;
+    const current = this.store.get(target.partition, record.messageId)!;
+    if (resolution?.state === 'owned') {
+      // A durable receipt or steering proof names this identity; the Turn it
+      // opened is this local copy's settlement.
+      this.store.update({
+        ...current,
+        state: 'accepted',
+        result: {
+          disposition: 'turn_started',
+          turnId: resolution.turnId,
+          skillInvocation: EMPTY_SKILL_INVOCATION,
+        },
+        error: undefined,
+      });
+    } else if (resolution?.state === 'pending') {
+      // The Host durably holds a queued admission for it. Delivery succeeded;
+      // the Host queue owns the ordering, so this local copy yields.
+      this.store.update({
+        ...current,
+        state: 'accepted',
+        result: { disposition: 'followup', skillInvocation: EMPTY_SKILL_INVOCATION },
+        error: undefined,
+      });
+    } else if (resolution?.state === 'cancelled' || resolution?.state === 'not_admitted') {
+      // The Host answered positively that this identity is settled: either it
+      // carries a cancellation tombstone, or it has no durable record at all
+      // and no in-flight submit, so no epoch ever admitted it and it can never
+      // execute. Record that as an explicit non-delivery: it releases the
+      // Session's ordering and gives the user a removable local copy.
+      this.store.update({
+        ...current,
+        state: 'failed',
+        error:
+          resolution.state === 'cancelled'
+            ? 'The Host cancelled this message; the local copy is retained.'
+            : 'The Host never admitted this message; the local copy is retained.',
+        result: undefined,
+      });
+    } else {
+      // The Host omitted the identity: it cannot yet assert anything about it
+      // (`recovering`). Keep the copy unresolved rather than guess — a wrong
+      // "never delivered" would let the user resend a Message the Host may
+      // already own.
+      this.store.update({
+        ...current,
+        state: 'unknown',
+        error: 'Host outcome is unknown; the running Host has not confirmed the original message.',
+      });
+      if (!this.#closed && !this.#retries.has(key)) this.#scheduleRetry(key);
+      this.deps.changed(target.scope, record.sessionId);
+      return;
+    }
+    const timer = this.#retries.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.#retries.delete(key);
+    }
+    this.#probed.delete(key);
+    this.#catalogFresh.delete(target.partition);
+    this.deps.changed(target.scope, record.sessionId);
+  }
 }
 
 export function registerDesktopSessionLocalIpc(deps: {
@@ -553,7 +682,9 @@ export function registerDesktopSessionLocalIpc(deps: {
         permissionMode: creation.permissionMode ?? 'bypass',
         collaborationMode: creation.collaborationMode,
         orchestrationMode: creation.orchestrationMode,
-        thinkingLevel: creation.thinkingLevel,
+        ...(creation.thinkingLevel === null
+          ? {}
+          : { thinkingLevel: creation.thinkingLevel }),
       };
       service.store.saveSession(target.partition, summary, creation);
       deps.changed(target.scope, creation.sessionId);
@@ -675,4 +806,26 @@ function requiredId(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 256)
     throw new Error('Invalid local Session or Message identity');
   return value;
+}
+
+/**
+ * `session-local:changed` keeps the row id for message-level readers, while
+ * `sessions:changed` drops it for a Session the local store still owns: a
+ * targeted `sessions.get` can only answer for Host-owned rows, so a pending
+ * Session's change must signal a merged-list refresh instead.
+ */
+export function createSessionLocalChangedEmitter(deps: {
+  send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
+  locallyOwned(scope: DesktopTargetScope, sessionId: string): boolean;
+}): (scope: DesktopTargetScope, sessionId?: string) => void {
+  return (scope, sessionId) => {
+    deps.send('session-local:changed', scope, { sessionId });
+    const catalogSessionId =
+      sessionId !== undefined && !deps.locallyOwned(scope, sessionId) ? sessionId : undefined;
+    deps.send('sessions:changed', scope, {
+      reason: 'updated',
+      ts: Date.now(),
+      ...(catalogSessionId !== undefined ? { sessionId: catalogSessionId } : {}),
+    });
+  };
 }

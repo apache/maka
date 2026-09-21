@@ -78,7 +78,7 @@ type PendingNewChatModel = {
   model: string;
 } | null;
 
-type PendingNewChatThinkingLevel = ThinkingLevel | null;
+type PendingNewChatThinkingLevel = ThinkingLevel | null | undefined;
 type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
 type DesktopSessionSummary = DesktopBridge.DesktopSessionSummary;
 type InteractionFormResponse = Parameters<
@@ -183,6 +183,7 @@ export function createAppShellChatActions(deps: {
   ) => void;
   toastApi: ToastApi;
   newChatModel: PendingNewChatModel;
+  /** Undefined applies the Host's model default; null explicitly keeps the provider default. */
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   /**
    * The user's explicit choice for this draft, or undefined when they made
@@ -387,7 +388,7 @@ export function createAppShellChatActions(deps: {
                 model: newChatModel.model,
               }
             : {}),
-          ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
+          thinkingLevel: pendingNewChatThinkingLevel,
           ...(newChatPermissionChoice ? { permissionMode: newChatPermissionChoice } : {}),
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,

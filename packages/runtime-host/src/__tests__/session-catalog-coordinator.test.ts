@@ -790,6 +790,93 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(persistedConnectionId, 'connection-1');
 });
 
+test("creation applies the selected model's configured thinking default", async () => {
+  let persistedThinkingLevel: unknown;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'openai-compatible',
+      enabledModelIds: ['relay-model'],
+      models: [{ id: 'relay-model' }],
+      modelOverrides: {
+        'relay-model': {
+          thinkingLevels: ['low', 'high'],
+          defaultThinkingLevel: 'high',
+        },
+      },
+    },
+    stores: {
+      createStableSession: async (args) => {
+        persistedThinkingLevel = args.input.thinkingLevel;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(persistedThinkingLevel, 'high');
+});
+
+test('creation can explicitly bypass a configured model thinking default', async () => {
+  let persistedThinkingLevel: unknown = 'not-called';
+  const fixture = createFixture({
+    connection: {
+      providerType: 'openai-compatible',
+      enabledModelIds: ['relay-model'],
+      models: [{ id: 'relay-model' }],
+      modelOverrides: {
+        'relay-model': {
+          thinkingLevels: ['low', 'high'],
+          defaultThinkingLevel: 'high',
+        },
+      },
+    },
+    stores: {
+      createStableSession: async (args) => {
+        persistedThinkingLevel = args.input.thinkingLevel;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
+      thinkingLevel: null,
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(persistedThinkingLevel, undefined);
+});
+
 test('plugin executor creation bypasses model resolution and persists the executor route', async () => {
   let persistedInput: Parameters<CatalogStores['createStableSession']>[0]['input'] | undefined;
   const externalHeader = (sessionId: string): SessionHeader => {
