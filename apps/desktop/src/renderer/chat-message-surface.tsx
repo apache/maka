@@ -36,7 +36,7 @@ import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery'
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
 import { selectLiveTurns } from './features/conversation/index.js';
-import { useExternalStoreSelector } from './use-external-store-selector';
+import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { useDeepResearchRun } from './use-deep-research-run';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 

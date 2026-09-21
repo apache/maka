@@ -53,7 +53,6 @@ export const PRICING_EXCLUDED_PROVIDER_TYPES = new Set([
   'kimi-coding-plan',
   'minimax-coding-plan',
   'MiniMax-cn',
-  'opencode-free',
   'opencode-go',
   'stepfun-ai-step-plan',
   'stepfun-step-plan',

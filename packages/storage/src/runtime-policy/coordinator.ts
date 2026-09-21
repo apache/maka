@@ -58,7 +58,6 @@ import {
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type SetCredentialInput,
-  type MigrateSystemSeedInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
   type UpdateNetworkProxyInput,
@@ -474,10 +473,6 @@ export class RuntimePolicyCoordinator {
     return this.inLane(async (root) =>
       this.projectCatalogMutation(root, await this.catalog.setDefaultTarget(root, input)),
     );
-  }
-
-  migrateSystemSeed(input: MigrateSystemSeedInput) {
-    return this.inLane((root) => this.catalog.migrateSystemSeed(root, input));
   }
 
   setCredential(rawInput: SetCredentialInput) {

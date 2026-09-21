@@ -304,119 +304,32 @@
    Product CSS keeps only what is layout: it is a block-level note under the
    bubble, so it needs its own line and the gap above it. */
 .maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
-/* The execution process as one bounded card above the answer: a framed,
-   titled header row over a body that grows with its content up to a cap and
-   then scrolls inside the frame. Keep children mounted so tool disclosures and
-   streamed text retain their identities. */
-.maka-processing-sequence {
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--foreground-2);
-}
+.maka-processing-sequence { min-width: 0; }
 .maka-processing-summary {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: var(--space-2) var(--space-3);
-  border-radius: calc(var(--radius-surface) - 1px);
+  padding-block: var(--space-0-5);
+  border-radius: var(--radius-control);
   color: var(--muted-foreground);
   font: var(--maka-text-body);
   list-style: none;
 }
 .maka-processing-summary::-webkit-details-marker { display: none; }
-.maka-processing-title { color: var(--foreground); font-weight: var(--font-weight-medium); }
 .maka-processing-summary:hover { color: var(--foreground); }
 .maka-processing-summary:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: calc(-1 * var(--focus-ring-width)); }
 .maka-processing-summary > svg { flex-shrink: 0; transition: transform var(--duration-fast) var(--ease-standard); }
 .maka-processing-summary .maka-turn-processing { margin: 0; }
 .maka-processing-summary[aria-disabled='true']:hover { color: var(--muted-foreground); }
-/* The header keeps its frame hairline only while there is a body under it. */
-.maka-processing-sequence[open] > .maka-processing-summary {
-  border-bottom: 1px solid var(--border);
-  border-radius: calc(var(--radius-surface) - 1px) calc(var(--radius-surface) - 1px) 0 0;
-}
-/* The waiting stand-in has an empty body: keep it a single bordered header row
-   rather than stacking the header's hairline on the frame's bottom edge. */
-.maka-processing-sequence[open]:has(> .maka-processing-body > .maka-processing-content:empty) > .maka-processing-summary {
-  border-bottom: none;
-  border-radius: calc(var(--radius-surface) - 1px);
-}
 .maka-processing-sequence[open] > .maka-processing-summary > svg { transform: rotate(90deg); }
-/* The scroller: content grows to the frame's cap, then this owns the overflow
-   so a long process scrolls here instead of pushing the answer off screen.
-   `overscroll-behavior` stays default (`auto`): at an edge the wheel chains up
-   to the transcript, so reaching the top/bottom of the box scrolls the page
-   instead of dead-stopping. `contain` would make the transcript authority treat
-   the box as a dead end and hand off nothing. */
-/* The viewport's overflow is owned by Astryx's `useScrollableArea` (applied
-   through the class that carries `--x-overflow*`): product CSS here only states
-   the cap, the radius and the scrollbar width. Do NOT restate `overflow-y`
-   — it would override the primitive and make `stickyContainment` inert. */
 .maka-processing-body {
-  --maka-process-cap: min(50vh, 360px);
-  max-height: var(--maka-process-cap);
-  min-height: 0;
-  border-radius: 0 0 calc(var(--radius-surface) - 1px) calc(var(--radius-surface) - 1px);
-  scrollbar-width: thin;
-}
-.maka-processing-content {
   display: flex;
-  min-width: 0;
+  min-height: 0;
   flex-direction: column;
   gap: 8px;
-  padding: var(--space-3);
+  overflow: clip;
 }
-/* An empty box is only its header row. */
-.maka-processing-content:empty { display: none; }
-/* A soft fade on an edge that has content hidden past it, so the clamped rows
-   read as "more above/below" rather than cut off. The mask is set on the
-   scroller itself (not an overlay), so nothing adds flow height or a layer; a
-   box that fits, or an edge sitting at its own end, shows no fade.
-   The edge flags are Astryx's OWN viewport attributes from
-   `useScrollableArea` (`data-scrollable-block` while the body overflows,
-   `data-scroll-block-start/end` while an edge is at its end), so this layer
-   reads the primitive's state directly instead of a mirrored copy. */
-.maka-processing-body[data-scrollable-block='true']:not([data-scroll-block-start='true']) {
-  mask-image: linear-gradient(transparent, black var(--space-6));
-}
-.maka-processing-body[data-scrollable-block='true']:not([data-scroll-block-end='true']) {
-  mask-image: linear-gradient(black calc(100% - var(--space-6)), transparent);
-}
-.maka-processing-body[data-scrollable-block='true']:not([data-scroll-block-start='true']):not([data-scroll-block-end='true']) {
-  mask-image: linear-gradient(transparent, black var(--space-6), black calc(100% - var(--space-6)), transparent);
-}
-/* The zoom switch's wrapper: zero-height and sticky inside the body, so the
-   switch rides the body's VISIBLE bottom edge as rows pass under it, and never
-   takes flow space (which would change the content's height and the overflow
-   measure). It works in both states because the body is a scroll container in
-   both: capped at the reading cap, or at the taller magnified cap. Only
-   placement is product CSS: Astryx owns the button's chrome, hover, and focus
-   ring. The gap ignores pointer events so a click there still reaches the rows;
-   the button does not. */
-.maka-processing-zoom {
-  position: sticky;
-  bottom: var(--space-2);
-  z-index: 1;
-  height: 0;
-  display: flex;
-  align-items: flex-end;
-  justify-content: flex-end;
-  pointer-events: none;
-}
-.maka-processing-zoom > * {
-  pointer-events: auto;
-  margin-inline-end: var(--space-2);
-  margin-block-end: var(--space-2);
-}
-/* The reader took the cap off: the process gets the full available height and
-   scrolls inside it, so they can read the whole thing in one tall frame. It is
-   NOT unbounded — a body that never scrolls stops being the switch's scrollport
-   and the corner control drifts to the end of the content (the [P2] the review
-   caught). A taller cap keeps the switch pinned to the visible bottom edge. */
-.maka-processing-body[data-unclamped='true'] {
-  --maka-process-cap: 80vh;
-}
+.maka-processing-body > :first-child { margin-top: var(--space-2); }
 /* Match Astryx ChatToolCalls' grid disclosure motion. The native details
    content remains rendered through exit, without a second open state or timer.
    Unsupported browsers retain the native immediate disclosure. */

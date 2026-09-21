@@ -33,11 +33,7 @@ import type {
   ArtifactTextReadResult,
 } from '@maka/core/artifacts';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
-import type {
-  GitBranchReadResult,
-  GitReviewReadResult,
-  GitReviewSource,
-} from '@maka/core/git-review';
+import type { GitReviewReadResult, GitReviewSource } from '@maka/core/git-review';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
@@ -71,8 +67,6 @@ export interface WorkbarReviewService {
     source: GitReviewSource;
     baseBranch?: string;
   }): Promise<GitReviewReadResult>;
-  /** The working tree's branch (or short sha when detached), for the composer chip. */
-  branch(sessionId: string): Promise<GitBranchReadResult>;
   subscribeSessionEvents(
     sessionId: string,
     handler: (event: SessionEvent) => void,

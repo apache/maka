@@ -183,7 +183,6 @@ import type {
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
-  GitBranchReadResult,
   GitReviewReadResult,
   GitReviewSource,
 } from '@maka/core/git-review';
@@ -2139,6 +2138,21 @@ const makaBridge = {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]> {
       return listDesktopSessions(filter);
     },
+    async get(sessionId: string): Promise<DesktopSessionSummary | null> {
+      const session = await runtimeHostSessionRef(sessionId);
+      const summary = await ipcRenderer.invoke(
+        'sessions:get',
+        session.scope,
+        session.sessionId,
+      ) as DesktopSessionSummaryInput | null;
+      if (summary === null) {
+        desktopSessionCatalogRefresher.evict(sessionId);
+        return null;
+      }
+      const projected = projectSessionSummary(session.scope, summary);
+      desktopSessionCatalogRefresher.admit(projected);
+      return projected;
+    },
     listWithCoverage() {
       return desktopSessionCatalogRefresher.refresh();
     },
@@ -2975,9 +2989,6 @@ const makaBridge = {
       baseBranch?: string;
     }): Promise<GitReviewReadResult> {
       return invokeSessionInput('git-review:read', input);
-    },
-    branch(input: { sessionId: string }): Promise<GitBranchReadResult> {
-      return invokeSessionInput('git:branch', input);
     },
   },
   goal: {
