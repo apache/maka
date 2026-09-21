@@ -57,6 +57,8 @@ export interface SessionRailData {
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
+  /** Opaque Project ids whose Host can choose a replacement client directory. */
+  relinkableProjectIds?: ReadonlySet<string>;
 }
 
 /**

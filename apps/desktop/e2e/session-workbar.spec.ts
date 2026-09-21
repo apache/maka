@@ -49,7 +49,7 @@ async function createSession(page: Page, prompt: string) {
   await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible();
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, {
     timeout: 20_000,
   });
   const sidebar = page.getByRole('navigation', { name: '任务列表' });

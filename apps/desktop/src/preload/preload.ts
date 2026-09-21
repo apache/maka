@@ -170,7 +170,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 
-import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
+import type { TurnOrchestration, SessionListFilter } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchResult } from '@maka/core/search';
 import type {
@@ -183,7 +183,6 @@ import type {
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
-  GitBranchReadResult,
   GitReviewReadResult,
   GitReviewSource,
 } from '@maka/core/git-review';
@@ -1520,17 +1519,11 @@ const makaBridge = {
       return ipcRenderer.invoke(
         'session-collaboration:turn-request:create',
         session.scope,
-        input.kind === 'start'
-          ? {
-              sessionId: session.sessionId,
-              turnId: input.turnId,
-              content: { text: input.text },
-            }
-          : {
-              sessionId: session.sessionId,
-              turnId: input.turnId,
-              sourceTurnId: input.sourceTurnId,
-            },
+        {
+          sessionId: session.sessionId,
+          turnId: input.turnId,
+          content: { text: input.text },
+        },
       );
     },
     async getTurnRequests(sessionId) {
@@ -2145,6 +2138,21 @@ const makaBridge = {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]> {
       return listDesktopSessions(filter);
     },
+    async get(sessionId: string): Promise<DesktopSessionSummary | null> {
+      const session = await runtimeHostSessionRef(sessionId);
+      const summary = await ipcRenderer.invoke(
+        'sessions:get',
+        session.scope,
+        session.sessionId,
+      ) as DesktopSessionSummaryInput | null;
+      if (summary === null) {
+        desktopSessionCatalogRefresher.evict(sessionId);
+        return null;
+      }
+      const projected = projectSessionSummary(session.scope, summary);
+      desktopSessionCatalogRefresher.admit(projected);
+      return projected;
+    },
     listWithCoverage() {
       return desktopSessionCatalogRefresher.refresh();
     },
@@ -2319,9 +2327,6 @@ const makaBridge = {
     },
     listTurnLandmarks(sessionId, turnId = null) {
       return invokeProjectedSessionRuntimeHost('sessions:listTurnLandmarks', sessionId, turnId);
-    },
-    regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:regenerateTurn', sessionId, input);
     },
     branchFromTurn: invokeBranchFromTurn,
     async reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<DesktopSessionSummary> {
@@ -2984,9 +2989,6 @@ const makaBridge = {
       baseBranch?: string;
     }): Promise<GitReviewReadResult> {
       return invokeSessionInput('git-review:read', input);
-    },
-    branch(input: { sessionId: string }): Promise<GitBranchReadResult> {
-      return invokeSessionInput('git:branch', input);
     },
   },
   goal: {

@@ -18,6 +18,7 @@
  */
 
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
+import type { SessionCatalogState } from './session-catalog-state.js';
 
 export interface StaleSessionsInput {
   /** Sessions visible in the sidebar (already filtered + grouped). */
@@ -37,6 +38,14 @@ export function deriveStaleSessionIds(input: StaleSessionsInput): Set<string> {
   }
   return stale;
 }
+
+const NO_SEND_OUTCOMES: Readonly<Record<string, SessionSendProjection>> = {};
+
+export const selectStaleSessionIds = (
+  state: SessionCatalogState,
+  sendOutcomes: Readonly<Record<string, SessionSendProjection>> | undefined,
+): Set<string> =>
+  deriveStaleSessionIds({ sessions: state.sessions, sendOutcomes: sendOutcomes ?? NO_SEND_OUTCOMES });
 
 /**
  * A row is stale when its owning Runtime Host says the next send cannot go

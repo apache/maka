@@ -3464,6 +3464,7 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;
+  #transcriptWatermark: number | null = null;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{
     resolve(result: IteratorResult<SubscriptionFrame>): void;
@@ -3490,6 +3491,10 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     readonly subscriptionId = 'subscription-1',
     private readonly onClose: () => void = () => undefined,
   ) {}
+
+  get transcriptWatermark(): number | null {
+    return this.#transcriptWatermark;
+  }
 
   subscribePtyData(): () => void {
     return () => undefined;
@@ -3524,6 +3529,9 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   }
 
   push(frame: SubscriptionFrame): void {
+    if (frame.kind === 'subscription.transcript_advanced') {
+      this.#transcriptWatermark = frame.throughSequence;
+    }
     const waiter = this.#waiters.shift();
     if (waiter) waiter.resolve({ done: false, value: frame });
     else this.#frames.push(frame);

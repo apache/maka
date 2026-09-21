@@ -739,6 +739,9 @@ async function smokeInteractiveTui({ packageRoot, cliEntrypoint, ptySpawn, root 
   const workspace = join(root, 'workspace');
   mkdirSync(workspace, { recursive: true });
   const environment = isolatedEnvironment(home);
+  for (const key of ['DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
+    delete environment[key];
+  }
   const dataRoots = await resolveInstalledDataRoots(packageRoot, environment, home);
   await withCleanup(
     async () => {
@@ -760,7 +763,9 @@ async function smokeInteractiveTui({ packageRoot, cliEntrypoint, ptySpawn, root 
         },
         timeoutMs: PROCESS_TIMEOUT_MS,
       });
-      if (result.exitCode !== 0) throw new Error(`Interactive TUI exited with ${result.exitCode}`);
+      if (result.exitCode !== 0) {
+        throw new Error(`Interactive TUI exited with ${result.exitCode}: ${result.output}`);
+      }
     },
     (completed) => settleRuntimeHost(packageRoot, dataRoots.workspaceRoot, completed),
   );
@@ -844,6 +849,9 @@ async function smokeNpxScheduleRecovery({ packageRoot, cliEntrypoint, ptySpawn, 
   // or a symlink that resolves back to the persistent installation.
   cpSync(packageRoot, temporaryPackage, { recursive: true, dereference: true });
   const environment = { ...isolatedEnvironment(home), npm_config_cache: cache };
+  for (const key of ['DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
+    delete environment[key];
+  }
   const dataRoots = await resolveInstalledDataRoots(packageRoot, environment, home);
   const installation = await importInstalled(packageRoot, 'dist/runtime-host-cli-installation.js');
   if (
@@ -905,12 +913,13 @@ async function smokeNpxScheduleRecovery({ packageRoot, cliEntrypoint, ptySpawn, 
       args: [entrypoint],
       cwd: workspace,
       environment,
-      marker: '/setup',
+      marker: 'Set Up Provider',
       onMarker: async (terminal) => {
         await prepare();
         await observer.close();
         observer = undefined;
-        terminal.write('/exit\r');
+        terminal.write('\x03');
+        setTimeout(() => terminal.write('\x04'), 250);
       },
       timeoutMs: PROCESS_TIMEOUT_MS,
     });
