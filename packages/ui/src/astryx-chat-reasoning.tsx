@@ -12,7 +12,8 @@
  * compiled, matching the published package output. Maka deliberately defers
  * body children until the first expansion, then keeps them mounted on close;
  * never-opened bodies also omit their descendants from the accessibility tree.
- * The wrapper DOM, header, and keyboard behavior remain the official component.
+ * The wrapper DOM, header, and keyboard behavior remain the official
+ * component; the props interface is trimmed to what Maka passes.
  *
  * Product dialect lives in chat-message.css (cursor default, hover wash,
  * chevron size). In addition to the first-open body rendering change, the
@@ -20,19 +21,15 @@
  * the 10x10 chat-message.css forces, that glyph drew 1.25px of stroke beside
  * the tool rows' 0.73px. One registry, one chevron.
  */
-import { useCallback, useState, type HTMLAttributes, type ReactNode } from 'react';
+import { useState, type HTMLAttributes, type ReactNode } from 'react';
 import { Icon } from '@astryxdesign/core/Icon';
 import { mergeProps, themeProps } from '@astryxdesign/core/utils';
 
 export interface ChatReasoningProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
   label?: string;
-  duration?: string;
   previewText?: string;
   isStreaming?: boolean;
-  isExpanded?: boolean;
-  defaultIsExpanded?: boolean;
-  onExpandedChange?: (isExpanded: boolean) => void;
 }
 
 function ThinkingIcon() {
@@ -49,37 +46,23 @@ export function ChatReasoning(props: ChatReasoningProps) {
   const {
     children,
     label = 'Thinking',
-    duration,
-    previewText: explicitPreviewText,
+    previewText,
     isStreaming = false,
-    isExpanded: controlledExpanded,
-    defaultIsExpanded = false,
-    onExpandedChange,
     className,
     style,
     ...rest
   } = props;
-  const [internalExpanded, setInternalExpanded] = useState(defaultIsExpanded);
-  const isControlled = controlledExpanded !== undefined;
-  const isExpanded = isControlled ? controlledExpanded : internalExpanded;
-  const [hasExpanded, setHasExpanded] = useState(isExpanded);
-  // Track controlled expansion too, before rendering children. Once opened,
-  // retain their state and streaming updates through the existing CSS collapse.
+  const [isExpanded, setIsExpanded] = useState(false);
+  // Track expansion before rendering children. Once opened, retain their
+  // state and streaming updates through the existing CSS collapse.
+  const [hasExpanded, setHasExpanded] = useState(false);
   if (isExpanded && !hasExpanded) setHasExpanded(true);
-  const toggle = useCallback(() => {
-    const next = !isExpanded;
-    if (!isControlled) setInternalExpanded(next);
-    onExpandedChange?.(next);
-  }, [isExpanded, isControlled, onExpandedChange]);
-  const previewText = explicitPreviewText ?? (typeof children === 'string' ? children : null);
+  const toggle = () => setIsExpanded(!isExpanded);
 
   return (
     <div
       {...mergeProps(
-        themeProps('chat-reasoning', {
-          expanded: isExpanded ? 'expanded' : null,
-          streaming: isStreaming ? 'streaming' : null,
-        }),
+        themeProps('chat-reasoning'),
         { className: 'x78zum5 xdt5ytf xtbrsbv' },
         className,
         style,
@@ -107,18 +90,12 @@ export function ChatReasoning(props: ChatReasoningProps) {
           <span
             className={
               isStreaming
-                ? 'x141an7d x1ltkj2j x9ynric x1e4wzip xuxw1ft x2lah0s xct3ic7 xakli9p x1ta4xzc x19co3pv x3mlza6 xeaay5l x1esw782 xa4qsjk'
+                ? 'x141an7d x1ltkj2j x9ynric x1e4wzip xuxw1ft x2lah0s maka-reasoning-shimmer'
                 : 'x141an7d x1ltkj2j x9ynric x1e4wzip xv1l7n4 xuxw1ft x2lah0s'
             }
           >
             {label}
           </span>
-          {duration != null && !isStreaming ? (
-            <>
-              <span className="x141an7d xnbbluu x2lah0s">·</span>
-              <span className="x141an7d x1ltkj2j x9ynric xnbbluu xuxw1ft x2lah0s">{duration}</span>
-            </>
-          ) : null}
           {!isExpanded && previewText && !isStreaming ? (
             <>
               <span className="x141an7d xnbbluu x2lah0s">—</span>

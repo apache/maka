@@ -1543,7 +1543,6 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
       previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}
       title={props.truncated ? copy.thinkingTruncatedTitle : undefined}
-      data-deep-thinking={props.live ? 'live' : undefined}
     >
       <Markdown
         text={props.text}
