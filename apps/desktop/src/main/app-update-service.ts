@@ -43,6 +43,15 @@ export interface AppUpdateService {
   getStatus(): AppUpdateStatus;
   retryUpdateDownload(): Promise<AppUpdateStatus>;
   installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult>;
+  /**
+   * Release an install handoff whose quit never happened.
+   *
+   * `installUpdate` retires the Host before handing off to the updater, and
+   * that retirement only unwinds through its rollback. A quit that is
+   * cancelled or abandoned would otherwise leave the Host retired with
+   * nothing left to restart it, so the quit path reports back here.
+   */
+  abandonPendingInstall(): void;
   /** Check because the window regained focus, subject to a shared throttle. */
   checkForUpdatesOnFocus(): Promise<void>;
   /**
@@ -524,6 +533,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     getStatus: currentStatus,
     retryUpdateDownload,
     installUpdate,
+    abandonPendingInstall: rollbackInstallHandoff,
     checkForUpdatesOnFocus,
     checkForUpdatesNow,
   };

@@ -1447,7 +1447,17 @@ const quitCoordinator = createAppQuitCoordinator({
     console.error("[runtime-host] shutdown failed:", error),
   onWindowCreationError: (error) =>
     console.error("[window] creation failed:", error),
+  onQuitTimeout: (stage, timeoutMs) => {
+    // Squirrel's ShipIt waits for this process before it replaces the bundle,
+    // so a quit that never finishes blocks the update with nothing to read.
+    console.error(
+      `[runtime-host] quit ${stage} did not settle within ${timeoutMs}ms; ` +
+        (stage === "cleaning" ? "exiting without it" : "continuing shutdown"),
+    );
+  },
+  onQuitAbandoned: () => updateService.abandonPendingInstall(),
   resumeQuit: () => app.quit(),
+  forceExit: () => app.exit(0),
 });
 app.on("before-quit", quitCoordinator.handleBeforeQuit);
 updateDesktopStartupProgress('connect');
