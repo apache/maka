@@ -73,7 +73,7 @@ import * as Conversation from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
-import { WorkbarHost, useWorkbarController } from './features/workbar';
+import { WorkbarHost, WorkbarTitlebarActions, useWorkbarController } from './features/workbar';
 import { AppUpdateProvider } from './features/app-update/index.js';
 import * as Goals from './features/goals';
 import * as ModuleHub from './features/module-hub';
@@ -137,7 +137,7 @@ import {
   createContextCompactionPresentation,
   presentContextCompactionResult,
 } from './app-shell-context-compaction';
-import { AppShellTopbarActions } from './app-shell-chrome-actions';
+import { AppShellTitlebar } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { appShellFrameStyle } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
@@ -536,6 +536,7 @@ function AppShellContent({
     sessionCount > 0,
   );
   const {
+    workbarTogglePosition,
     themePref,
     setThemePref,
     themePalette,
@@ -2191,21 +2192,14 @@ function AppShellContent({
           transparent drag overlay so column surfaces paint to the window top.
           It precedes the shell so Chromium applies app-region subtraction from
           one frame-level hit-test surface. */}
-      <header
-        className="maka-window-titlebar"
-        aria-hidden={shellObscured ? 'true' : undefined}
-        inert={hasModalOpen || undefined}
+      <AppShellTitlebar
+        obscured={shellObscured}
+        modalOpen={hasModalOpen}
+        settingsOpen={settingsOpen}
+        sidebarCollapsed={sessionListCollapsed}
+        onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
+        onOpenSearchModal={openSearch}
       >
-        {/* Settings owns the full window chrome. Keep this empty header mounted
-            as the frameless window's drag authority, but remove every control
-            and identity belonging to the obscured session shell. */}
-        {!settingsOpen && (
-          <>
-            <AppShellTopbarActions
-              sidebarCollapsed={sessionListCollapsed}
-              onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
-              onOpenSearchModal={openSearch}
-            />
             {/* Only a session has an identity to state. The other views name
                 themselves in the nav column they are selected from, and the
                 new-task surface still shows its project in the composer's
@@ -2250,9 +2244,11 @@ function AppShellContent({
                 parentSession={titlebarParentSession}
               />
             )}
-          </>
-        )}
-      </header>
+            <WorkbarTitlebarActions
+              model={workbar.host}
+              togglePosition={workbarTogglePosition}
+            />
+      </AppShellTitlebar>
       <AstryxAppShell
         className="app maka-shell-astryx agents-layout-body"
         /* Astryx's default: nav column takes --color-background-body, content takes
@@ -2325,7 +2321,7 @@ function AppShellContent({
               <WorkHubMainNavigation workbarReady={workHubActive && Boolean(workbar.host.activeId)}
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRight}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
-              <WorkHubDock workbarCollapsed={selectors.rightCollapsed} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
+              <WorkHubDock workbarTogglePosition={workbarTogglePosition} workbarCollapsed={selectors.rightCollapsed} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
@@ -2641,7 +2637,7 @@ function AppShellContent({
               </ChatSurfaceLayout>
             </div>
             {/* Collapse hides the Workbar surface without unmounting its tools. */}
-            <WorkbarHost model={workbar.host} />
+            <WorkbarHost model={workbar.host} togglePosition={workbarTogglePosition} />
           </div>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>

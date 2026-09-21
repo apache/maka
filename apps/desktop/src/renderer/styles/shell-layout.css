@@ -355,6 +355,14 @@ dialog:modal {
   color: var(--muted-foreground);
 }
 
+.maka-workspace-top-actions {
+  grid-column: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  -webkit-app-region: no-drag;
+}
+
 /* The title hugs its controls; the remaining track stays draggable. */
 .maka-titlebar-identity {
   grid-column: 2;
@@ -442,7 +450,7 @@ dialog:modal {
 }
 
 /* Titlebar chrome glyph ink is set where the glyph is: `ChromeIcon`
-   (app-shell-chrome-actions.tsx) renders Astryx Icon with `color="secondary"`,
+   (shell/window-titlebar.tsx) renders Astryx Icon with `color="secondary"`,
    and Icon puts `color: var(--color-icon-secondary)` on the svg ITSELF. A
    button-level rule cannot reach past that — a child's own `color` always beats
    an inherited one — so the ghost variant's primary text never applied to these

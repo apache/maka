@@ -74,7 +74,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(restoredDockWidth);
   // The edge belongs to the native conversation renderer. A Main DOM overlay
   // would be covered by this WebContentsView and never receive native clicks.
-  await workhub.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
+  await page.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeVisible();
   // A real native menu must coexist with the live sibling WebContentsView.
   // DOM tests cannot detect replacing that view with a frozen screenshot.
@@ -102,7 +102,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     await app.evaluate(() => (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup());
   }
   await expect(addPanel).toHaveAttribute('aria-expanded', 'false');
-  await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
+  await page.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
   const anchors = workhub.locator('.workhub-anchors');
   const draftBeforeOverlays = 'Draft survives main-window overlays and dragging.';
