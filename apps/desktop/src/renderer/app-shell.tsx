@@ -1401,7 +1401,6 @@ function AppShellContent({
     hasPendingAttachments: () => hasPendingContext,
     openSessionInChat,
     refreshSessions,
-    setMessages,
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
@@ -1662,6 +1661,7 @@ function AppShellContent({
     const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
+      targetSessionId: expectedRevisionDraft?.draftSessionId,
       onSessionResolved: workbar.commands.bindNewTaskSessionResolver(readSelectionRevision()),
       ...directoryOptions,
       ...(quotes ? { quotes } : {}),

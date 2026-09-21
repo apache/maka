@@ -37,7 +37,7 @@ function userMessage(turnId: string, text: string, extra: Record<string, unknown
   } as StoredMessage;
 }
 
-function createActions(input: { messages: StoredMessage[] }) {
+function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean }) {
   const drafts: unknown[] = [];
   const errors: string[] = [];
   const infos: string[] = [];
@@ -71,8 +71,10 @@ function createActions(input: { messages: StoredMessage[] }) {
       selectionRevision += 1;
       activeIdRef.current = sessionId;
     },
-    refreshSessions: async () => [],
-    setMessages: () => {},
+    refreshSessions: async () => {
+      if (input.failRefresh) throw new Error('Host lost the Session');
+      return [];
+    },
     commitRevisionDraft: (draft: unknown) => {
       revisionDraftRef.current = draft;
       drafts.push(draft);
@@ -152,8 +154,9 @@ describe('app-shell revision actions with structured context (#5109)', () => {
 });
 
 describe('prepareRevisionSend transcript settlement', () => {
-  it('keeps the send alive while the revision transcript is still opening', async () => {
+  it('prepares the revision without opening another transcript consumer', async () => {
     let abandoned = 0;
+    let opened = 0;
     await withWindowMaka(
       {
         sessions: {
@@ -163,14 +166,10 @@ describe('prepareRevisionSend transcript settlement', () => {
           },
         },
         transcripts: {
-          open: async (
-            _sessionId: string,
-            _handler: unknown,
-            registerCancellation: (cancel: () => void) => void,
-          ) =>
-            new Promise<never>((_resolve, reject) => {
-              registerCancellation(() => reject(new Error('open cancelled')));
-            }),
+          open: async () => {
+            opened += 1;
+            return new Promise<never>(() => {});
+          },
           readTurn: async () => [],
         },
       },
@@ -178,7 +177,8 @@ describe('prepareRevisionSend transcript settlement', () => {
         const h = createActions({ messages: [userMessage('turn-1', 'original')] });
         h.beginEditUserMessage('turn-1');
         assert.equal(await h.prepareRevisionSend('edited'), true);
-        assert.equal(abandoned, 0, 'a lagging replica must not roll back the revision');
+        assert.equal(opened, 0, 'the send must not wait on a second transcript open');
+        assert.equal(abandoned, 0);
         assert.equal(h.activeIdRef.current, SESSION_2);
         assert.deepEqual(h.errors, []);
         assert.equal(
@@ -191,6 +191,7 @@ describe('prepareRevisionSend transcript settlement', () => {
 
   it('surfaces a failed preparation instead of swallowing it behind rollback', async () => {
     let abandoned = 0;
+    let opened = 0;
     await withWindowMaka(
       {
         sessions: {
@@ -201,15 +202,20 @@ describe('prepareRevisionSend transcript settlement', () => {
         },
         transcripts: {
           open: async () => {
-            throw new Error('Host lost the Session');
+            opened += 1;
+            return new Promise<never>(() => {});
           },
           readTurn: async () => [],
         },
       },
       async () => {
-        const h = createActions({ messages: [userMessage('turn-1', 'original')] });
+        const h = createActions({
+          messages: [userMessage('turn-1', 'original')],
+          failRefresh: true,
+        });
         h.beginEditUserMessage('turn-1');
         assert.equal(await h.prepareRevisionSend('edited'), false);
+        assert.equal(opened, 0);
         assert.equal(h.errors.length, 1, 'the failure must reach the user before rollback navigates away');
         assert.equal(abandoned, 1);
         assert.equal(h.activeIdRef.current, SESSION_1);

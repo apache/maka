@@ -327,7 +327,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3596
+        "nonTriviaTokens": 3594
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -558,7 +558,7 @@
         "nonTriviaTokens": 2157
       },
       "src/renderer/app-shell-revision-actions.ts": {
-        "importDeclarations": 4,
+        "importDeclarations": 3,
         "bridgePaths": {
           "window.maka.sessions.abandonSessionCopy": 2,
           "window.maka.sessions.reviseBeforeTurn": 1
@@ -573,13 +573,12 @@
         "dependencyPaths": {
           "./locales/conversation-copy.js": 1,
           "./locales/shell-copy.js": 1,
-          "./platform/desktop/session-message-settlement.js": 1,
           "./session-copy-attempt.js": 1,
           "./session-workspace-errors.js": 1,
           "@maka/core/session": 1
         },
-        "importSpecifiers": 8,
-        "nonTriviaTokens": 2154
+        "importSpecifiers": 7,
+        "nonTriviaTokens": 2028
       },
       "src/renderer/app-shell-session-events.ts": {
         "importDeclarations": 2,
@@ -832,7 +831,7 @@
           "react": 1
         },
         "importSpecifiers": 98,
-        "nonTriviaTokens": 12727
+        "nonTriviaTokens": 12731
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
