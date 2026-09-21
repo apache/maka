@@ -155,6 +155,24 @@ test('a rejected queue edit keeps the row in edit mode instead of reading as reo
   }
 });
 
+test('the plate lists only follow-ups — steering entries belong to the transcript', async () => {
+  const dom = installDom();
+  try {
+    const { projectComposerMessageQueue } = await import('../composer-message-queue.js');
+    const steering: MessageQueueEntryProjection = {
+      ...queued('entry-0', 'steer the current turn'),
+      placement: 'current_turn',
+    };
+    assert.deepEqual(
+      projectComposerMessageQueue([steering, queued('entry-1', 'first follow-up')], [])
+        .map((entry) => entry.entryId),
+      ['entry-1'],
+    );
+  } finally {
+    dom.restore();
+  }
+});
+
 test('queue actions stay disabled until the entry is Host-admitted', async () => {
   const pending: MessageQueueEntryProjection[] = [
     { ...queued('entry-1', 'first follow-up'), state: 'in_flight' },

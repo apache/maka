@@ -18,13 +18,31 @@
  */
 
 import { createElement } from 'react';
-import type { MessageQueueEntryProjection } from '@maka/core/events';
+import type {
+  AttachmentRef,
+  DirectoryReference,
+  MessageQueueEntryProjection,
+  QuoteRef,
+} from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getConversationCopy, type TransientUserMessageProjection } from '@maka/ui';
 import { ICON_SIZE, Pencil, Trash2 } from '@maka/ui/icons';
 
 type TransientUserMessage = TransientUserMessageProjection;
+
+/**
+ * What a retracted send hands back to the composer: the editable text plus
+ * the staged context (attachments, directory references, quotes) that rode
+ * with it. `text` is the editable serialization — `displayText` when the
+ * content carries a separate model-facing `text`.
+ */
+export interface RestoredDraftContent {
+  text: string;
+  attachments?: readonly AttachmentRef[];
+  directoryReferences?: readonly DirectoryReference[];
+  quotes?: readonly QuoteRef[];
+}
 
 /**
  * Edit/delete controls for steering the Host queued but has not consumed.

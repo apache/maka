@@ -19,12 +19,16 @@
 
 import { useCallback, useMemo, useRef, type RefObject } from 'react';
 import {
+  appendPromptContextDraft,
   useToast,
   useUiLocale,
   type ComposerHandle,
   type TransientUserMessageProjection,
 } from '@maka/ui';
-import { withQueuedSteeringTransients } from '../../../application/contracts/transient-message-projection.js';
+import {
+  withQueuedSteeringTransients,
+  type RestoredDraftContent,
+} from '../../../application/contracts/transient-message-projection.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { useConversationServices } from '../services.js';
@@ -46,7 +50,15 @@ export function useSessionMessageQueue(options: {
 }): {
   composer: RefObject<ComposerHandle | null>;
   transientMessages: TransientUserMessageProjection[];
-  restoreDraft: (sessionId: string, text: string) => void;
+  restoreDraft: (sessionId: string, draft: RestoredDraftContent) => void;
+  /**
+   * Staged-context restorer slot: the shell owns the attachments/quotes stores
+   * and fills this once, so a retract can hand the entry's context back even
+   * after the owning Session navigated away.
+   */
+  draftContextRestorer: RefObject<
+    ((sessionId: string, draft: RestoredDraftContent) => void) | undefined
+  >;
   promoteQueuedEntry: (entryId: string) => Promise<void>;
   updateQueuedEntry: (entryId: string, expectedQueueRevision: number, text: string) => Promise<void>;
   deleteQueuedEntry: (entryId: string) => Promise<void>;
@@ -55,6 +67,7 @@ export function useSessionMessageQueue(options: {
   const { sessionId, queue, transientMessages, activeSessionId } = options;
   const services = useConversationServices();
   const composer = useRef<ComposerHandle>(null);
+  const draftContextRestorer = useRef<((sessionId: string, draft: RestoredDraftContent) => void) | undefined>(undefined);
   const locale = useUiLocale();
   const toast = useToast();
   const reportError = useCallback(
@@ -69,16 +82,22 @@ export function useSessionMessageQueue(options: {
     },
     [locale, toast],
   );
-  const restoreDraft = useCallback(
-    (targetSessionId: string, text: string) => {
-      const handle = composer.current;
-      if (!handle || activeSessionId.current !== targetSessionId) return;
-      if (handle.getText().trim()) handle.appendText(text);
-      else handle.setText(text);
-      handle.focus();
-    },
-    [activeSessionId],
-  );
+  // The draft store is keyed, so a restore lands under the retracted Session's
+  // key even after navigation — the composer focuses only when it is still
+  // showing that Session (setDraft/appendDraft guard on the active key).
+  const restoreDraft = useCallback((targetSessionId: string, draft: RestoredDraftContent) => {
+    draftContextRestorer.current?.(targetSessionId, draft);
+    const handle = composer.current;
+    if (!handle || !draft.text.trim()) return;
+    if (handle.appendDraft) {
+      handle.appendDraft(targetSessionId, draft.text);
+    } else {
+      handle.setDraft(
+        targetSessionId,
+        appendPromptContextDraft(handle.getDraft(targetSessionId), draft.text),
+      );
+    }
+  }, []);
   // Surfaces the failure, then rethrows so the pending plate can settle its
   // in-flight action state without guessing with a timer.
   const runAction = useCallback(
@@ -105,7 +124,14 @@ export function useSessionMessageQueue(options: {
           if (activeSessionId.current === sessionId) reportError(sessionId, error);
           return false;
         }
-        if (draftText !== undefined) restoreDraft(sessionId, draftText);
+        if (draftText !== undefined) {
+          restoreDraft(sessionId, {
+            text: draftText,
+            attachments: entry.content.attachments,
+            directoryReferences: entry.content.directoryReferences,
+            quotes: entry.content.quotes,
+          });
+        }
         return true;
       },
     }),
@@ -115,6 +141,7 @@ export function useSessionMessageQueue(options: {
     composer,
     transientMessages: merged,
     restoreDraft,
+    draftContextRestorer,
     promoteQueuedEntry: (entryId) => runAction((targetSessionId) => services.sessions.promoteQueueEntry(targetSessionId, entryId)),
     updateQueuedEntry: (entryId, expectedQueueRevision, text) =>
       runAction((targetSessionId) => services.sessions.updateQueueEntry(targetSessionId, entryId, expectedQueueRevision, text)),

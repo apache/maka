@@ -78,6 +78,7 @@ import {
   mergeTransientMessageProjection,
   reconcileTransientMessages,
   withQueuedSteeringTransients,
+  type RestoredDraftContent,
 } from '../../../../application/contracts/transient-message-projection.js';
 import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
 import {
@@ -160,8 +161,8 @@ export interface UseQuoteCompanionInput {
     outcome: ContextCompactionOutcome,
   ) => void;
   onContextCompactionError?: (sessionId: string, error: unknown) => void;
-  /** Returns a retracted message's text to the composer draft for editing. */
-  restoreDraft?: (sessionId: string, text: string) => void;
+  /** Returns a retracted message's content to the composer draft for editing. */
+  restoreDraft?: (sessionId: string, draft: RestoredDraftContent) => void;
 }
 
 export async function requestPermissionModeWithConfirmation(
@@ -1740,7 +1741,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
         return false;
       }
-      if (draftText !== undefined) restoreDraftRef.current?.(forkId, draftText);
+      if (draftText !== undefined) {
+        restoreDraftRef.current?.(forkId, {
+          text: draftText,
+          attachments: entry.content.attachments,
+          directoryReferences: entry.content.directoryReferences,
+          quotes: entry.content.quotes,
+        });
+      }
       return true;
     },
   });
