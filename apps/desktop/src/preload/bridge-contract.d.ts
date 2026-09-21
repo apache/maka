@@ -1044,12 +1044,17 @@ export interface MakaBridge {
   newTasks: {
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
-    addProject(host: DesktopNewTaskHostRef): Promise<
+    addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
       { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
     >;
     relinkProject(host: DesktopNewTaskHostRef, projectId: string): Promise<
       { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
     >;
+    renameProject(
+      host: DesktopNewTaskHostRef,
+      projectId: string,
+      name: string,
+    ): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }>;
     getConnections(host: DesktopNewTaskHostRef): Promise<DesktopConnectionSnapshot>;
     listInvocableSkills(
       target: DesktopNewTaskTarget,
@@ -1371,6 +1376,15 @@ export interface MakaBridge {
     unarchive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     setFlagged(sessionId: string, isFlagged: boolean, options?: { revisionFamily?: boolean }): Promise<void>;
     rename(sessionId: string, name: string, options?: { revisionFamily?: boolean }): Promise<void>;
+    /**
+     * Re-file an existing Session into another Project, or out of every Project
+     * when `projectId` is `null`. The Host resolves a Project to its preferred
+     * directory, so the Session's working directory follows the Project; a
+     * `null` target keeps the current directory and drops the association.
+     * Rejects with `operation_conflict` while a Turn is running and for an
+     * archived Session.
+     */
+    moveToProject(sessionId: string, projectId: string | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * Enter or leave Plan — a temporary collaboration excursion Runtime ends
@@ -1477,7 +1491,13 @@ export interface MakaBridge {
     subscribeChanges(handler: () => void, sessionId?: string, host?: DesktopRuntimeHostRef): () => void;
     getLocalSnapshot(): Promise<DesktopProjectSnapshot>;
     subscribeLocalChanges(handler: () => void): () => void;
-    add(host?: DesktopRuntimeHostRef): Promise<
+    /**
+     * Register a directory the user picks as a project, optionally naming it in
+     * the same step. The folder picker still decides the directory; `name` is
+     * what the New project dialog collected, applied before the call returns so
+     * the caller never sees the folder-derived placeholder.
+     */
+    add(host?: DesktopRuntimeHostRef, options?: { readonly name?: string }): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;
     getDirectoryRoots(host: DesktopRuntimeHostRef): Promise<readonly DesktopProjectDirectoryRoot[]>;

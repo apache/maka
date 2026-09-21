@@ -1909,11 +1909,11 @@ const makaBridge = {
         for (const unsubscribe of unsubscribes) unsubscribe();
       };
     },
-    async addProject(host: DesktopNewTaskHostRef) {
+    async addProject(host: DesktopNewTaskHostRef, name?: string) {
       const result = await invokeWhenReady(
         'projects:add',
         await runtimeHostScope(host),
-        { select: false },
+        { select: false, ...(name === undefined ? {} : { name }) },
       ) as
         | { ok: true; project: ProjectRecord; path: string }
         | { ok: false; reason: 'cancelled' };
@@ -1925,6 +1925,17 @@ const makaBridge = {
         await runtimeHostScope(host),
         projectId,
       );
+    },
+    async renameProject(host: DesktopNewTaskHostRef, projectId: string, name: string) {
+      return {
+        ok: true as const,
+        project: (await ipcRenderer.invoke(
+          'projects:rename',
+          await runtimeHostScope(host),
+          projectId,
+          name,
+        )) as ProjectRecord,
+      };
     },
     async getConnections(host: DesktopNewTaskHostRef) {
       return invokeWhenReady(
@@ -2553,6 +2564,9 @@ const makaBridge = {
     rename(sessionId: string, name: string, options?: { revisionFamily?: boolean }): Promise<void> {
       return invokeSessionRuntimeHost('sessions:rename', sessionId, name, options);
     },
+    moveToProject(sessionId: string, projectId: string | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
+      return invokeSessionUpdate('sessions:moveToProject', sessionId, projectId);
+    },
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
       return invokeSessionUpdate('sessions:setPermissionMode', sessionId, mode);
     },
@@ -2907,10 +2921,10 @@ const makaBridge = {
         if (runtimeHostMetadataFor(scope)?.profileKind === 'local') handler();
       });
     },
-    add(host?: DesktopRuntimeHostRef): Promise<
+    add(host?: DesktopRuntimeHostRef, options?: { name?: string }): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     > {
-      return invokeSelectedRuntimeHost(host, 'projects:add');
+      return invokeSelectedRuntimeHost(host, 'projects:add', options);
     },
     getDirectoryRoots(host: DesktopRuntimeHostRef) {
       return invokeSelectedRuntimeHost(host, 'projects:directoryRoots');

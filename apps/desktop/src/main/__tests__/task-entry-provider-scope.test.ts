@@ -40,6 +40,7 @@ let workspaceRenders = 0;
 let hostRenders = 0;
 let latestTaskEntry: TaskEntryShellProjection | undefined;
 let latestDirectoryHostId: string | undefined;
+let latestProjectDialog: ReturnType<typeof useTaskEntryHostModel>['newProjectDialog'];
 let latestWorkspaceGroupCount = 0;
 
 function project(id: string) {
@@ -88,6 +89,7 @@ function HostProbe() {
   const host = useTaskEntryHostModel();
   hostRenders += 1;
   latestDirectoryHostId = host.directoryHost?.hostId;
+  latestProjectDialog = host.newProjectDialog;
   return null;
 }
 
@@ -133,6 +135,7 @@ afterEach(() => {
   hostRenders = 0;
   latestTaskEntry = undefined;
   latestDirectoryHostId = undefined;
+  latestProjectDialog = undefined;
   latestWorkspaceGroupCount = 0;
   cleanupFakeDom();
 });
@@ -163,6 +166,37 @@ describe('TaskEntryRoot render scope', () => {
     assert.equal(workspaceRenders, workspaceBefore);
     assert.equal(hostRenders, hostBefore + 1);
 
+    await act(async () => root.unmount());
+  });
+
+  it('opens and closes the named-project dialog without rerendering the shell', async () => {
+    const { root } = installReactRenderer();
+    const names: Array<string | undefined> = [];
+    const host = {
+      ...remoteHost(),
+      capabilities: { chooseClientDirectory: true, chooseHostDirectory: false, selectNoProject: false },
+    };
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => ({ defaultProfileId: 'remote', hosts: [host] }),
+        addProject: async (_host, name) => {
+          names.push(name);
+          return { ok: false, reason: 'cancelled' };
+        },
+      },
+    });
+    await act(async () => renderProvider(root, services));
+    const before = { shell: shellRenders, frame: frameRenders, workspace: workspaceRenders };
+    await act(async () => latestTaskEntry?.commands.openNewProject());
+    assert.ok(latestProjectDialog);
+    assert.deepEqual({ shell: shellRenders, frame: frameRenders, workspace: workspaceRenders }, before);
+    await act(async () => latestProjectDialog?.submit('Named from the rail'));
+    assert.deepEqual(names, ['Named from the rail']);
+    await act(async () => latestProjectDialog?.close());
+    assert.equal(latestProjectDialog, undefined);
+    await act(async () => latestTaskEntry?.commands.addProject('Named through the bridge'));
+    assert.deepEqual(names, ['Named from the rail', 'Named through the bridge']);
     await act(async () => root.unmount());
   });
 

@@ -111,6 +111,19 @@ describe('OverlaysRoot', () => {
     await act(async () => root.unmount());
   });
 
+  test('an omitted section opens Settings without changing the persisted section', async () => {
+    const { root } = installReactRenderer();
+    const persisted: string[] = [];
+    const services = createFakeOverlaysServices({
+      settingsSection: { persist: (section) => { persisted.push(section); } },
+    });
+    await act(async () => renderRoot(root, services));
+    await act(async () => latest!.commands.openSettingsSection());
+    assert.equal(latest?.selectors.settings.open, true);
+    assert.deepEqual(persisted, []);
+    await act(async () => root.unmount());
+  });
+
   test('opens Settings through the persisted section and settles focus only when closed', async () => {
     const { root } = installReactRenderer();
     const persisted: string[] = [];

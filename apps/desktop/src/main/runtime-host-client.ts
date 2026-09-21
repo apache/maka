@@ -154,6 +154,7 @@ import {
   type TurnMessageSubmitInput,
   type TurnMessageSubmitResult,
   type WorkspaceProjection,
+  type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 
 const decodeStoredMessage = (value: unknown): StoredMessage =>
@@ -1102,6 +1103,30 @@ export class DesktopRuntimeHostClient {
         patch: definedPatch,
       }),
     );
+  }
+
+  /**
+   * Re-point an existing Session at another workspace, at the revision the
+   * caller read.
+   *
+   * Deliberately a single attempt. The target can carry a working directory the
+   * caller read from that same revision — a `host_path` taken from the Session
+   * while detaching it from every project — and retrying against a fresher one
+   * would commit that stale directory under the new revision, undoing whatever
+   * the concurrent write did. A conflict is the answer, not a replay.
+   */
+  async relocateSessionWorkspace(
+    sessionId: string,
+    expectedRevision: number,
+    workspace: WorkspaceTarget,
+  ): Promise<SessionCatalogProjection> {
+    const result = await this.request("session.workspace.relocate", {
+      sessionId,
+      expectedRevision,
+      workspace,
+    });
+    if (result.kind === "committed") return requireSessionProjection(result.session);
+    throw revisionConflict("relocate", sessionId);
   }
 
   async setSessionReadMarker(

@@ -58,6 +58,7 @@ type RuntimeHostSessionCatalogClient = Pick<
   | 'getSession'
   | 'listSessions'
   | 'previewSessionRemoval'
+  | 'relocateSessionWorkspace'
   | 'removeSession'
   | 'setSessionLifecycle'
   | 'updateSessionConfiguration'
@@ -233,6 +234,61 @@ export function registerRuntimeHostSessionCatalogIpc(
     // Read-only: how many subtasks the delete would archive, for the confirm.
     return deps.client.previewSessionRemoval(sessionId);
   });
+  ipcMain.handle(
+    'sessions:moveToProject',
+    async (_event, sessionId: string, projectId: unknown) => {
+      if (projectId !== null && (typeof projectId !== 'string' || projectId.length === 0)) {
+        throw new Error('Invalid project id');
+      }
+      return moveSessionToProject(deps, sessionId, projectId);
+    },
+  );
+}
+
+/**
+ * Re-files an existing Session into another Project, or out of every Project.
+ *
+ * Unlike the configuration updates, this is not a revision-family action: a
+ * move re-points one working directory, and moving an archived or branched
+ * sibling's cwd as a side effect is not what the user asked for.
+ *
+ * The revision is read once, here, and carried into the commit. Detaching needs
+ * the Session's own cwd as the target, and that directory is only meaningful
+ * paired with the revision it was read at: committing it against a later
+ * revision would move the Session back to a directory a concurrent writer had
+ * already left, which is exactly what the Host's compare-and-set exists to
+ * stop. So a conflict is reported, not retried.
+ */
+async function moveSessionToProject(
+  deps: RuntimeHostSessionCatalogIpcDeps,
+  sessionId: string,
+  projectId: string | null,
+): Promise<DesktopSessionUpdateResult<DesktopHostSessionSummary>> {
+  let session: SessionCatalogProjection;
+  try {
+    const current = await deps.client.getSession(sessionId);
+    if (!current) {
+      throw new DesktopRuntimeHostClientError(
+        'session_not_found',
+        `No such Session: ${sessionId}`,
+      );
+    }
+    const workspace: WorkspaceTarget =
+      projectId === null
+        ? { kind: 'host_path', path: current.workspace.hostCwd }
+        : { kind: 'project', projectId };
+    session = await deps.client.relocateSessionWorkspace(
+      sessionId,
+      current.revision,
+      workspace,
+    );
+  } catch (error) {
+    const code = updateFailureCode(error);
+    if (code) return { ok: false, code };
+    throw error;
+  }
+  deps.emitSessionsChanged('updated', sessionId);
+  return { ok: true, session: toDesktopHostSessionSummary(session) };
 }
 
 /**
