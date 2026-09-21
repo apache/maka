@@ -18,7 +18,7 @@
  */
 
 import type { Page } from '@playwright/test';
-import { expect, test, COMPOSER_INPUT } from './fixtures';
+import { awaitSendReady, expect, test, COMPOSER_INPUT } from './fixtures';
 
 /**
  * Revision drafts, per session, with a Skill staged in them.
@@ -73,7 +73,8 @@ async function failWorkspaceSkillRevision(page: Page): Promise<void> {
   expect(disabled.ok).toBe(true);
 
   const composer = page.locator(COMPOSER_INPUT);
-  await composer.press('Enter');
+  await awaitSendReady(page);
+  await page.locator('.maka-composer button[type="submit"]').click();
   await expect(page.getByText('Skill 调用失败，消息未发送')).toBeVisible();
   // The draft survives the rejection whole, and reads as the token rather than
   // as a chip: the Skill was just disabled, so it is gone from the catalog the
