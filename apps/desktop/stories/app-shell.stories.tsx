@@ -1820,7 +1820,7 @@ export const TitlebarParentReturn: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     expect(canvas.queryByRole('button', { name: '项目信息' })).toBeNull();
-    await userEvent.click(canvas.getByRole('button', { name: '复现登录失败 任务操作' }));
+    await userEvent.click(canvas.getByRole('button', { name: '复现登录失败 — 任务操作' }));
     const page = within(canvasElement.ownerDocument.body);
     expect(await page.findByRole('menuitem', { name: '复制路径' })).toBeVisible();
     await userEvent.keyboard('{Escape}');
