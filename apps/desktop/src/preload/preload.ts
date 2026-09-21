@@ -2669,6 +2669,7 @@ const makaBridge = {
       const channel = `sessions:transcript:${consumerId}`;
       let identity: DesktopTranscriptIdentity | undefined;
       let cachedIdentity: DesktopTranscriptIdentity | undefined;
+      let session: Awaited<ReturnType<typeof runtimeHostSessionRef>> | undefined;
       const retiredGenerations = new Set<string>();
       let closed = false;
       let requestClose = () => {};
@@ -2712,22 +2713,15 @@ const makaBridge = {
         }
       };
       ipcRenderer.on(channel, listener);
-      const openDispatch = runtimeHostSessionRef(sessionId).then(async (session) => {
-        consumerScope = session.scope;
-        const cached = await invokeWhenReady(
-          'session-local:transcript', session.scope, session.sessionId,
-        ).catch(() => null) as import('../shared/session-local-contract.js').DesktopCachedTranscript | null;
+      const openDispatch = runtimeHostSessionRef(sessionId).then(async (ref) => {
+        consumerScope = ref.scope;
+        session = ref;
         if (closed) throw new Error('Desktop transcript open was cancelled');
-        // Local frames do not participate in the live consumer identity or ACK window.
-        for (const [index, batch] of (cached?.batches ?? []).entries()) {
-          handler({ ...batch, deliverySequence: index + 1 });
-          if (batch.ready) cachedIdentity = { generation: batch.generation, hostEpoch: batch.hostEpoch };
-        }
         return {
           completion: invokeWhenReady(
             'sessions:transcript:open',
-            session.scope,
-            session.sessionId,
+            ref.scope,
+            ref.sessionId,
             consumerId,
             mode,
             resumeFrom ?? null,
@@ -2752,14 +2746,26 @@ const makaBridge = {
         const cancelled = closed;
         closed = true;
         ipcRenderer.off(channel, listener);
-        if (!cancelled && cachedIdentity && !identity) {
-          const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
-          return {
-            ...cachedIdentity, sessionId, readThroughMessageId: null,
-            acknowledgeTail: unavailable,
-            loadEarlier: unavailable,
-            close: async () => {},
-          };
+        if (!cancelled && !identity && session) {
+          // The cache stands in only when the live read never answered; on a
+          // healthy open the first published history is the live answer itself.
+          const cached = await invokeWhenReady(
+            'session-local:transcript', session.scope, session.sessionId,
+          ).catch(() => null) as import('../shared/session-local-contract.js').DesktopCachedTranscript | null;
+          // Local frames do not participate in the live consumer identity or ACK window.
+          for (const [index, batch] of (cached?.batches ?? []).entries()) {
+            handler({ ...batch, deliverySequence: index + 1 });
+            if (batch.ready) cachedIdentity = { generation: batch.generation, hostEpoch: batch.hostEpoch };
+          }
+          if (cachedIdentity) {
+            const unavailable = async () => { throw new Error('Reconnect the Host to load uncached history'); };
+            return {
+              ...cachedIdentity, sessionId, readThroughMessageId: null,
+              acknowledgeTail: unavailable,
+              loadEarlier: unavailable,
+              close: async () => {},
+            };
+          }
         }
         throw error;
       }

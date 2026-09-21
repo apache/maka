@@ -806,7 +806,7 @@ export function ChatView(props: {
                 ? emptyContent
                 : null}
               {loadEarlierHistoryControl}
-              <div key={props.activeSession.id} ref={listRef}>
+              <div key={props.activeSession.id} ref={listRef} className="maka-chat-session-swap">
                 <Virtualizer
                   key={measurement.generation}
                   ref={virtualizerRef}
