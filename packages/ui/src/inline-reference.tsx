@@ -118,7 +118,7 @@ export function InlineReferenceText(props: {
       continue;
     }
     if (reference.start > cursor) {
-      parts.push(skillTokenizedText(props.text.slice(cursor, reference.start), `gap:${cursor}`));
+      parts.push(...skillTokenizedParts(props.text, cursor, reference.start));
     }
     parts.push(
       <ChatTokenizedText
@@ -131,27 +131,42 @@ export function InlineReferenceText(props: {
     cursor = reference.start + reference.value.length;
   }
   if (cursor < props.text.length) {
-    parts.push(skillTokenizedText(props.text.slice(cursor), `gap:${cursor}`));
+    parts.push(...skillTokenizedParts(props.text, cursor, props.text.length));
   }
   return <span>{parts}</span>;
 }
 
-/** A text run with its `/skill:<id>` invocations drawn as chips, or plain. */
-function skillTokenizedText(text: string, key: string): ReactNode {
-  const values = new Set(
-    [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
-  );
-  if (values.size === 0) return text;
-  return (
-    <ChatTokenizedText
-      key={key}
-      tokens={[...values].map((value) =>
-        inlineReferenceToken({ kind: 'skill', value, label: skillTokenLabel(value) }),
-      )}
-    >
-      {text}
-    </ChatTokenizedText>
-  );
+/**
+ * `/skill:<id>` invocations in `text[start..end)` drawn as chips at their
+ * grammar positions. `ChatTokenizedText` re-locates a token by its value, so
+ * each match gets an island holding exactly the matched text: a value can
+ * never chip a position the grammar rejected (`a/skill:x`), and a shorter id
+ * can never split a longer one.
+ */
+function skillTokenizedParts(text: string, start: number, end: number): ReactNode[] {
+  const parts: ReactNode[] = [];
+  let cursor = start;
+  for (const match of text.slice(start, end).matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))) {
+    if (match.index === undefined) continue;
+    const at = start + match.index;
+    // The grammar's `^` reads the slice's start; the real boundary is the
+    // character before it in the full text.
+    if (match.index === 0 && start > 0 && !/\s/.test(text[start - 1])) continue;
+    if (at > cursor) parts.push(text.slice(cursor, at));
+    parts.push(
+      <ChatTokenizedText
+        key={`skill:${at}`}
+        tokens={[
+          inlineReferenceToken({ kind: 'skill', value: match[0], label: skillTokenLabel(match[0]) }),
+        ]}
+      >
+        {match[0]}
+      </ChatTokenizedText>,
+    );
+    cursor = at + match[0].length;
+  }
+  if (cursor < end) parts.push(text.slice(cursor, end));
+  return parts;
 }
 
 /**

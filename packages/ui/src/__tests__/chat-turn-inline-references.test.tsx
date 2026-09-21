@@ -149,3 +149,49 @@ test('leaves a reference the text no longer holds as text, and still chips the t
   assert.deepEqual(chipLabels(bubble), ['writer']);
   assert.equal(bubble.textContent, 'read something else then writer');
 });
+
+test('does not chip a token the grammar rejects at its position', async () => {
+  // `a/skill:writer` is a URL-shaped mention the grammar's `(?<=\s)` excludes;
+  // drawing chips by token *value* chips it anyway — and when the invocation's
+  // receipt failed the wrong chip stayed in the final transcript forever.
+  const bubble = await renderUserRow({
+    id: 'ask',
+    role: 'user',
+    text: '参考 a/skill:writer 再调 /skill:writer',
+    ts: 1,
+    inlineReferences: [],
+  });
+
+  assert.deepEqual(chipLabels(bubble), ['writer']);
+  assert.equal(bubble.textContent, '参考 a/skill:writer 再调 writer');
+});
+
+test('does not chip a token that starts right after a reference span', async () => {
+  // The text's own boundary check sees `d/`, not the whitespace the grammar
+  // requires — the gap slice's start is not a real `^`.
+  const bubble = await renderUserRow({
+    id: 'ask',
+    role: 'user',
+    text: 'read @notes/writer.md/skill:review',
+    ts: 1,
+    inlineReferences: [WRITER_FILE],
+  });
+
+  assert.deepEqual(chipLabels(bubble), ['writer.md']);
+  assert.equal(bubble.textContent, 'read writer.md/skill:review');
+});
+
+test('chips prefix-related ids at their own positions', async () => {
+  // Value-set tokenization let the shorter `review` match inside `reviewer`
+  // first, leaving a `review` chip plus a stray `er`.
+  const bubble = await renderUserRow({
+    id: 'ask',
+    role: 'user',
+    text: 'run /skill:review and /skill:reviewer',
+    ts: 1,
+    inlineReferences: [],
+  });
+
+  assert.deepEqual(chipLabels(bubble), ['review', 'reviewer']);
+  assert.equal(bubble.textContent, 'run review and reviewer');
+});
