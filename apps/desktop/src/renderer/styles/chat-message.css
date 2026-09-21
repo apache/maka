@@ -33,14 +33,6 @@
 
 /* Astryx owns sender-aware row alignment; Maka only declares the product
    reading geometry and the deliberately dense conversation type scale. */
-.maka-chat-message {
-  width: 100%;
-  opacity: 1;
-}
-
-.maka-chat-message-list {
-  width: 100%;
-}
 
 /* Native anchoring handles ordinary content growth. The scroll authority
    disables it during following and atomic range replacement, when it owns
@@ -60,7 +52,6 @@
 
 .maka-transcript-turn {
   display: flex;
-  width: 100%;
   flex-direction: column;
   gap: var(--spacing-4);
   /* Resident Turns contribute their real size before the first scroll. */
