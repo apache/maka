@@ -27,9 +27,9 @@ The before image renders `GeneralSettingsPage` from base `acab16537` in the same
 
 | Before | After: enabled with a synthetic key |
 | --- | --- |
-| ![Before](settings-before.png) | ![After](settings-after-enabled.png) |
+| ![Before](../../.maka-shots/pr-5562/settings-before.png) | ![After](../../.maka-shots/pr-5562/settings-after-enabled.png) |
 
-[After: advanced settings collapsed](settings-after-collapsed.png). Jev remains disabled by default; the enabled image shows an explicit user opt-in.
+[After: advanced settings collapsed](../../.maka-shots/pr-5562/settings-after-collapsed.png). Jev remains disabled by default; the enabled image shows an explicit user opt-in.
 
 ## Scope and method
 
