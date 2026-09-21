@@ -18,7 +18,7 @@
  */
 
 import type { Page } from '@playwright/test';
-import { awaitSendReady, expect, test, COMPOSER_INPUT } from './fixtures';
+import { expect, test, COMPOSER_INPUT, waitForSkillNotInvocable } from './fixtures';
 
 /**
  * Revision drafts, per session, with a Skill staged in them.
@@ -49,15 +49,14 @@ async function seedEditableTurn(page: Page): Promise<void> {
 }
 
 /** Type the draft, then append the Skill chip — the order a user works in. */
-async function composeWithSkill(page: Page, text: string, name: string, skillId: string): Promise<void> {
+async function composeWithSkill(page: Page, text: string, name: RegExp): Promise<void> {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(text);
   await composer.click();
-  await composer.pressSequentially(` /${skillId}`);
+  await composer.pressSequentially(' /');
   const option = page.getByRole('listbox', { name: /技能/ }).getByRole('option', { name });
   await expect(option).toBeVisible();
-  await composer.press('Enter');
-  await expect(page.locator(`[data-astryx-token-value="/skill:${skillId}"]`)).toBeVisible();
+  await option.click();
 }
 
 async function beginRevision(page: Page): Promise<void> {
@@ -74,8 +73,22 @@ async function failWorkspaceSkillRevision(page: Page): Promise<void> {
   expect(disabled.ok).toBe(true);
 
   const composer = page.locator(COMPOSER_INPUT);
-  await awaitSendReady(page);
-  await page.locator('form.maka-composer').evaluate((form: HTMLFormElement) => form.requestSubmit());
+  // Two independent races sit between disabling the Skill and pressing Enter,
+  // and both make the rejection this journey asserts never render:
+  //
+  //  1. The toggle above goes through the raw bridge, not the Skills page, so
+  //     nothing re-fetches the composer's `/` source. Until Runtime's projection
+  //     drops the Skill it is still invocable, the send resolves it, and it
+  //     succeeds — no banner.
+  //  2. Picking the Skill left the `/` menu open. While it reports
+  //     `aria-expanded`, the composer swallows Enter as menu acceptance instead
+  //     of sending, so the draft is never submitted at all.
+  //
+  // Settle both: the menu closed, and the Skill gone from the invocable set.
+  await expect(composer).toHaveAttribute('aria-expanded', 'false');
+  await waitForSkillNotInvocable(page, ['workspace-only']);
+
+  await composer.press('Enter');
   await expect(page.getByText('Skill 调用失败，消息未发送')).toBeVisible();
   // The draft survives the rejection whole, and reads as the token rather than
   // as a chip: the Skill was just disabled, so it is gone from the catalog the
@@ -91,7 +104,7 @@ test('a successful revision retry clears both child and source drafts', async ({
   await openInstalledWorkspaceSkill(page);
   await seedEditableTurn(page);
   await beginRevision(page);
-  await composeWithSkill(page, 'edited with skill', 'Workspace Only', 'workspace-only');
+  await composeWithSkill(page, 'edited with skill', /Workspace Only/);
   await failWorkspaceSkillRevision(page);
 
   const enabled = await page.evaluate(() =>
@@ -116,9 +129,9 @@ test('cancelling a failed revision restores the complete pre-edit draft', async 
   await seedEditableTurn(page);
 
   const composer = page.locator(COMPOSER_INPUT);
-  await composeWithSkill(page, 'previous unsent draft', 'Project Only', 'project-only');
+  await composeWithSkill(page, 'previous unsent draft', /Project Only/);
   await beginRevision(page);
-  await composeWithSkill(page, 'edited with skill', 'Workspace Only', 'workspace-only');
+  await composeWithSkill(page, 'edited with skill', /Workspace Only/);
   await failWorkspaceSkillRevision(page);
 
   await page.getByRole('button', { name: '取消' }).click();

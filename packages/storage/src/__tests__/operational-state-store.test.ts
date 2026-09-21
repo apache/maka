@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -842,6 +842,50 @@ test('rolls back every scope when migration publication fails', async () => {
       undefined,
     );
     preserved.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves retired research events through upgrade, reopen, and backup', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-retired-research-'));
+  const restoredRoot = join(root, 'restored');
+  const record = '{"kind":"started","objective":"Existing research"}';
+  try {
+    const databasePath = join(root, 'runtime.sqlite');
+    await restoreV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    try {
+      legacy.exec('DELETE FROM automation_pending_fires; DELETE FROM automation_definitions');
+      legacy
+        .prepare(`
+        INSERT INTO workflow_deep_research_events(session_id, sequence, event_id, record_json)
+        VALUES ('legacy-research', 0, 'start', ?)
+      `)
+        .run(record);
+    } finally {
+      legacy.close();
+    }
+
+    acquireOperationalStateDatabase(root).close();
+    await mkdir(restoredRoot);
+    for (const stateRoot of [root, restoredRoot]) {
+      const lease = acquireOperationalStateDatabase(stateRoot, {
+        schemaMigration: 'require_current',
+      });
+      try {
+        const row = lease.database
+          .prepare(`
+          SELECT record_json FROM workflow_deep_research_events
+          WHERE session_id = 'legacy-research' AND event_id = 'start'
+        `)
+          .get();
+        assert.equal(row?.record_json, record);
+        if (stateRoot === root) await lease.backup(join(restoredRoot, 'runtime.sqlite'));
+      } finally {
+        lease.close();
+      }
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -486,7 +486,7 @@ export interface PrivacySettings {
 }
 
 /**
- * `explore` is excluded — it's reserved for Deep Research sessions and
+ * `explore` is excluded — it's reserved for read-only sessions and
  * Bot-incoming guards and is never a mode the user picks, in the composer
  * dropdown or here. Derived from the canonical PERMISSION_MODES (not a
  * hand-copied literal) so adding a future mode updates every consumer —

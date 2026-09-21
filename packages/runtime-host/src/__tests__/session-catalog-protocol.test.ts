@@ -509,14 +509,14 @@ describe('Session catalog protocol', () => {
       input: {
         sessionId: 'session-mode',
         workspace: { kind: 'host_path', path: '/workspace' },
-        mode: 'deep_research',
+        mode: 'bot',
         modelTarget: { kind: 'default' },
       },
     });
     if ('kind' in decoded || decoded.operation !== 'session.create') {
       assert.fail('Expected Session create frame');
     }
-    assert.equal(decoded.input.mode, 'deep_research');
+    assert.equal(decoded.input.mode, 'bot');
     assert.throws(
       () =>
         decodeClientFrame({
@@ -525,7 +525,7 @@ describe('Session catalog protocol', () => {
           input: {
             sessionId: 'session-invalid-mode',
             workspace: { kind: 'host_path', path: '/workspace' },
-            mode: 'unknown',
+            mode: 'deep_research',
             modelTarget: { kind: 'default' },
           },
         }),

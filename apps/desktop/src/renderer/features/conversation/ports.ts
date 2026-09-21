@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import type { SessionChangedEvent } from '@maka/core/session';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
@@ -51,8 +50,6 @@ export interface ConversationServices extends Pick<
   'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
   readonly sessions: {
-    list(): Promise<ConversationSession[]>;
-    subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
     readSnapshot(sessionId: string, options?: { readonly maxChars?: number }): Promise<SessionSnapshot>;
   };
   readonly skills: {
