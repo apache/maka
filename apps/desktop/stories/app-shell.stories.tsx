@@ -3597,10 +3597,19 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     // same visible affordance without pretending to move the native pointer.
     edge.focus();
     await waitFor(() => expect(Number(getComputedStyle(glass).opacity)).toBe(1));
+    expect(getComputedStyle(glass).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(edge).outlineStyle).toBe('solid');
+    const glassBox = glass.getBoundingClientRect();
+    const edgeBox = edge.getBoundingClientRect();
+    expect(glassBox.left).toBeGreaterThanOrEqual(edgeBox.left);
+    expect(glassBox.right).toBeLessThanOrEqual(edgeBox.right);
+    for (const x of [glassBox.left + 2, glassBox.right - 2]) {
+      expect(document.elementFromPoint(x, glassBox.y + glassBox.height / 2)?.closest('button')).toBe(edge);
+    }
     expect(frame.getBoundingClientRect().width).toBe(width);
     const conversation = canvasElement.querySelector('.maka-detail-with-artifacts > .mainColumn')!.getBoundingClientRect();
     expect(edge.getBoundingClientRect().left).toBeGreaterThan(conversation.left);
-    expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(conversation.right - 12);
+    expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(conversation.right - 16);
     expect(frame.getBoundingClientRect().left - conversation.right).toBeLessThanOrEqual(8);
     expect(edge.getBoundingClientRect().right).toBeLessThanOrEqual(frame.getBoundingClientRect().left);
     const separator = canvas.getByRole('separator', { name: '调整工作栏宽度' });

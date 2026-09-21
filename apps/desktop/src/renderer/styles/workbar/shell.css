@@ -314,10 +314,11 @@ button.maka-workbar-edge {
   grid-area: main;
   position: absolute;
   top: 50%;
-  right: 12px;
+  right: 16px;
   transform: translateY(-50%);
   z-index: 3;
-  width: 12px;
+  width: 28px;
+  min-width: 28px;
   height: 112px;
   padding: 0;
   border: 0;
@@ -333,17 +334,18 @@ button.maka-workbar-edge:is(:hover, :active, :focus-visible) { background: trans
 }
 /* Leave space between the anchor targets and the edge control, without moving
    the conversation or its scrollbar. The resize separator stays outside both. */
-:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail { right: 30px; }
-:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail:hover { right: 33px; }
+:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail { right: 48px; }
+:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail:hover { right: 51px; }
 .maka-workbar-edge-glass {
   position: absolute;
   top: 50%;
-  right: -12px;
+  right: 0;
   display: grid;
   place-items: center;
   width: 28px;
   height: 112px;
-  /* The ends attach to the boundary; the middle bows into the conversation. */
+  /* Keep the entire painted shape inside the button hit area. The inset
+     leaves the transcript scrollbar clear without changing the shell gutter. */
   clip-path: path('M28 0 C28 22 0 27 0 56 C0 85 28 90 28 112 Z');
   background: linear-gradient(105deg, color-mix(in oklch, var(--foreground) 16%, transparent), color-mix(in oklch, var(--background-elevated) 62%, transparent) 48%, color-mix(in oklch, var(--foreground) 6%, transparent));
   backdrop-filter: blur(16px) saturate(135%);
@@ -360,15 +362,14 @@ button.maka-workbar-edge:is(:hover, :active, :focus-visible) { background: trans
   transform: translateY(-50%) scaleX(1);
 }
 .maka-workbar-edge:active .maka-workbar-edge-glass { transform: translateY(-50%) scaleX(.86); }
-.maka-workbar-edge:focus-visible { outline: none; }
-.maka-workbar-edge:focus-visible .maka-workbar-edge-glass { background-color: color-mix(in oklch, var(--focus-ring) 24%, var(--background-elevated)); }
+.maka-workbar-edge:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* An explicit placement comes from Main for the native WorkHub renderer,
    whose own width is not the workspace's responsive breakpoint. */
 .maka-workbar-edge[data-placement="bottom"] {
-  top: auto; right: auto; bottom: 12px; left: 50%; transform: translateX(-50%); width: 112px; height: 12px;
+  top: auto; right: auto; bottom: 16px; left: 50%; transform: translateX(-50%); width: 112px; height: 28px;
 }
 .maka-workbar-edge[data-placement="bottom"] .maka-workbar-edge-glass {
-  top: auto; right: auto; bottom: -12px; left: 50%; width: 112px; height: 28px;
+  top: auto; right: auto; bottom: 0; left: 50%; width: 112px; height: 28px;
   clip-path: path('M0 28 C22 28 27 0 56 0 C85 0 90 28 112 28 Z');
   transform-origin: center bottom; transform: translateX(-50%) scaleY(.08);
 }
