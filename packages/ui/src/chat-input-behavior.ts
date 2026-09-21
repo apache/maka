@@ -120,6 +120,34 @@ export function mentionQueryMatches(query: string, text: string): boolean {
     .every((token) => haystack.includes(token));
 }
 
+/**
+ * How well one `/`-menu candidate answers the typed query, lower first: 0 for a
+ * prefix of its id or name, 1 for an id/name substring, 2 when every query word
+ * appears across id and name, 3 when only the description or the keywords
+ * explain the match.
+ *
+ * The menu orders by this ahead of its catalog order. `mentionQueryMatches`
+ * alone treats a description as good as a name, so one or two typed letters of
+ * a Skill's own name sorted below every Skill that merely mentions the word in
+ * its prose — the list looked like it had not matched at all until the query
+ * grew long enough to exclude those descriptions.
+ *
+ * `primary` is what a user is naming: a Skill's id and name, a command's id,
+ * name and keywords.
+ */
+export function mentionMatchRank(query: string, primary: string): 0 | 1 | 2 | 3 {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return 0;
+  const haystack = primary.toLowerCase();
+  if (haystack.startsWith(normalized)) return 0;
+  if (haystack.includes(normalized)) return 1;
+  const words = normalized.split(/\s+/);
+  // A multi-word query ("project only") rarely appears verbatim in an id/name,
+  // but every word being there still makes it a name match rather than prose.
+  if (words.every((word) => haystack.includes(word))) return 2;
+  return 3;
+}
+
 /** Normalize `/skill:<query>` and bare `/<query>` into the same Skill search query. */
 export function skillMentionQuery(query: string): string {
   return query.toLowerCase().startsWith('skill:') ? query.slice('skill:'.length) : query;
