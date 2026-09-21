@@ -1339,6 +1339,7 @@ function AppShellContent({
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
     openSettingsSection,
     refreshSessions,
+    sessionCatalog: sessionCatalogController,
     setActiveId,
     setNavSelection,
     openSearchModal: openSearch,

@@ -443,7 +443,7 @@
           "./theme": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 634
+        "nonTriviaTokens": 750
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 9,
@@ -855,7 +855,7 @@
           "react": 1
         },
         "importSpecifiers": 99,
-        "nonTriviaTokens": 12855
+        "nonTriviaTokens": 12859
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,

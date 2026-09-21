@@ -31,6 +31,10 @@ export interface AppShellE2eFixtureActions {
 export function createAppShellE2eFixtureActions(options: {
   openSettingsSection: (section: SettingsSection) => void;
   refreshSessions: () => Promise<unknown>;
+  sessionCatalog: {
+    getState(): { sessions: readonly { id: string }[] };
+    subscribe(listener: () => void): () => void;
+  };
   setActiveId: (sessionId: string | undefined) => void;
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
   openSearchModal(): void;
@@ -48,6 +52,7 @@ export function createAppShellE2eFixtureActions(options: {
   const {
     openSettingsSection,
     refreshSessions,
+    sessionCatalog,
     setActiveId,
     setNavSelection,
     openSearchModal,
@@ -110,6 +115,22 @@ export function createAppShellE2eFixtureActions(options: {
       document.documentElement.setAttribute('data-maka-e2e-fixture-tz', state.timezone);
     }
     if (state.activeSessionId) {
+      // A runtime-host-profiles change triggers a retire sweep that drops an
+      // active Session missing from the committed catalog. With the Host
+      // still starting, that sweep can land before the seeded row reaches the
+      // catalog — activate only once the catalog has observed it.
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (
+            sessionCatalog.getState().sessions.some((s) => s.id === state.activeSessionId)
+          ) {
+            unsubscribe();
+            resolve();
+          }
+        };
+        const unsubscribe = sessionCatalog.subscribe(check);
+        check();
+      });
       setActiveId(state.activeSessionId);
     }
     // Workbar collapse state is keyed per Session and drops writes issued
