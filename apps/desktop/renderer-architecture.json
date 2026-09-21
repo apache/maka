@@ -327,7 +327,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3590
+        "nonTriviaTokens": 3594
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -721,7 +721,7 @@
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
-          "useRef": 14,
+          "useRef": 13,
           "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
@@ -827,7 +827,7 @@
           "react": 1
         },
         "importSpecifiers": 98,
-        "nonTriviaTokens": 12729
+        "nonTriviaTokens": 12427
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,

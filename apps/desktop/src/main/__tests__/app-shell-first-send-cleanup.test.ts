@@ -726,11 +726,9 @@ describe('composer first-send cleanup', () => {
       subscribeChanges: () => () => undefined,
       skills: { listInvocable: async () => [] },
       sessions: {
-        list: async () => [],
         readSnapshot: async () => {
           throw new Error('Session snapshot is not used in this test');
         },
-        subscribeChanges: () => () => undefined,
         promoteQueueEntry: async () => undefined,
         updateQueueEntry: async () => undefined,
         retractQueueEntry: async () => undefined,
