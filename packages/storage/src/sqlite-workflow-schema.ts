@@ -62,6 +62,17 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       UNIQUE (session_id, store_version)
     );
 
+    -- Retained for existing State Roots: schema validation compares the complete DDL.
+    -- The research writer is retired, but its stored events must survive upgrades.
+    CREATE TABLE IF NOT EXISTS workflow_deep_research_events (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      event_id TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (session_id, sequence),
+      UNIQUE (session_id, event_id)
+    );
+
     CREATE TABLE IF NOT EXISTS workflow_scheduled_tasks (
       task_id TEXT PRIMARY KEY,
       created_at INTEGER NOT NULL,
