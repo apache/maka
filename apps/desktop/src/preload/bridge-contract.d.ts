@@ -111,7 +111,6 @@ import type {
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import type { SessionTodoItem } from '@maka/core/session-todo';
-import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
@@ -1134,10 +1133,6 @@ export interface MakaBridge {
   todo: {
     read(sessionId: string): Promise<SessionTodoItem[]>;
     subscribeChanges(handler: (event: { sessionId: string; at: number }) => void): () => void;
-  };
-  deepResearch: {
-    get(sessionId: string): Promise<DeepResearchClientProgress | undefined>;
-    subscribeChanges(handler: (event: DeepResearchChangedEvent) => void): () => void;
   };
   graphs: {
     listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;

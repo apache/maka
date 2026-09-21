@@ -23,7 +23,6 @@ import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { CONFIGURATION_OPERATION_SPECS } from './configuration.js';
-import { DEEP_RESEARCH_OPERATION_SPECS } from './deep-research.js';
 import { DAILY_REVIEW_OPERATION_SPECS } from './daily-review.js';
 import { CONTEXT_OPERATION_SPECS } from './context.js';
 import { EXECUTION_INSPECT_OPERATION_SPECS } from './execution-inspect.js';
@@ -157,7 +156,6 @@ export type {
 export * from './connection-effects.js';
 export * from './access-authority.js';
 export * from './configuration.js';
-export * from './deep-research.js';
 export * from './daily-review.js';
 export * from './context.js';
 export * from './agent-graph.js';
@@ -201,7 +199,6 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   TURN_OPERATION_SPECS,
   CONTEXT_OPERATION_SPECS,
   CONNECTION_EFFECT_OPERATION_SPECS,
-  DEEP_RESEARCH_OPERATION_SPECS,
   DAILY_REVIEW_OPERATION_SPECS,
   EXECUTION_INSPECT_OPERATION_SPECS,
   EXTERNAL_SESSION_OPERATION_SPECS,
@@ -279,7 +276,6 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'credential.vault.set',
   'daily-review.mutate',
   'daily-review.query',
-  'deep-research.query',
   'execution.inspect.query',
   'external-session.catalog.query',
   'external-session.import',

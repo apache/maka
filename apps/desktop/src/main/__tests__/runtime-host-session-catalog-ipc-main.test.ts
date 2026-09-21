@@ -51,13 +51,15 @@ test('session creation forwards the caller name for a mode that carries none', a
   registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
 
   await ipc.invoke('sessions:create', { mode: 'bot', name: '飞书 任务' });
-  await ipc.invoke('sessions:create', { mode: 'deep_research', name: '飞书 任务' });
+  await assert.rejects(
+    () => ipc.invoke('sessions:create', { mode: 'deep_research', name: '飞书 任务' }),
+    /Invalid session start mode/,
+  );
 
   assert.deepEqual(
     creates.map((input) => [input.mode, input.name]),
     [
       ['bot', '飞书 任务'],
-      ['deep_research', '飞书 任务'],
     ],
   );
 });

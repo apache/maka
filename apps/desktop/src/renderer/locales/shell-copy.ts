@@ -37,7 +37,6 @@ import type { DesktopSessionUpdateFailureCode } from '../../shared/desktop-sessi
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
   'action:side-chat',
-  'action:new-deep-research',
   'action:new-scheduled-task',
   'action:open-settings',
   'action:keyboard-help',
@@ -86,7 +85,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
     '任务',
     '追问',
   ],
-  'action:new-deep-research': ['deep', 'research', 'explore', 'readonly', '研究', '深度', '探索', '只读'],
   'action:new-scheduled-task': ['plan', 'task', 'schedule', 'new', 'create', '计划', '提醒', '新建', '创建'],
   'action:open-settings': ['settings', 'preferences', '设置', 'options'],
   'action:keyboard-help': ['shortcuts', 'keyboard', 'help', '快捷键', '帮助'],
@@ -548,11 +546,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
-  'action:new-deep-research': {
-    label: '新建深度研究',
-    hint: '只读探索',
-    group: '操作',
-  },
   'action:new-scheduled-task': {
     label: '新建定时任务',
     hint: '打开定时任务表单',
@@ -636,11 +629,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:side-chat': {
     label: 'Open side chat',
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
-    group: 'Actions',
-  },
-  'action:new-deep-research': {
-    label: 'New deep research',
-    hint: 'Read-only exploration',
     group: 'Actions',
   },
   'action:new-scheduled-task': {

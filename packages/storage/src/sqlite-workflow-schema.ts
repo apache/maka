@@ -62,15 +62,6 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       UNIQUE (session_id, store_version)
     );
 
-    CREATE TABLE IF NOT EXISTS workflow_deep_research_events (
-      session_id TEXT NOT NULL,
-      sequence INTEGER NOT NULL CHECK (sequence >= 0),
-      event_id TEXT NOT NULL,
-      record_json TEXT NOT NULL,
-      PRIMARY KEY (session_id, sequence),
-      UNIQUE (session_id, event_id)
-    );
-
     CREATE TABLE IF NOT EXISTS workflow_scheduled_tasks (
       task_id TEXT PRIMARY KEY,
       created_at INTEGER NOT NULL,

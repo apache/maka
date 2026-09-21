@@ -17,25 +17,13 @@
  * under the License.
  */
 
-import type { DeepResearchReportSectionKey } from '@maka/core/deep-research-run';
 import type { ProviderRetryReason } from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionBlockedReason, SessionStatus } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-import {
-  DEEP_RESEARCH_EVIDENCE_CHECKLIST,
-  DEEP_RESEARCH_PROGRESS_CHECKPOINTS,
-  DEEP_RESEARCH_REPORT_SECTIONS,
-  DEEP_RESEARCH_SCOPE_OPTIONS,
-  DEEP_RESEARCH_STARTER_PROMPTS,
-  DEEP_RESEARCH_WORKFLOW_STEPS,
-} from '@maka/core/deep-research';
 
 export type DayPeriod = 'morning' | 'noon' | 'afternoon' | 'evening';
-type ResearchItem = Readonly<{ title: string; body: string }>;
-type ResearchOption = Readonly<{ label: string; body: string }>;
-type ResearchStarter = Readonly<{ label: string; prompt: string }>;
 
 /** Compact token count: 999 → "999", 45,200 → "45.2k", 128,000 → "128k", 1,048,576 → "1M". */
 function formatCompactTokenCount(count: number): string {
@@ -95,28 +83,6 @@ export interface ConversationCopy {
     greetingTail: Record<DayPeriod, string>;
     headlineWithLabel: (greeting: string, label: string) => string;
     headlineFallback: (greeting: string, tail: string) => string;
-  };
-  deepResearchEmpty: {
-    ariaLabel: string;
-    eyebrow: string;
-    title: string;
-    intro: string;
-    workflowAriaLabel: string;
-    workflow: readonly ResearchItem[];
-    reportAriaLabel: string;
-    reportTitle: string;
-    report: readonly ResearchItem[];
-    scopeAriaLabel: string;
-    scopeTitle: string;
-    scope: readonly ResearchOption[];
-    evidenceAriaLabel: string;
-    evidenceTitle: string;
-    evidence: readonly ResearchItem[];
-    progressAriaLabel: string;
-    progressTitle: string;
-    progress: readonly ResearchItem[];
-    startersAriaLabel: string;
-    starters: readonly ResearchStarter[];
   };
   composer: {
     placeholder: string;
@@ -382,26 +348,6 @@ export interface ConversationCopy {
     memory: string;
     memoryAriaLabel: string;
     memoryTitle: string;
-    deepResearch: string;
-    deepResearchAriaLabel: string;
-    deepResearchTitle: string;
-    deepResearchProgress: {
-      ariaLabel: string;
-      title: string;
-      completedSummary: string;
-      activeSummary: (stage: string, scope: string, round: number) => string;
-      handoffTitle: string;
-      handoffAction: string;
-      checklistTitle: string;
-      reportTitle: string;
-      inspectedTitle: string;
-      inspectedEmpty: string;
-      executionTitle: string;
-      executionSummary: (steps: number, artifacts: number) => string;
-      workersLabel: string;
-      noBlockers: string;
-      sectionLabels: Record<DeepResearchReportSectionKey, string>;
-    };
     clearGoal: (condition: string, iteration: number, max: number, status: string) => string;
     clearGoalAriaLabel: (iteration: number, max: number) => string;
     goalProgress: (iteration: number, max: number) => string;
@@ -508,15 +454,6 @@ const CONVERSATION_COPY = {
       greetingTail: { morning: '清醒的早晨适合理清思路', noon: '专注的午间适合一鼓作气', afternoon: '舒缓的下午适合慢慢推进', evening: '安静的夜晚适合深度思考' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做点什么？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
     },
-    deepResearchEmpty: {
-      ariaLabel: '深度研究空任务', eyebrow: '深度研究 · 只读探索', title: '先把项目读透，再决定怎么改。', intro: '这个任务固定在只读权限：优先阅读、搜索和分析代码；需要动手实现时，先输出文件、风险和验证命令。',
-      workflowAriaLabel: '深度研究流程', workflow: DEEP_RESEARCH_WORKFLOW_STEPS,
-      reportAriaLabel: '深度研究输出结构', reportTitle: '输出必须能直接落地', report: DEEP_RESEARCH_REPORT_SECTIONS,
-      scopeAriaLabel: '深度研究范围', scopeTitle: '默认按标准深度研究', scope: DEEP_RESEARCH_SCOPE_OPTIONS,
-      evidenceAriaLabel: '深度研究证据清单', evidenceTitle: '每次研究都要留证据', evidence: DEEP_RESEARCH_EVIDENCE_CHECKLIST,
-      progressAriaLabel: '深度研究检查点', progressTitle: '多步研究要按检查点推进', progress: DEEP_RESEARCH_PROGRESS_CHECKPOINTS,
-      startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
-    },
     composer: {
       placeholder: '描述任务，@ 引用文件或会话，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
@@ -621,30 +558,7 @@ const CONVERSATION_COPY = {
     },
     chat: {
       conversationAriaLabel: (name) => `对话：${name}`,
-      memory: '记忆', memoryAriaLabel: '本地记忆已启用', memoryTitle: '本地 MEMORY.md 已加入 agent 系统提示。点击进入设置 · 记忆管理。', deepResearch: '深度研究', deepResearchAriaLabel: '深度研究，只读探索', deepResearchTitle: '深度研究任务使用只读探索边界：先阅读和分析，默认不改文件。',
-      deepResearchProgress: {
-        ariaLabel: '深度研究实时进度',
-        title: '研究进度',
-        completedSummary: '研究完成 · 原任务保持只读',
-        activeSummary: (stage, scope, round) => `${stage} · ${scope} · 第 ${round} 轮`,
-        handoffTitle: '新建普通任务并填入研究 handoff；不会自动发送，也不会改变原研究任务权限',
-        handoffAction: '在新任务中继续实现',
-        checklistTitle: '检查清单',
-        reportTitle: '报告草稿',
-        inspectedTitle: '已检查位置',
-        inspectedEmpty: '等待记录文件、符号或来源。',
-        executionTitle: '执行与阻塞',
-        executionSummary: (steps, artifacts) => `${steps} 个研究步骤 · ${artifacts} 个持久化证据`,
-        workersLabel: 'Workers',
-        noBlockers: '当前无阻塞。',
-        sectionLabels: {
-          conclusion: '结论',
-          source_evidence: '证据',
-          borrow_diverge_risk_gate: '取舍与风险',
-          implementation_recommendations: '实施建议',
-          verification: '验证',
-        },
-      },
+      memory: '记忆', memoryAriaLabel: '本地记忆已启用', memoryTitle: '本地 MEMORY.md 已加入 agent 系统提示。点击进入设置 · 记忆管理。',
       clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalProgress: (iteration, max) => `目标 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目标正在运行', goalWaitingAriaLabel: '自主目标正在等待条件变化',
       goalPausedAriaLabel: '自主目标已暂停', pauseGoalAriaLabel: (iteration, max) => `暂停自主执行目标（已进行 ${iteration}/${max} 轮）`, resumeGoalAriaLabel: (iteration, max) => `恢复自主执行目标（已进行 ${iteration}/${max} 轮）`, pauseGoal: (condition, iteration, max, status) => `暂停自主执行目标：「${condition}」（第 ${iteration}/${max} 轮，${status}）。暂停后立即停止自动续行，不再消耗令牌；可随时恢复。`, resumeGoal: (condition, iteration, max) => `恢复自主执行目标：「${condition}」（第 ${iteration}/${max} 轮）。恢复后立即继续自动续行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分钟', hour: ' 小时', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', loadEarlierHistory: '载入更早的记录', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
@@ -666,15 +580,6 @@ const CONVERSATION_COPY = {
       greeting: { morning: '早上好', noon: '中午好', afternoon: '下午好', evening: '晚上好' },
       greetingTail: { morning: '清醒的早晨適合理清思路', noon: '專注的午間適合一鼓作氣', afternoon: '舒緩的下午適合慢慢推進', evening: '安靜的夜晚適合深度思考' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做點什麼？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
-    },
-    deepResearchEmpty: {
-      ariaLabel: '深度研究空任務', eyebrow: '深度研究 · 只讀探索', title: '先把專案讀透，再決定怎麼改。', intro: '這個任務固定在只讀權限：優先閱讀、搜尋和分析程式碼；需要動手實現時，先輸出檔案、風險和驗證命令。',
-      workflowAriaLabel: '深度研究流程', workflow: DEEP_RESEARCH_WORKFLOW_STEPS,
-      reportAriaLabel: '深度研究輸出結構', reportTitle: '輸出必須能直接落地', report: DEEP_RESEARCH_REPORT_SECTIONS,
-      scopeAriaLabel: '深度研究範圍', scopeTitle: '預設按標準深度研究', scope: DEEP_RESEARCH_SCOPE_OPTIONS,
-      evidenceAriaLabel: '深度研究證據清單', evidenceTitle: '每次研究都要留證據', evidence: DEEP_RESEARCH_EVIDENCE_CHECKLIST,
-      progressAriaLabel: '深度研究檢查點', progressTitle: '多步研究要按檢查點推進', progress: DEEP_RESEARCH_PROGRESS_CHECKPOINTS,
-      startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
     },
     composer: {
       placeholder: '描述任務，@ 引用檔案，/ 選擇技能…', textareaAriaLabel: '訊息輸入框', pastedQuoteLabel: '貼上的文本', selectedSkillsAriaLabel: '已選擇的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你確認權限…',
@@ -780,30 +685,7 @@ const CONVERSATION_COPY = {
     },
     chat: {
       conversationAriaLabel: (name) => `對話：${name}`,
-      memory: '記憶', memoryAriaLabel: '本地記憶已啟用', memoryTitle: '本地 MEMORY.md 已加入 agent 系統提示。點選進入設定 · 記憶管理。', deepResearch: '深度研究', deepResearchAriaLabel: '深度研究，只讀探索', deepResearchTitle: '深度研究任務使用只讀探索邊界：先閱讀和分析，預設不改檔案。',
-      deepResearchProgress: {
-        ariaLabel: '深度研究即時進度',
-        title: '研究進度',
-        completedSummary: '研究完成 · 原任務保持只讀',
-        activeSummary: (stage, scope, round) => `${stage} · ${scope} · 第 ${round} 輪`,
-        handoffTitle: '建立普通任務並填入研究 handoff；不會自動傳送，也不會改變原研究任務權限',
-        handoffAction: '在新任務中繼續實現',
-        checklistTitle: '檢查清單',
-        reportTitle: '報告草稿',
-        inspectedTitle: '已檢查位置',
-        inspectedEmpty: '等待記錄檔案、符號或來源。',
-        executionTitle: '執行與阻塞',
-        executionSummary: (steps, artifacts) => `${steps} 個研究步驟 · ${artifacts} 個持久化證據`,
-        workersLabel: 'Workers',
-        noBlockers: '目前無阻塞。',
-        sectionLabels: {
-          conclusion: '結論',
-          source_evidence: '證據',
-          borrow_diverge_risk_gate: '取捨與風險',
-          implementation_recommendations: '實施建議',
-          verification: '驗證',
-        },
-      },
+      memory: '記憶', memoryAriaLabel: '本地記憶已啟用', memoryTitle: '本地 MEMORY.md 已加入 agent 系統提示。點選進入設定 · 記憶管理。',
       clearGoal: (condition, iteration, max, status) => `自主執行目標進行中：「${condition}」（第 ${iteration}/${max} 輪，${status}）。系統每輪後自動續行；點選可清除目標、停止續行。`, clearGoalAriaLabel: (iteration, max) => `清除自主執行目標（已進行 ${iteration}/${max} 輪）`, goalProgress: (iteration, max) => `目標 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目標正在執行', goalWaitingAriaLabel: '自主目標正在等待條件變化',
       goalPausedAriaLabel: '自主目標已暫停', pauseGoalAriaLabel: (iteration, max) => `暫停自主執行目標（已進行 ${iteration}/${max} 輪）`, resumeGoalAriaLabel: (iteration, max) => `恢復自主執行目標（已進行 ${iteration}/${max} 輪）`, pauseGoal: (condition, iteration, max, status) => `暫停自主執行目標：「${condition}」（第 ${iteration}/${max} 輪，${status}）。暫停後立即停止自動續行，不再消耗權杖；可隨時恢復。`, resumeGoal: (condition, iteration, max) => `恢復自主執行目標：「${condition}」（第 ${iteration}/${max} 輪）。恢復後立即繼續自動續行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分鐘', hour: ' 小時', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: '任務載入失敗', loading: '載入中…', retryLoad: '重試載入', loadEarlierHistory: '載入更早的記錄', quoteSelection: '引用', askInSidePanel: '在側欄追問', noMessages: '暫無訊息',
@@ -825,44 +707,6 @@ const CONVERSATION_COPY = {
       greeting: { morning: 'Good morning', noon: 'Good afternoon', afternoon: 'Good afternoon', evening: 'Good evening' },
       greetingTail: { morning: 'A clear morning is good for untangling ideas', noon: 'A focused midday is good for a single big push', afternoon: 'A calm afternoon is good for steady progress', evening: 'A quiet evening is good for deep thinking' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label} — what shall we tackle today?`, headlineFallback: (greeting, tail) => `${greeting} — ${tail}.`,
-    },
-    deepResearchEmpty: {
-      ariaLabel: 'Empty Deep Research task', eyebrow: 'Deep Research · Read-only exploration', title: 'Understand the project before deciding what to change.', intro: 'This task stays read only: inspect, search, and analyze first. When implementation is needed, report the files, risks, and verification commands.',
-      workflowAriaLabel: 'Deep Research workflow', workflow: [
-        { title: 'Find the entry points', body: 'Read the directory layout, configuration, startup path, and test entry points to build a project map.' },
-        { title: 'Trace the data flow', body: 'Follow key modules through IPC, storage, permissions, and runtime boundaries to the real implementation.' },
-        { title: 'Compare references', body: 'Break each reusable idea into borrow / diverge / risk / gate.' },
-        { title: 'Propose a mergeable plan', body: 'List files, risk boundaries, and verification commands without changing files in read-only mode.' },
-      ],
-      reportAriaLabel: 'Deep Research report structure', reportTitle: 'The report must be actionable', report: [
-        { title: 'Lead with conclusions', body: 'Use three to five points to explain the current state, major gaps, and priorities.' },
-        { title: 'Cite source evidence', body: 'Name files, functions, configuration, tests, and runtime paths instead of relying on impressions.' },
-        { title: 'Break down what to borrow', body: 'Describe each idea as borrow / diverge / risk / gate.' },
-        { title: 'Make it implementable', body: 'Give a small-step file plan, boundaries, and verification commands.' },
-      ],
-      scopeAriaLabel: 'Deep Research scope', scopeTitle: 'Standard depth by default', scope: [
-        { label: 'Quick', body: 'Scan entry points, key files, and the likeliest data flow for a narrowly scoped question.' },
-        { label: 'Standard', body: 'Trace the core path, related tests, and major risks before recommending changes.' },
-        { label: 'Deep', body: 'Run multi-pass investigation across modules, references, and edge cases only when explicitly requested.' },
-      ],
-      evidenceAriaLabel: 'Deep Research evidence checklist', evidenceTitle: 'Leave evidence for every investigation', evidence: [
-        { title: 'Project entry points', body: 'Check the README, package/config files, startup scripts, and directory layers to confirm how the project runs.' },
-        { title: 'Core path', body: 'Trace UI entry points, IPC/services, storage, runtime calls, and error handling.' },
-        { title: 'Boundaries', body: 'Check permissions, privacy mode, token/path exposure, retries, and user-visible feedback.' },
-        { title: 'Verification evidence', body: 'Find tests, fixtures, smoke documentation, and reproducible commands; call out missing evidence.' },
-      ],
-      progressAriaLabel: 'Deep Research checkpoints', progressTitle: 'Advance multi-step research through checkpoints', progress: [
-        { title: 'Build a checklist', body: 'When the scope has more than three related areas, list verifiable checks before tracing code.' },
-        { title: 'Mark the current check', body: 'State what is being verified and move on only after collecting evidence.' },
-        { title: 'Record blockers', body: 'Mark missing source, runtime, or test evidence as blocked instead of guessing.' },
-        { title: 'Converge on a plan', body: 'Roll completed checks into borrow / diverge / risk / gate and actionable improvements.' },
-      ],
-      startersAriaLabel: 'Deep Research starters', starters: [
-        { label: 'Research a reference project', prompt: 'Read this project without changing files. Map its structure, core modules, startup path, data flow, and tests; then list reusable design ideas, risks, and an implementation order for Maka.' },
-        { label: 'Read a reference project end to end', prompt: 'Perform a deep, read-only study of this project. Map modules and trace core features, runtime, storage, permissions, UI, tests, and docs. Express each idea as borrow / diverge / risk / gate and recommend an implementation order for Maka.' },
-        { label: 'Compare a feature implementation', prompt: 'Compare this feature in the reference project and Maka without changing files. Identify key files, runtime boundaries, UI entry points, persistence, tests, and the smallest mergeable improvement.' },
-        { label: 'Audit security boundaries', prompt: 'Audit this feature read only: permissions, token and secret flow, IPC/renderer exposure, file paths, privacy mode, logs, and telemetry. Report blocking risks and corresponding contract tests.' },
-      ],
     },
     composer: {
       placeholder: 'Describe a task, @ to reference files or sessions, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
@@ -965,30 +809,7 @@ const CONVERSATION_COPY = {
     },
     chat: {
       conversationAriaLabel: (name) => `Conversation: ${name}`,
-      memory: 'Memory', memoryAriaLabel: 'Local memory enabled', memoryTitle: 'Local MEMORY.md is included in the agent system prompt. Click to manage it in Settings · Memory.', deepResearch: 'Deep Research', deepResearchAriaLabel: 'Deep Research, read-only exploration', deepResearchTitle: 'Deep Research uses a read-only boundary: inspect and analyze first, without changing files by default.',
-      deepResearchProgress: {
-        ariaLabel: 'Live Deep Research progress',
-        title: 'Research progress',
-        completedSummary: 'Research complete · Original task remains read-only',
-        activeSummary: (stage, scope, round) => `${stage} · ${scope} · Round ${round}`,
-        handoffTitle: 'Create a normal task with the research handoff. It will not send automatically or change the original research task permissions.',
-        handoffAction: 'Continue implementation in a new task',
-        checklistTitle: 'Checklist',
-        reportTitle: 'Report draft',
-        inspectedTitle: 'Inspected locations',
-        inspectedEmpty: 'Waiting for recorded files, symbols, or sources.',
-        executionTitle: 'Execution and blockers',
-        executionSummary: (steps, artifacts) => `${steps} research steps · ${artifacts} persisted evidence items`,
-        workersLabel: 'Workers',
-        noBlockers: 'No current blockers.',
-        sectionLabels: {
-          conclusion: 'Conclusion',
-          source_evidence: 'Evidence',
-          borrow_diverge_risk_gate: 'Tradeoffs and risks',
-          implementation_recommendations: 'Implementation recommendations',
-          verification: 'Verification',
-        },
-      },
+      memory: 'Memory', memoryAriaLabel: 'Local memory enabled', memoryTitle: 'Local MEMORY.md is included in the agent system prompt. Click to manage it in Settings · Memory.',
       clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running', goalWaitingAriaLabel: 'Autonomous goal waiting for conditions to change',
       goalPausedAriaLabel: 'Autonomous goal paused', pauseGoalAriaLabel: (iteration, max) => `Pause autonomous goal after ${iteration}/${max} iterations`, resumeGoalAriaLabel: (iteration, max) => `Resume autonomous goal after ${iteration}/${max} iterations`, pauseGoal: (condition, iteration, max, status) => `Pause autonomous goal: “${condition}” (iteration ${iteration}/${max}, ${status}). Pausing stops autonomous continuation immediately — no more tokens burn; resume any time.`, resumeGoal: (condition, iteration, max) => `Resume autonomous goal: “${condition}” (iteration ${iteration}/${max}). Resuming continues autonomous iteration immediately.`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: 's', minute: 'm', hour: 'h', day: 'd' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', loadEarlierHistory: 'Load earlier history', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',

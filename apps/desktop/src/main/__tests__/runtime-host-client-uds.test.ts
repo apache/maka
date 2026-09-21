@@ -493,10 +493,6 @@ test('drives bounded Session domain projections through real UDS framing', async
             ok: true,
             result: { sessionId: input.sessionId, goal: null },
           }),
-          'deep-research.query': async (input) => ({
-            ok: true,
-            result: { kind: 'not_started', sessionId: input.sessionId, revision: 0 },
-          }),
           'runtime.resource.query': async (input) => ({
             ok: true,
             result: {
@@ -542,7 +538,6 @@ test('drives bounded Session domain projections through real UDS framing', async
       executions: [],
     });
     assert.equal(await ipc.invoke('goal:get', 'session-1'), null);
-    assert.equal(await ipc.invoke('deepResearch:get', 'session-1'), undefined);
     assert.deepEqual(await ipc.invoke('shell-runs:list', 'session-1'), []);
 
     await client.close();

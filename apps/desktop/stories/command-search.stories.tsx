@@ -29,7 +29,6 @@ import {
   FolderOpen,
   Plus,
   Settings,
-  Sparkles,
 } from '@maka/ui/icons';
 import {
   CommandPalette,
@@ -123,16 +122,7 @@ const paletteCommands: Command[] = [
     keywords: ['new', 'chat', '新建'],
     run: noop,
   },
-  {
-    id: 'action:new-deep-research',
-    kind: 'action',
-    label: '新建深度研究',
-    hint: '只读探索',
-    group: '操作',
-    Icon: Sparkles,
-    keywords: ['deep', 'research', '研究'],
-    run: noop,
-  },
+
   {
     id: 'settings:models',
     kind: 'action',
