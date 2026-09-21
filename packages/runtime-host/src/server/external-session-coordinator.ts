@@ -32,7 +32,10 @@ import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
 import type { ExternalSessionImportLookupResult } from '@maka/storage/execution-stores';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
-import { ExternalSessionImporter } from '@maka/storage/external-sessions';
+import {
+  ExternalSessionImporter,
+  type ExternalSessionImportTarget,
+} from '@maka/storage/external-sessions';
 import {
   EXTERNAL_SESSION_CWD_MAX_BYTES,
   EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
@@ -282,14 +285,25 @@ export class HostExternalSessionCoordinator {
       return importFailure('operation_unavailable', 'External Session source is unavailable');
     }
 
-    let target: Omit<CreateSessionInput, 'cwd' | 'name'>;
+    let target: ExternalSessionImportTarget;
     try {
       target = await this.#resolveTarget();
+      if (input.workspace !== undefined) {
+        const workspace = await this.#workspaceResolver.resolve(input.workspace);
+        target = {
+          ...target,
+          cwd: workspace.cwd,
+          projectId: workspace.projectId,
+        };
+      }
     } catch (error) {
       if (error instanceof NoUsableImportModelError) {
         return importFailure('model_unavailable', error.message);
       }
       if (error instanceof SessionOperationFailure) {
+        return importFailure(error.code, error.message);
+      }
+      if (error instanceof WorkspaceResolutionError) {
         return importFailure(error.code, error.message);
       }
       return importFailure('persistence_failed', 'Session defaults are unavailable');

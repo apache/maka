@@ -1126,6 +1126,8 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
         { allowHostPath: !runtimeHostProfileUsesHostWorkspace(target.kind) },
       );
     },
+    resolveExternalSessionImportWorkspace: (target) =>
+      currentDesktopWorkspaceTarget(target),
     emitSessionsChanged,
     cacheTranscript: (scope, snapshot) => sessionLocal.cacheTranscript(scope, snapshot),
     ...(e2eFixture?.scenario === "chat-partial-history"

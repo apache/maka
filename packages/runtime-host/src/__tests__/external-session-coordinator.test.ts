@@ -917,6 +917,32 @@ test('does not classify untyped source errors or errors after persistence as sou
   assert.equal(committed.drainRequests(), 1);
 });
 
+test('uses the Host-resolved workspace as the imported Session cwd', async () => {
+  const fixture = coordinatorFixture([adapterFixture()]);
+
+  const outcome = await fixture.coordinator.handlers['external-session.import'](
+    {
+      adapterId: 'codex',
+      sourceSessionId: 'source-0',
+      workspace: { kind: 'project', projectId: 'project-1' },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(fixture.creates[0]?.input, {
+    backend: 'ai-sdk',
+    cwd: '/resolved-project',
+    projectId: 'project-1',
+    llmConnectionSlug: 'default',
+    model: 'gpt-5',
+    permissionMode: 'ask',
+    collaborationMode: 'agent',
+    orchestrationMode: 'default',
+    name: 'Source 0',
+  });
+});
+
 test('reports a model-target failure before any commit is attempted', async () => {
   let createAttempts = 0;
   const fixture = coordinatorFixture([adapterFixture()], {
