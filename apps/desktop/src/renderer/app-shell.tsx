@@ -139,7 +139,7 @@ import {
 } from './app-shell-context-compaction';
 import { AppShellTopbarActions } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
-import { appShellFrameStyle } from './shell/frame-style';
+import { appShellFrameStyle, APP_SHELL_CONTENT_AREA_GAP } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
@@ -1230,6 +1230,9 @@ function AppShellContent({
       }),
     [toastApi],
   );
+  /* The grid the Workbar measures to size its rail. The shell renders the
+     element, so the shell holds the ref. */
+  const workbarLayoutContainerRef = useRef<HTMLDivElement>(null);
   const workbar = useWorkbarController({
     workHub: { enabled: workHubEnabled, active: workHubActive },
     available: sessionsSelected && (workHubActive || Boolean(activeHostSession)),
@@ -1240,6 +1243,8 @@ function AppShellContent({
     authoritativeSessionIds,
     shellObscured,
     modelChoices: chatModelChoices,
+    layoutContainerRef: workbarLayoutContainerRef,
+    layoutGap: APP_SHELL_CONTENT_AREA_GAP,
     toastApi,
     composerRef,
     openNewTaskSurface,
@@ -2317,7 +2322,7 @@ function AppShellContent({
               which is correct: those surfaces shouldn't be a
               navigation entry point. */}
           <MakaUriContext.Provider value={dispatchMakaUri}>
-          <div className="maka-detail-with-artifacts">
+          <div className="maka-detail-with-artifacts" ref={workbarLayoutContainerRef}>
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}
               inert={switchingSession || undefined}
               aria-busy={switchingSession || undefined}>

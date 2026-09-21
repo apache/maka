@@ -49,7 +49,11 @@
      6 → 12 so the floating surface's bottom corners actually read.
      6px was geometrically present but optically invisible against a
      same-color shell. */
-  --agents-content-area-gap: 4px;
+  /* `--agents-content-area-gap` is NOT here: the gap has a JavaScript reader
+     (the Workbar sizes its rail against it), and a value with two hand-kept
+     copies drifts. `appShellFrameStyle` publishes it from
+     APP_SHELL_CONTENT_AREA_GAP instead — see shell/frame-style.ts. The radius
+     above still has no JavaScript reader, so it stays. */
 }
 
 [data-agents-page] {

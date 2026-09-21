@@ -53,6 +53,7 @@ import {
   reduceWorkbarLayout,
   SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
   SESSION_WORKBAR_DEFAULT_WIDTH,
+  sessionWorkbarDisplayWidth,
   type WorkbarLayoutState,
 } from '../src/renderer/features/workbar/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
@@ -3417,13 +3418,16 @@ export const RailStaysOnTheVisiblePrompt: Story = {
 };
 
 // What the real `open` action leaves behind, rather than a hand-written topology.
+// Storybook mounts the shell without the app's measurement hook, so the fixture
+// states the ceiling the app would have measured — the demo's own handle limit.
 const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
   {
     panels: createSessionWorkbarPanelsState(),
     activeSessionId: 'session-active',
     collapsedBySession: {},
     bottomOpen: false,
-    rightWidth: SESSION_WORKBAR_DEFAULT_WIDTH,
+    rightWidthPreference: SESSION_WORKBAR_DEFAULT_WIDTH,
+    rightWidthCeiling: 760,
     bottomHeight: SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT,
   },
   { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
@@ -3432,11 +3436,11 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
 function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number; withConversation?: boolean } = {}) {
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const resizable = useResizable({
-    defaultSize: props.workbarWidth ?? layout.rightWidth,
+    defaultSize: props.workbarWidth ?? sessionWorkbarDisplayWidth(layout),
     minSize: 320, maxSize: 760,
     onSizeChange: (size) => dispatch({ type: 'resize', placement: 'right', size }),
   });
-  const workbarWidth = props.workbarWidth ?? layout.rightWidth;
+  const workbarWidth = props.workbarWidth ?? sessionWorkbarDisplayWidth(layout);
   const rightCollapsed = isSessionWorkbarCollapsed(layout);
   const collapseRight = (collapsed: boolean) =>
     dispatch({ type: 'collapse', placement: 'right', collapsed });

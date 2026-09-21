@@ -26,6 +26,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type RefObject,
 } from 'react';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { QuoteRef } from '@maka/core/events';
@@ -113,6 +114,17 @@ export interface UseWorkbarControllerInput {
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
+  /**
+   * The grid container holding both the conversation column and the rail. The
+   * shell owns the element; the Workbar owns what to do with its width.
+   */
+  layoutContainerRef?: RefObject<HTMLElement | null>;
+  /**
+   * The spacing between those two columns, in CSS pixels. The shell resolves it
+   * because a custom property reads back as its declaration, not a length (see
+   * `ink-ladder-contract`), so the Workbar cannot read the variable itself.
+   */
+  layoutGap?: number;
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
   composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
@@ -187,7 +199,12 @@ export function useWorkbarController(
     Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
-  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
+  const layout = useWorkbarLayoutState(
+    input.layoutSessionId,
+    input.authoritativeSessionIds,
+    input.layoutContainerRef,
+    input.layoutGap,
+  );
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
