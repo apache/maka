@@ -855,7 +855,7 @@ export function createDefaultSettings(): AppSettings {
       activeTab: 'requests',
     },
     appearance: {
-      workbarTogglePosition: 'titlebar',
+      workbarTogglePosition: 'edge',
       theme: 'auto',
       palette: 'default',
       appIcon: DEFAULT_APP_ICON,
@@ -1048,7 +1048,8 @@ export function normalizeSettings(input: unknown): AppSettings {
     // position; UI density is no longer a product setting.
     appearance: {
       ...appearanceWithoutLegacyFields,
-      workbarTogglePosition: base.appearance.workbarTogglePosition === 'edge' ? 'edge' : 'titlebar',
+      workbarTogglePosition:
+        base.appearance.workbarTogglePosition === 'titlebar' ? 'titlebar' : 'edge',
       palette: isThemePalette(base.appearance.palette) ? base.appearance.palette : 'default',
       // Same fail-closed rule as `palette` above, for the same reason: an
       // unknown id would otherwise reach the main process and resolve to a

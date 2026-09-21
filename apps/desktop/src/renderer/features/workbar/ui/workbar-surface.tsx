@@ -459,7 +459,7 @@ export function WorkbarSurface(props: {
 
   return (
     <div className="maka-workbar-workspace-contents">
-      {props.togglePosition === 'edge' && !props.hidden && props.sessionId && <WorkbarEdgeToggle label={getShellCopy(locale).chrome[props.rightCollapsed ? 'expandWorkbar' : 'collapseWorkbar']} collapsed={props.rightCollapsed} onToggle={props.onToggleRightPanel} />}
+      {props.togglePosition !== 'titlebar' && !props.hidden && props.sessionId && <WorkbarEdgeToggle label={getShellCopy(locale).chrome[props.rightCollapsed ? 'expandWorkbar' : 'collapseWorkbar']} collapsed={props.rightCollapsed} onToggle={props.onToggleRightPanel} />}
       {placements.map((placement) => {
         const panel = visiblePanels[placement];
         const activeTab = panel.tabs.find((tab) => tab.id === panel.activeTabId);
@@ -497,7 +497,7 @@ export function WorkbarSurface(props: {
                 onClose={(tab) => props.onCloseTab(placement, tab)}
                 tools={tools}
                 placement={placement}
-                onToggleRightPanel={placement === 'right' && props.togglePosition !== 'edge' ? props.onToggleRightPanel : undefined}
+                onToggleRightPanel={placement === 'right' && props.togglePosition === 'titlebar' ? props.onToggleRightPanel : undefined}
               />
             </div>
             <WorkbarPanel active={showingLauncher} placement={placement}>

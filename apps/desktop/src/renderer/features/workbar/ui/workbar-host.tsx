@@ -126,7 +126,7 @@ export interface WorkbarHostModel {
   };
 }
 
-export function WorkbarHost({ model: props, togglePosition = 'titlebar' }: { model: WorkbarHostModel; togglePosition?: WorkbarTogglePosition }) {
+export function WorkbarHost({ model: props, togglePosition = 'edge' }: { model: WorkbarHostModel; togglePosition?: WorkbarTogglePosition }) {
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getShellCopy(locale).app;

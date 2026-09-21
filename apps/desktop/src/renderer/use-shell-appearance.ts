@@ -64,7 +64,7 @@ export function useShellAppearance({
     theme: ThemePreference;
     palette: ThemePalette;
     workbarTogglePosition: WorkbarTogglePosition;
-  }>({ theme: 'auto', palette: 'default', workbarTogglePosition: 'titlebar' });
+  }>({ theme: 'auto', palette: 'default', workbarTogglePosition: 'edge' });
   const setThemePref = (theme: SetStateAction<ThemePreference>) => setAppearance((current) => ({ ...current, theme: typeof theme === 'function' ? theme(current.theme) : theme }));
   const setThemePalette = (palette: ThemePalette) => setAppearance((current) => ({ ...current, palette }));
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
@@ -96,7 +96,7 @@ export function useShellAppearance({
         localePreference,
         (preference) => setUiLocalePreference(preference),
       );
-      setAppearance({ theme: pref, palette, workbarTogglePosition: next.appearance.workbarTogglePosition ?? 'titlebar' });
+      setAppearance({ theme: pref, palette, workbarTogglePosition: next.appearance.workbarTogglePosition ?? 'edge' });
       applyTheme(pref);
       applyThemePalette(palette);
       // Font appearance has no app-shell state of its own: theme.ts holds the

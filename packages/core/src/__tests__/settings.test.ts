@@ -423,13 +423,13 @@ test('proxy credentials never enter persisted settings', () => {
   assert.strictEqual('passwordConfigured' in normalized.network.proxy, false);
 });
 
-test('Workbar toggle position defaults to titlebar and survives other appearance updates', () => {
-  assert.equal(createDefaultSettings().appearance.workbarTogglePosition, 'titlebar');
+test('Workbar toggle position defaults to edge and survives other appearance updates', () => {
+  assert.equal(createDefaultSettings().appearance.workbarTogglePosition, 'edge');
   for (const workbarTogglePosition of [undefined, null, 'invalid', 1]) {
     assert.equal(
       normalizeSettings({ appearance: { workbarTogglePosition } as never }).appearance
         .workbarTogglePosition,
-      'titlebar',
+      'edge',
     );
   }
   for (const workbarTogglePosition of ['edge', 'titlebar'] as const) {

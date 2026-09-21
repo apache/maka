@@ -27,7 +27,7 @@ import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
 /** The main window owns only this landing space; the live view keeps its React owner. */
-export function WorkHubDock({ enabled, visible = true, workbarCollapsed, workbarTogglePosition = 'titlebar' }: { enabled: boolean; visible?: boolean; workbarCollapsed: boolean; workbarTogglePosition?: WorkbarTogglePosition }) {
+export function WorkHubDock({ enabled, visible = true, workbarCollapsed, workbarTogglePosition = 'edge' }: { enabled: boolean; visible?: boolean; workbarCollapsed: boolean; workbarTogglePosition?: WorkbarTogglePosition }) {
   const { presentation } = useWorkHubServices();
   const t = workHubLiveCopy[useUiLocale()];
   const element = useRef<HTMLElement>(null);
