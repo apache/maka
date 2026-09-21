@@ -75,7 +75,7 @@ async function failWorkspaceSkillRevision(page: Page): Promise<void> {
 
   const composer = page.locator(COMPOSER_INPUT);
   await awaitSendReady(page);
-  await page.locator('.maka-composer button[type="submit"]').click();
+  await page.locator('form.maka-composer').evaluate((form: HTMLFormElement) => form.requestSubmit());
   await expect(page.getByText('Skill 调用失败，消息未发送')).toBeVisible();
   // The draft survives the rejection whole, and reads as the token rather than
   // as a chip: the Skill was just disabled, so it is gone from the catalog the
