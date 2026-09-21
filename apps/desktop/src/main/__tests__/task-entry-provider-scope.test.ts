@@ -160,11 +160,20 @@ function ShellProbe() {
   });
 }
 
-function RecoveryShellProbe({ local = false }: { local?: boolean } = {}) {
+function RecoveryShellProbe() {
   return createElement(TaskEntryRoot, {
     children: (taskEntry) => {
       latestTaskEntry = taskEntry;
-      return createElement(RecoveryWorkspaceProbe, { local });
+      return createElement(RecoveryWorkspaceProbe);
+    },
+  });
+}
+
+function LocalRecoveryShellProbe() {
+  return createElement(TaskEntryRoot, {
+    children: (taskEntry) => {
+      latestTaskEntry = taskEntry;
+      return createElement(RecoveryWorkspaceProbe, { local: true });
     },
   });
 }
@@ -363,7 +372,7 @@ describe('TaskEntryRoot render scope', () => {
       },
     });
 
-    await act(async () => renderProvider(root, services, createElement(RecoveryShellProbe, { local: true })));
+    await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe)));
     await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
     assert.equal(typeof latestRecoveryPicker?.groups[0]?.onAdd, 'function');
 
