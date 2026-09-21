@@ -344,12 +344,12 @@ button.maka-workbar-edge:is(:hover, :active, :focus-visible) { background: trans
   right: -16px;
   display: grid;
   place-items: center;
-  width: 40px;
+  width: 28px;
   height: 112px;
   /* Only the decoration crosses the scrollbar lane to meet the boundary.
      Its pointer-events:none leaves scrollbar presses and drags untouched;
      the shorter button and focus ring surround the arrow on the inner side. */
-  clip-path: path('M40 0 C40 22 0 27 0 56 C0 85 40 90 40 112 Z');
+  clip-path: path('M28 0 C28 22 0 27 0 56 C0 85 28 90 28 112 Z');
   background: linear-gradient(105deg, color-mix(in oklch, var(--foreground) 16%, transparent), color-mix(in oklch, var(--background-elevated) 62%, transparent) 48%, color-mix(in oklch, var(--foreground) 6%, transparent));
   backdrop-filter: blur(16px) saturate(135%);
   box-shadow: inset -1px 0 color-mix(in oklch, var(--foreground) 12%, transparent);
@@ -359,7 +359,7 @@ button.maka-workbar-edge:is(:hover, :active, :focus-visible) { background: trans
   transition: opacity 180ms ease, transform 340ms cubic-bezier(.2,.8,.2,1);
   pointer-events: none;
 }
-.maka-workbar-edge-glass svg { translate: -10px 0; }
+.maka-workbar-edge-glass svg { translate: -8px 0; }
 .maka-workbar-edge:is(:hover, :focus-visible) .maka-workbar-edge-glass {
   opacity: 1;
   transform: translateY(-50%) scaleX(1);
@@ -372,13 +372,13 @@ button.maka-workbar-edge:is(:hover, :active, :focus-visible) { background: trans
   top: auto; right: auto; bottom: 16px; left: 50%; transform: translateX(-50%); width: 48px; height: 28px;
 }
 .maka-workbar-edge[data-placement="bottom"] .maka-workbar-edge-glass {
-  top: auto; right: auto; bottom: -16px; left: 50%; width: 112px; height: 40px;
-  clip-path: path('M0 40 C22 40 27 0 56 0 C85 0 90 40 112 40 Z');
+  top: auto; right: auto; bottom: -16px; left: 50%; width: 112px; height: 28px;
+  clip-path: path('M0 28 C22 28 27 0 56 0 C85 0 90 28 112 28 Z');
   transform-origin: center bottom; transform: translateX(-50%) scaleY(.08);
 }
 .maka-workbar-edge[data-placement="bottom"]:is(:hover, :focus-visible) .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(1); }
 .maka-workbar-edge[data-placement="bottom"]:active .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(.86); }
-.maka-workbar-edge[data-placement="bottom"] svg { rotate: 90deg; translate: 0 -10px; }
+.maka-workbar-edge[data-placement="bottom"] svg { rotate: 90deg; translate: 0 -8px; }
 @media (prefers-reduced-motion: reduce) {
   .maka-workbar-edge-glass { transition: none; }
 }

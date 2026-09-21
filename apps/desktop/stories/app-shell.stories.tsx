@@ -3639,7 +3639,7 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
       const boundary = scroller.getBoundingClientRect().right;
       const glassBox = glass.getBoundingClientRect();
       expect(Math.abs(glassBox.right - boundary)).toBeLessThan(1);
-      expect(glassBox.width).toBeGreaterThanOrEqual(36);
+      expect(glassBox.width).toBe(28);
       // The decoration bridges the scrollbar/resize lane, but only the
       // inner body is a button. With the panel collapsed, presses in that
       // lane must reach the scrollport rather than the restore control.
