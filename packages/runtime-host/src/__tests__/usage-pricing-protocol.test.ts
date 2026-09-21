@@ -41,6 +41,9 @@ import {
   decodeUsageQueryInput,
   encodePricingQueryResult,
   encodeProtocolMessage,
+  createPricingReconciliationTarget,
+  pricingReconciliationTargetMatches,
+  pricingReconciliationTargetModelKey,
   PRICING_PAGE_MAX_BYTES,
   PRICING_PAGE_MAX_ITEMS,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
@@ -63,6 +66,48 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 };
 
 describe('Usage/Pricing protocol', () => {
+  test('pricing reconciliation captures reset semantics and exact custom provenance', () => {
+    const builtin: EffectivePricingEntry = {
+      source: 'builtin',
+      pricing: { modelKey: 'openai:gpt-5', inputUsdPer1M: 1, outputUsdPer1M: 2 },
+    };
+    const resettable = customPricingEntry('anthropic:claude', 'restore_builtin');
+    const upsert = createPricingReconciliationTarget([builtin, resettable], {
+      kind: 'upsert',
+      pricing: builtin.pricing,
+    });
+    assert.equal(pricingReconciliationTargetModelKey(upsert), 'openai:gpt-5');
+    assert.equal(
+      pricingReconciliationTargetMatches(upsert, [builtin, resettable]),
+      false,
+      'equal bundled rates are not a committed custom override',
+    );
+    assert.equal(
+      pricingReconciliationTargetMatches(upsert, [
+        { ...builtin, source: 'custom', resetEffect: 'restore_builtin' },
+        resettable,
+      ]),
+      true,
+    );
+
+    const reset = createPricingReconciliationTarget([builtin, resettable], {
+      kind: 'delete',
+      modelKey: resettable.pricing.modelKey,
+    });
+    assert.deepEqual(reset, {
+      kind: 'delete',
+      modelKey: 'anthropic:claude',
+      expected: 'builtin',
+    });
+    assert.equal(
+      pricingReconciliationTargetMatches(reset, [
+        builtin,
+        { source: 'builtin', pricing: resettable.pricing },
+      ]),
+      true,
+    );
+  });
+
   test('decodes exact bounded usage queries', () => {
     assert.deepEqual(
       decodeUsageQueryInput({

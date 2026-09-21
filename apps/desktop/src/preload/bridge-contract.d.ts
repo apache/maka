@@ -194,6 +194,11 @@ import type {
   DesktopSessionUpdateResult,
 } from '../shared/desktop-session-projection.js';
 import type {
+  DesktopPricingMutationOutcome,
+  DesktopPricingSnapshot,
+} from '../shared/desktop-pricing.js';
+import type { PricingMutation } from '@maka/runtime-host/protocol';
+import type {
   SessionCollaborationCancelResult,
   SessionCollaborationImportPhase,
   SessionCollaborationImportResult,
@@ -1620,6 +1625,14 @@ export interface MakaBridge {
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;
     testBotChannel(provider: BotProvider): Promise<SettingsTestResult>;
     usageStats(range?: UsageRange | Extract<UsageScreenRequest, {kind: 'activity'}>, host?: DesktopRuntimeHostRef, query?: UsageScreenQuery): Promise<UsageStats | UsageScreenResult>;
+    pricing: {
+      load(host: DesktopRuntimeHostRef): Promise<DesktopPricingSnapshot>;
+      mutate(
+        base: DesktopPricingSnapshot,
+        mutation: PricingMutation,
+        host: DesktopRuntimeHostRef,
+      ): Promise<DesktopPricingMutationOutcome>;
+    };
     bots: {
       listStatuses(): Promise<Record<BotProvider, BotStatus>>;
       restart(provider: BotProvider): Promise<BotStatus>;

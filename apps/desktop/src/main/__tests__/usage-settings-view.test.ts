@@ -61,7 +61,6 @@ function statsWithRequests(totalRequests: number): UsageStats {
     byProvider: [],
     byModel: [],
     byTool: [],
-    pricing: [],
     provenance: EMPTY_USAGE_PROVENANCE,
   };
 }
@@ -153,6 +152,7 @@ function tree(opts: {
             ? createElement(UsageSettingsView, {
                 settings: opts.settings.usage,
                 describeError: (error: unknown) => String(error),
+                runtimeHost: undefined,
               })
             : null,
         }),
@@ -450,6 +450,7 @@ describe('Usage feature scope', () => {
                 : createElement(UsageSettingsView, {
                     settings: base.usage,
                     describeError: (error: unknown) => String(error),
+                    runtimeHost: undefined,
                   }),
             }),
           }),
@@ -517,6 +518,7 @@ describe('Usage feature scope', () => {
               children: createElement(UsageSettingsView, {
                 settings: base.usage,
                 describeError: (error: unknown) => String(error),
+                runtimeHost: undefined,
               }),
             }),
           }),

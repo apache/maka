@@ -27,11 +27,14 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type Dispatch,
+  type SetStateAction,
 } from 'react';
 import { useMountedRef, useToast } from '@maka/ui';
 import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
 import type { UsageRange, UsageStats, UsageScreenQuery } from '@maka/core/settings';
 import type { UsageServices } from './ports.js';
+import type { PricingEditorDraft } from './pricing-view-model.js';
 
 interface UsageSnapshot {
   readonly installation: number;
@@ -46,6 +49,10 @@ interface UsageScopeValue {
   readonly services: UsageServices;
   readonly snapshot: UsageSnapshot | null;
   readonly targetKey: string;
+  /** True only while the rendered Host generation is still authoritative. */
+  isCurrentTarget(): boolean;
+  readonly pricingEditor: PricingEditorDraft | null;
+  readonly setPricingEditor: Dispatch<SetStateAction<PricingEditorDraft | null>>;
   readonly state: 'ready' | 'loading' | 'stale' | 'error';
   readonly error: string | null;
   readonly paging: boolean;
@@ -69,6 +76,9 @@ export const UsageFeatureScope = forwardRef<
   const toast = useToast();
   const mountedRef = useMountedRef();
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
+  const [pricingEditor, setPricingEditor] = useState<PricingEditorDraft | null>(null);
+  const targetCurrentRef = useRef(true);
+  const renderedTargetKeyRef = useRef(props.targetKey);
   const [state, setState] = useState<UsageScopeValue['state']>('ready');
   const [error, setError] = useState<string | null>(null);
   const [paging, setPaging] = useState(false);
@@ -78,6 +88,10 @@ export const UsageFeatureScope = forwardRef<
   const pagingRef = useRef(false);
   const resolvedRef = useRef<{ range: UsageRange; query: UsageScreenQuery } | null>(null);
   const { targetKey, services, loadErrorTitle, describeError } = props;
+  const isCurrentTarget = useCallback(
+    () => targetCurrentRef.current && renderedTargetKeyRef.current === targetKey,
+    [targetKey],
+  );
   const clear = () => {
     ticketRef.current += 1;
     blockedRef.current = true;
@@ -90,6 +104,8 @@ export const UsageFeatureScope = forwardRef<
   };
   if (targetKey !== renderedTargetKey) {
     setRenderedTargetKey(targetKey);
+    renderedTargetKeyRef.current = targetKey;
+    targetCurrentRef.current = true;
     clear();
   }
 
@@ -210,10 +226,15 @@ export const UsageFeatureScope = forwardRef<
     [snapshot, services, mountedRef, describeError],
   );
 
-  useImperativeHandle(ref, () => ({ fenceTarget: clear }));
+  useImperativeHandle(ref, () => ({
+    fenceTarget: () => {
+      targetCurrentRef.current = false;
+      clear();
+    },
+  }));
   const value = useMemo<UsageScopeValue>(
-    () => ({ services, snapshot, targetKey, state, error, paging, reload, loadMore }),
-    [services, snapshot, targetKey, state, error, paging, reload, loadMore],
+    () => ({ services, snapshot, targetKey, state, error, paging, reload, loadMore, isCurrentTarget, pricingEditor, setPricingEditor }),
+    [services, snapshot, targetKey, state, error, paging, reload, loadMore, isCurrentTarget, pricingEditor],
   );
   return <UsageScopeContext.Provider value={value}>{props.children}</UsageScopeContext.Provider>;
 });
@@ -225,6 +246,12 @@ function useUsageScope(): UsageScopeValue {
 export function useUsageServices(): UsageServices {
   return useUsageScope().services;
 }
+/** Only user input persists above the Host gate; pricing authority stays view-owned. */
+export function usePricingEditorDraft() {
+  const { pricingEditor, setPricingEditor } = useUsageScope();
+  return [pricingEditor, setPricingEditor] as const;
+}
+
 export function useUsageStats(_range: UsageRange) {
   const { snapshot, ...scope } = useUsageScope();
   return {
