@@ -134,6 +134,7 @@
     "./computer-use": "./dist/computer-use.js",
     "./connection-error-copy": "./dist/connection-error-copy.js",
     "./connection-usage": "./dist/connection-usage.js",
+    "./refresh-read-coordinator": "./dist/refresh-read-coordinator.js",
     "./git-review": "./dist/git-review.js",
     "./graph-command": "./dist/graph-command.js",
     "./project": "./dist/project.js",
