@@ -58,7 +58,6 @@ export function createFakeTaskEntryServices(
       relinkProject: async () => ({ ok: false, reason: 'cancelled' }),
       renameProject: async () => undefined,
       archiveProject: async () => undefined,
-      restoreProject: async () => undefined,
     },
     sessions: {
       relocateWorkspace: async () => ({ ok: false, reason: 'operation_unavailable' }),
