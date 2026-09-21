@@ -38,7 +38,7 @@ import {
 } from '@maka/runtime-host/profile-kind';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
-import { createThreadSearchClient } from './multi-host-thread-search.js';
+import { createRecallSearchClient } from './multi-host-recall-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
 import {
   resolveDesktopWorkHubCoordinationCreateScope,
@@ -89,11 +89,6 @@ import type {
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
-import type {
-  DesktopCommandCodeLoginResult,
-  DesktopCommandCodeLoginStartInput,
-  DesktopCommandCodeLoginStartResult,
-} from './bridge-contract.js';
 import {
   projectDesktopExternalSessionCatalogItem,
   type DesktopExternalSessionCatalogItem,
@@ -172,7 +167,6 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 
 import type { TurnOrchestration, SessionListFilter } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
-import type { SearchErrorReason, SearchResult } from '@maka/core/search';
 import type {
   SessionCatalogSummary,
   SessionChangedEvent,
@@ -208,7 +202,6 @@ import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import { createBrowserSelectionCoordinator } from './browser-selection.js';
 import type { SessionTodoItem } from '@maka/core/session-todo';
-import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import {
   isWebSearchProvider,
   MASKED_TOKEN_SENTINEL,
@@ -1849,11 +1842,11 @@ const makaBridge = {
         for (const unsubscribe of unsubscribes) unsubscribe();
       };
     },
-    async addProject(host: DesktopNewTaskHostRef) {
+    async addProject(host: DesktopNewTaskHostRef, name?: string) {
       const result = await ipcRenderer.invoke(
         'projects:add',
         await runtimeHostScope(host),
-        { select: false },
+        { select: false, ...(name === undefined ? {} : { name }) },
       ) as
         | { ok: true; project: ProjectRecord; path: string }
         | { ok: false; reason: 'cancelled' };
@@ -1865,6 +1858,17 @@ const makaBridge = {
         await runtimeHostScope(host),
         projectId,
       );
+    },
+    async renameProject(host: DesktopNewTaskHostRef, projectId: string, name: string) {
+      return {
+        ok: true as const,
+        project: (await ipcRenderer.invoke(
+          'projects:rename',
+          await runtimeHostScope(host),
+          projectId,
+          name,
+        )) as ProjectRecord,
+      };
     },
     async getConnections(host: DesktopNewTaskHostRef) {
       return ipcRenderer.invoke(
@@ -1982,19 +1986,6 @@ const makaBridge = {
     },
     subscribeChanges(handler: (event: { sessionId: string; at: number }) => void): () => void {
       return subscribeEveryRuntimeHostEvent('todo:changed', (scope, event: { sessionId: string; at: number }) =>
-        handler({
-          ...event,
-          sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),
-        }),
-      );
-    },
-  },
-  deepResearch: {
-    get(sessionId: string): Promise<DeepResearchClientProgress | undefined> {
-      return invokeProjectedSessionRuntimeHost('deepResearch:get', sessionId);
-    },
-    subscribeChanges(handler: (event: DeepResearchChangedEvent) => void): () => void {
-      return subscribeEveryRuntimeHostEvent('deepResearch:changed', (scope, event: DeepResearchChangedEvent) =>
         handler({
           ...event,
           sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),
@@ -2493,6 +2484,9 @@ const makaBridge = {
     rename(sessionId: string, name: string, options?: { revisionFamily?: boolean }): Promise<void> {
       return invokeSessionRuntimeHost('sessions:rename', sessionId, name, options);
     },
+    moveToProject(sessionId: string, projectId: string | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
+      return invokeSessionUpdate('sessions:moveToProject', sessionId, projectId);
+    },
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
       return invokeSessionUpdate('sessions:setPermissionMode', sessionId, mode);
     },
@@ -2847,10 +2841,10 @@ const makaBridge = {
         if (runtimeHostMetadataFor(scope)?.profileKind === 'local') handler();
       });
     },
-    add(host?: DesktopRuntimeHostRef): Promise<
+    add(host?: DesktopRuntimeHostRef, options?: { name?: string }): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     > {
-      return invokeSelectedRuntimeHost(host, 'projects:add');
+      return invokeSelectedRuntimeHost(host, 'projects:add', options);
     },
     getDirectoryRoots(host: DesktopRuntimeHostRef) {
       return invokeSelectedRuntimeHost(host, 'projects:directoryRoots');
@@ -3053,9 +3047,6 @@ const makaBridge = {
     hasSecret(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'connections:hasSecret', connection);
     },
-    usage(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/runtime-host/protocol').ConnectionUsageReadResult> {
-      return invokeSelectedRuntimeHost(host, 'connections:usage', connection);
-    },
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders> {
       return invokeSelectedRuntimeHost(host, 'connections:getRequestHeaders', connection);
     },
@@ -3234,28 +3225,36 @@ const makaBridge = {
       return invokeSessionRuntimeHost('attachments:readBytes', sessionId, artifactId);
     },
   },
-  search: createThreadSearchClient({
+  search: createRecallSearchClient({
     // Search each ready Owner Host independently; Guests cannot search a workspace.
     scopes: readyOwnerRuntimeHostScopes,
     async search(scope, request, requestId) {
-      const result = await ipcRenderer.invoke('search:thread', scope, request, requestId) as
-        | SearchResult[]
-        | { ok: false; reason: SearchErrorReason; message: string };
-      return Array.isArray(result)
-        ? result.map((entry) =>
-            entry.target?.kind === 'thread'
+      const result = await ipcRenderer.invoke('search:recall', scope, request, requestId);
+      if (typeof result !== 'object' || result === null) return result;
+      const envelope = result as { ok?: unknown; result?: { ok?: unknown; passages?: unknown } };
+      if (envelope.ok !== true || envelope.result?.ok !== true) return result;
+      if (!Array.isArray(envelope.result.passages)) return result;
+      // A passage's sessionId is meaningful only inside its own Host, so it is
+      // qualified here, exactly as the previous scan lane did for its results.
+      return {
+        ok: true,
+        result: {
+          ...envelope.result,
+          passages: envelope.result.passages.map((passage) =>
+            typeof passage === 'object' && passage !== null
               ? {
-                  ...entry,
-                  target: {
-                    ...entry.target,
-                    sessionId: recordRuntimeHostSessionScope(scope, entry.target.sessionId),
-                  },
+                  ...passage,
+                  sessionId: recordRuntimeHostSessionScope(
+                    scope,
+                    (passage as { sessionId: string }).sessionId,
+                  ),
                 }
-              : entry,
-          )
-        : result;
+              : passage,
+          ),
+        },
+      };
     },
-    cancel: (scope, requestId) => ipcRenderer.invoke('search:thread:cancel', scope, requestId),
+    cancel: (scope, requestId) => ipcRenderer.invoke('search:recall:cancel', scope, requestId),
   }),
   // Browser-assisted Codex account bridge. NEVER returns raw OAuth
   // credentials; the renderer only sees account state and action results.
@@ -3331,17 +3330,6 @@ const makaBridge = {
     },
     logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:logout', connectionId);
-    },
-  },
-  commandCodeLogin: {
-    start(input: DesktopCommandCodeLoginStartInput): Promise<DesktopCommandCodeLoginStartResult> {
-      return ipcRenderer.invoke('commandcode-login:start', input);
-    },
-    complete(attemptId: string): Promise<DesktopCommandCodeLoginResult> {
-      return ipcRenderer.invoke('commandcode-login:complete', attemptId);
-    },
-    cancel(attemptId: string): Promise<void> {
-      return ipcRenderer.invoke('commandcode-login:cancel', attemptId);
     },
   },
   githubCopilotSubscription: {

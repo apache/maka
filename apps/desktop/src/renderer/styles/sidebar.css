@@ -209,6 +209,19 @@
 }
 
 /*
+ * A project row receiving a dragged task. Drawn on the row's own box rather
+ * than on the nested SideNavItem so the whole target — the heading and any
+ * expanded children — reads as one zone. An inset outline, not a border or
+ * padding: it costs no layout, so nothing under the pointer shifts as the ring
+ * appears.
+ */
+.maka-project-row[data-drop-target="true"] {
+  border-radius: var(--radius-control);
+  outline: 2px solid var(--accent-solid);
+  outline-offset: -2px;
+}
+
+/*
  * Grouping switch (session-list-panel.tsx): the last row of the sticky top
  * region, above the scrolling history it governs.
  *

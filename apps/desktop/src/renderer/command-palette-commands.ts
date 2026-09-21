@@ -39,7 +39,6 @@ import {
   Plus,
   Settings as SettingsIcon,
   ShieldCheck,
-  Sparkles,
   Sun,
   SunMoon,
   Wifi,
@@ -69,7 +68,6 @@ export function buildCommandList(args: {
   defaultSlug: string | null;
   onNewChat(): Promise<void> | void;
   onOpenSideChat?(): Promise<void> | void;
-  onStartDeepResearch?(): Promise<void> | void;
   onOpenSettings(): void;
   onOpenSettingsSection(section: SettingsSection): void;
   onOpenShortcuts(): void;
@@ -138,7 +136,7 @@ export function buildCommandList(args: {
   /**
    * PR-CMD-PALETTE-ENRICH-0: jump to an app module (会话 / 计划 /
    * 技能 / 每日回顾) directly from the palette. Search itself is
-   * already covered by the existing thread-search hookup, so the
+   * already covered by the existing recall-search hookup, so the
    * `search` module nav id is intentionally omitted here.
    */
   onSelectModule?(selection: NavSelection): void;
@@ -164,18 +162,6 @@ export function buildCommandList(args: {
             Icon: MessageCircleQuestion,
             keywords: [...copy.staticKeywords['action:side-chat']],
             run: args.onOpenSideChat,
-          },
-        ]
-      : []),
-    ...(args.onStartDeepResearch
-      ? [
-          {
-          id: 'action:new-deep-research',
-          kind: 'action' as const,
-            ...staticCopy('action:new-deep-research'),
-          Icon: Sparkles,
-            keywords: [...copy.staticKeywords['action:new-deep-research']],
-          run: () => args.onStartDeepResearch!(),
           },
         ]
       : []),

@@ -61,7 +61,6 @@ import {
   createWorkspaceWritePermissionProfile,
   isReadOnlyPermissionProfile,
 } from '@maka/core/permission-profile';
-import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/deep-research';
 import { RUNTIME_CONTINUATION_AUTHORITY_V1 } from '@maka/core/runtime-event-store';
 import { deriveTurnRecords } from '@maka/core/session';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -5696,7 +5695,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(summary.permissionMode, 'bypass');
   });
 
-  test('the setPermissionMode wrapper delegates deep research cleanup to configuration authority', async () => {
+  test('legacy research Sessions stay read-only after restart until explicitly changed', async () => {
     const store = new VersionedConfigurationMemorySessionStore();
     const backends = new BackendRegistry();
     backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
@@ -5704,15 +5703,33 @@ describe('SessionManager permission mode updates', () => {
     const session = await manager.createSession(
       makeInput({
         permissionMode: 'explore',
-        labels: [DEEP_RESEARCH_SESSION_LABEL, 'kept'],
+        labels: ['mode:deep_research', 'kept'],
       }),
     );
 
-    const summary = await manager.setPermissionMode(session.id, 'ask');
+    const boundaryBeforeRestart = await manager.readExecutionBoundary(session.id);
+    const restarted = new SessionManager({
+      store,
+      backends,
+      newId: nextId('restarted'),
+      now: nextNow(6_100),
+    });
+    await drain(
+      restarted.sendMessage(session.id, {
+        turnId: 'legacy-follow-up',
+        text: 'Read the existing report',
+      }),
+    );
+    assert.equal((await store.readHeader(session.id)).permissionMode, 'explore');
+    assert.deepEqual(await restarted.readExecutionBoundary(session.id), boundaryBeforeRestart);
+    const summary = await restarted.setPermissionMode(session.id, 'ask');
 
     assert.strictEqual(summary.permissionMode, 'ask');
-    assert.deepStrictEqual(summary.labels, ['kept']);
-    assert.deepStrictEqual((await store.readHeader(session.id)).labels, ['kept']);
+    assert.deepStrictEqual(summary.labels, ['mode:deep_research', 'kept']);
+    assert.deepStrictEqual((await store.readHeader(session.id)).labels, [
+      'mode:deep_research',
+      'kept',
+    ]);
   });
 
   test('temporarily preserves setPermissionMode for legacy SessionStore implementations', async () => {

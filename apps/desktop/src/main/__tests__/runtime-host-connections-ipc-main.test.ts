@@ -79,7 +79,6 @@ test('registers pure Connection reads for replacement-Host retry', () => {
     'connections:getRequestHeaders',
     'connections:getSnapshot',
     'connections:hasSecret',
-    'connections:usage',
   ]);
   assert.ok(effects.has('connections:create'));
   assert.ok(effects.has('connections:onboardingVerify'));
@@ -424,41 +423,6 @@ test('reports an existing but unconfigured credential as missing', async () => {
   assert.equal(
     await handlers.get('connections:hasSecret')?.({}, connectionIdentity()),
     false,
-  );
-});
-
-test('reads connection usage Host-side and rejects an identity with extra keys', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  let readFor: string | undefined;
-  registerRuntimeHostConnectionsIpc({
-    ipcMain: {
-      handle: (channel, handler) => {
-        handlers.set(channel, handler as (...args: unknown[]) => unknown);
-      },
-    },
-    client: {
-      loadConnectionCatalog: async () => catalog(),
-      readConnectionUsage: async (connectionId: string) => {
-        readFor = connectionId;
-        return { kind: 'unavailable', reason: 'unsupported' };
-      },
-    } as never,
-    emitConnectionListChanged() {},
-  });
-
-  assert.deepEqual(
-    await handlers.get('connections:usage')?.({}, connectionIdentity()),
-    { kind: 'unavailable', reason: 'unsupported' },
-  );
-  assert.equal(readFor, 'connection-1');
-
-  // The renderer bug this guards: passing the whole projected connection
-  // instead of the narrow identity. Structural typing lets the extra fields
-  // through at compile time, so the boundary must refuse them at runtime.
-  await assert.rejects(
-    async () =>
-      handlers.get('connections:usage')?.({}, { ...connectionIdentity(), name: 'OpenRouter' }),
-    /Invalid Connection identity/i,
   );
 });
 

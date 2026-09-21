@@ -18,7 +18,7 @@
  */
 
 import type { Page } from '@playwright/test';
-import { awaitSendReady, expect, test, COMPOSER_INPUT } from './fixtures';
+import { expect, test, COMPOSER_INPUT, waitForSkillNotInvocable } from './fixtures';
 
 /**
  * Revision drafts, per session, with a Skill staged in them.
@@ -73,8 +73,22 @@ async function failWorkspaceSkillRevision(page: Page): Promise<void> {
   expect(disabled.ok).toBe(true);
 
   const composer = page.locator(COMPOSER_INPUT);
-  await awaitSendReady(page);
-  await page.locator('.maka-composer button[type="submit"]').click();
+  // Two independent races sit between disabling the Skill and pressing Enter,
+  // and both make the rejection this journey asserts never render:
+  //
+  //  1. The toggle above goes through the raw bridge, not the Skills page, so
+  //     nothing re-fetches the composer's `/` source. Until Runtime's projection
+  //     drops the Skill it is still invocable, the send resolves it, and it
+  //     succeeds — no banner.
+  //  2. Picking the Skill left the `/` menu open. While it reports
+  //     `aria-expanded`, the composer swallows Enter as menu acceptance instead
+  //     of sending, so the draft is never submitted at all.
+  //
+  // Settle both: the menu closed, and the Skill gone from the invocable set.
+  await expect(composer).toHaveAttribute('aria-expanded', 'false');
+  await waitForSkillNotInvocable(page, ['workspace-only']);
+
+  await composer.press('Enter');
   await expect(page.getByText('Skill 调用失败，消息未发送')).toBeVisible();
   // The draft survives the rejection whole, and reads as the token rather than
   // as a chip: the Skill was just disabled, so it is gone from the catalog the

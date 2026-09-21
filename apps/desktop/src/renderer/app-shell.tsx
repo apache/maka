@@ -164,7 +164,6 @@ import {
   createAppShellRevisionActions,
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
-import { createAppShellSessionStartActions } from './app-shell-session-start-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
 import {
@@ -555,7 +554,6 @@ function AppShellContent({
     appearanceHydrated,
     userLabel,
     setUserLabel,
-
 
     refreshShellSettings,
   } = useShellAppearance({
@@ -1031,7 +1029,6 @@ function AppShellContent({
   // aborted) takes over with the existing chat surface.
   // Re-entrancy lock only — a ref, not state, because nothing renders
   // from it (#1433 removed its last reader with the first-run hero).
-  const sessionStartPendingRef = useRef(false);
   // Seed a snapshot captured before React mounted so the sidebar can paint
   // immediately. The subscription bootstrap reconciles once through the live
   // Session catalog on the next frame; later onboarding pulls still own
@@ -1191,20 +1188,6 @@ function AppShellContent({
         projectName: currentProject?.name,
         projectPath: projectInfo?.projectPath,
       });
-  const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
-    uiLocale,
-    activeIdRef,
-    captureComposerImportOwner,
-    composerRef,
-    isShellSurfaceOwnerActive,
-    openSessionInChat,
-    newTaskTarget: taskEntry.selectors.target,
-    sessionStartPendingRef,
-    refreshOnboarding: onboarding.refresh,
-    refreshSessions,
-    showModelSetupToast,
-    toastApi,
-  });
   const openNewTaskSurface = useCallback(() => {
     imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
     const ownerToken = startNewSession();
@@ -2123,7 +2106,6 @@ function AppShellContent({
     hiddenSessionIds: selectors.hiddenSessionIds,
     captureComposerImportOwner,
     createSession,
-    startModeSession,
     openHelp,
     openScheduledTaskCreate: () => {
       closePalette();
@@ -2340,6 +2322,11 @@ function AppShellContent({
                   onSelect: openWorkHub,
                 } : undefined}
                 projectActions={projectRowActions}
+                onNewProject={
+                  taskEntry.selectors.canAddProject
+                    ? taskEntry.commands.openNewProject
+                    : undefined
+                }
               >
                 {SESSION_RAIL}
               </SessionNavigationProvider>
@@ -2630,16 +2617,6 @@ function AppShellContent({
                       }
                     : undefined
                 }
-                onContinueDeepResearchHandoff={(run) => {
-                  const prompt = run.implementationPrompt;
-                  if (!prompt) return;
-                  void createSession().then(() => {
-                    window.requestAnimationFrame(() => {
-                      composerRef.current?.setText(prompt);
-                      composerRef.current?.focus();
-                    });
-                  });
-                }}
                 sessionHealthNotice={sessionHealthNotice}
                 sessionHealthModelPickerAvailable={
                   activeBoundarySurface.localInteractionAvailable
@@ -2658,10 +2635,7 @@ function AppShellContent({
                 showOnboardingHero={showOnboardingHero}
                 onboardingState={onboardingState}
                 isOnboardingLoading={isOnboardingLoading}
-                onOpenSettings={(section) => {
-                  if (section) openSettingsSection(section);
-                  else openSettings();
-                }}
+                onOpenSettings={openSettingsSection}
                 onOpenConnectionDetail={openConnectionDetail}
                 onAddProvider={openProviderCreate}
                 onBrowseProviders={openProviderCatalog}

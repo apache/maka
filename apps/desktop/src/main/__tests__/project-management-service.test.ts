@@ -166,6 +166,73 @@ test('can register a draft Project without changing the Host selection', async (
   assert.equal(selected, false);
 });
 
+test('names the Project in the same step as registering it', async () => {
+  const renames: Array<{ projectId: string; name: string }> = [];
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: unexpected,
+      register: async (path) => ({
+        id: 'project-1',
+        name: 'folder-name',
+        locations: [{ path, available: true, isWorktree: false }],
+        preferredPath: path,
+        available: true,
+      }),
+      relink: unexpected,
+      rename: async (projectId, name) => {
+        renames.push({ projectId, name });
+        return {
+          id: projectId,
+          name,
+          locations: [{ path: '/workspace', available: true, isWorktree: false }],
+          preferredPath: '/workspace',
+          available: true,
+        };
+      },
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => '/workspace',
+    selection: {
+      currentSelection: async () => ({ projectId: undefined, path: '/current' }),
+      setSelection() {},
+    },
+  });
+
+  const result = await service.add({ select: false, name: '  My Project  ' });
+  assert.deepEqual(renames, [{ projectId: 'project-1', name: 'My Project' }]);
+  assert.equal(result.ok && result.project.name, 'My Project');
+});
+
+test('a blank name leaves the folder-derived name alone', async () => {
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: unexpected,
+      register: async (path) => ({
+        id: 'project-1',
+        name: 'folder-name',
+        locations: [{ path, available: true, isWorktree: false }],
+        preferredPath: path,
+        available: true,
+      }),
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => '/workspace',
+    selection: {
+      currentSelection: async () => ({ projectId: undefined, path: '/current' }),
+      setSelection() {},
+    },
+  });
+
+  const result = await service.add({ select: false, name: '   ' });
+  assert.equal(result.ok && result.project.name, 'folder-name');
+});
+
 test('rejects malformed Project identities before catalog access', async () => {
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,

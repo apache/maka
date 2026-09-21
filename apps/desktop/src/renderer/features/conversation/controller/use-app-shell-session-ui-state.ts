@@ -19,7 +19,8 @@
 
 import { useRef, useState } from 'react';
 import type { StoredMessage } from '@maka/core/session';
-import type { TransientUserMessageProjection } from '@maka/ui';
+import { valuesEqual, type TransientUserMessageProjection } from '@maka/ui';
+import type { DesktopSessionSummary } from '../../../../shared/desktop-session-projection.js';
 import { currentTranscriptRange } from './transcript-reading-position.js';
 import { createAppShellSessionUiStateController, type AppShellSessionUiStateController } from '../model/session-ui-state.js';
 import {
@@ -27,6 +28,43 @@ import {
   type SessionCatalogController,
 } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
+
+/**
+ * Catalog bookkeeping that republishes at event rate but renders only in the
+ * rail — ordering, unread and flag markers, preview text, admission revision.
+ * Nothing under the shell's whole-row read renders them, so a patch that moves
+ * only these fields must not re-render the whole chat surface. Every other
+ * field still compares, and a row field added later republishes until someone
+ * proves it belongs here — the failure direction is a re-render, not a stale
+ * value the UI swears is current.
+ */
+const NON_RENDERED_ROW_KEYS = {
+  activityAt: true,
+  hasUnread: true,
+  isFlagged: true,
+  lastMessagePreview: true,
+  localCreatedAt: true,
+  revision: true,
+  statusUpdatedAt: true,
+  subagentRuntime: true,
+} satisfies Partial<Record<keyof DesktopSessionSummary, true>>;
+
+export function shellSessionRowEqual(
+  a: DesktopSessionSummary | undefined,
+  b: DesktopSessionSummary | undefined,
+): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  const keys = new Set([
+    ...(Object.keys(a) as (keyof DesktopSessionSummary)[]),
+    ...(Object.keys(b) as (keyof DesktopSessionSummary)[]),
+  ]);
+  for (const key of keys) {
+    if (key in NON_RENDERED_ROW_KEYS) continue;
+    if (!valuesEqual(a[key], b[key])) return false;
+  }
+  return true;
+}
 
 interface TranscriptSource {
   range(): { readonly sessionId: string; readonly hasOlder: boolean };
@@ -98,11 +136,13 @@ export function useAppShellSessionUiState<
     catalog,
     selectSessionById,
     view.sessionId,
+    shellSessionRowEqual,
   );
   const requestedCatalogSession = useExternalStoreSelector(
     catalog,
     selectSessionById,
     requestedSessionId,
+    shellSessionRowEqual,
   );
   // Locally staged tasks cannot admit Host reads until creation completes.
   const activeHostSession = activeCatalogSession?.localState !== 'pending' ? activeCatalogSession : undefined;

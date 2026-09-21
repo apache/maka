@@ -30,7 +30,6 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/deep-research';
 
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 
@@ -59,8 +58,8 @@ describe('resolveCreateSessionRequest', () => {
   });
 
   it('passes a product mode through verbatim for the Host to expand', () => {
-    assert.deepEqual(resolve({ mode: 'deep_research' }), {
-      mode: 'deep_research',
+    assert.deepEqual(resolve({ mode: 'bot' }), {
+      mode: 'bot',
       collaborationMode: 'agent',
       orchestrationMode: 'default',
       name: DEFAULT_SESSION_NAME,
@@ -68,15 +67,6 @@ describe('resolveCreateSessionRequest', () => {
     });
   });
 
-  /**
-   * `explore` is a boundary a mode confers, never one a caller may open a
-   * session at — core names the pickable set `ChatDefaultPermissionMode`.
-   * Without this refusal the seed is only a default: a renderer could ask for
-   * `explore` outright and get it without the Deep Research label, tools or
-   * system prompt that define the mode. `sessions:setPermissionMode` stays the
-   * separate, deliberate path for moving an EXISTING session (the quote
-   * companion relies on it), so the guard belongs on creation only.
-   */
   it('refuses a directly-requested explore boundary', () => {
     assert.throws(() => resolve({ permissionMode: 'explore' }), TypeError);
     assert.throws(() => resolve({ permissionMode: 'nonsense' }), TypeError);
@@ -87,23 +77,19 @@ describe('resolveCreateSessionRequest', () => {
     assert.throws(() => resolve({ orchestrationMode: 'nonsense' }), TypeError);
   });
 
-  /**
-   * The mode is a closed set, exercised with the raw values a renderer can
-   * actually put on the wire. An unrecognized mode must not reach the Host as
-   * one — it simply is not a mode.
-   */
-  it('drops an unrecognized mode from the renderer', () => {
+  it('rejects the retired research workflow', () => {
+    assert.throws(() => resolve({ mode: 'deep_research' }), /Invalid session start mode/);
+  });
+
+  it('drops other unrecognized modes from the renderer', () => {
     for (const mode of ['explore', 'deep-reseach', 'chat', 'admin', '', null, 42, {}]) {
-      const resolved = resolve({ mode });
-      assert.equal(resolved.mode, undefined, `mode ${JSON.stringify(mode)} reached the wire`);
-      assert.equal(resolved.name, DEFAULT_SESSION_NAME);
-      assert.equal(resolved.labels, undefined);
+      assert.equal(resolve({ mode }).mode, undefined);
     }
   });
 
   it("carries the caller's name and labels when no mode overrides them", () => {
-    const resolved = resolve({ name: 'Release notes', labels: ['pinned', DEEP_RESEARCH_SESSION_LABEL] });
+    const resolved = resolve({ name: 'Release notes', labels: ['pinned', 'mode:bot'] });
     assert.equal(resolved.name, 'Release notes');
-    assert.deepEqual(resolved.labels, ['pinned', DEEP_RESEARCH_SESSION_LABEL]);
+    assert.deepEqual(resolved.labels, ['pinned', 'mode:bot']);
   });
 });
