@@ -1573,15 +1573,13 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     ) {
       return execution;
     }
-    return {
-      ...execution,
-      routingDecision: await this.prepareWorkHubRoutingDecision({
-        header,
-        turnId,
-        content,
-        ...(inputClosedSignal ? { inputClosedSignal } : {}),
-      }),
-    };
+    const routingDecision = await this.prepareWorkHubRoutingDecision({
+      header,
+      turnId,
+      content,
+      ...(inputClosedSignal ? { inputClosedSignal } : {}),
+    });
+    return routingDecision === undefined ? execution : { ...execution, routingDecision };
   }
 
   prepareMessage(input: HostMessagePreparationInput): Promise<
