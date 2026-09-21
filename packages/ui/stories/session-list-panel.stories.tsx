@@ -85,7 +85,6 @@ function makeSession(input: {
 const rowActions: NonNullable<SessionListPanelProps['rowActions']> = {
   onToggleFlag: noop,
   onArchive: noop,
-  onUnarchive: noop,
   onRename: noop,
 };
 
