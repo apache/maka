@@ -648,7 +648,7 @@ export const RunningStatusDuringToolRun: Story = {
     const activity = process.querySelector('.maka-processing-summary .maka-turn-processing')!;
     await expect(activity).toHaveTextContent('正在琢磨…');
     await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
-    await expect(canvasElement.querySelector('.maka-turn-footer-meta .maka-turn-processing')).toBeNull();
+    await expect(canvasElement.querySelector('.maka-turn-footer .maka-turn-processing')).toBeNull();
     // Live work is not a disclosure action. Even pointer activation cannot
     // hide it; the tool keeps ownership of its visible spinner.
     const summary = process.querySelector('summary')!;

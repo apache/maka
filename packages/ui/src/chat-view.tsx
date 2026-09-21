@@ -50,18 +50,17 @@ import type {
   QuoteRef,
   ShellRunUpdate,
 } from '@maka/core/events';
-import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
+import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { finalAssistantReplyText } from './materialize.js';
 import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
-import type { LiveTurnProjection } from './live-turn-projection.js';
+import type { LiveProviderRetry, LiveTurnProjection } from './live-turn-projection.js';
 import {
   ModelProviderRetryIndicator,
   LocalizedChatMessage,
-  ProcessingBlock,
-  TurnFooter,
+  TurnStatusBar,
   TurnView,
   TransientUserMessage,
   type TurnFooterActionMeta,
@@ -365,8 +364,8 @@ export function ChatView(props: {
       : props.messages,
     [drainingMessageIds, props.messages],
   );
-  // Whether anything would render in the log — the empty-state gate. Answers
-  // the same question materializeChat did without materializing every row.
+  // Whether anything would render in the log — the empty-state gate, answered
+  // by a scan rather than materializing every row.
   const hasVisibleChatContent = useMemo(
     () => visibleMessages.some(
       (message) => message.type === 'user'
@@ -425,6 +424,10 @@ export function ChatView(props: {
   const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
   const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
   const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
+  const preTurnRetry =
+    activeContent !== undefined && activeContent.turnId === tailTurnId
+      ? activeContent.providerRetry
+      : undefined;
   const boundaryOverlayTurnId = activeContent?.turnId
     ?? (streamingActive ? tailTurnId : undefined);
   const transformedUserTurnIds = useMemo(
@@ -688,12 +691,8 @@ export function ChatView(props: {
                   ))}
                 </section>
               )}
-              {/* The pre-Turn cue is the same summary row the process uses. */}
-              {runningStatus && (
-                <section className="maka-turn" data-live-streaming="true">
-                  <ProcessingBlock entries={[]} running activity={{}} />
-                </section>
-              )}
+              {/* The pre-Turn cue is the same status row the Turn will show. */}
+              {runningStatus && <PreTurnCue running />}
             </>
           ) : null}
         </ChatMessageList>
@@ -906,29 +905,14 @@ export function ChatView(props: {
               )}
               {/* A send arm already names its Turn, but the transcript may not
                   contain it yet. Keep feedback below the pending prompt until
-                  that same TurnView can take over. */}
+                  that same TurnView can take over — and show it the way the
+                  TurnView will, so the handoff does not shift the row. */}
               {streamingActive && !hasRenderedLiveTurn && (
-                <section className="maka-turn" data-live-streaming="true">
-                  {activeContent && activeContent.turnId === tailTurnId && activeContent.providerRetry ? (
-                    <LocalizedChatMessage
-                      accessibleLabel={conversationCopy.messages.assistantAriaLabel}
-                      sender="assistant"
-                      className="maka-chat-message maka-assistant-answer"
-                    >
-                      <TurnFooter actions={[]} live context="" activity={
-                        <ModelProviderRetryIndicator retry={activeContent.providerRetry} />
-                      } />
-                    </LocalizedChatMessage>
-                  ) : runningStatus ? (
-                    // The waiting cue. This row stands in for the Turn until the
-                    // transcript contains it, and an empty disclosure has no
-                    // footer to host the cue — so the cue renders in the
-                    // disclosure here, and moves to the footer once the real
-                    // TurnView takes over. Passing `activity` is what selects
-                    // that form.
-                    <ProcessingBlock entries={[]} running activity={{}} />
-                  ) : null}
-                </section>
+                preTurnRetry ? (
+                  <PreTurnCue providerRetry={preTurnRetry} />
+                ) : runningStatus ? (
+                  <PreTurnCue running />
+                ) : null
               )}
               {conversationItemPlacement.orphan && (
                 <Fragment key={conversationItemPlacement.orphan.id}>
@@ -998,6 +982,28 @@ export function ChatView(props: {
 }
 
 /** Turns holding document focus or a selection endpoint; virtualization must not unmount them. */
+/**
+ * The cue shown before the transcript contains the Turn: the same status row
+ * the TurnView will render, so the handoff does not shift the row.
+ */
+function PreTurnCue(props: { running?: boolean; providerRetry?: LiveProviderRetry }) {
+  const copy = getConversationCopy(useUiLocale()).messages;
+  return (
+    <section className="maka-turn" data-live-streaming="true">
+      <LocalizedChatMessage
+        accessibleLabel={copy.assistantAriaLabel}
+        sender="assistant"
+        className="maka-chat-message maka-assistant-answer"
+      >
+        <div className="maka-assistant-answer-content">
+          <TurnStatusBar status="running" running={props.running} providerRetry={props.providerRetry} />
+          {props.providerRetry ? <ModelProviderRetryIndicator retry={props.providerRetry} /> : null}
+        </div>
+      </LocalizedChatMessage>
+    </section>
+  );
+}
+
 /**
  * virtua disables pointer events while its scroller moves, and a streaming
  * answer moves the pinned scroller every frame, which would leave every Turn

@@ -361,13 +361,8 @@ export interface TurnViewModel {
    * Absent on hand-built view models, which are treated as non-evidence.
    */
   statusSource?: TurnRecord["statusSource"];
-  parentTurnId?: string;
   retriedFromTurnId?: string;
   regeneratedFromTurnId?: string;
-  branchOfTurnId?: string;
-  parentSessionId?: string;
-  abortedAt?: number;
-  abortSource?: string;
   errorClass?: string;
   failureMessage?: string;
   retry?: import('@maka/core/model-failure').ModelRetryDecision;
@@ -721,23 +716,12 @@ export function materializeTurns(
         turnId,
         status: record?.status ?? "completed",
         statusSource: record?.statusSource ?? "inferred",
-        ...(record?.parentTurnId ? { parentTurnId: record.parentTurnId } : {}),
         ...(record?.retriedFromTurnId
           ? { retriedFromTurnId: record.retriedFromTurnId }
           : {}),
         ...(record?.regeneratedFromTurnId
           ? { regeneratedFromTurnId: record.regeneratedFromTurnId }
           : {}),
-        ...(record?.branchOfTurnId
-          ? { branchOfTurnId: record.branchOfTurnId }
-          : {}),
-        ...(record?.parentSessionId
-          ? { parentSessionId: record.parentSessionId }
-          : {}),
-        ...(record?.abortedAt !== undefined
-          ? { abortedAt: record.abortedAt }
-          : {}),
-        ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
         ...(record?.failureMessage ? { failureMessage: record.failureMessage } : {}),
         ...(record?.errorClass ? { errorClass: record.errorClass } : {}),
         ...(record?.retry ? { retry: record.retry } : {}),
