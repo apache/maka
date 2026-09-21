@@ -148,6 +148,19 @@ test('the retired Regenerate grant is dropped from released credentials', async 
   assert.deepEqual(unresolvedPersistedGrants(file), []);
 });
 
+test('the retired Command Code GO usage grant is dropped from released credentials', async () => {
+  const path = await writeAccessFile({
+    schemaVersion: 3,
+    credentials: [storedCredential(['host.status', 'connection.usage.read'])],
+    sessionGrants: [],
+    turnAccessRequests: [],
+  });
+
+  const file = await readAccessCredentialFile(path);
+  assert.deepEqual(file.credentials[0]?.grants, ['host.status']);
+  assert.deepEqual(unresolvedPersistedGrants(file), []);
+});
+
 test('retired WorkHub grants are released without granting active-turn authority', async () => {
   const original = storedCredential([
     'host.status',

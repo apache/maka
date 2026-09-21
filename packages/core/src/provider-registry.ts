@@ -88,8 +88,6 @@ type ProviderRuntimeAdapterDefinition =
   | { kind: 'openai-codex'; responses: ProviderResponsesContract }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
   | { kind: 'cohere' }
-  /** The Command Code CLI's `/alpha/generate` wire, used by the GO plan. */
-  | { kind: 'commandcode-cli' }
   | OpenAiCompatibleRuntimeAdapter;
 
 export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
@@ -1491,20 +1489,26 @@ const providerRegistry = {
     signupUrl: 'https://commandcode.ai/docs/plans/goat',
     catalogOrder: 41.5,
   },
+  // Retired rather than removed: an existing connection must stay identifiable
+  // and must answer `provider_retired` at readiness. Removing the entry would
+  // leave it *unknown*, which `isConnectionReady` does not reject, so a send
+  // would be admitted and only fail deep in model construction. Its transport
+  // presented the official CLI's identity to a private endpoint, which is why
+  // nothing can send through it any more.
   'commandcode-go': {
     label: 'Command Code GO',
-    // The API root, not `/provider/v1`: generation posts to `/alpha/generate`
-    // and discovery reads `/provider/v1/models`, both under it.
     baseUrl: 'https://api.commandcode.ai',
     authKind: 'api_key',
     fallbackModels: [],
-    status: 'ready',
-    runtimeAdapter: { kind: 'commandcode-cli' },
-    modelDiscovery: { kind: 'protocol', path: 'provider/v1/models' },
+    status: 'phase3-experimental',
+    runtimeAdapter: { kind: 'unavailable' },
+    retired: true,
+    modelDiscovery: {
+      kind: 'fallback',
+      reason: 'The GO plan was reached through the official CLI\u2019s private transport.',
+    },
     category: 'overseas',
     catalogGroup: 'plans',
-    signupUrl: 'https://commandcode.ai/docs/plans/go',
-    catalogOrder: 41.6,
   },
   'cloudflare-workers-ai': {
     label: cloudflareWorkersAi.name,

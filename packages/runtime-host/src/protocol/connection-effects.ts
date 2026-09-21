@@ -54,14 +54,6 @@ const EFFECT_ERRORS = [
   'commit_outcome_unknown',
 ] as const;
 
-/**
- * Upper bound on the quota windows one usage report may carry. The producer
- * emits three today (5-hour, weekly, monthly); the cap exists because a decoder
- * is the boundary that does not trust its producer, matching how every other
- * array in this package is bounded before mapping.
- */
-const CONNECTION_USAGE_MAX_WINDOWS = 16;
-
 export const CONNECTION_EFFECT_CHANGED_DOMAINS = [
   'connection',
   'credential',
@@ -217,56 +209,6 @@ export type ConnectionTestRunResult =
   | ConnectionEffectRejected
   | ConnectionEffectSuperseded;
 
-export interface ConnectionUsageReadInput {
-  readonly connectionId: string;
-}
-
-/** One quota window, e.g. the 5-hour, weekly or monthly allowance. */
-export interface ConnectionUsageWindow {
-  readonly id: string;
-  readonly label: string | null;
-  readonly used: number;
-  readonly cap: number;
-  readonly unit: 'credits' | 'usd' | 'tokens';
-  /** Epoch millis the window resets, or null when the provider did not say. */
-  readonly resetsAt: number | null;
-  readonly unlimited: boolean | null;
-}
-
-/** The aggregate counters a provider reports, each null when unreported. */
-export interface ConnectionUsageStats {
-  readonly requests: number | null;
-  readonly failed: number | null;
-  readonly successRate: number | null;
-  readonly cost: number | null;
-  readonly tokensIn: number | null;
-  readonly tokensOut: number | null;
-}
-
-export interface ConnectionUsageReportProjection {
-  readonly accountLabel: string | null;
-  readonly planLabel: string | null;
-  readonly stats: ConnectionUsageStats | null;
-  readonly windows: readonly ConnectionUsageWindow[];
-  readonly periodEnd: number | null;
-  /** Some endpoints refused the credential while others answered. */
-  readonly partiallyUnauthorized: boolean;
-  readonly fetchedAt: number;
-}
-
-/**
- * Read-only: unlike the fetch/test effects there is no committed state. A host
- * that could not reach the provider says `unavailable` with a reason; a host
- * that reached it but found no credential says `rejected`.
- */
-export type ConnectionUsageReadResult =
-  | { readonly kind: 'report'; readonly report: ConnectionUsageReportProjection }
-  | {
-      readonly kind: 'unavailable';
-      readonly reason: 'unsupported' | 'network' | 'no-credential' | 'unauthorized';
-    }
-  | ConnectionEffectRejected;
-
 export const CONNECTION_EFFECT_OPERATION_SPECS = {
   'connection.onboarding.save': defineOperation<
     ConnectionOnboardingSaveInput,
@@ -311,17 +253,6 @@ export const CONNECTION_EFFECT_OPERATION_SPECS = {
     errors: EFFECT_ERRORS,
     decodeInput: decodeConnectionTestRunInput,
     decodeOutput: decodeConnectionTestRunResult,
-  }),
-  'connection.usage.read': defineOperation<
-    ConnectionUsageReadInput,
-    ConnectionUsageReadResult,
-    (typeof EFFECT_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: EFFECT_ERRORS,
-    decodeInput: decodeConnectionUsageReadInput,
-    decodeOutput: decodeConnectionUsageReadResult,
   }),
 } as const;
 
@@ -569,107 +500,6 @@ export function decodeConnectionTestRunResult(value: unknown): ConnectionTestRun
     };
   }
   return decodeNonEffectResult(result, 'connection test result');
-}
-
-export function decodeConnectionUsageReadInput(value: unknown): ConnectionUsageReadInput {
-  const input = requireExactRecord(value, 'connection usage input', ['connectionId']);
-  return { connectionId: requireEntityId(input.connectionId, 'connectionId') };
-}
-
-export function decodeConnectionUsageReadResult(value: unknown): ConnectionUsageReadResult {
-  const result = requireRecord(value, 'connection usage result');
-  if (result.kind === 'report') {
-    const report = requireExactRecord(result, 'connection usage report', ['kind', 'report']);
-    return { kind: 'report', report: decodeUsageReport(report.report) };
-  }
-  if (result.kind === 'unavailable') {
-    const unavailable = requireExactRecord(result, 'connection usage unavailable', [
-      'kind',
-      'reason',
-    ]);
-    if (
-      unavailable.reason !== 'unsupported' &&
-      unavailable.reason !== 'network' &&
-      unavailable.reason !== 'no-credential' &&
-      unavailable.reason !== 'unauthorized'
-    ) {
-      throw invalidProtocolFrame('Invalid connection usage unavailable reason');
-    }
-    return { kind: 'unavailable', reason: unavailable.reason };
-  }
-  if (result.kind === 'rejected') {
-    const rejected = requireExactRecord(result, 'connection usage result', ['kind', 'reason']);
-    return { kind: 'rejected', reason: rejectionReason(rejected.reason) };
-  }
-  throw invalidProtocolFrame('Invalid connection usage result');
-}
-
-function decodeUsageReport(value: unknown): ConnectionUsageReportProjection {
-  const report = requireExactRecord(value, 'connection usage report body', [
-    'accountLabel',
-    'planLabel',
-    'stats',
-    'windows',
-    'periodEnd',
-    'partiallyUnauthorized',
-    'fetchedAt',
-  ]);
-  if (!Array.isArray(report.windows) || report.windows.length > CONNECTION_USAGE_MAX_WINDOWS) {
-    throw invalidProtocolFrame('Invalid connection usage windows');
-  }
-  return {
-    accountLabel: optionalText(report.accountLabel, 'account label'),
-    planLabel: optionalText(report.planLabel, 'plan label'),
-    stats: report.stats === null ? null : decodeUsageStats(report.stats),
-    windows: report.windows.map(decodeUsageWindow),
-    periodEnd: optionalMillis(report.periodEnd, 'period end'),
-    partiallyUnauthorized: requireBoolean(report.partiallyUnauthorized, 'partially unauthorized'),
-    fetchedAt: requireCount(report.fetchedAt, 'usage fetchedAt'),
-  };
-}
-
-function decodeUsageStats(value: unknown): ConnectionUsageStats {
-  const stats = requireExactRecord(value, 'connection usage stats', [
-    'requests',
-    'failed',
-    'successRate',
-    'cost',
-    'tokensIn',
-    'tokensOut',
-  ]);
-  return {
-    requests: optionalCount(stats.requests, 'requests'),
-    failed: optionalCount(stats.failed, 'failed'),
-    successRate: optionalAmount(stats.successRate, 'success rate'),
-    cost: optionalAmount(stats.cost, 'cost'),
-    tokensIn: optionalCount(stats.tokensIn, 'tokens in'),
-    tokensOut: optionalCount(stats.tokensOut, 'tokens out'),
-  };
-}
-
-function decodeUsageWindow(value: unknown): ConnectionUsageWindow {
-  const window = requireExactRecord(value, 'connection usage window', [
-    'id',
-    'label',
-    'used',
-    'cap',
-    'unit',
-    'resetsAt',
-    'unlimited',
-  ]);
-  const unit = window.unit;
-  if (unit !== 'credits' && unit !== 'usd' && unit !== 'tokens') {
-    throw invalidProtocolFrame('Invalid connection usage unit');
-  }
-  return {
-    id: requireUtf8String(window.id, 'usage window id', 64),
-    label: optionalText(window.label, 'usage window label'),
-    used: requireAmount(window.used, 'usage window used'),
-    cap: requireAmount(window.cap, 'usage window cap'),
-    unit,
-    resetsAt: optionalMillis(window.resetsAt, 'usage window reset'),
-    unlimited: window.unlimited === null ? null : requireBoolean(window.unlimited, 'unlimited'),
-  };
 }
 
 function optionalText(value: unknown, label: string): string | null {

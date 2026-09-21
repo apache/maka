@@ -219,10 +219,7 @@ async function fetchProviderModelsStrict(
       return filterDiscoveredModels(models, discovery.filter);
     }
     case 'openai':
-    case 'openai-compatible':
-    // The CLI transport lists models through the Provider API's `/models`,
-    // which every plan may read.
-    case 'commandcode-cli': {
+    case 'openai-compatible': {
       const r = await fetchForConnectionEffect(
         fetchFn,
         modelListUrl(baseUrl, discovery.path, discovery.query),

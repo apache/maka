@@ -546,12 +546,6 @@ export class DesktopRuntimeHostClient {
     });
   }
 
-  readConnectionUsage(
-    connectionId: string,
-  ): Promise<OperationOutput<"connection.usage.read">> {
-    return this.request("connection.usage.read", { connectionId });
-  }
-
   verifyConnectionOnboarding(
     input: OperationInput<"connection.onboarding.verify">,
   ): Promise<OperationOutput<"connection.onboarding.verify">> {
