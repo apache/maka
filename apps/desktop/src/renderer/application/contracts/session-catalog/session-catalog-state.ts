@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useRef } from 'react';
+import { createContext, useContext, useRef } from 'react';
 import { valuesEqual } from '@maka/ui';
 import {
   compareDesktopSessionCatalogSummaries,
@@ -199,11 +199,15 @@ export const selectAuthoritativeSessionIds = (
   state.revision > 0 ? new Set(state.sessions.map(({ id }) => id)) : undefined;
 
 /**
- * Owns the controller for the component's lifetime. Deliberately does NOT
- * subscribe: readers select what they need through `useExternalStoreSelector`.
+ * The shell's catalog instance, mounted once above the feature services.
+ * Providers that need the catalog read it here instead of receiving it as a
+ * prop drilled through the shell. Deliberately does NOT subscribe: readers
+ * select what they need through `useExternalStoreSelector`.
  */
+export const SessionCatalogContext = createContext<SessionCatalogController | null>(null);
+
 export function useSessionCatalogController(): SessionCatalogController {
-  const controllerRef = useRef<SessionCatalogController | null>(null);
-  if (!controllerRef.current) controllerRef.current = createSessionCatalogController();
-  return controllerRef.current;
+  const catalog = useContext(SessionCatalogContext);
+  if (catalog === null) throw new Error('SessionCatalogContext.Provider is missing');
+  return catalog;
 }

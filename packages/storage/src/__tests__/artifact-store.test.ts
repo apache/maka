@@ -575,7 +575,7 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('persists complete canonical deep-research and archived tool-result records', async () => {
+  test('reopens legacy research reports and archived tool results', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       const report = await store.create({
@@ -588,7 +588,6 @@ describe('SQLite Artifact store', () => {
         mimeType: 'text/html',
         source: 'deep_research',
         summary: 'Canonical research report',
-        deepResearchRole: 'report',
         now: 100,
       });
       const archive = await store.create({
@@ -603,6 +602,9 @@ describe('SQLite Artifact store', () => {
         summary: 'Archived tool result',
         now: 200,
       });
+
+      const legacyReport = { ...report, deepResearchRole: 'report' };
+      await writeArtifactMetadata(root, [legacyReport]);
 
       const reopened = createArtifactStore(root);
       assert.deepEqual(await getArtifact(reopened, report.id), report);
@@ -1326,14 +1328,6 @@ describe('SQLite Artifact store', () => {
         () => store.create({ ...artifactInput('bad/id', 'no', 1) }),
         /Artifact id must be a canonical entity ID/,
       );
-      await assert.rejects(
-        () =>
-          store.create({
-            ...artifactInput('invalid-role', 'no', 1),
-            deepResearchRole: 'invalid' as never,
-          }),
-        /Invalid Artifact deep-research role/,
-      );
       await assert.rejects(() => stat(join(root, 'artifacts')), { code: 'ENOENT' });
     });
 
@@ -1386,7 +1380,6 @@ function deepResearchArtifactInput(id: string, content: string) {
     mimeType: 'text/markdown',
     source: 'deep_research' as const,
     summary: 'Stable research artifact',
-    deepResearchRole: 'source' as const,
   };
 }
 

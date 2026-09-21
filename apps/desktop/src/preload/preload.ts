@@ -209,7 +209,6 @@ import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import { createBrowserSelectionCoordinator } from './browser-selection.js';
 import type { SessionTodoItem } from '@maka/core/session-todo';
-import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import {
   isWebSearchProvider,
   MASKED_TOKEN_SENTINEL,
@@ -2062,19 +2061,6 @@ const makaBridge = {
     },
     subscribeChanges(handler: (event: { sessionId: string; at: number }) => void): () => void {
       return subscribeEveryRuntimeHostEvent('todo:changed', (scope, event: { sessionId: string; at: number }) =>
-        handler({
-          ...event,
-          sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),
-        }),
-      );
-    },
-  },
-  deepResearch: {
-    get(sessionId: string): Promise<DeepResearchClientProgress | undefined> {
-      return invokeProjectedSessionRuntimeHost('deepResearch:get', sessionId);
-    },
-    subscribeChanges(handler: (event: DeepResearchChangedEvent) => void): () => void {
-      return subscribeEveryRuntimeHostEvent('deepResearch:changed', (scope, event: DeepResearchChangedEvent) =>
         handler({
           ...event,
           sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),

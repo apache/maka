@@ -172,6 +172,29 @@ test('retired WorkHub grants are released without granting active-turn authority
   assert.deepEqual(rewritten.credentials, [{ ...original, operationGrants: ['host.status'] }]);
 });
 
+test('retires the research grant while preserving the released credential across restart', async () => {
+  const original = storedCredential(['host.status', 'deep-research.query', 'artifact.query']);
+  const path = await writeAccessFile({
+    schemaVersion: 3,
+    credentials: [original],
+    sessionGrants: [],
+    turnAccessRequests: [],
+  });
+
+  const file = await readAccessCredentialFile(path);
+  assert.deepEqual(unresolvedPersistedGrants(file), []);
+  await writeAccessCredentialFile(path, file);
+  const reopened = await readAccessCredentialFile(path);
+  assert.deepEqual(effectiveOperationGrants(reopened.credentials[0]!), [
+    'host.status',
+    'artifact.query',
+  ]);
+  const rewritten = JSON.parse(await readFile(path, 'utf8'));
+  assert.deepEqual(rewritten.credentials, [
+    { ...original, operationGrants: ['host.status', 'artifact.query'] },
+  ]);
+});
+
 test('a Session Guest holds the current guest policy, not what its record says', async () => {
   const path = await writeAccessFile({
     schemaVersion: 3,

@@ -173,7 +173,6 @@ apps/desktop/src/renderer/styles/composer-mention.css
 apps/desktop/src/renderer/styles/composer.css
 apps/desktop/src/renderer/styles/custom-pet-companion.css
 apps/desktop/src/renderer/styles/daily-review.css
-apps/desktop/src/renderer/styles/deep-research.css
 apps/desktop/src/renderer/styles/desktop-assistant.css
 apps/desktop/src/renderer/styles/error.css
 apps/desktop/src/renderer/styles/help.css

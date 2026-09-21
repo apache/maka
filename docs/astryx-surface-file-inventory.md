@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.2` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 294 files — blocker 0, reimplementation 0, polish 4, aligned 290.
+**Totals:** 292 files — blocker 0, reimplementation 0, polish 4, aligned 288.
 
 ## Exclusions (explicit)
 
@@ -85,7 +85,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-add-computer-menu.tsx` | other | DropdownMenu, DropdownMenuItem | aligned — uses Astryx (DropdownMenu, DropdownMenuItem) | aligned |
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-button.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, FormLayout, IconButton, Layout, LayoutContent, LayoutFooter, TextArea, Tooltip | aligned — uses Astryx (Button, Dialog, DialogHeader, FormLayout, IconButton, Layout, LayoutContent, LayoutFooter) | aligned |
-| `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-handoff-overlay.tsx` | other | Button, Dialog, DialogHeader, Layout, LayoutContent, LayoutFooter, Text | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent, LayoutFooter, Text) | aligned |
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx` | dialog-overlay | Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, MoreMenu, SegmentedControl, SegmentedControlItem, Selector, Switch, Text, TextArea, TextInput, Tooltip | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx` | other | Button, MoreMenu | aligned — uses Astryx (Button, MoreMenu) | aligned |
 | `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, Layout, LayoutContent, LayoutFooter, Spinner, Text | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent, LayoutFooter, Spinner, Text) | aligned |
@@ -202,7 +201,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/composer.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/custom-pet-companion.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/daily-review.css` | module-hub | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/styles/deep-research.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/desktop-assistant.css` | styles | n/a (css) | off-rhythm control height 30px (Design size) | polish |
 | `apps/desktop/src/renderer/styles/error.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/help.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -259,7 +257,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/attachment-kinds.tsx` | ui-composition | Icon | aligned — uses Astryx (Icon) | aligned |
 | `packages/ui/src/bot-brand-logo.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/capability-audit-strip.tsx` | ui-composition | Banner | aligned — uses Astryx (Banner) | aligned |
-| `packages/ui/src/chat-empty-hero.tsx` | shell-chrome-or-panel | Item | aligned — uses Astryx (Item) | aligned |
+| `packages/ui/src/chat-empty-hero.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/chat-model-switcher.tsx` | shell-chrome-or-panel | Button, Selector, SelectorOption | aligned — uses Astryx (Button, Selector, SelectorOption) | aligned |
 | `packages/ui/src/chat-surface-layout.tsx` | shell-chrome-or-panel | ChatLayout | aligned — uses Astryx (ChatLayout) | aligned |
 | `packages/ui/src/chat-turn.tsx` | shell-chrome-or-panel | Badge, Banner, Button, ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatSystemMessage, ChatTokenizedText, HStack, Icon, IconButton, Spinner, Thumbnail, Timestamp, Token, Tooltip | aligned — uses Astryx (Badge, Banner, Button, ChatMessage, ChatMessageBubble, ChatMessageMetadata, ChatSystemMessage, ChatTokenizedText) | aligned |

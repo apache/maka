@@ -142,7 +142,7 @@ export const ALLOWED = {
     useShellMemoryPill: 1,
     useShellResume: 1,
     useShellRunUpdates: 1,
-    useStableActions: 6,
+    useStableActions: 5,
     useState: 11,
     useTaskSubmissionReadiness: 1,
     useToast: 1,

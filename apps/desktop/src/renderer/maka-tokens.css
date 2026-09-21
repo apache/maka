@@ -1166,8 +1166,7 @@
    no --info hue: "info" is a semantic slot (Banner status), so it paints with
    the accent at 0.24 like its three siblings. It has to be the
    same CONSTRUCTION and not just the same weight — an opaque tint does not
-   compose, so a tinted chip on a tinted panel (deep-research's count pill,
-   plan-mode's in-progress marker) resolves to the parent's exact pixel and
+   compose, so a tinted chip on a tinted panel (plan-mode's in-progress marker) resolves to the parent's exact pixel and
    disappears. Alpha is also what upstream ships this token as (#0082FB33,
    0.20); theme-neutral is what flattens it to an opaque #f1f1f1.
 

@@ -277,7 +277,7 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
     mkdir(path.join(projectSkillRoot, 'project-only'), { recursive: true }),
     mkdir(path.join(projectSkillRoot, 'host-incompatible'), { recursive: true }),
     mkdir(path.join(projectSkillRoot, 'agent-write'), { recursive: true }),
-    mkdir(path.join(projectSkillRoot, 'deep-research-only'), { recursive: true }),
+    mkdir(path.join(projectSkillRoot, 'unavailable-tool'), { recursive: true }),
     mkdir(path.join(workspaceSkillRoot, 'workspace-only'), { recursive: true }),
     mkdir(path.join(userSkillRoot, 'user-only'), { recursive: true }),
   ]);
@@ -303,8 +303,8 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
       'utf8',
     ),
     writeFile(
-      path.join(projectSkillRoot, 'deep-research-only', 'SKILL.md'),
-      `---\nname: Deep Research Only\ndescription: Requires a tool available only in Deep Research mode.\nrequired-tools: [deep_research_status]\n---\n# Deep Research Only`,
+      path.join(projectSkillRoot, 'unavailable-tool', 'SKILL.md'),
+      `---\nname: Unavailable Tool\ndescription: Requires a tool unavailable on this Host.\nrequired-tools: [unavailable_fixture_tool]\n---\n# Unavailable Tool`,
       'utf8',
     ),
     writeFile(
