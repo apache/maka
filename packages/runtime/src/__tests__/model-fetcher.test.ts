@@ -18,22 +18,122 @@
  */
 
 import assert from 'node:assert/strict';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import {
-  fetchProviderModels,
-  ProviderModelDiscoveryHttpError,
-  runConnectionModelDiscoveryEffect,
-} from '../model-fetcher.js';
+import { runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
+import { discoverModels } from './model-discovery-fixture.js';
 
-const servers: Array<{ close(): Promise<void> }> = [];
+import { startJsonServer, respondJson, closeAllJsonServers } from './conformance-harness.js';
 
-after(async () => {
-  await Promise.all(servers.map((server) => server.close()));
-});
+after(closeAllJsonServers);
 
-describe('fetchProviderModels', () => {
+describe('model discovery', () => {
+  test('all token metadata adapters preserve valid limits and omit invalid optional limits', async () => {
+    const values = [
+      [undefined, undefined],
+      [null, undefined],
+      ['128000', undefined],
+      [0, undefined],
+      [-1, undefined],
+      [1.5, undefined],
+      [Number.MAX_SAFE_INTEGER + 1, undefined],
+      [1, 1],
+      [128000, 128000],
+      [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+    ] as const;
+    const cases = [
+      {
+        providerType: 'fireworks-ai',
+        row: (id: string, value: unknown) => ({ name: id, contextLength: value }),
+        key: 'models',
+        output: false,
+      },
+      {
+        providerType: 'cohere',
+        row: (id: string, value: unknown) => ({
+          name: id,
+          context_length: value,
+          endpoints: ['chat'],
+        }),
+        key: 'models',
+        output: false,
+      },
+      {
+        providerType: 'openai-compatible',
+        row: (id: string, value: unknown, fallback?: number) => ({
+          id,
+          context_length: value,
+          context_window: fallback,
+          max_tokens: value,
+        }),
+        key: 'data',
+        output: true,
+      },
+      {
+        providerType: 'github-copilot',
+        row: (id: string, value: unknown, fallback?: number) => ({
+          id,
+          model_picker_enabled: true,
+          supported_endpoints: ['/responses'],
+          capabilities: {
+            supports: { tool_calls: true },
+            limits: {
+              max_context_window_tokens: value,
+              max_prompt_tokens: fallback,
+              max_output_tokens: value,
+            },
+          },
+        }),
+        key: 'data',
+        output: true,
+      },
+      {
+        providerType: 'openai-codex',
+        row: (id: string, value: unknown) => ({ slug: id, context_window: value }),
+        key: 'models',
+        output: false,
+      },
+    ] as const;
+    for (const fixture of cases) {
+      const fallbacks =
+        fixture.providerType === 'openai-compatible' || fixture.providerType === 'github-copilot'
+          ? [undefined, 32768]
+          : [undefined];
+      for (const fallback of fallbacks) {
+        const outcome = await runConnectionModelDiscoveryEffect(
+          { providerType: fixture.providerType, baseUrl: 'https://fixture.invalid/v1' },
+          'fixture-key',
+          {
+            fetch: async (input) =>
+              Response.json(
+                new URL(String(input)).pathname === '/v1/accounts'
+                  ? { accounts: [] }
+                  : {
+                      [fixture.key]: values.map(([value], i) =>
+                        fixture.row(`model-${i}`, value, fallback),
+                      ),
+                    },
+              ),
+          },
+        );
+        assert.ok(outcome.ok, fixture.providerType);
+        assert.deepEqual(
+          outcome.models.map(({ id, contextWindow, maxOutputTokens }) => ({
+            id,
+            contextWindow,
+            maxOutputTokens,
+          })),
+          values.map(([, expected], i) => ({
+            id: `model-${i}`,
+            contextWindow: expected ?? fallback,
+            maxOutputTokens: fixture.output ? expected : undefined,
+          })),
+          fixture.providerType,
+        );
+      }
+    }
+  });
+
   test('Cloudflare Workers AI accepts exactly 2,048 models and rejects the first excess item', async () => {
     for (const modelCount of [2_048, 2_049]) {
       let requestCount = 0;
@@ -50,64 +150,25 @@ describe('fetchProviderModels', () => {
         respondJson(response, 200, { success: true, result });
       });
 
-      const request = fetchProviderModels(
+      const request = runConnectionModelDiscoveryEffect(
         {
-          slug: 'cloudflare-workers-ai',
-          name: 'Cloudflare Workers AI',
           providerType: 'cloudflare-workers-ai',
           baseUrl: `${server.url}/client/v4/accounts/account-123/ai/v1`,
           defaultModel: '@cf/example/default',
-          enabled: true,
-          createdAt: 1,
-          updatedAt: 1,
         },
         'cloudflare-api-token',
+        { fetch: globalThis.fetch },
       );
       if (modelCount === 2_048) {
-        assert.equal((await request).length, 2_048);
+        const outcome = await request;
+        assert.ok(outcome.ok);
+        assert.equal(outcome.models.length, 2_048);
         assert.equal(requestCount, 42);
       } else {
-        await assert.rejects(request, /Failed to fetch provider models/);
+        assert.deepEqual(await request, { ok: false, error: { kind: 'invalid_response' } });
         assert.equal(requestCount, 41);
       }
     }
-  });
-
-  test('Cloudflare Workers AI bounds pagination before an oversized catalog can be persisted', async () => {
-    let requestCount = 0;
-    const server = await startJsonServer((_request, response) => {
-      requestCount += 1;
-      respondJson(response, 200, {
-        success: true,
-        result: Array.from({ length: 50 }, (_, index) => ({
-          name: `@cf/example/page-${requestCount}-model-${index}`,
-        })),
-        result_info: {
-          page: requestCount,
-          per_page: 50,
-          count: 50,
-          total_count: 10_000,
-        },
-      });
-    });
-
-    await assert.rejects(
-      fetchProviderModels(
-        {
-          slug: 'cloudflare-workers-ai',
-          name: 'Cloudflare Workers AI',
-          providerType: 'cloudflare-workers-ai',
-          baseUrl: `${server.url}/client/v4/accounts/account-123/ai/v1`,
-          defaultModel: '@cf/example/default',
-          enabled: true,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-        'cloudflare-api-token',
-      ),
-      /Failed to fetch provider models/,
-    );
-    assert.equal(requestCount, 41);
   });
 
   test('Cohere rejects repeated page tokens or excess entries', async () => {
@@ -119,9 +180,11 @@ describe('fetchProviderModels', () => {
         next_page_token: 'same-token',
       });
     });
-    await assert.rejects(
-      fetchProviderModels(cohereConnection(repeated.url), 'cohere-key'),
-      /Failed to fetch provider models/,
+    assert.deepEqual(
+      await runConnectionModelDiscoveryEffect(cohereConnection(repeated.url), 'cohere-key', {
+        fetch: globalThis.fetch,
+      }),
+      { ok: false, error: { kind: 'invalid_response' } },
     );
     assert.equal(repeatedRequests, 2);
 
@@ -133,9 +196,11 @@ describe('fetchProviderModels', () => {
         })),
       });
     });
-    await assert.rejects(
-      fetchProviderModels(cohereConnection(oversized.url), 'cohere-key'),
-      /Failed to fetch provider models/,
+    assert.deepEqual(
+      await runConnectionModelDiscoveryEffect(cohereConnection(oversized.url), 'cohere-key', {
+        fetch: globalThis.fetch,
+      }),
+      { ok: false, error: { kind: 'invalid_response' } },
     );
   });
 
@@ -175,7 +240,7 @@ describe('fetchProviderModels', () => {
       respondWithModels();
     });
 
-    const models = await fetchProviderModels(fireworksConnection(server.url), 'fireworks-key');
+    const models = await discoverModels(fireworksConnection(server.url), 'fireworks-key');
     assert.equal(maxActiveModelRequests, 4);
     assert.equal(models.length, 8);
     assert.ok(models.some(({ id }) => id === 'accounts/team-0/models/second'));
@@ -191,9 +256,13 @@ describe('fetchProviderModels', () => {
         })),
       });
     });
-    await assert.rejects(
-      fetchProviderModels(fireworksConnection(tooManyAccounts.url), 'fireworks-key'),
-      /Failed to fetch provider models/,
+    assert.deepEqual(
+      await runConnectionModelDiscoveryEffect(
+        fireworksConnection(tooManyAccounts.url),
+        'fireworks-key',
+        { fetch: globalThis.fetch },
+      ),
+      { ok: false, error: { kind: 'invalid_response' } },
     );
 
     const tooManyEntries = await startJsonServer((request, response) => {
@@ -209,9 +278,13 @@ describe('fetchProviderModels', () => {
         })),
       });
     });
-    await assert.rejects(
-      fetchProviderModels(fireworksConnection(tooManyEntries.url), 'fireworks-key'),
-      /Failed to fetch provider models/,
+    assert.deepEqual(
+      await runConnectionModelDiscoveryEffect(
+        fireworksConnection(tooManyEntries.url),
+        'fireworks-key',
+        { fetch: globalThis.fetch },
+      ),
+      { ok: false, error: { kind: 'invalid_response' } },
     );
 
     let repeatedRequests = 0;
@@ -227,53 +300,36 @@ describe('fetchProviderModels', () => {
         nextPageToken: 'same-token',
       });
     });
-    await assert.rejects(
-      fetchProviderModels(fireworksConnection(repeatedToken.url), 'fireworks-key'),
-      /Failed to fetch provider models/,
+    assert.deepEqual(
+      await runConnectionModelDiscoveryEffect(
+        fireworksConnection(repeatedToken.url),
+        'fireworks-key',
+        { fetch: globalThis.fetch },
+      ),
+      { ok: false, error: { kind: 'invalid_response' } },
     );
     assert.equal(repeatedRequests, 2);
   });
 
-  test('xAI OAuth preserves discovery HTTP status for auth-failure classification', async () => {
-    const server = await startJsonServer((_request, response) => {
-      respondJson(response, 401, { error: 'invalid_token' });
-    });
-
-    await assert.rejects(
-      fetchProviderModels(
-        {
-          slug: 'xai-oauth',
-          name: 'xAI OAuth',
-          providerType: 'xai-oauth',
-          baseUrl: `${server.url}/v1`,
-          defaultModel: 'grok-4.5',
-          enabled: true,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-        'expired-xai-oauth-token',
-      ),
-      (error: unknown) => error instanceof ProviderModelDiscoveryHttpError && error.status === 401,
-    );
-  });
-
-  test('provider fetch failures throw generalized errors instead of returning fallback models', async () => {
+  test('discovery classifies HTTP authentication failure without secrets or fallback models', async () => {
     const server = await startJsonServer((_request, response) => {
       respondJson(response, 401, {
-        error: 'bad token',
-        authorization: 'Bearer zai-live-secret',
+        authorization: 'Bearer fixture-secret',
+        error: 'invalid_token',
       });
     });
-
-    await assert.rejects(
-      () => fetchProviderModels({ ...zaiConnection(), baseUrl: server.url }, 'zai-live-secret'),
-      (error) => {
-        assert.ok(error instanceof Error);
-        assert.equal(error.message, 'Authentication failed');
-        assert.equal(error.message.includes('zai-live-secret'), false);
-        return true;
-      },
-    );
+    for (const providerType of ['xai-oauth', 'openai-codex', 'zai-coding-plan'] as const) {
+      const outcome = await runConnectionModelDiscoveryEffect(
+        { providerType, baseUrl: server.url },
+        'fixture-secret',
+        { fetch: globalThis.fetch },
+      );
+      assert.deepEqual(
+        outcome,
+        { ok: false, error: { kind: 'auth', statusCode: 401 } },
+        providerType,
+      );
+    }
   });
 
   test('Codex OAuth discovers models from the chatgpt.com/backend-api/codex/models endpoint', async () => {
@@ -291,7 +347,7 @@ describe('fetchProviderModels', () => {
       });
     });
 
-    const models = await fetchProviderModels(
+    const models = await discoverModels(
       {
         slug: 'openai-codex',
         name: 'Codex OAuth',
@@ -325,7 +381,7 @@ describe('fetchProviderModels', () => {
       capturedAccountId = request.headers['chatgpt-account-id'];
       respondJson(response, 200, { models: [{ slug: 'gpt-5.6-sol' }] });
     });
-    await fetchProviderModels(
+    await discoverModels(
       {
         slug: 'openai-codex',
         name: 'Codex OAuth',
@@ -339,28 +395,6 @@ describe('fetchProviderModels', () => {
       token,
     );
     assert.equal(capturedAccountId, 'acct-42');
-  });
-
-  test('Codex OAuth discovery surfaces the HTTP status on auth failure for caller classification', async () => {
-    const server = await startJsonServer((_request, response) => {
-      respondJson(response, 401, { error: 'unauthorized' });
-    });
-    await assert.rejects(
-      fetchProviderModels(
-        {
-          slug: 'openai-codex',
-          name: 'Codex OAuth',
-          providerType: 'openai-codex',
-          baseUrl: server.url,
-          defaultModel: 'gpt-5.6-sol',
-          enabled: true,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-        'codex-oauth-token',
-      ),
-      (err: unknown) => (err as { status?: number }).status === 401,
-    );
   });
 
   test('connection discovery classifies a wholly policy-blocked Copilot catalog as auth', async () => {
@@ -409,7 +443,6 @@ describe('fetchProviderModels', () => {
       );
 
       assert.deepEqual(outcome, { ok: false, error: { kind: 'invalid_response' } });
-      assert.equal(JSON.stringify(outcome).includes(secret), false);
     }
   });
 
@@ -429,7 +462,7 @@ describe('fetchProviderModels', () => {
       });
     });
 
-    const models = await fetchProviderModels(
+    const models = await discoverModels(
       { ...zaiConnection(), baseUrl: server.url },
       'zai-live-secret',
     );
@@ -469,7 +502,7 @@ describe('fetchProviderModels', () => {
       });
     });
 
-    const models = await fetchProviderModels(
+    const models = await discoverModels(
       { ...zaiConnection(), baseUrl: server.url },
       'zai-live-secret',
     );
@@ -482,29 +515,6 @@ describe('fetchProviderModels', () => {
     assert.equal(capabilitiesOf('relay-mixed')?.imageGeneration, true);
   });
 });
-
-async function startJsonServer(
-  handler: (request: IncomingMessage, response: ServerResponse) => void,
-): Promise<{ url: string; close(): Promise<void> }> {
-  const server = createServer(handler);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address === 'object');
-  const control = {
-    url: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      }),
-  };
-  servers.push(control);
-  return control;
-}
-
-function respondJson(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { 'content-type': 'application/json' });
-  response.end(JSON.stringify(body));
-}
 
 function zaiConnection(): LlmConnection {
   return {

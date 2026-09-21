@@ -23,11 +23,20 @@ import { parseHTML } from 'linkedom';
 import { act, createElement, useLayoutEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import { LocaleProvider } from '@maka/ui';
 import {
   ComposerMentionsProvider,
   useComposerMentionsContext,
   type ComposerMentions,
 } from '../../renderer/composer-mentions.js';
+import {
+  ConversationServicesProvider,
+  type ConversationServices,
+} from '../../renderer/features/conversation/index.js';
+import {
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 interface CatalogObservation {
   sessionId: string;
@@ -71,16 +80,31 @@ function installCatalogRenderer(t: TestContext) {
     sessionId: string;
     resolve(skills: InvocableSkillEntry[]): void;
   }> = [];
-  (window as unknown as { maka: unknown }).maka = {
+  const services: ConversationServices = {
+    listMessages: async () => [],
+    cancelMessage: async () => undefined,
+    reconcileMessage: async () => undefined,
+    subscribeChanges: () => () => undefined,
     skills: {
       listInvocable: (sessionId: string) => new Promise<InvocableSkillEntry[]>((resolve) => {
         pending.push({ sessionId, resolve });
       }),
     },
-    sessions: { subscribeChanges: () => () => {} },
-    mcp: { subscribeChanges: () => () => {} },
+    sessions: {
+      readSnapshot: async () => {
+        throw new Error('Session snapshot is not used in catalog tests');
+      },
+    },
+    workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
+    newTasks: {
+      subscribeChanges: () => () => undefined,
+      listInvocableSkills: async () => [],
+      searchFiles: async () => ({ ok: false, reason: 'no_project' }),
+    },
+    mcp: { subscribeChanges: () => () => undefined },
   };
 
+  const sessionCatalog = createSessionCatalogController();
   const observations: CatalogObservation[] = [];
   function Consumer({ sessionId }: { sessionId: string }) {
     const mentions = useComposerMentionsContext();
@@ -120,11 +144,20 @@ function installCatalogRenderer(t: TestContext) {
       return pending.length;
     },
     async render(sessionId: string, skillCatalogRevision = 0, projectPath?: string) {
-      await act(() => root.render(createElement(ComposerMentionsProvider, {
-        sessionId,
-        projectPath,
-        skillCatalogRevision,
-        children: createElement(Consumer, { sessionId }),
+      await act(() => root.render(createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(ConversationServicesProvider, {
+          services,
+          children: createElement(SessionCatalogContext.Provider, {
+            value: sessionCatalog,
+            children: createElement(ComposerMentionsProvider, {
+              sessionId,
+              projectPath,
+              skillCatalogRevision,
+              children: createElement(Consumer, { sessionId }),
+            }),
+          }),
+        }),
       })));
     },
     async settleNext(sessionId: string, skills: InvocableSkillEntry[]) {

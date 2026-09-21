@@ -82,6 +82,8 @@ export interface RuntimeHostDesktopManager {
     targetId: number,
   ): void;
   unobserveSession(observerId: string): Promise<void>;
+  start(): Promise<void>;
+  retryLocalStart(): Promise<void>;
   enable(
     profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
     onHostStatus?: (status: HostStatusResult) => void,
@@ -250,33 +252,35 @@ interface DesktopOwnedProcessEvidence {
   state: 'running' | 'exited' | 'unknown';
 }
 
-export async function startRuntimeHostDesktopManager(
+export interface RuntimeHostDesktopManagerOptions {
+  startCandidate?: (
+    input: DesktopRuntimeHostCandidateStartInput,
+    observationRegistry: RuntimeHostSessionObservationRegistry,
+  ) => Promise<DesktopRuntimeHostCandidateStartResult>;
+  onFatalError?: (error: Error, target: ResolvedRuntimeHostProfile) => void;
+  handoffSurface?: OpenHostHandoffSurface;
+  waitForHostExit?: (pid: number) => Promise<void>;
+  forceTerminateObservedHost?: typeof forceTerminateObservedRegisteredRuntimeHost;
+  resolveLocalHostReplacement?: (
+    registration: HostRegistration,
+    signal: AbortSignal,
+  ) => Promise<RuntimeHostLocalReplacement | undefined>;
+  recoverLocalHost?: (signal: AbortSignal) => Promise<boolean>;
+  resolveStartupRepair?: (error: Error, signal: AbortSignal) => Promise<HostHandoffBlocker | undefined>;
+  resolveWslHostHandoff?: (profile: Extract<ResolvedRuntimeHostProfile['profile'], { kind: 'environment' }>, error: RuntimeHostRemoteCompatibilityError, signal: AbortSignal) => Promise<HostHandoffBlocker>;
+  reconnectBackoff?: RuntimeHostReconnectBackoff;
+  pairingFinalizationTimeoutMs?: number;
+  onTargetStateChanged?: (state: RuntimeHostDesktopTargetState) => void;
+  onTargetRemoved?: (state: RuntimeHostDesktopTargetState) => void;
+  onDefaultProfileChanged?: (profileId: string) => void;
+}
+
+export function createRuntimeHostDesktopManager(
   input: DesktopRuntimeHostCandidateStartInput,
-  options: {
-    startCandidate?: (
-      input: DesktopRuntimeHostCandidateStartInput,
-      observationRegistry: RuntimeHostSessionObservationRegistry,
-    ) => Promise<DesktopRuntimeHostCandidateStartResult>;
-    onFatalError?: (error: Error, target: ResolvedRuntimeHostProfile) => void;
-    handoffSurface?: OpenHostHandoffSurface;
-    waitForHostExit?: (pid: number) => Promise<void>;
-    forceTerminateObservedHost?: typeof forceTerminateObservedRegisteredRuntimeHost;
-    resolveLocalHostReplacement?: (
-      registration: HostRegistration,
-      signal: AbortSignal,
-    ) => Promise<RuntimeHostLocalReplacement | undefined>;
-    recoverLocalHost?: (signal: AbortSignal) => Promise<boolean>;
-    resolveStartupRepair?: (error: Error, signal: AbortSignal) => Promise<HostHandoffBlocker | undefined>;
-    resolveWslHostHandoff?: (profile: Extract<ResolvedRuntimeHostProfile['profile'], { kind: 'environment' }>, error: RuntimeHostRemoteCompatibilityError, signal: AbortSignal) => Promise<HostHandoffBlocker>;
-    reconnectBackoff?: RuntimeHostReconnectBackoff;
-    pairingFinalizationTimeoutMs?: number;
-    onTargetStateChanged?: (state: RuntimeHostDesktopTargetState) => void;
-    onTargetRemoved?: (state: RuntimeHostDesktopTargetState) => void;
-    onDefaultProfileChanged?: (profileId: string) => void;
-  } = {},
-): Promise<RuntimeHostDesktopManager> {
+  options: RuntimeHostDesktopManagerOptions = {},
+): RuntimeHostDesktopManager {
   if (input.profileTarget) throw new Error('Desktop Runtime Host manager must start with Local');
-  const manager = new RuntimeHostDesktopManagerImpl(
+  return new RuntimeHostDesktopManagerImpl(
     input,
     options.startCandidate ?? startDesktopRuntimeHostCandidate,
     options.onFatalError ?? ((error) => console.error('[runtime-host] reconnect failed:', error)),
@@ -293,6 +297,13 @@ export async function startRuntimeHostDesktopManager(
     options.onTargetRemoved,
     options.onDefaultProfileChanged,
   );
+}
+
+export async function startRuntimeHostDesktopManager(
+  input: DesktopRuntimeHostCandidateStartInput,
+  options: RuntimeHostDesktopManagerOptions = {},
+): Promise<RuntimeHostDesktopManager> {
+  const manager = createRuntimeHostDesktopManager(input, options);
   await manager.start();
   return manager;
 }
@@ -368,11 +379,51 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       local.lifecycle = await this.#startLifecycle(local, true);
       this.#activate(local);
     } catch (error) {
-      local.valid = false;
-      await this.#closeObservations(local.observations);
-      this.#ipcMain.close();
-      throw error;
+      // A failed first connect degrades the Local target instead of taking the
+      // manager down: the renderer and IPC stay up, and retryLocalStart can
+      // drive a fresh attempt.
+      await this.#markUnavailable(local, error);
     }
+  }
+
+  retryLocalStart(): Promise<void> {
+    return this.#mutateTarget(LOCAL_RUNTIME_HOST_PROFILE.id, async (connectionSignal) => {
+      const existing = this.#requireTarget(LOCAL_RUNTIME_HOST_PROFILE.id);
+      if (existing.valid) return;
+      this.#targets.delete(LOCAL_RUNTIME_HOST_PROFILE.id);
+      existing.unsubscribeLifecycle?.();
+      existing.unsubscribeRoutes?.();
+      this.#ipcMain.deactivate(existing.epoch);
+      try {
+        await existing.lifecycle?.close();
+      } finally {
+        await this.#closeObservations(existing.observations);
+      }
+      const local = this.#createTarget(this.#baseInput);
+      this.#targets.set(LOCAL_RUNTIME_HOST_PROFILE.id, local);
+      this.#publishState(local, {
+        epoch: local.epoch,
+        target: local.target,
+        readiness: 'connecting',
+      });
+      try {
+        local.lifecycle = await this.#startLifecycle(local, false, connectionSignal);
+        if (this.#closed) {
+          await local.lifecycle.close();
+          throw new Error('Desktop Runtime Host manager is closed');
+        }
+        if (!local.valid) {
+          await local.lifecycle.close();
+          throw local.state.readiness === 'unavailable'
+            ? local.state.error
+            : new Error('Desktop Runtime Host target became unavailable during startup');
+        }
+        this.#activate(local);
+      } catch (error) {
+        await this.#markUnavailable(local, error);
+        throw error;
+      }
+    });
   }
 
   async handleBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
@@ -665,20 +716,27 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       }
       this.#activate(target);
     } catch (error) {
-      const alreadyUnavailable = target.state.readiness === 'unavailable';
-      target.valid = false;
-      this.#ipcMain.deactivate(target.epoch);
-      await this.#closeObservations(target.observations);
-      if (!alreadyUnavailable) {
-        this.#publishState(target, {
-          epoch: target.epoch,
-          target: target.target,
-          readiness: 'unavailable',
-          ...(target.hostId ? { hostId: target.hostId } : {}),
-          error: error instanceof Error ? error : new Error(String(error)),
-        });
-      }
+      await this.#markUnavailable(target, error);
       throw error;
+    }
+  }
+
+  async #markUnavailable(
+    target: DesktopRuntimeHostTargetGeneration,
+    error: unknown,
+  ): Promise<void> {
+    const alreadyUnavailable = target.state.readiness === 'unavailable';
+    target.valid = false;
+    this.#ipcMain.deactivate(target.epoch);
+    await this.#closeObservations(target.observations);
+    if (!alreadyUnavailable) {
+      this.#publishState(target, {
+        epoch: target.epoch,
+        target: target.target,
+        readiness: 'unavailable',
+        ...(target.hostId ? { hostId: target.hostId } : {}),
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
     }
   }
 

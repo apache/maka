@@ -58,7 +58,6 @@ import {
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type SetCredentialInput,
-  type MigrateSystemSeedInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
   type UpdateNetworkProxyInput,
@@ -469,10 +468,6 @@ export class RuntimePolicyCoordinator {
     return this.inLane(async (root) =>
       this.projectCatalogMutation(root, await this.catalog.setDefaultTarget(root, input)),
     );
-  }
-
-  migrateSystemSeed(input: MigrateSystemSeedInput) {
-    return this.inLane((root) => this.catalog.migrateSystemSeed(root, input));
   }
 
   setCredential(rawInput: SetCredentialInput) {
@@ -2438,7 +2433,12 @@ function assertConnectionIsWritable(connection: { readonly providerType: Provide
 }
 
 function ticketLabel(kind: ConnectionTicketKind): string {
-  return kind === 'model_fetch' ? 'model fetch' : 'connection test';
+  switch (kind) {
+    case 'model_fetch':
+      return 'model fetch';
+    case 'connection_test':
+      return 'connection test';
+  }
 }
 
 function networkProxyCredentialLocator(): Extract<CredentialLocator, { scope: 'network_proxy' }> {

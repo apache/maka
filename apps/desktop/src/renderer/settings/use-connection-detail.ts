@@ -516,7 +516,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
         // The backend probes the enabled models first, then the provider
-        // fallbacks (opencode-free tries each in turn until one answers). When
+        // fallback. When
         // the model that actually answered isn't one the user enabled, a plain
         // "connection succeeded · <model>" reads as if their selection never
         // took — and hides that their chosen model is currently down. Name both

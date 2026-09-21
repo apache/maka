@@ -159,6 +159,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     sessionId: string,
   ) => void | Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
+  readonly transcriptHistoryBytes?: number;
   readonly renderer?: {
     send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
   };
@@ -657,6 +658,7 @@ export async function createDesktopRuntimeHostCandidate(
     };
     const sessionObserver = new RuntimeHostSessionObserver({
       client,
+      transcriptHistoryBytes: deps.transcriptHistoryBytes,
       cacheTranscript: (snapshot) => {
         if (target.access === 'owner') deps.cacheTranscript?.(scope, snapshot);
       },

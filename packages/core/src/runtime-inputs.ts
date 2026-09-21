@@ -53,14 +53,8 @@ export interface CreateSessionInput {
   projectId?: string | null;
   /** If omitted, runtime auto-derives a placeholder; users may rename later. */
   name?: string;
-  /**
-   * No `backend`: a live build has exactly one, so the field carried no choice
-   * — only the chance of writing the retired `'fake'` into a new row (#3211).
-   * The store stamps every new header instead. Sessions derived from an older
-   * one (branch, revision, subagent) no longer inherit its backend; a copy of a
-   * legacy row is a real session whose connection slug resolves to nothing,
-   * which is what the readiness projection already says about it.
-   */
+  /** Named plugin executor. When present, model fields are retained only as display placeholders. */
+  executorId?: string;
   /** Immutable Connection entity identity. Omitted only while copying legacy state. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
@@ -105,7 +99,9 @@ export interface CreateSessionInput {
  * type-checks against `bridge-contract.d.ts` alone, so a field added on one
  * side and not the other is a type error nowhere.
  */
-export type CreateSessionRequestInput = Partial<CreateSessionInput> & {
+export type CreateSessionRequestInput = Omit<Partial<CreateSessionInput>, 'thinkingLevel'> & {
+  /** `null` explicitly bypasses the configured per-model default. */
+  thinkingLevel?: ThinkingLevel | null;
   mode?: SessionStartMode;
 };
 
@@ -128,11 +124,6 @@ export interface UserMessageInput extends MessageContent {
   parentSessionId?: string;
   /** What triggered this turn, when it is not a direct user message. */
   origin?: TurnOrigin;
-}
-
-export interface RegenerateTurnInput {
-  sourceTurnId: string;
-  turnId?: string;
 }
 
 export interface BranchFromTurnInput {

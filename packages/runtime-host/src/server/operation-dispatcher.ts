@@ -20,6 +20,7 @@
 import type { RootTurnAdmissionAuthorization } from '@maka/storage/execution-stores';
 import {
   HOST_OPERATION_SPECS,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   decodeOperationOutcome,
   type HostOperationErrorCode,
   type OperationInput,
@@ -30,6 +31,7 @@ import {
   type ResponseFrame,
   type ResponseFrameFor,
 } from '../protocol/index.js';
+import { usageScreenMessageBytes } from '../protocol/usage-screen.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { HOST_RESOURCE_OPERATION_SPECS } from '../protocol/host-resources.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.js';
@@ -42,7 +44,6 @@ import { CONFIGURATION_OPERATION_SPECS } from '../protocol/configuration.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from '../protocol/connection-effects.js';
 import { CONTEXT_OPERATION_SPECS } from '../protocol/context.js';
 import { DAILY_REVIEW_OPERATION_SPECS } from '../protocol/daily-review.js';
-import { DEEP_RESEARCH_OPERATION_SPECS } from '../protocol/deep-research.js';
 import { EXECUTION_INSPECT_OPERATION_SPECS } from '../protocol/execution-inspect.js';
 import { EXTERNAL_SESSION_OPERATION_SPECS } from '../protocol/external-session.js';
 import { SESSION_BUNDLE_OPERATION_SPECS } from '../protocol/session-bundle.js';
@@ -70,6 +71,7 @@ import { SKILL_CATALOG_OPERATION_SPECS } from '../protocol/skill-catalog.js';
 import { TURN_OPERATION_SPECS } from '../protocol/turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from '../protocol/usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from '../protocol/web-search.js';
+import { RECALL_OPERATION_SPECS } from '../protocol/recall.js';
 import { WORKHUB_COORDINATION_OPERATION_SPECS } from '../protocol/workhub-coordination.js';
 import { PLUGIN_PLATFORM_OPERATION_SPECS } from '../protocol/plugin-platform.js';
 import { boundedFailureDiagnostic } from './failure-diagnostic.js';
@@ -153,7 +155,6 @@ export type ClientCapabilityOperationKey = keyof typeof CLIENT_CAPABILITY_OPERAT
 export type ScheduledTaskOperationKey = keyof typeof SCHEDULED_TASK_OPERATION_SPECS;
 export type PlanOperationKey = keyof typeof PLAN_OPERATION_SPECS;
 export type ProjectCatalogOperationKey = keyof typeof PROJECT_CATALOG_OPERATION_SPECS;
-export type DeepResearchOperationKey = keyof typeof DEEP_RESEARCH_OPERATION_SPECS;
 export type DailyReviewOperationKey = keyof typeof DAILY_REVIEW_OPERATION_SPECS;
 export type WebSearchOperationKey = keyof typeof WEB_SEARCH_OPERATION_SPECS;
 export type NetworkProxyOperationKey = keyof typeof NETWORK_PROXY_OPERATION_SPECS;
@@ -222,9 +223,10 @@ export type ProjectCatalogOperationHandlerMap = Pick<
   OperationHandlerMap,
   ProjectCatalogOperationKey
 >;
-export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
 export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyReviewOperationKey>;
 export type WebSearchOperationHandlerMap = Pick<OperationHandlerMap, WebSearchOperationKey>;
+export type RecallOperationKey = keyof typeof RECALL_OPERATION_SPECS;
+export type RecallOperationHandlerMap = Pick<OperationHandlerMap, RecallOperationKey>;
 export type NetworkProxyOperationHandlerMap = Pick<OperationHandlerMap, NetworkProxyOperationKey>;
 export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, ConfigurationOperationKey>;
 export type WorkHubCoordinationOperationHandlerMap = Pick<
@@ -379,7 +381,7 @@ async function dispatchTypedOperation<K extends OperationKey>(
       'Runtime Host operation failed',
     ) as ResponseFrameFor<K>;
   }
-  return outcome.ok
+  const response: ResponseFrameFor<K> = outcome.ok
     ? {
         requestId: request.requestId,
         operation: request.operation,
@@ -392,4 +394,18 @@ async function dispatchTypedOperation<K extends OperationKey>(
         ok: false,
         error: outcome.error,
       };
+  const frame = response as ResponseFrame;
+  if (
+    frame.operation === 'usage.query' &&
+    frame.ok &&
+    (frame.result.kind === 'screen' || frame.result.kind === 'activity') &&
+    usageScreenMessageBytes(frame.requestId, frame.result) > RUNTIME_HOST_MAX_MESSAGE_BYTES
+  ) {
+    return {
+      ...response,
+      ok: true,
+      result: { kind: 'screen_response_too_large', section: 'message' },
+    } as ResponseFrameFor<K>;
+  }
+  return response;
 }

@@ -39,6 +39,7 @@ import { act, createElement } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { useAppShellSessionUiState } from '../../renderer/features/conversation/index.js';
+import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 import type { LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
@@ -252,9 +253,10 @@ describe('composer first-send cleanup', () => {
     assert.equal(settingsUpdates, 0);
   });
 
-  it('does not re-send a consumed permission choice on the next task', async () => {
+  it('retains the permission choice across refused and throwing first sends, then consumes it on success', async () => {
     const createInputs: unknown[] = [];
     let cleared = 0;
+    const removed: string[] = [];
     const restoreWindow = installWindow({
       newTasks: {
         create: async (_target: unknown, input: unknown) => {
@@ -263,20 +265,19 @@ describe('composer first-send cleanup', () => {
         },
       },
       sessions: {
-        submitMessage: async () => ({
-          ok: true,
-          attachments: [],
-          skillInvocation: { loaded: [], failed: [] },
-        }),
+        remove: async (id: string) => { removed.push(id); },
+        submitMessage: async () => {
+          if (createInputs.length === 1) {
+            return { ok: false, reason: 'skill_invocation_failed', skillInvocation: { loaded: [], failed: [] } };
+          }
+          if (createInputs.length === 2) throw new Error('First submission failed');
+          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
+        },
       },
     });
 
     try {
-      // The choice is keyed by Host/project target, not by draft, so task B on
-      // the same target sees whatever task A left behind. Consuming it on a
-      // successful create is what keeps a one-task elevation from becoming a
-      // standing one.
-      let choice: 'bypass' | undefined = 'bypass';
+      let choice: 'ask' | undefined = 'ask';
       const deps = () => ({
         ...createActionsDeps(),
         newChatPermissionChoice: choice,
@@ -285,15 +286,24 @@ describe('composer first-send cleanup', () => {
           choice = undefined;
         },
       });
-      assert.equal(await createAppShellChatActions(deps()).send('task A'), true);
+      assert.equal(await createAppShellChatActions(deps()).send('task A'), false);
+      assert.equal(choice, 'ask');
+      assert.deepEqual(removed, ['session-1']);
+      assert.equal(await createAppShellChatActions(deps()).send('retry task A'), false);
+      assert.equal(choice, 'ask');
+      assert.deepEqual(removed, ['session-1', 'session-2']);
+      assert.equal(await createAppShellChatActions(deps()).send('retry task A again'), true);
+      assert.equal(choice, undefined);
       assert.equal(await createAppShellChatActions(deps()).send('task B'), true);
     } finally {
       restoreWindow();
     }
 
     assert.equal(cleared, 1);
-    assert.equal((createInputs[0] as { permissionMode?: unknown }).permissionMode, 'bypass');
-    assert.ok(!('permissionMode' in (createInputs[1] as Record<string, unknown>)));
+    assert.equal((createInputs[0] as { permissionMode?: unknown }).permissionMode, 'ask');
+    assert.equal((createInputs[1] as { permissionMode?: unknown }).permissionMode, 'ask');
+    assert.equal((createInputs[2] as { permissionMode?: unknown }).permissionMode, 'ask');
+    assert.ok(!('permissionMode' in (createInputs[3] as Record<string, unknown>)));
   });
 
   it('creates the first session on the selected Runtime Host and project', async () => {
@@ -632,22 +642,9 @@ describe('composer first-send cleanup', () => {
     assert.equal(resolved, 0);
   });
 
-  it('cancels restoration and accepts a message while latest history catches up in the background', async () => {
-    const latest = deferred<void>();
+  it('cancels restoration and follows latest before accepting a message', async () => {
     const order: string[] = [];
     const activeIdRef = { current: 'existing-session' as string | undefined };
-    const transcript = {
-      store: {
-        sessionId: 'existing-session',
-        range: () => ({ sessionId: 'existing-session', hasNewer: false }),
-        snapshot: () => ({ messages: [] }),
-      },
-      async loadLatest() {
-        order.push('latest');
-        await latest.promise;
-      },
-    } as unknown as DesktopTranscriptRangeController;
-    const transcriptRangeRef = { current: transcript as DesktopTranscriptRangeController | undefined };
     const restoreWindow = installWindow({
       sessions: {
         submitMessage: async () => {
@@ -661,17 +658,14 @@ describe('composer first-send cleanup', () => {
       const sending = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
-        transcriptRangeRef,
         onFollowLatest: (sessionId) => prepareTranscriptForSend({
-          sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
-          cancel: () => { order.push('cancel-restore'); }, followLatest: () => {},
+          sessionId, currentSessionId: activeIdRef,
+          cancel: () => { order.push('cancel-restore'); },
+          followLatest: () => { order.push('follow-latest'); },
         }),
       }).send('hello');
-      await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(order, ['cancel-restore', 'latest', 'send']);
       assert.equal(await sending, true);
-      latest.resolve();
-      assert.deepEqual(order, ['cancel-restore', 'latest', 'send']);
+      assert.deepEqual(order, ['cancel-restore', 'follow-latest', 'send']);
     } finally {
       restoreWindow();
     }
@@ -720,9 +714,10 @@ describe('composer first-send cleanup', () => {
     } as unknown as DesktopTranscriptRangeController;
     const { root } = installReactRenderer();
     let publication!: ReturnType<typeof useAppShellSessionUiState>['publication'];
+    const catalog = createSessionCatalogController();
     function Probe(): null {
       publication = useAppShellSessionUiState(
-        [], undefined, deps.activeIdRef,
+        catalog, undefined, deps.activeIdRef,
         (_sessionId, _messages, _controller: DesktopTranscriptRangeController) => true,
       ).publication;
       return null;
@@ -746,49 +741,6 @@ describe('composer first-send cleanup', () => {
     }
   });
 
-  for (const initialized of [false, true]) {
-  it(`does not navigate the previous Session controller (${initialized ? 'initialized' : 'opening'}) while sending`, async () => {
-    const submissions: string[] = [];
-    let latestReads = 0;
-    const transcript = {
-      store: {
-        sessionId: 'previous-session',
-        range: () => {
-          if (!initialized) throw new Error('Desktop transcript range is not initialized');
-          return { sessionId: 'previous-session' };
-        },
-      },
-      loadLatest: async () => { latestReads += 1; },
-    } as unknown as DesktopTranscriptRangeController;
-    const restoreWindow = installWindow({
-      sessions: {
-        submitMessage: async (sessionId: string) => {
-          submissions.push(sessionId);
-          return { ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } };
-        },
-      },
-    });
-    const activeIdRef = { current: 'selected-session' };
-    const transcriptRangeRef = { current: transcript };
-    try {
-      const result = await createAppShellChatActions({
-        ...createActionsDeps(),
-        activeIdRef,
-        transcriptRangeRef,
-        onFollowLatest: (sessionId) => prepareTranscriptForSend({
-          sessionId, currentSessionId: activeIdRef, controller: transcriptRangeRef,
-          cancel: () => {},
-          followLatest: (sessionId) => { assert.equal(sessionId, 'selected-session'); },
-        }),
-      }).send('hello');
-      assert.equal(result, true);
-      assert.deepEqual(submissions, ['selected-session']);
-      assert.equal(latestReads, 0, 'the previous Session must not be navigated');
-    } finally {
-      restoreWindow();
-    }
-  });
-  }
 });
 /**
  * #1433 round 5: the failure feedback for a send is addressed to the surface

@@ -598,6 +598,40 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
+  test('preserves opaque nested call and step identities in subscription tool events', () => {
+    const parentId = 'p'.repeat(128);
+    const frame = {
+      kind: 'subscription.session_event',
+      hostEpoch: 'epoch',
+      subscriptionId: 'subscription',
+      sequence: 1,
+      sessionId: 'session',
+      runId: 'run',
+      event: {
+        type: 'tool_start',
+        id: 'event',
+        turnId: 'turn',
+        ts: 1,
+        toolName: 'mcp__desktop_workhub__control',
+        toolUseId: `${parentId}:nested:00000000-0000-4000-8000-000000000001`,
+        stepId: `${parentId}:nested`,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(frame), frame);
+    for (const field of ['toolUseId', 'stepId']) {
+      for (const value of ['', 'x'.repeat(257), ' leading', 'trailing ', 'control\u0000']) {
+        assert.throws(
+          () => decodeHostFrame({ ...frame, event: { ...frame.event, [field]: value } }),
+          isInvalidFrame,
+        );
+      }
+    }
+    assert.throws(
+      () => decodeHostFrame({ ...frame, event: { ...frame.event, turnId: 'turn:nested' } }),
+      isInvalidFrame,
+    );
+  });
+
   test('decodes only privacy-normalized bounded subscription live frames', () => {
     const envelope = {
       kind: 'subscription.session_event' as const,
@@ -1796,43 +1830,6 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.throws(() => decodeHostFrame(oversized), isInvalidFrame);
-  });
-
-  test('decodes a closed regenerate identity without accepting replacement content', () => {
-    assert.deepEqual(
-      decodeClientFrame({
-        requestId: 'request-regenerate',
-        operation: 'turn.regenerate',
-        input: {
-          sessionId: 'session-1',
-          sourceTurnId: 'turn-source',
-          turnId: 'turn-regenerated',
-        },
-      }),
-      {
-        requestId: 'request-regenerate',
-        operation: 'turn.regenerate',
-        input: {
-          sessionId: 'session-1',
-          sourceTurnId: 'turn-source',
-          turnId: 'turn-regenerated',
-        },
-      },
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          requestId: 'request-regenerate',
-          operation: 'turn.regenerate',
-          input: {
-            sessionId: 'session-1',
-            sourceTurnId: 'turn-source',
-            turnId: 'turn-regenerated',
-            content: { text: 'replacement' },
-          },
-        }),
-      isInvalidFrame,
-    );
   });
 
   test('bounds canonical MessageContent attachments, directory references and quotes', () => {

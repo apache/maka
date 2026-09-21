@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { useRef } from 'react';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -26,6 +27,7 @@ import {
 } from '@maka/core/settings';
 import {
   useSessionSettingIntent as useSharedSessionSettingIntent,
+  type SessionSettingIntentCatalog,
 } from '@maka/ui';
 import {
   equalSessionModelConfigurationIntent,
@@ -34,7 +36,7 @@ import {
   type SessionModelConfigurationIntent,
   type SessionModelTarget,
 } from './session-model-configuration-intent.js';
-import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
+import type { SessionCatalogController } from '../../application/contracts/session-catalog/session-catalog-state.js';
 import { useSessionSettingsServices } from './services-context.js';
 
 type SessionSettingValues = {
@@ -45,10 +47,9 @@ type SessionSettingValues = {
 };
 
 export function useSessionSettingIntent<Owner extends { sessionId?: string }>(input: {
-  catalogRevision: number;
+  catalog: SessionCatalogController;
   isActiveSession(sessionId: string): boolean;
-  sessions: readonly DesktopSessionSummary[];
-  newTaskPermissionMode: ChatDefaultPermissionMode;
+  newSessionPermissionMode: ChatDefaultPermissionMode;
   refreshCatalog(): Promise<unknown>;
   saveComposerDefaults(model: SessionModelTarget): void;
   writeFailureCopy(
@@ -75,9 +76,14 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
     input.showSessionError(sessionId, failure.title, failure.description);
   };
   const catalogSessionRevision = (sessionId: string) =>
-    input.sessions.find((session) => session.id === sessionId)?.revision;
+    input.catalog.getState().sessions.find((session) => session.id === sessionId)?.revision;
+  const catalogRef = useRef<SessionSettingIntentCatalog | null>(null);
+  catalogRef.current ??= {
+    revision: () => input.catalog.getState().revision,
+    subscribeChanged: input.catalog.subscribe,
+  };
   const intent = useSharedSessionSettingIntent<SessionSettingValues>({
-    catalogRevision: input.catalogRevision,
+    catalog: catalogRef.current,
     refreshCatalog: input.refreshCatalog,
     channels: {
       modelConfiguration: {
@@ -142,7 +148,7 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
       intent.request('modelConfiguration', sessionId, modelConfigurationIntentForModel(modelTarget)),
     setSessionThinkingLevel: (sessionId: string, thinkingLevel: ThinkingLevel | null) => {
       const pending = intent.overlayByChannel.modelConfiguration[sessionId];
-      const session = input.sessions.find((candidate) => candidate.id === sessionId);
+      const session = input.catalog.getState().sessions.find((candidate) => candidate.id === sessionId);
       const currentModelTarget = session?.llmConnectionId
         ? {
             llmConnectionId: session.llmConnectionId,
@@ -161,8 +167,8 @@ export function useSessionSettingIntent<Owner extends { sessionId?: string }>(in
       const sessionId = owner.sessionId;
       const overlay = sessionId ? intent.overlayByChannel.permissionMode[sessionId] : undefined;
       const currentMode = sessionId
-        ? overlay ?? input.sessions.find((session) => session.id === sessionId)?.permissionMode
-        : input.newTaskPermissionMode;
+        ? overlay ?? input.catalog.getState().sessions.find((session) => session.id === sessionId)?.permissionMode
+        : input.newSessionPermissionMode;
       if (currentMode === mode) {
         return sessionId && overlay !== undefined
           ? intent.request('permissionMode', sessionId, mode)

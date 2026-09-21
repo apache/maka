@@ -278,10 +278,6 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.updateQueueEntry('fork', 'entry-3', 4, 'updated');
     await services.sideChat.reorderQueueEntries('fork', ['entry-3', 'entry-2']);
     await services.sideChat.setPermissionMode('fork', 'ask');
-    await services.sideChat.regenerateTurn('fork', {
-      sourceTurnId: 'turn-2',
-      turnId: 'turn-3',
-    });
     await services.sideChat.respondToSandboxBoundary('fork', {} as never);
     await services.sideChat.respondToClientCapability('fork', {} as never);
     await services.sideChat.respondToUserQuestion('fork', {} as never);
@@ -339,7 +335,6 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.updateQueueEntry',
         'sessions.reorderQueueEntries',
         'sessions.setPermissionMode',
-        'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',
         'sessions.respondToClientCapability',
         'sessions.respondToUserQuestion',

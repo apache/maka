@@ -73,21 +73,18 @@ import type {
 } from './session-continuity-service.js';
 import {
   createSessionTranscriptBootstrap,
-  prepareSessionTranscriptOverlay,
   readSessionTranscriptPage,
   type SubscriberTranscriptState,
   TranscriptPageRequestError,
   updateSubscriberTranscriptHighWater,
 } from './session-transcript-pager.js';
-import {
-  ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
-  type SessionTranscriptReader,
-} from './session-transcript-reader.js';
+import type { SessionTranscriptReader } from './session-transcript-reader.js';
 import { projectSharedSessionMessageContent } from './shared-session-transcript.js';
 
 const MAX_CONNECTION_SUBSCRIPTIONS = 16;
 const MAX_SUBSCRIBER_QUEUED_FRAMES = 32;
 const MAX_SUBSCRIBER_QUEUED_BYTES = 256 * 1024;
+const ASSISTANT_BACKLOG_CHUNK_CHARACTERS = 8 * 1024;
 
 export type { CanonicalSessionProjection } from './canonical-session-projection.js';
 
@@ -118,7 +115,6 @@ interface SessionProjectionState {
   revision: number;
   subscribers: Map<string, Subscriber>;
   assistantStreams: Map<string, ActiveAssistantStream>;
-  transcriptOverlay?: CachedTranscriptOverlay;
   /**
    * Latest live tool_result_preview per toolUseId for the active turn.
    * Replace semantics; cleared on tool_result and terminal publication.
@@ -148,7 +144,6 @@ interface ConnectionState {
   sink: SessionContinuityFrameSink;
   subscriptionIds: Set<string>;
   pendingOpenCount: number;
-  readonly closed: AbortController;
 }
 
 interface QueuedSubscriptionFrame {
@@ -176,47 +171,24 @@ interface Subscriber {
   ptyInterests: Set<string>;
   terminalQueued: boolean;
   transcript?: SubscriberTranscriptState;
-  retainedTranscriptOverlay?: RetainedTranscriptOverlay;
+  /**
+   * Streams that were already running when this subscriber opened. Their text
+   * is paid out as the queue drains, so a long stream cannot overflow the queue.
+   */
+  assistantBacklog: Map<string, AssistantBacklog>;
+  /**
+   * Work that arrived while a backlog was still unpaid. A subscriber has one
+   * delivery order, so anything produced after the text it is catching up on
+   * waits here instead of overtaking it.
+   */
+  deferred: Array<() => void>;
 }
 
-interface RetainedTranscriptOverlay {
-  readonly messages: readonly Buffer[];
-  readonly bytes: number;
-  references: number;
-}
-
-interface CachedTranscriptOverlay {
-  readonly throughSequence: number | null;
-  readonly prepared: Promise<RetainedTranscriptOverlay>;
-  pendingConsumers: number;
-  cancelPreparation(): void;
-}
-
-interface TranscriptOverlayPreparationWaiter {
-  cancelled: boolean;
-  granted: boolean;
-  resolve(release: () => void): void;
-  reject(error: Error): void;
-}
-
-interface TranscriptOverlayPreparationPermit {
-  readonly waiter: TranscriptOverlayPreparationWaiter;
-  take(): () => void;
-  release(): void;
-}
-
-const MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES = 64 * 1024 * 1024;
-const MAX_TRANSCRIPT_OVERLAY_PREPARATION_WAITERS = 64;
-// Preparation can retain the active projection, durable reconciliation, and
-// final encoded snapshot at the same time; charge all three to the Host budget.
-const MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES = ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES * 3;
-
-class TranscriptOverlayCapacityError extends Error {
-  readonly name = 'TranscriptOverlayCapacityError';
-}
-
-class TranscriptOverlayPreparationRequired extends Error {
-  readonly name = 'TranscriptOverlayPreparationRequired';
+interface AssistantBacklog {
+  /** Characters of the stream this subscriber has been sent. */
+  sent: number;
+  /** Set when the stream completed before the subscriber caught up. */
+  completion?: { runId: string; stream: ActiveAssistantStream; interrupted?: true };
 }
 
 interface PendingRefresh {
@@ -277,23 +249,18 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             error: { code: 'not_found', message: 'Session subscription was not found' },
           };
     },
-    'session.transcript.page': (input, context) =>
-      this.#readTranscriptPage(context.connectionId, input),
-    'session.transcript.overlay.release': async (input, context) => {
-      const existing = this.#subscriptions.get(input.subscriptionId);
-      if (!existing) {
-        return { ok: true, result: { subscriptionId: input.subscriptionId } };
-      }
-      const subscriber = this.#ownedSubscriber(context.connectionId, input.subscriptionId);
-      if (!subscriber) {
+    'subscription.ready': async (input, context) => {
+      if (!this.#ownedSubscriber(context.connectionId, input.subscriptionId)) {
         return {
           ok: false,
           error: { code: 'not_found', message: 'Session subscription was not found' },
         };
       }
-      this.#releaseSubscriberTranscriptOverlay(subscriber);
+      this.#activate(context.connectionId, input.subscriptionId);
       return { ok: true, result: { subscriptionId: input.subscriptionId } };
     },
+    'session.transcript.page': (input, context) =>
+      this.#readTranscriptPage(context.connectionId, input),
   };
 
   readonly #connections = new Map<string, ConnectionState>();
@@ -302,14 +269,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly #pendingRefreshes = new Map<string, PendingRefresh>();
   readonly #pendingAgentGraphChanges = new Map<string, PendingAgentGraphChange>();
   readonly #pendingSessionDomainChanges = new Map<string, PendingSessionDomainChanges>();
-  readonly #retainedTranscriptOverlays = new Map<readonly Buffer[], RetainedTranscriptOverlay>();
-  readonly #transcriptOverlayPreparationWaiters: TranscriptOverlayPreparationWaiter[] = [];
+  readonly #pendingTranscriptAdvances = new Map<string, PendingRefresh>();
   readonly #hostEpoch: string;
   readonly #readCanonical: ReadCanonicalSessionProjection;
   readonly #transcriptReader: SessionTranscriptReader | undefined;
   #closed = false;
-  #preparingTranscriptOverlayBytes = 0;
-  #retainedTranscriptOverlayBytes = 0;
   readonly #sessionAccessAuthority:
     | Pick<RuntimeHostAccessAuthority, 'activeSessionGrant' | 'subscribeGrantRevocations'>
     | undefined;
@@ -358,13 +322,9 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       sink,
       subscriptionIds: new Set(),
       pendingOpenCount: 0,
-      closed: new AbortController(),
     });
     let attached = true;
     return {
-      activate: (subscriptionId) => {
-        if (attached) this.#activate(connectionId, subscriptionId);
-      },
       abort: (subscriptionId) => {
         if (attached) this.#abortSubscription(connectionId, subscriptionId);
       },
@@ -384,7 +344,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         if (this.#closed) return;
         const state = this.#sessions.get(sessionId);
         if (!state || (state.subscribers.size === 0 && !state.terminalPublicationFence)) return;
-        this.#invalidateTranscriptOverlay(state);
         const canonical = await this.#readCanonicalProjection(sessionId);
         if (this.#closed || !canonical) return;
         await this.#refreshTranscriptHighWater(sessionId, state);
@@ -420,6 +379,44 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         },
         (error) => {
           this.#pendingRefreshes.delete(sessionId);
+          this.onPublicationFailure(error);
+        },
+      );
+  }
+
+  /** Safe for synchronous commit hooks: publishes the transcript high water after RuntimeEvents commit. */
+  enqueueTranscriptAdvanced(sessionId: string): void {
+    if (this.#closed || !this.#sessions.has(sessionId)) return;
+    const pending = this.#pendingTranscriptAdvances.get(sessionId);
+    if (pending) {
+      if (pending.inFlight) pending.dirty = true;
+      return;
+    }
+    const advance: PendingRefresh = { dirty: false, inFlight: false };
+    this.#pendingTranscriptAdvances.set(sessionId, advance);
+    const run = async () => {
+      if (this.#closed) return;
+      const state = this.#sessions.get(sessionId);
+      // A fenced terminal publication advances the transcript together with
+      // the terminal projection, so a turn_state row never outruns its Turn.
+      if (!state || state.terminalPublicationFence) return;
+      await this.#refreshTranscriptHighWater(sessionId, state);
+    };
+    void this.sessionAdmission
+      .enqueueDetached(sessionId, async () => {
+        advance.inFlight = true;
+        await run();
+        if (!advance.dirty) return;
+        advance.dirty = false;
+        await run();
+      })
+      .then(
+        () => {
+          this.#pendingTranscriptAdvances.delete(sessionId);
+          if (advance.dirty) this.enqueueTranscriptAdvanced(sessionId);
+        },
+        (error) => {
+          this.#pendingTranscriptAdvances.delete(sessionId);
           this.onPublicationFailure(error);
         },
       );
@@ -667,17 +664,31 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
         const nextRevision = state.revision + 1;
         const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
-        this.#invalidateTranscriptOverlay(state);
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
+        // A subscriber still being paid a stream's prefix has not seen the end
+        // of it. The Turn ending does not make that text untrue, so each
+        // backlog keeps its own copy of the stream and finishes paying it; the
+        // terminal projection queues behind that, never over it.
+        for (const subscriber of state.subscribers.values()) {
+          for (const [key, backlog] of subscriber.assistantBacklog) {
+            if (backlog.completion) continue;
+            const stream = state.assistantStreams.get(key);
+            if (!stream) {
+              subscriber.assistantBacklog.delete(key);
+              continue;
+            }
+            backlog.completion = { runId: rootTurn.runId, stream: { ...stream } };
+          }
+        }
         state.assistantStreams.clear();
         state.toolResultPreviews.clear();
         this.#broadcastProjection(state, snapshot);
-        if (state.subscribers.size === 0) {
-          this.#invalidateTranscriptOverlay(state);
-          this.#sessions.delete(sessionId);
+        for (const subscriber of state.subscribers.values()) {
+          this.#payAssistantBacklog(subscriber, state);
         }
+        if (state.subscribers.size === 0) this.#sessions.delete(sessionId);
       },
       admission,
     );
@@ -708,7 +719,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         if (!canonical) throw new Error('Runtime event belongs to a missing Session');
         state = this.#commitCanonical(sessionId, canonical).state;
       }
-      this.#invalidateTranscriptOverlay(state);
       const rootTurn = state.canonical.rootTurn;
       if (
         !rootTurn ||
@@ -738,7 +748,15 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           text: (current?.text ?? '') + event.text,
         });
         for (const subscriber of state.subscribers.values()) {
-          this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset);
+          if (subscriber.assistantBacklog.has(prefixKey)) {
+            // This text is part of the prefix still being paid out; the payout
+            // reads the accumulated stream, so it carries this delta already.
+            this.#payAssistantBacklog(subscriber, state);
+          } else {
+            this.#deliverInOrder(subscriber, () =>
+              this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset),
+            );
+          }
         }
         return;
       }
@@ -761,12 +779,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         if (thinking) {
           const finalThinking = thinking.completedParts?.join('') ?? thinking.text;
           for (const subscriber of state.subscribers.values()) {
-            this.#enqueueAssistantCompletion(
+            this.#completeAssistantStream(
               subscriber,
-              sessionId,
+              state,
               runId,
+              thinkingKey,
               thinking,
-              'thinking',
               finalThinking,
             );
           }
@@ -785,12 +803,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
               text: '',
             } satisfies ActiveAssistantStream);
           for (const subscriber of state.subscribers.values()) {
-            this.#enqueueAssistantCompletion(
+            this.#completeAssistantStream(
               subscriber,
-              sessionId,
+              state,
               runId,
+              textKey,
               current,
-              'text',
               event.text,
               event.interrupted,
             );
@@ -836,7 +854,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           for (const subscriber of state.subscribers.values()) {
             this.#enqueueSessionRemoved(subscriber);
           }
-          this.#invalidateTranscriptOverlay(state);
           this.#sessions.delete(sessionId);
         },
         admission,
@@ -848,12 +865,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (this.#closed) return;
     this.#closed = true;
     this.#unsubscribeGrantRevocations?.();
-    this.#cancelTranscriptOverlayPreparationWaiters();
     for (const connectionId of [...this.#connections.keys()]) this.#closeConnection(connectionId);
-    for (const state of this.#sessions.values()) this.#invalidateTranscriptOverlay(state);
     this.#sessions.clear();
     this.#subscriptions.clear();
     this.#pendingRefreshes.clear();
+    this.#pendingTranscriptAdvances.clear();
     this.#pendingAgentGraphChanges.clear();
     this.#pendingSessionDomainChanges.clear();
   }
@@ -893,219 +909,68 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       };
     }
     connection.pendingOpenCount += 1;
-    let preparationPermit: TranscriptOverlayPreparationPermit | undefined;
-    let retryAfterCapacity = false;
     try {
-      for (;;) {
-        try {
-          return await this.sessionAdmission.run(sessionId, async () => {
-            if (this.#connections.get(connectionId) !== connection) {
-              throw new Error('Runtime Host connection closed during subscription open');
-            }
-            const canonical = await this.#readCanonicalProjection(sessionId);
-            if (this.#connections.get(connectionId) !== connection) {
-              throw new Error('Runtime Host connection closed during subscription open');
-            }
-            if (!canonical) {
-              return {
-                ok: false as const,
-                code: 'not_found' as const,
-                message: 'Session was not found',
-              };
-            }
-            const committed = this.#commitCanonical(sessionId, canonical);
-            if (committed.changed) {
-              this.#invalidateTranscriptOverlay(committed.state);
-              this.#broadcastProjection(committed.state, committed.value);
-            }
-            if (this.#connections.get(connectionId) !== connection) {
-              this.#scheduleInactiveStateCleanup(sessionId, committed.state);
-              throw new Error('Runtime Host connection closed during subscription open');
-            }
+      return await this.sessionAdmission.run(sessionId, async () => {
+        if (this.#connections.get(connectionId) !== connection) {
+          throw new Error('Runtime Host connection closed during subscription open');
+        }
+        const canonical = await this.#readCanonicalProjection(sessionId);
+        if (this.#connections.get(connectionId) !== connection) {
+          throw new Error('Runtime Host connection closed during subscription open');
+        }
+        if (!canonical) {
+          return {
+            ok: false as const,
+            code: 'not_found' as const,
+            message: 'Session was not found',
+          };
+        }
+        const committed = this.#commitCanonical(sessionId, canonical);
+        if (committed.changed) this.#broadcastProjection(committed.state, committed.value);
+        if (this.#connections.get(connectionId) !== connection) {
+          this.#scheduleInactiveStateCleanup(sessionId, committed.state);
+          throw new Error('Runtime Host connection closed during subscription open');
+        }
 
-            const subscriptionId = randomUUID();
-            const activeAssistantStreams = [...committed.state.assistantStreams.values()].map(
-              ({ kind, turnId, messageId }) => ({ kind, turnId, messageId }),
-            );
-            let transcript: SubscriberTranscriptState | undefined;
-            let retainedTranscriptOverlay: RetainedTranscriptOverlay | undefined;
-            let cachedTranscriptOverlay: CachedTranscriptOverlay | undefined;
-            let transcriptSubscriberInstalled = false;
-            let transcriptBootstrap: SubscriptionOpenResult['transcript'] = null;
-            try {
-              if (input.transcript.kind === 'tail') {
-                if (!this.#transcriptReader) {
-                  return {
-                    ok: false as const,
-                    code: 'operation_unavailable' as const,
-                    message: 'Session transcript is unavailable',
-                  };
-                }
-                try {
-                  const throughSequence =
-                    await this.#transcriptReader.readDurableHighWater(sessionId);
-                  cachedTranscriptOverlay = this.#prepareTranscriptOverlay(
-                    committed.state,
-                    sessionId,
-                    throughSequence,
-                    preparationPermit,
-                  );
-                  cachedTranscriptOverlay.pendingConsumers += 1;
-                  retainedTranscriptOverlay = await waitForConnectionOpen(
-                    cachedTranscriptOverlay.prepared,
-                    connection.closed.signal,
-                  );
-                  const snapshot = projectSessionSnapshot(committed.value, identity.principalKind);
-                  const created = await createSessionTranscriptBootstrap({
-                    reader: this.#transcriptReader,
-                    sessionId,
-                    subscriptionId,
-                    throughSequence,
-                    rootTurn: committed.state.canonical.rootTurn,
-                    activeAssistantStreams: committed.state.assistantStreams.values(),
-                    maxBytes: input.transcript.maxBytes,
-                    preparedOverlayMessages: retainedTranscriptOverlay.messages,
-                    projection: identity.principalKind === 'session_guest' ? 'shared' : 'owner',
-                    maxEncodedBytes: subscriptionOpenTranscriptBudget({
-                      hostEpoch: this.#hostEpoch,
-                      subscriptionId,
-                      nextSequence: 1,
-                      snapshot,
-                      activeAssistantStreams,
-                      transcript: null,
-                    }),
-                  });
-                  transcript = created.state;
-                  transcriptBootstrap = created.bootstrap;
-                } catch (error) {
-                  if (error instanceof TranscriptOverlayPreparationRequired) throw error;
-                  return {
-                    ok: false as const,
-                    code:
-                      error instanceof TranscriptOverlayCapacityError
-                        ? ('operation_unavailable' as const)
-                        : ('persistence_failed' as const),
-                    message:
-                      error instanceof TranscriptOverlayCapacityError
-                        ? 'Runtime Host transcript overlay capacity reached'
-                        : 'Session transcript is unavailable',
-                  };
-                }
-              }
-              if (this.#connections.get(connectionId) !== connection) {
-                this.#scheduleInactiveStateCleanup(sessionId, committed.state);
-                throw new Error('Runtime Host connection closed during subscription open');
-              }
-              const openValue: SubscriptionOpenResult = {
-                hostEpoch: this.#hostEpoch,
-                subscriptionId,
-                nextSequence: 1,
-                snapshot: projectSessionSnapshot(committed.value, identity.principalKind),
-                activeAssistantStreams,
-                transcript: transcriptBootstrap,
-              };
-              if (
-                Buffer.byteLength(JSON.stringify(openValue), 'utf8') >
-                SUBSCRIPTION_OPEN_RESULT_MAX_BYTES
-              ) {
-                return {
-                  ok: false as const,
-                  code: 'operation_unavailable' as const,
-                  message: 'Session subscription state exceeds the transport limit',
-                };
-              }
-              if (!this.#canObserve(identity, sessionId)) {
-                return {
-                  ok: false as const,
-                  code: 'not_found' as const,
-                  message: 'Session was not found',
-                };
-              }
-              const subscriber: Subscriber = {
-                connectionId,
-                principalId: identity.principalId,
-                principalKind: identity.principalKind,
-                sessionId,
-                subscriptionId,
-                sink: connection.sink,
-                phase: 'open',
-                activated: false,
-                nextSequence: 1,
-                lastFlushedSequence: 0,
-                queue: [],
-                ptyQueue: [],
-                ptyInterests: new Set(),
-                ptyQueuedBytes: 0,
-                ptyPumping: false,
-                queuedBytes: 0,
-                pumping: false,
-                terminalQueued: false,
-                ...(transcript ? { transcript } : {}),
-                ...(retainedTranscriptOverlay ? { retainedTranscriptOverlay } : {}),
-              };
-              if (subscriber.retainedTranscriptOverlay)
-                this.#retainTranscriptOverlay(subscriber.retainedTranscriptOverlay);
-              committed.state.subscribers.set(subscriptionId, subscriber);
-              this.#subscriptions.set(subscriptionId, subscriber);
-              connection.subscriptionIds.add(subscriptionId);
-              transcriptSubscriberInstalled = subscriber.retainedTranscriptOverlay !== undefined;
-              // Client expects the first delivered frame at nextSequence from the open
-              // result. Capture that before enqueueing retained previews — each
-              // #enqueue advances nextSequence.
-              const firstSequence = subscriber.nextSequence;
-              // Seed retained live previews so a mid-turn rejoin still has Open facts.
-              const rootTurn = committed.state.canonical.rootTurn;
-              if (rootTurn && !isTerminalTurn(rootTurn)) {
-                for (const preview of committed.state.toolResultPreviews.values()) {
-                  if (preview.turnId !== rootTurn.turnId) continue;
-                  const frame: SessionEventFrame = {
-                    kind: 'subscription.session_event',
-                    hostEpoch: this.#hostEpoch,
-                    subscriptionId: subscriber.subscriptionId,
-                    sequence: subscriber.nextSequence,
-                    sessionId,
-                    runId: rootTurn.runId,
-                    event: projectSessionEvent(
-                      preview,
-                      sessionId,
-                      subscriber.principalKind === 'session_guest',
-                    ),
-                  };
-                  this.#enqueue(subscriber, frame);
-                }
-              }
-              return {
-                ok: true as const,
-                value: { ...openValue, nextSequence: firstSequence },
-              };
-            } finally {
-              if (cachedTranscriptOverlay) cachedTranscriptOverlay.pendingConsumers -= 1;
-              if (
-                cachedTranscriptOverlay &&
-                !transcriptSubscriberInstalled &&
-                cachedTranscriptOverlay.pendingConsumers === 0 &&
-                !this.#hasTranscriptOverlayConsumer(committed.state)
-              ) {
-                this.#invalidateTranscriptOverlay(committed.state, cachedTranscriptOverlay);
-              }
-            }
-          });
-        } catch (error) {
-          if (!(error instanceof TranscriptOverlayPreparationRequired)) throw error;
-          if (retryAfterCapacity) {
+        const subscriptionId = randomUUID();
+        const activeAssistantStreams = [...committed.state.assistantStreams.values()].map(
+          ({ kind, turnId, messageId }) => ({ kind, turnId, messageId }),
+        );
+        let transcript: SubscriberTranscriptState | undefined;
+        let transcriptBootstrap: SubscriptionOpenResult['transcript'] = null;
+        if (input.transcript.kind === 'tail') {
+          if (!this.#transcriptReader) {
             return {
               ok: false as const,
               code: 'operation_unavailable' as const,
-              message: 'Runtime Host transcript overlay capacity reached',
+              message: 'Session transcript is unavailable',
             };
           }
           try {
-            preparationPermit = await this.#acquireTranscriptOverlayPreparation(connection);
-          } catch (acquireError) {
-            if (acquireError instanceof TranscriptOverlayCapacityError) {
-              retryAfterCapacity = true;
-              continue;
-            }
+            const throughSequence = await this.#transcriptReader.readDurableHighWater(sessionId);
+            const snapshot = projectSessionSnapshot(committed.value, identity.principalKind);
+            const created = await createSessionTranscriptBootstrap({
+              reader: this.#transcriptReader,
+              sessionId,
+              subscriptionId,
+              throughSequence,
+              maxBytes: input.transcript.maxBytes,
+              projection: identity.principalKind === 'session_guest' ? 'shared' : 'owner',
+              maxEncodedBytes: subscriptionOpenTranscriptBudget({
+                hostEpoch: this.#hostEpoch,
+                subscriptionId,
+                nextSequence: 1,
+                snapshot,
+                activeAssistantStreams,
+                transcript: null,
+              }),
+            });
+            transcript = created.state;
+            transcriptBootstrap = created.bootstrap;
+          } catch (error) {
+            // The client can only retry, but a projection that outgrew its
+            // bounds is a Host defect and has to leave a trace here.
+            this.onPublicationFailure(error);
             return {
               ok: false as const,
               code: 'persistence_failed' as const,
@@ -1113,9 +978,94 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             };
           }
         }
-      }
+        if (this.#connections.get(connectionId) !== connection) {
+          this.#scheduleInactiveStateCleanup(sessionId, committed.state);
+          throw new Error('Runtime Host connection closed during subscription open');
+        }
+        const openValue: SubscriptionOpenResult = {
+          hostEpoch: this.#hostEpoch,
+          subscriptionId,
+          nextSequence: 1,
+          snapshot: projectSessionSnapshot(committed.value, identity.principalKind),
+          activeAssistantStreams,
+          transcript: transcriptBootstrap,
+        };
+        if (
+          Buffer.byteLength(JSON.stringify(openValue), 'utf8') > SUBSCRIPTION_OPEN_RESULT_MAX_BYTES
+        ) {
+          return {
+            ok: false as const,
+            code: 'operation_unavailable' as const,
+            message: 'Session subscription state exceeds the transport limit',
+          };
+        }
+        if (!this.#canObserve(identity, sessionId)) {
+          return {
+            ok: false as const,
+            code: 'not_found' as const,
+            message: 'Session was not found',
+          };
+        }
+        const subscriber: Subscriber = {
+          connectionId,
+          principalId: identity.principalId,
+          principalKind: identity.principalKind,
+          sessionId,
+          subscriptionId,
+          sink: connection.sink,
+          phase: 'open',
+          activated: false,
+          nextSequence: 1,
+          lastFlushedSequence: 0,
+          queue: [],
+          ptyQueue: [],
+          ptyInterests: new Set(),
+          ptyQueuedBytes: 0,
+          ptyPumping: false,
+          queuedBytes: 0,
+          pumping: false,
+          terminalQueued: false,
+          assistantBacklog: new Map(
+            [...committed.state.assistantStreams.keys()].map((key) => [key, { sent: 0 }]),
+          ),
+          deferred: [],
+          ...(transcript ? { transcript } : {}),
+        };
+        committed.state.subscribers.set(subscriptionId, subscriber);
+        this.#subscriptions.set(subscriptionId, subscriber);
+        connection.subscriptionIds.add(subscriptionId);
+        // Client expects the first delivered frame at nextSequence from the open
+        // result. Capture that before enqueueing retained previews — each
+        // #enqueue advances nextSequence.
+        const firstSequence = subscriber.nextSequence;
+        // Seed retained live previews so a mid-turn rejoin still has Open facts.
+        const rootTurn = committed.state.canonical.rootTurn;
+        if (rootTurn && !isTerminalTurn(rootTurn)) {
+          for (const preview of committed.state.toolResultPreviews.values()) {
+            if (preview.turnId !== rootTurn.turnId) continue;
+            const frame: SessionEventFrame = {
+              kind: 'subscription.session_event',
+              hostEpoch: this.#hostEpoch,
+              subscriptionId: subscriber.subscriptionId,
+              sequence: subscriber.nextSequence,
+              sessionId,
+              runId: rootTurn.runId,
+              event: projectSessionEvent(
+                preview,
+                sessionId,
+                subscriber.principalKind === 'session_guest',
+              ),
+            };
+            this.#enqueue(subscriber, frame);
+          }
+        }
+        this.#payAssistantBacklog(subscriber, committed.state);
+        return {
+          ok: true as const,
+          value: { ...openValue, nextSequence: firstSequence },
+        };
+      });
     } finally {
-      preparationPermit?.release();
       connection.pendingOpenCount -= 1;
     }
   }
@@ -1180,232 +1130,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     });
   }
 
-  #prepareTranscriptOverlay(
-    state: SessionProjectionState,
-    sessionId: string,
-    throughSequence: number | null,
-    permit: TranscriptOverlayPreparationPermit | undefined,
-  ): CachedTranscriptOverlay {
-    if (!this.#transcriptReader) throw new Error('Session transcript is unavailable');
-    const cached = state.transcriptOverlay;
-    if (cached?.throughSequence === throughSequence) return cached;
-    if (cached) this.#invalidateTranscriptOverlay(state, cached);
-    if (!state.canonical.rootTurn || isTerminalTurn(state.canonical.rootTurn)) {
-      const prepared = Promise.resolve(this.#registerTranscriptOverlay([]));
-      const entry = {
-        throughSequence,
-        prepared,
-        pendingConsumers: 0,
-        cancelPreparation: () => {},
-      };
-      state.transcriptOverlay = entry;
-      return entry;
-    }
-    if (!permit) throw new TranscriptOverlayPreparationRequired();
-    const release = permit.take();
-    const prepared = (async () => {
-      try {
-        if (permit.waiter.cancelled) {
-          throw new Error('Session transcript overlay preparation was cancelled');
-        }
-        const messages = await prepareSessionTranscriptOverlay({
-          reader: this.#transcriptReader!,
-          sessionId,
-          throughSequence,
-          rootTurn: state.canonical.rootTurn,
-          activeAssistantStreams: state.assistantStreams.values(),
-        });
-        return this.#registerTranscriptOverlay(messages);
-      } finally {
-        release();
-      }
-    })();
-    const entry = {
-      throughSequence,
-      prepared,
-      pendingConsumers: 0,
-      cancelPreparation: () => this.#cancelTranscriptOverlayPreparation(permit.waiter),
-    };
-    state.transcriptOverlay = entry;
-    void prepared.catch(() => {
-      if (state.transcriptOverlay === entry) state.transcriptOverlay = undefined;
-    });
-    return entry;
-  }
-
-  async #acquireTranscriptOverlayPreparation(
-    connection: ConnectionState,
-  ): Promise<TranscriptOverlayPreparationPermit> {
-    const ticket = this.#queueTranscriptOverlayPreparation();
-    let release: () => void;
-    try {
-      release = await waitForConnectionOpen(ticket.ready, connection.closed.signal);
-    } catch (error) {
-      this.#cancelTranscriptOverlayPreparation(ticket.waiter);
-      throw error;
-    }
-    let available = true;
-    return {
-      waiter: ticket.waiter,
-      take: () => {
-        if (!available) {
-          throw new Error('Session transcript overlay preparation permit is unavailable');
-        }
-        available = false;
-        return release;
-      },
-      release: () => {
-        if (!available) return;
-        available = false;
-        release();
-      },
-    };
-  }
-
-  #queueTranscriptOverlayPreparation(): {
-    readonly waiter: TranscriptOverlayPreparationWaiter;
-    readonly ready: Promise<() => void>;
-  } {
-    if (
-      this.#transcriptOverlayPreparationWaiters.length >= MAX_TRANSCRIPT_OVERLAY_PREPARATION_WAITERS
-    ) {
-      throw new TranscriptOverlayCapacityError(
-        'Runtime Host transcript overlay preparation queue reached its limit',
-      );
-    }
-    let resolve!: (release: () => void) => void;
-    let reject!: (error: Error) => void;
-    const ready = new Promise<() => void>((resolveReady, rejectReady) => {
-      resolve = resolveReady;
-      reject = rejectReady;
-    });
-    const waiter: TranscriptOverlayPreparationWaiter = {
-      cancelled: false,
-      granted: false,
-      resolve,
-      reject,
-    };
-    this.#transcriptOverlayPreparationWaiters.push(waiter);
-    this.#drainTranscriptOverlayPreparationWaiters();
-    return { waiter, ready };
-  }
-
-  #releaseTranscriptOverlayPreparation(): void {
-    this.#preparingTranscriptOverlayBytes -= MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES;
-    this.#drainTranscriptOverlayPreparationWaiters();
-  }
-
-  #drainTranscriptOverlayPreparationWaiters(): void {
-    if (this.#closed) return;
-    while (this.#transcriptOverlayPreparationWaiters.length > 0) {
-      const waiter = this.#transcriptOverlayPreparationWaiters[0]!;
-      if (waiter.cancelled) {
-        this.#transcriptOverlayPreparationWaiters.shift();
-        continue;
-      }
-      if (
-        this.#retainedTranscriptOverlayBytes + MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES >
-        MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES
-      ) {
-        if (this.#preparingTranscriptOverlayBytes > 0) return;
-        this.#transcriptOverlayPreparationWaiters.shift();
-        waiter.cancelled = true;
-        waiter.reject(
-          new TranscriptOverlayCapacityError('Runtime Host transcript overlay capacity reached'),
-        );
-        continue;
-      }
-      if (
-        this.#retainedTranscriptOverlayBytes +
-          this.#preparingTranscriptOverlayBytes +
-          MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES >
-        MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES
-      ) {
-        return;
-      }
-      this.#transcriptOverlayPreparationWaiters.shift();
-      waiter.granted = true;
-      this.#preparingTranscriptOverlayBytes += MAX_TRANSCRIPT_OVERLAY_PREPARATION_BYTES;
-      let released = false;
-      waiter.resolve(() => {
-        if (released) return;
-        released = true;
-        this.#releaseTranscriptOverlayPreparation();
-      });
-    }
-  }
-
-  #cancelTranscriptOverlayPreparation(waiter: TranscriptOverlayPreparationWaiter): void {
-    if (waiter.cancelled) return;
-    waiter.cancelled = true;
-    if (!waiter.granted) {
-      const index = this.#transcriptOverlayPreparationWaiters.indexOf(waiter);
-      if (index >= 0) this.#transcriptOverlayPreparationWaiters.splice(index, 1);
-      waiter.reject(new Error('Session transcript overlay preparation was cancelled'));
-      this.#drainTranscriptOverlayPreparationWaiters();
-    }
-  }
-
-  #cancelTranscriptOverlayPreparationWaiters(): void {
-    for (const waiter of this.#transcriptOverlayPreparationWaiters.splice(0)) {
-      waiter.cancelled = true;
-      waiter.reject(new Error('Session continuity coordinator is closed'));
-    }
-  }
-
-  #registerTranscriptOverlay(messages: readonly Buffer[]): RetainedTranscriptOverlay {
-    const bytes = messages.reduce((total, message) => total + message.byteLength, 0);
-    if (this.#retainedTranscriptOverlayBytes + bytes > MAX_RETAINED_TRANSCRIPT_OVERLAY_BYTES) {
-      throw new TranscriptOverlayCapacityError('Runtime Host transcript overlay capacity reached');
-    }
-    const retained = { messages, bytes, references: 1 };
-    this.#retainedTranscriptOverlays.set(messages, retained);
-    this.#retainedTranscriptOverlayBytes += bytes;
-    return retained;
-  }
-
-  #retainTranscriptOverlay(retained: RetainedTranscriptOverlay): void {
-    if (
-      retained.references < 1 ||
-      this.#retainedTranscriptOverlays.get(retained.messages) !== retained
-    ) {
-      throw new Error('Session transcript overlay is no longer retained');
-    }
-    retained.references += 1;
-  }
-
-  #releaseTranscriptOverlay(retained: RetainedTranscriptOverlay): void {
-    if (retained.references < 1) return;
-    retained.references -= 1;
-    if (retained.references > 0) return;
-    this.#retainedTranscriptOverlays.delete(retained.messages);
-    this.#retainedTranscriptOverlayBytes -= retained.bytes;
-    this.#drainTranscriptOverlayPreparationWaiters();
-  }
-
-  #invalidateTranscriptOverlay(
-    state: SessionProjectionState,
-    expected?: CachedTranscriptOverlay,
-  ): void {
-    const cached = state.transcriptOverlay;
-    if (!cached || (expected && cached !== expected)) return;
-    state.transcriptOverlay = undefined;
-    cached.cancelPreparation();
-    void cached.prepared.then(
-      (retained) => this.#releaseTranscriptOverlay(retained),
-      () => undefined,
-    );
-  }
-
-  #hasTranscriptOverlayConsumer(state: SessionProjectionState): boolean {
-    return (
-      (state.transcriptOverlay?.pendingConsumers ?? 0) > 0 ||
-      [...state.subscribers.values()].some(
-        (subscriber) => subscriber.retainedTranscriptOverlay !== undefined,
-      )
-    );
-  }
-
   async #refreshTranscriptHighWater(
     sessionId: string,
     state: SessionProjectionState,
@@ -1464,7 +1188,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   #closeConnection(connectionId: string): void {
     const connection = this.#connections.get(connectionId);
     if (!connection) return;
-    connection.closed.abort(new Error('Runtime Host connection closed during subscription open'));
     for (const subscriptionId of [...connection.subscriptionIds]) {
       const subscriber = this.#ownedSubscriber(connectionId, subscriptionId);
       if (subscriber) this.#removeSubscriber(subscriber);
@@ -1774,6 +1497,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           this.#removeSubscriber(subscriber);
           return;
         }
+        if (subscriber.assistantBacklog.size > 0) {
+          const state = this.#sessions.get(subscriber.sessionId);
+          if (state) this.#payAssistantBacklog(subscriber, state);
+        }
         this.#pump(subscriber);
       },
       () => this.#removeSubscriber(subscriber),
@@ -1793,25 +1520,99 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     this.#connections
       .get(subscriber.connectionId)
       ?.subscriptionIds.delete(subscriber.subscriptionId);
-    this.#releaseSubscriberTranscriptOverlay(subscriber);
-    if (!this.#closed && state && removed) {
-      if (!this.#hasTranscriptOverlayConsumer(state)) this.#invalidateTranscriptOverlay(state);
-      if (state.subscribers.size === 0) {
-        this.#scheduleInactiveStateCleanup(subscriber.sessionId, state);
-      }
+    subscriber.assistantBacklog.clear();
+    subscriber.deferred = [];
+    if (!this.#closed && state && removed && state.subscribers.size === 0) {
+      this.#scheduleInactiveStateCleanup(subscriber.sessionId, state);
     }
   }
 
-  #releaseSubscriberTranscriptOverlay(subscriber: Subscriber): void {
-    if (subscriber.transcript) subscriber.transcript.overlayMessages = undefined;
-    const retained = subscriber.retainedTranscriptOverlay;
-    if (!retained) return;
-    subscriber.retainedTranscriptOverlay = undefined;
-    this.#releaseTranscriptOverlay(retained);
-    const state = this.#sessions.get(subscriber.sessionId);
-    if (state && !this.#hasTranscriptOverlayConsumer(state)) {
-      this.#invalidateTranscriptOverlay(state);
+  /**
+   * Sends a subscriber the in-flight assistant text it joined too late to see,
+   * one frame at a time while its queue has room. Live deltas for such a stream
+   * are withheld until the backlog catches up, so offsets stay contiguous.
+   */
+  #payAssistantBacklog(subscriber: Subscriber, state: SessionProjectionState): void {
+    const rootTurn = state.canonical.rootTurn;
+    for (const [key, backlog] of subscriber.assistantBacklog) {
+      const { completion } = backlog;
+      const stream = completion?.stream ?? state.assistantStreams.get(key);
+      const runId = completion?.runId ?? rootTurn?.runId;
+      if (!stream || !runId || (!completion && stream.turnId !== rootTurn?.turnId)) {
+        subscriber.assistantBacklog.delete(key);
+        continue;
+      }
+      while (backlog.sent < stream.text.length) {
+        if (
+          subscriber.phase !== 'open' ||
+          subscriber.queue.length >= MAX_SUBSCRIBER_QUEUED_FRAMES / 2 ||
+          subscriber.queuedBytes >= MAX_SUBSCRIBER_QUEUED_BYTES / 2
+        ) {
+          return;
+        }
+        const chunk = stream.text.slice(
+          backlog.sent,
+          backlog.sent + ASSISTANT_BACKLOG_CHUNK_CHARACTERS,
+        );
+        this.#enqueueAssistantText(
+          subscriber,
+          subscriber.sessionId,
+          runId,
+          stream,
+          stream.kind,
+          backlog.sent,
+          chunk,
+        );
+        backlog.sent += chunk.length;
+      }
+      subscriber.assistantBacklog.delete(key);
+      if (completion) {
+        this.#enqueueAssistantCompletion(
+          subscriber,
+          subscriber.sessionId,
+          runId,
+          stream,
+          stream.kind,
+          stream.text,
+          completion.interrupted,
+        );
+      }
     }
+    this.#drainDeferred(subscriber);
+  }
+
+  #completeAssistantStream(
+    subscriber: Subscriber,
+    state: SessionProjectionState,
+    runId: string,
+    key: string,
+    stream: ActiveAssistantStream,
+    finalText: string,
+    interrupted?: true,
+  ): void {
+    const backlog = subscriber.assistantBacklog.get(key);
+    const held = backlog ? stream.text.slice(0, backlog.sent) : stream.text;
+    if (backlog && finalText.startsWith(held)) {
+      backlog.completion = {
+        runId,
+        stream: { ...stream, text: finalText },
+        ...(interrupted ? { interrupted } : {}),
+      };
+      this.#payAssistantBacklog(subscriber, state);
+      return;
+    }
+    subscriber.assistantBacklog.delete(key);
+    this.#deliverInOrder(subscriber, () =>
+      this.#enqueueAssistantCompletion(
+        subscriber,
+        subscriber.sessionId,
+        runId,
+        { ...stream, text: held },
+        stream.kind,
+        finalText,
+        interrupted,
+      ),
+    );
   }
 
   #ownedSubscriber(connectionId: string, subscriptionId: string): Subscriber | undefined {
@@ -1830,7 +1631,6 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         !state.terminalPublicationFence &&
         (!state.canonical.rootTurn || isTerminalTurn(state.canonical.rootTurn))
       ) {
-        this.#invalidateTranscriptOverlay(state);
         this.#sessions.delete(sessionId);
       }
     });
@@ -1903,13 +1703,38 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
   #broadcastProjection(state: SessionProjectionState, snapshot: SessionContinuitySnapshot): void {
     for (const subscriber of state.subscribers.values()) {
-      this.#enqueue(subscriber, {
-        kind: 'subscription.session_projection',
-        hostEpoch: this.#hostEpoch,
-        subscriptionId: subscriber.subscriptionId,
-        sequence: subscriber.nextSequence,
-        snapshot: projectSessionSnapshot(snapshot, subscriber.principalKind),
+      this.#deliverInOrder(subscriber, () => {
+        this.#enqueue(subscriber, {
+          kind: 'subscription.session_projection',
+          hostEpoch: this.#hostEpoch,
+          subscriptionId: subscriber.subscriptionId,
+          sequence: subscriber.nextSequence,
+          snapshot: projectSessionSnapshot(snapshot, subscriber.principalKind),
+        });
       });
+    }
+  }
+
+  /**
+   * Runs `work` now, or behind whatever this subscriber is still catching up
+   * on. Every assistant frame and projection goes through here, so the order a
+   * subscriber sees is the order the Host produced.
+   */
+  #deliverInOrder(subscriber: Subscriber, work: () => void): void {
+    if (subscriber.assistantBacklog.size === 0 && subscriber.deferred.length === 0) {
+      work();
+      return;
+    }
+    subscriber.deferred.push(work);
+  }
+
+  #drainDeferred(subscriber: Subscriber): void {
+    while (
+      subscriber.assistantBacklog.size === 0 &&
+      subscriber.deferred.length > 0 &&
+      subscriber.phase === 'open'
+    ) {
+      subscriber.deferred.shift()?.();
     }
   }
 
@@ -2265,24 +2090,4 @@ function toolStartShellRunRef(
   } catch {
     return undefined;
   }
-}
-
-function waitForConnectionOpen<T>(task: Promise<T>, closed: AbortSignal): Promise<T> {
-  // A race against a connection-lifetime Promise retains every winning overlay
-  // until disconnect. Remove the close listener as soon as this wait finishes.
-  return new Promise<T>((resolve, reject) => {
-    const onClose = () => reject(closed.reason);
-    if (closed.aborted) onClose();
-    else closed.addEventListener('abort', onClose, { once: true });
-    void task.then(
-      (value) => {
-        closed.removeEventListener('abort', onClose);
-        resolve(value);
-      },
-      (error: unknown) => {
-        closed.removeEventListener('abort', onClose);
-        reject(error);
-      },
-    );
-  });
 }

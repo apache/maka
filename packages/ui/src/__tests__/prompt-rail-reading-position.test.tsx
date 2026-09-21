@@ -19,56 +19,33 @@
 
 /**
  * The rail's current tick is the reading position the scroll authority
- * publishes — the newest Turn while pinned to the tail, otherwise the Turn
- * crossing the top of the scrollport — and nothing else. Mounted through the
- * real layout, because that is what hands the authority the scroller the
- * reader scrolls.
+ * publishes — the newest Turn while pinned to the tail, otherwise the Turn the
+ * virtualizer places under the top of the scrollport — and a tick navigates by
+ * that same index. Mounted through the real layout, because that is what hands
+ * the authority and the virtualizer the scroller the reader scrolls.
  */
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, type ReactElement } from 'react';
-import { createRoot } from 'react-dom/client';
-import { parseHTML } from 'linkedom';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
-import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import { LocaleProvider } from '../locale-context.js';
-import { PromptAnchorRail } from '../prompt-anchor-rail.js';
+import { PromptAnchorRail, type PromptAnchorRailTurn } from '../prompt-anchor-rail.js';
 import { TranscriptScrollAuthorityProvider } from '../transcript-scroll-authority.js';
-
-const originalGlobals = {
-  CSS: globalThis.CSS,
-  document: globalThis.document,
-  Element: globalThis.Element,
-  HTMLElement: globalThis.HTMLElement,
-  MutationObserver: globalThis.MutationObserver,
-  Node: globalThis.Node,
-  ResizeObserver: globalThis.ResizeObserver,
-  matchMedia: globalThis.matchMedia,
-  requestAnimationFrame: globalThis.requestAnimationFrame,
-  cancelAnimationFrame: globalThis.cancelAnimationFrame,
-  window: globalThis.window,
-};
-const originalActEnvironment = (globalThis as typeof globalThis & {
-  IS_REACT_ACT_ENVIRONMENT?: boolean;
-}).IS_REACT_ACT_ENVIRONMENT;
-
-let mountedRoot: ReturnType<typeof createRoot> | undefined;
-
-afterEach(async () => {
-  if (mountedRoot) await act(() => mountedRoot?.unmount());
-  mountedRoot = undefined;
-  Object.assign(globalThis, {
-    ...originalGlobals,
-    IS_REACT_ACT_ENVIRONMENT: originalActEnvironment,
-  });
-});
+import { installTranscriptDom, type TranscriptDom } from './transcript-test-dom.js';
 
 const TURN_COUNT = 6;
 const TURN_HEIGHT = 400;
 const SCROLLPORT_HEIGHT = 600;
+
+let dom: TranscriptDom | undefined;
+
+afterEach(async () => {
+  await dom?.cleanup();
+  dom = undefined;
+});
 
 const activeSession: SessionSummary = {
   id: 'session-rail',
@@ -107,77 +84,23 @@ function turnMessages(): StoredMessage[] {
   ]).flat();
 }
 
-function view(messages: StoredMessage[]): ReactElement {
-  const chat = createElement(ChatView, { messages, activeSession, onNew: () => {} } as never);
-  const layout = createElement(ChatSurfaceLayout, {
-    composer: null,
-    children: chat,
-  });
-  const astryx = createElement(AstryxLocaleProvider, { children: layout });
-  return createElement(LocaleProvider, { locale: 'zh-CN', children: astryx });
+function view(messages: StoredMessage[], extra: Partial<Parameters<typeof ChatView>[0]> = {}): ReactElement {
+  const chat = createElement(ChatView, { messages, activeSession, onNew: () => {}, scrollBehavior: 'auto', ...extra });
+  const layout = createElement(ChatSurfaceLayout, { composer: null, children: chat });
+  return createElement(LocaleProvider, { locale: 'zh-CN', children: layout });
 }
 
-/** linkedom lays nothing out, so every box this reads is stated here. */
-function harness() {
-  const { document, window } = parseHTML('<main id="mount"></main>');
-  const viewport = { scrollTop: 0 };
-  const scrollport = {
-    bottom: SCROLLPORT_HEIGHT, height: SCROLLPORT_HEIGHT, left: 0, right: 800, top: 0,
-    width: 800, x: 0, y: 0, toJSON: () => ({}),
-  } satisfies DOMRect;
-  window.Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
-    const turnId = this.getAttribute('data-turn-id');
-    if (turnId === null) return scrollport;
-    const top = Number(turnId.split('-')[1]) * TURN_HEIGHT - viewport.scrollTop;
-    return { ...scrollport, top, bottom: top + TURN_HEIGHT, height: TURN_HEIGHT };
-  };
-  class InertResizeObserver {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-  Object.assign(globalThis, {
-    CSS: { supports: () => false, escape: (value: string) => value },
-    document,
-    Element: window.Element,
-    HTMLElement: window.HTMLElement,
-    MutationObserver: window.MutationObserver,
-    Node: window.Node,
-    ResizeObserver: InertResizeObserver,
-    matchMedia: () => ({
-      matches: false,
-      addEventListener() {},
-      removeEventListener() {},
-    }),
-    requestAnimationFrame: (callback: FrameRequestCallback) => {
-      callback(0);
-      return 0;
-    },
-    cancelAnimationFrame: () => {},
-    window,
-    IS_REACT_ACT_ENVIRONMENT: true,
+async function mountTranscript(): Promise<{ dom: TranscriptDom; scroller: HTMLElement }> {
+  dom = installTranscriptDom({ viewportHeight: SCROLLPORT_HEIGHT, boxHeight: TURN_HEIGHT });
+  await dom.render(view(turnMessages()));
+  const scroller = dom.container.querySelector<HTMLElement>('[data-chat-scroll-container]');
+  assert.ok(scroller, 'the layout publishes the scroller the authority attaches to');
+  Object.defineProperties(scroller, {
+    scrollHeight: { get: () => TURN_COUNT * TURN_HEIGHT },
+    clientHeight: { get: () => SCROLLPORT_HEIGHT },
   });
-  const mount = document.querySelector<HTMLElement>('#mount');
-  assert.ok(mount);
-  return {
-    mount,
-    window,
-    viewport,
-    /** Give the mounted scroller the geometry a scrolled transcript has. */
-    scroller(): HTMLElement {
-      const element = document.querySelector<HTMLElement>('[data-chat-scroll-container]');
-      assert.ok(element, 'the layout publishes the scroller the authority attaches to');
-      Object.defineProperties(element, {
-        scrollTop: {
-          get: () => viewport.scrollTop,
-          set: (value: number) => { viewport.scrollTop = value; },
-        },
-        scrollHeight: { get: () => TURN_COUNT * TURN_HEIGHT },
-        clientHeight: { get: () => SCROLLPORT_HEIGHT },
-      });
-      return element;
-    },
-  };
+  scroller.scrollTop = TURN_COUNT * TURN_HEIGHT - SCROLLPORT_HEIGHT;
+  return { dom, scroller };
 }
 
 function activeTickTurnId(mount: HTMLElement): string | null {
@@ -185,62 +108,107 @@ function activeTickTurnId(mount: HTMLElement): string | null {
     ?.getAttribute('data-prompt-turn-id') ?? null;
 }
 
-test('the current tick follows the reading position the authority publishes', async () => {
-  const probe = harness();
-  const root = createRoot(probe.mount);
-  mountedRoot = root;
-  await act(() => {
-    root.render(view(turnMessages()));
-  });
-  const scroller = probe.scroller();
+test('the current tick follows the reading position the virtualizer maps', async () => {
+  const { dom, scroller } = await mountTranscript();
+  assert.equal(activeTickTurnId(dom.container), 'turn-5', 'pinned to the tail, the reader is on the newest Turn');
 
-  // Pinned to the tail, the reader is on the newest Turn.
-  probe.viewport.scrollTop = TURN_COUNT * TURN_HEIGHT - SCROLLPORT_HEIGHT;
-  assert.equal(activeTickTurnId(probe.mount), 'turn-5');
-
-  // The reader takes the transcript to the third Turn's box. A wheel first:
-  // a scroll the reader did not cause leaves the pin, and the newest Turn, alone.
   await act(() => {
-    const wheel = new probe.window.Event('wheel', { bubbles: true });
+    const wheel = new dom.window.Event('wheel', { bubbles: true });
     Object.defineProperty(wheel, 'deltaY', { value: -120 });
     scroller.dispatchEvent(wheel);
-    probe.viewport.scrollTop = TURN_HEIGHT * 2 + 100;
-    scroller.dispatchEvent(new probe.window.Event('scroll'));
+    scroller.scrollTop = TURN_HEIGHT * 2 + 100;
+    scroller.dispatchEvent(new dom.window.Event('scroll'));
   });
-  assert.equal(activeTickTurnId(probe.mount), 'turn-2');
+  assert.equal(activeTickTurnId(dom.container), 'turn-2');
 
   await act(() => {
-    probe.viewport.scrollTop = TURN_HEIGHT * 4;
-    scroller.dispatchEvent(new probe.window.Event('scroll'));
+    scroller.scrollTop = TURN_HEIGHT * 4;
+    scroller.dispatchEvent(new dom.window.Event('scroll'));
   });
-  assert.equal(activeTickTurnId(probe.mount), 'turn-4');
+  assert.equal(activeTickTurnId(dom.container), 'turn-4');
 });
 
-test('portals unloaded landmarks into the layout host and keeps them actionable', async () => {
-  const { mount } = harness();
-  const root = createRoot(mount);
-  mountedRoot = root;
+test('a tick releases the pin and scrolls its Turn to the top by index', async () => {
+  const { dom, scroller } = await mountTranscript();
+  const tick = dom.container.querySelector('[data-prompt-turn-id="turn-3"]');
+  assert.ok(tick);
+  await act(async () => { tick.dispatchEvent(new dom.window.Event('click', { bubbles: true })); });
+  assert.equal(scroller.scrollTop, TURN_HEIGHT * 3);
+  await act(() => { scroller.dispatchEvent(new dom.window.Event('scroll')); });
+  assert.equal(activeTickTurnId(dom.container), 'turn-3');
+});
+
+test('a tick for an indexed Turn outside the loaded range asks for history down to it', async () => {
+  const { dom } = await mountTranscript();
+  const loaded = turnMessages().filter((message) => message.turnId !== 'turn-0' && message.turnId !== 'turn-1');
+  const requests: { turnId: string; sequence: number }[] = [];
+  const extra = {
+    transcriptTurnIndex: [{ turnId: 'turn-0', sequence: 8, label: '第 0 个问题' }],
+    onLoadTranscriptTurn: (turn: { turnId: string; sequence: number }) => { requests.push(turn); },
+  };
+  await dom.render(view(loaded, extra));
+  const tick = dom.container.querySelector('[data-prompt-turn-id="turn-0"]');
+  assert.ok(tick, 'the indexed Turn has a tick before it is loaded');
+  await act(async () => { tick.dispatchEvent(new dom.window.Event('click', { bubbles: true })); });
+  assert.deepEqual(requests, [{ turnId: 'turn-0', sequence: 8 }]);
+  // Landing it at the top after the prepend is measured in the browser
+  // (`partial-history-notice` E2E); this fake DOM runs no frames.
+});
+
+test('portals landmarks into the layout host and keeps them actionable', async () => {
+  dom = installTranscriptDom();
   const rail = createElement(PromptAnchorRail, {
     turns: [
-      { turnId: 'turn-1', label: 'Prompt 1', sequence: 0 },
-      { turnId: 'turn-2', label: 'Prompt 2', sequence: 2 },
-      { turnId: 'turn-3', label: 'Prompt 3', sequence: 4 },
+      { turnId: 'turn-1', label: 'Prompt 1' },
+      { turnId: 'turn-2', label: 'Prompt 2' },
+      { turnId: 'turn-3', label: 'Prompt 3' },
     ],
     scrollRef: { current: null },
+    onNavigateTurn: () => {},
   });
   // The rail reads its tick from the scroll authority, so the host-less render
   // still needs one — otherwise this would assert the absence of a rail that
   // threw rather than one that found no host.
-  await act(() => root.render(createElement(LocaleProvider, {
+  await dom.render(createElement(LocaleProvider, {
     locale: 'en',
     children: createElement(TranscriptScrollAuthorityProvider, { children: rail }),
-  })));
-  assert.equal(mount.querySelector('.maka-prompt-rail'), null, 'no inline rail before a host exists');
-  await act(() => root.render(createElement(LocaleProvider, {
+  }));
+  assert.equal(dom.container.querySelector('.maka-prompt-rail'), null, 'no inline rail before a host exists');
+  await dom.render(createElement(LocaleProvider, {
     locale: 'en', children: createElement(ChatSurfaceLayout, { composer: null, children: rail }),
-  })));
-  assert.equal(mount.querySelectorAll('.maka-prompt-rail-host .maka-prompt-rail').length, 1);
-  assert.match(mount.innerHTML, /data-prompt-turn-id="turn-2"/);
-  assert.doesNotMatch(mount.innerHTML, /data-resident|Not currently loaded|aria-disabled="true"/);
-  assert.match(mount.innerHTML, /aria-label="Jump to prompt: Prompt 2"/);
+  }));
+  assert.equal(dom.container.querySelectorAll('.maka-prompt-rail-host .maka-prompt-rail').length, 1);
+  assert.match(dom.container.innerHTML, /data-prompt-turn-id="turn-2"/);
+  assert.match(dom.container.innerHTML, /aria-label="Jump to prompt: Prompt 2"/);
+});
+
+test('a retained tick uses updated content, decoration, and navigation callbacks', async () => {
+  dom = installTranscriptDom();
+  const scrollRef = { current: null };
+  const turns: PromptAnchorRailTurn[] = Array.from({ length: 3 }, (_, index) => ({
+    turnId: `turn-${index}`, label: `Prompt ${index}`,
+  }));
+  const calls: string[] = [];
+  const render = (items: PromptAnchorRailTurn[], navigate: (turn: PromptAnchorRailTurn) => void) =>
+    createElement(LocaleProvider, {
+      locale: 'en', children: createElement(ChatSurfaceLayout, {
+        composer: null, children: createElement(PromptAnchorRail, {
+          turns: items, scrollRef, onNavigateTurn: navigate,
+        }),
+      }),
+    });
+  await dom.render(render(turns, () => calls.push('old')));
+  const tick = dom.container.querySelector('[data-prompt-turn-id="turn-1"]')!;
+  const updated = turns.map((turn, index) => index === 1
+    ? { ...turn, label: 'Updated prompt', reply: 'Updated answer', highlighted: true }
+    : turn);
+  await dom.render(render(updated, (turn) => {
+    assert.equal(turn, updated[1]);
+    calls.push(`new:${turn.turnId}`);
+  }));
+  assert.equal(dom.container.querySelector('[data-prompt-turn-id="turn-1"]'), tick);
+  assert.equal(tick.getAttribute('aria-label'), 'Jump to prompt: Updated prompt');
+  assert.equal(tick.getAttribute('data-highlighted'), 'true');
+  await act(() => { tick.dispatchEvent(new dom!.window.Event('click', { bubbles: true })); });
+  assert.deepEqual(calls, ['new:turn-1']);
 });

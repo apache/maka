@@ -48,6 +48,22 @@ export interface DesktopSessionSummary extends SessionSummary {
 
 export type DesktopSessionSummaryInput = SessionSummary & { readonly revision: number; readonly localState?: 'pending' | 'cached'; readonly localCreatedAt?: number };
 
+/**
+ * Catalog order is Host-owned (`activity_at DESC, session_id ASC`); a single
+ * row patched locally must sort exactly as a re-listed catalog would.
+ */
+export function compareDesktopSessionCatalogSummaries(
+  left: DesktopSessionSummary,
+  right: DesktopSessionSummary,
+): number {
+  const leftActivity = left.localState === 'pending' ? left.localCreatedAt : left.activityAt;
+  const rightActivity = right.localState === 'pending' ? right.localCreatedAt : right.activityAt;
+  if (leftActivity === undefined || rightActivity === undefined) {
+    throw new Error('Runtime Host Session Catalog activity is unavailable');
+  }
+  return rightActivity - leftActivity || left.id.localeCompare(right.id);
+}
+
 export type DesktopSessionUpdateFailureCode =
   | 'session_busy'
   | 'operation_conflict'
@@ -273,17 +289,18 @@ export function projectDesktopDailyReviewSummary(
   };
 }
 
-export function projectDesktopUsageStats(
+export function projectDesktopUsageActivity(
   host: DesktopHostRef,
-  stats: UsageStats,
-): UsageStats {
-  return {
-    ...stats,
-    logs: stats.logs.map((log) => ({
-      ...log,
-      ...(log.sessionId === undefined
-        ? {}
-        : { sessionId: projectSessionId(host, log.sessionId) }),
-    })),
-  };
+  logs: UsageStats['logs'],
+): UsageStats['logs'] {
+  return logs.map((log) => ({
+    ...log,
+    ...(log.sessionId === undefined
+      ? {}
+      : { sessionId: projectSessionId(host, log.sessionId) }),
+  }));
+}
+
+export function projectDesktopUsageStats(host: DesktopHostRef, stats: UsageStats): UsageStats {
+  return { ...stats, logs: projectDesktopUsageActivity(host, stats.logs) };
 }

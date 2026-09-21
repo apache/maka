@@ -20,7 +20,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import type { SessionEvent } from '@maka/core/events';
 import {
@@ -36,9 +35,10 @@ import {
   createAppShellSessionEventHandlers,
 } from '../../renderer/app-shell-session-events.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { renderTranscriptMarkup } from './transcript-test-dom.js';
 
-function renderWithLocale(child: ReactNode): string {
-  return renderToStaticMarkup(
+function renderWithLocale(child: ReactNode): Promise<string> {
+  return renderTranscriptMarkup(
     createElement(LocaleProvider, {
       locale: 'zh-CN',
       children: createElement(ChatSurfaceLayout, { composer: null, children: child }),
@@ -63,7 +63,7 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
   await pollFor(predicate, { timeoutMs: 3_000, pollMs: 10, message });
 }
 
-function renderLiveTurn(liveTurn: LiveTurnProjection): string {
+function renderLiveTurn(liveTurn: LiveTurnProjection): Promise<string> {
   return renderWithLocale(createElement(ChatView, {
     activeSession: {
       id: 'session-1',
@@ -88,14 +88,14 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
 }
 
 describe('single live-turn handoff', () => {
-  it('keeps activity in the answer footer before the session or Turn arrives', () => {
+  it('keeps activity in the process row before the session or Turn arrives', async () => {
     const session: NonNullable<Parameters<typeof ChatView>[0]['activeSession']> = {
       id: 'session-1', name: 'pending', status: 'running' as const, backend: 'ai-sdk',
       labels: [], isFlagged: false, isArchived: false, hasUnread: false,
       llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask' as const,
     };
     for (const activeSession of [undefined, session]) {
-      const markup = renderWithLocale(createElement(ChatView, {
+      const markup = await renderWithLocale(createElement(ChatView, {
         activeSession,
         messages: [],
         transientMessages: [{
@@ -107,14 +107,15 @@ describe('single live-turn handoff', () => {
         onNew() {},
       } satisfies Parameters<typeof ChatView>[0]));
       const { document } = parseHTML(markup);
-      const status = document.querySelector('.maka-assistant-answer [role="status"]');
-      assert.ok(status?.closest('.maka-turn-footer'), 'activity must occupy the shared footer');
+      const status = document.querySelector('.maka-processing-summary [role="status"]');
+      assert.ok(status, 'activity must occupy the process row');
+      assert.equal(document.querySelector('.maka-turn-footer'), null);
       assert.equal(document.querySelector('.maka-assistant-answer [role="toolbar"]'), null);
     }
   });
 
-  it('renders a transient user message without manufacturing a Turn', () => {
-    const markup = renderWithLocale(createElement(ChatView, {
+  it('renders a transient user message without manufacturing a Turn', async () => {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -138,8 +139,8 @@ describe('single live-turn handoff', () => {
     assert.match(markup, />send now</);
   });
 
-  it('does not flash the empty-chat Maka hero before a first transient message', () => {
-    const markup = renderWithLocale(createElement(ChatView, {
+  it('does not flash the empty-chat Maka hero before a first transient message', async () => {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -161,8 +162,8 @@ describe('single live-turn handoff', () => {
     assert.doesNotMatch(markup, /maka-hero-empty-chat/);
   });
 
-  it('shows a loading transient before its real live Turn answer', () => {
-    const markup = renderWithLocale(createElement(ChatView, {
+  it('shows a loading transient before its real live Turn answer', async () => {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -198,8 +199,8 @@ describe('single live-turn handoff', () => {
     assert.equal((markup.match(/data-transcript-turn-id="turn-1"/g) ?? []).length, 1);
   });
 
-  it('keeps an unresolved Message independent of a Turn without an admission binding', () => {
-    const markup = renderWithLocale(createElement(ChatView, {
+  it('keeps an unresolved Message independent of a Turn without an admission binding', async () => {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -235,8 +236,8 @@ describe('single live-turn handoff', () => {
     assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 1);
   });
 
-  it('renders one ordered timeline: thinking before its tool and answer', () => {
-    const markup = renderLiveTurn({
+  it('renders one ordered timeline: thinking before its tool and answer', async () => {
+    const markup = await renderLiveTurn({
       turnId: 'turn-1',
       steps: [{
         stepId: 'assistant-1',
@@ -261,9 +262,9 @@ describe('single live-turn handoff', () => {
     assert.equal((markup.match(/data-turn-id=/g) ?? []).length, 1);
   });
 
-  it('keeps a completed live answer as the only visible owner until settle', () => {
+  it('keeps a completed live answer as the only visible owner until settle', async () => {
     const finalText = 'one visible answer';
-    const markup = renderWithLocale(createElement(ChatView, {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -290,9 +291,9 @@ describe('single live-turn handoff', () => {
     assert.equal(markup.split(finalText).length - 1, 1);
   });
 
-  it('keeps an incomplete live answer as the only owner after early persistence', () => {
+  it('keeps an incomplete live answer as the only owner after early persistence', async () => {
     const text = 'persisted before a slow tool finishes';
-    const markup = renderWithLocale(createElement(ChatView, {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,

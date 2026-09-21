@@ -271,6 +271,50 @@ describe('Session catalog protocol', () => {
 
     assert.deepEqual(
       decodeClientFrame({
+        requestId: 'request-executor',
+        operation: 'session.create',
+        input: {
+          sessionId: 'session-executor',
+          workspace: { kind: 'project', projectId: 'project-1' },
+          executorId: 'codex.app-server',
+        },
+      }),
+      {
+        requestId: 'request-executor',
+        operation: 'session.create',
+        input: {
+          sessionId: 'session-executor',
+          workspace: { kind: 'project', projectId: 'project-1' },
+          executorId: 'codex.app-server',
+        },
+      },
+    );
+
+    for (const input of [
+      {
+        sessionId: 'session-missing-route',
+        workspace: { kind: 'project', projectId: 'project-1' },
+      },
+      {
+        sessionId: 'session-ambiguous-route',
+        workspace: { kind: 'project', projectId: 'project-1' },
+        executorId: 'codex',
+        modelTarget: { kind: 'default' },
+      },
+    ]) {
+      assert.throws(
+        () =>
+          decodeClientFrame({
+            requestId: 'request-invalid-executor',
+            operation: 'session.create',
+            input,
+          }),
+        isProtocolError,
+      );
+    }
+
+    assert.deepEqual(
+      decodeClientFrame({
         requestId: 'request-3',
         operation: 'session.workspace.relocate',
         input: {
@@ -465,14 +509,14 @@ describe('Session catalog protocol', () => {
       input: {
         sessionId: 'session-mode',
         workspace: { kind: 'host_path', path: '/workspace' },
-        mode: 'deep_research',
+        mode: 'bot',
         modelTarget: { kind: 'default' },
       },
     });
     if ('kind' in decoded || decoded.operation !== 'session.create') {
       assert.fail('Expected Session create frame');
     }
-    assert.equal(decoded.input.mode, 'deep_research');
+    assert.equal(decoded.input.mode, 'bot');
     assert.throws(
       () =>
         decodeClientFrame({
@@ -481,12 +525,34 @@ describe('Session catalog protocol', () => {
           input: {
             sessionId: 'session-invalid-mode',
             workspace: { kind: 'host_path', path: '/workspace' },
-            mode: 'unknown',
+            mode: 'deep_research',
             modelTarget: { kind: 'default' },
           },
         }),
       isProtocolError,
     );
+  });
+
+  test('distinguishes a model thinking default from an explicit provider default', () => {
+    const decode = (thinkingLevel: 'high' | null | undefined) => {
+      const decoded = decodeClientFrame({
+        requestId: `request-thinking-${String(thinkingLevel)}`,
+        operation: 'session.create',
+        input: {
+          sessionId: `session-thinking-${String(thinkingLevel)}`,
+          workspace: { kind: 'host_path', path: '/workspace' },
+          modelTarget: { kind: 'default' },
+          ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+        },
+      });
+      if ('kind' in decoded || decoded.operation !== 'session.create') {
+        assert.fail('Expected Session create frame');
+      }
+      return decoded.input;
+    };
+    assert.equal(Object.hasOwn(decode(undefined), 'thinkingLevel'), false);
+    assert.equal(decode(null).thinkingLevel, null);
+    assert.equal(decode('high').thinkingLevel, 'high');
   });
 
   test('correlates committed and conflicting update outputs with the request Session', () => {

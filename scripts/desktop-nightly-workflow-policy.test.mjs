@@ -53,6 +53,21 @@ test('npm publication owns both npm channels and no Desktop authority', async ()
     positions.toSorted((left, right) => left - right),
   );
   assert.ok(positions.every((position) => position >= 0));
+  // npm makes a published version readable minutes later, not immediately, so
+  // the gate must poll with a budget that fits inside the job's own timeout.
+  const availability = steps.find((step) => step.name === 'Require the public npm Nightly');
+  assert.match(availability.run, /--prefer-online/u);
+  const budget = /for attempt in \{1\.\.(\d+)\}[\s\S]*?sleep (\d+)/u.exec(availability.run);
+  assert.ok(budget, 'the availability gate must poll a bounded number of attempts');
+  const seconds = Number(budget[1]) * Number(budget[2]);
+  assert.ok(
+    seconds >= 30 * 60,
+    `the availability gate waits ${seconds}s, too short for a publish scan`,
+  );
+  assert.ok(
+    seconds < workflow.jobs.publish['timeout-minutes'] * 60,
+    'the availability gate must finish before the job timeout kills it',
+  );
   assert.doesNotMatch(JSON.stringify(workflow), /DESKTOP_NIGHTLY_ENABLED|NIGHTLIES_RSYNC/u);
   assert.doesNotMatch(JSON.stringify(workflow), /NODE_AUTH_TOKEN|NPM_TOKEN/u);
 });

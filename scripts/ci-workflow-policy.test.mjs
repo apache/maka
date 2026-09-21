@@ -101,6 +101,35 @@ test('core CI validates pull requests and the resulting main branch state', () =
   assert.doesNotMatch(workflow, /github\.event\.pull_request\.base\.sha/u);
 });
 
+test('the Desktop e2e tier reaches its servers through the tested runner', () => {
+  const workflow = readWorkflow('ci.yml');
+  const start = workflow.indexOf('      - name: Desktop e2e\n');
+  assert.ok(start >= 0, 'no Desktop e2e step');
+  const next = workflow.indexOf('\n      - ', start + 1);
+  const step = workflow.slice(start, next === -1 ? undefined : next);
+
+  // Allocation, readiness and retirement live in the runner, where
+  // `run-desktop-e2e-parallel.test.mjs` can exercise them. Inline here they
+  // would only ever be checked by a regex over this file.
+  assert.match(step, /run: node scripts\/run-desktop-e2e-parallel\.mjs --workers \d+\n/u);
+  // `xvfb-run -a` allocates one display for one command, which is the shape
+  // the runner exists to replace.
+  assert.doesNotMatch(step, /xvfb-run/u);
+});
+
+test('every main commit keeps a concurrency group of its own', () => {
+  const workflow = readWorkflow('ci.yml');
+  const group = /\n {2}group: (?<key>.+)\n {2}cancel-in-progress: (?<cancel>.+)\n/u.exec(
+    workflow,
+  )?.groups;
+  assert.ok(group, 'core CI declares no concurrency group');
+
+  // A group holds one pending run, so two main pushes sharing a key would let
+  // the later one evict the earlier commit's verdict before it ever ran.
+  assert.equal(group.cancel, "${{ github.event_name == 'pull_request' }}");
+  assert.match(group.key, /github\.event\.pull_request\.number \|\| github\.sha/u);
+});
+
 test('every core diff gate consumes the shared comparison without resolving another base', () => {
   const workflow = readWorkflow('ci.yml');
   const gates = workflow.split('\n      - ').filter((step) => step.includes('--base '));
@@ -1030,6 +1059,21 @@ test('everything that runs before dependency setup imports only node builtins', 
       pending.push(resolved);
     }
   }
+});
+
+test('every CI run validates the real committed source archive without dependency installation', () => {
+  const workflow = readWorkflow('ci.yml');
+  const step = workflow
+    .split('      - name: Verify repository source archive\n')[1]
+    ?.split('\n      - ', 1)[0];
+  assert.ok(step, 'repository archive gate is missing');
+  assert.doesNotMatch(step, /\bif:/u);
+  assert.match(step, /node scripts\/asf-source-release\.mjs create --revision HEAD --version/u);
+  assert.match(step, /require\("\.\/package\.json"\)\.version/u);
+  assert.ok(
+    workflow.indexOf('name: Verify repository source archive') <
+      workflow.indexOf('uses: actions/setup-node'),
+  );
 });
 
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);

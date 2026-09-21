@@ -17,9 +17,8 @@
  * under the License.
  */
 
-import type { ComponentProps } from 'react';
 import { AppShell as LegacyAppShell } from '../app-shell';
-import { WorkHubSurfaceSwitch } from '../features/workhub';
-export function AppShell(props: ComponentProps<typeof LegacyAppShell>) {
-  return <WorkHubSurfaceSwitch main={<LegacyAppShell {...props} />} />;
+import { WorkHubRoot, WorkHubSurfaceSwitch } from '../features/workhub';
+export function AppShell() {
+  return <WorkHubSurfaceSwitch main={<LegacyAppShell />} workhub={<WorkHubRoot />} />;
 }

@@ -25,6 +25,13 @@
 
 ### Added
 
+- Added external Session import to the TUI. It lists the Runtime Host's external
+  sources (Claude Code, Codex, OpenCode) and imports one Session as a native
+  Maka Session through the same Host catalog/import path the Desktop App uses,
+  opening the result without sending a model request. Sources with prior imports
+  offer an action to open the most recently imported task or create another
+  independent import. An uncertain result remains visible as a warning while
+  still allowing a user-initiated import again in both Desktop and TUI.
 - Added `/transcript` to browse long TUI sessions without depending on terminal
   scrollback, with line, page, and first/last navigation.
 
@@ -40,6 +47,12 @@
 
 ### Changed
 
+- Imported Sessions replay conversation text only — the user's words and the
+  model's — so an import can no longer publish an empty or partial history. A
+  transcript whose rows convert to nothing is refused before anything is
+  persisted, and a transcript that opens on an assistant reply keeps that turn.
+- Reading a Claude Code transcript for the Session catalog is bounded to a head
+  and tail window instead of reading each transcript to its end.
 - Made typed `request()` the sole direct Runtime Host operation API; removed the 17 forwarding
   aliases from direct and reconnecting connections while preserving status validation,
   subscriptions, capabilities, listeners, lifecycle, and close behavior.
@@ -454,6 +467,9 @@
 
 ### Removed
 
+- Removed the TUI's local foreign-Session scanner, the
+  `<foreign-session-digest>` handoff prompt, the second OpenCode reader, and the
+  `MAKA_IMPORT_*` switches. TUI and Desktop now share one import path.
 - Removed dead storage modules (#2104), consumer-less Desktop IPC bridge surface
   (#2065), and dead shell CSS recipes along with the check-dead-css blind spots
   that hid them (#2070).

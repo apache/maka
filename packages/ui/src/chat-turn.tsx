@@ -41,6 +41,7 @@ import {
   Timestamp,
   Token,
   useLightbox,
+  useMediaQuery,
 } from '@astryxdesign/core';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
@@ -56,15 +57,14 @@ import type { TransientUserMessageProjection } from './chat-view.js';
 import { type LiveProviderRetry } from './live-turn-projection.js';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import {
-  finalAssistantReplyText,
   type TurnTimelineItem,
   type TurnViewModel,
 } from './materialize.js';
-import { foldTimeline, type FoldedTimelineChild, type FoldedTimelineEntry } from './timeline-fold.js';
+import { foldTimeline, reconcileFoldedEntries, type FoldedTimelineChild, type FoldedTimelineEntry } from './timeline-fold.js';
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
-import { ToolTrow, toolTrowHasVisibleSpinner } from './tool-activity.js';
+import { ToolTrow } from './tool-activity.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -75,6 +75,7 @@ import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
+import { MakaClientSlotOutlet, useMakaClientSlotOccupied } from './client-plugin-slots.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -458,12 +459,9 @@ export const TurnView = memo(function TurnView(props: {
   liveStreaming?: {
     onStreamingSettled?: (messageId?: string) => void;
     /**
-     * Whether to show the running status line at the tail of the live turn.
-     *
-     * It stays up for the WHOLE turn, not just the wait before the first token.
-     * The cue it replaces was gated on the turn having no live content yet, so
-     * it vanished the moment a tool started — exactly the stretch where a turn
-     * looks abandoned and the user most needs to see it is still working.
+     * Whether to show activity for the live turn. The current process summary
+     * owns it when present; the footer is the fallback before a process exists.
+     * False while waiting for user input, whose prompt owns the next action.
      */
     runningStatus?: boolean;
     providerRetry?: LiveProviderRetry;
@@ -474,16 +472,27 @@ export const TurnView = memo(function TurnView(props: {
    * linked subagent tool rows; omitted when the host has no navigation.
    */
   onOpenLinkedSession?(sessionId: string): void;
-  /** Resolve a requires-bypass tool refusal, then regenerate this turn. */
-  onSwitchToBypassAndRetry?(turnId: string): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
+  const hasTurnFooterContribution = useMakaClientSlotOccupied('conversation.turn.footer');
   const { turn } = props;
+  // Derive disclosure entries and reply identity together, only when this
+  // turn's timeline changes. Rendering and copy share the original reply item.
+  const folded = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
+  // The live turn's timeline moves on every event; the fold re-runs but its
+  // entries are reconciled back to the previous objects, so the entry-level
+  // memo boundaries below see only what actually moved.
+  const foldedEntriesRef = useRef(folded.entries);
+  if (foldedEntriesRef.current !== folded.entries) {
+    foldedEntriesRef.current = reconcileFoldedEntries(foldedEntriesRef.current, folded.entries);
+  }
+  const foldedTimeline = foldedEntriesRef.current;
+  const finalReply = folded.finalReply;
   const forwardBadges = props.lineageBadges?.filter((b) => b.direction === 'forward') ?? [];
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
   const answerContext = accessibleActionContext(
-    turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
+    turn.user?.text ?? finalReply?.text ?? '',
     turn.startedAt,
     locale,
   );
@@ -495,17 +504,10 @@ export const TurnView = memo(function TurnView(props: {
     turn.timeline.length > 0 ||
     !!props.liveStreaming ||
     (turn.user !== undefined && turn.statusSource === 'recorded' && turn.status !== 'running');
-  // #1307: the collapsed "Processing" fold is derived at render time from the
-  // flat timeline. Settled turn identities are stable (memoized projections),
-  // so this only recomputes for the turn whose timeline actually changed.
-  const foldedTimeline = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
   const runningToolLabel = computerRunningLabel(turn.tools, locale);
   const conversationSegments = useMemo(
     () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
     [foldedTimeline, showAssistantMessage],
-  );
-  const toolSurfaceOwnsSpinner = turn.timeline.some(
-    (item) => item.kind === 'tools' && toolTrowHasVisibleSpinner(item.items),
   );
   return (
     <section
@@ -673,6 +675,12 @@ export const TurnView = memo(function TurnView(props: {
           );
         }
         const ownsTurnChrome = segmentIndex === conversationSegments.length - 1;
+        const activityProcessIndex = ownsTurnChrome
+          ? segment.items.findLastIndex((item) => item.kind === 'processing')
+          : -1;
+        // Every Turn owns this row, empty or not, so the cue never moves and
+        // settlement does not shift the transcript.
+        const liveWorkOwnsDisclosure = ownsTurnChrome && activityProcessIndex === -1;
         // Disjoint namespaces: a steering id is any string, so a bare
         // sentinel could collide with a real one.
         const assistantKey =
@@ -695,6 +703,18 @@ export const TurnView = memo(function TurnView(props: {
                 and Astryx tool group in the order the model produced them.
                 Intermediate text, reasoning and tools share a disclosure;
                 the final reply and inserted user instructions stay outside. */}
+              {liveWorkOwnsDisclosure && (
+                // An empty work log for a Turn that IS rendered: the cue lives
+                // on the footer row, so passing `activity` here would show it
+                // twice. This disclosure only holds the turn's process entries,
+                // and it has none yet.
+                <ProcessingBlock
+                  key="processing-status"
+                  activityObserved={props.activityObserved}
+                  entries={[]}
+                  running={!!props.liveStreaming || turn.status === 'running'}
+                />
+              )}
               {segment.items.map((item, index) =>
                 item.kind === 'processing' ? (
                   <ProcessingBlock
@@ -702,14 +722,15 @@ export const TurnView = memo(function TurnView(props: {
                     activityObserved={props.activityObserved}
                     entries={item.children}
                     running={!!props.liveStreaming || turn.status === 'running'}
-                    durationMs={ownsTurnChrome ? turn.durationMs : undefined}
-                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
-                    onOpenLinkedSession={props.onOpenLinkedSession}
-                    onSwitchToBypassAndRetry={
-                      props.onSwitchToBypassAndRetry
-                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
+                    durationMs={index === activityProcessIndex ? turn.durationMs : undefined}
+                    activity={
+                      index === activityProcessIndex && props.activityObserved !== false &&
+                      props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                        ? { startedAt: turn.startedAt || undefined, label: runningToolLabel }
                         : undefined
                     }
+                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
+                    onOpenLinkedSession={props.onOpenLinkedSession}
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ) : (
@@ -719,11 +740,6 @@ export const TurnView = memo(function TurnView(props: {
                     item={item}
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
-                    onSwitchToBypassAndRetry={
-                      props.onSwitchToBypassAndRetry
-                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
-                        : undefined
-                    }
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ),
@@ -786,19 +802,40 @@ export const TurnView = memo(function TurnView(props: {
                 ))}
               </Marker>
             )}
-            {ownsTurnChrome && (props.liveStreaming || props.footerActions?.length) ? (
+            {ownsTurnChrome ? (
               <TurnFooter
+                turnId={turn.turnId}
                 actions={props.liveStreaming ? [] : props.footerActions ?? []}
-                meta={props.liveStreaming ? undefined : turnMetaSummary(turn)}
+                meta={
+                  // The turn's state and the model facts share this row: one line
+                  // reads as the turn's footer, two read as a stray paragraph
+                  // between the answer and the model name. The state leads.
+                  <TurnFooterMeta
+                    status={
+                      <TurnStatusLine
+                        // The live STREAM decides whether work is happening: a turn
+                        // record can still say `running` while nothing is arriving
+                        // (a retry is scheduled, input is awaited), and announcing
+                        // activity then is a claim the reader watches fail.
+                        status={props.liveStreaming ? 'running' : turn.status}
+                        running={props.liveStreaming?.runningStatus === true}
+                        providerRetry={props.liveStreaming?.providerRetry !== undefined}
+                        startedAt={turn.startedAt}
+                        durationMs={turn.durationMs}
+                        elapsedInProcess={activityProcessIndex !== -1}
+                        activityLabel={
+                          props.liveStreaming?.runningStatus && !props.liveStreaming.providerRetry
+                            ? runningToolLabel
+                            : undefined
+                        }
+                      />
+                    }
+                    model={turnMetaSummary(turn)}
+                  />
+                }
                 live={!!props.liveStreaming}
                 activity={props.liveStreaming?.providerRetry ? (
                   <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
-                ) : props.liveStreaming?.runningStatus ? (
-                  <TurnRunningStatus
-                    startedAt={turn.startedAt}
-                    showSpinner={!toolSurfaceOwnsSpinner}
-                    activityLabel={runningToolLabel}
-                  />
                 ) : undefined}
                 context={answerContext}
                 onAction={
@@ -806,7 +843,7 @@ export const TurnView = memo(function TurnView(props: {
                     ? (actionId) => props.onFooterAction?.(turn.turnId, actionId)
                     : undefined
                 }
-                assistantText={finalAssistantReplyText(turn)}
+                assistantText={finalReply?.text ?? ''}
               />
             ) : null}
             </LocalizedChatMessage>
@@ -836,8 +873,8 @@ type ConversationSegment =
        * What this answer replies to: the steering message that opened it, or
        * the turn itself for the first answer. This is the segment's identity —
        * its React key must not be derived from its contents, because those
-       * change as the turn runs (a Processing fold dissolves once its last
-       * tools group is projected away) and a changing key remounts the whole
+       * change as the turn runs (a tools-only sequence disappears when its
+       * tools are projected away) and a changing key remounts the whole
        * answer, costing the user their scroll position, any disclosure they
        * had open, and any text Selection held inside it.
        *
@@ -871,7 +908,7 @@ function splitTimelineAtUserMessages(
 }
 
 export interface TurnFooterActionMeta {
-  id: 'regenerate' | 'branch' | 'copy';
+  id: 'branch' | 'copy';
   label: string;
   enabled: boolean;
   tooltip?: string;
@@ -916,10 +953,105 @@ export interface TurnPresentation {
 
 export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnPresentation;
 
+/**
+ * The turn's state, rendered as part of the turn's footer row.
+ *
+ * It shares that row rather than taking a line of its own: a second line between
+ * the answer and the model name read as a stray paragraph, and the row it joins
+ * is the one place guaranteed to be under the answer when the turn ends — a
+ * growing reply cannot push it out of view the way the process disclosure at the
+ * top is pushed. Running keeps the working cue (phrase + ticking clock) the
+ * disclosure used to host; settled states the duration and the wall-clock time
+ * the turn finished, which is what makes a transcript reviewable later — the
+ * message's relative stamp says how long ago, not when.
+ */
+function TurnStatusLine(props: {
+  status: TurnViewModel['status'];
+  startedAt: number;
+  durationMs?: number;
+  elapsedInProcess?: boolean;
+  /** A concrete activity (e.g. driving an app) outranks the playful phrase. */
+  activityLabel?: string;
+  /** Work is actually arriving. Only consulted for the running arm. */
+  running?: boolean;
+  /** A scheduled retry is waiting, not working. */
+  providerRetry?: boolean;
+}): ReactNode {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+
+  if (props.status === 'running') {
+    // A retry is not progress: nothing is produced while the client waits, and
+    // the retry indicator already says what is happening. A live turn whose
+    // stream is not running has nothing to announce either.
+    if (props.elapsedInProcess || props.providerRetry || props.running === false) return null;
+    return <TurnRunningStatus startedAt={props.startedAt || undefined} activityLabel={props.activityLabel} />;
+  }
+
+  // Localized duration, not the compact `3m 33s` the live counter uses: this
+  // reads as prose in the transcript, and a Chinese UI must not show English units.
+  const elapsed = props.durationMs === undefined || props.elapsedInProcess
+    ? undefined
+    : copy.processDuration(
+        Math.floor(props.durationMs / 60_000),
+        Math.floor(props.durationMs / 1_000) % 60,
+      );
+  // `startedAt + durationMs` is the same arithmetic the projection used to
+  // derive the duration, so the two cannot disagree. A placeholder start (the
+  // projection yields 0 for a turn whose messages carried none) would date the
+  // turn to 1970, so an implausibly early value suppresses the time instead.
+  const finishedAt =
+    props.durationMs !== undefined && props.startedAt > MIN_PLAUSIBLE_TURN_TS
+      ? formatAbsoluteTimestamp(props.startedAt + props.durationMs, locale)
+      : undefined;
+
+  const label =
+    props.status === 'completed'
+      ? finishedAt !== undefined
+        ? copy.turnStatusCompleted(elapsed, finishedAt)
+        : elapsed !== undefined
+          ? copy.turnStatusCompletedAloneWithDuration(elapsed)
+          : copy.turnStatusCompletedAlone
+      : props.status === 'aborted'
+        ? props.durationMs === undefined
+          ? undefined
+          : copy.turnStatusAborted(elapsed)
+        : props.durationMs === undefined
+          ? undefined
+          : copy.turnStatusFailed(elapsed);
+  if (label === undefined) return null;
+  return <span className="maka-turn-status-line" data-turn-status={props.status}>{label}</span>;
+}
+
+/**
+ * Below this, a `startedAt` is a placeholder rather than a time (the projection
+ * yields 0 for a turn whose messages carried no timestamp). 2001-09-09 in millis:
+ * comfortably after every real timestamp, comfortably before any clock a
+ * transcript could predate.
+ */
+const MIN_PLAUSIBLE_TURN_TS = 1_000_000_000_000;
+
+/** The turn's state, then the quieter model/cost facts, in one row. */
+function TurnFooterMeta(props: { status: ReactNode; model?: string }): ReactNode {
+  if (props.status === null && props.model === undefined) return undefined;
+  return (
+    <>
+      {props.status}
+      {props.status !== null && props.model !== undefined ? <span className="maka-turn-footer-meta-separator"> · </span> : null}
+      {props.model !== undefined ? <span className="maka-turn-footer-meta-model">{props.model}</span> : null}
+    </>
+  );
+}
+
 export function TurnFooter(props: {
+  turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
-  /** One-line turn meta (model · duration · cost) shown beside the actions. */
-  meta?: string;
+  /**
+   * The turn's one-line meta, beside the actions. A node rather than a string so
+   * the turn's state can share this row with the model name: two lines where one
+   * will do reads as a stray paragraph between the answer and the footer.
+   */
+  meta?: ReactNode;
   live?: boolean;
   activity?: ReactNode;
   context: string;
@@ -945,78 +1077,82 @@ export function TurnFooter(props: {
       role={props.live ? undefined : 'toolbar'}
       aria-label={props.live ? undefined : copy.answerActionsAriaLabel(props.context)}
       footer={
-        props.activity ?? <>
-          {props.meta ? <span className="maka-turn-footer-meta">{props.meta}</span> : null}
-          {props.actions.map((action) => {
-            const isCopyAction = action.id === 'copy';
-            const copyFeedbackLabel = copyPhase === 'pending'
-              ? `${copy.copying}…`
-              : copyPhase === 'copied'
-                ? copy.copied
-                : copyPhase === 'failed'
-                  ? copy.copyFailed
-                  : action.label;
-            const tooltipText = isCopyAction
-              ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
-              : (action.tooltip ?? action.label);
-            const icon = isCopyAction && copyPhase === 'copied'
-              ? <Icon icon="check" size="sm" />
-              : STATUS_FOOTER_ICON[action.id];
-            return (
-              <UiIconButton
-                key={action.id}
-                label={copy.answerActionAriaLabel(
-                  action.label,
-                  props.context,
-                )}
-                tooltip={tooltipText}
-                icon={icon}
-                variant="ghost"
-                size="sm"
-                className={markerVariants({ variant: 'footer-action' })}
-                data-action={action.id}
-                data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-                isDisabled={!action.enabled}
-                isLoading={
-                  isCopyAction ? copyPhase === 'pending' : action.tooltip === copy.processing
-                }
-                onClick={() => void handleClick(action)}
-              />
-            );
-          })}
+        <>
+          {props.activity ?? <>
+            {props.meta ? <span className="maka-turn-footer-meta">{props.meta}</span> : null}
+            {props.actions.map((action) => {
+              const isCopyAction = action.id === 'copy';
+              const copyFeedbackLabel = copyPhase === 'pending'
+                ? `${copy.copying}…`
+                : copyPhase === 'copied'
+                  ? copy.copied
+                  : copyPhase === 'failed'
+                    ? copy.copyFailed
+                    : action.label;
+              const tooltipText = isCopyAction
+                ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
+                : (action.tooltip ?? action.label);
+              const icon = isCopyAction && copyPhase === 'copied'
+                ? <Icon icon="check" size="sm" />
+                : STATUS_FOOTER_ICON[action.id];
+              return (
+                <UiIconButton
+                  key={action.id}
+                  label={copy.answerActionAriaLabel(
+                    action.label,
+                    props.context,
+                  )}
+                  tooltip={tooltipText}
+                  icon={icon}
+                  variant="ghost"
+                  size="sm"
+                  className={markerVariants({ variant: 'footer-action' })}
+                  data-action={action.id}
+                  data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
+                  isDisabled={!action.enabled}
+                  isLoading={
+                    isCopyAction ? copyPhase === 'pending' : action.tooltip === copy.processing
+                  }
+                  onClick={() => void handleClick(action)}
+                />
+              );
+            })}
+          </>}
+          <MakaClientSlotOutlet
+            name="conversation.turn.footer"
+            owner={{
+              turnId: props.turnId,
+              live: props.live === true,
+              assistantText: props.assistantText,
+            }}
+          />
         </>
       }
     />
   );
 }
 
-/** "model · duration · cost" for a settled turn; undefined when there is nothing to say. */
+/** "model · cost" for a settled turn; the elapsed lives in the process row. */
 function turnMetaSummary(turn: TurnViewModel): string | undefined {
   const parts: string[] = [];
   if (turn.modelId) parts.push(turn.modelId);
-  // Duration counts whole seconds, so anything under one would read「0s」.
-  if (turn.durationMs && turn.durationMs >= 1_000) parts.push(formatTurnDuration(turn.durationMs));
   if (turn.tokens?.costUsd && turn.tokens.costUsd > 0) parts.push(`$${turn.tokens.costUsd.toFixed(4)}`);
   return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
 const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
-  regenerate: <Icon icon={RefreshCcw} size="sm" />,
   branch: <Icon icon={GitBranch} size="sm" />,
   copy: <Icon icon="copy" size="sm" />,
 };
 
 const ELAPSED_TICK_MS = 1_000;
+const WORKING_PHRASE_INTERVAL_MS = 20_000;
 
 /**
- * The live turn's running status line: a truthful activity label and the
- * elapsed clock beside it.
- *
- * A quiet provider request does not prove that the model is actively making
- * semantic progress. The default therefore says only that Maka is waiting for
- * model output. A concrete tool label can replace it when Runtime has direct
- * evidence of work in flight. The clock is local presentation state so ticking
- * it does not repaint the whole transcript.
+ * One live activity cue, inside the current process summary or, before any
+ * process exists, in the footer. Working phrases express liveness, not stages
+ * or completed progress. Concrete activity labels take precedence. Rotation
+ * shares the elapsed clock and never changes the accessible status name.
  *
  * `startedAt` is the turn's own first-message timestamp, so the clock measures
  * the wait the user actually experienced — from pressing send, not from
@@ -1024,47 +1160,53 @@ const ELAPSED_TICK_MS = 1_000;
  * rare fallback path where streaming beat the user turn into the transcript;
  * the phrase then stands alone.
  */
-export function TurnRunningStatus(props: {
+function TurnRunningStatus(props: {
   startedAt?: number;
-  showSpinner?: boolean;
   activityLabel?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const elapsedMs = useTurnElapsedTime(props.startedAt);
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
+  const phrase = copy.workingPhrases[
+    reducedMotion || !isTimeDrivenMotionEnabled(rootRef.current) ? 0
+      : Math.floor((elapsedMs ?? 0) / WORKING_PHRASE_INTERVAL_MS) % copy.workingPhrases.length
+  ];
 
   return (
-    <div
+    <span
       className="maka-turn-processing"
       role="status"
-      aria-label={props.activityLabel ?? copy.awaitingModelOutput}
+      aria-label={props.activityLabel ?? copy.processing}
+      ref={rootRef}
     >
-      {props.showSpinner !== false && (
-        <Spinner size="md" shade="subtle" aria-hidden="true" />
-      )}
       {/* Name the activity once; the clock must not announce each second. */}
       <span className="maka-turn-indicator-text" aria-hidden="true">
         <span className="maka-turn-status-label">
-          {props.activityLabel ?? copy.awaitingModelOutput}
+          {props.activityLabel ?? phrase}
         </span>
-        <TurnElapsedTime startedAt={props.startedAt} separator />
+        {elapsedMs !== undefined && <>
+          <span className="maka-turn-status-separator">·</span>
+          <span className="maka-turn-elapsed">{formatTurnDuration(elapsedMs)}</span>
+        </>}
       </span>
-    </div>
+    </span>
   );
 }
 
-function TurnElapsedTime(props: { startedAt?: number; separator?: boolean }) {
-  const { startedAt } = props;
-  const rootRef = useRef<HTMLSpanElement>(null);
+function useTurnElapsedTime(startedAt: number | undefined) {
   // Undefined until an effect measures it, which is also what keeps a static
   // render deterministic: the clock is a client-only value, so server markup
   // and the first paint carry the phrase alone.
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
 
   useEffect(() => {
-    // Frozen (fixture / reduced motion) the clock is dropped rather than
-    // pinned: any value it could show is a real wall-clock difference, so a
-    // capture taken a second later would differ from this one. The gate needs
-    // this node because the freeze can be declared on any ancestor.
-    if (startedAt === undefined || !isTimeDrivenMotionEnabled(rootRef.current)) return;
+    // Elapsed time is task information, independent of motion preferences.
+    // Screenshot fixtures can pin browser time without hiding this information.
+    if (startedAt === undefined) {
+      setElapsedMs(undefined);
+      return;
+    }
     setElapsedMs(Math.max(0, Date.now() - startedAt));
     const tick = window.setInterval(() => {
       setElapsedMs(Math.max(0, Date.now() - startedAt));
@@ -1072,12 +1214,15 @@ function TurnElapsedTime(props: { startedAt?: number; separator?: boolean }) {
     return () => window.clearInterval(tick);
   }, [startedAt]);
 
+  return elapsedMs;
+}
+
+function TurnElapsedTime(props: { startedAt?: number }) {
+  const elapsedMs = useTurnElapsedTime(props.startedAt);
+
   return (
-    <span className="maka-turn-elapsed" aria-hidden="true" ref={rootRef}>
-      {elapsedMs !== undefined && <>
-        {props.separator && <span className="maka-turn-status-separator">·</span>}
-        {formatTurnDuration(elapsedMs)}
-      </>}
+    <span className="maka-turn-elapsed" aria-hidden="true">
+      {elapsedMs !== undefined && formatTurnDuration(elapsedMs)}
     </span>
   );
 }
@@ -1268,12 +1413,11 @@ function timelineEntryKey(item: TurnTimelineItem, index: number): string {
 }
 
 /** Render one timeline entry: reasoning disclosure / answer bubble / tool group. */
-function TurnTimelineEntry(props: {
+const TurnTimelineEntry = memo(function TurnTimelineEntry(props: {
   activityObserved?: boolean;
   item: Exclude<TurnTimelineItem, { kind: 'user' }>;
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
-  onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const { item } = props;
@@ -1293,7 +1437,6 @@ function TurnTimelineEntry(props: {
         items={item.items}
         activityObserved={props.activityObserved}
         onOpenLinkedSession={props.onOpenLinkedSession}
-        onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
       />
     );
   }
@@ -1309,56 +1452,65 @@ function TurnTimelineEntry(props: {
       onSettled={() => props.onStreamingSettled?.(item.messageId)}
     />
   );
-}
+});
 
-function ProcessingBlock(props: {
+/**
+ * The turn's whole execution process (reasoning, intermediate commentary, tool
+ * activity) as one in-flow disclosure: a titled header row and, when open, the
+ * full body laid out in the transcript's own scroll path. The container's
+ * border is the frame, so a collapsed box keeps its outline and shows only the
+ * title row.
+ */
+export const ProcessingBlock = memo(function ProcessingBlock(props: {
   activityObserved?: boolean;
   entries: FoldedTimelineChild[];
   running: boolean;
   durationMs?: number;
+  activity?: { startedAt?: number; label?: string };
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
-  onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   // null follows the lifecycle: open while running, collapsed on completion.
-  // Explicit reader choices survive appended events and the live→stored swap.
+  // Settled reader choices survive appended events. Live work stays expanded.
+  // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
-  const needsAttention = props.entries.some((entry) => entry.kind === 'tools'
-    && entry.items.some((tool) => tool.status === 'errored' || tool.status === 'interrupted'));
-  // Reveal a new failure even if the reader collapsed the running process.
-  // They can close it again; its attention label remains visible. Permission
-  // requests and turn recovery banners are owned outside the timeline.
-  useEffect(() => {
-    if (needsAttention) setManualOpen(null);
-  }, [needsAttention]);
-  const open = manualOpen ?? (props.running || needsAttention);
-  const seconds = props.durationMs !== undefined && Number.isFinite(props.durationMs)
+  const open = props.running || manualOpen === true;
+  const seconds = !props.running && props.durationMs !== undefined && Number.isFinite(props.durationMs)
     ? Math.floor(Math.max(0, props.durationMs) / 1000)
     : undefined;
-  const label = needsAttention ? copy.processNeedsAttention
-    : props.running ? copy.processing
-    : seconds === undefined ? copy.processDetails
+  const label = seconds === undefined
+    ? copy.processDetails
     : copy.processDuration(Math.floor(seconds / 60), seconds % 60);
   return (
     <details
       className="maka-processing-sequence"
       data-maka-transcript-boundary=""
+      data-running={props.running ? 'true' : 'false'}
       open={open}
     >
       <summary
         className="maka-processing-summary"
         aria-expanded={open}
+        aria-disabled={props.running || undefined}
+        tabIndex={props.running ? -1 : 0}
         onClick={(event) => {
           event.preventDefault();
-          setManualOpen(!open);
+          if (!props.running) setManualOpen(!open);
         }}
       >
-        <span>{label}</span>
-        <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />
+        {props.activity ? (
+          <TurnRunningStatus
+            startedAt={props.activity.startedAt}
+            activityLabel={props.activity.label}
+          />
+        ) : (
+          <span>{label}</span>
+        )}
+        {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}
       </summary>
-      <div className="maka-processing-content">
+      <div className="maka-processing-body">
         {props.entries.map((entry, index) => (
           <TurnTimelineEntry
             key={timelineEntryKey(entry, index)}
@@ -1366,14 +1518,13 @@ function ProcessingBlock(props: {
             item={entry}
             onStreamingSettled={props.onStreamingSettled}
             onOpenLinkedSession={props.onOpenLinkedSession}
-            onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
             initialLiveContent={props.initialLiveContent}
           />
         ))}
       </div>
     </details>
   );
-}
+});
 
 function DeepThinking(props: { text: string; live: boolean; settledText?: string; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
@@ -1386,12 +1537,13 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
       previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}
       title={props.truncated ? copy.thinkingTruncatedTitle : undefined}
-      data-deep-thinking={props.live ? 'live' : undefined}
     >
       <Markdown
         text={props.text}
         streaming={props.live}
-        settledText={props.settledText}
+        // A truncated reasoning buffer slides at the head. It is a current
+        // snapshot, not an append-only prefix for the reveal cursor to replay.
+        settledText={props.truncated ? props.text : props.settledText}
         density="compact"
       />
     </ChatReasoning>

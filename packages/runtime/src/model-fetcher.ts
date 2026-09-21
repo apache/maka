@@ -23,15 +23,13 @@ import {
   effectiveBaseUrl,
   isModelModality,
   providerAuthSupportsApiKey,
-  type LlmConnection,
   type ModelInfo,
   type ModelModality,
 } from '@maka/core/llm-connections';
-import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   CONNECTION_MODEL_ID_MAX_LENGTH,
-  normalizeConnectionModelDiscoveryResult,
+  decodeConnectionModels,
 } from '@maka/core/runtime-policy';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
@@ -44,7 +42,6 @@ import {
   fetchForConnectionEffect,
   type ConnectionEffectFetch,
   type ConnectionEffectFetchDependency,
-  type ConnectionEffectFetchOptions,
   type ConnectionEffectResponse,
 } from './connection-effect-fetch.js';
 import {
@@ -137,28 +134,6 @@ type FireworksModelDiscovery = Extract<
   (typeof PROVIDER_REGISTRY)[keyof typeof PROVIDER_REGISTRY]['modelDiscovery'],
   { kind: 'fireworks' }
 >;
-
-export async function fetchProviderModels(
-  connection: LlmConnection,
-  apiKey: string,
-  options: ConnectionEffectFetchOptions = {},
-): Promise<ModelInfo[]> {
-  try {
-    return normalizeDiscoveredModels(
-      await fetchProviderModelsStrict(connection, apiKey, options.fetch),
-    );
-  } catch (error) {
-    // Preserve status-bearing discovery errors so the sync layer can classify
-    // auth/protocol/network failures; only wrap unknown errors for display.
-    if (
-      error instanceof OpenAiCodexDiscoveryError ||
-      error instanceof ProviderModelDiscoveryHttpError
-    ) {
-      throw error;
-    }
-    throw new Error(generalizedErrorMessage(error, 'Failed to fetch provider models'));
-  }
-}
 
 export async function runConnectionModelDiscoveryEffect(
   connection: ConnectionEffectConnection,
@@ -262,9 +237,6 @@ async function fetchProviderModelsStrict(
       );
       if (!r.ok) {
         await r.cancel();
-        if (connection.providerType === 'xai-oauth') {
-          throw new ProviderModelDiscoveryHttpError(r.status);
-        }
         throw new ConnectionEffectHttpError(r.status);
       }
       const data = await readProviderJson<{ data?: unknown } | unknown[]>(r);
@@ -372,7 +344,7 @@ function cloudflareModelsUrl(baseUrl: string, page: number): string {
   return url.toString();
 }
 
-function normalizeDiscoveredModels(models: ModelInfo[]): ModelInfo[] {
+function normalizeConnectionEffectModels(models: ModelInfo[]): readonly ModelInfo[] {
   const unique = new Map<string, ModelInfo>();
   for (const model of models) {
     if (typeof model?.id !== 'string') continue;
@@ -390,16 +362,8 @@ function normalizeDiscoveredModels(models: ModelInfo[]): ModelInfo[] {
       throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
     }
   }
-  return [...unique.values()];
-}
-
-function normalizeConnectionEffectModels(models: ModelInfo[]): readonly ModelInfo[] {
   try {
-    return normalizeConnectionModelDiscoveryResult({
-      models: normalizeDiscoveredModels(models),
-      source: 'fetched',
-      fetchedAt: 0,
-    }).models;
+    return decodeConnectionModels([...unique.values()]);
   } catch (error) {
     throw new ConnectionEffectInvalidResponseError('Provider returned invalid model metadata', {
       cause: error,
@@ -453,26 +417,6 @@ type RawOpenAiCodexModel = {
 };
 
 /**
- * Discovery error carrying the HTTP status, so callers (syncOpenAiCodexConnection)
- * can classify auth failures (401/403) vs protocol errors (4xx) vs transient
- * network failures without string-matching the message.
- */
-export class OpenAiCodexDiscoveryError extends ConnectionEffectHttpError {
-  constructor(status: number) {
-    super(status);
-    this.name = 'OpenAiCodexDiscoveryError';
-  }
-}
-
-/** Structured status for standard provider `/models` endpoints. */
-export class ProviderModelDiscoveryHttpError extends ConnectionEffectHttpError {
-  constructor(status: number) {
-    super(status);
-    this.name = 'ProviderModelDiscoveryHttpError';
-  }
-}
-
-/**
  * Discover models from the ChatGPT/Codex OAuth backend
  * (`chatgpt.com/backend-api/codex/models`). Unlike the public OpenAI API
  * `/v1/models`, this endpoint reports the slugs the signed-in ChatGPT account
@@ -481,7 +425,7 @@ export class ProviderModelDiscoveryHttpError extends ConnectionEffectHttpError {
  * dropped; the rest are sorted by `priority` (ascending) to match the
  * ChatGPT/Codex picker order.
  */
-export async function fetchOpenAiCodexModels(
+async function fetchOpenAiCodexModels(
   baseUrl: string,
   accessToken: string,
   fetchFn?: ConnectionEffectFetch,
@@ -500,7 +444,7 @@ export async function fetchOpenAiCodexModels(
   );
   if (!response.ok) {
     await response.cancel();
-    throw new OpenAiCodexDiscoveryError(response.status);
+    throw new ConnectionEffectHttpError(response.status);
   }
   const payload = await readProviderJson<{ models?: unknown }>(response);
   const models = providerObjectArray<RawOpenAiCodexModel>(
@@ -517,7 +461,7 @@ export async function fetchOpenAiCodexModels(
   visible.sort((a, b) => priorityOfOpenAiCodexModel(a) - priorityOfOpenAiCodexModel(b));
   return visible.map((model) => {
     const entry: ModelInfo = { id: (model.slug as string).trim() };
-    const contextWindow = contextWindowOfOpenAiCodexModel(model);
+    const contextWindow = providerTokenLimit(model.context_window);
     if (contextWindow !== undefined) entry.contextWindow = contextWindow;
     return entry;
   });
@@ -529,12 +473,9 @@ function priorityOfOpenAiCodexModel(model: RawOpenAiCodexModel): number {
     : 10_000;
 }
 
-function contextWindowOfOpenAiCodexModel(model: RawOpenAiCodexModel): number | undefined {
-  return typeof model.context_window === 'number' &&
-    Number.isFinite(model.context_window) &&
-    model.context_window > 0
-    ? model.context_window
-    : undefined;
+function providerTokenLimit(value: unknown): number | undefined {
+  // Invalid upstream metadata makes no claim about the model's limit.
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
@@ -581,15 +522,16 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
     limits?.vision?.supported_media_types?.some(
       (type) => typeof type === 'string' && type.startsWith('image/'),
     ) === true;
-  const contextWindow = limits?.max_context_window_tokens ?? limits?.max_prompt_tokens;
+  const contextWindow =
+    providerTokenLimit(limits?.max_context_window_tokens) ??
+    providerTokenLimit(limits?.max_prompt_tokens);
+  const maxOutputTokens = providerTokenLimit(limits?.max_output_tokens);
   return [
     {
       id: model.id,
       ...(model.name ? { displayName: model.name } : {}),
-      ...(typeof contextWindow === 'number' ? { contextWindow } : {}),
-      ...(typeof limits?.max_output_tokens === 'number'
-        ? { maxOutputTokens: limits.max_output_tokens }
-        : {}),
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
       apiProtocol,
       capabilities: { vision, reasoning, functionCalling: true },
     },
@@ -670,12 +612,11 @@ async function fetchCohereModels(
         }
         assertOptionalArray(model.endpoints, 'model endpoints');
         if (!model.endpoints?.includes('chat')) return [];
+        const contextWindow = providerTokenLimit(model.context_length);
         return [
           {
             id: model.name,
-            ...(typeof model.context_length === 'number'
-              ? { contextWindow: model.context_length }
-              : {}),
+            ...(contextWindow === undefined ? {} : { contextWindow }),
           },
         ];
       }),
@@ -731,12 +672,11 @@ async function fetchFireworksModels(
     authorization: `Bearer ${apiKey}`,
   };
   const signal = AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS);
+  let rawModelCount = 0;
   const fetchPages = async <T extends object>(
     path: string,
     query: Readonly<Record<string, string>>,
     itemKey: 'accounts' | 'models',
-    maxItems: number,
-    reserveItems?: (count: number) => void,
   ): Promise<T[]> => {
     const items: T[] = [];
     const seenPageTokens = new Set<string>();
@@ -768,10 +708,15 @@ async function fetchFireworksModels(
         nextPageToken?: unknown;
       }>(response);
       const rawItems = providerObjectArray<T>(data[itemKey], `Fireworks ${itemKey}`);
-      reserveItems?.(rawItems.length);
+      if (itemKey === 'models') {
+        rawModelCount += rawItems.length;
+        if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+          throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
+        }
+      }
       items.push(...rawItems);
-      if (items.length > maxItems) {
-        throw new ConnectionEffectInvalidResponseError(`Provider returned too many ${itemKey}`);
+      if (itemKey === 'accounts' && items.length > FIREWORKS_MAX_ACCOUNTS) {
+        throw new ConnectionEffectInvalidResponseError('Provider returned too many accounts');
       }
       pageToken = nextProviderPageToken(data.nextPageToken);
       if (!pageToken) return items;
@@ -786,7 +731,6 @@ async function fetchFireworksModels(
     discovery.accountsPath,
     { pageSize: String(FIREWORKS_PAGE_SIZE) },
     'accounts',
-    FIREWORKS_MAX_ACCOUNTS,
   );
   const accountNames = [
     ...accounts.flatMap((account) =>
@@ -797,13 +741,6 @@ async function fetchFireworksModels(
   if (accountNames.length > FIREWORKS_MAX_ACCOUNTS) {
     throw new ConnectionEffectInvalidResponseError('Provider returned too many accounts');
   }
-  let rawModelCount = 0;
-  const reserveModels = (count: number) => {
-    rawModelCount += count;
-    if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
-      throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
-    }
-  };
   const modelLists: RawFireworksModel[][] = [];
   for (let index = 0; index < accountNames.length; index += FIREWORKS_ACCOUNT_CONCURRENCY) {
     modelLists.push(
@@ -811,13 +748,7 @@ async function fetchFireworksModels(
         accountNames
           .slice(index, index + FIREWORKS_ACCOUNT_CONCURRENCY)
           .map((accountName) =>
-            fetchPages<RawFireworksModel>(
-              `/v1/${accountName}/models`,
-              discovery.query,
-              'models',
-              CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
-              reserveModels,
-            ),
+            fetchPages<RawFireworksModel>(`/v1/${accountName}/models`, discovery.query, 'models'),
           ),
       )),
     );
@@ -825,6 +756,7 @@ async function fetchFireworksModels(
 
   return modelLists.flat().flatMap((model) => {
     if (!model.name) return [];
+    const contextWindow = providerTokenLimit(model.contextLength);
     const capabilities: NonNullable<ModelInfo['capabilities']> = {};
     if (typeof model.supportsImageInput === 'boolean')
       capabilities.vision = model.supportsImageInput;
@@ -834,7 +766,7 @@ async function fetchFireworksModels(
       {
         id: model.name,
         ...(model.displayName ? { displayName: model.displayName } : {}),
-        ...(typeof model.contextLength === 'number' ? { contextWindow: model.contextLength } : {}),
+        ...(contextWindow === undefined ? {} : { contextWindow }),
         ...(Object.keys(capabilities).length ? { capabilities } : {}),
       },
     ];
@@ -850,7 +782,9 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
     model.providers,
     'model providers',
   );
-  const contextWindow = model.context_length ?? model.context_window;
+  const contextWindow =
+    providerTokenLimit(model.context_length) ?? providerTokenLimit(model.context_window);
+  const maxOutputTokens = providerTokenLimit(model.max_tokens);
   const capabilities: NonNullable<ModelInfo['capabilities']> = {};
   if (model.input_modalities?.includes('image')) capabilities.vision = true;
   if (typeof model.capabilities?.reasoning === 'boolean')
@@ -885,8 +819,8 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   return {
     id: model.id,
     ...(model.display_name || model.name ? { displayName: model.display_name ?? model.name } : {}),
-    ...(typeof contextWindow === 'number' ? { contextWindow } : {}),
-    ...(typeof model.max_tokens === 'number' ? { maxOutputTokens: model.max_tokens } : {}),
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     ...(Object.keys(capabilities).length ? { capabilities } : {}),
   };
 }

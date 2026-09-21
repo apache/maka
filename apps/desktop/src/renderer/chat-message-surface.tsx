@@ -18,7 +18,6 @@
  */
 
 import { useMemo, useState, type ComponentProps, type ReactNode } from 'react';
-import { isDeepResearchSession } from '@maka/core/deep-research';
 import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
 import { type OnboardingState } from '@maka/core/onboarding';
 import { type SettingsSection } from '@maka/core/settings';
@@ -36,8 +35,7 @@ import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery'
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
 import { selectLiveTurns } from './features/conversation/index.js';
-import { useExternalStoreSelector } from './use-external-store-selector';
-import { useDeepResearchRun } from './use-deep-research-run';
+import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 
 const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string | undefined) =>
@@ -56,15 +54,12 @@ const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string |
 
 interface ChatMessageSurfaceProps extends Omit<
   ComponentProps<typeof ChatView>,
-  | 'deepResearchRun'
   | 'emptyOverride'
   | 'initialLiveContentSnapshot'
   | 'liveTurns'
   | 'shellRunUpdates'
   | 'goalIndicator'
-  | 'onPrefetchHistory'
-  | 'onRetainWindow'
->, Required<Pick<ComponentProps<typeof ChatView>, 'onPrefetchHistory' | 'onRetainWindow'>> {
+> {
   /**
    * #1985: the live projection and the shell-run records are the only session
    * UI state that changes per streamed token, and this surface is their only
@@ -145,11 +140,6 @@ export function ChatMessageSurface({
         return;
     }
   };
-  const activeSession = chatViewRest.activeSession;
-  const deepResearchRun = useDeepResearchRun(
-    activeSession?.id,
-    isDeepResearchSession(activeSession?.labels),
-  );
   const liveTurns = useExternalStoreSelector(sessionUiController, selectLiveTurns, activeSessionId);
   const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
   const seededLiveTurns = liveContentSeedRevision > 0 ? liveTurns : undefined;
@@ -235,7 +225,6 @@ export function ChatMessageSurface({
             // the activation reaching the DOM is always this session's.
             initialLiveContentSnapshot={activation.initialLiveContent}
             shellRunUpdates={shellRunUpdates}
-            deepResearchRun={deepResearchRun}
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
           />

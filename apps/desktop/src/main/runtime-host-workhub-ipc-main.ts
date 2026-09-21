@@ -22,10 +22,11 @@ import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { RuntimeHostOperationError, RuntimeHostRequestInterruptedError } from '@maka/runtime-host/client';
 import { prepareIngestItems, resolveAttachmentRefs } from './attachment-ingest.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
-import { handleReconciledControl, rethrowReconnectableReadFailure, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
+import { handleReconnectableRead, handleReconciledControl, rethrowReconnectableReadFailure, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 import type {
   WorkHubAnswerInput,
   WorkHubAnswerResult,
+  WorkHubCoordinationSessionResolution,
   WorkHubPrepareAttachmentsResult,
 } from '../shared/workhub-conversation.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
@@ -51,10 +52,23 @@ export function registerRuntimeHostWorkHubIpc(
   ipcMain: ReconnectableReadIpcMain,
   options: RuntimeHostWorkHubIpcOptions,
 ): void {
-  ipcMain.handle('workhub:getSession', async () => toDesktopHostSessionSummary(await client.getWorkHubSession()));
-  ipcMain.handle('workhub:resolveCoordinationSession', () =>
-    client.resolveWorkHubCoordinationSession(),
+  handleReconnectableRead(ipcMain, 'workhub:getSession', async () =>
+    toDesktopHostSessionSummary(await client.getWorkHubSession()),
   );
+  ipcMain.handle('workhub:resolveCoordinationSession', async (): Promise<WorkHubCoordinationSessionResolution> => {
+    try {
+      return await client.resolveWorkHubCoordinationSession();
+    } catch (error) {
+      if (
+        error instanceof RuntimeHostOperationError &&
+        error.operation === 'workhub.coordination.resolve' &&
+        error.code === 'model_required'
+      ) {
+        return { kind: 'model_required' };
+      }
+      throw error;
+    }
+  });
   type Attempt = WorkHubAnswerInput & { readonly originHostEpoch: string };
   const unknown = (attempt: Attempt): WorkHubAnswerResult => ({
     kind: 'unknown', originHostEpoch: attempt.originHostEpoch,

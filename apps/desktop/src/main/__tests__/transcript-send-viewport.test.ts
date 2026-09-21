@@ -23,7 +23,6 @@ import { act, createElement, createRef, Fragment, useRef, useState, type Compone
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { StoredMessage } from '@maka/core/session';
-import { deferred } from '@maka/core/test-only/async-primitives';
 import {
   TranscriptScrollAuthorityProvider,
   TranscriptScrollButton,
@@ -37,6 +36,8 @@ import {
   type TranscriptReadingPositionCommands,
 } from '../../renderer/features/conversation/index.js';
 
+type VirtualizerHandle = NonNullable<Parameters<typeof useChatScroll>[0]['virtualizerRef']['current']>;
+
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { while (cleanups.length) await cleanups.pop()!(); });
 
@@ -48,9 +49,8 @@ test('preparing a send follows the new prompt and streaming growth, then lets th
   assert.equal(fixture.sessionUi.transcriptReadingAnchorBySessionRef.current['session-a']?.turnId, 'history');
 
   let prepared: boolean | undefined;
-  await act(async () => { prepared = await fixture.commands.current!.prepareSend('session-a'); });
+  await act(() => { prepared = fixture.commands.current!.prepareSend('session-a'); });
   assert.equal(prepared, true);
-  assert.equal(fixture.latestReads(), 1);
   assert.equal(fixture.pinned(), true);
   assert.equal(fixture.scroller.scrollTop, 2400);
 
@@ -68,10 +68,8 @@ test('preparing a send follows the new prompt and streaming growth, then lets th
   assert.equal(fixture.scroller.scrollTop, 500);
 });
 
-test('reading a live Turn without a durable sequence bookmarks its Turn identity', async () => {
+test('reading a live Turn bookmarks its Turn identity', async () => {
   const fixture = viewportFixture();
-  const sequenceForTurn = fixture.controller.store.sequenceForTurn;
-  fixture.controller.store.sequenceForTurn = (turnId) => turnId === 'latest' ? null : sequenceForTurn(turnId);
   await fixture.render();
   await fixture.readAt(1900);
 
@@ -79,18 +77,12 @@ test('reading a live Turn without a durable sequence bookmarks its Turn identity
   assert.deepEqual(fixture.sessionUi.transcriptReadingAnchorBySessionRef.current['session-a'], { turnId: 'latest' });
 });
 
-test('a send is accepted before latest history loads and its old completion cannot move a new Session viewport', async () => {
+test('a send prepared for an old Session cannot move the new Session viewport', async () => {
   const fixture = viewportFixture();
-  const latest = deferred<void>();
-  fixture.controller.loadLatest = () => latest.promise;
   await fixture.render();
-  await fixture.readAt(1000);
-  await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
-  assert.equal(fixture.pinned(), true, 'local admission must not wait for the latest range');
-
   await fixture.switchSession('session-b');
   await fixture.readAt(900);
-  await act(async () => { latest.resolve(); });
+  await act(() => { assert.equal(fixture.commands.current!.prepareSend('session-a'), false); });
 
   assert.equal(fixture.pinned(), false);
   assert.equal(fixture.scroller.scrollTop, 900);
@@ -98,30 +90,13 @@ test('a send is accepted before latest history loads and its old completion cann
   assert.equal(fixture.scroller.scrollTop, 900);
 });
 
-for (const direction of ['older', 'newer'] as const) {
-  test(`filling the ${direction} edge supersedes the background range load of an accepted send`, async () => {
-    const fixture = viewportFixture();
-    const latest = deferred<void>();
-    fixture.controller.loadLatest = () => latest.promise;
-    await fixture.render();
-    await fixture.readAt(1000);
-    await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
-    await fixture.fillEdge(direction);
-    const readerTop = fixture.scroller.scrollTop;
-    await act(async () => { latest.resolve(); });
-
-    assert.equal(fixture.pinned(), false);
-    assert.equal(fixture.scroller.scrollTop, readerTop);
-  });
-}
-
 test('a prepared send cancels an outstanding bookmark frame before it can scroll to history', async () => {
   const fixture = viewportFixture();
-  fixture.sessionUi.setTranscriptReadingAnchor('session-a', { turnId: 'history', sequence: 0 });
+  fixture.sessionUi.setTranscriptReadingAnchor('session-a', { turnId: 'history' });
   await fixture.render();
   assert.equal(fixture.pinned(), false);
 
-  await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
+  await act(() => { assert.equal(fixture.commands.current!.prepareSend('session-a'), true); });
   await fixture.flushFrames();
   await fixture.append('new-question', 200);
 
@@ -131,10 +106,7 @@ test('a prepared send cancels an outstanding bookmark frame before it can scroll
 
 test('the return-to-latest button consumes a pending bookmark frame and permits subsequent reader navigation', async () => {
   const fixture = viewportFixture({ returnButton: true });
-  const latest = deferred<void>();
-  fixture.controller.loadLatest = () => latest.promise;
-  fixture.controller.store.range = () => ({ sessionId: 'session-a', hasNewer: true });
-  fixture.sessionUi.setTranscriptReadingAnchor('session-a', { turnId: 'history', sequence: 0 });
+  fixture.sessionUi.setTranscriptReadingAnchor('session-a', { turnId: 'history' });
   await fixture.render();
   assert.equal(fixture.pinned(), false);
 
@@ -144,41 +116,8 @@ test('the return-to-latest button consumes a pending bookmark frame and permits 
   assert.equal(fixture.scroller.scrollTop, 2400);
 
   await fixture.readAt(1000);
-  await act(async () => { latest.resolve(); });
   await fixture.append('later-content', 200);
-  assert.equal(fixture.pinned(), false, 'the reader can leave while the latest range is pending');
-  assert.equal(fixture.scroller.scrollTop, 1000);
-});
-
-test('geometry changes from the latest range do not cancel the background load of an accepted send', async () => {
-  const fixture = viewportFixture();
-  const latest = deferred<void>();
-  fixture.controller.loadLatest = () => latest.promise;
-  await fixture.render();
-  await fixture.readAt(1000);
-  await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
-
-  await fixture.replaceRangeFromHost();
-  await act(async () => { latest.resolve(); });
-
-  assert.deepEqual(fixture.visibleTurns(), ['latest-b']);
-  assert.equal(fixture.pinned(), true);
-  await fixture.append('new-question', 200);
-  assert.equal(fixture.scroller.scrollTop, 400);
-});
-
-test('the reader can leave an accepted send while its latest range is still loading', async () => {
-  const fixture = viewportFixture();
-  const latest = deferred<void>();
-  fixture.controller.loadLatest = () => latest.promise;
-  await fixture.render();
-  await fixture.readAt(1900);
-  await act(async () => { assert.equal(await fixture.commands.current!.prepareSend('session-a'), true); });
-
-  await fixture.readAt(1000);
-  await act(async () => { latest.resolve(); });
-
-  assert.equal(fixture.pinned(), false);
+  assert.equal(fixture.pinned(), false, 'the reader can leave the tail again');
   assert.equal(fixture.scroller.scrollTop, 1000);
 });
 
@@ -230,29 +169,26 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   const messages: StoredMessage[] = [];
+  const turns: Array<{ id: string; start: number }> = [];
   const addTurn = (id: string, start: number, size: number) => {
     const article = document.createElement('article');
     article.dataset.turnId = id;
     article.getBoundingClientRect = () => rectangle(start - top, size);
-    article.scrollIntoView = () => { scroller.scrollTop = start; };
     scroller.append(article);
+    turns.push({ id, start });
     messages.push({ id, type: 'user', turnId: id, ts: 1, text: id });
   };
   addTurn('history', 0, 1800);
   addTurn('latest', 1800, 1200);
-  let reads = 0;
+  const virtualizer = {
+    findItemIndex: (offset: number) => Math.max(0, turns.filter((turn) => turn.start <= offset).length - 1),
+    getItemOffset: (index: number) => turns[index]?.start ?? 0,
+    scrollToIndex: (index: number) => { scroller.scrollTop = turns[index]?.start ?? 0; },
+  } as unknown as VirtualizerHandle;
   const controller = {
-    loadAround: async () => {}, loadBefore: async () => true, loadAfter: async () => true,
-    loadLatest: async () => { reads += 1; },
+    loadEarlier: async () => {},
     store: {
-      sessionId: 'session-a',
-      range: () => ({ sessionId: 'session-a' }),
-      retain: () => false,
-      sequenceForTurn: (turnId: string) => {
-        const sequence = messages.findIndex((message) => message.turnId === turnId);
-        return sequence < 0 ? null : sequence;
-      },
-      newestDurableUserSequence: () => 1,
+      range: () => ({ sessionId: 'session-a', hasOlder: false, ready: true }),
       snapshot: () => ({ messages }),
     },
   };
@@ -262,25 +198,25 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
     commands, sessionId: 'session-a', currentSessionId: { current: 'session-a' },
     rangeController: { current: controller }, messages, sessionUi,
     searchTarget: undefined, clearSearchTarget: () => {},
-    turnIndex: undefined, setTurnIndex: () => {},
-    listTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
-    onRestoreError: (error) => assert.fail(String(error)), onNavigationError: (error) => assert.fail(String(error)),
+    landmarkSessionId: null, listTurnLandmarks: async () => ({ landmarks: [] }), setTurnIndex: () => {},
+    onRestoreError: (error) => assert.fail(String(error)),
   };
   let authority: TranscriptScrollAuthority | undefined;
   function Harness() {
     const scrollRef = useRef<HTMLElement | null>(scroller);
+    const virtualizerRef = useRef<VirtualizerHandle | null>(virtualizer);
     authority = useTranscriptScrollAuthority();
     const anchor = sessionUi.transcriptReadingAnchorBySessionRef.current[props.sessionId!];
     useChatScroll({
-      scrollRef, sessionId: props.sessionId, messages: props.messages,
+      scrollRef, virtualizerRef, sessionId: props.sessionId,
+      turnIds: props.messages.map((message) => message.turnId!),
+      measureStartMargin: () => 0,
       restoreTarget: anchor, viewportNavigation: sessionUi.transcriptViewportNavigation,
       onReadingAnchorChange: (turnId) => commands.current?.captureAnchor(turnId), behavior: 'auto',
     });
     return createElement(Fragment, null,
       createElement(TranscriptReadingPositionController, props),
-      options.returnButton ? createElement(TranscriptScrollButton, {
-        onActivate: () => commands.current?.returnToLatest(),
-      }) : null,
+      options.returnButton ? createElement(TranscriptScrollButton) : null,
     );
   }
   const root = createRoot(mount);
@@ -288,17 +224,11 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
   const render = () => act(() => root.render(createElement(TranscriptScrollAuthorityProvider, null, createElement(Harness))));
   return {
     scroller, controller, sessionUi, commands, render,
-    pinned: () => authority!.getSnapshot().pinned, latestReads: () => reads,
-    visibleTurns: () => props.messages.map((message) => message.turnId),
+    pinned: () => authority!.getSnapshot().pinned,
     async clickReturnToLatest() {
       const button = mount.querySelector('button');
       assert.ok(button);
       await act(() => { button.dispatchEvent(new window.Event('click', { bubbles: true })); });
-    },
-    async fillEdge(edge: 'older' | 'newer') {
-      // A reader who scrolls to an edge releases the pin, and the band fills
-      // that edge behind them.
-      await act(async () => { authority!.releasePin(); await commands.current!.prefetchHistory(edge); });
     },
     async readAt(offset: number) {
       await act(() => {
@@ -317,22 +247,12 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
       await render();
       await act(() => { for (const callback of resizeCallbacks) callback([], {} as ResizeObserver); });
     },
-    async replaceRangeFromHost() {
-      // The browser clamps the old offset when a much shorter range arrives.
-      // ResizeObserver changes awayFromTail, without a reader scroll gesture.
-      height = 800;
-      messages.splice(0);
-      scroller.replaceChildren();
-      addTurn('latest-b', 0, 800);
-      scroller.scrollTop = scroller.scrollTop;
-      props.messages = [...messages];
-      await render();
-      await act(() => { for (const callback of resizeCallbacks) callback([], {} as ResizeObserver); });
-    },
     async switchSession(sessionId: string) {
       props.sessionId = sessionId;
       props.currentSessionId.current = sessionId;
-      props.rangeController.current = { ...controller, store: { ...controller.store, sessionId, range: () => ({ sessionId }) } };
+      props.rangeController.current = {
+        ...controller, store: { ...controller.store, range: () => ({ sessionId, hasOlder: false, ready: true }) },
+      };
       await render();
     },
     async flushFrames() {

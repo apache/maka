@@ -30,6 +30,7 @@ import { describe, it } from 'node:test';
 
 import type { TransientUserMessageProjection } from '@maka/ui';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 
 import {
   createActionsDeps,
@@ -191,6 +192,35 @@ describe('busy-raced send settlement', () => {
     } finally {
       restoreWindow();
     }
+  });
+
+  it('surfaces the blocked-Skill toast on an outright refusal', async () => {
+    const errors: Array<{ title: string; description?: string }> = [];
+    const restoreWindow = installWindow({ sessions: {
+      submitMessage: async () => ({
+        ok: false as const,
+        reason: 'skill_invocation_failed' as const,
+        skillInvocation: {
+          loaded: [],
+          failed: [{ request: 'workspace-only', reason: 'not_found' as const }],
+          receipts: [],
+        },
+      }),
+    } });
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'session-a' },
+        toastApi: {
+          error: (title: string, description?: string) => { errors.push({ title, description }); },
+          info: () => undefined,
+        },
+      });
+      assert.equal(await actions.send('edited with skill /skill:workspace-only'), false);
+      const copy = getShellCopy('en').chatActions;
+      assert.deepEqual(errors.map((entry) => entry.title), [copy.skillInvocationBlockedTitle]);
+      assert.match(errors[0]?.description ?? '', /workspace-only/);
+    } finally { restoreWindow(); }
   });
 
   it('reports a refused Follow Up as not sent', async () => {

@@ -22,7 +22,7 @@ import { z } from 'zod';
 
 export const READ_PAGE_MAX_CHARS = 7_500;
 export const READ_DESCRIPTION =
-  'Read a file or a Maka resource. Only path is required. By default, read from the beginning and return one bounded page. offset and limit select a line range; offset is zero-based. A large limit cannot bypass the response-size cap. If next is non-null, pass its contents to Read to continue; otherwise the requested range is complete. Use a smaller limit for a short excerpt. A partialLine page continues automatically through next.';
+  'Read a text file, view a PNG/JPEG/GIF/WebP image, or read a Maka resource returned by a tool. Only path is required. Images are returned as images, without text pagination. Text reads return one bounded page by default; offset and limit select a line range within the response-size cap. If next is non-null, pass its complete object to Read to continue, including partial lines; otherwise the requested range is complete.';
 export const readParameters = z.object({
   path: z
     .string({
@@ -38,7 +38,7 @@ export const readParameters = z.object({
     .nonnegative('offset must be non-negative. Omit it to start at the beginning.')
     .optional()
     .describe(
-      'Zero-based starting line; defaults to 0. offset 200 starts at line 201. Omit when using a continuation address.',
+      'Zero-based starting text line; defaults to 0. offset 200 starts at line 201. Omit for images or when using a continuation address.',
     ),
   limit: z
     .number({ error: 'limit must be a positive integer. Omit it to read one bounded page.' })
@@ -46,7 +46,7 @@ export const readParameters = z.object({
     .positive('limit must be positive. Omit it to read one bounded page.')
     .optional()
     .describe(
-      'Maximum lines in the requested range. Omit to browse one bounded page at a time. Use next to obtain any remaining content.',
+      'Maximum text lines in the requested range. Omit for images or to browse one bounded page at a time. Use next to obtain any remaining content.',
     ),
 });
 export type ReadInput = z.infer<typeof readParameters>;

@@ -32,7 +32,7 @@ export const WorkHubHighlightContext = createContext<{
 }>({ sessionId: undefined, highlight: () => {}, navigateWork: () => {}, selectWork: () => {}, toggleWork: () => {} });
 
 /** Work identity hover and conversation filtering are local presentation state. */
-export function WorkHubHighlightProvider({ children }: { children: ReactNode }) {
+export function useWorkHubHighlightState() {
   const [sessionId, highlight] = useState<string>();
   const [navigationWork, setNavigationWork] = useState<{ sessionId: string; nonce: number }>();
   const [selectedWork, setSelectedWork] = useState<{ sessionId: string; name: string }>();
@@ -48,9 +48,7 @@ export function WorkHubHighlightProvider({ children }: { children: ReactNode }) 
       setNavigationWork({ sessionId: work.sessionId, nonce: Date.now() });
     }
   };
-  return <WorkHubHighlightContext.Provider value={{ sessionId, highlight, navigationWork, navigateWork, selectedWork, selectWork, toggleWork: (work) => selectWork(selectedWork?.sessionId === work.sessionId ? undefined : work) }}>
-    {children}
-  </WorkHubHighlightContext.Provider>;
+  return { sessionId, highlight, navigationWork, navigateWork, selectedWork, selectWork, toggleWork: (work: { sessionId: string; name: string }) => selectWork(selectedWork?.sessionId === work.sessionId ? undefined : work) };
 }
 
 const WorkHubHueContext = createContext<ReadonlyMap<string, number> | undefined>(undefined);
