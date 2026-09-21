@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.2` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 292 files — blocker 0, reimplementation 0, polish 4, aligned 288.
+**Totals:** 294 files — blocker 0, reimplementation 0, polish 4, aligned 290.
 
 ## Exclusions (explicit)
 
@@ -293,7 +293,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/primitives/chat.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/primitives/module-page.tsx` | primitive | Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel, ResizeHandle, StackItem, Text, VStack | aligned — uses Astryx (Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel) | aligned |
 | `packages/ui/src/primitives/stat-tile.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `packages/ui/src/progress-card.tsx` | ui-composition | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
+| `packages/ui/src/progress-card.tsx` | ui-composition | IconButton | aligned — uses Astryx (IconButton) | aligned |
 | `packages/ui/src/prompt-anchor-rail.tsx` | ui-composition | Button, HoverCard | aligned — uses Astryx (Button, HoverCard) | aligned |
 | `packages/ui/src/quote-ref-chip.tsx` | ui-composition | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
 | `packages/ui/src/relative-time.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
