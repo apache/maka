@@ -155,7 +155,6 @@ import {
   type TurnMessageSubmitInput,
   type TurnMessageSubmitResult,
   type WorkspaceProjection,
-  type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 
 const decodeStoredMessage = (value: unknown): StoredMessage =>
