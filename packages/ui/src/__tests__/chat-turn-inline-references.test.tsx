@@ -30,51 +30,18 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { parseHTML } from 'linkedom';
 import type { InlineReference } from '@maka/core/events';
 import { TurnView } from '../chat-turn.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { ChatItem, TurnViewModel } from '../materialize.js';
+import { installTranscriptDom, type TranscriptDom } from './transcript-test-dom.js';
 
-const originalGlobals = {
-  document: globalThis.document,
-  matchMedia: globalThis.matchMedia,
-  requestAnimationFrame: globalThis.requestAnimationFrame,
-  cancelAnimationFrame: globalThis.cancelAnimationFrame,
-  window: globalThis.window,
-};
-const originalActEnvironment = (globalThis as typeof globalThis & {
-  IS_REACT_ACT_ENVIRONMENT?: boolean;
-}).IS_REACT_ACT_ENVIRONMENT;
-
-const mountedRoots: ReturnType<typeof createRoot>[] = [];
+let dom: TranscriptDom | undefined;
 
 afterEach(async () => {
-  for (const root of mountedRoots.splice(0)) await act(() => root.unmount());
-  Object.assign(globalThis, {
-    ...originalGlobals,
-    IS_REACT_ACT_ENVIRONMENT: originalActEnvironment,
-  });
+  await dom?.cleanup();
+  dom = undefined;
 });
-
-function domRoot() {
-  const { document, window } = parseHTML('<div id="root"></div>');
-  Object.assign(globalThis, {
-    document,
-    window,
-    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame() {},
-    IS_REACT_ACT_ENVIRONMENT: true,
-  });
-  const container = document.querySelector('#root');
-  assert.ok(container);
-  const root = createRoot(container);
-  mountedRoots.push(root);
-  return { container, root };
-}
 
 function userTurn(user: ChatItem): TurnViewModel {
   return {
@@ -89,15 +56,13 @@ function userTurn(user: ChatItem): TurnViewModel {
 }
 
 async function renderUserRow(user: ChatItem): Promise<HTMLElement> {
-  const { container, root } = domRoot();
-  await act(() =>
-    root.render(
-      <LocaleProvider locale="en">
-        <TurnView turn={userTurn(user)} />
-      </LocaleProvider>,
-    ),
+  dom = installTranscriptDom();
+  await dom.render(
+    <LocaleProvider locale="en">
+      <TurnView turn={userTurn(user)} />
+    </LocaleProvider>,
   );
-  const bubble = container.querySelector('.maka-chat-message-bubble-user');
+  const bubble = dom.container.querySelector('.maka-chat-message-bubble-user');
   assert.ok(bubble, 'the user row rendered no bubble');
   return bubble as unknown as HTMLElement;
 }
