@@ -380,7 +380,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     private readonly directoryHostId?: string,
     private readonly prepareWorkHubRoutingDecision?: (
       input: HostWorkHubRoutingDecisionPreparation,
-    ) => Promise<WorkHubRoutingDecision>,
+    ) => Promise<WorkHubRoutingDecision | undefined>,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);

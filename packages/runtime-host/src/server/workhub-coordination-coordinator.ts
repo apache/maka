@@ -955,7 +955,7 @@ export class HostWorkHubCoordinationCoordinator {
 
   async prepareRoutingDecision(
     input: HostWorkHubRoutingDecisionPreparation,
-  ): Promise<WorkHubRoutingDecision> {
+  ): Promise<WorkHubRoutingDecision | undefined> {
     try {
       if (!this.#routingModel) throw new Error('WorkHub routing model is unavailable');
       const page = await this.#stores.readMessagesAfter(WORKHUB_COORDINATION_SESSION_ID, {

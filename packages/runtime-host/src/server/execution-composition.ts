@@ -18,6 +18,7 @@
  */
 
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
+import { createJevRoutingModel } from './jev-routing-model.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { attachmentKindFromMimeType, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
@@ -1702,9 +1703,17 @@ export async function createExecutionRuntimeHostComposition(
       },
       (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
       context.owner.capability.rootId,
-      dependencies.workHubRoutingModel
-        ? (input) => workHubCoordination.prepareRoutingDecision(input)
-        : undefined,
+      async (input) => {
+        if (!dependencies.workHubRoutingModel) {
+          try {
+            const { policy } = await runtimePolicyStores.runtimePolicy.getSnapshot();
+            if (!policy.jev?.enabled || policy.privacy.incognitoActive) return undefined;
+          } catch {
+            return undefined;
+          }
+        }
+        return workHubCoordination.prepareRoutingDecision(input);
+      },
     );
     const coordinator = rootCoordinator;
     const pluginModel = createHostPluginModel({
@@ -2171,7 +2180,7 @@ export async function createExecutionRuntimeHostComposition(
       },
     });
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
-      routingModel: dependencies.workHubRoutingModel,
+      routingModel: dependencies.workHubRoutingModel ?? createJevRoutingModel({ stores: runtimePolicyStores }),
       requestForm: (input) => interactions.requestForm(input),
       targetExecution: workHubTargetExecution,
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),

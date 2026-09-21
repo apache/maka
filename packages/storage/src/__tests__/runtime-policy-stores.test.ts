@@ -4974,3 +4974,25 @@ async function withTempDir(run: (base: string) => Promise<void>): Promise<void> 
     await rm(base, { recursive: true, force: true });
   }
 }
+
+test('Jev policy and credentials persist in Host stores without exposing the key in projections', async () => {
+  await withInteractiveOwner(async ({ stores }) => {
+    const before = await stores.runtimePolicy.getSnapshot();
+    assert.equal(before.policy.jev?.enabled ?? false, false);
+    const changed = await stores.runtimePolicy.mutate({ expectedRevision: before.revision,
+      operation: { kind: 'set_jev', value: { enabled: true } } });
+    assert.equal(changed.kind, 'committed');
+    assert.equal((await stores.runtimePolicy.getSnapshot()).policy.jev?.enabled, true);
+    const locator = { scope: 'jev', kind: 'api_key' } as const;
+    const saved = await stores.credentialVault.set({ locator, expected: null, secret: 'jev-test-secret' });
+    assert.equal(saved.kind, 'committed');
+    const projection = await stores.credentialVault.getSnapshot();
+    assert.equal(JSON.stringify(projection).includes('jev-test-secret'), false);
+    const material = await stores.operations.exportCredentialMaterial(locator);
+    assert.equal(material?.secret, 'jev-test-secret');
+    const status = await getCredentialStatus(stores.credentialVault, locator);
+    assert.equal(status.configured, true);
+    if (status.configured) await stores.credentialVault.delete({ expected: credentialBasis(status) });
+    assert.equal(await stores.operations.exportCredentialMaterial(locator), null);
+  });
+});
