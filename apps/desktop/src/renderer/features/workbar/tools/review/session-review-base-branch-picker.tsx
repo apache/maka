@@ -19,7 +19,7 @@
 
 import { useMemo } from 'react';
 import type { GitReviewBaseBranchOption } from '@maka/core/git-review';
-import { Selector } from '@astryxdesign/core/Selector';
+import { Selector, SelectorOption } from '@astryxdesign/core/Selector';
 import { Text } from '@astryxdesign/core/Text';
 
 /**
@@ -54,9 +54,18 @@ export function SessionReviewBaseBranchPicker(props: {
         options={options}
         value={props.baseBranch ?? undefined}
         renderValue={(option) => (
-          <Text type="inherit" maxLines={1}>
-            {option.label}
+          <Text type="inherit" maxLines={1} hasTruncateTooltip>
+            {option.label ?? option.value}
           </Text>
+        )}
+        renderOption={(option) => (
+          <SelectorOption
+            label={
+              <Text type="inherit" maxLines={1} hasTruncateTooltip>
+                {option.label ?? option.value}
+              </Text>
+            }
+          />
         )}
         onChange={props.onSelect}
         placeholder={props.label}

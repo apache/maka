@@ -56,7 +56,7 @@
    lands on the surface; the option's `Item` needs `min-width: 0` to let its
    label ellipsize instead of pushing the row wider. */
 .maka-session-review-base-branch .astryx-popover-surface {
-  max-width: 180px;
+  max-width: 280px;
 }
 
 .maka-session-review-base-branch [role='listbox'] {
