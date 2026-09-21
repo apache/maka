@@ -315,6 +315,13 @@
   );
 }
 
+/* Native window dragging consumes clicks before the DOM can dismiss a menu
+   or blur the rename input. Return the blank titlebar to ordinary hit testing
+   only for the duration of that interaction. */
+.maka-window-titlebar:has(.maka-titlebar-identity[data-interacting]) {
+  -webkit-app-region: no-drag;
+}
+
 .appFrame:has(.maka-workbar-resize-handle[data-resizing]) .maka-window-titlebar {
   transition: none;
 }

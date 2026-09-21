@@ -3536,7 +3536,25 @@ export const TitlebarWithWideWorkbar: Story = {
     await waitFor(() => expect(page.getByRole('menuitem', { name: '打开项目文件夹' })).toBeVisible());
     await waitFor(() => expect(page.getByRole('menuitem', { name: '复制路径' })).toBeVisible());
     expect(within(page.getByRole('menu', { name: '项目信息' })).queryByRole('menuitem', { name: '重命名' })).toBeNull();
+    // Synthetic pointer events cannot light-dismiss a native popover. Check
+    // its drag-region lifetime here; real browser clicks exercise dismissal.
+    const titlebar = canvasElement.querySelector<HTMLElement>('.maka-window-titlebar')!;
+    expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('no-drag');
     await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(page.queryByRole('menu', { name: '项目信息' })).toBeNull());
+    await waitFor(() => expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('drag'));
+    await userEvent.click(menuButton);
+    expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('no-drag');
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(page.queryByRole('menuitem', { name: '重命名' })).toBeNull());
+    const renameAgain = title.querySelector<HTMLButtonElement>('.maka-titlebar-identity__name')!;
+    await userEvent.click(renameAgain);
+    expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('no-drag');
+    await userEvent.click(titlebar);
+    await waitFor(() => expect(title.querySelector('input')).toBeNull());
+    await waitFor(() => expect(getComputedStyle(titlebar).getPropertyValue('-webkit-app-region')).toBe('drag'));
+    expect(menuButton.getAttribute('aria-label')).toContain(' — 任务操作');
+    expect(renameAgain.getAttribute('aria-label')).toContain(' — 重命名任务');
     titlebarShare.mockClear();
     await userEvent.click(menuButton);
     await userEvent.click(await page.findByRole('menuitem', { name: '分享任务' }));
