@@ -60,13 +60,13 @@ import xiaomiMiMoMarkUrl from '../assets/provider-brands/xiaomimimo.svg';
 import zaiMarkUrl from '../assets/provider-brands/zai.svg';
 import zenmuxBrandMark from '../assets/provider-brands/zenmux.svg';
 
-// Opper mark contributed by Opper AI AB (the trademark owner) for this
+// Opper mark contributed by Opper Technology AB (the trademark owner) for this
 // catalog entry, under this repository's Apache-2.0 license:
 // - source: Opper brand assets (https://opper.ai), monochrome variant
 // - variant: single-colour path, rendered through ProviderAssetMask so it
 //   follows the current text colour like the other monochrome marks
 // - license: Apache-2.0 as part of this contribution; the Opper trademark
-//   remains Opper AI AB's
+//   remains Opper Technology AB's
 
 // ZenMux mark vendored byte-for-byte from Lobe Icons:
 // - repository: https://github.com/lobehub/lobe-icons
