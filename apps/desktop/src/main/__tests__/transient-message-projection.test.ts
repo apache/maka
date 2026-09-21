@@ -170,7 +170,14 @@ test('queued steering derives a transcript bubble that lives and dies with the s
     placement: 'current_turn' as const,
     state: 'queued' as const,
   };
-  const queue = { turnId: 'turn-1', ts: 7, entries: [queueEntry] };
+  const followupEntry = {
+    entryId: 'next',
+    messageId: 'message-next',
+    content: { text: 'follow up' },
+    placement: 'next_turn' as const,
+    state: 'queued' as const,
+  };
+  const queue = { turnId: 'turn-1', ts: 7, entries: [queueEntry, followupEntry] };
   const retracted: (string | undefined)[][] = [];
   const actions = {
     locale: 'en' as const,
@@ -184,7 +191,7 @@ test('queued steering derives a transcript bubble that lives and dies with the s
   const derived = withQueuedSteeringTransients([transient, localCopy], queue, actions);
 
   assert.deepEqual(derived.map((message) => message.id), ['message-1', 'message-steer'],
-    'the queue-owned bubble replaces its stored local copy');
+    'the queue-owned bubble replaces its stored local copy, and a queued follow-up stays out of the transcript');
   const bubble = derived.at(-1);
   assert.equal(bubble?.pendingSteering, true);
   assert.equal(bubble?.hostTurnId, 'turn-1');

@@ -21,6 +21,7 @@ import { useEffect } from 'react';
 import { useUiLocale, type TransientUserMessageProjection } from '@maka/ui';
 import { ICON_SIZE, Pencil, Search, Trash2 } from '@maka/ui/icons';
 import { getSessionLocalCopy } from '../../../locales/session-local-copy.js';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 import { useConversationServices } from '../services.js';
 
 export function SessionLocalMessages(props: {
@@ -28,8 +29,8 @@ export function SessionLocalMessages(props: {
   readonly publish: (sessionId: string, message: TransientUserMessageProjection) => void;
   readonly retire: (sessionId: string, messageId: string) => void;
   readonly reportError: (message: string) => void;
-  /** Puts a never-dispatched message's text back into the composer for editing. */
-  readonly restoreDraft?: (sessionId: string, text: string) => void;
+  /** Puts a never-dispatched message's content back into the composer for editing. */
+  readonly restoreDraft?: (sessionId: string, draft: RestoredDraftContent) => void;
 }): null {
   const services = useConversationServices();
   const locale = useUiLocale();
@@ -85,7 +86,12 @@ export function SessionLocalMessages(props: {
                             onClick: action(async () => {
                               await services.cancelMessage(sessionId, message.messageId);
                               retire(sessionId, message.messageId);
-                              restoreDraft(sessionId, message.text);
+                              restoreDraft(sessionId, {
+                                text: message.text,
+                                attachments: message.attachments,
+                                directoryReferences: message.directoryReferences,
+                                quotes: message.quotes,
+                              });
                             }),
                           }]
                         : []),

@@ -19,7 +19,10 @@
 
 import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
 import { deriveMessageQueueProjection } from '../../../application/contracts/message-queue-projection.js';
-import { withQueuedSteeringTransients } from '../../../application/contracts/transient-message-projection.js';
+import {
+  withQueuedSteeringTransients,
+  type RestoredDraftContent,
+} from '../../../application/contracts/transient-message-projection.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnBufferEvent,
@@ -65,7 +68,7 @@ interface MessagePresentation {
 }
 export function useWorkHubController(
   onSubmit?: () => void,
-  restoreDraft?: (sessionId: string, text: string) => void,
+  restoreDraft?: (sessionId: string, draft: RestoredDraftContent) => void,
 ) {
   const services = useWorkHubServices();
   const locale = useUiLocale();
@@ -714,7 +717,14 @@ export function useWorkHubController(
         if (!sessionId) return false;
         try { await services.retractQueueEntry(sessionId, entry.entryId); }
         catch (reason) { report(reason); return false; }
-        if (draftText !== undefined) restoreDraftRef.current?.(sessionId, draftText);
+        if (draftText !== undefined) {
+          restoreDraftRef.current?.(sessionId, {
+            text: draftText,
+            attachments: entry.content.attachments,
+            directoryReferences: entry.content.directoryReferences,
+            quotes: entry.content.quotes,
+          });
+        }
         return true;
       },
     }),

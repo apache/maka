@@ -428,6 +428,25 @@ export function useComposerAttachments(options: {
     for (const item of staged) lifecycle.stagedKeys.add(item.stagingKey);
   }
 
+  // Retained references carry their Host id, so a restore re-derives the same
+  // `${draftKey}:${hostId}` owner key `pickDirectory` staged them under.
+  function restoreDirectories(draftKey: string, references: readonly DirectoryReference[]): void {
+    if (!lifecycle.mounted || references.length === 0) return;
+    updateDirectories((all) => {
+      let next = all;
+      for (const reference of references) {
+        const ownerKey = `${draftKey}:${reference.hostId}`;
+        const previous = next[ownerKey] ?? [];
+        if (
+          previous.length >= DIRECTORY_REFERENCE_MAX_COUNT
+          || previous.some((entry) => entry.path === reference.path)
+        ) continue;
+        next = { ...next, [ownerKey]: [...previous, reference] };
+      }
+      return next;
+    });
+  }
+
   function removeAttachment(index: number): void {
     const ownerKey = options.draftKey;
     updateAttachments((map) => removePending(map, ownerKey, index));
@@ -493,6 +512,7 @@ export function useComposerAttachments(options: {
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
+    restoreDirectories,
     removeAttachment,
     clearSubmittedContext,
     clearSubmittedAttachments,

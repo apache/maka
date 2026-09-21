@@ -64,6 +64,7 @@ import { WorkbarEdgeToggle } from '../../../application/contracts/workbar-edge-t
 import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getShellCopy } from '../../../locales/shell-copy.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
+import type { QuoteRef } from '@maka/core/events';
 import type {
   CompanionQuoteTarget,
   CompanionQuoteSnapshot,
@@ -398,6 +399,7 @@ export function WorkbarSurface(props: {
   ) => void;
   quotes?: readonly QuoteCompanionPanelState[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
+  onRestoreQuotes?: (panelId: string, quotes: readonly QuoteRef[]) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
@@ -598,6 +600,7 @@ export function WorkbarSurface(props: {
                 modelChoices={props.modelChoices ?? []}
                 confirmBypass={props.confirmBypass}
                 onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
+                onRestoreQuotes={props.onRestoreQuotes}
                 onRemoveQuote={props.onRemoveQuote}
                 onForkVisibilityChange={props.onForkVisibilityChange}
                 onContentStateChange={props.onContentStateChange}

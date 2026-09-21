@@ -229,8 +229,8 @@ function QueuedComposer({ deliveryState }: { deliveryState: DeliveryState }) {
         publish={publish}
         retire={retire}
         reportError={noop}
-        restoreDraft={(_id, text) => {
-          composerRef.current?.setText(text);
+        restoreDraft={(_id, draft) => {
+          composerRef.current?.setText(draft.text);
           composerRef.current?.focus();
         }}
       />

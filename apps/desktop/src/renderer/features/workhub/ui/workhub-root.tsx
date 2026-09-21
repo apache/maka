@@ -25,6 +25,7 @@ import { useLiveContextUsage } from '../../../application/contracts/session-insp
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
 import { getShellCopy } from '../../../locales/shell-copy.js';
@@ -73,13 +74,11 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
 export function WorkHubRoot() {
   const highlight = useWorkHubHighlightState();
   const composer = useRef<ComposerHandle>(null);
-  const controller = useWorkHubController(() => highlight.selectWork(undefined), (_sessionId, text) => {
-    const input = composer.current;
-    if (!input) return;
-    if (input.getText().trim()) input.appendText(text);
-    else input.setText(text);
-    input.focus();
-  });
+  const draftRestore = useRef<((sessionId: string, draft: RestoredDraftContent) => void) | undefined>(undefined);
+  const controller = useWorkHubController(
+    () => highlight.selectWork(undefined),
+    (sessionId, draft) => draftRestore.current?.(sessionId, draft),
+  );
   const { services, session, transcript, busy } = controller;
   useEffect(() => {
     services.bindBrowserSession(controller.sessionId ?? null);
@@ -352,6 +351,7 @@ export function WorkHubRoot() {
               onReorderQueuedEntries={controller.reorderQueuedEntries}
               placeholder={progress ? t.progressInput : t.welcome}
               ref={composer}
+              draftRestore={draftRestore}
               sessionId={controller.sessionId}
               streaming={busy}
               sendBlocked={!controller.sessionId || controller.sending || !session?.model}

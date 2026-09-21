@@ -385,6 +385,7 @@ function AppShellContent({
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
+    restoreDirectories,
     removeAttachment,
     clearSubmittedContext,
     imageNoticeLifecycle,
@@ -678,11 +679,20 @@ function AppShellContent({
     composer: composerRef,
     transientMessages: transcriptTransientMessages,
     restoreDraft: restoreLocalMessageDraft,
+    draftContextRestorer,
     promoteQueuedEntry,
     updateQueuedEntry,
     deleteQueuedEntry,
     reorderQueuedEntries,
   } = queueSurface;
+  // A retracted send hands its staged context back through the same keyed
+  // stores a picked file or quote would land in — keyed by Session, so the
+  // restore survives the owning Session navigating away mid-request.
+  draftContextRestorer.current = (targetSessionId, draft) => {
+    if (draft.attachments?.length) restoreAttachments(targetSessionId, draft.attachments);
+    if (draft.directoryReferences?.length) restoreDirectories(targetSessionId, draft.directoryReferences);
+    if (draft.quotes?.length) restoreQuotes(targetSessionId, draft.quotes);
+  };
   const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the

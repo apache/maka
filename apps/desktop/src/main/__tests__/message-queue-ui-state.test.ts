@@ -20,8 +20,14 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
-import { LocaleProvider, type TransientUserMessageProjection } from '@maka/ui';
-import { ConversationServicesProvider, SessionLocalMessages } from '../../renderer/features/conversation/index.js';
+import {
+  LocaleProvider,
+  ToastProvider,
+  type ComposerHandle,
+  type TransientUserMessageProjection,
+} from '@maka/ui';
+import { ConversationServicesProvider, SessionLocalMessages, useSessionMessageQueue } from '../../renderer/features/conversation/index.js';
+import type { RestoredDraftContent } from '../../renderer/application/contracts/transient-message-projection.js';
 import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
@@ -60,7 +66,7 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       publish: (_id, message) => { transient.set(message.id, message); },
       retire: (_id, messageId) => { transient.delete(messageId); },
       reportError: (message) => { throw new Error(message); },
-      restoreDraft: (sessionId, text) => { restored.push([sessionId, text]); },
+      restoreDraft: (sessionId, draft) => { restored.push([sessionId, draft.text]); },
     }) }),
   })));
   const steering = transient.get('steering');
@@ -250,4 +256,78 @@ test('complete events deliver the durable context compaction outcome to Desktop'
       outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
     },
   ]);
+});
+
+test('editing a queued steering restores content under the owning Session even after navigation', async () => {
+  const { root } = installReactRenderer();
+  const entry = {
+    entryId: 'entry-1', messageId: 'message-1',
+    placement: 'current_turn' as const, state: 'queued' as const,
+    content: {
+      text: 'steer it',
+      attachments: [{
+        kind: 'other' as const, name: 'a.png', mimeType: 'image/png', bytes: 1,
+        ref: { kind: 'external_file' as const, absolutePath: '/tmp/a.png' },
+      }],
+      quotes: [{ text: 'quoted' }],
+    },
+  };
+  const retracted: string[][] = [];
+  const restoredDrafts: [string, string][] = [];
+  const restoredContext: [string, RestoredDraftContent][] = [];
+  // The user navigated to another Session before the retract resolves.
+  const activeSessionId = { current: 'session-b' as string | undefined };
+  let surface!: ReturnType<typeof useSessionMessageQueue>;
+  function Probe() {
+    surface = useSessionMessageQueue({
+      sessionId: 'session-a',
+      queue: { entries: [entry], turnId: 'turn-1', ts: 1, queueRevision: 2 },
+      transientMessages: [],
+      activeSessionId,
+    });
+    return null;
+  }
+  await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(ToastProvider, { children:
+      createElement(ConversationServicesProvider, { services: {
+        listMessages: async () => [],
+        subscribeChanges: () => () => {},
+        cancelMessage: async () => {},
+        reconcileMessage: async () => {},
+        sessions: {
+          readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
+          promoteQueueEntry: async () => undefined,
+          updateQueueEntry: async () => undefined,
+          retractQueueEntry: async (sessionId: string, entryId: string) => {
+            retracted.push([sessionId, entryId]);
+          },
+          reorderQueueEntries: async () => undefined,
+        },
+        skills: { listInvocable: async () => [] },
+        workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
+        newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
+        mcp: { subscribeChanges: () => () => {} },
+      }, children: createElement(Probe) }) })})));
+  surface.composer.current = {
+    setText() {}, appendText() {}, getText: () => '', clearDraft() {},
+    setDraft: (key, text) => { restoredDrafts.push([key, text]); },
+    getDraft: () => '',
+    appendDraft: (key, text) => { restoredDrafts.push([key, text]); },
+    focus() {}, openModelPicker() {},
+  } as ComposerHandle;
+  surface.draftContextRestorer.current = (sessionId, draft) => { restoredContext.push([sessionId, draft]); };
+  const bubble = surface.transientMessages.find((message) => message.pendingSteering);
+  assert.ok(bubble, 'a queued steering entry derives a transcript bubble');
+  const edit = bubble.deliveryActions?.find((action) => action.label === 'Edit');
+  assert.ok(edit, 'the bubble offers edit');
+  await act(async () => { await edit.onClick(); });
+  assert.deepEqual(retracted, [['session-a', 'entry-1']]);
+  assert.equal(restoredContext.length, 1);
+  assert.equal(restoredContext[0]![0], 'session-a');
+  assert.equal(restoredContext[0]![1].attachments, entry.content.attachments,
+    'attachments ride back into the draft');
+  assert.equal(restoredContext[0]![1].quotes, entry.content.quotes,
+    'quotes ride back into the draft');
+  assert.deepEqual(restoredDrafts, [['session-a', 'steer it']],
+    'the draft lands under the owning Session even while another is active');
 });

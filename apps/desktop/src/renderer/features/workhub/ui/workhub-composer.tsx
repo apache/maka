@@ -17,25 +17,41 @@
  * under the License.
  */
 
-import { forwardRef, useRef, useState } from 'react';
-import { Composer, useToast, useUiLocale, type ComposerHandle, type ComposerProps } from '@maka/ui';
+import { forwardRef, useRef, useState, type MutableRefObject } from 'react';
+import {
+  appendPromptContextDraft,
+  Composer,
+  useToast,
+  useUiLocale,
+  type ComposerHandle,
+  type ComposerProps,
+} from '@maka/ui';
 import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { toComposerIngestItems } from '@maka/ui/composer-attachments';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import type { AttachmentRef, FollowUpMode } from '@maka/core/events';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
 export type WorkHubComposerProps = Omit<ComposerProps, 'onSend' | 'draftKey'> & {
   sessionId?: string;
   onSend(text: string, attachments: AttachmentRef[], followUpMode?: FollowUpMode): Promise<boolean>;
+  /**
+   * Filled with a restorer that writes a retracted send's content back under
+   * the owning Session's draft scope — correct even when that Session is not
+   * the one on screen.
+   */
+  draftRestore?: MutableRefObject<
+    ((sessionId: string, draft: RestoredDraftContent) => void) | undefined
+  >;
 };
 
 /** The shared Composer and attachment lifecycle belong to the persistent coordination Session. */
 export const WorkHubComposer = forwardRef<ComposerHandle, WorkHubComposerProps>(function WorkHubComposer(
-  { sessionId, onSend, ...composer }, ref,
+  { sessionId, onSend, draftRestore, ...composer }, ref,
 ) {
   const services = useWorkHubServices();
   const locale = useUiLocale();
@@ -60,8 +76,27 @@ export const WorkHubComposer = forwardRef<ComposerHandle, WorkHubComposerProps>(
     formatError: (error, fallback) => localizedShellErrorMessage(error, fallback, locale),
   });
   const uploaded = useRef(new Map<string, AttachmentRef>());
+  const self = useRef<ComposerHandle | null>(null);
+  if (draftRestore) {
+    draftRestore.current = (targetSessionId, draft) => {
+      // The first-seen Session's draft permanently lives under the 'initial'
+      // scope; later Sessions are keyed by id.
+      const key = targetSessionId === draftOwner.current.first
+        ? 'workhub:initial'
+        : `workhub:${targetSessionId}`;
+      if (draft.attachments?.length) staged.restoreAttachments(key, draft.attachments);
+      const handle = self.current;
+      if (!handle || !draft.text.trim()) return;
+      if (handle.appendDraft) handle.appendDraft(key, draft.text);
+      else handle.setDraft(key, appendPromptContextDraft(handle.getDraft(key), draft.text));
+    };
+  }
   return <Composer {...composer}
-    ref={ref}
+    ref={(handle) => {
+      self.current = handle;
+      if (typeof ref === 'function') ref(handle);
+      else if (ref) ref.current = handle;
+    }}
     draftKey={scope}
     sendBlocked={composer.sendBlocked || submitting || !sessionId}
     allowAttachmentOnlySend
