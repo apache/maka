@@ -43,7 +43,7 @@ import {
 } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type { ProviderType } from '@maka/core/llm-connections';
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import { isUserVisibleSessionSystemNote, type SessionSummary, type StoredMessage } from '@maka/core/session';
 import type {
   AttachmentRef,
   InlineReference,
@@ -53,7 +53,7 @@ import type {
 import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
-import { finalAssistantReplyText, materializeChat } from './materialize.js';
+import { finalAssistantReplyText } from './materialize.js';
 import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
@@ -352,14 +352,12 @@ export function ChatView(props: {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.chat;
-  // chat survives for the empty-state path; the main message log is driven by
-  // `turns` (per @kenji UI-04 turn-grouping projection).
-  const drainingMessageIdsKey = JSON.stringify(
-    props.liveTurns?.flatMap((turn) => turn.steps.flatMap((step) => step.text ? [step.stepId] : [])) ?? [],
-  );
+  const drainingStepIdsKey = (props.liveTurns ?? [])
+    .flatMap((turn) => turn.steps.flatMap((step) => (step.text ? [step.stepId] : [])))
+    .join('\u0000');
   const drainingMessageIds = useMemo(
-    () => new Set<string>(JSON.parse(drainingMessageIdsKey) as string[]),
-    [drainingMessageIdsKey],
+    () => new Set<string>(drainingStepIdsKey ? drainingStepIdsKey.split('\u0000') : []),
+    [drainingStepIdsKey],
   );
   const visibleMessages = useMemo(
     () => drainingMessageIds.size > 0
@@ -367,7 +365,16 @@ export function ChatView(props: {
       : props.messages,
     [drainingMessageIds, props.messages],
   );
-  const chat = useMemo(() => materializeChat(visibleMessages, locale), [visibleMessages, locale]);
+  // Whether anything would render in the log — the empty-state gate. Answers
+  // the same question materializeChat did without materializing every row.
+  const hasVisibleChatContent = useMemo(
+    () => visibleMessages.some(
+      (message) => message.type === 'user'
+        || message.type === 'assistant'
+        || (message.type === 'system_note' && isUserVisibleSessionSystemNote(message.kind)),
+    ),
+    [visibleMessages],
+  );
   const transientMessages = (props.transientMessages ?? []).filter((message) => !message.pendingSteering && message.transientPlacement !== 'next_turn');
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
@@ -410,9 +417,9 @@ export function ChatView(props: {
   const isCompactionLive = props.activeTurn?.compacting === true;
   // overlayLiveTurn renders one "compacting" system row for a live compaction
   // Turn that has no assistant steps — including in a session with no settled
-  // chat messages yet. The empty-state decision (below) keys off `chat.length`,
-  // which does not see that overlaid row, so it must treat this as visible
-  // content or the row is hidden behind the empty hero.
+  // chat messages yet. The empty-state decision (below) keys off
+  // `hasVisibleChatContent`, which does not see that overlaid row, so it must
+  // treat this as visible content or the row is hidden behind the empty hero.
   const hasLiveCompactionRow = isCompactionLive && (activeContent?.steps.length ?? 0) === 0;
   const streamingActive = props.activeTurn !== undefined && !isCompactionLive;
   const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
@@ -696,7 +703,7 @@ export function ChatView(props: {
   const hasVisibleConversationItem =
     conversationItemPlacement.byTurn.size > 0 || conversationItemPlacement.orphan !== undefined;
   const showEmptyState =
-    chat.length === 0
+    !hasVisibleChatContent
     && transientMessages.length === 0
     && !streamingActive
     && !hasVisibleConversationItem
@@ -800,7 +807,7 @@ export function ChatView(props: {
               {/* A transient is already the first visible conversation row.
                   Do not prepend the empty-chat Maka hero while that optimistic
                   message waits for durable transcript or live-turn identity. */}
-              {chat.length === 0
+              {!hasVisibleChatContent
                 && transientMessages.length === 0
                 && !streamingActive
                 ? emptyContent

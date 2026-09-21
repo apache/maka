@@ -912,6 +912,8 @@ export interface TurnFooterActionMeta {
   label: string;
   enabled: boolean;
   tooltip?: string;
+  /** Busy from click until the action settles — renders the spinner. */
+  pending?: boolean;
 }
 /**
  * Lineage badge rendered on a turn, either pointing to its origin
@@ -1111,7 +1113,7 @@ export function TurnFooter(props: {
                   data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
                   isDisabled={!action.enabled}
                   isLoading={
-                    isCopyAction ? copyPhase === 'pending' : action.tooltip === copy.processing
+                    isCopyAction ? copyPhase === 'pending' : action.pending === true
                   }
                   onClick={() => void handleClick(action)}
                 />
