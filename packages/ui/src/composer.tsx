@@ -2394,7 +2394,8 @@ export const Composer = forwardRef<
                   the open menu next to the trigger rather than portaling it, so
                   the palette rebinding and the pinned-footer rules attach
                   here. */}
-              {!props.activeSession && props.workspacePicker ? (
+              {props.workspacePicker &&
+              (!props.activeSession || props.workspacePicker.showForActiveSession) ? (
                 <div className="maka-composer-workspace">
                   <WorkspacePicker workspacePicker={props.workspacePicker} />
                 </div>

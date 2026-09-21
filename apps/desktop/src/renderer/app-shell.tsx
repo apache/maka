@@ -362,7 +362,7 @@ function AppShellContent({
   const onboarding = useOnboardingSnapshot();
   // The owner bridge keeps commands stable while TaskEntryRoot swaps the
   // current feature-owned implementation below the shell.
-  const { resolveWorkBoardTarget, prepareWorkBoardDraft } = taskEntry.commands;
+  const { resolveWorkBoardTarget, prepareWorkBoardDraft, openSessionWorkspaceRecovery } = taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
   // Staged files and quotes do NOT take the target-scoped key: they belong to
   // the composer the user is looking at, and an in-flight send needs an owner
@@ -495,9 +495,8 @@ function AppShellContent({
     target: { kind: 'session', sessionId: ownerActiveId },
   });
   const startupConnectionSnapshot = onboarding.snapshot;
-  const newTaskUsesDefaultHost = taskEntry.selectors.usesDefaultHost;
   let newTaskConnectionSnapshot = newTaskConnections.snapshot;
-  if (newTaskConnections.projection.status !== 'ready' && newTaskUsesDefaultHost) {
+  if (newTaskConnections.projection.status !== 'ready' && taskEntry.selectors.usesDefaultHost) {
     newTaskConnectionSnapshot = defaultHostConnections.projection.status === 'ready'
       ? defaultHostConnections.snapshot
       : defaultHostConnections.projection.status === 'unrequested' && startupConnectionSnapshot
@@ -672,8 +671,6 @@ function AppShellContent({
       }
     : undefined;
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
-  const activeMessageSubmitting = transientMessages.length > 0;
-  const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
   // semantic snapshot rather than the projection (#1985).
@@ -706,10 +703,10 @@ function AppShellContent({
     ? onboarding.snapshot?.sessionSendOutcomes[activeSession.id]
     : undefined;
   const composerProfileId = activeId
-    ? activeDesktopSession?.profileId
+    ? activeSession?.profileId
     : taskEntry.selectors.selectedProfileId;
   const composerProfileName = activeId
-    ? activeDesktopSession?.profileName
+    ? activeSession?.profileName
     : taskEntry.selectors.selectedHost?.name;
   const modelSettingsOwnsComposerHost =
     composerProfileId !== undefined &&
@@ -1044,7 +1041,7 @@ function AppShellContent({
   // no sessions is not onboarding: they land on the normal empty chat and use
   // the one real Composer, which creates the session on its first send.
   const showOnboardingHero =
-    sessionCount === 0 &&
+    !sessionCount &&
     !onboardingSettled &&
     onboardingState !== undefined &&
     onboardingState.kind !== 'ready_with_history' &&
@@ -1108,7 +1105,7 @@ function AppShellContent({
     sessionId: ownerActiveId,
     sessionCwd: sharedSessionActive ? undefined : activeSession?.cwd,
     sessionProjectId: sharedSessionActive ? undefined : activeSession?.projectId,
-    sessionProfileKind: sharedSessionActive ? undefined : activeDesktopSession?.profileKind,
+    sessionProfileKind: sharedSessionActive ? undefined : activeSession?.profileKind,
     onProjectSelected: (ownerSessionId) => {
       void moduleHubCommands.refreshProjectSkills();
       if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
@@ -2227,12 +2224,12 @@ function AppShellContent({
                 readOnly={sharedSessionActive}
                 action={
                   sharedSessionActive ||
-                  !activeDesktopSession ||
-                  activeDesktopSession.profileKind === 'environment'
+                  !activeSession ||
+                  activeSession.profileKind === 'environment'
                     ? undefined
                     : {
                         label: sharedSessionDialog.shareActionLabel,
-                        onClick: () => sharedSessionDialog.openSession(activeDesktopSession),
+                        onClick: () => sharedSessionDialog.openSession(activeSession),
                       }
                 }
                 onRenameSession={(name) => {
@@ -2366,7 +2363,9 @@ function AppShellContent({
                         sessionId={activeId}
                       />
                     ) : (
-                      <TaskEntry.TaskEntryWorkspacePickerConsumer manageProjects={openProjectSettings}>
+                      <TaskEntry.TaskEntryWorkspacePickerConsumer manageProjects={openProjectSettings}
+                        activeSession={activeSession}
+                      >
                         {(workspacePicker) => (
                           <ChatComposerRegion
                   workspacePicker={workspacePicker}
@@ -2394,7 +2393,7 @@ function AppShellContent({
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
                   streaming={turnActive}
-                  processing={activeMessageSubmitting}
+                  processing={transientMessages.length > 0}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
                   pendingMessages={transientMessages}
@@ -2600,7 +2599,7 @@ function AppShellContent({
                 onTaskReadinessAction={
                   taskReadinessNotice?.action === 'workspace_picker'
                     ? activeSession
-                      ? openNewTaskSurface
+                      ? () => openSessionWorkspaceRecovery(activeSession.id)
                       : taskEntry.selectors.canAddProject
                         ? taskEntry.commands.addProject
                         : undefined

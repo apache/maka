@@ -77,6 +77,7 @@ export interface TaskEntryControllerSelectors {
   readonly defaultProfileId: string;
   readonly usesDefaultHost: boolean;
   readonly workspacePicker: WorkspacePickerModel;
+  readonly sessionWorkspaceRecoverySessionId?: string;
   readonly canAddProject: boolean;
   /** Every ready Host's Projects, with the owning Host retained as identity. */
   readonly projectScopes: readonly TaskEntryProjectScope[];
@@ -94,6 +95,18 @@ export interface TaskEntryControllerCommands {
   addProject(name?: string): void;
   openNewProject(): void;
   chooseProjectForProfile(profileId: string): Promise<void>;
+  openSessionWorkspaceRecovery(sessionId: string): void;
+  closeSessionWorkspaceRecovery(): void;
+  relocateSessionWorkspace(input: {
+    sessionId: string;
+    profileId: string;
+    projectId: string;
+  }): Promise<boolean>;
+  addSessionWorkspace(input: {
+    sessionId: string;
+    profileId: string;
+    host: TaskEntryHostRef;
+  }): Promise<boolean>;
   resolveWorkBoardTarget(item: WorkBoardItem): WorkBoardStartTargetResult;
   prepareWorkBoardDraft(target: TaskEntryTarget, draft: string): string | undefined;
 }
@@ -150,10 +163,11 @@ export function useTaskEntryController(
 ): TaskEntryController {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).projectActions;
+  const sessionMoveCopy = getShellCopy(locale).sessionRowActions;
   const conversationCopy = getConversationCopy(locale).workspace;
   const reportError = input.reportError;
   const manageProjects = input.manageProjects;
-  const { catalog: service } = useTaskEntryServices();
+  const { catalog: service, sessions: sessionService } = useTaskEntryServices();
   const [catalog, setCatalog] = useState<TaskEntryCatalog>(EMPTY_CATALOG);
   const [selectedProfileId, setSelectedProfileId] = useState<string>();
   const [projectSelections, setProjectSelections] = useState(
@@ -162,6 +176,7 @@ export function useTaskEntryController(
   const [pending, setPending] = useState(false);
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string>();
+  const [sessionWorkspaceRecoverySessionId, setSessionWorkspaceRecoverySessionId] = useState<string>();
   const [directoryHost, setDirectoryHost] = useState<DirectoryHandoff>();
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const directoryOpenerRef = useRef<HTMLElement | null>(null);
@@ -296,6 +311,77 @@ export function useTaskEntryController(
       });
     }
   }, [copy.projectUpdateFailedFallback, copy.projectUpdateFailedTitle, locale, refresh, reportError]);
+
+  const openSessionWorkspaceRecovery = useCallback((sessionId: string): void => {
+    setSessionWorkspaceRecoverySessionId(sessionId);
+  }, []);
+
+  const closeSessionWorkspaceRecovery = useCallback((): void => {
+    setSessionWorkspaceRecoverySessionId(undefined);
+  }, []);
+
+  const relocateSessionWorkspace = useCallback(async (input: {
+    sessionId: string;
+    profileId: string;
+    projectId: string;
+  }): Promise<boolean> => {
+    try {
+      const result = await sessionService.relocateWorkspace(input.sessionId, input.projectId);
+      if (!result.ok) {
+        reportError({
+          title: sessionMoveCopy.moveFailedTitle,
+          description: sessionMoveCopy.moveFailures[result.reason],
+          profileId: input.profileId,
+        });
+        return false;
+      }
+      closeSessionWorkspaceRecovery();
+      return true;
+    } catch (cause) {
+      reportError({
+        title: copy.projectUpdateFailedTitle,
+        description: localizedShellErrorMessage(
+          cause,
+          copy.projectUpdateFailedFallback,
+          locale,
+        ),
+        profileId: input.profileId,
+      });
+      return false;
+    }
+  }, [
+    closeSessionWorkspaceRecovery,
+    copy.projectUpdateFailedFallback,
+    copy.projectUpdateFailedTitle,
+    locale,
+    reportError,
+    sessionMoveCopy,
+    sessionService,
+  ]);
+
+  const addSessionWorkspace = useCallback(async (input: {
+    sessionId: string;
+    profileId: string;
+    host: TaskEntryHostRef;
+  }): Promise<boolean> => {
+    try {
+      const result = await service.addProject(input.host);
+      if (!result.ok) return false;
+      await refreshAfterProjectMutation(input.host.profileId);
+      return relocateSessionWorkspace({
+        sessionId: input.sessionId,
+        profileId: input.profileId,
+        projectId: result.project.id,
+      });
+    } catch (cause) {
+      reportError({
+        title: copy.selectDirectoryFailedTitle,
+        description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
+        profileId: input.host.profileId,
+      });
+      return false;
+    }
+  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, relocateSessionWorkspace, reportError, service]);
 
   const addProjectForHost = useCallback(async (host: ReadyTaskEntryHost, name?: string): Promise<void> => {
     if (projectMutationPendingRef.current) return;
@@ -469,6 +555,7 @@ export function useTaskEntryController(
           : host.selectedProjectId;
         return {
           id: host.profile.id,
+          hostId: host.hostId,
           label: host.profile.name,
           projects: host.projects.filter((project) => project.archivedAt === undefined),
           selectedProjectId: groupSelectedProjectId,
@@ -692,6 +779,10 @@ export function useTaskEntryController(
       addProject: addSelectedProject,
       openNewProject,
       chooseProjectForProfile,
+      openSessionWorkspaceRecovery,
+      closeSessionWorkspaceRecovery,
+      relocateSessionWorkspace,
+      addSessionWorkspace,
       resolveWorkBoardTarget,
       prepareWorkBoardDraft,
     },
@@ -705,6 +796,9 @@ export function useTaskEntryController(
       usesDefaultHost:
         catalog.hosts.length === 0 || selectedProfileId === catalog.defaultProfileId,
       workspacePicker,
+      ...(sessionWorkspaceRecoverySessionId
+        ? { sessionWorkspaceRecoverySessionId }
+        : {}),
       canAddProject: Boolean(
         selectedHost &&
           (selectedHost.capabilities.chooseClientDirectory ||
@@ -717,23 +811,28 @@ export function useTaskEntryController(
     addSelectedProject,
     newProjectDialog,
     openNewProject,
+    addSessionWorkspace,
     catalog.defaultProfileId,
     catalog.hosts.length,
     chooseProjectForProfile,
     closeDirectoryPicker,
+    closeSessionWorkspaceRecovery,
     directoryHost,
     projectPath,
     projectScopes,
+    openSessionWorkspaceRecovery,
     refreshCatalog,
     selectLocalProject,
     selectScopedProject,
     mutateScopedProject,
     service,
     resolveWorkBoardTarget,
+    relocateSessionWorkspace,
     prepareWorkBoardDraft,
     selectedHost,
     selectedHostProjection,
     selectedProfileId,
+    sessionWorkspaceRecoverySessionId,
     target,
     workspacePicker,
   ]);
