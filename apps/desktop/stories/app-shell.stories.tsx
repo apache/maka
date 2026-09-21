@@ -3634,12 +3634,32 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     await waitFor(() => expect(Number(getComputedStyle(glass).opacity)).toBe(1));
     expect(getComputedStyle(glass).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     expect(getComputedStyle(edge).outlineStyle).toBe('solid');
-    const glassBox = glass.getBoundingClientRect();
+    const scroller = canvasElement.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
+    const expectAttachedEdge = () => {
+      const boundary = scroller.getBoundingClientRect().right;
+      const glassBox = glass.getBoundingClientRect();
+      expect(Math.abs(glassBox.right - boundary)).toBeLessThan(1);
+      expect(glassBox.width).toBeGreaterThanOrEqual(36);
+      // The decoration bridges the scrollbar/resize lane, but only the
+      // inner body is a button. With the panel collapsed, presses in that
+      // lane must reach the scrollport rather than the restore control.
+      const scrollbarTarget = document.elementFromPoint(boundary - 4, glassBox.y + glassBox.height / 2);
+      expect(scrollbarTarget).not.toBeNull();
+      expect(edge.contains(scrollbarTarget)).toBe(false);
+      if (edge.getAttribute('aria-expanded') === 'false') {
+        expect(scroller.contains(scrollbarTarget)).toBe(true);
+      }
+    };
+    await waitFor(expectAttachedEdge);
     const edgeBox = edge.getBoundingClientRect();
-    expect(glassBox.left).toBeGreaterThanOrEqual(edgeBox.left);
-    expect(glassBox.right).toBeLessThanOrEqual(edgeBox.right);
-    for (const x of [glassBox.left + 2, glassBox.right - 2]) {
-      expect(document.elementFromPoint(x, glassBox.y + glassBox.height / 2)?.closest('button')).toBe(edge);
+    expect(edgeBox.width).toBeGreaterThanOrEqual(24);
+    expect(edgeBox.height).toBeGreaterThanOrEqual(44);
+    expect(edgeBox.height).toBeLessThanOrEqual(48);
+    const arrow = glass.querySelector('svg')!.getBoundingClientRect();
+    expect(arrow.left).toBeGreaterThan(edgeBox.left);
+    expect(arrow.right).toBeLessThan(edgeBox.right);
+    for (const x of [edgeBox.left + 2, edgeBox.right - 2]) {
+      expect(document.elementFromPoint(x, edgeBox.y + edgeBox.height / 2)?.closest('button')).toBe(edge);
     }
     expect(frame.getBoundingClientRect().width).toBe(width);
     const conversation = canvasElement.querySelector('.maka-detail-with-artifacts > .mainColumn')!.getBoundingClientRect();
@@ -3669,6 +3689,7 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     const restore = canvas.getByRole('button', { name: '展开任务工作栏' });
     expect(restore).toBe(edge);
     restore.focus();
+    await waitFor(expectAttachedEdge);
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(frame).toBeVisible());
     expect(panel).toBeVisible();

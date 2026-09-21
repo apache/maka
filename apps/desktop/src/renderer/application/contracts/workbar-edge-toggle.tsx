@@ -26,6 +26,6 @@ export function WorkbarEdgeToggle(props: { collapsed: boolean; label: string; pl
   return (
     <Button variant="ghost" type="button" className="maka-workbar-edge" data-collapsed={props.collapsed || undefined} data-placement={props.placement}
       label={props.label} isIconOnly aria-expanded={!props.collapsed} onClick={props.onToggle}
-      icon={<span className="maka-workbar-edge-glass" aria-hidden="true"><Arrow size={10} strokeWidth={1.25} /></span>} />
+      icon={<span className="maka-workbar-edge-glass" aria-hidden="true"><Arrow size={12} strokeWidth={1.5} /></span>} />
   );
 }
