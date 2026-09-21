@@ -31,6 +31,8 @@ import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/Segme
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
+import { selectSessions, type SessionCatalogController } from '../../application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../application/contracts/session-catalog/use-external-store-selector.js';
 import { getExternalSessionImportCopy } from '../../locales/external-session-import-copy.js';
 import { getSettingsSharedCopy } from '../../locales/settings-shared-copy.js';
 import { ExportTree } from './export-tree.js';
@@ -56,8 +58,8 @@ export function SessionBundleTasks(props: {
   isLocalTarget: boolean;
   /** The adapter catalog, rendered when the import half is showing. */
   children: ReactNode;
-  /** Local tasks for the export half. Archived ones are left out here. */
-  sessions?: readonly DesktopSessionSummary[];
+  /** The shell's session catalog, subscribed for the export half's task list. */
+  catalog: SessionCatalogController;
   /** The settings surface's own section chrome, supplied rather than imported. */
   renderSection: (input: {
     title?: string;
@@ -76,7 +78,8 @@ export function SessionBundleTasks(props: {
   // filesystem. A Guest projection is not ours to carry at all -- a Guest's
   // Desktop does not even register these channels, and a remote owner is not
   // granted the operations.
-  const exportable = (props.sessions ?? []).filter(
+  const sessions = useExternalStoreSelector(props.catalog, selectSessions);
+  const exportable = sessions.filter(
     (session) => session.profileKind === 'local' && session.shared !== true,
   );
 

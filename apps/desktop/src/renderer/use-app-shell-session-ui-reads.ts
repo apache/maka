@@ -18,7 +18,7 @@
  */
 
 import { sessionUiSelectors as select, type AppShellSessionUiStateController } from './features/conversation/index.js';
-import { useExternalStoreSelector } from './use-external-store-selector.js';
+import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 
 /** Shell subscribes to low-frequency execution and content summaries, never raw tokens. */
 export function useAppShellSessionUiReads(controller: AppShellSessionUiStateController, activeId: string | undefined) {

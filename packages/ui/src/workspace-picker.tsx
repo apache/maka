@@ -18,10 +18,13 @@
  */
 
 import type { ProjectRecord } from '@maka/core/project';
+import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { ICON_SIZE, AlertTriangle, Check, FolderOpen, Network, Plus, RefreshCcw, Settings, X } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { NewProjectDialog } from './new-project-dialog.js';
 
 export interface WorkspacePickerGroup {
   id: string;
@@ -31,7 +34,12 @@ export interface WorkspacePickerGroup {
   projects: readonly ProjectRecord[];
   selectedProjectId?: string | null;
   onSelectProject?(projectId: string): void;
-  onAdd?(): void;
+  /**
+   * Create a project on this host. The picker collects the name first (see
+   * `NewProjectDialog`) and passes it here; the handler then asks for the
+   * directory and registers the project under that name.
+   */
+  onAdd?(name: string): void;
   onManage?(): void;
   onRelink?(projectId: string): void;
   onSelectNoProject?(): void;
@@ -52,8 +60,14 @@ export function WorkspacePicker({ workspacePicker: picker }: {
 }) {
   const copy = getConversationCopy(useUiLocale()).workspace;
   const locked = picker.pending === true;
+  // Which host's New project dialog is open. The picker names the project, then
+  // the caller's `onAdd` opens the folder picker — so the name is collected
+  // before the directory step, not after it.
+  const [newProjectGroupId, setNewProjectGroupId] = useState<string | null>(null);
+  const newProjectGroup = picker.groups.find((group) => group.id === newProjectGroupId);
 
   return (
+    <>
     <DropdownMenu
       placement="above"
       hasChevron={false}
@@ -132,9 +146,9 @@ export function WorkspacePicker({ workspacePicker: picker }: {
               {group.onAdd ? (
                 <DropdownMenuItem
                   icon={<Plus size={ICON_SIZE.meta} aria-hidden="true" />}
-                  label={copy.addProject}
+                  label={copy.newProject}
                   isDisabled={locked || group.disabled}
-                  onClick={group.onAdd}
+                  onClick={() => setNewProjectGroupId(group.id)}
                 />
               ) : null}
               {group.onManage ? (
@@ -172,5 +186,22 @@ export function WorkspacePicker({ workspacePicker: picker }: {
         </div>
       ) : null}
     </DropdownMenu>
+    {newProjectGroup ? (
+      // Portalled out of the picker's subtree on purpose. Astryx's Dialog is a
+      // native `<dialog>` that does NOT portal itself, and the composer renders
+      // this picker INSIDE its own `<form>`. A dialog mounted in place would put
+      // the New project form inside the composer form, where a submit can be
+      // taken for the composer's — the window then navigates to the dev URL.
+      createPortal(
+        <NewProjectDialog
+          onOpenChange={(open) => {
+            if (!open) setNewProjectGroupId(null);
+          }}
+          onSubmit={(name) => newProjectGroup.onAdd?.(name)}
+        />,
+        document.body,
+      )
+    ) : null}
+    </>
   );
 }

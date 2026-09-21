@@ -27,7 +27,6 @@ import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtim
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import type { UpdateCatalogConnectionInput } from '@maka/core/runtime-policy';
 import { createDesktopConnectionSettingsServices } from '../../renderer/platform/desktop/create-connection-settings-services.js';
-import { defaultEnabledModelIdsWhenOmitted } from '@maka/core/llm-connections';
 import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
   RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
@@ -43,12 +42,7 @@ import {
 } from '../runtime-host-connections-ipc-main.js';
 import { normalizeCreateConnectionInputForIpc } from '../connections-ipc-validation.js';
 
-const OPENCODE_FREE_ENABLED_MODEL_IDS: readonly string[] =
-  defaultEnabledModelIdsWhenOmitted('opencode-free') ?? [];
 
-// `providerType in PROVIDER_REGISTRY` traverses the prototype chain, so an
-// inherited member named a provider the build does not register. The renderer
-// reaches this boundary, and what it admits is persisted.
 test('refuses a prototype member posing as a provider type', () => {
   for (const providerType of ['__proto__', 'toString', 'constructor', 'hasOwnProperty']) {
     assert.throws(
@@ -85,7 +79,6 @@ test('registers pure Connection reads for replacement-Host retry', () => {
     'connections:getRequestHeaders',
     'connections:getSnapshot',
     'connections:hasSecret',
-    'connections:usage',
   ]);
   assert.ok(effects.has('connections:create'));
   assert.ok(effects.has('connections:onboardingVerify'));
@@ -433,41 +426,6 @@ test('reports an existing but unconfigured credential as missing', async () => {
   );
 });
 
-test('reads connection usage Host-side and rejects an identity with extra keys', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  let readFor: string | undefined;
-  registerRuntimeHostConnectionsIpc({
-    ipcMain: {
-      handle: (channel, handler) => {
-        handlers.set(channel, handler as (...args: unknown[]) => unknown);
-      },
-    },
-    client: {
-      loadConnectionCatalog: async () => catalog(),
-      readConnectionUsage: async (connectionId: string) => {
-        readFor = connectionId;
-        return { kind: 'unavailable', reason: 'unsupported' };
-      },
-    } as never,
-    emitConnectionListChanged() {},
-  });
-
-  assert.deepEqual(
-    await handlers.get('connections:usage')?.({}, connectionIdentity()),
-    { kind: 'unavailable', reason: 'unsupported' },
-  );
-  assert.equal(readFor, 'connection-1');
-
-  // The renderer bug this guards: passing the whole projected connection
-  // instead of the narrow identity. Structural typing lets the extra fields
-  // through at compile time, so the boundary must refuse them at runtime.
-  await assert.rejects(
-    async () =>
-      handlers.get('connections:usage')?.({}, { ...connectionIdentity(), name: 'OpenRouter' }),
-    /Invalid Connection identity/i,
-  );
-});
-
 test('keeps saved custom header values out of the renderer and preserves them by name', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let replacedHeaders: unknown;
@@ -513,7 +471,7 @@ test('keeps saved custom header values out of the renderer and preserves them by
   ]);
 });
 
-test('preserves the provider default inventory beside the recommended model', async () => {
+test('creates a connection with only the explicitly selected model', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let createdModels: readonly string[] = [];
   const emptyCatalog: ConnectionCatalogSnapshot = {
@@ -536,11 +494,11 @@ test('preserves the provider default inventory beside the recommended model', as
               defaultTarget: null,
               connections: [
                 {
-                  connectionId: 'connection-free',
+                  connectionId: 'connection-go',
                   revision: 1,
-                  slug: 'opencode-free',
-                  name: 'OpenCode Free',
-                  providerType: 'opencode-free',
+                  slug: 'opencode-go',
+                  name: 'OpenCode Go',
+                  providerType: 'opencode-go',
                   enabled: true,
                   enabledModelIds: createdModels,
                   catalogEntries: [],
@@ -555,7 +513,7 @@ test('preserves the provider default inventory beside the recommended model', as
         createdModels = draft.enabledModelIds;
         return {
           kind: 'committed',
-          connection: { connectionId: 'connection-free', revision: 1 },
+          connection: { connectionId: 'connection-go', revision: 1 },
         };
       },
     } as never,
@@ -563,14 +521,13 @@ test('preserves the provider default inventory beside the recommended model', as
   });
 
   await handlers.get('connections:create')?.({}, {
-    slug: 'opencode-free',
-    name: 'OpenCode Free',
-    providerType: 'opencode-free',
-    defaultModel: 'nemotron-3-ultra-free',
+    slug: 'opencode-go',
+    name: 'OpenCode Go',
+    providerType: 'opencode-go',
+    defaultModel: 'minimax-m3',
   });
 
-  // Snapshot-derived set; assert the contract, not today's ids.
-  assert.deepEqual(createdModels, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
+  assert.deepEqual(createdModels, ['minimax-m3']);
 });
 
 test('projects the Host default target without inventing a second Connection authority', () => {

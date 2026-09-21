@@ -54,6 +54,10 @@ import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
 import { createDesktopOverlaysServices } from '../platform/desktop/create-overlays-services';
 import { observeReactPerformanceMeasures } from '../platform/desktop/react-performance-measures';
+import {
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../application/contracts/session-catalog/session-catalog-state.js';
 
 if (import.meta.env.DEV) {
   const stopObserving = observeReactPerformanceMeasures();
@@ -62,6 +66,11 @@ if (import.meta.env.DEV) {
 
 export function createDesktopFeatureServices() {
   return {
+    // The session catalog is renderer-owned shared state, not a bridge
+    // service — it is created once with the other app singletons and read
+    // through `useSessionCatalogController` so providers below do not need it
+    // drilled through the shell.
+    sessionCatalog: createSessionCatalogController(),
     appUpdate: createDesktopAppUpdateServices(),
     clientPlugins: createDesktopClientPluginServices(),
     workHub: createDesktopWorkHubServices(),
@@ -86,6 +95,7 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
+    <SessionCatalogContext.Provider value={props.services.sessionCatalog}>
     <ClientPluginServicesProvider services={props.services.clientPlugins}>
       <ClientPluginRoot>
         <AppUpdateServicesProvider services={props.services.appUpdate}>
@@ -121,5 +131,6 @@ export function DesktopFeatureServicesProvider(props: {
         </AppUpdateServicesProvider>
       </ClientPluginRoot>
     </ClientPluginServicesProvider>
+    </SessionCatalogContext.Provider>
   );
 }

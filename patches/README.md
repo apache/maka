@@ -172,7 +172,7 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
-## `@astryxdesign/core@0.6.1`
+## `@astryxdesign/core@0.6.2`
 
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short
@@ -224,6 +224,12 @@ rewritten or later text still reveals and fades from a parsed-visible boundary.
 Markdown can also transform the displayed prefix immediately before its
 existing incremental parser, so host syntax such as math stays behind the
 streaming cursor without adding another parser or scheduler.
+
+`trimStreamingArtifacts` pairs its unclosed-marker scans with the inline math
+spans it already found. Without that, a complete `$…$` whose TeX contains
+`[`, `*`, or `~~` on the last streamed line is trimmed or auto-closed as if
+the characters were Markdown, mangling a finished formula. Remove this hunk
+when upstream scopes those scans to text outside math.
 
 One hunk is a geometry fix rather than a seam. `ChatLayout`'s frosted dock
 layer is a per-density constant (80/100/120px) while the dock it fades is

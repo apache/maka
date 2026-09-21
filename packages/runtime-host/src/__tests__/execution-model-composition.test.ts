@@ -915,12 +915,7 @@ test('backend creation admits an enabled model a live list omits', async () => {
 });
 
 test('backend creation admits an enabled model a snapshot never listed', async () => {
-  // `opencode-free` has no model-list endpoint, so its discovery run replays
-  // the array this build shipped and records `modelSource: 'fallback'`. The
-  // user enabled this id; a release snapshot cannot rule on what an account
-  // serves (#1584). Until now the only id that could get through an absent
-  // inventory was a hardcoded `deepseek` / `deepseek-v4-flash` pair (#2896) —
-  // the same situation, conceded for one provider.
+  // User-selected models remain usable when a fallback catalog has not listed them.
   const modelId = 'claude-opus-5';
   const backend = await createHostAiSdkBackend(
     backendCreationFixture({
@@ -930,10 +925,10 @@ test('backend creation admits an enabled model a snapshot never listed', async (
         kind: 'ready',
         connection: {
           slug: 'backend-creation-connection',
-          providerType: 'opencode-free',
+          providerType: 'volcengine-ark',
           enabledModelIds: [modelId],
           models: [{ id: 'grok-code' }],
-          modelSource: 'fetched' as const,
+          modelSource: 'fallback' as const,
         },
         networkProxy: { enabled: false },
         secretMaterial: {},

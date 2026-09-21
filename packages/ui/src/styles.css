@@ -304,7 +304,13 @@
    Product CSS keeps only what is layout: it is a block-level note under the
    bubble, so it needs its own line and the gap above it. */
 .maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
-.maka-processing-sequence { min-width: 0; }
+.maka-processing-sequence {
+  min-width: 0;
+  /* Astryx tool rows overhang their text by 4px on each inline edge so hover
+     surfaces reach the card edge (their padding/negative-margin pair); this
+     padding is where that overhang lands inside the paint boundary. */
+  padding-inline: var(--space-1);
+}
 .maka-processing-summary {
   display: flex;
   align-items: center;
@@ -327,7 +333,9 @@
   min-height: 0;
   flex-direction: column;
   gap: 8px;
-  overflow: clip;
+  /* Block-axis clip for the disclosure wipe only; the rows' inline overhang
+     must reach the sequence's padding edge, so it cannot be clipped here. */
+  overflow-y: clip;
 }
 .maka-processing-body > :first-child { margin-top: var(--space-2); }
 /* Match Astryx ChatToolCalls' grid disclosure motion. The native details
@@ -336,6 +344,11 @@
 @supports selector(::details-content) {
   .maka-processing-sequence::details-content {
     display: grid;
+    /* An implicit `auto` column track grows to the item's max-content, so one
+       unbreakable row would widen the whole body past the reading measure and
+       every row would clip at the sequence's paint boundary. Pin the column to
+       the grid's inline size; overflow stays each child's own problem. */
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 0fr;
     transition: grid-template-rows var(--duration-medium) var(--ease-standard),
       content-visibility var(--duration-medium) allow-discrete;

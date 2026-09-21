@@ -84,6 +84,7 @@ import { createMcpToolBinding, parseMcpToolBinding } from './tool-binding.js';
 import { McpToolCallError, normalizeToolCallError } from './tool-call-error.js';
 import { discoverMcpTools, type McpDiscoveredTool } from './tool-discovery.js';
 import { McpToolCallPreparer, type McpToolCallPreparationState } from './tool-output-validation.js';
+import { mapMcpToolProgress } from './tool-progress.js';
 import { McpCredentialCoordinator } from './credential-coordinator.js';
 import {
   assertTransportSecurity,
@@ -804,6 +805,9 @@ export class McpClientManager {
     options: {
       signal?: AbortSignal;
       timeoutMs?: number;
+      onProgress?: (current: number, total: number) => void;
+      /** McpToolProvider name; Desktop in-process tools pass this instead of onProgress. */
+      emitProgress?: (current: number, total: number) => void;
       requestInteraction?: (
         form: InteractionFormInput,
         options?: { cancellationSignal?: AbortSignal },
@@ -901,6 +905,26 @@ export class McpClientManager {
       )
         throw new McpToolCallError(serverId, toolName, 'tool binding is stale');
     };
+    const progressListener = options.onProgress ?? options.emitProgress;
+    let forwardedProgressTotal: number | undefined;
+    let forwardedProgressCurrent = -1;
+    const forwardProgress = (progress: unknown): void => {
+      const mapped = mapMcpToolProgress(progress);
+      if (!mapped) return;
+      if (
+        (forwardedProgressTotal !== undefined && mapped.total !== forwardedProgressTotal) ||
+        mapped.current <= forwardedProgressCurrent
+      ) {
+        return;
+      }
+      forwardedProgressTotal ??= mapped.total;
+      forwardedProgressCurrent = mapped.current;
+      try {
+        progressListener?.(mapped.current, mapped.total);
+      } catch {
+        // Progress is advisory: a listener failure must not fail the tool.
+      }
+    };
     try {
       const originalArguments = requestInteraction ? structuredClone(args) : args;
       let continuation: { inputResponses?: Record<string, ElicitResult>; requestState?: string } =
@@ -924,6 +948,7 @@ export class McpClientManager {
             signal,
             timeout: options.timeoutMs ?? this.timeouts.callToolMs,
             toolDefinition: structuredClone(preparation.value.definitionForSdk),
+            ...(progressListener ? { onprogress: forwardProgress } : {}),
             ...(requestInteraction ? { allowInputRequired: true } : {}),
           },
         );

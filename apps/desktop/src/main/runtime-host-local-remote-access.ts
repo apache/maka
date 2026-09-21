@@ -192,7 +192,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     signal?: AbortSignal,
   ) => DesktopRuntimeHostSetupPackage | Promise<DesktopRuntimeHostSetupPackage>;
   readonly operator: DesktopRuntimeHostLocalOperator;
-  readonly onUpdateProgress?: (phase: RuntimeHostServiceUpdatePhase | 'restart') => void;
   readonly resolveManagedDeploymentAuthority?: (
     rootId: string,
   ) => Promise<LocalManagedDeploymentAuthority | undefined>;
@@ -779,7 +778,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
                 ...(retirementSignal ? { retirementSignal } : {}),
               },
               (phase) => {
-                input.onUpdateProgress?.(phase);
                 progress?.(phase);
               },
             );
@@ -878,7 +876,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
 
         const setupPackage = await input.resolveSetupPackage(signal);
         const progress = (phase: RuntimeHostServiceUpdatePhase | 'restart') => {
-          input.onUpdateProgress?.(phase);
           options.onProgress?.(phase);
         };
         progress('checking');

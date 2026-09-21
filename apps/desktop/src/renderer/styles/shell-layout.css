@@ -24,19 +24,11 @@
   height: 100dvh;
   width: 100%;
   padding: 0;
-  /* PR-APPFRAME-FILL-0: `#root` (index.html) is `display:flex;
-     align-items:center; justify-content:center` so the preload
-     skeleton (`.maka-preload`, rendered before React mounts) sits
-     centered. Once React mounts, `.appFrame` is that flex container's
-     only child, and without an explicit main-axis size a flex item
-     shrinks to its content width and gets centered — so on the
-     first-run hero (onboarding content is narrower than the window) the whole
-     app frame floated mid-window with large left/right gutters, while
-     long-message sessions filled the width. Pin `width:100%` so the
-     frame always spans the window regardless of inner content's
-     max-content. The preload centering is unaffected (it's the only
-     child at that point and still centers). */
-  /* The backplate under the preload skeleton and behind the shell before it
+  /* PR-APPFRAME-FILL-0: pin `width:100%` so the frame always spans the
+     window regardless of inner content's max-content — without it, narrow
+     surfaces like the first-run hero can leave the frame short of the
+     window's width. */
+  /* The backplate under the preload surface and behind the shell before it
      mounts. AppShell paints both columns over this, so it is not a shell
      surface — it is what the window shows when there is no shell yet. */
   background: var(--surface-canvas);

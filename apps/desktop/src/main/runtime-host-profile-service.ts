@@ -303,6 +303,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     onPeerEndpoint?: (endpoint: HostPeerEndpoint) => void,
   ) => Promise<void>;
   readonly disable: (profileId: string) => Promise<void>;
+  readonly retryLocal?: () => Promise<void>;
   readonly finalizePairing: (profileId: string) => Promise<void>;
   readonly setDefault: (profileId: string) => void;
   readonly catalog?: RuntimeHostProfileCatalog;
@@ -1266,6 +1267,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       return mutateProfiles(async () => {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           if (!isEnabled) throw new Error("Local Runtime Host cannot be disabled");
+          await input.retryLocal?.();
           return snapshot();
         }
         if (isEnabled) {
