@@ -33,7 +33,6 @@ import {
   ChatMessageBubble,
   ChatMessageMetadata,
   ChatSystemMessage,
-  ChatTokenizedText,
   HStack,
   IconButton as UiIconButton,
   Spinner,
@@ -46,7 +45,6 @@ import {
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { Icon } from '@astryxdesign/core/Icon';
-import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import {
   type AttachmentRef,
   type InlineReference,
@@ -94,13 +92,6 @@ export function LocalizedChatMessage({
       <ChatMessage {...props} />
     </AstryxLocaleProvider>
   );
-}
-
-function legacySentSkillTokens(text: string) {
-  const values = new Set(
-    [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
-  );
-  return [...values].map((value) => ({ value, label: value, variant: 'neutral' as const }));
 }
 
 function AttachmentImage(props: { attachment: AttachmentRef }) {
@@ -273,13 +264,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           className="maka-chat-message-bubble maka-chat-message-bubble-user"
           metadata={userMetadata}
         >
-          {props.inlineReferences ? (
-            <InlineReferenceText text={props.text} references={props.inlineReferences} />
-          ) : (
-            <ChatTokenizedText tokens={legacySentSkillTokens(props.text)}>
-              {props.text}
-            </ChatTokenizedText>
-          )}
+          <InlineReferenceText text={props.text} references={props.inlineReferences ?? []} />
         </ChatMessageBubble>
       ) : (
         userMetadata

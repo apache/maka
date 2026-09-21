@@ -18,6 +18,7 @@
  */
 
 import type { InlineReference } from '@maka/core/events';
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import { ChatTokenizedText, type ChatComposerToken } from '@astryxdesign/core';
 import type { ReactNode } from 'react';
 import { ICON_SIZE, Sparkles } from './icons.js';
@@ -89,6 +90,17 @@ export function inlineReferenceToken(reference: InlineReferenceVisual): ChatComp
   };
 }
 
+/**
+ * The one renderer for a user row's text: the references the message carries,
+ * plus the `/skill:<id>` invocations the text itself spells.
+ *
+ * A Skill chip arrives structurally only once the Host has frozen it from the
+ * invocation receipts, so the optimistic row, the local store's copy and any
+ * invocation with no successful receipt carry the token as plain text. Drawing
+ * only what `references` holds left those rows showing `/skill:writer` while the
+ * canonical copy of the same message showed a chip — the token is the grammar
+ * and the chip is one of its renderings, so it is drawn from the text here too.
+ */
 export function InlineReferenceText(props: {
   text: string;
   references: readonly InlineReference[];
@@ -105,7 +117,9 @@ export function InlineReferenceText(props: {
     ) {
       continue;
     }
-    if (reference.start > cursor) parts.push(props.text.slice(cursor, reference.start));
+    if (reference.start > cursor) {
+      parts.push(skillTokenizedText(props.text.slice(cursor, reference.start), `gap:${cursor}`));
+    }
     parts.push(
       <ChatTokenizedText
         key={`${reference.start}:${reference.value}`}
@@ -116,6 +130,35 @@ export function InlineReferenceText(props: {
     );
     cursor = reference.start + reference.value.length;
   }
-  if (cursor < props.text.length) parts.push(props.text.slice(cursor));
+  if (cursor < props.text.length) {
+    parts.push(skillTokenizedText(props.text.slice(cursor), `gap:${cursor}`));
+  }
   return <span>{parts}</span>;
+}
+
+/** A text run with its `/skill:<id>` invocations drawn as chips, or plain. */
+function skillTokenizedText(text: string, key: string): ReactNode {
+  const values = new Set(
+    [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
+  );
+  if (values.size === 0) return text;
+  return (
+    <ChatTokenizedText
+      key={key}
+      tokens={[...values].map((value) =>
+        inlineReferenceToken({ kind: 'skill', value, label: skillTokenLabel(value) }),
+      )}
+    >
+      {text}
+    </ChatTokenizedText>
+  );
+}
+
+/**
+ * What a token-only chip is labelled with. The id is what the text carries and
+ * what the Host's frozen reference labels itself from when the Skill's name is
+ * the id — the common case, so the chip does not rename itself mid-flight.
+ */
+function skillTokenLabel(value: string): string {
+  return value.slice('/skill:'.length);
 }
