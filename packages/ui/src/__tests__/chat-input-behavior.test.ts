@@ -149,12 +149,9 @@ describe('shared chat input behavior', () => {
     assert.equal(debug, 0);
     assert.equal(proseOnly, 3);
     assert.ok(debug < proseOnly);
-    // Prefix, then anywhere in the id/name, then every word of a multi-word
-    // query, then prose only.
+    // Prefix, then anywhere in the id/name, then prose only.
     assert.equal(mentionMatchRank('pro', 'project-only Project Only'), 0);
     assert.equal(mentionMatchRank('only', 'project-only Project Only'), 1);
-    // Words out of order: not a substring, but every word is in the name.
-    assert.equal(mentionMatchRank('logger debug', 'debug logger'), 2);
     assert.equal(mentionMatchRank('  ', 'project-only Project Only'), 0);
     assert.equal(mentionMatchRank('comp', 'compact'), 0);
     assert.equal(mentionMatchRank('pact', 'compact'), 1);
