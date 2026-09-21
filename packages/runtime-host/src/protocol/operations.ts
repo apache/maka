@@ -67,6 +67,7 @@ import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
+import { RECALL_OPERATION_SPECS } from './recall.js';
 import { WORKHUB_COORDINATION_OPERATION_SPECS } from './workhub-coordination.js';
 
 export type {
@@ -142,7 +143,6 @@ export type {
   LiveTurnSnapshot,
   TurnProviderRetry,
   TurnQueryInput,
-  TurnRegenerateInput,
   TurnResumeParkReason,
   TurnResumePlan,
   TurnResumeQueryInput,
@@ -186,6 +186,7 @@ export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
 export * from './web-search.js';
+export * from './recall.js';
 export * from './workspace.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
@@ -229,6 +230,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   CLIENT_CAPABILITY_OPERATION_SPECS,
   WEB_SEARCH_OPERATION_SPECS,
   NETWORK_PROXY_OPERATION_SPECS,
+  RECALL_OPERATION_SPECS,
   CONFIGURATION_OPERATION_SPECS,
   WORKHUB_COORDINATION_OPERATION_SPECS,
   PLUGIN_PLATFORM_OPERATION_SPECS,
@@ -317,6 +319,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'runtime.policy.mutate',
   'runtime.policy.network-proxy.update',
   'runtime.policy.query',
+  'recall.query',
   'runtime.resource.controller.acquire',
   'runtime.resource.controller.control',
   'runtime.resource.controller.release',
@@ -357,7 +360,6 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'turn.message.query',
   'turn.message.submit',
   'turn.query',
-  'turn.regenerate',
   'turn.resume.query',
   'turn.resume.start',
   'turn.start',

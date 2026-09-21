@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import {
+  CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL,
   CLIENT_CAPABILITY_MAX_RESULT_BYTES,
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
   decodeClientCapabilityClientFrame,
@@ -48,6 +49,7 @@ interface ClientCapabilityInvocation {
   readonly controller: AbortController;
   admission?: ClientCapabilityAdmission;
   interaction?: ClientCapabilityPendingInteraction;
+  progress?: { current: number; total: number };
   released: boolean;
 }
 
@@ -340,6 +342,38 @@ export class ClientCapabilityChannel {
       });
       return accepting;
     };
+    let pendingProgress: { current: number; total: number } | undefined;
+    let progressWriting = false;
+    let progressWrite: Promise<void> = Promise.resolve();
+    const scheduleProgressWrite = (): void => {
+      if (progressWriting) return;
+      progressWriting = true;
+      progressWrite = (async () => {
+        while (pendingProgress) {
+          const next = pendingProgress;
+          pendingProgress = undefined;
+          try {
+            await this.#options.write({
+              kind: 'client.capability.progress',
+              invocationId,
+              current: next.current,
+              total: next.total,
+            });
+          } catch {
+            // Progress is advisory: a failed write must not fail the invocation.
+            return;
+          }
+        }
+      })().finally(() => {
+        progressWriting = false;
+      });
+    };
+    const flushProgress = async (): Promise<void> => {
+      do {
+        scheduleProgressWrite();
+        await progressWrite;
+      } while (pendingProgress);
+    };
     try {
       const progress = (current: number, total: number): void => {
         if (
@@ -349,18 +383,18 @@ export class ClientCapabilityChannel {
           !Number.isInteger(total) ||
           current < 0 ||
           total < 1 ||
+          total > CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL ||
           current > total
         ) {
           return;
         }
-        void this.#options
-          .write({
-            kind: 'client.capability.progress',
-            invocationId,
-            current,
-            total,
-          })
-          .catch((error: unknown) => this.#options.onFailure(asError(error)));
+        const previous = invocation.progress;
+        if (previous && (previous.total !== total || current <= previous.current)) {
+          return;
+        }
+        invocation.progress = { current, total };
+        pendingProgress = { current, total };
+        scheduleProgressWrite();
       };
       const requestInteraction = async (
         request: InteractionFormInput,
@@ -409,6 +443,7 @@ export class ClientCapabilityChannel {
         throw new Error('Client Capability provider returned with a pending interaction');
       }
       await accept({ kind: 'none' });
+      await flushProgress();
       await this.#sendResult(invocationId, result, invocation);
     } catch (error) {
       if (invocation.released) return;

@@ -72,6 +72,7 @@ import { SKILL_CATALOG_OPERATION_SPECS } from '../protocol/skill-catalog.js';
 import { TURN_OPERATION_SPECS } from '../protocol/turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from '../protocol/usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from '../protocol/web-search.js';
+import { RECALL_OPERATION_SPECS } from '../protocol/recall.js';
 import { WORKHUB_COORDINATION_OPERATION_SPECS } from '../protocol/workhub-coordination.js';
 import { PLUGIN_PLATFORM_OPERATION_SPECS } from '../protocol/plugin-platform.js';
 import { boundedFailureDiagnostic } from './failure-diagnostic.js';
@@ -227,6 +228,8 @@ export type ProjectCatalogOperationHandlerMap = Pick<
 export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
 export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyReviewOperationKey>;
 export type WebSearchOperationHandlerMap = Pick<OperationHandlerMap, WebSearchOperationKey>;
+export type RecallOperationKey = keyof typeof RECALL_OPERATION_SPECS;
+export type RecallOperationHandlerMap = Pick<OperationHandlerMap, RecallOperationKey>;
 export type NetworkProxyOperationHandlerMap = Pick<OperationHandlerMap, NetworkProxyOperationKey>;
 export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, ConfigurationOperationKey>;
 export type WorkHubCoordinationOperationHandlerMap = Pick<

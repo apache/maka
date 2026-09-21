@@ -81,7 +81,7 @@ test('Code Mode is opt-in and survives policy decoding', () => {
   );
 });
 
-test('preserves a valid default thinking level and rejects unknown levels', () => {
+test('preserves the legacy chat thinking field but rejects unknown levels', () => {
   const policy = {
     ...createDefaultRuntimePolicy(),
     chatDefaults: { permissionMode: 'ask' as const, thinkingLevel: 'high' as const },
@@ -282,6 +282,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
   const table = {
     'relay-reasoner': {
       thinkingLevels: ['minimal', 'low'],
+      defaultThinkingLevel: 'low',
       vision: true,
       contextWindow: 128_000,
       serviceTier: 'fast',

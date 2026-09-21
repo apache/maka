@@ -22,15 +22,13 @@ import { describe, test } from 'node:test';
 import { OPENCODE_SESSION_HEADER, withOpenCodeSessionHeader } from '../opencode-session-header.js';
 
 describe('OpenCode session header', () => {
-  test('adds a trimmed stable session identity for OpenCode Go and Free', () => {
+  test('adds a trimmed stable session identity for OpenCode Go', () => {
     assert.deepEqual(withOpenCodeSessionHeader('opencode-go', '  session-a  '), {
       [OPENCODE_SESSION_HEADER]: 'session-a',
     });
     assert.equal(withOpenCodeSessionHeader('opencode', 'session-a'), undefined);
     assert.equal(withOpenCodeSessionHeader('openai', 'session-a'), undefined);
-    assert.deepEqual(withOpenCodeSessionHeader('opencode-free', '  session-a  '), {
-      [OPENCODE_SESSION_HEADER]: 'session-a',
-    });
+    assert.equal(withOpenCodeSessionHeader('opencode-free', 'session-a'), undefined);
   });
 
   test('preserves an explicitly configured header case-insensitively', () => {

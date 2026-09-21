@@ -193,45 +193,6 @@ if (process.versions.electron) {
             ? passed.reduce((a, b) => (b[1] > a[1] ? b : a))
             : rows.reduce((a, b) => (b[1] < a[1] ? b : a), rows[0]);
         };
-        // Where a wheel is dispatched: the transcript's centre, unless a nested
-        // scroller — a process box's capped body — sits under that point and can
-        // still swallow the wheel in this direction. A wheel over such a body
-        // scrolls the BOX and leaves the transcript still, which reads as the
-        // reader slipping when nothing in the transcript moved. Aim at the first
-        // centreline point instead that reaches the transcript directly. The
-        // point is re-picked each tick: which body is under the centre, and
-        // whether it still has room, both change as the sweep moves.
-        const aimAt = async (deltaY) => {
-          const x = box.x + box.width / 2;
-          const y = await page.locator('[data-chat-scroll-container]').evaluate(
-            (root, args) => {
-              const rect = root.getBoundingClientRect();
-              const canConsume = (node) => {
-                if (!(node instanceof HTMLElement)) return false;
-                if (!['auto', 'scroll', 'overlay'].includes(getComputedStyle(node).overflowY))
-                  return false;
-                return args.dy < 0
-                  ? node.scrollTop > 0
-                  : node.scrollHeight - node.clientHeight - node.scrollTop > 0;
-              };
-              for (let probe = rect.top + 4; probe <= rect.bottom - 4; probe += 8) {
-                const under = document.elementFromPoint(args.x, probe);
-                if (!under || under === root || !root.contains(under)) continue;
-                let nested = false;
-                for (let node = under; node && node !== root; node = node.parentElement) {
-                  if (canConsume(node)) {
-                    nested = true;
-                    break;
-                  }
-                }
-                if (!nested) return probe;
-              }
-              return rect.top + rect.height / 2;
-            },
-            { x, dy: deltaY },
-          );
-          return { x, y };
-        };
         // Returns how far the reader's anchor moved away from what the wheel
         // asked for, how many ticks moved it at all, and every scrollHeight the
         // sweep passed through.
@@ -248,11 +209,10 @@ if (process.versions.electron) {
             for (const id of Object.keys(before.tops)) seen.add(id);
             const room = deltaY < 0 ? before.t : before.h - before.v - before.t;
             if (room <= 1) return { displacement, slips, heights };
-            const point = await aimAt(deltaY);
             await cdp.send('Input.dispatchMouseEvent', {
               type: 'mouseWheel',
-              x: point.x,
-              y: point.y,
+              x: box.x + box.width / 2,
+              y: box.y + box.height / 2,
               deltaX: 0,
               deltaY,
             });

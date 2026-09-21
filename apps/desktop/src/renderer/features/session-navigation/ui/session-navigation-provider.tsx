@@ -18,13 +18,13 @@
  */
 
 import {
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
   type ComponentType,
   type ReactNode,
 } from 'react';
-import type { ProjectRecord } from '@maka/core/project';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
   SessionRailProvider,
@@ -32,6 +32,7 @@ import {
   type NavSelection,
   type ProjectRowActions,
   type SessionRailChrome,
+  type SessionMoveTarget,
   type SessionRailData,
   type SessionRowActions,
 } from '@maka/ui';
@@ -41,9 +42,23 @@ import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
 } from '../model/session-list-layout.js';
-import type { SessionRailProjection } from '../model/session-rail.js';
+import { deriveSessionRail } from '../model/session-rail.js';
+import { sessionMatchesRail } from '../model/session-nav-filter.js';
 import { sessionRailLayoutStore } from '../model/session-rail-layout-store.js';
-import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.js';
+import {
+  projectGroupId,
+  ungroupedGroupId,
+} from '../model/session-navigation-groups.js';
+import type {
+  SessionNavigationPorts,
+  SessionNavigationProjectScope,
+  SessionNavigationSession,
+} from '../ports.js';
+import { selectSessions, type SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
+import { selectStaleSessionIds } from '../../../application/contracts/session-catalog/stale-sessions.js';
+import { sessionIdSetsEqual } from '../../../application/contracts/session-catalog/session-id-set.js';
+import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
+import type { SessionSendProjection } from '@maka/core/session-send-projection';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -59,13 +74,21 @@ export interface SessionNavigationChromeInput {
   onNew(): void;
   onExitWorkHub(): void;
   onSelectSession(sessionId: string): void;
+  /**
+   * Create a project from the rail's ＋. Absent when no host can make one, and
+   * the heading then carries no ＋ at all.
+   */
+  onNewProject?: () => void;
 }
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
-  rail: SessionRailProjection<SessionNavigationSession>;
-  projects: readonly ProjectRecord[];
+  /** The rail subscribes the catalog itself: its rows are the churn it displays. */
+  catalog: SessionCatalogController;
+  activeSessionId: string | undefined;
+  hiddenSessionIds: ReadonlySet<string>;
+  projectScopes: readonly SessionNavigationProjectScope[];
   streamingSessionIds: ReadonlySet<string>;
-  staleSessionIds: ReadonlySet<string>;
+  sessionSendOutcomes?: Readonly<Record<string, SessionSendProjection>>;
   SessionBadge?: ComponentType<{ readonly sessionId: string }>;
   ports: SessionNavigationPorts;
   /**
@@ -89,9 +112,23 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
  * first, the few dozen fibers of permanent chrome on the second.
  */
 export function SessionNavigationProvider(props: SessionNavigationProviderProps) {
+  const sessions = useExternalStoreSelector(props.catalog, selectSessions);
+  const staleSessionIds = useExternalStoreSelector(
+    props.catalog,
+    selectStaleSessionIds,
+    props.sessionSendOutcomes,
+    sessionIdSetsEqual,
+  );
+  const rail = useMemo(
+    () =>
+      deriveSessionRail(sessions, props.activeSessionId, (session) =>
+        !props.hiddenSessionIds.has(session.id) && sessionMatchesRail(session),
+      ),
+    [sessions, props.activeSessionId, props.hiddenSessionIds],
+  );
   const controller = useSessionNavigationController({
-    rail: props.rail,
-    projects: props.projects,
+    rail,
+    projectScopes: props.projectScopes,
     ports: props.ports,
   });
 
@@ -113,11 +150,60 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       onRename: (sessionId, name) => {
         void controller.commands.renameSession(sessionId, name);
       },
+      onMoveToProject: (sessionId, projectId) => {
+        void controller.commands.moveSessionToProject(sessionId, projectId);
+      },
       // No `onDelete`: the rail cannot delete. `deleteSession` is still a
       // command, reached from Settings › 已归档任务, where the task has already
       // been archived once.
     }),
     [controller.commands],
+  );
+
+  // The rail draws a row for every Host's Projects, so a task may only be moved
+  // among its own Host's — and only into a project that can receive one. Both
+  // answers come from the same scopes, so the rows that carry the drop marker and
+  // the destinations a task is offered cannot disagree.
+  const moveDropGroupKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const scope of props.projectScopes) {
+      if (scope.project.available && scope.project.archivedAt === undefined) {
+        keys.add(projectGroupId(scope.key));
+      }
+    }
+    for (const session of rail.sessions) {
+      if (!session.projectId) keys.add(ungroupedGroupId(session.runtimeHostId));
+    }
+    return keys;
+  }, [props.projectScopes, rail.sessions]);
+
+  const moveTargets = useCallback(
+    (sessionId: string): readonly SessionMoveTarget[] => {
+      const session = rail.sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) return [];
+      const targets: SessionMoveTarget[] = props.projectScopes
+        .filter(
+          (scope) =>
+            scope.hostId === session.runtimeHostId &&
+            scope.project.available &&
+            scope.project.archivedAt === undefined,
+        )
+        .map((scope) => ({
+          groupKey: projectGroupId(scope.key),
+          projectId: scope.project.id,
+          name: scope.project.name,
+        }));
+      if (session.projectId) {
+        // The one row that means "leave every project". Its name is the rail's
+        // to say, so none is given here.
+        targets.push({
+          groupKey: ungroupedGroupId(session.runtimeHostId),
+          projectId: null,
+        });
+      }
+      return targets;
+    },
+    [props.projectScopes, rail.sessions],
   );
 
   // Project row mutations are commands too, and they arrive from a different
@@ -158,13 +244,22 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     const SessionBadge = props.SessionBadge;
     return SessionBadge ? (session) => <SessionBadge sessionId={session.id} /> : undefined;
   }, [props.SessionBadge]);
+  const relinkableProjectIds = useMemo(
+    () =>
+      new Set(
+        props.projectScopes
+          .filter((scope) => scope.capabilities.chooseClientDirectory)
+          .map((scope) => scope.key),
+      ),
+    [props.projectScopes],
+  );
 
   const data = useMemo<SessionRailData>(
     () => ({
-      sessions: props.rail.sessions,
-      activeId: props.workHubActive ? undefined : props.rail.activeRowId,
+      sessions: rail.sessions,
+      activeId: props.workHubActive ? undefined : rail.activeRowId,
       streamingSessionIds: props.streamingSessionIds,
-      staleSessionIds: props.staleSessionIds,
+      staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
       groupVariant: controller.layout.viewMode,
@@ -174,6 +269,10 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       onSelectSession: props.onSelectSession,
       rowActions,
       projectActions,
+      relinkableProjectIds,
+      moveDropGroupKeys,
+      moveTargets,
+      onNewProject: props.onNewProject,
     }),
     [
       controller.layout.viewMode,
@@ -182,9 +281,13 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       controller.selectors.sessionProjectName,
       controller.selectors.worktreeSessionIds,
       props.onSelectSession,
+      props.onNewProject,
+      moveDropGroupKeys,
+      moveTargets,
       projectActions,
-      props.rail,
-      props.staleSessionIds,
+      relinkableProjectIds,
+      rail,
+      staleSessionIds,
       props.streamingSessionIds,
       props.workHubActive,
       rowActions,

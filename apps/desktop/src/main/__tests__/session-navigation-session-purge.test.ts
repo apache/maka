@@ -125,6 +125,7 @@ function installService(
       if (options.rejectPreviewIds?.includes(id)) throw new Error(`preview-unavailable:${id}`);
       return options.previewSubtasks?.[id] ?? 0;
     },
+    moveToProject: async () => ({ ok: true }),
   };
 }
 

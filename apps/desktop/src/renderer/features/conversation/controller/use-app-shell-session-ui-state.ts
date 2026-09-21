@@ -18,10 +18,15 @@
  */
 
 import { useRef, useState } from 'react';
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
 import { currentTranscriptRange } from './transcript-reading-position.js';
 import { createAppShellSessionUiStateController, type AppShellSessionUiStateController } from '../model/session-ui-state.js';
+import {
+  selectSessionById,
+  type SessionCatalogController,
+} from '../../../application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 
 interface TranscriptSource {
   range(): { readonly sessionId: string; readonly hasOlder: boolean };
@@ -38,9 +43,8 @@ export type TranscriptPublisher<Controller> = (
 /** The rendered messages and the earlier-history flag are a single publication. */
 export function useAppShellSessionUiState<
   Controller extends { readonly store: TranscriptSource },
-  Session extends SessionSummary & { localState?: string; shared?: boolean },
 >(
-  sessions: readonly Session[],
+  catalog: SessionCatalogController,
   requestedSessionId: string | undefined,
   activeIdRef: { current: string | undefined },
   commitTranscript: (sessionId: string, messages: StoredMessage[], controller: Controller) => boolean,
@@ -90,8 +94,16 @@ export function useAppShellSessionUiState<
     },
   }));
 
-  const activeCatalogSession = sessions.find((session) => session.id === view.sessionId);
-  const requestedCatalogSession = sessions.find((session) => session.id === requestedSessionId);
+  const activeCatalogSession = useExternalStoreSelector(
+    catalog,
+    selectSessionById,
+    view.sessionId,
+  );
+  const requestedCatalogSession = useExternalStoreSelector(
+    catalog,
+    selectSessionById,
+    requestedSessionId,
+  );
   // Locally staged tasks cannot admit Host reads until creation completes.
   const activeHostSession = activeCatalogSession?.localState !== 'pending' ? activeCatalogSession : undefined;
   const requestedHostSession = requestedCatalogSession?.localState !== 'pending' ? requestedCatalogSession : undefined;

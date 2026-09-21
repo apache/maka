@@ -533,6 +533,28 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('distinguishes a model thinking default from an explicit provider default', () => {
+    const decode = (thinkingLevel: 'high' | null | undefined) => {
+      const decoded = decodeClientFrame({
+        requestId: `request-thinking-${String(thinkingLevel)}`,
+        operation: 'session.create',
+        input: {
+          sessionId: `session-thinking-${String(thinkingLevel)}`,
+          workspace: { kind: 'host_path', path: '/workspace' },
+          modelTarget: { kind: 'default' },
+          ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+        },
+      });
+      if ('kind' in decoded || decoded.operation !== 'session.create') {
+        assert.fail('Expected Session create frame');
+      }
+      return decoded.input;
+    };
+    assert.equal(Object.hasOwn(decode(undefined), 'thinkingLevel'), false);
+    assert.equal(decode(null).thinkingLevel, null);
+    assert.equal(decode('high').thinkingLevel, 'high');
+  });
+
   test('correlates committed and conflicting update outputs with the request Session', () => {
     const session = projection();
     assert.deepEqual(

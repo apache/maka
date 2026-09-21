@@ -733,7 +733,6 @@ h2 {
   }
 }
 
-/* Get Maka: three paths */
 .tile.get {
   flex-direction: row;
   gap: 40px;
@@ -745,10 +744,10 @@ h2 {
   flex-direction: column;
   gap: 8px;
 }
-.paths3 {
+.paths {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 24px;
 }
 .path {
@@ -1111,7 +1110,7 @@ h2 {
   .get-h {
     flex-basis: auto;
   }
-  .paths3 {
+  .paths {
     grid-template-columns: 1fr;
   }
   .reads {
