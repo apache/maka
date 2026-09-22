@@ -52,6 +52,7 @@ const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
 const TSC_CLI      = join(REPO_ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 const MODEL_METADATA_SYNC = join(REPO_ROOT, 'scripts', 'sync-model-metadata.mjs');
+const DEPENDENCY_PATCHES = join(REPO_ROOT, 'scripts', 'apply-dependency-patches.mjs');
 const RUNTIME_WORKER_BUILD = join(REPO_ROOT, 'packages', 'runtime', 'scripts', 'build-filesystem-worker.mjs');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -81,9 +82,13 @@ const TIMER_START = Date.now();
 
 // A clean or ignore-scripts install has no generated model modules yet, and
 // `tsc --build` bypasses workspace prebuild hooks. Generate from the committed
-// snapshot before starting the incremental library graph.
+// snapshot, then require the dependency patches that runtime's direct prebuild
+// normally enforces, before starting the incremental library graph. Root builds
+// reach runtime only after earlier workspaces, so this remains a direct dev gate.
 log('build', 'model metadata — generating from committed snapshot');
 await runNodeTool(REPO_ROOT, MODEL_METADATA_SYNC, []);
+log('build', 'dependency patches — verifying');
+await runNodeTool(REPO_ROOT, DEPENDENCY_PATCHES, ['--strict']);
 
 // Phase 1: all library packages via `tsc --build` (single process, shared
 // .tsbuildinfo, sub-project incremental detection). The preload bundle imports

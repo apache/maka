@@ -18,7 +18,23 @@
  */
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+
+const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
+
+test('dev startup verifies dependency patches after metadata sync and before incremental libraries', () => {
+  const source = readFileSync(join(scriptsDirectory, 'dev.mjs'), 'utf8');
+  const metadataSync = source.indexOf("await runNodeTool(REPO_ROOT, MODEL_METADATA_SYNC, []);");
+  const patchVerification = source.indexOf("await runNodeTool(REPO_ROOT, DEPENDENCY_PATCHES, ['--strict']);");
+  const librariesBuild = source.indexOf("runNodeTool(REPO_ROOT, TSC_CLI, ['--build', 'tsconfig.lib.json'])");
+
+  assert.ok(metadataSync >= 0, 'dev startup must synchronize model metadata');
+  assert.ok(patchVerification > metadataSync, 'patch verification must follow metadata synchronization');
+  assert.ok(librariesBuild > patchVerification, 'patch verification must precede tsc --build');
+});
 
 test('a launcher signal cancels preparation before Electron can spawn', async () => {
   const { createDevelopmentLaunchSession } = await import('./dev-app-runtime.mjs');

@@ -29,6 +29,7 @@
   "scripts": {
     "prepare": "npm run sync:model-metadata && node scripts/install-husky.mjs",
     "postinstall": "node scripts/apply-dependency-patches.mjs && node scripts/install-electron-with-retry.mjs",
+    "prebuild": "node scripts/apply-dependency-patches.mjs --strict",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",

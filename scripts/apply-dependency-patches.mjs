@@ -33,9 +33,14 @@
 // unpatched dependency source, because the resulting failure looks like a
 // product regression rather than a stale install. A missing patch-package or a
 // patch that no longer applies stops before tsc and names a fresh root `npm ci`
-// as the recovery; it cannot promise that recovery for every cause.
+// as the recovery; it cannot promise that recovery for every cause. In
+// particular, `npm ci` cannot resolve an intentional dependency upgrade whose
+// versioned patch must be regenerated for the installed version.
 //
 // Applying an already-applied patch is a no-op, so both callers are idempotent.
+// This only validates patch files still present in patches/: a patch deleted or
+// narrowed after an earlier application cannot describe and therefore cannot
+// detect the residual edit in node_modules.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -44,6 +49,8 @@ import { fileURLToPath } from 'node:url';
 
 const RECOVERY =
   'Run `npm ci` from the repository root to restore a clean, fully patched dependency tree, then rerun.';
+const VERSION_MISMATCH_RECOVERY =
+  'If patch-package reported a patch file version mismatch, regenerate the versioned patch for the installed dependency version; `npm ci` alone cannot resolve an intentional upgrade.';
 
 let strict = false;
 for (const argument of process.argv.slice(2)) {
@@ -99,7 +106,7 @@ if (result.error) {
 
 if (result.status !== 0) {
   console.error(
-    `patches/ did not apply cleanly; the installed dependencies are stale or only partially patched. ${RECOVERY}`,
+    `patches/ did not apply cleanly; the installed dependencies are stale or only partially patched. ${RECOVERY} ${VERSION_MISMATCH_RECOVERY}`,
   );
   process.exit(result.status ?? 1);
 }

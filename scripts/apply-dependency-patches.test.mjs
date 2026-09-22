@@ -50,6 +50,13 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const scriptName = 'apply-dependency-patches.mjs';
 const scriptPath = join(repoRoot, 'scripts', scriptName);
 
+test('root build runs the strict patch gate before its first workspace build', () => {
+  const rootPackage = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+
+  assert.equal(rootPackage.scripts.prebuild, 'node scripts/apply-dependency-patches.mjs --strict');
+  assert.match(rootPackage.scripts.build, /^npm --workspace @maka\/core run build/u);
+});
+
 const realPatchPackageEntry = (() => {
   try {
     return createRequire(import.meta.url).resolve('patch-package/index.js');
@@ -306,6 +313,29 @@ test('strict mode rejects a real patch-package version mismatch', {
   assert.notEqual(result.status, 0);
   assert.match(result.stdout, /patch file version mismatch/u);
   assert.match(result.stderr, /did not apply cleanly/u);
+  assert.match(result.stderr, /regenerate the versioned patch/u);
+});
+
+test('strict mode rejects a versioned patch replacement after the prior version applied', {
+  skip: realPatchPackageEntry === undefined ? 'patch-package is not installed' : false,
+}, (t) => {
+  const root = createFixture(t);
+  const v1Patch = join(root, 'patches', 'fixture-dep+1.0.0.patch');
+  writePatch(root, APPLICABLE_PATCH);
+  const dependencyEntry = writeFixtureDependency(root, APPLICABLE_SOURCE);
+  linkRealPatchPackage(root);
+
+  const first = runScript(root, ['--strict']);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(readFileSync(dependencyEntry, 'utf8'), /const patched = true;/u);
+
+  rmSync(v1Patch);
+  writePatch(root, APPLICABLE_PATCH, 'fixture-dep+1.0.1.patch');
+
+  const replacement = runScript(root, ['--strict']);
+  assert.notEqual(replacement.status, 0);
+  assert.match(replacement.stdout, /patch file version mismatch/u);
+  assert.match(replacement.stderr, /regenerate the versioned patch/u);
 });
 
 test('default mode permits a real patch-package version mismatch', {
