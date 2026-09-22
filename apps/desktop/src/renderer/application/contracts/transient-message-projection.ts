@@ -45,6 +45,38 @@ export interface RestoredDraftContent {
 }
 
 /**
+ * One retract-and-restore path for every surface's queued-entry edit: the Host
+ * call first, the draft hand-back only when the caller passed the text.
+ * `retractEntry` owns the service call, `reportError` the surface's failure
+ * channel; resolves false when the retract failed.
+ */
+export async function retractQueueEntryToDraft(
+  entry: MessageQueueEntryProjection,
+  draftText: string | undefined,
+  options: {
+    retractEntry(): Promise<unknown>;
+    reportError(error: unknown): void;
+    restoreDraft?(draft: RestoredDraftContent): void;
+  },
+): Promise<boolean> {
+  try {
+    await options.retractEntry();
+  } catch (error) {
+    options.reportError(error);
+    return false;
+  }
+  if (draftText !== undefined) {
+    options.restoreDraft?.({
+      text: draftText,
+      attachments: entry.content.attachments,
+      directoryReferences: entry.content.directoryReferences,
+      quotes: entry.content.quotes,
+    });
+  }
+  return true;
+}
+
+/**
  * Edit/delete controls for steering the Host queued but has not consumed.
  * Both retract the queue entry; edit also hands the text back to the caller's
  * draft restore, so it is only offered when the caller can actually restore —
