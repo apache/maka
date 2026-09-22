@@ -2114,17 +2114,11 @@ function AppShellContent({
       session={activeSession}
       publish={addTransientMessage} update={updateTransientMessage}
       retire={removeTransientMessage}
-      canRestoreDraft={() => Boolean(
-        activeId && navSelection.section === 'sessions' && canStageComposerContext &&
-        composerRef.current && !composerRef.current.getText() &&
-        !hasPendingContext && pendingQuotes.length === 0 && !revisionDraft
-      )}
-      restoreDraft={(draft) => {
-        if (!activeId || !composerRef.current) return;
-        restoreMessageContext(activeId, directoryHostId, draft);
-        restoreQuotes(activeId, draft.quotes);
-        composerRef.current.setText(draft.text, draft.inlineReferences);
-      }}
+      {...Conversation.composerMessageRecovery({
+        sessionId: activeId, directoryHostId, composerRef,
+        enabled: navSelection.section === 'sessions' && canStageComposerContext && !revisionDraft,
+        hasPendingContext, pendingQuotes, restoreMessageContext, restoreQuotes,
+      })}
     />
     <CatalogRowWatch
       catalog={sessionCatalogController}

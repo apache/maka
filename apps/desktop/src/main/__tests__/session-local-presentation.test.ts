@@ -19,9 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { localMessagePresentation, composerFollowUp } from '../../renderer/features/conversation/testing.js';
-import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';
-import type { MessageQueueEntryProjection } from '@maka/core/events';
+import { localMessagePresentation, composerFollowUp, composerMessageRecovery } from '../../renderer/features/conversation/testing.js';
+import type { DesktopLocalMessage, DesktopLocalMessageDraft } from '../../shared/session-local-contract.js';
+import type { MessageQueueEntryProjection, QuoteRef } from '@maka/core/events';
+import type { ComposerHandle } from '@maka/ui';
 
 const message: DesktopLocalMessage = {
   sessionId: 'session', messageId: 'message', text: 'hello', state: 'accepted', createdAt: 1,
@@ -69,4 +70,87 @@ test('follow-up recovery consumes context only after admission and preserves it 
     assert.equal(cleared, outcome === true ? 2 : 0);
     assert.equal(errors, outcome === 'error' ? 1 : 0);
   }
+});
+
+const recoveredDraft: DesktopLocalMessageDraft = {
+  messageId: 'failed-message', text: '/swarm inspect repository',
+  attachments: [{ kind: 'code', name: 'saved.ts', mimeType: 'text/plain', bytes: 3,
+    ref: { kind: 'workspace_file', relativePath: 'saved.ts' } }],
+  stagedAttachments: [{ name: 'draft.ts', mimeType: 'text/plain', content: new Uint8Array([1, 2, 3]) }],
+  directoryReferences: [{ hostId: 'host', path: '/workspace' }],
+  quotes: [{ text: 'original quote', sourceTurnId: 'original-turn' }],
+  inlineReferences: [{ kind: 'workspace_file', value: 'repository', label: 'repository', start: 15 }],
+};
+
+function recoveryFixture(options: { sessionId?: string; enabled?: boolean; hasPendingContext?: boolean } = {}) {
+  const restored: unknown[][] = [];
+  let text = '';
+  const composerRef: { current: Pick<ComposerHandle, 'getText' | 'setText'> | null } = {
+    current: {
+      getText: () => text,
+      setText(value, references) { restored.push(['text', value, references]); text = value; },
+    },
+  };
+  const pendingQuotes: QuoteRef[] = [];
+  const recovery = composerMessageRecovery({
+    sessionId: 'session', directoryHostId: 'host', composerRef,
+    enabled: true, hasPendingContext: false, pendingQuotes, ...options,
+    restoreMessageContext(sessionId, hostId, draft) { restored.push(['context', sessionId, hostId, draft]); },
+    restoreQuotes(sessionId, quotes) { restored.push(['quotes', sessionId, quotes]); },
+  });
+  return { recovery, composerRef, pendingQuotes, restored, setText(value: string) { text = value; } };
+}
+
+test('failed-message recovery preserves complete context, text, and inline tokens in restore order', () => {
+  const { recovery, restored } = recoveryFixture();
+  assert.equal(recovery.canRestoreDraft(), true);
+  recovery.restoreDraft(recoveredDraft);
+  assert.deepEqual(restored, [
+    ['context', 'session', 'host', recoveredDraft],
+    ['quotes', 'session', recoveredDraft.quotes],
+    ['text', recoveredDraft.text, recoveredDraft.inlineReferences],
+  ]);
+  assert.equal(recovery.canRestoreDraft(), false);
+});
+
+test('failed-message recovery checks the live composer and quote bucket before overwriting', () => {
+  const { recovery, composerRef, pendingQuotes, restored, setText } = recoveryFixture();
+  assert.equal(recovery.canRestoreDraft(), true);
+  setText('newer draft');
+  assert.equal(recovery.canRestoreDraft(), false);
+  setText('');
+  pendingQuotes.push({ text: 'newer quote' });
+  assert.equal(recovery.canRestoreDraft(), false);
+  pendingQuotes.length = 0;
+  assert.equal(recovery.canRestoreDraft(), true);
+  composerRef.current = null;
+  assert.equal(recovery.canRestoreDraft(), false);
+  recovery.restoreDraft(recoveredDraft);
+  assert.deepEqual(restored, []);
+});
+
+test('failed-message recovery respects shell eligibility, staged context, and missing session fences', () => {
+  for (const options of [{ enabled: false }, { hasPendingContext: true }, { sessionId: undefined }]) {
+    assert.equal(recoveryFixture(options).recovery.canRestoreDraft(), false);
+  }
+  const { recovery, restored } = recoveryFixture({ sessionId: undefined });
+  recovery.restoreDraft(recoveredDraft);
+  assert.deepEqual(restored, []);
+});
+
+test('failed-message recovery resolves the mounted composer when each callback runs', () => {
+  const { recovery, composerRef, restored } = recoveryFixture();
+  assert.equal(recovery.canRestoreDraft(), true);
+  composerRef.current = {
+    getText: () => 'another composer draft',
+    setText: () => assert.fail('the blocked composer must not be overwritten'),
+  };
+  assert.equal(recovery.canRestoreDraft(), false);
+  composerRef.current = {
+    getText: () => '',
+    setText(text, references) { restored.push(['replacement', text, references]); },
+  };
+  assert.equal(recovery.canRestoreDraft(), true);
+  recovery.restoreDraft(recoveredDraft);
+  assert.deepEqual(restored.at(-1), ['replacement', recoveredDraft.text, recoveredDraft.inlineReferences]);
 });

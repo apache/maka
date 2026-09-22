@@ -74,3 +74,4 @@ export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selector
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
 export { composerFollowUp } from './controller/composer-follow-up.js';
+export { composerMessageRecovery } from './controller/composer-message-recovery.js';
