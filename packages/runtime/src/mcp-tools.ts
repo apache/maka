@@ -244,7 +244,9 @@ export function mcpProxyToolName(serverId: string, toolName: string): string {
     .update(`${serverId}\0${toolName}`)
     .digest('hex')
     .slice(0, HASH_CHARS);
-  return `${raw.slice(0, MAX_PROVIDER_TOOL_NAME - HASH_CHARS - 2)}__${hash}`;
+  // A truncated name must not become another identity's unmodified name.
+  const hashed = `mcp_h__${sanitizeNamePart(serverId)}__${sanitizeNamePart(toolName)}`;
+  return `${hashed.slice(0, MAX_PROVIDER_TOOL_NAME - HASH_CHARS - 2)}__${hash}`;
 }
 
 function sanitizeNamePart(value: string): string {

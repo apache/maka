@@ -452,6 +452,8 @@ test('distinct MCP identities remain callable after name normalization', async (
     ['server', '写入'],
     ['a__b', 'c'],
     ['a', 'b__c'],
+    ['a'.repeat(80), 'x'],
+    ['a'.repeat(47), 'bb9771ed28'],
   ];
   const calls: McpToolBinding[] = [];
   const tools = buildMcpTools(
