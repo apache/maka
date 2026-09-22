@@ -199,6 +199,9 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   expect(await app.evaluate(({ app }) => process.platform !== 'darwin' || app.dock!.isVisible())).toBe(true);
   const editor = workhub.locator('.maka-composer-editor [contenteditable="true"]');
   await editor.fill('Keep this draft while folding the conversation.');
+  // The floating native window is foregrounded on local runs. Release its
+  // editor so host keyboard input cannot mutate the draft under assertion.
+  await editor.blur();
   const expandedHeight = await workhub.evaluate(() => window.innerHeight);
   const floatingBottom = () => app.evaluate(({ BrowserWindow }) => {
     const bounds = BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getBounds();
