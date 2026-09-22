@@ -65,6 +65,8 @@ const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
 // Dark mode currently changes only paint tokens, with no dark-only DOM, layout,
 // or renderer branches; expand this set if that invariant changes.
 const DARK_THEME_SENTINEL_STORY_IDS = new Set([
+  'product-module-hubs--extensions-mcp-editor',
+  'product-module-hubs--extensions-mcp-editor-narrow',
   'design-system-palette-matrix--all-palettes',
   'product-accessibility-dialogs--rename-conversation',
   'product-markdown--rich-assistant-answer',

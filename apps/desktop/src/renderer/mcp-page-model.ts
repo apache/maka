@@ -53,9 +53,6 @@ export type McpEditorDraft = {
    * Stored configs are projected to an explicit value before editing. */
   protocol?: McpProtocolPreference;
   headers: string;
-  /** Opaque round-trip state: the editor has no OAuth fields, but an
-   * edit → save of an OAuth-configured server must not delete the block
-   * (the masked clientSecret sentinel restores from disk in main). */
   oauth?: McpOAuthConfig;
 };
 

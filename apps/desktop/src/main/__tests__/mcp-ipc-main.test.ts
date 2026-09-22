@@ -30,6 +30,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
   let config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
   const calls: string[] = [];
+  let activeLogin = false;
   const connected: McpServerStatus = {
     serverId: 'fixture', state: 'connected', transport: 'stdio', toolCount: 1,
     tools: [{ serverId: 'fixture', name: 'echo', inputSchema: { type: 'object' } }], updatedAt: 1,
@@ -55,14 +56,13 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
       },
     },
     manager: {
-      cancelConnect: () => { calls.push('cancel'); return true; },
       forgetServerCredentials: async () => { calls.push('forget'); },
       sync: async () => { calls.push('sync'); },
       statuses: () => [connected],
       test: async () => ({ ok: true, status: connected, latencyMs: 1 }),
     },
     oauth: {
-      isActive: () => false,
+      isActive: () => activeLogin,
       cancelLogin: () => false,
       login: async () => connected,
       logout: async () => connected,
@@ -77,7 +77,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   const upsert = handlers.get('mcp:upsert');
   assert.ok(upsert);
   const result = await upsert({}, 'fixture', { command: 'node' });
-  assert.deepEqual(result.mcpServers.fixture, { command: 'node' });
+  assert.deepEqual(result.mcpServers.fixture, { command: 'node', enabled: true });
   assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
 
   calls.length = 0;
@@ -89,7 +89,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   );
   assert.equal(imported.status, 'imported');
   assert.deepEqual(imported.config.mcpServers, {
-    fixture: { command: 'node' },
+    fixture: { command: 'node', enabled: true },
     remote: { url: 'https://example.com/mcp', enabled: false, transport: 'auto' },
   });
   assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
@@ -109,7 +109,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   assert.ok(add);
   const added = await add({}, 'brave', { command: 'npx' });
   assert.equal(added.status, 'added');
-  assert.deepEqual(added.config.mcpServers.brave, { command: 'npx' });
+  assert.deepEqual(added.config.mcpServers.brave, { command: 'npx', enabled: true });
   assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
   // A taken id comes back as data, not an IPC error. The check runs against
   // the locked transaction snapshot, but reaches neither credential cleanup
@@ -124,13 +124,13 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   assert.equal((await testHandler({}, 'fixture')).ok, true);
   assert.deepEqual(calls, ['ready', 'emit']);
 
-  calls.length = 0;
-  config = { version: MCP_CONFIG_VERSION, mcpServers: { fixture: { command: 'node' } } };
-  const cancelInstall = handlers.get('mcp:cancelInstall');
-  assert.ok(cancelInstall);
-  const cancelled = await cancelInstall({}, 'fixture');
-  assert.equal(cancelled.mcpServers.fixture, undefined);
-  assert.deepEqual(calls, ['cancel', 'store', 'forget', 'sync', 'emit', 'publish']);
+  activeLogin = true;
+  assert.equal((await handlers.get('mcp:listStatuses')!({}))[0].authorizationPending, true);
+  assert.equal(connected.authorizationPending, undefined);
+  activeLogin = false;
+  assert.equal((await handlers.get('mcp:listStatuses')!({}))[0].authorizationPending, undefined);
+
+
 });
 
 test('MCP remove aborts before touching the config when credential deletion fails', async () => {
@@ -157,7 +157,6 @@ test('MCP remove aborts before touching the config when credential deletion fail
       },
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => { throw new Error('credential store unavailable'); },
       sync: async () => {},
       statuses: () => [],
@@ -223,7 +222,6 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
       },
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async (next) => { synced.push(next); },
       statuses: () => [],
@@ -277,7 +275,7 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
   assert.ok(echoed && 'url' in echoed);
   assert.notEqual(echoed.oauth?.clientSecret, 'real-secret');
 
-  // Removing or cancelling an unrelated server also returns a full config
+  // Removing an unrelated server also returns a full config
   // crossing toward the renderer — the survivors' secrets stay sentinels.
   const remove = handlers.get('mcp:remove');
   assert.ok(remove);
@@ -287,97 +285,7 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
   assert.ok(survivorAfterRemove.oauth?.clientSecret);
   assert.notEqual(survivorAfterRemove.oauth?.clientSecret, 'real-secret');
 
-  config = {
-    version: MCP_CONFIG_VERSION,
-    mcpServers: { ...config.mcpServers, doomed: { command: 'npx' } },
-  };
-  const cancelInstall = handlers.get('mcp:cancelInstall');
-  assert.ok(cancelInstall);
-  const afterCancel = await cancelInstall({}, 'doomed');
-  assert.equal(afterCancel.mcpServers.doomed, undefined);
-  const survivorAfterCancel = afterCancel.mcpServers.notion;
-  assert.ok(survivorAfterCancel && 'url' in survivorAfterCancel);
-  assert.ok(survivorAfterCancel.oauth?.clientSecret);
-  assert.notEqual(survivorAfterCancel.oauth?.clientSecret, 'real-secret');
-});
 
-test('MCP market cancellation waits for an in-flight config write before rolling it back', async () => {
-  const handlers = new Map<string, (...args: any[]) => Promise<any>>();
-  let config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
-  let releaseWrite!: () => void;
-  let markWriteStarted!: () => void;
-  const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
-  const writeStarted = new Promise<void>((resolve) => { markWriteStarted = resolve; });
-  const calls: string[] = [];
-
-  registerMcpIpcMain({
-    ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
-    store: {
-      get: async () => config,
-      transform: async (apply) => {
-        calls.push('transaction:start');
-        markWriteStarted();
-        await writeGate;
-        const next = await apply(config);
-        calls.push('write');
-        config = next;
-        calls.push('transaction:end');
-        return config;
-      },
-      upsert: async (serverId, server) => {
-        config = { version: MCP_CONFIG_VERSION, mcpServers: { ...config.mcpServers, [serverId]: server } };
-        return config;
-      },
-      remove: async (serverId) => {
-        calls.push('remove');
-        const { [serverId]: _removed, ...mcpServers } = config.mcpServers;
-        config = { version: MCP_CONFIG_VERSION, mcpServers };
-        return config;
-      },
-    },
-    manager: {
-      cancelConnect: () => { calls.push('cancel'); return true; },
-      forgetServerCredentials: async () => { calls.push('forget'); },
-      sync: async () => { calls.push('sync'); },
-      statuses: () => [],
-      test: async () => { throw new Error('not used'); },
-    },
-    oauth: {
-      isActive: () => false,
-      cancelLogin: () => false,
-      login: async () => { throw new Error('not used'); },
-      logout: async () => { throw new Error('not used'); },
-      resumeLogin: async () => undefined,
-    },
-    ensureReady: async () => {},
-    publishCapabilities: async () => { calls.push('publish'); },
-    onPublicationError: () => { calls.push('publication:error'); },
-    emitChanged: () => { calls.push('emit'); },
-  });
-
-  const install = handlers.get('mcp:install');
-  const cancelInstall = handlers.get('mcp:cancelInstall');
-  assert.ok(install);
-  assert.ok(cancelInstall);
-
-  // The fake store skips normalizeMcpConfig, so the install config is given
-  // in its normal form — the real-store variant below covers the
-  // normalization mismatch.
-  const installing = install({}, 'fixture', { enabled: true, command: 'node' });
-  await writeStarted;
-  const cancelling = cancelInstall({}, 'fixture');
-  releaseWrite();
-
-  const [, cancelled] = await Promise.all([installing, cancelling]);
-  assert.equal(cancelled.mcpServers.fixture, undefined);
-  assert.equal(config.mcpServers.fixture, undefined);
-  // The cancellation's own removal is a full transaction on the same lane:
-  // credentials retire first, then the conditional write.
-  assert.deepEqual(calls, [
-    'transaction:start', 'cancel', 'write', 'transaction:end',
-    'transaction:start', 'forget', 'write', 'transaction:end',
-    'sync', 'emit', 'publish',
-  ]);
 });
 
 test('an active login on a secret-bearing server does not veto edits to another server', async () => {
@@ -401,7 +309,6 @@ test('an active login on a secret-bearing server does not veto edits to another 
       remove: async () => config,
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async () => {},
       statuses: () => [],
@@ -465,7 +372,6 @@ test('a URL change retires the old endpoint credentials before the write, and an
       remove: async () => config,
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {
         calls.push('forget');
         if (eraseFails) throw new Error('credential store unavailable');
@@ -520,70 +426,6 @@ test('a URL change retires the old endpoint credentials before the write, and an
   assert.deepEqual(calls, ['transaction:start', 'write', 'sync']);
 });
 
-test('cancelling an install rolls back only its own write, never a newer same-id config', async () => {
-  const handlers = new Map<string, (...args: any[]) => Promise<any>>();
-  let config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
-  let releaseInstallSync!: () => void;
-  const installSyncGate = new Promise<void>((resolve) => { releaseInstallSync = resolve; });
-  let syncs = 0;
-  registerMcpIpcMain({
-    ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
-    store: {
-      get: async () => config,
-      transform: async (apply) => { config = await apply(config); return config; },
-      upsert: async (_serverId, _server) => config,
-      remove: async () => config,
-    },
-    manager: {
-      cancelConnect: () => { releaseInstallSync(); return true; },
-      forgetServerCredentials: async () => {},
-      sync: async () => {
-        syncs += 1;
-        // Only the install's connect parks; later syncs pass through.
-        if (syncs === 1) await installSyncGate;
-      },
-      statuses: () => [],
-      test: async () => { throw new Error('not used'); },
-    },
-    oauth: {
-      isActive: () => false,
-      cancelLogin: () => false,
-      login: async () => { throw new Error('not used'); },
-      logout: async () => { throw new Error('not used'); },
-      resumeLogin: async () => undefined,
-    },
-    ensureReady: async () => {},
-    publishCapabilities: async () => {},
-    onPublicationError: () => {},
-    emitChanged: () => {},
-  });
-
-  const install = handlers.get('mcp:install');
-  const upsert = handlers.get('mcp:upsert');
-  const cancelInstall = handlers.get('mcp:cancelInstall');
-  assert.ok(install);
-  assert.ok(upsert);
-  assert.ok(cancelInstall);
-
-  // The install commits A and parks in its connect; a newer same-id config
-  // B lands through upsert while it waits.
-  const installing = install({}, 'x', { command: 'installed-a' });
-  await new Promise((resolve) => setImmediate(resolve));
-  await upsert({}, 'x', { command: 'newer-b' });
-
-  const cancelled = await cancelInstall({}, 'x');
-  await installing;
-
-  // The cancellation found B where it committed A: it must decline the
-  // rollback instead of deleting the newer server (and its credentials).
-  const survivor = config.mcpServers.x;
-  assert.ok(survivor && 'command' in survivor);
-  assert.equal(survivor.command, 'newer-b');
-  const echoed = cancelled.mcpServers.x;
-  assert.ok(echoed && 'command' in echoed);
-  assert.equal(echoed.command, 'newer-b');
-});
-
 test('a login claim travels the shared lane and cannot land inside an open transaction', async () => {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
   let config: McpConfigFile = {
@@ -610,7 +452,6 @@ test('a login claim travels the shared lane and cannot land inside an open trans
       remove: async () => config,
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async () => {},
       statuses: () => [],
@@ -658,63 +499,6 @@ test('a login claim travels the shared lane and cannot land inside an open trans
   );
 });
 
-test('cancelling an install through the REAL store rolls the entry back despite normalization', async () => {
-  // The fake stores in this file skip normalizeMcpConfig; the real store
-  // rebuilds each server (key order, defaulted enabled/transport, WHATWG
-  // URL) on write. The cancellation's identity check must compare in that
-  // normal form, or it mismatches its own persisted entry and silently
-  // keeps the cancelled server installed.
-  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-real-'));
-  try {
-    const store = createMcpConfigStore(root);
-    const handlers = new Map<string, (...args: any[]) => Promise<any>>();
-    let releaseInstallSync!: () => void;
-    const installSyncGate = new Promise<void>((resolve) => { releaseInstallSync = resolve; });
-    let syncs = 0;
-    registerMcpIpcMain({
-      ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
-      store,
-      manager: {
-        cancelConnect: () => { releaseInstallSync(); return true; },
-        forgetServerCredentials: async () => {},
-        sync: async () => {
-          syncs += 1;
-          if (syncs === 1) await installSyncGate;
-        },
-        statuses: () => [],
-        test: async () => { throw new Error('not used'); },
-      },
-      oauth: {
-        isActive: () => false,
-        cancelLogin: () => false,
-        login: async () => { throw new Error('not used'); },
-        logout: async () => { throw new Error('not used'); },
-        resumeLogin: async () => undefined,
-      },
-      ensureReady: async () => {},
-      publishCapabilities: async () => {},
-      onPublicationError: () => {},
-      emitChanged: () => {},
-    });
-
-    const install = handlers.get('mcp:install');
-    const cancelInstall = handlers.get('mcp:cancelInstall');
-    assert.ok(install);
-    assert.ok(cancelInstall);
-
-    // No `enabled`, no `transport`: the store materializes both on write.
-    const installing = install({}, 'market', { url: 'https://mcp.vercel.com' });
-    await new Promise((resolve) => setImmediate(resolve));
-    const cancelled = await cancelInstall({}, 'market');
-    await installing;
-
-    assert.equal(cancelled.mcpServers.market, undefined);
-    assert.equal((await store.get()).mcpServers.market, undefined);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('the config commit applies its mutation to the transaction snapshot', async () => {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
   const config: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
@@ -738,7 +522,6 @@ test('the config commit applies its mutation to the transaction snapshot', async
       remove: async () => config,
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async () => {},
       statuses: () => [],
@@ -788,7 +571,6 @@ test('MCP config commit is not rolled back by a capability publication failure',
       remove: async () => config,
     },
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async () => {},
       sync: async () => {},
       statuses: () => [],
@@ -812,7 +594,7 @@ test('MCP config commit is not rolled back by a capability publication failure',
   const upsert = handlers.get('mcp:upsert');
   assert.ok(upsert);
   const committed = await upsert({}, 'fixture', { command: 'node' });
-  assert.deepEqual(committed.mcpServers.fixture, { command: 'node' });
+  assert.deepEqual(committed.mcpServers.fixture, { command: 'node', enabled: true });
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(publicationErrors.map((error) => (error as Error).message), [
     'Host disconnected',

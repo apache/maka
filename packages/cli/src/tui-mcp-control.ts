@@ -20,7 +20,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   MCP_CONFIG_VERSION,
-  mcpConfigChangeRetiresCredentials,
   resolveMcpProtocolPreference,
   type McpConfigFile,
   type McpConfigSourceFailureReason,
@@ -34,7 +33,8 @@ import { createFileCredentialStore } from '@maka/storage/credential-store';
 import {
   AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
-  assertMcpEndpointPolicyOnChanges,
+  updateMcpConfiguration,
+  McpConfigurationValidationError,
   McpConfigSourceError,
   normalizeMcpConfig,
   normalizeMcpImport,
@@ -481,37 +481,30 @@ class TuiMcpControllerImpl implements TuiMcpController {
   ): Promise<TuiMcpActionResult> {
     let committed: McpConfigFile;
     try {
-      committed = await this.#deps.configStore.transform(async (current) => {
-        if (this.#closed) {
-          throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
-        }
-        const prepared = this.#prepareMutation(current, action);
-        if ('status' in prepared) throw new TuiMcpMutationError(prepared);
-        const { next } = prepared;
-        try {
-          assertMcpEndpointPolicyOnChanges(current, next);
-        } catch {
-          throw new TuiMcpMutationError({ status: 'failed', reason: 'invalid-config' });
-        }
-        try {
-          for (const [serverId, previous] of Object.entries(current.mcpServers)) {
-            if (!mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId])) continue;
+      committed = await updateMcpConfiguration(
+        this.#deps.configStore,
+        (current) => {
+          if (this.#closed) throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
+          const prepared = this.#prepareMutation(current, action);
+          if ('status' in prepared) throw new TuiMcpMutationError(prepared);
+          return prepared.next;
+        },
+        async (serverId, previous) => {
+          try {
             await this.#deps.manager.forgetServerCredentials(serverId, previous);
-            if (this.#closed) {
-              throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
-            }
+          } catch {
+            throw new TuiMcpMutationError({
+              status: 'failed',
+              reason: 'credential-cleanup-failed',
+            });
           }
-        } catch (error) {
-          if (error instanceof TuiMcpMutationError) throw error;
-          throw new TuiMcpMutationError({
-            status: 'failed',
-            reason: 'credential-cleanup-failed',
-          });
-        }
-        return next;
-      });
+          if (this.#closed) throw new TuiMcpMutationError({ status: 'failed', reason: 'closed' });
+        },
+      );
     } catch (error) {
       if (error instanceof TuiMcpMutationError) return error.result;
+      if (error instanceof McpConfigurationValidationError)
+        return { status: 'failed', reason: 'invalid-config' };
       if (error instanceof AtomicFileWriteCommitUnknownError) {
         // The transform has already published, including any credential
         // retirement. Reload its authority; never replay those effects.

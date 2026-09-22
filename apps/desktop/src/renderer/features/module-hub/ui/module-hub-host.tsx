@@ -57,8 +57,6 @@ export function ModuleHubHostView({ model }: { model: ModuleHubHostModel }) {
       ),
     };
     if (route === 'mcp') {
-      // Explicit leaf-owner exception: MCP keeps its existing page-owned
-      // controller and direct bridge; Module Hub only selects and mounts it.
       return <McpPage hubHeader={header} />;
     }
     return (

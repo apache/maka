@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { Meta, StoryObj } from '@storybook/react-vite';
+import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
 import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
@@ -48,7 +48,6 @@ import {
 } from '../src/renderer/features/module-hub/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
-import { withScopedMakaBridge } from './maka-bridge';
 import { withSkillLocationCounts } from '../src/shared/skill-location-counts';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -604,69 +603,54 @@ const failedMcpStatuses: McpServerStatus[] = [
   },
 ];
 
-const storyRuntimeHostProfilesBridge = {
-  getDefaultHost: async () => ({ profileId: 'local', hostId: 'storybook-local-host' }),
-};
+function withMcpServices(config: McpConfigFile, statuses: McpServerStatus[]): Decorator {
+  return function McpServicesDecorator(StoryComponent) {
+    const [services] = useState(() => {
+      let saved = structuredClone(config);
+      let current = structuredClone(statuses);
+      const listeners = new Set<() => void>();
+      const changed = () => { for (const listener of listeners) listener(); };
+      const defaults = createFakeModuleHubServices();
+      return createFakeModuleHubServices({ mcp: {
+        ...defaults.mcp,
+        getConfig: async () => saved,
+        listStatuses: async () => current,
+        add: async (id, server) => {
+          if (Object.hasOwn(saved.mcpServers, id)) return { status: 'exists' };
+          saved = { ...saved, mcpServers: { ...saved.mcpServers, [id]: server } };
+          changed();
+          return { status: 'added', config: saved };
+        },
+        upsert: async (id, server) => {
+          saved = { ...saved, mcpServers: { ...saved.mcpServers, [id]: server } };
+          changed();
+          return saved;
+        },
+        remove: async (id) => {
+          const { [id]: _removed, ...mcpServers } = saved.mcpServers;
+          saved = { ...saved, mcpServers };
+          current = current.filter((status) => status.serverId !== id);
+          changed();
+          return saved;
+        },
+        test: async (id) => ({ ok: current.find((status) => status.serverId === id)?.state === 'connected', status: current.find((status) => status.serverId === id)!, latencyMs: 42 }),
+        login: async (id) => {
+          const status = { ...current.find((status) => status.serverId === id)!, state: 'connected' as const, authenticated: true };
+          current = current.map((entry) => entry.serverId === id ? status : entry);
+          changed();
+          return status;
+        },
+        subscribeChanges: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+      } });
+    });
+    return <ModuleHubServicesProvider services={services}><StoryComponent /></ModuleHubServicesProvider>;
+  };
+}
 
-const withConfiguredMcpBridge = withScopedMakaBridge({
-  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
-  mcp: {
-    getConfig: async () => configuredMcpConfig,
-    listStatuses: async () => configuredMcpStatuses,
-    setConfig: async () => configuredMcpConfig,
-    upsert: async () => configuredMcpConfig,
-    install: async () => configuredMcpConfig,
-    remove: async () => configuredMcpConfig,
-    cancelInstall: async () => configuredMcpConfig,
-    test: async () => ({ ok: true, status: configuredMcpStatuses[0], latencyMs: 42 }),
-    subscribeChanges: () => () => {},
-  },
-});
-
-const withEditorMcpBridge = withScopedMakaBridge({
-  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
-  mcp: {
-    getConfig: async () => editorMcpConfig,
-    listStatuses: async () => [editorMcpStatus],
-    setConfig: async () => editorMcpConfig,
-    upsert: async () => editorMcpConfig,
-    install: async () => editorMcpConfig,
-    remove: async () => editorMcpConfig,
-    cancelInstall: async () => editorMcpConfig,
-    test: async () => ({ ok: false, status: editorMcpStatus, latencyMs: 0 }),
-    subscribeChanges: () => () => {},
-  },
-});
-
-const withEmptyMcpBridge = withScopedMakaBridge({
-  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
-  mcp: {
-    getConfig: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
-    listStatuses: async () => [],
-    setConfig: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
-    upsert: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
-    install: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
-    remove: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
-    cancelInstall: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
-    test: async () => ({ ok: true, status: configuredMcpStatuses[0], latencyMs: 42 }),
-    subscribeChanges: () => () => {},
-  },
-});
-
-const withFailedMcpBridge = withScopedMakaBridge({
-  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
-  mcp: {
-    getConfig: async () => failedMcpConfig,
-    listStatuses: async () => failedMcpStatuses,
-    setConfig: async () => failedMcpConfig,
-    upsert: async () => failedMcpConfig,
-    install: async () => failedMcpConfig,
-    remove: async () => failedMcpConfig,
-    cancelInstall: async () => failedMcpConfig,
-    test: async () => ({ ok: false, status: failedMcpStatuses[0], latencyMs: 30_000 }),
-    subscribeChanges: () => () => {},
-  },
-});
+const withConfiguredMcpBridge = withMcpServices(configuredMcpConfig, configuredMcpStatuses);
+const withEditorMcpBridge = withMcpServices(editorMcpConfig, [editorMcpStatus]);
+const withEmptyMcpBridge = withMcpServices({ version: MCP_CONFIG_VERSION, mcpServers: {} }, []);
+const withFailedMcpBridge = withMcpServices(failedMcpConfig, failedMcpStatuses);
 
 function ModuleSurface(props: {
   children: ReactNode;
@@ -1056,10 +1040,10 @@ export const ExtensionsMcpSetupRequired: Story = {
   play: async ({ canvasElement }) => {
     const installed = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.trim() === '已安装',
+      (candidate) => candidate.textContent?.trim() === '连接',
     );
     installed.click();
-    await waitForStoryText(canvasElement, '还没有安装 MCP');
+    await waitForStoryText(canvasElement, '还没有 MCP 连接');
   },
 };
 
@@ -1070,7 +1054,7 @@ export const ExtensionsMcpMarketplace: Story = {
   play: async ({ canvasElement }) => {
     const market = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.trim() === '市场',
+      (candidate) => candidate.textContent?.trim() === '模板',
     );
     market.click();
     await waitForStoryText(canvasElement, 'Slack');
@@ -1084,7 +1068,7 @@ export const ExtensionsMcpConfigured: Story = {
   play: async ({ canvasElement }) => {
     const installed = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.trim() === '已安装',
+      (candidate) => candidate.textContent?.trim() === '连接',
     );
     installed.click();
     await waitForStoryText(canvasElement, 'filesystem');
@@ -1100,7 +1084,7 @@ export const ExtensionsMcpInspector: Story = {
   play: async ({ canvasElement }) => {
     const installed = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.trim() === '已安装',
+      (candidate) => candidate.textContent?.trim() === '连接',
     );
     installed.click();
     await waitForStoryText(canvasElement, 'filesystem');
@@ -1114,17 +1098,34 @@ export const ExtensionsMcpInspector: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → Slack 管理, with credential fields visible.
+// Real path: sidebar → 扩展 → MCP → slack → 编辑, with credential fields visible.
 export const ExtensionsMcpEditor: Story = {
   decorators: [withEditorMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const manage = await waitForStoryButton(
-      canvasElement,
-      (button) => button.textContent?.trim() === '管理',
-    );
-    manage.click();
+    const row = await waitForStoryButton(canvasElement, (button) => button.textContent?.includes('slack') === true);
+    row.click();
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '编辑')).click();
     await waitForStoryText(canvasElement.ownerDocument.body, '编辑 slack');
+    const inputs = canvasElement.ownerDocument.querySelectorAll<HTMLInputElement>('.maka-mcp-primary-fields input');
+    if (inputs.length !== 2) throw new Error('MCP editor primary inputs are missing');
+    const [id, endpoint] = [...inputs].map((input) => input.getBoundingClientRect());
+    if (!id || !endpoint || Math.abs(id.left - endpoint.left) > 1 || Math.abs(id.width - endpoint.width) > 1 || endpoint.top < id.bottom) {
+      throw new Error('MCP fields must use one aligned column');
+    }
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP → slack → 编辑, in a narrow window.
+export const ExtensionsMcpEditorNarrow: Story = { ...ExtensionsMcpEditor };
+
+// Real path: sidebar → 扩展 → MCP → select a remote connection requiring OAuth.
+export const ExtensionsMcpLoginRequired: Story = {
+  decorators: [withMcpServices(failedMcpConfig, [{ ...failedMcpStatuses[0]!, state: 'needs-auth', error: undefined, stderrTail: undefined }])],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.includes('team-tools') === true)).click();
+    await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '登录');
   },
 };
 
@@ -1136,7 +1137,7 @@ export const ExtensionsMcpConnectionFailed: Story = {
   play: async ({ canvasElement }) => {
     const installed = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.trim() === '已安装',
+      (candidate) => candidate.textContent?.trim() === '连接',
     );
     installed.click();
     await waitForStoryText(canvasElement, '连接失败');

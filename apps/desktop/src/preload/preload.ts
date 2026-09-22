@@ -3172,14 +3172,8 @@ const makaBridge = {
     upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
       return invokeSelectedRuntimeHost(host, 'mcp:upsert', serverId, config);
     },
-    install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
-      return invokeSelectedRuntimeHost(host, 'mcp:install', serverId, config);
-    },
     remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
       return invokeSelectedRuntimeHost(host, 'mcp:remove', serverId);
-    },
-    cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
-      return invokeSelectedRuntimeHost(host, 'mcp:cancelInstall', serverId);
     },
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult> {
       return invokeSelectedRuntimeHost(host, 'mcp:test', serverId);

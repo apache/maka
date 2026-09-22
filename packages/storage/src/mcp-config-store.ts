@@ -23,6 +23,7 @@ import {
   MCP_CONFIG_VERSION,
   createDefaultMcpConfig,
   isNonLoopbackCleartextHttp,
+  mcpConfigChangeRetiresCredentials,
   type McpConfigFile,
   type McpConfigSourceFailureReason,
   type McpOAuthConfig,
@@ -84,6 +85,38 @@ export class McpServerExistsError extends Error {
 
 export function createMcpConfigStore(workspaceRoot: string): McpConfigStore {
   return new FileMcpConfigStore(join(workspaceRoot, 'mcp.json'));
+}
+
+export class McpConfigurationValidationError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'Invalid MCP configuration', { cause });
+    this.name = 'McpConfigurationValidationError';
+  }
+}
+
+/** Validate before retiring credentials, and retire before publishing the
+ * replacement. Both effects run under the config file's cross-process lock. */
+export function updateMcpConfiguration(
+  store: Pick<McpConfigStore, 'transform'>,
+  prepare: (current: McpConfigFile) => McpConfigFile,
+  retireCredentials: (serverId: string, previous: McpServerConfig) => Promise<void>,
+): Promise<McpConfigFile> {
+  return store.transform(async (current) => {
+    const proposed = prepare(current);
+    let next: McpConfigFile;
+    try {
+      next = normalizeMcpConfig(proposed);
+      assertMcpEndpointPolicyOnChanges(current, next);
+    } catch (error) {
+      throw new McpConfigurationValidationError(error);
+    }
+    for (const [serverId, previous] of Object.entries(current.mcpServers)) {
+      if (mcpConfigChangeRetiresCredentials(previous, next.mcpServers[serverId])) {
+        await retireCredentials(serverId, previous);
+      }
+    }
+    return next;
+  });
 }
 
 export function normalizeMcpConfig(value: unknown): McpConfigFile {

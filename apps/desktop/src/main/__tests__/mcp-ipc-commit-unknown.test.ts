@@ -148,37 +148,6 @@ test('MCP pre-publication failure does not reconcile or retry the failed mutatio
   assert.deepEqual(ipc.emitted, []);
 });
 
-test('MCP cancelled install does not start a new connection during post-rename reconciliation', {
-  skip: process.platform === 'win32',
-  timeout: 5_000,
-}, async (t) => {
-  const { root, store } = await fixtureStore(t);
-  let published!: () => void;
-  const publication = new Promise<void>((resolve) => { published = resolve; });
-  let finishSync!: () => void;
-  const syncGate = new Promise<void>((resolve) => { finishSync = resolve; });
-  const fault = failDirectorySync(t, root, async () => {
-    published();
-    await syncGate;
-  });
-  const ipc = mutationHarness(store);
-  const installing = ipc.invoke('mcp:install', 'fixture', { command: 'node' }).catch((error) => error);
-  await publication;
-  const cancelling = ipc.invoke('mcp:cancelInstall', 'fixture');
-  finishSync();
-  const installationError = await installing;
-  const cancelled = await cancelling;
-  assert.ok(installationError instanceof AggregateError);
-  assert.ok(installationError.cause instanceof AtomicFileWriteCommitUnknownError);
-  assert.equal(installationError.cause.cause, fault.error);
-  assert.match(installationError.message, /out of sync/u);
-  assert.match(installationError.errors[1].message, /cancelled/u);
-  const empty = { version: MCP_CONFIG_VERSION, mcpServers: {} };
-  assert.deepEqual(cancelled, empty);
-  assert.deepEqual(await diskConfig(root), empty);
-  assert.deepEqual(ipc.synced, [empty], 'only the cancellation rollback may sync the manager');
-});
-
 async function fixtureStore(t: TestContext): Promise<{ root: string; store: McpConfigStore }> {
   const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-commit-unknown-'));
   t.after(async () => {
@@ -243,7 +212,6 @@ function mutationHarness(store: McpConfigStore, overrides: Partial<McpIpcMainDep
     ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
     store,
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async (serverId) => { retired.push(serverId); },
       sync: async (next) => { synced.push(structuredClone(next)); },
       statuses: () => [],

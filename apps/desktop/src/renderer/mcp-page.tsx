@@ -17,28 +17,10 @@
  * under the License.
  */
 
-// apps/desktop/src/renderer/mcp-page.tsx
-//
-// The MCP module page, on the shared ModulePage shell (Astryx Layout, the
-// vendor's incident-console archetype) — the same surface as 技能 and
-// 定时任务:
-//
-// - header: title, a live count line, 添加 MCP and refresh;
-// - toolbar (the header's last row, fixed): the hub switch, the 市场 /
-//   已安装 SegmentedControl and search;
-// - content: dense Astryx List rows — the market's card grid is gone, brand
-//   marks ride the rows;
-// - inspector: selecting an installed row opens it, and every per-server
-//   control (enable / test / edit / delete) plus the connection
-//   diagnostics live there.
-//
-// Layout owns scroll containment, so the view switch stays put while rows
-// scroll — the same contract as the Skills page (#2236).
-
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  McpConfigFile,
   McpConfigImportResult,
+  McpOAuthConfig,
   McpProtocolPreference,
   McpServerConfig,
   McpServerStatus,
@@ -84,22 +66,19 @@ import {
   useUiLocale,
   type ModuleHubHeader,
   dotForStatus,
-  type StatusSemantic,
 } from '@maka/ui';
 
 import {
   ICON_SIZE,
   FileCode,
   Globe,
-  Loader2,
   Plug,
   Plus,
   RefreshCcw,
   Search,
   Terminal,
-  X,
 } from '@maka/ui/icons';
-import { getMcpCatalog, catalogEntryMatches, type McpCatalogEntry } from './mcp-catalog';
+import { getMcpCatalog, catalogEntryMatches } from './mcp-catalog';
 import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
 import {
   createEmptyMcpDraft,
@@ -113,11 +92,8 @@ import {
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
 import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
 import { formatCommandLine } from './mcp-command-line';
-import {
-  defaultRuntimeHostDiagnosticTarget,
-  runOnDefaultRuntimeHost,
-  type DefaultRuntimeHostDiagnosticTarget,
-} from './default-runtime-host-operation.js';
+import { defaultRuntimeHostDiagnosticTarget } from './features/module-hub/controller/default-runtime-host.js';
+import { useMcpController } from './features/module-hub/controller/use-mcp-controller.js';
 import {
   validateMcpEditorDraft,
   type McpEditorErrors,
@@ -128,40 +104,31 @@ type EditorState =
   | { mode: 'json'; source: string }
   | null;
 
-const EMPTY_CONFIG: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers: {} };
-const MIN_INSTALL_INDICATOR_MS = 500;
-
-type InstallPhase = 'installing' | 'cancelling';
-type McpTab = 'market' | 'installed';
+type McpTab = 'templates' | 'connections';
 
 export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const locale = useUiLocale();
   const copy = getMcpCopy(locale);
   const catalog = getMcpCatalog(locale);
-  const [config, setConfig] = useState<McpConfigFile>(EMPTY_CONFIG);
-  const [statuses, setStatuses] = useState<McpServerStatus[]>([]);
+  const controller = useMcpController();
+  const { config, statuses, busy, reload, error } = controller;
   const [editor, setEditor] = useState<EditorState>(null);
   const [editorErrors, setEditorErrors] = useState<McpEditorErrors>({});
   const [editorOpen, setEditorOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<McpTab>('market');
+  const [activeTab, setActiveTab] = useState<McpTab>('connections');
   const [query, setQuery] = useState('');
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>('load');
-  const [installPhases, setInstallPhases] = useState<Record<string, InstallPhase>>({});
-  const cancelledInstalls = useRef(new Set<string>());
   const editorSessionRef = useRef(0);
   const mounted = useMountedRef();
   const toast = useToast();
-  const reportRuntimeHostError = (
-    title: string,
-    description: string | undefined,
-    diagnosticTarget?: DefaultRuntimeHostDiagnosticTarget,
-  ) => toast.error(title, description, undefined, diagnosticTarget);
+  useEffect(() => {
+    if (error) toast.error(copy.errors.update, mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale), undefined, defaultRuntimeHostDiagnosticTarget(error));
+  }, [error, locale, copy, toast]);
   // Set when a remove starts, consumed once the row has actually left the
   // list — which only happens when the config write lands.
   const rowsContainerRef = useRef<HTMLDivElement | null>(null);
   const focusRowAfterRemovalRef = useRef<number | null>(null);
-  // One tab stop for the whole installed list, same keyboard contract as the
+  // One tab stop for the whole connection list, same keyboard contract as the
   // skills and 定时任务 pages: without it, reaching the inspector from row
   // k of N costs N−k presses.
   const rovingRows = useRovingRowFocus(rowsContainerRef);
@@ -173,46 +140,14 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     setActiveTab(next);
   }
 
-  async function reload() {
-    setBusy((current) => current ?? 'load');
-    try {
-      const { value: [nextConfig, nextStatuses] } = await runOnDefaultRuntimeHost((host) =>
-        Promise.all([
-          window.maka.mcp.getConfig(host),
-          window.maka.mcp.listStatuses(host),
-        ]),
-      );
-      if (!mounted.current) return;
-      setConfig(nextConfig);
-      setStatuses(nextStatuses);
-    } catch (error) {
-      if (mounted.current) {
-        reportRuntimeHostError(
-          copy.errors.load,
-          settingsActionErrorMessage(error, locale),
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-      }
-    } finally {
-      if (mounted.current) setBusy(null);
-    }
-  }
-
-  useEffect(() => {
-    void reload();
-    return window.maka.mcp.subscribeChanges((next) => {
-      if (mounted.current) setStatuses(next);
-    });
-  }, [locale]);
-
   const statusById = useMemo(
     () => new Map(statuses.map((status) => [status.serverId, status])),
     [statuses],
   );
   const entries = Object.entries(config.mcpServers);
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const marketEntries = catalog.filter((entry) => catalogEntryMatches(entry, normalizedQuery));
-  const installedEntries = entries.filter(([serverId, server]) => {
+  const templateEntries = catalog.filter((entry) => catalogEntryMatches(entry, normalizedQuery));
+  const connectionEntries = entries.filter(([serverId, server]) => {
     if (!normalizedQuery) return true;
     const status = statusById.get(serverId);
     return [serverId, endpointFor(server), ...status?.tools.map((tool) => tool.name) ?? []]
@@ -221,8 +156,8 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
 
   // Derived, not stored: whatever hides the row — deletion, a filter, a
   // view switch — closes the inspector without a reconciliation step.
-  const selectedServer = activeTab === 'installed'
-    ? installedEntries.find(([serverId]) => serverId === selectedServerId) ?? null
+  const selectedServer = activeTab === 'connections'
+    ? connectionEntries.find(([serverId]) => serverId === selectedServerId) ?? null
     : null;
 
   // Synchronising focus with the DOM once the list it points into has been
@@ -269,6 +204,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   function openEdit(serverId: string, server: McpServerConfig) {
+    setSelectedServerId(null);
     openEditor({
       mode: 'manual',
       draft: mcpDraftFromConfig(serverId, server),
@@ -276,246 +212,77 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     });
   }
 
-  async function installCatalogEntry(entry: McpCatalogEntry) {
-    if (installPhases[entry.id] || config.mcpServers[entry.id]) return;
-    cancelledInstalls.current.delete(entry.id);
-    setInstallPhases((current) => ({ ...current, [entry.id]: 'installing' }));
-    try {
-      const minimumIndicator = delay(MIN_INSTALL_INDICATOR_MS);
-      const next = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.install(entry.id, structuredClone(entry.config), host),
-      );
-      await minimumIndicator;
-      if (!mounted.current || cancelledInstalls.current.has(entry.id)) return;
-      setConfig(next.value);
-      if (entry.setupRequired) {
-        toast.success(copy.toast.templateInstalled(entry.name), copy.toast.templateInstalledDetail);
-      } else {
-        toast.success(copy.toast.installed(entry.name), copy.toast.installedDetail);
-      }
-    } catch (error) {
-      if (mounted.current && !cancelledInstalls.current.has(entry.id)) {
-        reportRuntimeHostError(
-          copy.errors.install(entry.name),
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-        await reload();
-      }
-    } finally {
-      const wasCancelled = cancelledInstalls.current.delete(entry.id);
-      if (mounted.current && !wasCancelled) {
-        setInstallPhases((current) => omitKey(current, entry.id));
-      }
-    }
-  }
-
-  async function cancelCatalogInstall(entry: McpCatalogEntry) {
-    if (installPhases[entry.id] !== 'installing') return;
-    cancelledInstalls.current.add(entry.id);
-    setInstallPhases((current) => ({ ...current, [entry.id]: 'cancelling' }));
-    try {
-      const next = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.cancelInstall(entry.id, host),
-      );
-      if (!mounted.current) return;
-      setConfig(next.value);
-      setStatuses((current) => current.filter((status) => status.serverId !== entry.id));
-      toast.info(copy.toast.installCancelled(entry.name));
-    } catch (error) {
-      cancelledInstalls.current.delete(entry.id);
-      if (mounted.current) {
-        reportRuntimeHostError(
-          copy.errors.cancelInstall(entry.name),
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-        await reload();
-      }
-    } finally {
-      if (mounted.current) setInstallPhases((current) => omitKey(current, entry.id));
-    }
-  }
-
   async function saveDraft(event: React.FormEvent) {
     event.preventDefault();
     if (!editor || editor.mode !== 'manual') return;
     const validation = validateMcpEditorDraft(editor.draft);
-    if (Object.keys(validation).length > 0) {
-      setEditorErrors(validation);
-      return;
-    }
-    setEditorErrors({});
-    setBusy('save');
-    try {
-      const next = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.upsert(
-          editor.draft.id.trim(),
-          mcpConfigFromDraft(editor.draft, copy),
-          host,
-        ),
-      );
-      if (!mounted.current) return;
-      setConfig(next.value);
-      closeEditor();
-      switchTab('installed');
-      toast.success(copy.toast.saved, copy.toast.savedDetail);
-    } catch (error) {
-      if (mounted.current) {
-        reportRuntimeHostError(
-          copy.errors.save,
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-        // A rejected mutation may already have replaced mcp.json. Refresh
-        // both the configured rows and statuses before another user action.
-        await reload();
-      }
-    } finally {
-      if (mounted.current) setBusy(null);
-    }
+    setEditorErrors(validation);
+    if (Object.keys(validation).length) return;
+    let server: McpServerConfig;
+    try { server = mcpConfigFromDraft(editor.draft, copy); }
+    catch (failure) { toast.error(copy.errors.save, settingsActionErrorMessage(failure, locale)); return; }
+    const id = editor.draft.id.trim();
+    const result = await controller.save(id, server, editor.editingId === null);
+    if (!result || !mounted.current) return;
+    if (result.status === 'exists') { setEditorErrors({ id: 'exists' }); return; }
+    closeEditor();
+    setActiveTab('connections');
+    setSelectedServerId(id);
+    toast.success(copy.toast.saved, copy.toast.savedDetail);
   }
 
   async function importJson(event: React.FormEvent) {
     event.preventDefault();
     if (!editor || editor.mode !== 'json') return;
-    setBusy('import');
-    try {
-      const next = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.importConfig(editor.source, host),
-      );
-      if (!mounted.current) return;
-      if (next.value.status === 'invalid') {
-        toast.error(copy.errors.import, mcpImportFailureMessage(next.value, copy));
-        return;
-      }
-      setConfig(next.value.config);
-      closeEditor();
-      switchTab('installed');
-      toast.success(copy.toast.imported, copy.toast.importedDetail(next.value.importedCount));
-    } catch (error) {
-      if (mounted.current) {
-        reportRuntimeHostError(
-          copy.errors.import,
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-        await reload();
-      }
-    } finally {
-      if (mounted.current) setBusy(null);
-    }
-  }
-
-  async function toggle(serverId: string, server: McpServerConfig, enabled: boolean) {
-    setBusy(`toggle:${serverId}`);
-    try {
-      const next = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.upsert(serverId, { ...server, enabled }, host),
-      );
-      if (mounted.current) setConfig(next.value);
-    } catch (error) {
-      if (mounted.current) {
-        reportRuntimeHostError(
-          copy.errors.update,
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-        await reload();
-      }
-    } finally {
-      if (mounted.current) setBusy(null);
-    }
+    const result = await controller.importConfig(editor.source);
+    if (!result || !mounted.current) return;
+    if (result.status === 'invalid') { toast.error(copy.errors.import, mcpImportFailureMessage(result, copy)); return; }
+    closeEditor();
+    switchTab('connections');
+    toast.success(copy.toast.imported, copy.toast.importedDetail(result.importedCount));
   }
 
   async function testServer(serverId: string) {
-    setBusy(`test:${serverId}`);
-    try {
-      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.test(serverId, host),
-      );
-      if (!mounted.current) return;
-      setStatuses((current) => replaceStatus(current, result.status));
-      if (result.ok) toast.success(copy.toast.connectionOk, copy.toast.toolLatency(result.status.toolCount, result.latencyMs));
-      else {
-        reportRuntimeHostError(
-          copy.toast.connectionFailed,
-          result.status.error ?? copy.errors.unavailableStatus,
-          diagnosticTarget,
-        );
-      }
-    } catch (error) {
-      if (mounted.current) {
-        reportRuntimeHostError(
-          copy.errors.test,
-          settingsActionErrorMessage(error, locale),
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-      }
-    } finally {
-      if (mounted.current) setBusy(null);
-    }
+    const result = await controller.test(serverId);
+    if (!result || !mounted.current) return;
+    if (result.ok) toast.success(copy.toast.connectionOk, copy.toast.toolLatency(result.status.toolCount, result.latencyMs));
+    else if (result.status.state !== 'needs-auth') toast.error(copy.toast.connectionFailed, result.status.error ?? copy.errors.unavailableStatus);
   }
 
   async function remove(serverId: string) {
     const confirmed = await toast.confirm({
-      title: copy.remove.title(serverId),
-      description: copy.remove.description,
+      title: copy.remove.title(serverId), description: copy.remove.description,
       confirmLabel: copy.remove.confirm, cancelLabel: copy.remove.cancel, destructive: true,
     });
     if (!confirmed || !mounted.current) return;
-    // The 删除 button is about to unmount with the whole inspector, and
-    // nothing else would claim focus — hand it to the row that takes the
-    // deleted one's place.
-    focusRowAfterRemovalRef.current = installedEntries.findIndex(([id]) => id === serverId);
-    setBusy(`remove:${serverId}`);
-    try {
-      const next = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.remove(serverId, host),
-      );
-      if (!mounted.current) return;
-      setConfig(next.value);
-      setStatuses((current) => current.filter((status) => status.serverId !== serverId));
-      // Drop the id too — keeping it would reopen the inspector if a server
-      // with the same id is added back later, without any user action.
-      setSelectedServerId((current) => (current === serverId ? null : current));
-      toast.success(copy.toast.removed);
-    } catch (error) {
-      if (mounted.current) {
-        reportRuntimeHostError(
-          copy.errors.remove,
-          mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale),
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-        await reload();
-      }
-    } finally {
-      if (mounted.current) setBusy(null);
-    }
+    focusRowAfterRemovalRef.current = connectionEntries.findIndex(([id]) => id === serverId);
+    const result = await controller.remove(serverId);
+    if (!result || !mounted.current) return;
+    setSelectedServerId(null);
+    toast.success(copy.toast.removed);
   }
 
   const connectionErrorCount = statuses.filter((status) => status.error).length;
   const searchSummary = normalizedQuery ? (
     <div className="maka-module-search-summary" role="status" aria-live="polite">
-      <span>{copy.page.searchMatches(activeTab === 'market' ? marketEntries.length : installedEntries.length)}</span>
+      <span>{copy.page.searchMatches(activeTab === 'templates' ? templateEntries.length : connectionEntries.length)}</span>
       <Button variant="ghost" size="sm" onClick={() => setQuery('')} label={copy.page.clearSearch} />
     </div>
   ) : null;
 
-  const marketPanel = (
+  const templatesPanel = (
     <div className="maka-module-page-panel">
       {searchSummary}
-      {marketEntries.length === 0 ? (
+      {templateEntries.length === 0 ? (
         <EmptyState
           icon={<Search size={ICON_SIZE.empty} />}
-          title={copy.page.noMarket}
-          description={copy.page.noMarketDetail(query)}
+          title={copy.page.noTemplates}
+          description={copy.page.noTemplatesDetail(query)}
           actions={<Button variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
         />
       ) : (
-        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.market}>
-          {marketEntries.map((entry) => {
-            const installed = Boolean(config.mcpServers[entry.id]);
+        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.templates}>
+          {templateEntries.map((entry) => {
             return (
               <ListItem
                 key={entry.id}
@@ -537,24 +304,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                     <McpBrandMark entry={entry} />
                   </span>
                 )}
-                endContent={installed ? (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      const server = config.mcpServers[entry.id];
-                      if (server) openEdit(entry.id, server);
-                    }}
-                    label={copy.card.manage}
-                  />
-                ) : (
-                  <McpInstallButton
-                    entry={entry}
-                    copy={copy}
-                    phase={installPhases[entry.id]}
-                    onInstall={() => void installCatalogEntry(entry)}
-                    onCancel={() => void cancelCatalogInstall(entry)}
-                  />
+                endContent={(
+                  <Button size="sm" variant="secondary" label={copy.card.useTemplate}
+                    onClick={() => openManual(mcpDraftFromConfig(entry.id, structuredClone(entry.config)))} />
                 )}
               />
             );
@@ -564,7 +316,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     </div>
   );
 
-  const installedPanel = (
+  const connectionsPanel = (
     <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
       {/* Selecting a row moves no focus, so nothing else would tell a screen
           reader that the details opened. This says so, politely. */}
@@ -573,7 +325,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       </p>
       {searchSummary}
       {busy === 'load' ? (
-        /* Loading (DESIGN.md §10): the installed list's structure is predictable,
+        /* Loading (DESIGN.md §10): the connection list's structure is predictable,
            so it loads as row-shaped skeletons in the rows' own geometry — three
            rows, this surface's typical ready count. Skeleton's radius scale has
            no 6px step, so the tile takes the nearest one (8px) to the real
@@ -592,15 +344,15 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       ) : entries.length === 0 ? (
         <EmptyState
           icon={<Plug size={ICON_SIZE.empty} />}
-          title={copy.page.noInstalled}
-          description={copy.page.noInstalledDetail}
-          actions={<Button variant="primary" label={copy.page.browseMarket} onClick={() => switchTab('market')} />}
+          title={copy.page.noConnections}
+          description={copy.page.noConnectionsDetail}
+          actions={<Button variant="primary" label={copy.page.browseTemplates} onClick={() => switchTab('templates')} />}
         />
-      ) : installedEntries.length === 0 ? (
+      ) : connectionEntries.length === 0 ? (
         <EmptyState
           icon={<Search size={ICON_SIZE.empty} />}
-          title={copy.page.noInstalledMatch}
-          description={copy.page.noInstalledMatchDetail(query)}
+          title={copy.page.noConnectionsMatch}
+          description={copy.page.noConnectionsMatchDetail(query)}
           actions={<Button variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
         />
       ) : (
@@ -608,8 +360,8 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
            delete controls that used to ride the row now live in the
            inspector — no interactive elements inside an interactive list
            item. */
-        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.installed}>
-          {installedEntries.map(([serverId, server]) => {
+        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.connections}>
+          {connectionEntries.map(([serverId, server]) => {
             const status = statusById.get(serverId);
             const state = presentStatus(status, server.enabled !== false, copy);
             const endpoint = endpointFor(server);
@@ -652,7 +404,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       <ModulePage
         title={props.hubHeader?.title ?? 'MCP'}
         meta={[
-          copy.page.metaInstalled(entries.length),
+          copy.page.metaConnections(entries.length),
           connectionErrorCount > 0 ? copy.page.metaErrors(connectionErrorCount) : null,
         ].filter(Boolean).join(' · ')}
         inspectorLabel={copy.detail.label}
@@ -665,10 +417,13 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             status={statusById.get(selectedServer[0])}
             busy={busy}
             copy={copy}
-            onToggle={(enabled) => void toggle(selectedServer[0], selectedServer[1], enabled)}
+            onToggle={(enabled) => void controller.setEnabled(selectedServer[0], selectedServer[1], enabled)}
             onEdit={() => openEdit(selectedServer[0], selectedServer[1])}
             onTest={() => void testServer(selectedServer[0])}
             onRemove={() => void remove(selectedServer[0])}
+            onLogin={() => void controller.login(selectedServer[0])}
+            onCancelLogin={() => void controller.cancelLogin(selectedServer[0])}
+            onLogout={() => void controller.logout(selectedServer[0])}
           />
         ) : undefined}
         actions={
@@ -678,7 +433,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             role="group"
             aria-label={copy.page.actionsAria}
           >
-            <Button variant="primary" onClick={() => openManual()} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
+            <Button variant="primary" onClick={() => openManual()} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
             <IconButton
               variant="ghost"
               label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
@@ -699,14 +454,14 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 <SegmentedControl
                   value={activeTab}
                   onChange={(value) => {
-                    if (value !== 'market' && value !== 'installed') return;
+                    if (value !== 'templates' && value !== 'connections') return;
                     switchTab(value);
                   }}
                   label={copy.page.categoriesAria}
                   size="sm"
                 >
-                  <SegmentedControlItem value="market" label={copy.page.market} />
-                  <SegmentedControlItem value="installed" label={copy.page.installed} />
+                  <SegmentedControlItem value="connections" label={copy.page.connections} />
+                  <SegmentedControlItem value="templates" label={copy.page.templates} />
                 </SegmentedControl>
               )}
               endContent={(
@@ -733,7 +488,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             />
           </div>
         ) : null}
-        {activeTab === 'market' ? marketPanel : installedPanel}
+        {activeTab === 'templates' ? templatesPanel : connectionsPanel}
       </ModulePage>
 
       {editor && (
@@ -743,34 +498,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           errors={editorErrors}
           copy={copy}
           saving={busy === 'save' || busy === 'import'}
-          onChange={(next, changedKey) => {
+          onChange={(next) => {
             setEditor(next);
-            setEditorErrors((current) => {
-              if (changedKey === undefined) {
-                return {};
-              }
-              if (Object.keys(current).length === 0 || next.mode !== 'manual') {
-                return current;
-              }
-              if (changedKey === 'kind') {
-                return validateMcpEditorDraft(next.draft);
-              }
-              if (
-                changedKey !== 'id' &&
-                changedKey !== 'commandLine' &&
-                changedKey !== 'url'
-              ) {
-                return current;
-              }
-              const nextErrors = { ...current };
-              const changedError = validateMcpEditorDraft(next.draft)[changedKey];
-              if (changedError) {
-                nextErrors[changedKey] = changedError;
-              } else {
-                delete nextErrors[changedKey];
-              }
-              return nextErrors;
-            });
+            setEditorErrors((current) => next.mode === 'manual' && Object.keys(current).length ? validateMcpEditorDraft(next.draft) : {});
           }}
           onOpenChange={(open) => {
             if (!open) closeEditor();
@@ -801,34 +531,6 @@ function mcpImportFailureMessage(
   }
 }
 
-function McpInstallButton(props: {
-  entry: McpCatalogEntry;
-  copy: McpCopy;
-  phase?: InstallPhase;
-  onInstall(): void;
-  onCancel(): void;
-}) {
-  const installing = props.phase === 'installing';
-  const cancelling = props.phase === 'cancelling';
-  return (
-    <IconButton
-      className="maka-mcp-install-button"
-      size="sm"
-      variant="ghost"
-      label={cancelling ? props.copy.card.cancellingAria(props.entry.name) : installing ? props.copy.card.cancelAria(props.entry.name) : props.copy.card.installAria(props.entry.name)}
-      tooltip={cancelling ? props.copy.card.cancelling : installing ? props.copy.card.cancel : props.copy.card.install}
-      onClick={installing ? props.onCancel : props.onInstall}
-      isDisabled={cancelling}
-      icon={props.phase ? (
-        <span className="maka-mcp-install-icon" data-phase={props.phase}>
-          <Loader2 size={ICON_SIZE.chrome} className="maka-mcp-install-spinner" aria-hidden="true" />
-          <X size={ICON_SIZE.chrome} className="maka-mcp-install-cancel" aria-hidden="true" />
-        </span>
-      ) : <Plus size={ICON_SIZE.chrome} aria-hidden="true" />}
-    />
-  );
-}
-
 function McpServerInspector(props: {
   serverId: string;
   server: McpServerConfig;
@@ -839,6 +541,9 @@ function McpServerInspector(props: {
   onEdit(): void;
   onTest(): void;
   onRemove(): void;
+  onLogin(): void;
+  onCancelLogin(): void;
+  onLogout(): void;
 }) {
   const { serverId, server, status, copy } = props;
   const state = presentStatus(status, server.enabled !== false, copy);
@@ -847,6 +552,8 @@ function McpServerInspector(props: {
     ? copy.page.localStdio
     : server.transport ?? 'auto';
   const negotiatedProtocol = presentMcpNegotiatedProtocol(status, copy);
+  const loginActive = status?.authorizationPending || props.busy === `login:${serverId}`;
+  const disabled = props.busy !== null || loginActive;
   return (
     <VStack className="maka-mcp-inspector" gap={4}>
       <VStack gap={2}>
@@ -865,18 +572,29 @@ function McpServerInspector(props: {
           <Switch
             value={server.enabled !== false}
             onChange={props.onToggle}
-            isDisabled={props.busy === `toggle:${serverId}`}
+            isDisabled={disabled}
             label={copy.detail.enabled}
           />
         </StackItem>
       </HStack>
+
+      {loginActive ? (
+        <Banner status="info" title={copy.row.loginPending}
+          endContent={<Button size="sm" variant="secondary" onClick={props.onCancelLogin} label={copy.row.cancelLogin} />} />
+      ) : status?.state === 'needs-auth' ? (
+        <Banner status="warning" title={copy.row.needsAuth}
+          endContent={<Button size="sm" variant="primary" isDisabled={disabled} onClick={props.onLogin} label={copy.row.login} />} />
+      ) : null}
+      {status?.authenticated ? (
+        <Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogout} label={copy.row.logout} />
+      ) : null}
 
       <HStack gap={2} wrap="wrap">
         <Button
           size="sm"
           variant="secondary"
           onClick={props.onTest}
-          isDisabled={props.busy === `test:${serverId}`}
+          isDisabled={disabled}
           icon={<RefreshCcw size={ICON_SIZE.chrome} aria-hidden="true" />}
           label={props.busy === `test:${serverId}` ? copy.row.testing : copy.row.test}
         />
@@ -884,13 +602,14 @@ function McpServerInspector(props: {
           size="sm"
           variant="secondary"
           onClick={props.onEdit}
+          isDisabled={disabled}
           label={copy.row.edit}
         />
         <Button
           size="sm"
           variant="destructive"
           onClick={props.onRemove}
-          isDisabled={props.busy === `remove:${serverId}`}
+          isDisabled={disabled}
           label={copy.row.delete}
         />
       </HStack>
@@ -908,12 +627,6 @@ function McpServerInspector(props: {
       <MetadataList columns="single" label={{ position: 'start', width: 88 }}>
         <MetadataListItem label={copy.detail.transport}>
           <Text type="body">{transportLabel}</Text>
-        </MetadataListItem>
-        <MetadataListItem label={copy.detail.endpoint}>
-          <Text type="body"><code>{endpoint}</code></Text>
-        </MetadataListItem>
-        <MetadataListItem label={copy.detail.statusLabel}>
-          <Text type="body">{state.label}</Text>
         </MetadataListItem>
         {negotiatedProtocol ? (
           <MetadataListItem label={copy.detail.protocolLabel}>
@@ -940,25 +653,8 @@ function McpServerInspector(props: {
   );
 }
 
-function mcpStatusSemantic(state: { tone: 'neutral' | 'info' | 'success' | 'warning' | 'error' }): StatusSemantic {
-  if (state.tone === 'error') return 'error';
-  if (state.tone === 'warning') return 'attention';
-  // A connected server is healthy, not merely busy, so it takes success rather
-  // than the accent it used to borrow. That accent was a workaround from
-  // before this page had a word for "success" — accent means "live" everywhere
-  // else (a reminder waiting to fire wears it), and spending it on health made
-  // a connected server read as an in-flight one.
-  if (state.tone === 'success') return 'success';
-  // `info` here is genuinely quiet: 连接中 is transient and says nothing the
-  // user must act on, so it sits with the neutral states rather than claiming
-  // the eye. Other surfaces read their own `info` as "something is happening"
-  // and choose `active` — which is why the vocabulary has no `info` rung for
-  // them to disagree inside of.
-  return 'neutral';
-}
-
 function mcpStatusDotVariant(state: { tone: 'neutral' | 'info' | 'success' | 'warning' | 'error' }) {
-  return dotForStatus(mcpStatusSemantic(state));
+  return dotForStatus(state.tone === 'warning' ? 'attention' : state.tone === 'info' ? 'neutral' : state.tone);
 }
 function McpEditorDialog(props: {
   state: Exclude<EditorState, null>;
@@ -991,6 +687,11 @@ function McpEditorDialog(props: {
       { ...props.state, draft: { ...props.state.draft, [key]: value } },
       key,
     );
+  };
+  const updateOAuth = <K extends keyof McpOAuthConfig>(key: K, value: McpOAuthConfig[K]) => {
+    if (props.state.mode !== 'manual') return;
+    const oauth = { ...props.state.draft.oauth, [key]: value };
+    updateDraft('oauth', Object.values(oauth).some((value) => value !== undefined) ? oauth : undefined);
   };
   return (
     <Dialog
@@ -1077,7 +778,7 @@ function McpEditorDialog(props: {
             </RadioList>
             <div className="maka-mcp-form-fields">
               <div className="maka-mcp-primary-fields">
-                <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.copy.editor.required } : undefined} />
+                <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.errors.id === 'exists' ? props.copy.editor.idExists : props.copy.editor.required } : undefined} />
                 {props.state.draft.kind === 'stdio' ? (
                   <TextInput hasAutoFocus={editing} label={props.copy.editor.command} description={props.copy.editor.commandHelp} value={props.state.draft.commandLine} onChange={(value) => updateDraft('commandLine', value)} isRequired placeholder={props.copy.editor.commandPlaceholder} status={props.errors.commandLine ? { type: 'error', message: props.errors.commandLine === 'unbalanced-quote' ? props.copy.editor.unbalancedQuote : props.copy.editor.required } : undefined} />
                 ) : (
@@ -1138,6 +839,16 @@ function McpEditorDialog(props: {
                     width="100%"
                   />
                   <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
+                  <Collapsible trigger={props.copy.editor.oauth} defaultIsOpen={Boolean(props.state.draft.oauth)}>
+                    <VStack gap={3} className="maka-mcp-advanced-fields">
+                      <Text type="supporting" color="secondary">{props.copy.editor.oauthHelp}</Text>
+                      <TextInput label={props.copy.editor.clientId} value={props.state.draft.oauth?.clientId ?? ''} onChange={(value) => updateOAuth('clientId', value || undefined)} />
+                      <TextInput label={props.copy.editor.issuer} value={props.state.draft.oauth?.issuer ?? ''} onChange={(value) => updateOAuth('issuer', value || undefined)} placeholder="https://auth.example.com" status={props.errors.oauthIssuer ? { type: 'error', message: props.errors.oauthIssuer === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
+                      <TextInput type="password" label={props.copy.editor.clientSecret} value={props.state.draft.oauth?.clientSecret ?? ''} onChange={(value) => updateOAuth('clientSecret', value || undefined)} />
+                      <TextInput label={props.copy.editor.scopes} value={props.state.draft.oauth?.scopes?.join(' ') ?? ''} onChange={(value) => updateOAuth('scopes', value.trim() ? value.split(/\s+/u) : undefined)} />
+                      <TextInput label={props.copy.editor.callbackPort} value={props.state.draft.oauth?.callbackPort?.toString() ?? ''} onChange={(value) => updateOAuth('callbackPort', value ? Number(value) : undefined)} />
+                    </VStack>
+                  </Collapsible>
                 </>
               )}
             </div>
@@ -1157,26 +868,12 @@ function endpointFor(server: McpServerConfig): string {
   return isMcpStdioConfig(server) ? formatCommandLine(server.command, server.args ?? []) : server.url;
 }
 
-function replaceStatus(statuses: McpServerStatus[], next: McpServerStatus): McpServerStatus[] {
-  return [...statuses.filter((status) => status.serverId !== next.serverId), next];
-}
-
-function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
-  const { [key]: _removed, ...rest } = record;
-  return rest;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-// `exception` marks the states that earn a toned Badge
-// (status-color restraint #651). 已停用 / 未连接 / 连接中 / 已连接 are all
-// expected states and stay neutral; only 连接失败 raises the destructive tone.
 function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): { label: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'error'; exception: boolean } {
+  if (status?.authorizationPending) return { label: copy.row.loginPending, tone: 'info', exception: true };
   if (!enabled || status?.state === 'disabled') return { label: copy.row.disabled, tone: 'neutral', exception: false };
   if (!status || status.state === 'disconnected') return { label: copy.row.disconnected, tone: 'neutral', exception: false };
   if (status.state === 'connecting') return { label: copy.row.connecting, tone: 'info', exception: false };
+  if (status.state === 'needs-auth') return { label: copy.row.needsAuth, tone: 'warning', exception: true };
   if (status.state === 'connected') return { label: copy.row.connected(status.toolCount), tone: 'success', exception: false };
   return { label: copy.row.failed, tone: 'error', exception: true };
 }

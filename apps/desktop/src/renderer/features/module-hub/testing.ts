@@ -132,6 +132,20 @@ export function createFakeModuleHubServices(
   overrides: Partial<ModuleHubServices> = {},
 ): ModuleHubServices {
   return {
+    mcp: {
+      getConfig: async () => ({ version: 3, mcpServers: {} }),
+      listStatuses: async () => [],
+      add: async () => notConfigured("mcp.add"),
+      upsert: async () => notConfigured("mcp.upsert"),
+      importConfig: async () => notConfigured("mcp.importConfig"),
+      remove: async () => notConfigured("mcp.remove"),
+      test: async () => notConfigured("mcp.test"),
+      login: async () => notConfigured("mcp.login"),
+      logout: async () => notConfigured("mcp.logout"),
+      cancelLogin: async () => false,
+      subscribeChanges: noopSubscription,
+    },
+
     runtimeHosts: {
       getDefault: async () => ({ profileId: "local", hostId: "local" }),
       subscribeChanges: noopSubscription,

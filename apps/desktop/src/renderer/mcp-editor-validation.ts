@@ -18,20 +18,23 @@
  */
 
 import { parseCommandLine } from './mcp-command-line.js';
+import type { McpOAuthConfig } from '@maka/core/mcp';
 
 export type McpEditorDraft = {
   id: string;
   kind: 'stdio' | 'remote';
   commandLine: string;
   url: string;
+  oauth?: McpOAuthConfig;
 };
 
 export type McpEditorValidationCode =
+  | 'exists'
   | 'required'
   | 'invalid-url'
   | 'unbalanced-quote';
 export type McpEditorErrors = Partial<
-  Record<'id' | 'commandLine' | 'url', McpEditorValidationCode>
+  Record<'id' | 'commandLine' | 'url' | 'oauthIssuer', McpEditorValidationCode>
 >;
 
 export function validateMcpEditorDraft(
@@ -51,6 +54,13 @@ export function validateMcpEditorDraft(
   }
 
   const value = draft.url.trim();
+  if (draft.oauth?.clientId && !draft.oauth.issuer?.trim()) errors.oauthIssuer = 'required';
+  if (draft.oauth?.issuer) {
+    try {
+      const issuer = new URL(draft.oauth.issuer);
+      if (!['http:', 'https:'].includes(issuer.protocol) || issuer.username || issuer.password || issuer.search || issuer.hash) errors.oauthIssuer = 'invalid-url';
+    } catch { errors.oauthIssuer = 'invalid-url'; }
+  }
   if (!value) {
     errors.url = 'required';
     return errors;

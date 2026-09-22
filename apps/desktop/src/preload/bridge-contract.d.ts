@@ -1583,9 +1583,7 @@ export interface MakaBridge {
      * instead of an error, so the dialog can put it on the id field. */
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;
     upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult>;
     login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
     /** Ends an in-flight login round; resolves false when none is active. */

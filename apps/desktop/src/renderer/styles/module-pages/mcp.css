@@ -35,42 +35,6 @@
   fill: currentColor;
 }
 
-.maka-mcp-install-icon {
-  position: relative;
-  display: grid;
-  place-items: center;
-}
-
-.maka-mcp-install-icon svg {
-  position: absolute;
-}
-
-.maka-mcp-install-spinner { animation: maka-spin 1s linear infinite; }
-
-.maka-mcp-install-cancel {
-  opacity: 0;
-  color: var(--destructive-text);
-  transform: scale(var(--scale-press));
-  transition: transform var(--duration-quick) var(--ease-out-strong);
-}
-
-.maka-mcp-install-button:hover .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-spinner,
-.maka-mcp-install-button:focus-visible .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-spinner {
-  opacity: 0;
-}
-
-.maka-mcp-install-button:hover .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-cancel,
-.maka-mcp-install-button:focus-visible .maka-mcp-install-icon[data-phase="installing"] .maka-mcp-install-cancel,
-.maka-mcp-install-icon[data-phase="cancelling"] .maka-mcp-install-cancel {
-  opacity: 1;
-  transform: scale(1);
-}
-
-.maka-mcp-install-icon[data-phase="cancelling"] .maka-mcp-install-spinner {
-  opacity: 0;
-}
-
-
 /* The endpoint <code> inside a browse row's supporting line. Follows the
    description to the shared class; the rule is still live, it just lost its
    old parent selector when the class moved. */
@@ -152,9 +116,7 @@
 .maka-mcp-primary-fields {
   min-width: 0;
   display: grid;
-  /* The second column holds a full command line or URL; the first is a short
-     slug. Equal halves squeezed the field that actually carries content. */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
 }
 

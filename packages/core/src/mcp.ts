@@ -319,6 +319,9 @@ export interface McpServerStatus {
   /** True when the connection is backed by stored OAuth credentials —
    * the UI offers logout only where there is something to drop. */
   authenticated?: boolean;
+  /** Derived from the client's interactive login owner, including after the
+   * configuration page is reopened. */
+  authorizationPending?: boolean;
   updatedAt: number;
 }
 

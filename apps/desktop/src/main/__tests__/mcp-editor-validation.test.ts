@@ -22,6 +22,11 @@ import { describe, it } from 'node:test';
 import { validateMcpEditorDraft } from '../../renderer/mcp-editor-validation.js';
 
 describe('MCP editor validation', () => {
+  it('requires an issuer for a pre-registered OAuth client', () => {
+    const draft = { id: 'remote', kind: 'remote' as const, commandLine: '', url: 'https://mcp.example', oauth: { clientId: 'client' } };
+    assert.deepEqual(validateMcpEditorDraft(draft), { oauthIssuer: 'required' });
+    assert.deepEqual(validateMcpEditorDraft({ ...draft, oauth: { ...draft.oauth, issuer: 'https://issuer.example' } }), {});
+  });
   it('requires a server id and the selected transport endpoint', () => {
     assert.deepEqual(
       validateMcpEditorDraft({

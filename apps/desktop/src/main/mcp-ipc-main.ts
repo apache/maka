@@ -20,7 +20,6 @@
 import type { IpcMain } from 'electron';
 import {
   MCP_CONFIG_VERSION,
-  mcpConfigChangeRetiresCredentials,
   type McpConfigAddResult,
   type McpConfigFile,
   type McpConfigImportResult,
@@ -30,10 +29,9 @@ import {
 import type { McpClientManager } from '@maka/mcp';
 import {
   AtomicFileWriteCommitUnknownError,
-  assertMcpEndpointPolicyOnChanges,
   McpServerExistsError,
   McpConfigSourceError,
-  normalizeMcpConfig,
+  updateMcpConfiguration,
   normalizeMcpImport,
   type McpConfigStore,
 } from '@maka/storage/mcp-config-store';
@@ -49,7 +47,7 @@ export interface McpIpcMainDeps {
   store: McpConfigStore;
   manager: Pick<
     McpClientManager,
-    'sync' | 'statuses' | 'test' | 'cancelConnect' | 'forgetServerCredentials'
+    'sync' | 'statuses' | 'test' | 'forgetServerCredentials'
   >;
   oauth: McpOAuthController;
   /** Shared with the OAuth controller (see createMcpExclusiveLane). Falls
@@ -81,10 +79,6 @@ export function createMcpExclusiveLane(): McpExclusiveLane {
 }
 
 export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
-  const installs = new Map<
-    string,
-    { cancelled: boolean; committed?: string; settled: Promise<void>; settle(): void }
-  >();
   // Main is the authority on operation exclusivity, not the renderer's
   // advisory locks: while a login round owns a server, a config mutation
   // would race the browser callback against a changed or absent server.
@@ -108,12 +102,10 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
   const inMutationLane = deps.exclusiveLane ?? createMcpExclusiveLane();
   const commitConfig = async (
     mutate: (current: McpConfigFile) => McpConfigFile,
-    assertReconciliationAllowed?: () => void,
   ): Promise<McpConfigFile> => {
     try {
-      return await deps.store.transform(async (current) => {
+      return await updateMcpConfiguration(deps.store, (current) => {
         const next = mutate(current);
-        assertMcpEndpointPolicyOnChanges(current, next);
         // The authoritative gate: every server this commit semantically touches
         // is re-checked INSIDE the lane. The handler-entry checks are advisory
         // fast-fails; this one cannot race a login claim, because claims travel
@@ -126,16 +118,8 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
           const after = next.mcpServers[serverId];
           if (JSON.stringify(before) !== JSON.stringify(after)) assertNoActiveLogin(serverId);
         }
-        // Erases are per-server and not transactional as a set: if one fails
-        // partway, the commit aborts with the EARLIER servers already logged
-        // out. That partial effect is deliberately in the fail-closed direction
-        // — a re-login is recoverable, a credential outliving its removed or
-        // repointed config is not.
-        for (const serverId of credentialRetirements(current, next)) {
-          await deps.manager.forgetServerCredentials(serverId);
-        }
         return next;
-      });
+      }, (serverId, previous) => deps.manager.forgetServerCredentials(serverId, previous));
     } catch (error) {
       if (!(error instanceof AtomicFileWriteCommitUnknownError)) throw error;
       // Rename has already published a file even though its durability fence
@@ -145,7 +129,6 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       // the reconciliation, and retain the original durability failure.
       try {
         const authoritative = await deps.store.get();
-        assertReconciliationAllowed?.();
         await deps.manager.sync(authoritative);
         changed(deps);
       } catch (reconciliationError) {
@@ -168,7 +151,10 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
   });
   deps.ipcMain.handle('mcp:listStatuses', async () => {
     await deps.ensureReady();
-    return deps.manager.statuses();
+    return deps.manager.statuses().map((status) => ({
+      ...status,
+      ...(deps.oauth.isActive(status.serverId) ? { authorizationPending: true } : {}),
+    }));
   });
   deps.ipcMain.handle(
     'mcp:importConfig',
@@ -248,62 +234,6 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
     changed(deps);
     return redactMcpConfigSecrets(next);
   });
-  deps.ipcMain.handle('mcp:install', async (_event, serverId: string, config: McpServerConfig) => {
-    assertNoActiveLogin(serverId);
-    if (installs.has(serverId)) throw new Error(`MCP install already in progress: ${serverId}`);
-    let settle!: () => void;
-    const operation = {
-      cancelled: false,
-      committed: undefined as string | undefined,
-      settled: new Promise<void>((resolve) => { settle = resolve; }),
-      settle: () => settle(),
-    };
-    installs.set(serverId, operation);
-    try {
-      const next = await inMutationLane(() =>
-        commitConfig((current) => {
-          const installed = restoreMcpServerSecret(serverId, config, current);
-          // What THIS install committed, for the cancellation to compare
-          // against: a cancel must only roll back its own write, never a
-          // newer same-id configuration that landed after it. Recorded in
-          // the STORE's normal form — the real store normalizes on write
-          // (key order, defaulted enabled/transport, WHATWG URL), so the
-          // raw restored shape would mismatch its own persisted entry and
-          // the rollback would silently no-op.
-          operation.committed = JSON.stringify(
-            normalizeMcpConfig({
-              version: MCP_CONFIG_VERSION,
-              mcpServers: { [serverId]: installed },
-            }).mcpServers[serverId],
-          );
-          return {
-            ...current,
-            mcpServers: { ...current.mcpServers, [serverId]: installed },
-          };
-        }, () => {
-          // Cancellation may have called cancelConnect while the write was
-          // pending. Do not start a new connection after that cancellation;
-          // the existing settled/rollback path will reconcile the removal.
-          if (operation.cancelled) {
-            throw new Error('MCP installation cancelled; awaiting configuration rollback');
-          }
-        }),
-      );
-      if (operation.cancelled) return redactMcpConfigSecrets(next);
-      // The connect runs OUTSIDE the mutation lane: a cancellation must be
-      // able to interrupt it, and its own removal transaction needs the lane.
-      try {
-        await deps.manager.sync(next);
-      } catch (error) {
-        if (!operation.cancelled) throw error;
-      }
-      if (!operation.cancelled) changed(deps);
-      return redactMcpConfigSecrets(next);
-    } finally {
-      if (installs.get(serverId) === operation) installs.delete(serverId);
-      operation.settle();
-    }
-  });
   const removeServer = async (serverId: string): Promise<McpConfigFile> =>
     inMutationLane(() =>
       commitConfig((current) => {
@@ -318,31 +248,6 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
     changed(deps);
     // Still a full config crossing toward the renderer: the remaining
     // servers' secrets must leave as sentinels here too.
-    return redactMcpConfigSecrets(next);
-  });
-  deps.ipcMain.handle('mcp:cancelInstall', async (_event, serverId: string) => {
-    assertNoActiveLogin(serverId);
-    const operation = installs.get(serverId);
-    if (operation) operation.cancelled = true;
-    deps.manager.cancelConnect(serverId);
-    await operation?.settled;
-    // Roll back only the install's OWN write. While the cancel waited, an
-    // upsert can have replaced the entry with a newer same-id config —
-    // removing whatever is current would delete that newer server and
-    // retire its credentials.
-    const next = await inMutationLane(() =>
-      commitConfig((current) => {
-        const entry = current.mcpServers[serverId];
-        if (entry === undefined) return current;
-        if (operation?.committed !== undefined && JSON.stringify(entry) !== operation.committed) {
-          return current;
-        }
-        const { [serverId]: _removed, ...mcpServers } = current.mcpServers;
-        return { ...current, mcpServers };
-      }),
-    );
-    await deps.manager.sync(next);
-    changed(deps);
     return redactMcpConfigSecrets(next);
   });
   deps.ipcMain.handle('mcp:test', async (_event, serverId: string) => {
@@ -381,22 +286,6 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       changed(deps);
     }
   });
-}
-
-/** Servers whose stored credentials this commit orphans: removed outright,
- * repointed to a different endpoint, or converted away from remote. An
- * unchanged endpoint keeps its credentials. Removals retire regardless of
- * kind — a stale record under a formerly-remote id must not survive the id
- * being freed for reuse. */
-function credentialRetirements(current: McpConfigFile, next: McpConfigFile): string[] {
-  const retired: string[] = [];
-  for (const [serverId, server] of Object.entries(current.mcpServers)) {
-    const incoming = Object.hasOwn(next.mcpServers, serverId)
-      ? next.mcpServers[serverId]
-      : undefined;
-    if (mcpConfigChangeRetiresCredentials(server, incoming)) retired.push(serverId);
-  }
-  return retired;
 }
 
 function changed(deps: McpIpcMainDeps): void {
