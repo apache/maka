@@ -2179,6 +2179,7 @@ export class SqliteSessionMetadataStore {
   async readActiveWorkHubAssignmentsByTarget(
     targetSessionIds: readonly string[],
     maxAssignmentsPerTarget?: number,
+    includeStopped?: boolean,
   ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
     this.assertOpen();
     for (const sessionId of targetSessionIds) assertSafeSessionId(sessionId);
@@ -2294,6 +2295,7 @@ export class SqliteSessionMetadataStore {
           `whz_${terminalSuffix}`,
         );
         if (
+          !includeStopped &&
           stopResolution?.type === 'workhub_coordination' &&
           stopResolution.kind === 'delegation_stop_resolved' &&
           stopResolution.outcome !== 'not_owned'

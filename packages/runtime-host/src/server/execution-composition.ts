@@ -2378,7 +2378,7 @@ export async function createExecutionRuntimeHostComposition(
                 : 'operation_conflict',
               plan.result.reason === 'resume_feature_disabled'
                 ? 'Safe-boundary resume is disabled for this Runtime Host'
-                : 'WorkHub delegated execution is not resumable',
+                : `WorkHub delegated execution is not resumable (${plan.result.reason})`,
             );
           }
           // Root planning authenticates handoff membership. Its source may be
@@ -2409,7 +2409,7 @@ export async function createExecutionRuntimeHostComposition(
                 : 'operation_conflict',
               started.result.plan.reason === 'resume_feature_disabled'
                 ? 'Safe-boundary resume is disabled for this Runtime Host'
-                : 'WorkHub delegated execution is not resumable',
+                : `WorkHub delegated execution is not resumable (${started.result.plan.reason})`,
             );
           }
           return {

@@ -33,6 +33,19 @@ export function WorkHubDelegationStatus(props: {
 }) {
   const { work } = props;
   const copy = workHubLiveCopy[props.locale];
+  if (work.operation) {
+    const operation = work.operation === 'stop' ? copy.stopAction : copy.resumeAction;
+    const state = work.operationState ?? 'pending';
+    const outcome = work.operationOutcome;
+    const label = state === 'pending' ? copy.actionPending : state === 'failed' ? copy.actionFailed
+      : outcome === 'stop_delivered' ? copy.stopDelivered
+      : outcome === 'already_terminal' ? copy.alreadyTerminal
+      : outcome === 'cancelled_pending' ? copy.pendingCancelled
+      : outcome === 'already_running' ? copy.alreadyRunning : copy.resumeStarted;
+    return <Text type="supporting" color="secondary" className="workhub-delegation-status" role="status" data-work-operation={work.operation}>
+      {props.showName ? `${work.targetSessionName}: ` : ''}{operation} · {label}
+    </Text>;
+  }
   const state = work.state ?? 'accepted';
   const stateLabel = {
     accepted: copy.delegationAccepted,
@@ -55,7 +68,7 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
   const locale = useUiLocale();
   const copy = workHubLiveCopy[locale];
   // A coordination turn can delegate to several Works. Keep every label and
-  // leave its shared bar neutral rather than attributing the entire turn to one.
+  // divide its rail evenly, keeping every segment linked to its own Session.
   const worksByTurn = useMemo(() => {
     const grouped = new Map<string, WorkHubLinkedWork[]>();
     for (const work of assignments) {
@@ -67,28 +80,36 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
   }, [assignments]);
   const workByTurn = useMemo(() => new Map([...worksByTurn].flatMap(([turnId, works]) =>
     works.length === 1 ? [[turnId, works[0]!.targetSessionId] as const] : [])), [worksByTurn]);
-  const promptRailDecorations = useMemo(() => new Map([...workByTurn].map(([turnId, sessionId]) => [turnId, {
-    accentColor: `oklch(var(--workhub-${highlight.sessionId === sessionId ? 'highlight' : 'tone'}) ${workHubIdentityHue(sessionId)})`,
-    highlighted: highlight.sessionId === sessionId,
-  }])), [workByTurn, highlight.sessionId, workHubIdentityHue]);
+  const promptRailDecorations = useMemo(() => new Map([...worksByTurn].map(([turnId, works]) => {
+    const colors = works.map((work) => `oklch(var(--workhub-${highlight.sessionId === work.targetSessionId ? 'highlight' : 'tone'}) ${workHubIdentityHue(work.targetSessionId)})`);
+    return [turnId, {
+      accentColor: works.length === 1 ? colors[0] : undefined,
+      accentBackground: works.length > 1 ? `linear-gradient(to right, ${colors.map((color, index) => `${color} ${index * 100 / colors.length}% ${(index + 1) * 100 / colors.length}%`).join(', ')})` : undefined,
+      highlighted: works.some((work) => highlight.sessionId === work.targetSessionId),
+    }];
+  })), [worksByTurn, highlight.sessionId, workHubIdentityHue]);
   const promptTextByTurn = new Map(chat.messages?.flatMap((message) => message.type === 'user' ? [[message.turnId, message.text.slice(0, 80)] as const] : []));
-  const turnDecorations = new Map([...worksByTurn].map(([turnId, works]) => [turnId, {
-    accentColor: promptRailDecorations.get(turnId)?.accentColor,
+  const turnDecorations = new Map<string, NonNullable<ComponentProps<typeof ChatView>['turnDecorations']> extends ReadonlyMap<string, infer V> ? V : never>([...worksByTurn].map(([turnId, works]) => [turnId, {
+    accentColor: promptRailDecorations.get(turnId)?.accentColor ?? 'transparent',
     promptStatus: <>{works.map((work, index) => <span key={work.id}>
       {index > 0 ? ' / ' : ''}<WorkHubDelegationStatus work={work} locale={locale} showName={works.length > 1} />
     </span>)}</>,
-    messageRail: works.length === 1 ? <Button
+    messageRail: <>{works.map((work, index) => <Button key={work.targetSessionId}
       variant="ghost" isIconOnly icon={<span aria-hidden="true" />} className="workhub-message-rail"
-      label={`${copy.filterConversation}: ${works[0]!.targetSessionName} · ${promptTextByTurn.get(turnId) ?? turnId}`}
-      tooltip={`${copy.filterConversation}: ${works[0]!.targetSessionName}`}
-      aria-pressed={highlight.selectedWork?.sessionId === works[0]!.targetSessionId}
-      data-work-highlighted={highlight.sessionId === works[0]!.targetSessionId}
-      onMouseEnter={() => highlight.highlight(works[0]!.targetSessionId)}
+      style={{ insetBlockStart: `${index * 100 / works.length}%`, insetBlockEnd: 'auto', height: `${100 / works.length}%`,
+        '--maka-turn-accent': `oklch(var(--workhub-${highlight.sessionId === work.targetSessionId ? 'highlight' : 'tone'}) ${workHubIdentityHue(work.targetSessionId)})`,
+      } as CSSProperties}
+      data-work-session-id={work.targetSessionId}
+      label={`${copy.filterConversation}: ${work.targetSessionName} · ${promptTextByTurn.get(turnId) ?? turnId}`}
+      tooltip={`${copy.filterConversation}: ${work.targetSessionName}`}
+      aria-pressed={highlight.selectedWork?.sessionId === work.targetSessionId}
+      data-work-highlighted={highlight.sessionId === work.targetSessionId}
+      onMouseEnter={() => highlight.highlight(work.targetSessionId)}
       onMouseLeave={() => highlight.highlight(undefined)}
-      onFocus={() => highlight.highlight(works[0]!.targetSessionId)}
+      onFocus={() => highlight.highlight(work.targetSessionId)}
       onBlur={() => highlight.highlight(undefined)}
-      onClick={() => highlight.toggleWork({ sessionId: works[0]!.targetSessionId, name: works[0]!.targetSessionName })}
-    /> : undefined,
+      onClick={() => highlight.toggleWork({ sessionId: work.targetSessionId, name: work.targetSessionName })}
+    />)}</>,
     header: <div className="workhub-turn-heading">
       {works.map((work) => <Link
         key={work.targetSessionId}

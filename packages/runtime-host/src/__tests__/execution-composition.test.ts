@@ -1878,10 +1878,27 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       assert.equal(original.ok, true);
       if (!original.ok) return;
       await handoffAndReopen();
-      await composition.handlers['turn.stop'](
-        { sessionId: target.id, turnId: original.result.turnId, runId: original.result.runId },
+      const firstStop = await actWorkHub(
+        composition,
+        {
+          actionId: 'workhub-first-stop',
+          userText: 'Stop Payments',
+          proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
+        },
         context,
       );
+      assert.equal(firstStop.ok, true, JSON.stringify(firstStop));
+      const afterStopCandidates = await composition.handlers['workhub.coordination.candidates'](
+        {},
+        context,
+      );
+      assert.equal(afterStopCandidates.ok, true);
+      if (afterStopCandidates.ok)
+        assert.equal(
+          afterStopCandidates.result.candidates.find(({ sessionId }) => sessionId === target.id)
+            ?.latestDelegationActionId,
+          'workhub-resume-stop-delegation',
+        );
 
       pauseNext = true;
       boundary = deferred<void>();
@@ -1914,6 +1931,25 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       if (!resumedTurn.ok) return;
       continuation = { turnId: resumedTurn.result.turnId, runId: resumedTurn.result.runId };
       assert.equal(resumedTurn.result.status, 'running');
+      assert.deepEqual(
+        await actWorkHub(
+          composition,
+          {
+            actionId: 'workhub-first-stop',
+            userText: 'Stop Payments',
+            proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
+          },
+          context,
+        ),
+        firstStop,
+        'replaying the old stop must not stop the resumed execution',
+      );
+      const stillRunning = await composition.handlers['turn.query'](
+        { sessionId: target.id, turnId: resumedTurn.result.turnId },
+        context,
+      );
+      assert.ok(stillRunning.ok && stillRunning.result.status === 'running');
+
       await handoffAndReopen();
 
       // Lose the response, interrupt the continuation, then discard all

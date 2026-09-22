@@ -113,6 +113,7 @@ export type CommitInteractionOutcomeResult =
   | InteractionMutationFailureResult;
 
 export interface InteractionStoreReader {
+  listTurnInteractions(sessionId: string, turnId: string): Promise<InteractionRecord[]>;
   readInteraction(requestId: string): Promise<InteractionRecord | undefined>;
   listSessionPending(sessionId: string): Promise<StoredInteractionRequest[]>;
   listPending(filter?: PendingInteractionFilter): Promise<StoredInteractionRequest[]>;

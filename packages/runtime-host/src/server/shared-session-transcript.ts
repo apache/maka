@@ -66,6 +66,8 @@ export function projectSharedSessionTranscriptMessage(
           : { coordinationActionId: message.coordinationActionId }),
       };
     }
+    case 'form_interaction':
+      return message;
     case 'assistant':
       return {
         type: message.type,

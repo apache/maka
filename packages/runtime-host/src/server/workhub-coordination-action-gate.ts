@@ -116,6 +116,7 @@ export interface WorkHubActionGateEffects {
   readAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
   listActiveAssignments(
     targetSessionId: string,
+    includeStopped?: boolean,
   ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
   readReplacement(
     delegationId: string,
@@ -124,9 +125,13 @@ export interface WorkHubActionGateEffects {
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined>;
   readSupersession(delegationId: string): Promise<WorkHubDelegationSupersededMessage | undefined>;
-  readStopRequest(delegationId: string): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
+  readStopRequest(
+    delegationId: string,
+    actionId?: string,
+  ): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
   readStopResolution(
     delegationId: string,
+    actionId?: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
 
   assign(
@@ -390,7 +395,7 @@ export class WorkHubCoordinationActionGate {
       const source = await this.#stopSource(input.actionId, proposal.expects.targetSessionId);
       const stopFingerprint = stopActionFingerprint(input, source);
       await this.#claimAction(input.actionId, 'stop', stopFingerprint, source.delegationId);
-      const existing = await this.#effects.readStopRequest(source.delegationId);
+      const existing = await this.#effects.readStopRequest(source.delegationId, input.actionId);
       if (existing) {
         if (existing.actionId !== input.actionId) {
           // `not_owned` deliberately leaves the delegation active, so the user
@@ -645,7 +650,7 @@ export class WorkHubCoordinationActionGate {
       // nothing to converge on — and nothing destructive happened either, so
       // that case resolves from the active links below, subject to the claim
       // still naming what they resolve to.
-      const requested = await this.#effects.readStopRequest(claim.subject);
+      const requested = await this.#effects.readStopRequest(claim.subject, actionId);
       if (requested) {
         const claimed = await this.#effects.readAssignment(requested.stopsActionId);
         if (!claimed || claimed.targetSessionId !== targetSessionId) {
@@ -677,7 +682,7 @@ export class WorkHubCoordinationActionGate {
     targetSessionId: string,
     operation: 'resume' | 'stop',
   ): Promise<WorkHubDelegationAssignedMessage> {
-    const onTarget = await this.#effects.listActiveAssignments(targetSessionId);
+    const onTarget = await this.#effects.listActiveAssignments(targetSessionId, true);
     if (onTarget.length === 0) {
       throw new WorkHubActionGateFailure(
         'action_conflict',
@@ -701,6 +706,7 @@ export class WorkHubCoordinationActionGate {
           holdingWork.push(assignment);
         }
       }
+      if (holdingWork.length === 0 && operation === 'resume') return resolved;
       if (holdingWork.length !== 1) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
@@ -716,7 +722,7 @@ export class WorkHubCoordinationActionGate {
     request: WorkHubDelegationStopRequestedMessage,
     source: WorkHubDelegationAssignedMessage,
   ): Promise<WorkHubCoordinationActResult> {
-    const resolved = await this.#effects.readStopResolution(source.delegationId);
+    const resolved = await this.#effects.readStopResolution(source.delegationId, request.actionId);
     if (resolved) return stopResultFromRecord(resolved, request);
     const retirement = await this.#effects.retireDelegation(source, {
       cancellationClaimId: request.actionId,

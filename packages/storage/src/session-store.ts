@@ -369,11 +369,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async readActiveWorkHubAssignmentsByTarget(
     targetSessionIds: readonly string[],
     maxAssignmentsPerTarget?: number,
+    includeStopped?: boolean,
   ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
     await this.ensureReady();
     return this.metadata.readActiveWorkHubAssignmentsByTarget(
       targetSessionIds,
       maxAssignmentsPerTarget,
+      includeStopped,
     );
   }
 
@@ -414,10 +416,20 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readWorkHubStopRequest(
     delegationId: string,
+    actionId?: string,
   ): Promise<WorkHubDelegationStopRequestedMessage | undefined> {
-    const message = await this.readWorkHubCoordinationMessage(
+    const first = await this.readWorkHubCoordinationMessage(
       `whq_${workHubIdentitySuffix(delegationId)}`,
     );
+    const message =
+      actionId &&
+      first?.type === 'workhub_coordination' &&
+      first.kind === 'delegation_stop_requested' &&
+      first.actionId !== actionId
+        ? await this.readWorkHubCoordinationMessage(
+            `whq_${workHubIdentitySuffix(JSON.stringify([delegationId, actionId]))}`,
+          )
+        : first;
     return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested'
       ? message
       : undefined;
@@ -425,10 +437,20 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async readWorkHubStopResolution(
     delegationId: string,
+    actionId?: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined> {
-    const message = await this.readWorkHubCoordinationMessage(
+    const first = await this.readWorkHubCoordinationMessage(
       `whz_${workHubIdentitySuffix(delegationId)}`,
     );
+    const message =
+      actionId &&
+      first?.type === 'workhub_coordination' &&
+      first.kind === 'delegation_stop_resolved' &&
+      first.actionId !== actionId
+        ? await this.readWorkHubCoordinationMessage(
+            `whz_${workHubIdentitySuffix(JSON.stringify([delegationId, actionId]))}`,
+          )
+        : first;
     return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
       ? message
       : undefined;

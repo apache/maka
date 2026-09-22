@@ -907,21 +907,35 @@ export function createMemorySessionStore(
           ? m
           : undefined;
       }),
-    readWorkHubStopRequest: async (id) =>
+    readWorkHubStopRequest: async (id, actionId) =>
       read((s) => {
-        const m = hubMessage(s, 'whq_' + suffix(id));
+        const first = hubMessage(s, 'whq_' + suffix(id));
+        const m =
+          actionId &&
+          first?.type === 'workhub_coordination' &&
+          first.kind === 'delegation_stop_requested' &&
+          first.actionId !== actionId
+            ? hubMessage(s, 'whq_' + suffix(JSON.stringify([id, actionId])))
+            : first;
         return m?.type === 'workhub_coordination' && m.kind === 'delegation_stop_requested'
           ? m
           : undefined;
       }),
-    readWorkHubStopResolution: async (id) =>
+    readWorkHubStopResolution: async (id, actionId) =>
       read((s) => {
-        const m = hubMessage(s, 'whz_' + suffix(id));
+        const first = hubMessage(s, 'whz_' + suffix(id));
+        const m =
+          actionId &&
+          first?.type === 'workhub_coordination' &&
+          first.kind === 'delegation_stop_resolved' &&
+          first.actionId !== actionId
+            ? hubMessage(s, 'whz_' + suffix(JSON.stringify([id, actionId])))
+            : first;
         return m?.type === 'workhub_coordination' && m.kind === 'delegation_stop_resolved'
           ? m
           : undefined;
       }),
-    readActiveWorkHubAssignmentsByTarget: async (ids, limit) =>
+    readActiveWorkHubAssignmentsByTarget: async (ids, limit, includeStopped) =>
       read((s) => {
         ids.forEach(assertSafeSessionId);
         if (
@@ -946,6 +960,7 @@ export function createMemorySessionStore(
               return false;
             const resolution = hubMessage(s, 'whz_' + suffix(m.delegationId));
             if (
+              !includeStopped &&
               resolution?.type === 'workhub_coordination' &&
               resolution.kind === 'delegation_stop_resolved' &&
               resolution.outcome !== 'not_owned'
