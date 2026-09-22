@@ -116,6 +116,7 @@ export function useSessionMessageQueue(options: {
   const merged = useMemo(
     () => withQueuedSteeringTransients(transientMessages, queue, {
       locale,
+      editable: true,
       retract: async (entry, draftText) => {
         if (!sessionId) return false;
         try {

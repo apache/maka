@@ -175,10 +175,9 @@ export class RuntimeHostSessionProjector {
       return [projectQueueUpdate(this.#unplacedQueue(queue), '', this.#now())];
     }
     const events: SessionEvent[] = [];
-    const queueEvents =
-      this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)
-        ? [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now())]
-        : [];
+    // The seed is the only queue evidence a re-observing or reconnecting client
+    // receives — an empty queue must still clear its last-seen entries.
+    const queueEvents = [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now())];
     if (this.#projectMessageAdmissions) {
       events.push(
         ...projectMessageAdmissionEvents(
@@ -742,8 +741,21 @@ function queueChanged(
   return previous.hostEpoch !== next.hostEpoch || previous.queueRevision !== next.queueRevision;
 }
 
-function queueHasEntries(queue: SessionMessageQueueProjection): boolean {
-  return queue.steering.length > 0 || queue.followup.length > 0;
+function newlyInFlight(
+  previous: SessionMessageQueueProjection,
+  next: SessionMessageQueueProjection,
+): Extract<SteeringMessageSnapshot, { state: 'in_flight' }>[] {
+  const previousIds = new Set(rootQueueInFlight(previous).map((entry) => entry.entryId));
+  return rootQueueInFlight(next).filter((entry) => !previousIds.has(entry.entryId));
+}
+
+function rootQueueInFlight(
+  queue: SessionMessageQueueProjection,
+): Extract<SteeringMessageSnapshot, { state: 'in_flight' }>[] {
+  return queue.steering.filter(
+    (entry): entry is Extract<SteeringMessageSnapshot, { state: 'in_flight' }> =>
+      entry.state === 'in_flight',
+  );
 }
 
 function projectQueueUpdate(
