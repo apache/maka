@@ -53,6 +53,7 @@ import type {
   MakaPreparedSessionTurn,
   MakaAttachedSessionTurn,
   MakaSessionMoveResult,
+  MakaSessionListOptions,
   MakaSessionDriver,
   MakaSideConversationParentStatus,
   MakaSessionRewindResult,
@@ -6091,6 +6092,7 @@ Slug openai-work<cursor>
     terminal.input('/resume');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.equal(driver.listLimits[0], 200);
     assert.ok(driver.availabilityCalls >= sessions.length);
     assert.ok(driver.maxActiveCalls <= 8);
 
@@ -11017,7 +11019,7 @@ abstract class FakeSessionDriver implements MakaSessionDriver {
     return { cancelledMessageIds: [] };
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
+  async listSessions(_options?: MakaSessionListOptions): Promise<SessionSummary[]> {
     return [];
   }
 
@@ -12030,7 +12032,7 @@ class SlashCommandDriver extends FakeSessionDriver {
     super();
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
+  async listSessions(_options?: MakaSessionListOptions): Promise<SessionSummary[]> {
     return this.sessions;
   }
 
@@ -12231,6 +12233,7 @@ class RejectingSwitchSessionDriver extends SlashCommandDriver {
 
 class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
   availabilityCalls = 0;
+  readonly listLimits: Array<number | undefined> = [];
   readonly availabilitySessionIds: string[] = [];
   readonly unavailableSessionIds = new Set<string>();
   activeCalls = 0;
@@ -12248,6 +12251,11 @@ class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
     return this.unavailableSessionIds.has(session.id)
       ? { available: false, reason: 'resume_candidate_missing' }
       : { available: true };
+  }
+
+  override async listSessions(options?: MakaSessionListOptions): Promise<SessionSummary[]> {
+    this.listLimits.push(options?.limit);
+    return super.listSessions(options);
   }
 }
 

@@ -59,10 +59,13 @@ import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
   projectSessionCatalogSummary,
+  readRuntimeHostSessionCatalogPage,
   readRuntimeHostResources,
   readRuntimeHostSessions,
+  RuntimeHostSessionCatalogRevisionChangedError,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
+  type RuntimeHostSessionCatalogPageCursor,
 } from '@maka/runtime-host/client';
 import {
   InteractionPendingSnapshot,
@@ -319,8 +322,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return projectSessionCatalogSummary(session);
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
-    const sessions = (await readRuntimeHostSessions(this.#connection))
+  async listSessions(options: { readonly limit?: number } = {}): Promise<SessionSummary[]> {
+    const sessions = (
+      await (options.limit === undefined
+        ? readRuntimeHostSessions(this.#connection)
+        : this.#readBoundedSessionCatalog(options.limit))
+    )
       .flatMap(representableSession)
       .filter((session) => !isSideConversationSession(session.labels))
       .map(projectSessionCatalogSummary);
@@ -334,6 +341,36 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         return cwdDelta !== 0 ? cwdDelta : left.index - right.index;
       })
       .map(({ session }) => session);
+  }
+
+  async #readBoundedSessionCatalog(limit: number): Promise<SessionCatalogItem[]> {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new Error(`Session catalog limit must be a non-negative safe integer: ${limit}`);
+    }
+    if (limit === 0) return [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const sessions: SessionCatalogItem[] = [];
+        let scanned = 0;
+        let cursor: RuntimeHostSessionCatalogPageCursor | undefined;
+        while (scanned < limit) {
+          const page = await readRuntimeHostSessionCatalogPage(this.#connection, cursor);
+          for (const item of page.sessions) {
+            if (scanned >= limit) break;
+            scanned += 1;
+            sessions.push(item);
+          }
+          if (!page.nextCursor || scanned >= limit) break;
+          cursor = page.nextCursor;
+        }
+        return sessions;
+      } catch (error) {
+        if (!(error instanceof RuntimeHostSessionCatalogRevisionChangedError) || attempt === 2) {
+          throw error;
+        }
+      }
+    }
+    throw new Error('Runtime Host Session catalog could not be read consistently');
   }
 
   async getSessionResumeAvailability(session: SessionSummary): Promise<SessionResumeAvailability> {

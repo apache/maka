@@ -94,6 +94,7 @@ import {
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
   type MakaSessionDriver,
+  type MakaSessionListOptions,
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
   type SessionResumeAvailability,
@@ -540,7 +541,6 @@ const SESSION_RESUME_AVAILABILITY_CONCURRENCY = 8;
 // history scan. Session catalog order is the Host's activity order, so this
 // keeps the newest bounded prefix responsive when the user explicitly opens All.
 const MAX_SESSION_RESUME_CANDIDATES = 200;
-const EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS = 120;
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
@@ -3001,7 +3001,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
-  let sessionListPromise: Promise<SessionSummary[]> | undefined;
+  let sessionListPromise:
+    | { readonly limit: number | undefined; readonly promise: Promise<SessionSummary[]> }
+    | undefined;
   let activeResumeAvailabilityChecks = 0;
   const queuedResumeAvailabilityChecks: Array<() => void> = [];
   const runResumeAvailabilityCheck = async <T>(task: () => Promise<T>): Promise<T> => {
@@ -3016,13 +3018,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       queuedResumeAvailabilityChecks.shift()?.();
     }
   };
-  const listSessions = (): Promise<SessionSummary[]> => {
-    if (!sessionListPromise) {
-      sessionListPromise = input.driver.listSessions().finally(() => {
-        sessionListPromise = undefined;
-      });
+  const listSessions = (options: MakaSessionListOptions = {}): Promise<SessionSummary[]> => {
+    if (sessionListPromise) {
+      if (sessionListPromise.limit === undefined || sessionListPromise.limit === options.limit) {
+        return sessionListPromise.promise;
+      }
+      if (options.limit === undefined) {
+        return sessionListPromise.promise.then(() => listSessions(options));
+      }
+      return sessionListPromise.promise;
     }
-    return sessionListPromise;
+    {
+      const promise = input.driver.listSessions(options).finally(() => {
+        if (sessionListPromise?.promise === promise) sessionListPromise = undefined;
+      });
+      sessionListPromise = { limit: options.limit, promise };
+    }
+    return sessionListPromise.promise;
   };
 
   const resumeSession = async () => {
@@ -3031,12 +3043,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     if (!input.driver.resumeLatest) {
-      throw new Error('Safe-boundary resume is unavailable on this runtime.');
+      throw new Error(pickerCopy.resumeUnavailableNotice);
     }
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: 'Resuming from the latest safe boundary…',
+      text: pickerCopy.resumeStartingNotice,
     });
     requestRender();
     try {
@@ -3364,7 +3376,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
-    const sessions = await listSessions();
+    const sessions = await listSessions(
+      options.onlyResumable ? { limit: MAX_SESSION_RESUME_CANDIDATES } : {},
+    );
     const sessionTree = projectRevisionLinkedSessionTree(
       sessions,
       input.driver.getSessionId() ?? undefined,
@@ -3387,7 +3401,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
                 session.id,
                 {
                   available: false,
-                  reason: 'Safe-boundary resume is unavailable on this runtime.',
+                  reason: pickerCopy.resumeUnavailableNotice,
                 },
               ] as const;
             }
@@ -3553,7 +3567,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const sessionId = input.driver.getSessionId();
     try {
       if (!input.driver.getSessionResumeCandidateAvailability) return;
-      const sessions = await listSessions();
+      const sessions = await listSessions({ limit: MAX_SESSION_RESUME_CANDIDATES });
       const session =
         sessions.find((candidate) => candidate.id === sessionId) ??
         sessions.find((candidate) => candidate.cwd === cwd);

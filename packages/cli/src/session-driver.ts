@@ -144,7 +144,7 @@ export interface MakaUserCommand {
 }
 
 export interface MakaSessionDriver {
-  listSessions(): Promise<SessionSummary[]>;
+  listSessions(options?: MakaSessionListOptions): Promise<SessionSummary[]>;
   /** The Host workspace currently attached to this shell, when one exists. */
   getWorkspaceTarget(): WorkspaceTarget | undefined;
   /** Reads the current committed Todo projection for the attached Session. */
@@ -250,6 +250,11 @@ export interface MakaSessionDriver {
    * invented mode here.
    */
   getPermissionMode?(): PermissionMode | undefined;
+}
+
+export interface MakaSessionListOptions {
+  /** Maximum number of catalog records to read before projecting the result. */
+  readonly limit?: number;
 }
 
 /**
