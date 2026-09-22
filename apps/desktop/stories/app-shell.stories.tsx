@@ -44,7 +44,6 @@ import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
 import {
   WorkbarServicesProvider,
-  WorkbarTitlebarActions,
 } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
@@ -423,6 +422,7 @@ function ComposedShell(props: {
         sidebarCollapsed={collapsed}
         onToggleSidebar={() => setCollapsed((current) => !current)}
         onOpenSearchModal={noop}
+        workbar={props.workbarToggle ? { togglePosition: 'titlebar', model: { activeId: active?.id, hidden: !active, rightCollapsed: props.workbarToggle.collapsed, onToggleRightPanel: props.workbarToggle.onToggle } } : undefined}
       >
         {/* Derived from the same session and project catalog the sidebar reads,
             not hand-passed: a story cannot show a project the session does not
@@ -442,8 +442,6 @@ function ComposedShell(props: {
             })()}
           />
         )}
-
-        {props.workbarToggle && <WorkbarTitlebarActions togglePosition="titlebar" model={{ activeId: active?.id, hidden: !active, rightCollapsed: props.workbarToggle.collapsed, onToggleRightPanel: props.workbarToggle.onToggle }} />}
       </AppShellTitlebar>
       <AstryxAppShell
         className="app maka-shell-astryx agents-layout-body"

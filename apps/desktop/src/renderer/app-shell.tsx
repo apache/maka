@@ -73,7 +73,7 @@ import * as Conversation from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
-import { WorkbarHost, WorkbarTitlebarActions, useWorkbarController } from './features/workbar';
+import { WorkbarHost, useWorkbarController } from './features/workbar';
 import { AppUpdateProvider } from './features/app-update/index.js';
 import * as Goals from './features/goals';
 import * as ModuleHub from './features/module-hub';
@@ -2199,6 +2199,7 @@ function AppShellContent({
         sidebarCollapsed={sessionListCollapsed}
         onToggleSidebar={() => sessionSideNavHandleRef.current?.getCollapseState()?.toggle()}
         onOpenSearchModal={openSearch}
+        workbar={{ model: workbar.host, togglePosition: workbarTogglePosition }}
       >
             {/* Only a session has an identity to state. The other views name
                 themselves in the nav column they are selected from, and the
@@ -2244,10 +2245,6 @@ function AppShellContent({
                 parentSession={titlebarParentSession}
               />
             )}
-            <WorkbarTitlebarActions
-              model={workbar.host}
-              togglePosition={workbarTogglePosition}
-            />
       </AppShellTitlebar>
       <AstryxAppShell
         className="app maka-shell-astryx agents-layout-body"
