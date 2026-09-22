@@ -42,6 +42,7 @@ import type {
   StoredOAuthTokens,
 } from '@modelcontextprotocol/client';
 import type { McpOAuthConfig } from '@maka/core/mcp';
+import { createHash } from 'node:crypto';
 
 export type McpAuthorizationCallback = ({ code: string } | { error: string }) & {
   iss?: string;
@@ -87,6 +88,9 @@ export interface McpOAuthRecord {
    * a different endpoint. Absent only on records written before this field
    * existed; they bind on their next save. */
   serverUrl?: string;
+  /** Binds static registration material across offline config edits without
+   * copying its client secret into the credential record. Absent for DCR. */
+  clientConfigHash?: string;
   tokens?: StoredOAuthTokens;
   clientInformation?: StoredOAuthClientInformation;
   /** RFC 9728 / AS metadata discovered on a previous round — including the
@@ -199,6 +203,14 @@ export class McpOAuthProvider implements OAuthClientProvider {
     if (state) this.state = () => state;
   }
 
+  private get clientConfigHash(): string | undefined {
+    const config = this.options.config;
+    if (!config?.clientId) return undefined;
+    return createHash('sha256')
+      .update(JSON.stringify([config.issuer, config.clientId, config.clientSecret]))
+      .digest('hex');
+  }
+
   get redirectUrl(): string {
     return this.options.interactive?.redirectUrl ?? BACKGROUND_REDIRECT_URL;
   }
@@ -263,23 +275,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
     const tokens = record.tokens;
     if (this.options.config?.issuer && tokens?.issuer !== this.options.config.issuer)
       return undefined;
-    if (
-      this.options.config?.clientId &&
-      record.clientInformation?.client_id !== this.options.config.clientId
-    )
-      return undefined;
     return tokens;
   }
 
   async saveTokens(tokens: StoredOAuthTokens): Promise<void> {
     await this.mutate((record) => {
       record.tokens = tokens;
-      if (this.options.config?.clientId) {
-        record.clientInformation = {
-          client_id: this.options.config.clientId,
-          issuer: this.options.config.issuer,
-        };
-      }
       // A fresh token set settles any pending interactive round.
       delete record.codeVerifier;
       delete record.pendingRedirectUrl;
@@ -390,7 +391,11 @@ export class McpOAuthProvider implements OAuthClientProvider {
       record.pendingRedirectUrl ||
       record.pendingServerUrl ||
       record.pendingState;
-    return Boolean(boundable) && record.serverUrl !== this.options.serverUrl;
+    return (
+      Boolean(boundable) &&
+      (record.serverUrl !== this.options.serverUrl ||
+        record.clientConfigHash !== this.clientConfigHash)
+    );
   }
 
   /** The same fail-closed binding rule as read(), applied to a mutation
@@ -411,6 +416,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
     const stamp = (record: McpOAuthRecord): McpOAuthRecord => {
       apply(record);
       record.serverUrl = this.options.serverUrl;
+      if (this.clientConfigHash) record.clientConfigHash = this.clientConfigHash;
+      else delete record.clientConfigHash;
       return record;
     };
     // The coordinator-provided storage view makes read-apply-write one

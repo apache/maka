@@ -97,7 +97,11 @@ test('an OAuth error callback is issuer-validated before its error is accepted',
     const response = await fetch(callback);
     assert.doesNotMatch(await response.text(), /access_denied/);
   } });
-  await assert.rejects(controller.login('remote'), /issuer/iu);
+  await assert.rejects(controller.login('remote'), (error: Error) => {
+    assert.match(error.message, /issuer/iu);
+    assert.doesNotMatch(error.message, /unrelated\.example|access_denied/u);
+    return true;
+  });
   assert.equal(await manager.pendingAuthorization('remote'), undefined);
 });
 

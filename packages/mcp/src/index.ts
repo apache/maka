@@ -1744,11 +1744,18 @@ export class McpClientManager {
       throw new Error(`MCP server "${serverId}" changed its URL during authorization`);
     }
     const metadata = record.discovery?.authorizationServerMetadata;
-    validateAuthorizationResponseIssuer({
-      iss: callback.iss,
-      expectedIssuer: metadata?.issuer,
-      issParameterSupported: metadata?.authorization_response_iss_parameter_supported === true,
-    });
+    const expectedIssuer = metadata?.issuer ?? record.discovery?.authorizationServerUrl;
+    if (!expectedIssuer) throw new Error('OAuth callback has no recorded issuer');
+    try {
+      validateAuthorizationResponseIssuer({
+        iss: callback.iss,
+        expectedIssuer: String(expectedIssuer),
+        issParameterSupported: metadata?.authorization_response_iss_parameter_supported === true,
+      });
+    } catch {
+      // SDK errors echo the untrusted iss parameter; it must not cross IPC.
+      throw new Error('OAuth callback issuer validation failed');
+    }
     if ('error' in callback) {
       throw authorizationCallbackError(callback.error);
     }
