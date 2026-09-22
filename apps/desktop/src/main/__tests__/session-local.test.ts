@@ -1033,14 +1033,14 @@ test('Host retraction proof is scoped and remains retired after restart while of
     db.store.update({ ...record, state: 'accepted', intent: { ...record.intent, originHostEpoch: epoch } });
   }
   const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
-  service.retireRetractedMessages({ ...scope, targetEpoch: 'stale' }, 'epoch', 'session-1', ['cancelled']);
+  service.retireCancelledMessages({ ...scope, targetEpoch: 'stale' }, 'session-1', ['cancelled']);
   assert.ok(db.store.get('authority', 'cancelled'));
-  service.retireRetractedMessages(scope, 'epoch', 'session-1', ['cancelled', 'other-session', 'other-epoch']);
+  service.retireCancelledMessages(scope, 'session-1', ['cancelled', 'other-session', 'other-epoch']);
   service.close();
   db.reopen();
   const offline = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
   t.after(() => offline.close());
-  assert.deepEqual(offline.listMessages(target, 'session-1').map((message) => message.messageId), ['other-epoch']);
+  assert.deepEqual(offline.listMessages(target, 'session-1'), []);
   assert.equal(offline.listMessages(target, 'session-2').length, 1);
   assert.ok(db.store.get('other-authority', 'cancelled'));
   assert.equal(db.store.stagedAttachments('authority', 'cancelled').length, 0);
@@ -1063,8 +1063,6 @@ test('durable cancellation proof retires an old Host epoch without crossing auth
   const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
   service.retireCancelledMessages({ ...scope, targetEpoch: 'stale-target' }, 'session-1', ['cancelled']);
   assert.ok(db.store.get('authority', 'cancelled'));
-  service.retireRetractedMessages(scope, 'new-epoch', 'session-1', ['cancelled']);
-  assert.ok(db.store.get('authority', 'cancelled'));
   service.retireCancelledMessages(scope, 'session-1', ['cancelled', 'other-session', 'never-dispatched']);
   service.close();
   db.reopen();
@@ -1077,13 +1075,13 @@ test('durable cancellation proof retires an old Host epoch without crossing auth
 });
 
 test('cancellation cleanup preserves an already scheduled canonical transcript cache write', async (t) => {
-  for (const durable of [false, true]) {
+  for (const epoch of ['epoch', 'old-epoch']) {
     const db = await database(t);
     const target: DesktopSessionLocalTarget = {
       partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
     };
     const record = db.store.enqueue('authority', intent('cancelled'));
-    db.store.update({ ...record, state: 'accepted', intent: { ...record.intent, originHostEpoch: 'epoch' } });
+    db.store.update({ ...record, state: 'accepted', intent: { ...record.intent, originHostEpoch: epoch } });
     const service = new DesktopSessionLocalService(db.store, { targets: () => [target], changed() {}, onError: assert.fail });
     db.beforeClose.push(() => service.close());
     service.cacheTranscript(target.scope, {
@@ -1091,8 +1089,7 @@ test('cancellation cleanup preserves an already scheduled canonical transcript c
       durable: [{ sequence: 1, message: { type: 'user', id: 'completed', turnId: 'turn-1', ts: 1, text: 'keep history' } }],
       hasOlder: false, beginsAtTurnBoundary: true,
     });
-    if (durable) service.retireCancelledMessages(target.scope, 'session-1', ['cancelled']);
-    else service.retireRetractedMessages(target.scope, 'epoch', 'session-1', ['cancelled']);
+    service.retireCancelledMessages(target.scope, 'session-1', ['cancelled']);
     await nextTurn();
     service.close();
     db.reopen();
@@ -1114,7 +1111,7 @@ test('retraction before the submit ACK fences the late completion without recrea
   store.enqueue('authority', { ...intent(), staged: [] });
   service.wake();
   await waitFor(() => dispatched);
-  service.retireRetractedMessages(target.scope, 'epoch', 'session-1', ['message-1']);
+  service.retireCancelledMessages(target.scope, 'session-1', ['message-1']);
   ack.resolve(accepted);
   await nextTurn();
   await nextTurn();

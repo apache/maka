@@ -398,18 +398,6 @@ export class DesktopSessionLocalService {
     });
   }
 
-  retireRetractedMessages(
-    scope: DesktopTargetScope, hostEpoch: string, sessionId: string, messageIds: readonly string[],
-  ): void {
-    if (this.#closed) return;
-    let target: DesktopSessionLocalTarget;
-    try { target = this.target(scope); } catch { return; }
-    if (this.store.retireRetractedMessages(target.partition, hostEpoch, sessionId, messageIds)) {
-      this.deps.changed(target.scope, sessionId);
-      this.wake();
-    }
-  }
-
   retireCancelledMessages(scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]): void {
     if (this.#closed) return;
     let target: DesktopSessionLocalTarget;

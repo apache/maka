@@ -121,7 +121,6 @@ type CandidateIpcMain = ReconnectableReadIpcMain & Pick<IpcMain, "removeHandler"
 
 export interface DesktopRuntimeHostCandidateDeps {
   readonly terminalCloses?: import('./terminal-close-intents.js').TerminalCloseIntents;
-  readonly retireRetractedMessages?: (scope: DesktopTargetScope, hostEpoch: string, sessionId: string, messageIds: readonly string[]) => void;
   readonly retireCancelledMessages?: (scope: DesktopTargetScope, sessionId: string, messageIds: readonly string[]) => void;
   readonly cacheTranscript?: (scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot) => void;
   readonly ipcMain: RuntimeHostTargetIpcMain;
@@ -662,11 +661,6 @@ export async function createDesktopRuntimeHostCandidate(
         interactions,
       });
     };
-    const retireRetractedMessages = (sessionId: string, messageIds: readonly string[]) => {
-      if (target.access === 'owner' && isTargetActive()) {
-        deps.retireRetractedMessages?.(scope, client.hostEpoch, sessionId, messageIds);
-      }
-    };
     const retireCancelledMessages = (sessionId: string, messageIds: readonly string[]) => {
       if (target.access === 'owner' && isTargetActive()) {
         deps.retireCancelledMessages?.(scope, sessionId, messageIds);
@@ -939,7 +933,6 @@ export async function createDesktopRuntimeHostCandidate(
           {
             client,
             observer: sessionObserver,
-            retireRetractedMessages,
             retireCancelledMessages,
             attachmentApprovals: deps.attachmentApprovals,
             emitSessionsChanged,

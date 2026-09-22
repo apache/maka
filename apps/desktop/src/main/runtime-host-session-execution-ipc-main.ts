@@ -165,7 +165,6 @@ async function submitMessageWithReconnect(
 }
 
 export interface RuntimeHostSessionExecutionIpcDeps {
-  retireRetractedMessages?: (sessionId: string, messageIds: readonly string[]) => void;
   retireCancelledMessages?: (sessionId: string, messageIds: readonly string[]) => void;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
@@ -968,7 +967,7 @@ function retainedAttachmentsForSession(
 function createRuntimeHostSessionStop(
   deps: Pick<
     RuntimeHostSessionExecutionIpcDeps,
-    "beforeStop" | "client" | "observer" | "emitSessionsChanged" | "retireRetractedMessages"
+    "beforeStop" | "client" | "observer" | "emitSessionsChanged" | "retireCancelledMessages"
   >,
   newId: () => string = randomUUID,
 ): (
@@ -994,7 +993,7 @@ function createRuntimeHostSessionStop(
             }),
           () => deps.client.getSession(sessionId),
         );
-        deps.retireRetractedMessages?.(sessionId, [entry.messageId]);
+        deps.retireCancelledMessages?.(sessionId, [entry.messageId]);
         deps.emitSessionsChanged('status-change', sessionId);
         return { kind: 'retracted', messageId: entry.messageId };
       }
@@ -1036,7 +1035,7 @@ function createRuntimeHostSessionStop(
       turnId: turn.turnId,
       runId: turn.runId,
     });
-    deps.retireRetractedMessages?.(sessionId, interrupted.retracted.map((message) => message.messageId));
+    deps.retireCancelledMessages?.(sessionId, interrupted.retracted.map((message) => message.messageId));
     deps.emitSessionsChanged("turn-status-change", sessionId, {
       turnId: turn.turnId,
     });

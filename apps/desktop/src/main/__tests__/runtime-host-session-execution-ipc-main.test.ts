@@ -1054,7 +1054,6 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
         },
       }),
       retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
-      retireRetractedMessages() { assert.fail('Durable cancellation proof must not use the current Host epoch'); },
     },
     ipc,
   );
@@ -2062,7 +2061,7 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       beforeStop() {
         stopLifecycle.push("teardown");
       },
-      retireRetractedMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
+      retireCancelledMessages(sessionId, messageIds) { retired.push({ sessionId, messageIds }); },
       newId: () => `id-${++sequence}`,
     },
     ipc,

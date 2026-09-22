@@ -23,7 +23,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from 'electron';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
@@ -41,6 +41,7 @@ import {
   type ClientCapabilityCallFrame,
   type OperationInput,
   type OperationKey,
+  type OperationOutput,
   type SessionAssistantStreamIdentity,
   type SessionCatalogProjection,
   type SessionContinuitySnapshot,
@@ -59,8 +60,10 @@ import {
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
 import { RuntimeHostReconnectingIpcMain } from '../runtime-host-reconnecting-ipc-main.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
-import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { deferred, waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 import { canRepairManagedRuntimeHostStartup } from '../runtime-host-startup-recovery.js';
+import { DesktopSessionLocalStore } from '../session-local-store.js';
+import { DesktopSessionLocalService } from '../session-local-service.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
@@ -329,6 +332,180 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
   await reconnected.close();
   assert.equal(ipc.size, 0);
 });
+
+test('Stop after Host restart durably frees a full local outbox through the registered candidate IPC', async (t) => {
+  const local = await stopLocalMessages(t);
+  const cancelledIds = Array.from({ length: 64 }, (_, index) => `cancelled-${index}`);
+  for (const messageId of cancelledIds) local.enqueue(messageId);
+  for (let index = 0; index < 188; index += 1) local.enqueue(`retained-${index}`);
+  local.enqueue('not-returned');
+  local.enqueue('never-dispatched', 'session-1', 'authority', false);
+  local.enqueue('other-session', 'session-2');
+  local.enqueue(cancelledIds[0]!, 'session-1', 'other-authority');
+  assert.throws(() => local.enqueue('over-capacity'), /Local message storage is full/);
+  local.reopen();
+
+  const ipc = ipcHarness();
+  let interrupts = 0;
+  const host = connectionHarness('restarted', {
+    subscriptionSnapshot: continuitySnapshot(),
+    interrupt: async (input) => {
+      interrupts += 1;
+      assert.equal(input.originHostEpoch, 'host-restarted');
+      assert.equal(input.sessionId, 'session-1');
+      return stoppedTurn(cancelledIds);
+    },
+  });
+  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+    ...deps(ipc),
+    ...local.callbacks,
+  });
+  t.after(() => candidate.close());
+
+  // Do not publish queue-change frames or query cancellation tombstones: a
+  // successful ordinary Stop must persist its own cleanup before it returns.
+  assert.deepEqual(await ipc.invoke('sessions:stop', 'session-1', { source: 'stop_button' }), {
+    kind: 'interrupted', retractedMessageIds: cancelledIds,
+  });
+  assert.equal(interrupts, 1);
+  for (const messageId of cancelledIds) {
+    assert.equal(local.store.get('authority', messageId), undefined);
+    assert.equal(local.store.stagedAttachments('authority', messageId).length, 0);
+  }
+  await candidate.close();
+  local.reopen();
+  assert.equal(local.store.list('authority').length, 191);
+  assert.ok(local.store.get('authority', 'retained-0'));
+  assert.ok(local.store.get('authority', 'not-returned'));
+  assert.equal(local.store.get('authority', 'never-dispatched')?.state, 'saved');
+  assert.equal(local.store.get('authority', 'other-session')?.sessionId, 'session-2');
+  assert.ok(local.store.get('other-authority', cancelledIds[0]!));
+  assert.equal(local.store.stagedAttachments('other-authority', cancelledIds[0]!).length, 1);
+  assert.doesNotThrow(() => local.enqueue('next-send'));
+});
+
+test('admission-targeted Stop after Host restart retires only the retracted local message', async (t) => {
+  const local = await stopLocalMessages(t);
+  local.enqueue('queued-message');
+  local.enqueue('other-message');
+  local.reopen();
+  const ipc = ipcHarness();
+  let retractions = 0;
+  const host = connectionHarness('restarted', {
+    subscriptionSnapshot: continuitySnapshot({
+      queue: {
+        hostEpoch: 'host-restarted', queueRevision: 1, steering: [],
+        followup: [{
+          entryId: 'entry-queued', messageId: 'queued-message',
+          content: { text: 'queued-message' }, placement: 'next_turn', state: 'queued',
+        }],
+      },
+    }),
+    retract: async (input) => {
+      retractions += 1;
+      assert.equal(input.originHostEpoch, 'host-restarted');
+      assert.equal(input.entryId, 'entry-queued');
+      return { queueRevision: 2 };
+    },
+  });
+  const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+    ...deps(ipc), ...local.callbacks,
+  });
+  t.after(() => candidate.close());
+  assert.deepEqual(await ipc.invoke('sessions:stop', 'session-1', {
+    source: 'stop_button', expectedAdmissionId: 'queued-message',
+  }), { kind: 'retracted', messageId: 'queued-message' });
+  assert.equal(retractions, 1);
+  await candidate.close();
+  local.reopen();
+  assert.equal(local.store.get('authority', 'queued-message'), undefined);
+  assert.equal(local.store.stagedAttachments('authority', 'queued-message').length, 0);
+  assert.ok(local.store.get('authority', 'other-message'));
+});
+
+for (const outcome of ['rejected', 'inactive-target'] as const) {
+  test(`Stop ${outcome} response cannot retire local messages`, async (t) => {
+    const local = await stopLocalMessages(t);
+    local.enqueue('retained');
+    const ipc = ipcHarness();
+    const interrupted = deferred<void>();
+    const response = deferred<OperationOutput<'turn.interrupt'>>();
+    let active = true;
+    const host = connectionHarness('restarted', {
+      subscriptionSnapshot: continuitySnapshot(),
+      interrupt: async () => { interrupted.resolve(); return response.promise; },
+    });
+    const candidate = await createDesktopRuntimeHostCandidate(host.connection, {
+      ...deps(ipc), ...local.callbacks, isTargetActive: () => active,
+    });
+    t.after(() => candidate.close());
+    const stopping = ipc.invoke('sessions:stop', 'session-1', { source: 'stop_button' });
+    await interrupted.promise;
+    if (outcome === 'rejected') {
+      response.reject(new Error('Host rejected Stop'));
+      await assert.rejects(stopping, /Host rejected Stop/);
+    } else {
+      active = false;
+      response.resolve(stoppedTurn(['retained']));
+      await stopping;
+    }
+    await candidate.close();
+    local.reopen();
+    assert.equal(local.store.get('authority', 'retained')?.state, 'accepted');
+    assert.equal(local.store.stagedAttachments('authority', 'retained').length, 1);
+  });
+}
+
+async function stopLocalMessages(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-candidate-stop-'));
+  const path = join(directory, 'client.sqlite');
+  const target = {
+    partition: 'authority', profileId: 'profile',
+    scope: { hostId: TEST_HOST_ID, targetEpoch: TEST_TARGET_EPOCH },
+  };
+  let store = new DesktopSessionLocalStore(path);
+  const createService = () => new DesktopSessionLocalService(store, {
+    targets: () => [target], changed() {}, onError: assert.fail,
+  });
+  let service = createService();
+  t.after(async () => { service.close(); store.close(); await rm(directory, { recursive: true, force: true }); });
+  return {
+    get store() { return store; },
+    callbacks: {
+      retireCancelledMessages: (scope, sessionId, messageIds) =>
+        service.retireCancelledMessages(scope, sessionId, messageIds),
+    } satisfies Pick<DesktopRuntimeHostCandidateDeps, 'retireCancelledMessages'>,
+    enqueue(messageId: string, sessionId = 'session-1', partition = 'authority', dispatched = true) {
+      const record = store.enqueue(partition, {
+        command: { messageId, sessionId, placement: 'next_turn', content: { text: messageId } },
+        staged: [{ name: 'note.txt', mimeType: 'text/plain', base64: Buffer.from('retained bytes').toString('base64') }],
+      });
+      if (dispatched) store.update({
+        ...record, state: 'accepted', intent: { ...record.intent, originHostEpoch: 'host-before-restart' },
+      });
+    },
+    reopen() {
+      service.close();
+      store.close();
+      store = new DesktopSessionLocalStore(path);
+      service = createService();
+    },
+  };
+}
+
+function stoppedTurn(messageIds: readonly string[]): OperationOutput<'turn.interrupt'> {
+  return {
+    queueRevision: 2,
+    retracted: messageIds.map((messageId) => ({
+      entryId: `entry-${messageId}`, messageId, content: { text: messageId },
+      placement: 'next_turn', state: 'retracted',
+    })),
+    turn: {
+      sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1', status: 'cancelled',
+      terminalEventId: 'terminal-1', abortSource: 'user',
+    },
+  };
+}
 
 test('routes Guest catalog changes through the mount projection authority', async () => {
   const ipc = ipcHarness();
@@ -1302,6 +1479,8 @@ function connectionHarness(
     runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
     runtimeResourceUpdate?: ShellRunUpdate;
     sharedSessionAvailable?: boolean;
+    interrupt?: (input: OperationInput<'turn.interrupt'>) => Promise<OperationOutput<'turn.interrupt'>>;
+    retract?: (input: OperationInput<'queue.entry.retract'>) => Promise<OperationOutput<'queue.entry.retract'>>;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -1329,6 +1508,12 @@ function connectionHarness(
     selectedProtocol: 0,
     closed,
     request: async <K extends OperationKey>(operation: K, input: OperationInput<K>) => {
+      if (operation === 'turn.interrupt' && options.interrupt) {
+        return options.interrupt(input as OperationInput<'turn.interrupt'>);
+      }
+      if (operation === 'queue.entry.retract' && options.retract) {
+        return options.retract(input as OperationInput<'queue.entry.retract'>);
+      }
       if (operation === 'subscription.pty_interest.set') return { subscriptionId: (input as { subscriptionId: string }).subscriptionId };
       if (
         operation === 'session.catalog.query' &&
