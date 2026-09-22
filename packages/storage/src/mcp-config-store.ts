@@ -332,6 +332,22 @@ function normalizeServer(
 function normalizeOAuth(value: unknown, serverId: string): McpOAuthConfig {
   if (!isRecord(value)) throw new Error(`${serverId}.oauth must be an object`);
   const result: McpOAuthConfig = {};
+  if (value.issuer !== undefined) {
+    const issuer = nonEmptyString(value.issuer, `${serverId}.oauth.issuer`);
+    const parsed = new URL(issuer);
+    if (
+      !['https:', 'http:'].includes(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error(
+        `${serverId}.oauth.issuer must be an HTTP(S) issuer URL without credentials, query or fragment`,
+      );
+    }
+    result.issuer = issuer;
+  }
   if (value.clientId !== undefined) {
     result.clientId = nonEmptyString(value.clientId, `${serverId}.oauth.clientId`);
   }

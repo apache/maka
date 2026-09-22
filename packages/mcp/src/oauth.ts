@@ -34,6 +34,7 @@
 //   login CAPTURES the authorization URL for the caller to open.
 
 import type {
+  OAuthClientInformationContext,
   OAuthClientMetadata,
   OAuthClientProvider,
   OAuthDiscoveryState,
@@ -41,6 +42,31 @@ import type {
   StoredOAuthTokens,
 } from '@modelcontextprotocol/client';
 import type { McpOAuthConfig } from '@maka/core/mcp';
+
+export type McpAuthorizationCallback = ({ code: string } | { error: string }) & {
+  iss?: string;
+  state?: string;
+};
+
+const OAUTH_ERROR_CODES = new Set([
+  'invalid_request',
+  'unauthorized_client',
+  'access_denied',
+  'unsupported_response_type',
+  'invalid_scope',
+  'server_error',
+  'temporarily_unavailable',
+  'invalid_client',
+  'invalid_grant',
+  'unsupported_grant_type',
+  'interaction_required',
+  'login_required',
+  'consent_required',
+]);
+
+export function authorizationCallbackError(code: string): Error {
+  return new Error(`Authorization failed: ${OAUTH_ERROR_CODES.has(code) ? code : 'unknown_error'}`);
+}
 
 /** Everything the provider persists for one server, as one JSON document. */
 export interface McpOAuthRecord {
@@ -193,10 +219,23 @@ export class McpOAuthProvider implements OAuthClientProvider {
     };
   }
 
-  async clientInformation(): Promise<StoredOAuthClientInformation | undefined> {
+  async clientInformation(
+    context?: OAuthClientInformationContext,
+  ): Promise<StoredOAuthClientInformation | undefined> {
     const configured = this.options.config;
     if (configured?.clientId) {
+      if (!configured.issuer) {
+        throw new Error(
+          `MCP server "${this.options.serverId}" requires oauth.issuer for its pre-registered client`,
+        );
+      }
+      if (context && context.issuer !== configured.issuer) {
+        throw new Error(
+          `MCP server "${this.options.serverId}" discovered a different OAuth issuer; reconfigure its client credentials`,
+        );
+      }
       return {
+        issuer: configured.issuer,
         client_id: configured.clientId,
         ...(configured.clientSecret ? { client_secret: configured.clientSecret } : {}),
       };
@@ -219,12 +258,28 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async tokens(): Promise<StoredOAuthTokens | undefined> {
-    return (await this.read()).tokens;
+    if (this.options.config?.clientId) await this.clientInformation();
+    const record = await this.read();
+    const tokens = record.tokens;
+    if (this.options.config?.issuer && tokens?.issuer !== this.options.config.issuer)
+      return undefined;
+    if (
+      this.options.config?.clientId &&
+      record.clientInformation?.client_id !== this.options.config.clientId
+    )
+      return undefined;
+    return tokens;
   }
 
   async saveTokens(tokens: StoredOAuthTokens): Promise<void> {
     await this.mutate((record) => {
       record.tokens = tokens;
+      if (this.options.config?.clientId) {
+        record.clientInformation = {
+          client_id: this.options.config.clientId,
+          issuer: this.options.config.issuer,
+        };
+      }
       // A fresh token set settles any pending interactive round.
       delete record.codeVerifier;
       delete record.pendingRedirectUrl;
@@ -264,9 +319,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
       // A dynamically registered client belongs to the authorization server
       // that issued it. When discovery moves the resource to a DIFFERENT
       // authorization server, carrying the old registration over would send
-      // one AS's client credentials (and any secret) to another. Static
-      // config-supplied clients are unaffected — they never live in the
-      // record.
+      // one AS's client credentials (and any secret) to another.
       const previousIssuer = record.discovery?.authorizationServerUrl;
       const nextIssuer = state.authorizationServerUrl;
       if (previousIssuer && nextIssuer && `${previousIssuer}` !== `${nextIssuer}`) {

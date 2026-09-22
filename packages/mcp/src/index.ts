@@ -20,6 +20,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   auth,
+  validateAuthorizationResponseIssuer,
   Client,
   extractWWWAuthenticateParams,
   LATEST_PROTOCOL_VERSION,
@@ -94,6 +95,8 @@ import {
 import {
   McpAuthRequiredError,
   McpOAuthProvider,
+  authorizationCallbackError,
+  type McpAuthorizationCallback,
   type McpOAuthRecord,
   type McpOAuthStorage,
 } from './oauth.js';
@@ -106,6 +109,7 @@ export {
 } from './credential-oauth-storage.js';
 export {
   createMemoryMcpOAuthStorage,
+  type McpAuthorizationCallback,
   McpAuthRequiredError,
   McpOAuthProvider,
   type McpOAuthRecord,
@@ -1695,7 +1699,7 @@ export class McpClientManager {
    * that check. */
   async finishAuthorization(
     serverId: string,
-    callback: { code: string; iss?: string; state?: string },
+    callback: McpAuthorizationCallback,
     options: { signal?: AbortSignal } = {},
   ): Promise<McpServerStatus> {
     try {
@@ -1709,10 +1713,9 @@ export class McpClientManager {
 
   private async finishAuthorizationRound(
     serverId: string,
-    callback: { code: string; iss?: string; state?: string },
+    callback: McpAuthorizationCallback,
     options: { signal?: AbortSignal } = {},
   ): Promise<McpServerStatus> {
-    const authorizationCode = callback.code;
     const { config } = this.requireRemoteEntry(serverId);
     // The immediate read doubles as the flow's generation/version pin.
     const storage = this.flowStorage(serverId, options.signal);
@@ -1740,6 +1743,16 @@ export class McpClientManager {
     if (record?.pendingServerUrl !== config.url) {
       throw new Error(`MCP server "${serverId}" changed its URL during authorization`);
     }
+    const metadata = record.discovery?.authorizationServerMetadata;
+    validateAuthorizationResponseIssuer({
+      iss: callback.iss,
+      expectedIssuer: metadata?.issuer,
+      issParameterSupported: metadata?.authorization_response_iss_parameter_supported === true,
+    });
+    if ('error' in callback) {
+      throw authorizationCallbackError(callback.error);
+    }
+    const authorizationCode = callback.code;
     const provider = new McpOAuthProvider({
       serverId,
       serverUrl: config.url,

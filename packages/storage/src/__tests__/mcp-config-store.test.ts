@@ -479,13 +479,19 @@ test('normalizes and bounds the remote oauth block', async () => {
     mcpServers: {
       notion: {
         url: 'https://mcp.notion.com/mcp',
-        oauth: { clientId: 'abc', scopes: ['read', 'write'], callbackPort: 33389 },
+        oauth: {
+          issuer: 'https://auth.example/tenant',
+          clientId: 'abc',
+          scopes: ['read', 'write'],
+          callbackPort: 33389,
+        },
       },
     },
   });
   const notion = normalized.mcpServers.notion;
   assert.ok(notion && 'url' in notion);
   assert.deepEqual(notion.oauth, {
+    issuer: 'https://auth.example/tenant',
     clientId: 'abc',
     scopes: ['read', 'write'],
     callbackPort: 33389,

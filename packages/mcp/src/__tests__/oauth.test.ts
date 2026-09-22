@@ -223,7 +223,11 @@ describe('McpClientManager OAuth E2E', () => {
         remote: {
           url: fixture.mcpUrl,
           transport: 'streamable-http',
-          oauth: { clientId: 'static-client', clientSecret: secret },
+          oauth: {
+            issuer: new URL(fixture.mcpUrl).origin,
+            clientId: 'static-client',
+            clientSecret: secret,
+          },
         },
       },
     });
@@ -326,7 +330,7 @@ describe('McpClientManager OAuth E2E', () => {
         remote: {
           url: fixture.mcpUrl,
           transport: 'streamable-http',
-          oauth: { clientId: 'abc', clientSecret: 'abcde' },
+          oauth: { issuer: new URL(fixture.mcpUrl).origin, clientId: 'abc', clientSecret: 'abcde' },
         },
       },
     });
@@ -394,7 +398,11 @@ describe('McpClientManager OAuth E2E', () => {
           transport: 'streamable-http',
           // A 3-character secret cannot be spliced out without shredding the
           // message, so the whole message must be withheld instead.
-          oauth: { clientId: 'abc-client', clientSecret: 'k7#' },
+          oauth: {
+            issuer: new URL(fixture.mcpUrl).origin,
+            clientId: 'abc-client',
+            clientSecret: 'k7#',
+          },
         },
       },
     });
@@ -684,6 +692,34 @@ describe('McpClientManager OAuth E2E', () => {
     assert.ok(
       !fixture.mcpRequests.some((req) => req.authorization === 'Bearer stale-configured-header'),
     );
+  });
+
+  test('static client credentials cannot follow a resource to a different issuer', async () => {
+    const fixture = await createOAuthFixture();
+    const storage = createMemoryMcpOAuthStorage();
+    const manager = new McpClientManager({ oauthStorage: storage });
+    managers.push(manager);
+    await manager.sync({
+      version: MCP_CONFIG_VERSION,
+      mcpServers: {
+        remote: {
+          url: fixture.mcpUrl,
+          enabled: false,
+          transport: 'streamable-http',
+          oauth: {
+            clientId: 'client-for-original-issuer',
+            clientSecret: 'original-secret',
+            issuer: 'https://original.example',
+          },
+        },
+      },
+    });
+    await assert.rejects(
+      manager.startAuthorization('remote', 'http://127.0.0.1:39991/callback'),
+      /issuer/iu,
+    );
+    assert.equal(fixture.tokenExchanges.length, 0);
+    assert.equal(fixture.registrations.length, 0);
   });
 
   test('the callback iss parameter reaches the SDK issuer validation', async () => {
@@ -1090,6 +1126,46 @@ describe('McpClientManager OAuth E2E', () => {
       ]);
       assert.doesNotMatch(JSON.stringify(provider.clientMetadata), /maka-agent\/maka-agent/u);
     }
+  });
+
+  test('static tokens survive restart only for their issued client and issuer', async () => {
+    const storage = createMemoryMcpOAuthStorage();
+    const options = {
+      serverId: 'remote',
+      serverUrl: 'https://mcp.example/mcp',
+      storage,
+      clientName: 'maka',
+      clientVersion: '0.0.0',
+    };
+    const config = { issuer: 'https://as.example', clientId: 'client-a' };
+    const provider = new McpOAuthProvider({ ...options, config });
+    await provider.saveTokens({
+      issuer: config.issuer,
+      access_token: 'issued-token',
+      token_type: 'Bearer',
+    });
+    assert.equal(
+      (await new McpOAuthProvider({ ...options, config }).tokens())?.access_token,
+      'issued-token',
+    );
+    assert.equal(
+      await new McpOAuthProvider({
+        ...options,
+        config: { ...config, clientId: 'client-b' },
+      }).tokens(),
+      undefined,
+    );
+    assert.equal(
+      await new McpOAuthProvider({
+        ...options,
+        config: { ...config, issuer: 'https://other.example' },
+      }).tokens(),
+      undefined,
+    );
+    await assert.rejects(
+      new McpOAuthProvider({ ...options, config: { clientId: 'client-a' } }).tokens(),
+      /oauth.issuer/u,
+    );
   });
 
   test('a discovery that moves to another authorization server drops the registered client', async () => {

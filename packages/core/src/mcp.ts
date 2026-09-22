@@ -49,6 +49,8 @@ export interface McpRemoteServerConfig {
  * `callbackPort`, because its redirect URI was registered with a fixed port.
  */
 export interface McpOAuthConfig {
+  /** Authorization server that owns the pre-registered client credentials. */
+  issuer?: string;
   clientId?: string;
   clientSecret?: string;
   scopes?: string[];
@@ -354,7 +356,12 @@ export function mcpConfigChangeRetiresCredentials(
   const previousStdio = isMcpStdioConfig(previous);
   const nextStdio = isMcpStdioConfig(next);
   if (previousStdio || nextStdio) return previousStdio !== nextStdio;
-  return previous.url !== next.url;
+  return (
+    previous.url !== next.url ||
+    previous.oauth?.issuer !== next.oauth?.issuer ||
+    previous.oauth?.clientId !== next.oauth?.clientId ||
+    previous.oauth?.clientSecret !== next.oauth?.clientSecret
+  );
 }
 
 export function resolveMcpProtocolPreference(config: McpServerConfig): McpProtocolPreference {
