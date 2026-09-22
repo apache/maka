@@ -267,6 +267,10 @@ function projectPassage(passage: RecallPassage, activeSessionId: string) {
     title: passage.sessionTitle,
     ...(passage.turnId ? { turn_id: passage.turnId } : {}),
     anchor_message_id: passage.anchorMessageId,
+    // The anchor's index in its Session transcript. Carried for the same
+    // reason a UI needs it: a caller that wants to point at the passage in a
+    // transcript scrolls by sequence, and this spares it a second lookup.
+    sequence: passage.sequence,
     is_current_session: passage.sessionId === activeSessionId,
     ...(passage.lastMessageAt !== undefined ? { last_message_at: passage.lastMessageAt } : {}),
     matched_terms: passage.matchedTerms,

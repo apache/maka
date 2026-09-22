@@ -1166,8 +1166,7 @@
    no --info hue: "info" is a semantic slot (Banner status), so it paints with
    the accent at 0.24 like its three siblings. It has to be the
    same CONSTRUCTION and not just the same weight — an opaque tint does not
-   compose, so a tinted chip on a tinted panel (deep-research's count pill,
-   plan-mode's in-progress marker) resolves to the parent's exact pixel and
+   compose, so a tinted chip on a tinted panel (plan-mode's in-progress marker) resolves to the parent's exact pixel and
    disappears. Alpha is also what upstream ships this token as (#0082FB33,
    0.20); theme-neutral is what flattens it to an opaque #f1f1f1.
 
@@ -1426,17 +1425,21 @@
   }
 
   /* ChatReasoning is ejected from Astryx lab 0.1.9 because lab is canary-only.
-     Core's atom sheet already contains every compiled StyleX atom except the
-     five shimmer declarations below; these are copied verbatim from lab.css. */
-  @keyframes x1ofn8cw-B {
+     Its streaming-label sweep is Maka-local: background-position cannot run on
+     the compositor, so upstream's linear timing repaints the glyph-clipped
+     gradient every frame for the whole turn. `steps(60)` holds the same look
+     at ~15fps — measured ~4x cheaper on one label. */
+  @keyframes maka-reasoning-shimmer {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
   }
-  .xct3ic7:not(#\#):not(#\#):not(#\#) { background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%); }
-  .xakli9p:not(#\#):not(#\#):not(#\#) { background-size: 200% 100%; }
-  .x1ta4xzc:not(#\#):not(#\#):not(#\#) { background-clip: text; }
-  .x3mlza6:not(#\#):not(#\#):not(#\#) { animation-name: x1ofn8cw-B; }
-  .xeaay5l:not(#\#):not(#\#):not(#\#) { animation-duration: 4s; }
+  .maka-reasoning-shimmer {
+    background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%);
+    background-size: 200% 100%;
+    background-clip: text;
+    color: transparent;
+    animation: maka-reasoning-shimmer 4s steps(60) infinite;
+  }
 
   /* ---- Tool activity ---------------------------------------------- */
 
@@ -1476,10 +1479,9 @@
 
 /* `maka-text-shimmer` and the `TextShimmer` primitive it drove are gone. The
    sweep-across-glyphs idiom is Astryx's: its `ChatReasoning` shimmers its own
-   streaming label off `x1ofn8cw-B` above, and that atom is the one this repo
-   copies from lab.css. A second, faster sweep on the turn's status line put two
-   of them a few pixels apart at different speeds, which read as two things
-   competing rather than one turn working. */
+   streaming label via `.maka-reasoning-shimmer` above. A second, faster sweep
+   on the turn's status line put two of them a few pixels apart at different
+   speeds, which read as two things competing rather than one turn working. */
 
 /* Shared short opacity entrance used by continuing and tool-settle cues. */
 @keyframes maka-stream-fade-in {

@@ -141,6 +141,7 @@ async function renderProbe(
     onContextCompactionError?: (sessionId: string, error: unknown) => void;
     pendingQuotes?: readonly StagedCompanionQuote[];
     onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
+    active?: boolean;
   } = {},
 ) {
   const container = installDom();
@@ -156,30 +157,35 @@ async function renderProbe(
   };
   const root = createRoot(container);
   mountedRoot = root;
-  const children = options.ownership
-    ? createElement(QuoteCompanionOwnershipProbe, {
-        onSend: options.onSend ?? (() => undefined),
-        onProjection: options.onProjection,
-        onQueue: options.onQueue,
-        onSteer: options.onSteer,
-        onStop: options.onStop,
-        onDeleteQueuedEntry: options.onDeleteQueuedEntry,
-        onSetPermissionMode: options.onSetPermissionMode,
-        onContextCompactionError: options.onContextCompactionError,
-        pendingQuotes: options.pendingQuotes,
-        onQuotesConsumed: options.onQuotesConsumed,
-        sourceSession: options.sourceSession,
-        modelChoices: options.modelChoices,
-      })
-    : createElement(QuoteCompanionProbe, {
-        sourceSession: options.sourceSession,
-        modelChoices: options.modelChoices,
-        onSetPermissionMode: options.onSetPermissionMode,
-        confirmBypass: options.confirmBypass,
-      });
+  const renderChildren = (active: boolean) =>
+    createElement(WorkbarServicesProvider, {
+      services,
+      children: options.ownership
+        ? createElement(QuoteCompanionOwnershipProbe, {
+            onSend: options.onSend ?? (() => undefined),
+            onProjection: options.onProjection,
+            onQueue: options.onQueue,
+            onSteer: options.onSteer,
+            onStop: options.onStop,
+            onDeleteQueuedEntry: options.onDeleteQueuedEntry,
+            onSetPermissionMode: options.onSetPermissionMode,
+            onContextCompactionError: options.onContextCompactionError,
+            pendingQuotes: options.pendingQuotes,
+            onQuotesConsumed: options.onQuotesConsumed,
+            sourceSession: options.sourceSession,
+            modelChoices: options.modelChoices,
+            active,
+          })
+        : createElement(QuoteCompanionProbe, {
+            sourceSession: options.sourceSession,
+            modelChoices: options.modelChoices,
+            onSetPermissionMode: options.onSetPermissionMode,
+            confirmBypass: options.confirmBypass,
+          }),
+    });
 
   await act(async () => {
-    root.render(createElement(WorkbarServicesProvider, { services, children }));
+    root.render(renderChildren(options.active ?? true));
     await Promise.resolve();
   });
   await waitUntil(
@@ -188,7 +194,17 @@ async function renderProbe(
       // produces a companion. Default readiness is just "the probe mounted".
       options.ready?.(container) ?? container.firstElementChild != null,
   );
-  return { container, root, services };
+  return {
+    container,
+    root,
+    services,
+    setActive: async (next: boolean) => {
+      await act(async () => {
+        root.render(renderChildren(next));
+        await Promise.resolve();
+      });
+    },
+  };
 }
 
 async function renderOwnershipProbe(
@@ -242,6 +258,7 @@ async function renderOwnershipProbe(
   );
   return {
     ...rendered,
+    setActive: rendered.setActive,
     send: (text: string) => send(text),
     queue: (text: string) => queue(text),
     steer: (text: string, attachmentItems?: WorkbarIngestInput[], onAdmitted?: () => void) =>
@@ -3101,6 +3118,56 @@ test('releases a send waiting for observation when the Side Conversation is disp
   mountedRoot = undefined;
 });
 
+test('releases the fork observation while the panel is hidden and re-seeds on return', async () => {
+  let subscribes = 0;
+  let unsubscribes = 0;
+  let settledReads = 0;
+  const rendered = await renderOwnershipProbe({
+    subscribeEvents: (_sessionId, _handler, onSeeded) => {
+      subscribes += 1;
+      onSeeded?.();
+      return () => {
+        unsubscribes += 1;
+      };
+    },
+    readSettledMessages: async () => {
+      settledReads += 1;
+      return { messages: [], settled: true };
+    },
+    send: async () => ({ ok: true as const, turnId: 'turn-1' }),
+  });
+
+  // Hiding before any fork exists releases nothing.
+  await rendered.setActive(false);
+  assert.equal(unsubscribes, 0);
+  await rendered.setActive(true);
+
+  await act(async () => {
+    assert.equal(await rendered.send('prepare side conversation'), true);
+    await Promise.resolve();
+  });
+  await awaitCompanion(rendered.container);
+  assert.equal(subscribes, 1);
+  assert.equal(unsubscribes, 0);
+
+  await rendered.setActive(false);
+  assert.equal(unsubscribes, 1);
+  // A second hide has nothing left to release.
+  await rendered.setActive(false);
+  assert.equal(unsubscribes, 1);
+  assert.equal(subscribes, 1);
+
+  const readsBeforeReturn = settledReads;
+  await rendered.setActive(true);
+  assert.equal(subscribes, 2);
+  // The re-seed reconciles the durable transcript, same as a recovered
+  // subscription.
+  assert.ok(settledReads > readsBeforeReturn);
+
+  await rendered.setActive(false);
+  assert.equal(unsubscribes, 2);
+});
+
 test('applies a permission mode picked before the first send once the fork is created', async () => {
   const permissionCalls: Array<{ sessionId: string; mode: PermissionMode }> = [];
   const probe = await renderOwnershipProbe({
@@ -3301,6 +3368,7 @@ function QuoteCompanionProbe(props: {
   const sourceSession = props.sourceSession ?? SOURCE_SESSION;
   const companion = useQuoteCompanion({
     panelId: 'retry-panel',
+    active: true,
     pendingQuotes: [],
     sourceSession,
     modelChoices: props.modelChoices ?? [choiceFor(sourceSession)],
@@ -3328,10 +3396,12 @@ function QuoteCompanionOwnershipProbe(props: {
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  active?: boolean;
 }) {
   const sourceSession = props.sourceSession ?? SOURCE_SESSION;
   const companion = useQuoteCompanion({
     panelId: 'ownership-panel',
+    active: props.active ?? true,
     pendingQuotes: props.pendingQuotes ?? [],
     sourceSession,
     modelChoices: props.modelChoices ?? [choiceFor(sourceSession)],

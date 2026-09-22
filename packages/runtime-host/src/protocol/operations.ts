@@ -23,7 +23,6 @@ import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { CONFIGURATION_OPERATION_SPECS } from './configuration.js';
-import { DEEP_RESEARCH_OPERATION_SPECS } from './deep-research.js';
 import { DAILY_REVIEW_OPERATION_SPECS } from './daily-review.js';
 import { CONTEXT_OPERATION_SPECS } from './context.js';
 import { EXECUTION_INSPECT_OPERATION_SPECS } from './execution-inspect.js';
@@ -67,6 +66,7 @@ import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
+import { RECALL_OPERATION_SPECS } from './recall.js';
 import { WORKHUB_COORDINATION_OPERATION_SPECS } from './workhub-coordination.js';
 
 export type {
@@ -156,7 +156,6 @@ export type {
 export * from './connection-effects.js';
 export * from './access-authority.js';
 export * from './configuration.js';
-export * from './deep-research.js';
 export * from './daily-review.js';
 export * from './context.js';
 export * from './agent-graph.js';
@@ -185,6 +184,7 @@ export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
 export * from './web-search.js';
+export * from './recall.js';
 export * from './workspace.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
@@ -199,7 +199,6 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   TURN_OPERATION_SPECS,
   CONTEXT_OPERATION_SPECS,
   CONNECTION_EFFECT_OPERATION_SPECS,
-  DEEP_RESEARCH_OPERATION_SPECS,
   DAILY_REVIEW_OPERATION_SPECS,
   EXECUTION_INSPECT_OPERATION_SPECS,
   EXTERNAL_SESSION_OPERATION_SPECS,
@@ -228,6 +227,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   CLIENT_CAPABILITY_OPERATION_SPECS,
   WEB_SEARCH_OPERATION_SPECS,
   NETWORK_PROXY_OPERATION_SPECS,
+  RECALL_OPERATION_SPECS,
   CONFIGURATION_OPERATION_SPECS,
   WORKHUB_COORDINATION_OPERATION_SPECS,
   PLUGIN_PLATFORM_OPERATION_SPECS,
@@ -268,7 +268,6 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'connection.request-headers.query',
   'connection.request-headers.replace',
   'connection.test.run',
-  'connection.usage.read',
   'context.compact',
   'context.diagnostics.query',
   'credential.vault.delete',
@@ -276,7 +275,6 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'credential.vault.set',
   'daily-review.mutate',
   'daily-review.query',
-  'deep-research.query',
   'execution.inspect.query',
   'external-session.catalog.query',
   'external-session.import',
@@ -316,6 +314,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'runtime.policy.mutate',
   'runtime.policy.network-proxy.update',
   'runtime.policy.query',
+  'recall.query',
   'runtime.resource.controller.acquire',
   'runtime.resource.controller.control',
   'runtime.resource.controller.release',

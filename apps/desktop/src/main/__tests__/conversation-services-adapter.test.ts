@@ -51,6 +51,5 @@ test('Desktop conversation adapter keeps snapshot reads and catalog access on th
   const services = createDesktopConversationServices(bridge);
 
   await services.sessions.readSnapshot('source');
-  assert.deepEqual(await services.sessions.list(), []);
   assert.deepEqual(calls, ['snapshot:source']);
 });

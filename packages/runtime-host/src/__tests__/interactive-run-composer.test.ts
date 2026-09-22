@@ -35,34 +35,13 @@ import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 import { WORKHUB_BROWSER_TOOL_NAMES } from './fixtures/workhub-capabilities.js';
 
-test('the interactive tool surface does not expose the retired ExploreAgent tool', () => {
+test('the interactive tool surface does not expose retired tools', () => {
   const composer = createFixtureComposer();
 
   assert.equal(
-    composer.tools.some(({ name }) => name === 'ExploreAgent'),
+    composer.tools.some(({ name }) => name === 'ExploreAgent' || name.startsWith('deep_research_')),
     false,
   );
-});
-
-test('Deep Research keeps standard inspection tools and its durable workspace tools', () => {
-  const tool = (name: string): MakaTool => ({
-    name,
-    description: name,
-    parameters: {},
-    impl: async () => name,
-  });
-  const composer = createFixtureComposer({
-    hostTools: [tool('WebSearch')],
-    deepResearch: { tools: [tool('deep_research_status')] },
-  });
-  const names = new Set(composer.tools.map(({ name }) => name));
-
-  for (const name of ['Read', 'Glob', 'Grep', 'WebSearch', 'deep_research_status']) {
-    assert.equal(names.has(name), true, `expected Deep Research tool ${name}`);
-  }
-  for (const name of ['Write', 'Edit', 'Bash', 'ExploreAgent']) {
-    assert.equal(names.has(name), false, `unexpected Deep Research tool ${name}`);
-  }
 });
 
 test('the composer resolves scoped Tool additions without rebuilding the backend', () => {

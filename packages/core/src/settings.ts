@@ -68,6 +68,30 @@ export {
   parseAllowedUserIdsFromText,
 } from './bot-chat-settings.js';
 
+export const USAGE_SCREEN_SEARCH_MAX_BYTES = 1024;
+const USAGE_SCREEN_UTF8 = new TextEncoder();
+
+/** Shared domain for the Usage screen's free-text query at every boundary. */
+export function isUsageScreenSearch(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    USAGE_SCREEN_UTF8.encode(value).byteLength <= USAGE_SCREEN_SEARCH_MAX_BYTES
+  );
+}
+
+/**
+ * Persisted Usage timestamps may retain sub-millisecond precision. Keep them
+ * JSON/SQLite round-trip safe so a stored value can also name a continuation.
+ */
+export function isUsageTimestamp(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= Number.MAX_SAFE_INTEGER
+  );
+}
+
 export const SETTINGS_SECTIONS = [
   'general',
   'appearance',
@@ -486,7 +510,7 @@ export interface PrivacySettings {
 }
 
 /**
- * `explore` is excluded — it's reserved for Deep Research sessions and
+ * `explore` is excluded — it's reserved for read-only sessions and
  * Bot-incoming guards and is never a mode the user picks, in the composer
  * dropdown or here. Derived from the canonical PERMISSION_MODES (not a
  * hand-copied literal) so adding a future mode updates every consumer —

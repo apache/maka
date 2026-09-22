@@ -648,7 +648,7 @@ export const RunningStatusDuringToolRun: Story = {
     const activity = process.querySelector('.maka-processing-summary .maka-turn-processing')!;
     await expect(activity).toHaveTextContent('正在琢磨…');
     await expect(canvasElement.querySelectorAll('.maka-turn-processing')).toHaveLength(1);
-    await expect(canvasElement.querySelector('.maka-turn-footer-meta .maka-turn-processing')).toBeNull();
+    await expect(canvasElement.querySelector('.maka-turn-footer .maka-turn-processing')).toBeNull();
     // Live work is not a disclosure action. Even pointer activation cannot
     // hide it; the tool keeps ownership of its visible spinner.
     const summary = process.querySelector('summary')!;
@@ -1653,7 +1653,7 @@ function GoalContextStory(props: { goal: NonNullable<ChatViewProps['goalIndicato
 }
 
 // Real path: open a derived revision that is running an autonomous goal with
-// local memory and Deep Research enabled. Session metadata stays in one context
+// local memory and a legacy research label. Session metadata stays in one context
 // layer above the transcript instead of splitting across header pills and
 // standalone branch/revision rows. The long session name is the point: it is
 // what forces that layer to collapse rather than wrap.
@@ -3608,7 +3608,6 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
   },
 };
 
-
 const narrowWorkbarShare = fn();
 
 export const NarrowWorkbarClearsTitlebarReserve: Story = {
@@ -3745,8 +3744,8 @@ const processDisclosureMessages: StoredMessage[] = [
   { type: 'assistant', id: 'process-check', turnId: 'process-turn', ts: NOW - 184_000, text: '我先检查登录状态的存储和恢复逻辑。', thinking: { text: '检查初始化时机与会话恢复顺序。' }, modelId: 'claude-sonnet-4-5' },
   { type: 'tool_call', id: 'process-edit', turnId: 'process-turn', ts: NOW - 160_000, toolName: 'Edit', activityKind: 'edit', stepId: 'process-fix', args: { path: 'src/auth-store.ts', old_string: 'const session = null;', new_string: 'const session = restoreSession();' } },
   { type: 'tool_result', id: 'process-edit-result', turnId: 'process-turn', ts: NOW - 150_000, toolUseId: 'process-edit', isError: false, content: { kind: 'text', text: 'Updated src/auth-store.ts' } },
-  { type: 'assistant', id: 'process-fix', turnId: 'process-turn', ts: NOW - 149_000, text: '恢复时机有问题，接下来补上初始化。', modelId: 'claude-sonnet-4-5' },
-  { type: 'tool_call', id: 'process-test', turnId: 'process-turn', ts: NOW - 90_000, toolName: 'Bash', activityKind: 'command', stepId: 'process-verify', args: { command: 'npm test -- auth-store.test.ts' } },
+  { type: 'assistant', id: 'process-fix', turnId: 'process-turn', ts: NOW - 149_000, text: '恢复时机有问题，接下来补上初始化。\n\n```text\nconst session = restoreSession(readPersistedSessionSnapshotFromStorageWithMigratedLegacyKeyFormat(storage));\n```', modelId: 'claude-sonnet-4-5' },
+  { type: 'tool_call', id: 'process-test', turnId: 'process-turn', ts: NOW - 90_000, toolName: 'Bash', activityKind: 'command', stepId: 'process-verify', args: { command: 'npm test -- auth-store.test.ts --coverage --reporter=verbose && npm run lint -- src/auth-store.ts src/session/*.test.ts --max-warnings=0' } },
   { type: 'tool_result', id: 'process-test-result', turnId: 'process-turn', ts: NOW - 5_000, toolUseId: 'process-test', isError: false, content: { kind: 'text', text: 'Tests passed: 4' } },
   { type: 'assistant', id: 'process-verify', turnId: 'process-turn', ts: NOW - 4_000, text: '初始化已补齐，现在运行登录状态的回归测试。', modelId: 'claude-sonnet-4-5' },
   { type: 'assistant', id: 'process-answer', turnId: 'process-turn', ts: NOW, text: '已修复登录状态恢复。\n\n刷新页面后会恢复已有会话；相关测试通过。', modelId: 'claude-sonnet-4-5' },
@@ -3928,6 +3927,16 @@ export const CompletedProcessExpanded: Story = {
     await waitFor(() => expect(process.getBoundingClientRect().height).toBeGreaterThanOrEqual(summary.getBoundingClientRect().height + process.querySelector<HTMLElement>('.maka-processing-body')!.clientHeight - 1));
     const processBody = process.querySelector<HTMLElement>('.maka-processing-body')!;
     await expect(getComputedStyle(processBody).overflowY).toBe('clip');
+    // One unbreakable child must not widen the body's box past the details'
+    // own: the disclosure grid's column track is pinned, so the code line
+    // scrolls inside its block instead of pushing every sibling to a
+    // clipped off-canvas width.
+    const processBox = process.getBoundingClientRect();
+    await expect(processBody.getBoundingClientRect().width).toBeLessThanOrEqual(processBox.width + 1);
+    for (const child of processBody.children) {
+      await expect(child.getBoundingClientRect().width, child.className.toString())
+        .toBeLessThanOrEqual(processBox.width + 1);
+    }
     await expect(summary).toHaveFocus();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');

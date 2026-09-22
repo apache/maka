@@ -96,7 +96,6 @@ import {
   type PlanStore,
 } from '@maka/core/plan';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
-import { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from '@maka/core/deep-research';
 import {
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
@@ -1204,12 +1203,7 @@ export class SessionManager {
         current.header,
         input.configuration.collaborationMode,
       );
-      const leavingDeepResearch =
-        isDeepResearchSession(current.header.labels) &&
-        input.configuration.permissionMode !== 'explore';
-      const labels = leavingDeepResearch
-        ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-        : current.header.labels;
+      const labels = current.header.labels;
       return () =>
         store.updateSessionConfiguration(sessionId, {
           expectedVersion: input.expectedRevision,
@@ -1693,18 +1687,14 @@ export class SessionManager {
   ): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);
-    const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
     if (
       previous.permissionMode === mode &&
-      executionBoundaryMatchesPermissionMode(boundary, mode) &&
-      !leavingDeepResearch
+      executionBoundaryMatchesPermissionMode(boundary, mode)
     ) {
       return headerToSummary(previous);
     }
 
-    const labels = leavingDeepResearch
-      ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-      : previous.labels;
+    const labels = previous.labels;
     const kind = mode === 'bypass' ? 'bypass' : 'managed';
     await this.commitExecutionBoundaryTransition(sessionId, boundary, mode, async () => {
       const current = await this.deps.store.readHeader(sessionId);
@@ -2643,7 +2633,9 @@ export class SessionManager {
     }
     const resolvedPreset = await this.deps.subagentCatalog.resolve(input.subagentId);
     if (resolvedPreset.profile !== input.agentProfile) {
-      throw new Error(`Subagent preset "${input.subagentId}" profile changed during spawn`);
+      throw new Error(
+        `Subagent preset "${input.subagentId}" profile changed during spawn. Retry the same agent_spawn call.`,
+      );
     }
     return { ...input, resolvedPreset };
   }

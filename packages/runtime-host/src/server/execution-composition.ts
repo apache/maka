@@ -29,14 +29,13 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import { readLogicalRuntimeExecutionForRun } from '@maka/core/runtime-logical-execution';
-import { foldForMatch } from '@maka/core/thread-search';
+import { foldForMatch } from '@maka/core/transcript-search';
 import type { PermissionMode } from '@maka/core/permission';
 import {
   runtimeInvocationOutcome,
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
 import {
-  isDeepResearchSession,
   type SessionHeader,
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
@@ -54,9 +53,10 @@ import {
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
-import { buildRecallTools } from '@maka/runtime/recall-tools';
+import { buildRecallTools, type RecallToolDeps } from '@maka/runtime/recall-tools';
 import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
 import { createRecallMaterialFetch } from './recall-material-fetch.js';
+import { HostRecallCoordinator } from './recall-coordinator.js';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
@@ -149,7 +149,6 @@ import { HostChangeFeed } from './host-change-feed.js';
 import { HostConfigurationCoordinator } from './configuration-coordinator.js';
 import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
-import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
 import { prepareHostAiSdkBackend } from './execution-model-composition.js';
 import {
@@ -401,7 +400,6 @@ export async function createExecutionRuntimeHostComposition(
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
     const openedScheduledTaskStore = storage.scheduledTasks;
     const openedPlanStore = storage.plan;
-    const openedDeepResearchStore = storage.deepResearch;
     const openedDailyReviewStore = storage.dailyReview;
     const openedGoalStore = storage.goal;
     const memoryStore = storage.memoryBundle;
@@ -691,7 +689,10 @@ export async function createExecutionRuntimeHostComposition(
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
       fetch: (input) => webFetchService.fetch(input),
     });
-    const recallTools = buildRecallTools({
+    // The recall surface is built once and shared: the model's tools and the
+    // Host's `recall.query` operation answer from the same dependency graph, so
+    // a UI search and a model recall cannot diverge in what they can see.
+    const recallDeps: RecallToolDeps = {
       listSessions: () => requireSessionManager(manager).listSessions(),
       readMessages: async (sessionId, abortSignal) => {
         if (abortSignal?.aborted) return null;
@@ -744,7 +745,9 @@ export async function createExecutionRuntimeHostComposition(
         incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
           .incognitoActive,
       }),
-    });
+    };
+    const recallTools = buildRecallTools(recallDeps);
+    const recall = new HostRecallCoordinator(recallDeps);
     const childHostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
@@ -866,7 +869,6 @@ export async function createExecutionRuntimeHostComposition(
     let scheduledTasks: HostScheduledTaskCoordinator | undefined;
     let scheduledTaskTool: MakaTool | undefined;
     let goal: HostGoalCoordinator | undefined;
-    let deepResearch: HostDeepResearchCoordinator | undefined;
     let dailyReview: HostDailyReviewCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readLatestRootTurnLineage: (identity) =>
@@ -946,14 +948,6 @@ export async function createExecutionRuntimeHostComposition(
     unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
       continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'usage'),
     );
-    deepResearch = new HostDeepResearchCoordinator({
-      store: openedDeepResearchStore,
-      artifacts: openedArtifactStore,
-      sessions: stores.sessionStore,
-      sessionAdmission,
-      onProjectionChanged: (sessionId) =>
-        continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'deep_research'),
-    });
     dailyReview = new HostDailyReviewCoordinator({
       store: openedDailyReviewStore,
       usage: openedUsageStores,
@@ -1068,9 +1062,6 @@ export async function createExecutionRuntimeHostComposition(
           resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
         ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
         planStore,
-        deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
-          backendContext.sessionId,
-        ),
         goalTools: requireGoal(goal).tools,
         builtinTools,
         hostTools,
@@ -1259,13 +1250,6 @@ export async function createExecutionRuntimeHostComposition(
             mode: header.collaborationMode ?? 'agent',
             permissionMode: header.permissionMode,
           },
-          ...(isDeepResearchSession(header.labels)
-            ? {
-                deepResearch: {
-                  tools: requireDeepResearch(deepResearch).toolsForSession(sessionId),
-                },
-              }
-            : {}),
         }).tools.map((tool) => tool.name);
       } finally {
         capabilitySnapshot?.release();
@@ -2541,7 +2525,6 @@ export async function createExecutionRuntimeHostComposition(
         // writer: publishing a per-Session `plan` invalidation for state that is
         // being removed would only wake subscribers to read nothing.
         await openedPlanStore.purgeSessionState(sessionId);
-        await openedDeepResearchStore.purgeSessionState(sessionId);
       },
       purgeAgentGraphState: async (sessionId) => {
         for (const graphId of await requireGraphCoordinator(graphCoordinator).listGraphIds(
@@ -2672,6 +2655,7 @@ export async function createExecutionRuntimeHostComposition(
           oauth.handlers,
           externalAgentSetup.handlers,
           webSearch.handlers,
+          recall.handlers,
           networkProxy.handlers,
           configuration.handlers,
         ],
@@ -2750,11 +2734,6 @@ export async function createExecutionRuntimeHostComposition(
         },
         drain: [() => clientCapabilities.beginDrain()],
         close: [() => clientCapabilities.close()],
-      }),
-      createRuntimeHostDomainModule({
-        id: 'deep-research',
-        handlers: [requireDeepResearch(deepResearch).handlers],
-        close: [() => deepResearch?.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'daily-review',
@@ -3217,13 +3196,6 @@ function requireScheduledTasks(
   coordinator: HostScheduledTaskCoordinator | undefined,
 ): HostScheduledTaskCoordinator {
   if (!coordinator) throw new Error('Runtime Host ScheduledTask coordinator is not composed');
-  return coordinator;
-}
-
-function requireDeepResearch(
-  coordinator: HostDeepResearchCoordinator | undefined,
-): HostDeepResearchCoordinator {
-  if (!coordinator) throw new Error('Runtime Host Deep Research coordinator is not composed');
   return coordinator;
 }
 

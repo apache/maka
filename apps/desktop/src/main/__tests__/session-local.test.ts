@@ -30,9 +30,10 @@ import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
-import type { TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
+import type { SessionCreateInput, TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
 import { DesktopSessionLocalStore, type LocalMessageIntent } from '../session-local-store.js';
 import {
+  createSessionLocalChangedEmitter,
   DesktopSessionLocalService,
   desktopSessionLocalPartition,
   registerDesktopSessionLocalIpc,
@@ -245,6 +246,46 @@ test('a catalog read begun before local creation cannot erase that Session or it
   await nextTurn();
   assert.equal(store.sessions('authority').length, 1);
   assert.equal(store.list('authority').length, 1);
+});
+
+test('a locally-owned Session change signals a list refresh, not a targeted row read', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  const sent: { channel: string; payload: unknown }[] = [];
+  const emit = createSessionLocalChangedEmitter({
+    send: (channel, _scope, payload) => sent.push({ channel, payload }),
+    locallyOwned: (scope, sessionId) => service.locallyOwned(scope, sessionId),
+  });
+  // The store still holds the creation intent, so no Host row exists for a
+  // targeted `sessions.get` to read.
+  store.saveSession(
+    'authority',
+    { id: 'session-1', name: 'task' } as DesktopSessionSummaryInput,
+    { sessionId: 'session-1' } as SessionCreateInput,
+  );
+  emit(target.scope, 'session-1');
+  assert.deepEqual(
+    sent.map(({ channel, payload }) => [channel, (payload as { sessionId?: string }).sessionId]),
+    [
+      ['session-local:changed', 'session-1'],
+      ['sessions:changed', undefined],
+    ],
+  );
+  // Host admission clears the creation marker, so the targeted path resumes.
+  store.saveSession('authority', { id: 'session-1', name: 'task' } as DesktopSessionSummaryInput);
+  emit(target.scope, 'session-1');
+  const last = sent[sent.length - 1]?.payload as { sessionId?: string } | undefined;
+  assert.equal(last?.sessionId, 'session-1');
 });
 
 test('an authorization failure quarantines the still-connected authority from cache and admission', async (t) => {

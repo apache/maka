@@ -74,7 +74,6 @@ import type {
   ReviseBeforeTurnInput,
 } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
-import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
 import type { SessionChangedEvent, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -112,7 +111,6 @@ import type {
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import type { SessionTodoItem } from '@maka/core/session-todo';
-import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
@@ -266,10 +264,58 @@ import type { OpenSkillLocationOptions, OpenSkillLocationResult, SkillLocationsS
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
 import type {
+  HostHandoffPresentation,
+  HostHandoffView,
   RemoteRuntimeHostProfile,
   RuntimeHostProfile,
   RuntimeHostProfileAccess,
 } from '@maka/runtime-host/client';
+export interface DesktopHostHandoffPayload {
+  readonly view: HostHandoffView;
+  readonly presentation: HostHandoffPresentation;
+}
+/**
+ * A recall query as the Search modal issues it, and the envelope it accepts.
+ *
+ * Defined here rather than imported from the preload implementation so the
+ * bridge contract does not depend on that module: the renderer architecture
+ * check prices every preload file this contract reaches, and a new entry in
+ * that debt ledger is forbidden. The implementation imports these instead.
+ */
+export interface RecallSearchRequest {
+  readonly terms: readonly string[];
+  readonly limit?: number;
+  readonly sessionId?: string;
+  readonly since?: number;
+  readonly until?: number;
+}
+
+export interface RecallSearchPassage {
+  readonly sessionId: string;
+  readonly sessionTitle: string;
+  readonly turnId?: string;
+  readonly anchorMessageId: string;
+  /** The anchor's index in its Session transcript; what navigation scrolls to. */
+  readonly sequence: number;
+  readonly messages: readonly {
+    readonly messageId: string;
+    readonly role: 'user' | 'assistant' | 'tool';
+    readonly matchKind: string;
+    readonly text: string;
+    readonly timestamp: number;
+    readonly isAnchor: boolean;
+  }[];
+  readonly matchedTerms: readonly string[];
+  readonly score: number;
+  readonly lastMessageAt?: number;
+}
+
+export interface RecallSearchResult {
+  readonly passages: readonly RecallSearchPassage[];
+  readonly gaps: string;
+  readonly searchedEverySession: boolean;
+}
+
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
@@ -415,35 +461,6 @@ export type DesktopOAuthAuthorizationStartResult =
 export type DesktopOAuthAuthorizationResult =
   | { readonly ok: true; readonly connection: DesktopOAuthConnectionIdentity }
   | Exclude<SubscriptionActionResult, { readonly ok: true }>;
-
-/**
- * Browser-assisted Command Code sign-in. Desktop-local, not Host-scoped: the
- * Studio page posts the minted key to a loopback port beside the browser, and
- * the key then travels through the ordinary `connections` path like a pasted
- * one. Mirrored by `features/connection-settings/ports.ts` on the renderer side.
- */
-export type DesktopCommandCodeLoginFailureReason =
-  | 'denied'
-  | 'timeout'
-  | 'cancelled'
-  | 'superseded'
-  | 'port_unavailable'
-  | 'browser_unavailable';
-export interface DesktopCommandCodeLoginStartInput {
-  readonly baseUrl?: string;
-}
-export type DesktopCommandCodeLoginStartResult =
-  | { readonly ok: true; readonly attemptId: string; readonly authUrl: string }
-  | {
-      readonly ok: false;
-      readonly reason: 'port_unavailable' | 'browser_unavailable' | 'superseded';
-    };
-export type DesktopCommandCodeLoginResult =
-  | {
-      readonly ok: true;
-      readonly credentials: { readonly apiKey: string; readonly userName: string; readonly keyName: string };
-    }
-  | { readonly ok: false; readonly reason: DesktopCommandCodeLoginFailureReason };
 
 export type DesktopNewTaskHostRef = DesktopRuntimeHostRef;
 
@@ -896,6 +913,14 @@ export interface MakaBridge {
     ): () => void;
   };
 
+  runtimeHostHandoff: {
+    current(): Promise<DesktopHostHandoffPayload | null>;
+    decide(revision: string, action: string): Promise<void>;
+    subscribe(
+      handler: (payload: DesktopHostHandoffPayload | null) => void,
+    ): () => void;
+  };
+
   localRuntimeHostRemoteAccess: {
     getSnapshot(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
     enable(input: {
@@ -989,12 +1014,17 @@ export interface MakaBridge {
   newTasks: {
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
-    addProject(host: DesktopNewTaskHostRef): Promise<
+    addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
       { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
     >;
     relinkProject(host: DesktopNewTaskHostRef, projectId: string): Promise<
       { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
     >;
+    renameProject(
+      host: DesktopNewTaskHostRef,
+      projectId: string,
+      name: string,
+    ): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }>;
     getConnections(host: DesktopNewTaskHostRef): Promise<DesktopConnectionSnapshot>;
     listInvocableSkills(
       target: DesktopNewTaskTarget,
@@ -1089,10 +1119,6 @@ export interface MakaBridge {
     read(sessionId: string): Promise<SessionTodoItem[]>;
     subscribeChanges(handler: (event: { sessionId: string; at: number }) => void): () => void;
   };
-  deepResearch: {
-    get(sessionId: string): Promise<DeepResearchClientProgress | undefined>;
-    subscribeChanges(handler: (event: DeepResearchChangedEvent) => void): () => void;
-  };
   graphs: {
     listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
     listCurrentEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
@@ -1122,6 +1148,7 @@ export interface MakaBridge {
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
+    get(sessionId: string): Promise<DesktopSessionSummary | null>;
     listWithCoverage(): Promise<{
       sessions: DesktopSessionSummary[];
       completeHostIds: string[];
@@ -1315,6 +1342,15 @@ export interface MakaBridge {
     unarchive(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
     setFlagged(sessionId: string, isFlagged: boolean, options?: { revisionFamily?: boolean }): Promise<void>;
     rename(sessionId: string, name: string, options?: { revisionFamily?: boolean }): Promise<void>;
+    /**
+     * Re-file an existing Session into another Project, or out of every Project
+     * when `projectId` is `null`. The Host resolves a Project to its preferred
+     * directory, so the Session's working directory follows the Project; a
+     * `null` target keeps the current directory and drops the association.
+     * Rejects with `operation_conflict` while a Turn is running and for an
+     * archived Session.
+     */
+    moveToProject(sessionId: string, projectId: string | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * Enter or leave Plan — a temporary collaboration excursion Runtime ends
@@ -1421,7 +1457,13 @@ export interface MakaBridge {
     subscribeChanges(handler: () => void, sessionId?: string, host?: DesktopRuntimeHostRef): () => void;
     getLocalSnapshot(): Promise<DesktopProjectSnapshot>;
     subscribeLocalChanges(handler: () => void): () => void;
-    add(host?: DesktopRuntimeHostRef): Promise<
+    /**
+     * Register a directory the user picks as a project, optionally naming it in
+     * the same step. The folder picker still decides the directory; `name` is
+     * what the New project dialog collected, applied before the call returns so
+     * the caller never sees the folder-derived placeholder.
+     */
+    add(host?: DesktopRuntimeHostRef, options?: { readonly name?: string }): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;
     getDirectoryRoots(host: DesktopRuntimeHostRef): Promise<readonly DesktopProjectDirectoryRoot[]>;
@@ -1515,8 +1557,6 @@ export interface MakaBridge {
     test(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
     fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
     hasSecret(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean>;
-    /** Read-only account usage for a connection, Host-fetched. */
-    usage(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/runtime-host/protocol').ConnectionUsageReadResult>;
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
       connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity,
@@ -1653,14 +1693,11 @@ export interface MakaBridge {
     readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   };
   search: {
-    thread(
-      request: SearchRequest,
+    recall(
+      request: RecallSearchRequest,
       requestId?: string,
-    ): Promise<
-      | SearchResult[]
-      | { ok: false; reason: SearchErrorReason; message: string }
-    >;
-    cancelThread(requestId: string): Promise<void>;
+    ): Promise<RecallSearchResult | { ok: false; reason: string; message: string }>;
+    cancelRecall(requestId: string): Promise<void>;
   };
   openAiCodex: {
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;
@@ -1710,12 +1747,6 @@ export interface MakaBridge {
     getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
     logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
-  };
-  /** Desktop-local browser sign-in for Command Code; see `DesktopCommandCodeLoginResult`. */
-  commandCodeLogin: {
-    start(input: DesktopCommandCodeLoginStartInput): Promise<DesktopCommandCodeLoginStartResult>;
-    complete(attemptId: string): Promise<DesktopCommandCodeLoginResult>;
-    cancel(attemptId: string): Promise<void>;
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
