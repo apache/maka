@@ -76,7 +76,7 @@ export function useNewTaskChoice<T>(
       return next;
     });
     consume(handoff.token);
-  }, [consume, handoff, options.acceptProjectHandoff, targetKey]);
+  }, [consume, handoff, options.acceptProjectHandoff, options.projectHandoffEnabled, options.projectHandoffIdentity, targetKey]);
   const clearChoice = useCallback(() => {
     setChoices((current) => {
       if (!current.has(targetKey) && !current.has(UNRESOLVED_NEW_TASK_DRAFT_KEY)) return current;

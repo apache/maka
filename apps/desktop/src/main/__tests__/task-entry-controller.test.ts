@@ -443,6 +443,56 @@ describe('useTaskEntryController', () => {
     assert.equal(reads, 2);
   });
 
+  it('closes a successful registration after catalog recovery moves the source target', async () => {
+    const { root } = installReactRenderer();
+    const remote = readyRemoteHost('remote-generation');
+    let snapshot: TaskEntryCatalog = { defaultProfileId: 'remote', hosts: [remote] };
+    const renamed: string[] = [];
+    const handoffs: unknown[] = [];
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => snapshot,
+      renameProject: async (_host, _id, name) => { renamed.push(name); },
+    } });
+    await act(async () => renderController(root, services, [], (handoff) => handoffs.push(handoff)));
+    await act(async () => controller().commands.addProject('Named project'));
+    snapshot = { defaultProfileId: 'remote', hosts: [{ ...remote, projects: [project('project-c')], selectedProjectId: 'project-c' }] };
+    await act(async () => controller().commands.refresh());
+    assert.equal(controller().selectors.target?.projectId, 'project-c');
+    snapshot = { defaultProfileId: 'remote', hosts: [{ ...remote, projects: [project('project-c'), project('project-b')], selectedProjectId: 'project-c' }] };
+    await act(async () => controller().host.acceptRegisteredProject(project('project-b'), { profileId: 'remote', hostId: 'remote-generation' }));
+    assert.equal(controller().host.directoryHost, undefined);
+    assert.deepEqual(renamed, ['Named project']);
+    assert.equal(controller().selectors.target?.projectId, 'project-c');
+    assert.equal(controller().selectors.projectScopes.some((scope) => scope.project.id === 'project-b'), true);
+    assert.deepEqual(handoffs, []);
+  });
+
+  it('does not reclaim the profile when navigation happens during registration rename', async () => {
+    const { root } = installReactRenderer();
+    const renamed = deferred<void>();
+    const remote = readyRemoteHost('remote-generation');
+    const local = readyHost();
+    let snapshot: TaskEntryCatalog = { defaultProfileId: 'remote', hosts: [remote, local] };
+    const handoffs: unknown[] = [];
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => snapshot,
+      renameProject: async () => renamed.promise,
+    } });
+    await act(async () => renderController(root, services, [], (handoff) => handoffs.push(handoff)));
+    await act(async () => controller().commands.addProject('Named project'));
+    let registration!: Promise<void>;
+    await act(async () => { registration = controller().host.acceptRegisteredProject(project('project-b'), { profileId: 'remote', hostId: 'remote-generation' }); });
+    assert.equal(controller().host.directoryHost, undefined);
+    await act(async () => { controller().commands.selectLocalProject('project-a'); });
+    snapshot = { defaultProfileId: 'remote', hosts: [{ ...remote, projects: [project('project-a'), project('project-b')] }, local] };
+    await act(async () => { renamed.resolve(); await registration; });
+    assert.equal(controller().selectors.target?.profileId, 'local');
+    assert.equal(controller().selectors.target?.projectId, 'project-a');
+    assert.deepEqual(handoffs, []);
+  });
+
   it('closes a remote directory handoff when the Host generation changes', async () => {
     const { root } = installReactRenderer();
     let reads = 0;

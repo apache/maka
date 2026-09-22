@@ -18,7 +18,8 @@
  */
 
 const NEW_TASK_RELOAD_INTENT_KEY = 'maka-new-task-reload-intent-v1';
-export const UNRESOLVED_NEW_TASK_DRAFT_KEY = 'new-task:unresolved';
+import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './application/contracts/new-task-choice.js';
+export { UNRESOLVED_NEW_TASK_DRAFT_KEY };
 
 type SessionStorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 

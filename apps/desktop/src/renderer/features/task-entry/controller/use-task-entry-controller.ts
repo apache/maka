@@ -359,12 +359,12 @@ export function useTaskEntryController(
       if (sourceMatchesHost && !sameTaskEntryTarget(selectedTargetRef.current, sourceTarget)) return;
       setSelectedProfileId(host.profile.id);
       setProjectSelections((current) =>
-        new Map(current).set(host.profile.id, result.project.id),
+        new Map(current).set(host.profile.id, refreshedProject.id),
       );
       if (sourceMatchesHost && sourceTarget) {
         reportProjectAdded?.({
           fromKey: taskEntryDraftKey(sourceTarget),
-          toKey: taskEntryDraftKey({ ...sourceTarget, projectId: result.project.id }),
+          toKey: taskEntryDraftKey({ ...sourceTarget, projectId: refreshedProject.id }),
         });
       }
     } finally {
@@ -411,11 +411,10 @@ export function useTaskEntryController(
     if (
       !host ||
       host.profileId !== registeredHost.profileId ||
-      host.hostId !== registeredHost.hostId ||
-      (host.sourceTarget !== undefined && !sameTaskEntryTarget(selectedTargetRef.current, host.sourceTarget))
+      host.hostId !== registeredHost.hostId
     ) return;
+    const registrationTarget = host.sourceTarget ?? selectedTargetRef.current;
     setDirectoryHost(undefined);
-    setSelectedProfileId(host.profileId);
     // Register names the project after the folder — the remote directory browser
     // has no name field of its own — so the name typed before the folder was
     // picked is applied here. A failed rename must not lose the project that was
@@ -425,19 +424,19 @@ export function useTaskEntryController(
         .renameProject(registeredHost, project.id, host.projectName)
         .catch(() => undefined);
     }
-    if (host.sourceTarget && !sameTaskEntryTarget(selectedTargetRef.current, host.sourceTarget)) return;
     const refreshed = await refreshAfterProjectMutation(host.profileId);
     const refreshedHost = refreshed?.hosts.find((candidate) =>
       isReadyTaskEntryHost(candidate) && candidate.profile.id === host.profileId && candidate.hostId === host.hostId);
     const refreshedProject = refreshedHost && isReadyTaskEntryHost(refreshedHost)
       ? findProjectByIdentity(refreshedHost.projects, project.id) : undefined;
     if (!refreshedProject?.available || refreshedProject.archivedAt !== undefined) return;
-    if (host.sourceTarget && !sameTaskEntryTarget(selectedTargetRef.current, host.sourceTarget)) return;
-    setProjectSelections((current) => new Map(current).set(host.profileId, project.id));
+    if (!sameTaskEntryTarget(selectedTargetRef.current, registrationTarget)) return;
+    setSelectedProfileId(host.profileId);
+    setProjectSelections((current) => new Map(current).set(host.profileId, refreshedProject.id));
     if (host.sourceTarget) {
       reportProjectAdded?.({
         fromKey: taskEntryDraftKey(host.sourceTarget),
-        toKey: taskEntryDraftKey({ ...host.sourceTarget, projectId: project.id }),
+        toKey: taskEntryDraftKey({ ...host.sourceTarget, projectId: refreshedProject.id }),
       });
     }
   }, [directoryHost, refreshAfterProjectMutation, reportProjectAdded, service]);

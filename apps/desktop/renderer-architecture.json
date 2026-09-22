@@ -1804,7 +1804,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "./application/contracts/new-task-choice.js": 1
+        }
       },
       "src/renderer/onboarding-hero-copy.ts": {
         "bridgePaths": {},
