@@ -23,14 +23,15 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import { QUOTE_COMMENT_MAX_LENGTH } from '@maka/core/events';
 import { LocaleProvider } from '@maka/ui';
 import { NEW_TASK_PENDING_KEY } from '../../renderer/pending-items.js';
 import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 import {
   useComposerAttachments,
+  useComposerQuotes,
   type ComposerAttachmentService,
 } from '../../renderer/features/conversation/index.js';
-import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer-quotes.js';
 import {
   composerModelSupportsVision,
   type NewChatModel,
@@ -193,7 +194,7 @@ function modelChoice(model: string, supportsVision: boolean): ChatModelChoice {
 }
 
 test('a Session keeps its own staged quotes, and the new-task bucket keeps its own', async () => {
-  const probe = await mountProbe(useAppShellComposerQuotes);
+  const probe = await mountProbe(useComposerQuotes);
 
   await probe.render(NEW_TASK_PENDING_KEY);
   await act(() => probe.latest().addQuote({ text: 'quoted for a new task' }));
@@ -228,6 +229,31 @@ test('a Session keeps its own staged quotes, and the new-task bucket keeps its o
     probe.latest().pendingQuotes.map((quote) => quote.text),
     ['quoted for a new task'],
   );
+});
+
+test('a staged quote carries its note, and editing the note leaves the quote in place', async () => {
+  const probe = await mountProbe(useComposerQuotes);
+  await probe.render('session-1');
+  await act(() => probe.latest().addQuote({ text: 'first excerpt' }));
+  await act(() => probe.latest().addQuote({ text: 'second excerpt', comment: '  why this one  ' }));
+  assert.deepEqual(
+    probe.latest().pendingQuotes.map((quote) => quote.comment),
+    [undefined, 'why this one'],
+  );
+
+  // The note is why the excerpt is staged, so emptying it must not reorder or
+  // drop the excerpt itself.
+  await act(() => probe.latest().updateQuoteComment(1, '   '));
+  assert.equal(probe.latest().pendingQuotes[1]?.comment, undefined);
+  assert.deepEqual(
+    probe.latest().pendingQuotes.map((quote) => quote.text),
+    ['first excerpt', 'second excerpt'],
+  );
+
+  await act(() =>
+    probe.latest().updateQuoteComment(0, 'y'.repeat(QUOTE_COMMENT_MAX_LENGTH + 5)),
+  );
+  assert.equal(probe.latest().pendingQuotes[0]?.comment?.length, QUOTE_COMMENT_MAX_LENGTH);
 });
 
 test('a completing send clears the attachments it submitted', async () => {

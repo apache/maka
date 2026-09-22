@@ -20,6 +20,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { QUOTE_COMMENT_MAX_LENGTH } from '@maka/core/events';
+
 import {
   normalizeBranchFromTurnInput,
   normalizeClientCapabilityResponse,
@@ -187,6 +189,7 @@ describe('permission response IPC boundary', () => {
           {
             text: 'the excerpt',
             label: '  Assistant  ',
+            comment: '  why this matters  ',
             sourceTurnId: 'turn-9',
             sourceSessionId: 'source-session',
             sourceSessionName: 'Research',
@@ -226,15 +229,18 @@ describe('permission response IPC boundary', () => {
           },
         ],
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
-        quotes: [{
-          text: 'the excerpt',
-          label: 'Assistant',
-          sourceTurnId: 'turn-9',
-          sourceSessionId: 'source-session',
-          sourceSessionName: 'Research',
-          sourceCapturedAt: 123,
-          sourceTruncated: false,
-        }],
+        quotes: [
+          {
+            text: 'the excerpt',
+            label: 'Assistant',
+            comment: 'why this matters',
+            sourceTurnId: 'turn-9',
+            sourceSessionId: 'source-session',
+            sourceSessionName: 'Research',
+            sourceCapturedAt: 123,
+            sourceTruncated: false,
+          },
+        ],
         workspaceFileReferences: [
           {
             value: '@packages/ui/src/chat turn.tsx',
@@ -284,6 +290,12 @@ describe('permission response IPC boundary', () => {
       { type: 'send', text: 'hello', quotes: [{ text: '' }] },
       { type: 'send', text: 'hello', quotes: [{ text: 'x', sourceTurnId: 1 }] },
       { type: 'send', text: 'hello', quotes: [{ text: 'x', sourceSessionId: 'source-session' }] },
+      { type: 'send', text: 'hello', quotes: [{ text: 'x', comment: 7 }] },
+      {
+        type: 'send',
+        text: 'hello',
+        quotes: [{ text: 'x', comment: 'y'.repeat(QUOTE_COMMENT_MAX_LENGTH + 1) }],
+      },
       { type: 'send', text: 'hello', workspaceFileReferences: {} },
       {
         type: 'send',

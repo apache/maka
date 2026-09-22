@@ -101,7 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 176 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 177 as const;
+// 177: Message quotes carry an optional annotation written by the user, which
+// the model reads beside the excerpt. An epoch-176 peer rejects the field.
 // 176: Session-scoped capability publication and MCP admission require compatible
 // Client and Host builds; older peers do not enforce their isolation contract.
 // 175: WorkHub coordinator model configuration again accepts only native

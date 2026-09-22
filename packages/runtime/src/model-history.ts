@@ -202,7 +202,7 @@ export function estimateRuntimeEventChars(event: RuntimeEvent): number {
     // history-compact gate drops a model-visible event (#4804).
     if (content.kind === 'text') {
       for (const quote of content.quotes ?? []) {
-        total += quote.text.length + (quote.label?.length ?? 0);
+        total += formatQuoteRefs([quote]).length;
       }
       for (const attachment of content.attachments ?? []) {
         // Weight the block the projection actually emits, not the display
@@ -1211,6 +1211,7 @@ function formatQuoteRefs(quotes: readonly QuoteRef[]): string {
     .map((q) => {
       const attributes = [
         q.label === undefined ? undefined : `label="${quoteAttribute(q.label)}"`,
+        q.comment === undefined ? undefined : `comment="${quoteAttribute(q.comment)}"`,
         q.sourceSessionId === undefined
           ? undefined
           : `source_session="${quoteAttribute(q.sourceSessionId)}"`,
@@ -1219,13 +1220,25 @@ function formatQuoteRefs(quotes: readonly QuoteRef[]): string {
       ].filter((attribute): attribute is string => attribute !== undefined);
       const opening =
         attributes.length > 0 ? `<quoted_excerpt ${attributes.join(' ')}>` : '<quoted_excerpt>';
-      return `${opening}\n${q.text}\n</quoted_excerpt>`;
+      // A literal closing tag inside the excerpt would end the block early
+      // and let the text that follows open a second, forged excerpt — one
+      // whose comment attribute reads as the user's own words. The body is
+      // otherwise verbatim, so only the tag boundary itself is neutralised.
+      const body = q.text.replace(/<(\/?)quoted_excerpt/gi, '\\u003c$1quoted_excerpt');
+      return `${opening}\n${body}\n</quoted_excerpt>`;
     })
     .join('\n');
 }
 
+/**
+ * One escaping rule for every attribute on a projected tag. A quote inside a
+ * double-quoted attribute would end the value early, and a newline would put
+ * the opening tag's boundary where a reader expects prose, so both are folded.
+ */
 function quoteAttribute(value: string): string {
-  return value.replace(/["<&>]/g, (character) =>
-    character === '"' ? "'" : `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
-  );
+  return value
+    .replace(/["<&>]/g, (character) =>
+      character === '"' ? "'" : `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    )
+    .replace(/\s+/g, ' ');
 }

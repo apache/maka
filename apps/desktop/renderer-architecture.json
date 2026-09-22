@@ -203,7 +203,6 @@
     "src/renderer/titlebar-modal-sync.ts",
     "src/renderer/turn-footer-actions.ts",
     "src/renderer/use-active-execution-boundary.ts",
-    "src/renderer/use-app-shell-composer-quotes.ts",
     "src/renderer/use-app-shell-session-list.ts",
     "src/renderer/use-app-shell-session-ui-reads.ts",
     "src/renderer/use-app-shell-session-workspace.ts",
@@ -681,7 +680,7 @@
         "nonTriviaTokens": 1243
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 62,
+        "importDeclarations": 61,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -711,7 +710,6 @@
           "useActiveExecutionBoundary": 1,
           "useActiveSessionEvents": 1,
           "useAppShellBootstrapSubscriptions": 1,
-          "useAppShellComposerQuotes": 1,
           "useAppShellHostEffects": 1,
           "useAppShellNavRefSync": 1,
           "useAppShellPersistenceEffects": 1,
@@ -804,7 +802,6 @@
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
           "./shell/frame-style": 1,
           "./use-active-execution-boundary": 1,
-          "./use-app-shell-composer-quotes": 1,
           "./use-app-shell-session-ui-reads": 1,
           "./use-app-shell-session-workspace": 1,
           "./use-new-task-choice": 1,
@@ -830,22 +827,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 98,
-        "nonTriviaTokens": 12729
-      },
-      "src/renderer/use-app-shell-composer-quotes.ts": {
-        "importDeclarations": 0,
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./features/conversation/index.js": 1
-        },
-        "importSpecifiers": 0,
-        "nonTriviaTokens": 24
+        "importSpecifiers": 97,
+        "nonTriviaTokens": 12691
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 5,
@@ -4373,8 +4356,7 @@
       "capability": "task-submission-and-composer-drafts",
       "targetZone": "features/conversation",
       "legacyPaths": [
-        "src/renderer/app-shell-chat-actions.ts",
-        "src/renderer/use-app-shell-composer-quotes.ts"
+        "src/renderer/app-shell-chat-actions.ts"
       ]
     },
     {

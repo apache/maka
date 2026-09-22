@@ -1,0 +1,195 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { afterEach, test } from 'node:test';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { parseHTML } from 'linkedom';
+import { QuoteCommentPanel } from '../quote-comment-panel.js';
+import { LocaleProvider } from '../locale-context.js';
+
+const originalGlobals = {
+  document: globalThis.document,
+  window: globalThis.window,
+  requestAnimationFrame: globalThis.requestAnimationFrame,
+  cancelAnimationFrame: globalThis.cancelAnimationFrame,
+};
+const originalActEnvironment = (globalThis as typeof globalThis & {
+  IS_REACT_ACT_ENVIRONMENT?: boolean;
+}).IS_REACT_ACT_ENVIRONMENT;
+const mountedRoots: Root[] = [];
+
+afterEach(async () => {
+  for (const root of mountedRoots.splice(0)) await act(() => root.unmount());
+  Object.assign(globalThis, {
+    ...originalGlobals,
+    IS_REACT_ACT_ENVIRONMENT: originalActEnvironment,
+  });
+});
+
+function domRoot() {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  // linkedom stores `contentEditable` verbatim, so the lowercase
+  // `[contenteditable]` selector would miss the editable node.
+  const setAttribute = window.Element.prototype.setAttribute;
+  window.Element.prototype.setAttribute = function normalized(name: string, value: string) {
+    return setAttribute.call(this, name === 'contentEditable' ? 'contenteditable' : name, value);
+  };
+  // linkedom has no Selection; the input's focus() only needs it to exist.
+  window.getSelection ??= () => null;
+  Object.assign(globalThis, {
+    document,
+    window,
+    Node: window.Node,
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame() {},
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container as unknown as Element);
+  mountedRoots.push(root);
+  return { container, root };
+}
+
+interface PanelProps {
+  index?: number;
+  comment?: string;
+  onSubmit?: (comment: string) => void;
+  onSkip?: () => void;
+}
+
+async function renderPanel(props: PanelProps = {}) {
+  const submitted: string[] = [];
+  let skipped = 0;
+  const { container, root } = domRoot();
+  await act(async () => {
+    root.render(
+      <LocaleProvider locale="en">
+        <QuoteCommentPanel
+          index={props.index ?? 0}
+          comment={props.comment}
+          title="Annotate this quote"
+          submitLabel="Quote"
+          skipLabel="Quote as-is"
+          onSubmit={(comment) => {
+            submitted.push(comment);
+            props.onSubmit?.(comment);
+          }}
+          onSkip={() => {
+            skipped += 1;
+            props.onSkip?.();
+          }}
+        />
+      </LocaleProvider>,
+    );
+  });
+  return {
+    container,
+    submitted,
+    skipped: () => skipped,
+    button: (label: string) =>
+      Array.from(container.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === label,
+      ),
+  };
+}
+
+/** Reads one React handler off a controlled node, the way this repo's other
+ *  controlled-input suites drive a field without a real browser. */
+function reactHandler<T>(element: Element, name: string): T {
+  const propsKey = Object.keys(element).find((candidate) =>
+    candidate.startsWith('__reactProps$'),
+  );
+  assert.ok(propsKey, 'the note field is a React-controlled node');
+  const props = (element as unknown as Record<string, unknown>)[propsKey] as Record<
+    string,
+    unknown
+  >;
+  const handler = props[name];
+  assert.equal(typeof handler, 'function', `the note field exposes ${name}`);
+  return handler as T;
+}
+
+async function type(container: Element, value: string) {
+  const editable = container.querySelector('[contenteditable="true"]');
+  assert.ok(editable, 'the panel renders its note field');
+  editable.textContent = value;
+  await act(async () => {
+    reactHandler<(event: { target: Element }) => void>(editable, 'onInput')({
+      target: editable,
+    });
+    await Promise.resolve();
+  });
+}
+
+async function pressSubmitShortcut(container: Element) {
+  const editable = container.querySelector('[contenteditable="true"]');
+  assert.ok(editable);
+  await act(async () => {
+    reactHandler<
+      (event: {
+        key: string;
+        nativeEvent: { isComposing: boolean };
+        preventDefault(): void;
+      }) => void
+    >(editable, 'onKeyDown')({
+      key: 'Enter',
+      nativeEvent: { isComposing: false },
+      preventDefault() {},
+    });
+    await Promise.resolve();
+  });
+}
+
+test('skipping stages the quote with no note', async () => {
+  const view = await renderPanel();
+  await type(view.container, 'a note that will be dropped');
+  view.button('Quote as-is')?.click();
+  await act(async () => {});
+
+  assert.deepEqual(view.submitted, []);
+  assert.equal(view.skipped(), 1);
+});
+
+test('an empty note submits as no annotation at all', async () => {
+  const view = await renderPanel({ comment: 'already written' });
+  await type(view.container, '   ');
+  view.button('Quote')?.click();
+  await act(async () => {});
+
+  assert.deepEqual(view.submitted, ['']);
+});
+
+test('the quote ordinal marks the panel', async () => {
+  const view = await renderPanel({ index: 2 });
+  assert.equal(
+    view.container.querySelector('.maka-quote-comment-index')?.textContent?.trim(),
+    '3',
+  );
+});
+
+test('the submit shortcut does not need the button', async () => {
+  const view = await renderPanel();
+  await type(view.container, 'noted');
+  await pressSubmitShortcut(view.container);
+
+  assert.deepEqual(view.submitted, ['noted']);
+});
