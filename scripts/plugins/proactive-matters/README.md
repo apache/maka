@@ -23,6 +23,14 @@
 
 在一个对话里委托持续跟进；插件保持同一个 session，登记绝对时间唤醒，让普通 agent loop 每轮基于当前情况决定行动。状态与计划是先前判断的参考，不是必须照着执行的流程。
 
+## Scope and acceptance criterion
+
+This is an opt-in, bounded experiment for time-triggered follow-up while the Host is alive, not a general durable task platform. Acceptance means: persist a delegation and its recovery binding together; schedule an absolute-time check; resume the original session; reassess and settle the next check or completion; stop dispatching after completion and pause uncertain interrupted work.
+
+The plugin SQLite store owns only the enrollment, observation/settlement revisions, next wake, and recovery metadata needed for this contract. A transaction prevents a task, its execution directory, acknowledged inputs, and next schedule from disagreeing. The append-only journal records state changes and activation handoffs required by the notebook design; it is not a replacement for Maka's session transcript or execution trace. Execution, permissions and conversation history remain owned by Maka. Future shared task/run/trace APIs from #544 should replace overlapping plugin bookkeeping when available; this experiment does not establish a second platform-wide task model.
+
+The Client bridge exposes only `matters.list` and `matters.watch`. User changes go through session-bound agent tools, classified by their effects: `MatterReadFile` is read-only; the other Matter tools write durable state (including `MatterRead`, which observes inputs and can bind a queued turn). Ordinary Plan mode excludes those writers using Maka's existing tool-selection policy.
+
 ## 安装与使用
 
 发布文件：`release/proactive-matters.maka-extension`。使用目标 Maka 的现有插件安装入口，或：

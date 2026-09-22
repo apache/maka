@@ -48,7 +48,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
     {
       name: 'MatterRead',
       description:
-        'Refresh file paths, revision and current time. Read request.md, state.md and inbox.json with MatterReadFile; their contents are not returned here. Call alone.',
+        'Refresh file paths, revision and current time. This writes observation state and may bind a queued activation; it is not read-only. Read request.md, state.md and inbox.json with MatterReadFile; their contents are not returned here. Call alone.',
       parameters: z.object({
         activationId: z
           .string()
@@ -57,7 +57,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
             'Activation ID from the latest wake, needed to bind a queued wake to this turn',
           ),
       }),
-      categoryHint: 'read',
+      categoryHint: 'file_write',
       executionSemantics: 'exclusive_step',
       impl: (input, ctx) => {
         deps.authorize?.(ctx);
@@ -85,7 +85,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
             'Absolute path to this activation’s draft.md, edited with MatterWriteFile before submitting',
           ),
       }),
-      categoryHint: 'read',
+      categoryHint: 'file_write',
       executionSemantics: 'exclusive_step',
       impl: (input: { expectedRevision: number; stateFile: string }, ctx) => {
         const o = own(ctx);
@@ -137,7 +137,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
             'The only proactive notification channel. Include meaningful progress or a needed user decision here; final chat text is not delivered as a progress notification. Omit for unchanged checks.',
           ),
       }),
-      categoryHint: 'read',
+      categoryHint: 'file_write',
       executionSemantics: 'exclusive_step',
       impl: async (input, ctx) => {
         const o = own(ctx);
@@ -171,7 +171,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
       description:
         'Write the entire draft.md file for this activation. This edits a working file only; publish it with MatterCheckpoint or MatterSettle. Other matter files are host-owned.',
       parameters: z.object({ path: z.string(), content: z.string() }),
-      categoryHint: 'read',
+      categoryHint: 'file_write',
       executionSemantics: 'exclusive_step',
       impl: ({ path, content }, ctx) => {
         const o = own(ctx);

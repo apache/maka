@@ -201,12 +201,16 @@ try {
     await sleep(250);
     const view = await f.remote('matters.list');
     const m = view.matters[0];
-    if (!amended && Date.now() - startedAt >= 60000 && m) {
+    if (!amended && Date.now() - startedAt >= 60000 && m && !m.activation) {
       amended = true;
-      await f.remote('matters.message', {
-        id: m.id,
-        text: '验收加上无障碍检查，必须针对最新稿通过。前面那个旧版别用了。会议时间范围不变，不要发邀请。',
-      });
+      await current;
+      const turn = randomUUID();
+      driver.sessions.get('session-1').running = true;
+      driver.sessions.get('session-1').turnId = turn;
+      current = run(
+        '验收加上无障碍检查，必须针对最新稿通过。前面那个旧版别用了。会议时间范围不变，不要发邀请。',
+        turn,
+      );
       log('user-amendment');
     }
     if (m?.status === 'completed' && !m.activation) break;

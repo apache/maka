@@ -35,9 +35,6 @@ test('release .maka-extension installs directly through latest main package load
   });
   assert.ok(view.activationId);
   assert.equal((await f.remote('matters.list')).matters.length, 1);
-  await f.remote('matters.control', {
-    id: (await f.remote('matters.list')).matters[0].id,
-    action: 'cancel',
-  });
+  await f.invoke('MatterControl', { action: 'cancel' });
   assert.equal((await f.remote('matters.list')).matters[0].status, 'cancelled');
 });

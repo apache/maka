@@ -76,3 +76,12 @@
 ## 仓库内集成验证
 
 插件迁入 `scripts/plugins/proactive-matters/`，PR 基线更新为 main `5263fb78a`。测试用代码默认从所在仓库解析，无需依赖原独立目录。重新运行构建、当前 main PluginPlatform / Client Runtime 集成测试、发布包导入及类型检查：26 项全部通过。真实 Flash 场景为前述历史验证，本次迁移没有重复调用付费模型。变更只在插件目录，不增加根 workspace，也不改 Maka 核心实现。
+
+## PR review corrections
+
+- Mutating tools, including activation-binding/observation `MatterRead`, are classified as `file_write`. A regression test calls the actual main `selectCollaborationTools`: ordinary Plan mode retains only `MatterReadFile`, while agent mode retains all plugin tools.
+- Enrollment now requires an absolute cwd and saves the matter, session binding, initial event and history in one transaction. An injected SQLite failure immediately after binding insertion rolls back all database records; restarting and retrying succeeds.
+- Removed Client mutation RPCs and the unused writable bridge contract. A test calls the actual generation-fenced Host bridge with valid descriptors and payloads: all three removed methods return `not_found`, and state is unchanged. UI stream tests now change state through the session agent tool.
+- Updated the opt-in live scenario to deliver its amendment as an ordinary human conversation turn; no paid model run was performed for these fixes.
+
+The updated suite has 29 passing tests; build, extension import and typecheck pass. Historical 26-test and Flash results above describe the earlier implementation, not proof of these fixes.

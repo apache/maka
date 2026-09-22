@@ -35,6 +35,7 @@ function fixture(t: { after(fn: () => void): void }) {
     rmSync(root, { recursive: true, force: true });
   });
   const m = store.create({
+    cwd: root,
     title: '找房',
     request: '预算 6000，可以养猫，找到且用户选定后完成',
     sessionId: 'session-1',
@@ -300,6 +301,7 @@ test('settle receipts remain idempotent after their timer has elapsed', (t) => {
 test('run budget pauses with a durable notice and explicit resume grants another budget', (t) => {
   const f = fixture(t);
   const m = f.store.create({
+    cwd: f.root,
     title: 'Bounded',
     request: 'Continue',
     sessionId: 'limited',

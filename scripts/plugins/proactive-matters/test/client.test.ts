@@ -156,9 +156,8 @@ test('real main Client Runtime renders a read-only task list and detail through 
     assert.doesNotMatch(window.document.body.textContent!, /已经做了什么/);
     await click('查看任务：面板测试');
     // External state changes still arrive through the real stream; the panel does not mutate state.
-    const id = (await f.remote('matters.list')).matters[0].id;
     await React.act(async () => {
-      await f.remote('matters.control', { id, action: 'pause' });
+      await f.invoke('MatterControl', { action: 'pause' }, 'human-pause-turn');
       await sleep(1100);
     });
     assert.match(window.document.body.textContent!, /任务已暂停/);

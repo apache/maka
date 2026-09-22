@@ -157,15 +157,15 @@ test('no settle faults durably; user amendment and pause invalidate stale writer
   await until(async () => (await f.remote('matters.list')).matters[0].status === 'paused');
   const m = (await f.remote('matters.list')).matters[0];
   assert.match(m.lastError, /未提交等待或完成/);
-  await assert.rejects(() => f.remote('matters.message', { id: m.id, text: '' }));
-  // A remote requirement resumes this task and appears in its file snapshot.
-  await f.remote('matters.message', { id: m.id, text: '只使用最新版' });
-  await until(() => f.driver.calls.some((c: any) => c.op === 'followup'));
-  const turn = f.driver.sessions.get('session-1').turnId;
-  const next = await f.invoke('MatterRead', {}, turn);
+  await assert.rejects(() => f.invoke('MatterMessage', { text: '' }));
+  // A direct human follow-up adopts the task in the current conversation turn.
+  const turn = 'human-amendment';
+  f.driver.sessions.get('session-1').running = true;
+  f.driver.sessions.get('session-1').turnId = turn;
+  const next = await f.invoke('MatterMessage', { text: '只使用最新版' }, turn);
   const request = await f.invoke('MatterReadFile', { path: next.files.request }, turn);
   assert.match(request.content, /只使用最新版/);
-  await f.remote('matters.control', { id: m.id, action: 'pause' });
+  await f.invoke('MatterControl', { action: 'pause' }, turn);
   await assert.rejects(
     () => f.invoke('MatterWriteFile', { path: next.files.draft, content: 'late' }, turn),
     /does not own/,
@@ -209,4 +209,117 @@ test('a queued Host wake waits for its exact activation claim instead of mistaki
   assert.equal(wakeError, undefined);
   assert.equal(started, true);
   await until(async () => !(await f.remote('matters.list')).matters[0].activation);
+});
+
+test('ordinary Plan mode excludes every mutating Matter tool, including activation reads', async (t) => {
+  const { selectCollaborationTools } = await import('../.artifacts/main-api.mjs');
+  const f = await fixture();
+  t.after(async () => {
+    await f.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  const tools = f.tools.resolve('session-1', []).tools;
+  const writes = [
+    'MatterStart',
+    'MatterMessage',
+    'MatterControl',
+    'MatterRead',
+    'MatterCheckpoint',
+    'MatterSettle',
+    'MatterWriteFile',
+  ];
+  assert.deepEqual(
+    tools
+      .filter((tool) => tool.categoryHint === 'file_write')
+      .map((tool) => tool.name)
+      .sort(),
+    writes.sort(),
+  );
+  const selected = selectCollaborationTools({ mode: 'plan', tools, hasActiveExecution: false });
+  assert.deepEqual(
+    selected.map((tool) => tool.name),
+    ['MatterReadFile'],
+  );
+  assert.equal(
+    selectCollaborationTools({ mode: 'agent', tools, hasActiveExecution: false }).length,
+    tools.length,
+  );
+  assert.deepEqual((await f.remote('matters.list')).matters, []);
+});
+
+test('failed enrollment binding rolls back matter, event and history; restart can retry', async (t) => {
+  const { DatabaseSync } = await import('node:sqlite');
+  let f = await fixture();
+  const root = f.root;
+  const db = new DatabaseSync(join(root, 'data', 'matters.sqlite'));
+  t.after(async () => {
+    db.close();
+    await f.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  db.exec(
+    "CREATE TRIGGER fail_binding AFTER INSERT ON plugin_bindings BEGIN SELECT RAISE(ABORT, 'injected binding failure'); END",
+  );
+  await assert.rejects(
+    () =>
+      f.invoke('MatterStart', { title: 'atomic enrollment', request: 'follow up after restart' }),
+    /injected binding failure/,
+  );
+  for (const table of [
+    'matters',
+    'plugin_bindings',
+    'matter_events',
+    'matter_history',
+    'matter_revisions',
+    'matter_runs',
+  ]) {
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
+  }
+  assert.equal(f.driver.calls.length, 0, 'failed registration cannot reach the agent');
+  db.exec('DROP TRIGGER fail_binding');
+  await f.close();
+  f = await fixture({ root, reopen: true });
+  const view = await f.invoke('MatterStart', {
+    title: 'atomic enrollment',
+    request: 'follow up after restart',
+  });
+  assert.ok(view.activationId);
+  assert.equal(
+    db.prepare('SELECT cwd FROM plugin_bindings WHERE session_id=?').get('session-1').cwd,
+    root,
+  );
+  assert.equal((await f.remote('matters.list')).matters.length, 1);
+  await f.invoke('MatterControl', { action: 'cancel' });
+});
+
+test('Client bridge rejects removed mutation RPCs with valid generation and payloads', async (t) => {
+  const f = await fixture();
+  t.after(async () => {
+    await f.close();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  await f.invoke('MatterStart', { title: 'read-only bridge', request: 'retain state' });
+  const before = await f.remote('matters.list');
+  const matter = before.matters[0];
+  const snapshot = await f.platform.clientSnapshot();
+  for (const [method, input] of [
+    ['matters.control', { id: matter.id, action: 'cancel' }],
+    ['matters.message', { id: matter.id, text: 'change the objective' }],
+    ['matters.edit', { id: matter.id, revision: matter.revision, text: 'replace state' }],
+  ]) {
+    await assert.rejects(
+      () =>
+        f.platform.invokeClientRemote({
+          ...snapshot.entries[0],
+          authorityEpoch: snapshot.authorityEpoch,
+          revision: snapshot.revision,
+          method,
+          input,
+        }),
+      (error: any) => error.code === 'not_found',
+    );
+  }
+  assert.deepEqual(await f.remote('matters.list'), before);
+  // The session's authorized agent tools remain the only interactive write surface.
+  await f.invoke('MatterControl', { action: 'cancel' });
 });

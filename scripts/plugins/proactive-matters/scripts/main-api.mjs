@@ -42,6 +42,7 @@ export const alias = {
   },
 };
 const exports = [
+  ['runtime', 'plan-mode', 'selectCollaborationTools'],
   ['runtime', 'plugin-kernel', 'Context'],
   ['runtime', 'plugin-agent-service', 'PluginAgentService'],
   ['runtime', 'plugin-tool-service', 'PluginToolService'],

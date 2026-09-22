@@ -20,7 +20,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { MatterFiles } from './files.js';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
@@ -210,6 +210,8 @@ class SqliteMatterStore implements MatterStore {
     return m;
   }
   create(input: MatterCreateInput): Matter {
+    if (typeof input.cwd !== 'string' || !isAbsolute(input.cwd))
+      throw new Error('cwd must be absolute');
     const m: Matter = {
       id: this.newId(),
       sessionId: text(input.sessionId, 200, 'session'),
@@ -237,6 +239,8 @@ class SqliteMatterStore implements MatterStore {
         source: 'user',
         text: m.request,
       });
+      // Enrollment and recovery authority must commit together, including the initial event/history.
+      this.db.prepare('INSERT INTO plugin_bindings VALUES(?,?)').run(m.sessionId, input.cwd);
       return this.write(m, 'create');
     });
   }
@@ -489,13 +493,7 @@ class SqliteMatterStore implements MatterStore {
       return this.write(m, 'bind_turn', { activationId, turnId });
     });
   }
-  binding(sessionId: string, cwd?: string): string | undefined {
-    if (cwd !== undefined)
-      this.db
-        .prepare(
-          'INSERT INTO plugin_bindings VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET cwd=excluded.cwd',
-        )
-        .run(sessionId, cwd);
+  binding(sessionId: string): string | undefined {
     return this.db.prepare('SELECT cwd FROM plugin_bindings WHERE session_id=?').get(sessionId)
       ?.cwd as string | undefined;
   }

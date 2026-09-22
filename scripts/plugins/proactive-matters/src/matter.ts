@@ -84,6 +84,7 @@ export interface MatterSnapshot {
   pendingEventCount: number;
 }
 export interface MatterCreateInput {
+  cwd: string;
   title: string;
   request: string;
   sessionId: string;
@@ -155,20 +156,8 @@ export interface MatterStore {
   markDelivered(id: string): void;
   runs(id: string): MatterRun[];
   bindTurn(id: string, activationId: string, turnId: string): Matter;
-  binding(sessionId: string, cwd?: string): string | undefined;
+  binding(sessionId: string): string | undefined;
   lease(owner: string, until: number): boolean;
   releaseLease(owner: string): void;
   close(): void;
-}
-
-export interface MatterBridge {
-  list(): Promise<Matter[]>;
-  get(id: string): Promise<MatterSnapshot>;
-  create(input: { title: string; request: string }): Promise<Matter>;
-  control(id: string, action: 'pause' | 'resume' | 'cancel' | 'check'): Promise<Matter>;
-  message(id: string, text: string): Promise<void>;
-  edit(id: string, revision: number, stateText: string): Promise<Matter>;
-  runs(id: string): Promise<MatterRun[]>;
-  updates(id: string): Promise<MatterUpdate[]>;
-  subscribeChanges(handler: () => void): () => void;
 }

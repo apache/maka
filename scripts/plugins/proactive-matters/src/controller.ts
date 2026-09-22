@@ -182,8 +182,7 @@ export class MatterController {
       throw new Error(
         'This conversation already has a follow-up; use MatterMessage or MatterControl',
       );
-    const m = this.store.create({ ...input, sessionId: call.sessionId });
-    this.store.binding(call.sessionId, call.cwd);
+    const m = this.store.create({ ...input, sessionId: call.sessionId, cwd: call.cwd });
     const claimed = this.store.claim(m.id)!.matter;
     this.store.bindTurn(m.id, claimed.activation!.id, call.turnId);
     const agent = await this.agent(call.sessionId);
@@ -219,34 +218,28 @@ export class MatterController {
     } else void this.tick();
     return result;
   }
-  async message(id: string, text: string, call?: MakaToolContext) {
+  async message(id: string, text: string, call: MakaToolContext) {
     this.assertReady();
     const m = this.store.get(id).matter;
     if (['completed', 'cancelled'].includes(m.status)) throw new Error('Matter has ended');
-    if (call && call.sessionId !== m.sessionId) throw new Error('Wrong session');
+    if (call.sessionId !== m.sessionId) throw new Error('Wrong session');
+    if (m.activation && m.activation.turnId !== call.turnId)
+      throw new Error('Previous activation is still stopping; retry after it exits');
     this.store.ingest(id, { key: randomUUID(), source: 'user', text });
-    if (call) {
-      // A new ordinary user turn may adopt the matter. Never stop the turn carrying that input.
-      if (m.activation?.turnId !== call.turnId) {
-        if (m.activation)
-          throw new Error('Previous activation is still stopping; retry after it exits');
-        if (m.status === 'paused') this.store.control(id, 'resume');
-        const claimed = this.store.claim(id)!.matter;
-        this.store.bindTurn(id, claimed.activation!.id, call.turnId);
-        const agent = await this.agent(m.sessionId);
-        const run = this.run(this.store.get(id).matter, agent, true).finally(() =>
-          this.runs.delete(id),
-        );
-        this.runs.set(id, run);
-      }
-      const active = this.store.get(id).matter.activation!;
-      this.store.observe(id, active.id);
-      return this.store.workspace(id, active.id);
+    // A direct human turn adopts the matter; there is no writable Client bridge.
+    if (m.activation?.turnId !== call.turnId) {
+      if (m.status === 'paused') this.store.control(id, 'resume');
+      const claimed = this.store.claim(id)!.matter;
+      this.store.bindTurn(id, claimed.activation!.id, call.turnId);
+      const agent = await this.agent(m.sessionId);
+      const run = this.run(this.store.get(id).matter, agent, true).finally(() =>
+        this.runs.delete(id),
+      );
+      this.runs.set(id, run);
     }
-    if (m.activation) await this.control(id, 'pause');
-    if (this.store.get(id).matter.status === 'paused') this.store.control(id, 'resume');
-    void this.tick();
-    return this.store.get(id).matter;
+    const active = this.store.get(id).matter.activation!;
+    this.store.observe(id, active.id);
+    return this.store.workspace(id, active.id);
   }
   snapshot() {
     return {
