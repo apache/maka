@@ -160,21 +160,29 @@ function htmlToMarkdown(html: string, pageUrl: string): string {
   assertSafeHtmlNesting(html);
   const { document } = parseHTML(html);
   const baseHref = document.querySelector('base[href]')?.getAttribute('href');
-  let linkBaseUrl = pageUrl;
+  let baseUrl = pageUrl;
   if (baseHref) {
     try {
-      linkBaseUrl = new URL(baseHref, pageUrl).toString();
+      baseUrl = new URL(baseHref, pageUrl).toString();
     } catch {
       // Fall back to the response URL for a malformed page-authored base URL.
     }
   }
-  for (const element of document.querySelectorAll<HTMLElement>('[href]')) {
-    const href = element.getAttribute('href');
-    if (!href) continue;
-    try {
-      element.setAttribute('href', new URL(href, linkBaseUrl).toString());
-    } catch {
-      // Keep malformed page-authored links as-is.
+  // Turndown renders both `<a href>` and `<img src>` as Markdown links, so each
+  // has to carry an absolute URL: a relative path stops meaning anything once
+  // the model reads the Markdown apart from the page it was extracted from.
+  for (const [selector, attribute] of [
+    ['[href]', 'href'],
+    ['img[src]', 'src'],
+  ] as const) {
+    for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+      const value = element.getAttribute(attribute);
+      if (!value) continue;
+      try {
+        element.setAttribute(attribute, new URL(value, baseUrl).toString());
+      } catch {
+        // Keep malformed page-authored values as-is.
+      }
     }
   }
   const article = new Readability(document as unknown as Document).parse();
