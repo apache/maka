@@ -126,7 +126,10 @@ export function QuoteRefChip(props: { quote: QuoteRef }) {
         variant="ghost"
         size="sm"
         label={a11yLabel}
-        className="maka-quote-chip-text"
+        className={cn(
+          'maka-quote-chip-text',
+          expanded && 'maka-quote-chip-text-expanded',
+        )}
         tabIndex={canExpand ? undefined : -1}
         aria-expanded={canExpand ? expanded : undefined}
         onClick={canExpand ? () => setExpanded((open) => !open) : undefined}

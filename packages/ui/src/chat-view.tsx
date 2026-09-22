@@ -46,7 +46,6 @@ import {
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import { findQuoteTextRange } from './selection-quote-target.js';
 import { QuoteCommentPanel } from './quote-comment-panel.js';
-import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
 import { isUserVisibleSessionSystemNote, type SessionSummary, type StoredMessage } from '@maka/core/session';
 import type {
