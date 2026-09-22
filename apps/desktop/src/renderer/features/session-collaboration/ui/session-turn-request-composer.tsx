@@ -294,7 +294,7 @@ function SessionTurnRequestComposerForSession(props: {
   return (
     <div className="sessionTurnRequestSurface">
       {requests.length > 0 ? (
-        <div className="maka-composer-queue sessionTurnRequestQueue">
+        <div className="sessionTurnRequestQueue">
           <Button
             variant="ghost"
             size="sm"
