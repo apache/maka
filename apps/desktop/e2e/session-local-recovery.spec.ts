@@ -108,11 +108,18 @@ test('cached history remains readable when the live transcript endpoint is unava
   const sessionId = await page
     .locator('[data-session-id]:has([aria-current="page"])')
     .getAttribute('data-session-id');
+  // A streamed reply can be visible while the durable cache still contains
+  // only the user message. Cut live reads only after the answer is persisted.
   await expect
     .poll(() =>
       page.evaluate(
-        async (id) => !!(await window.maka.sessionLocal.readTranscript(id)),
-        sessionId!,
+        async ({ id, reply }) => {
+          const cached = await window.maka.sessionLocal.readTranscript(id);
+          return cached?.batches.flatMap((batch) => batch.fragments)
+            .map((fragment) => new TextDecoder().decode(fragment.data))
+            .join('').includes(reply) ?? false;
+        },
+        { id: sessionId!, reply: `Fake backend received: ${prompt}` },
       ),
     )
     .toBe(true);
