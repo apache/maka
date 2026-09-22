@@ -138,15 +138,12 @@ export function createLiveContextUsageTracker(input: {
   onChange: (usage: LiveContextUsage | undefined) => void;
 }): LiveContextUsageTracker {
   let target: LiveContextUsageTarget | undefined;
-  let readTarget: LiveContextUsageTarget | undefined;
   const coordinator = createRefreshReadCoordinator({
-    read: () => {
-      readTarget = target;
-      return readTarget ? input.query(readTarget.sessionId) : Promise.resolve(undefined);
-    },
+    read: () => target ? input.query(target.sessionId) : Promise.resolve(undefined),
     apply: (diagnostics) => {
-      if (!diagnostics || !readTarget) return;
-      input.onChange(liveContextUsageFromDiagnostics(diagnostics, readTarget.route));
+      // Every target change invalidates in-flight reads before they can apply.
+      if (!diagnostics || !target) return;
+      input.onChange(liveContextUsageFromDiagnostics(diagnostics, target.route));
     },
     delayMs: input.delayMs,
     schedule: (callback, delayMs) => {
