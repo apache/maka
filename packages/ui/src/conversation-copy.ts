@@ -98,7 +98,7 @@ export interface ConversationCopy {
     steeringPending: string;
     followupPending: string;
     queueShortcutsLabel: string;
-    queueShortcuts: string;
+    queueShortcuts: { apple: string; other: string };
     promoteQueuedEntry: string;
     editQueuedEntry: string;
     saveQueuedEntry: string;
@@ -107,10 +107,6 @@ export interface ConversationCopy {
     reorderQueuedEntry: string;
     stopLabel: string;
     stopping: string;
-    streaming: string;
-    processing: string;
-    continuing: string;
-    interruptHint: string;
     addContext: string;
     /** Noun label for the composer drawer's staged quotes/attachments — the
      *  collapsed badge, the drawer group's accessible name, and the collapse
@@ -268,14 +264,10 @@ export interface ConversationCopy {
     you: string;
     assistant: string;
     processing: string;
-    continuing: string;
     workingPhrases: readonly string[];
     processDetails: string;
     processDuration: (minutes: number, seconds: number) => string;
-    turnStatusRunning: (elapsed: string) => string;
-    turnStatusCompleted: (elapsed: string | undefined, at: string) => string;
-    turnStatusCompletedAlone: string;
-    turnStatusCompletedAloneWithDuration: (elapsed: string) => string;
+    turnStatusCompleted: (elapsed?: string) => string;
     turnStatusAborted: (elapsed?: string) => string;
     turnStatusFailed: (elapsed?: string) => string;
     providerRetryScheduled: (seconds: number, attempt: number, maxAttempts: number) => string;
@@ -323,8 +315,6 @@ export interface ConversationCopy {
     quoteExpandAriaLabel: string;
     quoteCollapseAriaLabel: string;
     removeQuoteAriaLabel: string;
-    aborted: string;
-    abortedByStop: string;
     systemNotes: {
       contextCompacting: string;
       contextCompactionUnobserved: string;
@@ -461,11 +451,10 @@ const CONVERSATION_COPY = {
       steeringPending: '调整方向 · 等待整批生效',
       followupPending: '下一轮 · 每轮一条',
       queueShortcutsLabel: '发送快捷键',
-      queueShortcuts: 'Shift+Enter：转向（Steering）\nEnter：下一轮（Follow-up）',
+      queueShortcuts: { apple: 'Cmd+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行', other: 'Ctrl+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行' },
       promoteQueuedEntry: '调整方向', editQueuedEntry: '编辑', saveQueuedEntry: '保存', cancelQueuedEntryEdit: '取消编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
-      streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
-      interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
+      addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件', referenceFolder: '引用文件夹',
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
       setGoal: '设定 Goal…', goalAlreadySet: '当前会话已有进行中的 Goal',
@@ -525,10 +514,10 @@ const CONVERSATION_COPY = {
       chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], processDetails: '执行过程', processDuration: (minutes, seconds) => `用时 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusRunning: (elapsed: string) => `进行中 · 已用 ${elapsed}`, turnStatusCompleted: (elapsed: string | undefined, at: string) => ['完成', elapsed, at].filter(Boolean).join(' · '), turnStatusCompletedAlone: '已完成', turnStatusCompletedAloneWithDuration: (elapsed: string) => `完成 · ${elapsed}`, turnStatusAborted: (elapsed?: string) => ['已中止', elapsed].filter(Boolean).join(' · '), turnStatusFailed: (elapsed?: string) => ['失败', elapsed].filter(Boolean).join(' · '), providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小时', minute: '分', second: '秒' })}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '响应中途断开', network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, failureDetailsUnavailable: '无可用诊断详情。', safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
+      you: '你', assistant: 'Maka', processing: '正在处理…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], processDetails: '执行过程', processDuration: (minutes, seconds) => `用时 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusCompleted: (elapsed?: string) => ['已完成', elapsed].filter(Boolean).join(' · '), turnStatusAborted: (elapsed?: string) => ['已中止', elapsed].filter(Boolean).join(' · '), turnStatusFailed: (elapsed?: string) => ['失败', elapsed].filter(Boolean).join(' · '), providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小时', minute: '分', second: '秒' })}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '响应中途断开', network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, failureDetailsUnavailable: '无可用诊断详情。', safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
       editMessageDisabledDirectoryReferences: '包含文件夹引用的历史消息暂不支持编辑并重发',
       userAriaLabel: '你发送的消息', systemAriaLabel: '系统消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}消息${context ? `：${context}` : ''}`, sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', scheduledTaskTriggered: '定时任务触发', scheduledTaskTitle: (id) => `由定时任务触发 · ${id}`, legacyAutomationTriggered: '旧版自动化（仅历史）', legacyAutomationTitle: (id) => `由旧版自动化触发 · ${id} · 仅保留历史，不会再次执行`, goalContinued: 'Goal 自动继续', goalTitle: (id) => `由 Goal 继续执行 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
-      thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `会话：${name}`, sessionSnapshotPending: '发送时截取快照', sessionSnapshotCaptured: (iso, truncated) => `快照时间 ${iso}${truncated ? ' · 内容已截断' : ''}`, quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '已中断', abortedByStop: '已中断 · 由停止按钮触发',
+      thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `会话：${name}`, sessionSnapshotPending: '发送时截取快照', sessionSnapshotCaptured: (iso, truncated) => `快照时间 ${iso}${truncated ? ' · 内容已截断' : ''}`, quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用',
       systemNotes: {
         contextCompacting: '正在压缩上下文…',
         contextCompactionUnobserved: '上下文压缩状态暂不可用',
@@ -588,11 +577,10 @@ const CONVERSATION_COPY = {
       steeringPending: '調整方向 · 等待整批生效',
       followupPending: '下一輪 · 每輪一條',
       queueShortcutsLabel: '傳送快速鍵',
-      queueShortcuts: 'Shift+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）',
+      queueShortcuts: { apple: 'Cmd+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）\nShift+Enter：換行', other: 'Ctrl+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）\nShift+Enter：換行' },
       promoteQueuedEntry: '調整方向', editQueuedEntry: '編輯', saveQueuedEntry: '儲存', cancelQueuedEntryEdit: '取消編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',
       stopLabel: '停止', stopping: '停止中…',
-      streaming: 'Maka 正在回答…', processing: 'Maka 正在處理…', continuing: 'Maka 繼續中…',
-      interruptHint: '或點停止中斷', addContext: '新增上下文', stagedContext: '附加內容',
+      addContext: '新增上下文', stagedContext: '附加內容',
       selectModel: '選擇模型', dropToImport: '鬆開以匯入檔案內容', addingAttachment: '正在新增附件', addFileOrDirectory: '新增檔案或目錄', referenceFolder: '引用資料夾',
       chooseSkill: '選擇技能', noSkillsAvailable: '目前沒有可用技能',
       setGoal: '設定 Goal…', goalAlreadySet: '目前會話已有進行中的 Goal',
@@ -652,10 +640,10 @@ const CONVERSATION_COPY = {
       chooseAriaLabel: (label, branch) => branch ? `選擇專案：${label}，目前分支 ${branch}` : `選擇專案：${label}`,
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在處理…', continuing: '繼續中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盤算…', '正在鑽研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓搗…', '正在醞釀…', '正在攻堅…', '正在權衡…', '正在拾掇…'], processDetails: '執行過程', processDuration: (minutes, seconds) => `用時 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusRunning: (elapsed: string) => `進行中 · 已用 ${elapsed}`, turnStatusCompleted: (elapsed: string | undefined, at: string) => ['完成', elapsed, at].filter(Boolean).join(' · '), turnStatusCompletedAlone: '已完成', turnStatusCompletedAloneWithDuration: (elapsed: string) => `完成 · ${elapsed}`, turnStatusAborted: (elapsed?: string) => ['已中止', elapsed].filter(Boolean).join(' · '), turnStatusFailed: (elapsed?: string) => ['失敗', elapsed].filter(Boolean).join(' · '), providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小時', minute: '分', second: '秒' })}後重試（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重試（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重試（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '回應中途斷開', network: '網路中斷', provider_capacity: '模型服務暫時滿載', provider_unavailable: '模型服務暫時不可用', rate_limit: '觸發模型速率限制', timeout: '請求超時', unknown: '模型請求失敗' }, failureDetailsUnavailable: '無可用診斷詳情。', safeResumePending: '正在檢查…', safeResume: '繼續這一輪', thinking: '深度思考', truncated: '已截斷', copied: '已複製', copying: '複製中', copyFailed: '複製失敗', copy: '複製', editMessage: '編輯並重發', editMessageDisabledRunning: '目前回答仍在進行中，結束後再編輯', editMessageDisabledAttachments: '包含附件的歷史訊息暫不支援編輯並重發', editMessageDisabledQuotes: '包含引用的歷史訊息暫不支援編輯並重發', editMessageDisabledTransformedText: '包含已展開上下文的歷史訊息暫不支援編輯並重發',
+      you: '你', assistant: 'Maka', processing: '正在處理…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盤算…', '正在鑽研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓搗…', '正在醞釀…', '正在攻堅…', '正在權衡…', '正在拾掇…'], processDetails: '執行過程', processDuration: (minutes, seconds) => `用時 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusCompleted: (elapsed?: string) => ['已完成', elapsed].filter(Boolean).join(' · '), turnStatusAborted: (elapsed?: string) => ['已中止', elapsed].filter(Boolean).join(' · '), turnStatusFailed: (elapsed?: string) => ['失敗', elapsed].filter(Boolean).join(' · '), providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小時', minute: '分', second: '秒' })}後重試（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重試（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重試（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '回應中途斷開', network: '網路中斷', provider_capacity: '模型服務暫時滿載', provider_unavailable: '模型服務暫時不可用', rate_limit: '觸發模型速率限制', timeout: '請求超時', unknown: '模型請求失敗' }, failureDetailsUnavailable: '無可用診斷詳情。', safeResumePending: '正在檢查…', safeResume: '繼續這一輪', thinking: '深度思考', truncated: '已截斷', copied: '已複製', copying: '複製中', copyFailed: '複製失敗', copy: '複製', editMessage: '編輯並重發', editMessageDisabledRunning: '目前回答仍在進行中，結束後再編輯', editMessageDisabledAttachments: '包含附件的歷史訊息暫不支援編輯並重發', editMessageDisabledQuotes: '包含引用的歷史訊息暫不支援編輯並重發', editMessageDisabledTransformedText: '包含已展開上下文的歷史訊息暫不支援編輯並重發',
       editMessageDisabledDirectoryReferences: '包含資料夾引用的歷史訊息暫不支援編輯並重發',
       userAriaLabel: '你傳送的訊息', systemAriaLabel: '系統訊息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}訊息${context ? `：${context}` : ''}`, sourceAriaLabel: '本輪迴答的來源', derivativesAriaLabel: '本輪迴答的衍生', scheduledTaskTriggered: '定時任務觸發', scheduledTaskTitle: (id) => `由定時任務觸發 · ${id}`, legacyAutomationTriggered: '舊版自動化（僅歷史）', legacyAutomationTitle: (id) => `由舊版自動化觸發 · ${id} · 僅保留歷史，不會再次執行`, goalContinued: 'Goal 自動繼續', goalTitle: (id) => `由 Goal 繼續執行 · ${id}`, agentGraphTriggered: 'Agent Graph 自動繼續', agentGraphTitle: (graphId) => `由 Agent Graph 排程器觸發 · ${graphId}`,
-      thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `作業階段：${name}`, sessionSnapshotPending: '傳送時擷取快照', sessionSnapshotCaptured: (iso, truncated) => `快照時間 ${iso}${truncated ? ' · 內容已截斷' : ''}`, quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中斷)', abortedByStop: '(已中斷 · 由停止按鈕觸發)',
+      thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `作業階段：${name}`, sessionSnapshotPending: '傳送時擷取快照', sessionSnapshotCaptured: (iso, truncated) => `快照時間 ${iso}${truncated ? ' · 內容已截斷' : ''}`, quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用',
       systemNotes: {
         contextCompacting: '正在壓縮上下文…',
         contextCompactionUnobserved: '上下文壓縮狀態暫不可用',
@@ -715,11 +703,10 @@ const CONVERSATION_COPY = {
       steeringPending: 'Steering · Applied together',
       followupPending: 'Follow-up · One per turn',
       queueShortcutsLabel: 'Send shortcuts',
-      queueShortcuts: 'Shift+Enter: Steering\nEnter: Follow-up',
+      queueShortcuts: { apple: 'Cmd+Enter: Steering\nEnter: Follow-up\nShift+Enter: New line', other: 'Ctrl+Enter: Steering\nEnter: Follow-up\nShift+Enter: New line' },
       promoteQueuedEntry: 'Steer', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
-      streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
-      interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
+      addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add files', referenceFolder: 'Reference folder',
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
       setGoal: 'Set a goal…', goalAlreadySet: 'This session already has a goal in progress',
@@ -776,10 +763,10 @@ const CONVERSATION_COPY = {
       chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
     },
     messages: {
-      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], processDetails: 'Execution process', processDuration: (minutes, seconds) => `Worked for ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`, turnStatusRunning: (elapsed: string) => `Running · ${elapsed} elapsed`, turnStatusCompleted: (elapsed: string | undefined, at: string) => ['Done', elapsed, at].filter(Boolean).join(' · '), turnStatusCompletedAlone: 'Done', turnStatusCompletedAloneWithDuration: (elapsed: string) => `Done · ${elapsed}`, turnStatusAborted: (elapsed?: string) => ['Stopped', elapsed].filter(Boolean).join(' · '), turnStatusFailed: (elapsed?: string) => ['Failed', elapsed].filter(Boolean).join(' · '), providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, { day: 'd', hour: 'h', minute: 'm', second: 's' })} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { stream_truncated: 'Response stream ended before completion', network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, failureDetailsUnavailable: 'No diagnostic details are available.', safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
+      you: 'You', assistant: 'Maka', processing: 'Working…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], processDetails: 'Execution process', processDuration: (minutes, seconds) => `Worked for ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`, turnStatusCompleted: (elapsed?: string) => ['Done', elapsed].filter(Boolean).join(' · '), turnStatusAborted: (elapsed?: string) => ['Stopped', elapsed].filter(Boolean).join(' · '), turnStatusFailed: (elapsed?: string) => ['Failed', elapsed].filter(Boolean).join(' · '), providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, { day: 'd', hour: 'h', minute: 'm', second: 's' })} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { stream_truncated: 'Response stream ended before completion', network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, failureDetailsUnavailable: 'No diagnostic details are available.', safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
       editMessageDisabledDirectoryReferences: 'Edit & resend does not yet support messages with folder references',
       userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: (context) => `Response actions${context ? `: ${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action} response${context ? `: ${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action} message${context ? `: ${context}` : ''}`, sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', scheduledTaskTriggered: 'Triggered by scheduled task', scheduledTaskTitle: (id) => `Triggered by scheduled task · ${id}`, legacyAutomationTriggered: 'Legacy Automation (history only)', legacyAutomationTitle: (id) => `Triggered by legacy Automation · ${id} · Historical only; it will not run again`, goalContinued: 'Continued by Goal', goalTitle: (id) => `Continued by Goal · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
-      thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', sessionSnapshotLabel: (name) => `Session: ${name}`, sessionSnapshotPending: 'snapshot captured when sent', sessionSnapshotCaptured: (iso, truncated) => `captured ${iso}${truncated ? ' · truncated' : ''}`, quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
+      thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', sessionSnapshotLabel: (name) => `Session: ${name}`, sessionSnapshotPending: 'snapshot captured when sent', sessionSnapshotCaptured: (iso, truncated) => `captured ${iso}${truncated ? ' · truncated' : ''}`, quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote',
       systemNotes: {
         contextCompacting: 'Compacting context…',
         contextCompactionUnobserved: 'Context compaction status unavailable',

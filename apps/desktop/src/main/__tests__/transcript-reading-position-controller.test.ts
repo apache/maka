@@ -119,6 +119,65 @@ test('a bookmark the Turn index does not know, or cannot be asked about, is unav
   }
 });
 
+test('a cached transcript keeps a stored bookmark pending until the live answer replaces it', async () => {
+  const store = new DesktopTranscriptRangeStore(SESSION_ID);
+  for (const batch of encodeDesktopTranscriptSnapshot({
+    beginsAtTurnBoundary: true,
+    ...IDENTITY, generation: 'cached:generation', durableThrough: 30,
+    durable: [{ sequence: 30, message: answer('c') }], hasOlder: true,
+  })) store.accept(batch);
+  const reads: (number | undefined)[] = [];
+  const lookups: string[] = [];
+  const controller = createDesktopTranscriptRangeController(store, async () => handle({
+    async loadEarlier(throughSequence) {
+      reads.push(throughSequence);
+      for (const batch of encodeDesktopTranscriptBatches(IDENTITY, {
+        durableThrough: 30,
+        durable: [{ sequence: 10, message: answer('a') }, { sequence: 20, message: answer('b') }],
+        hasOlder: false, earlierThan: 30, reset: false, ready: true,
+      })) store.accept(batch);
+    },
+  }), { onError: (error) => assert.fail(String(error)) });
+  let anchor: { turnId: string } | undefined = { turnId: 'a' };
+  const unavailable: string[] = [];
+  const lifecycle = createTranscriptRestoreLifecycle();
+  const restore = () => restoreSessionTranscriptRange({
+    lifecycle, sessionId: SESSION_ID, controller, readingAnchor: { turnId: 'a' },
+    isCurrent: () => true,
+    lookupTurn: async (_sessionId, turnId) => { lookups.push(turnId); return 10; },
+    setReadingAnchor: (_sessionId, next) => { anchor = next; },
+    onRestoreUnavailable: (_sessionId, turnId) => { unavailable.push(turnId); },
+    onError: (error) => assert.fail(String(error)),
+  });
+  try {
+    await controller.ready();
+    restore();
+    for (let tick = 0; tick < 4; tick += 1) await settle();
+    restore();
+    await settle();
+    assert.deepEqual(lookups, []);
+    assert.deepEqual(reads, []);
+    assert.deepEqual(anchor, { turnId: 'a' });
+    assert.deepEqual(unavailable, []);
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
+      ...IDENTITY, durableThrough: 30,
+      durable: [{ sequence: 30, message: answer('c') }], hasOlder: true,
+    })) store.accept(batch);
+    restore();
+    for (let tick = 0; tick < 4; tick += 1) await settle();
+    restore();
+    await settle();
+    assert.deepEqual(lookups, ['a']);
+    assert.deepEqual(reads, [10]);
+    assert.deepEqual(store.snapshot().messages.map(({ turnId }) => turnId), ['a', 'b', 'c']);
+    assert.deepEqual(anchor, { turnId: 'a' });
+    assert.deepEqual(unavailable, []);
+  } finally {
+    await controller.close();
+  }
+});
+
 test('sending before transcript open completes cancels the queued bookmark without delaying admission', { timeout: 5_000 }, async () => {
   const store = new DesktopTranscriptRangeStore(SESSION_ID);
   const opening = deferred<DesktopTranscriptHandle>();

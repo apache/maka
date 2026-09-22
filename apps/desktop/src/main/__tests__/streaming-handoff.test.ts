@@ -88,7 +88,7 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): Promise<string> {
 }
 
 describe('single live-turn handoff', () => {
-  it('keeps activity in the process row before the session or Turn arrives', async () => {
+  it('keeps activity in the top status row before the session or Turn arrives', async () => {
     const session: NonNullable<Parameters<typeof ChatView>[0]['activeSession']> = {
       id: 'session-1', name: 'pending', status: 'running' as const, backend: 'ai-sdk',
       labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -107,8 +107,11 @@ describe('single live-turn handoff', () => {
         onNew() {},
       } satisfies Parameters<typeof ChatView>[0]));
       const { document } = parseHTML(markup);
-      const status = document.querySelector('.maka-processing-summary [role="status"]');
-      assert.ok(status, 'activity must occupy the process row');
+      const status = document.querySelector(
+        '.maka-assistant-answer .maka-turn-statusbar [role="status"]',
+      );
+      assert.ok(status, 'activity must occupy the top status row');
+      assert.equal(document.querySelector('.maka-processing-block'), null);
       assert.equal(document.querySelector('.maka-turn-footer'), null);
       assert.equal(document.querySelector('.maka-assistant-answer [role="toolbar"]'), null);
     }

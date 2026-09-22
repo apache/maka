@@ -54,6 +54,7 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-add-computer-menu.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-button.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-dialog.tsx
+apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-handoff-overlay.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx

@@ -82,6 +82,7 @@ export interface WorkbarControllerCommands {
   respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
   toggleRight(): void;
   toggleTool(kind: SessionWorkbarTabKind): void;
+  setWorkbarCollapsed(collapsed: boolean): void;
   /**
    * Accepts the Session produced by a projected first send that belongs to the
    * pending Work Board start claim. The claim is owned by one specific
@@ -908,6 +909,7 @@ export function useWorkbarController(
       respondToClientCapability,
       respondToUserForm: sideChat.respondToUserForm,
       toggleRight,
+      setWorkbarCollapsed: layout.setWorkbarCollapsed,
       bindNewTaskSessionResolver,
     }),
     [
@@ -918,6 +920,7 @@ export function useWorkbarController(
       respondToClientCapability,
       sideChat.respondToUserForm,
       toggleRight,
+      layout.setWorkbarCollapsed,
     ],
   );
 

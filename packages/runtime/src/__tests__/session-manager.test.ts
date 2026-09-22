@@ -2837,6 +2837,43 @@ describe('SessionManager child-session runtime primitive', () => {
     while (!(await parentTurn.next()).done) {}
   });
 
+  test('tells callers to retry when a subagent preset profile changes during spawn', async () => {
+    const manager = new SessionManager({
+      store: new MemorySessionStore(),
+      backends: new BackendRegistry(),
+      subagentCatalog: {
+        list: async () => [],
+        resolve: async (id) => ({
+          connectionId: '33333333-3333-4333-8333-333333333333',
+          id,
+          name: 'Changed preset',
+          description: 'Changed while spawning',
+          profile: IMPLEMENTATION_AGENT_DEFINITION.profile,
+          connectionSlug: 'worker-connection',
+          model: 'worker-model',
+          thinkingLevel: 'low',
+          enabled: true,
+        }),
+      },
+      newId: nextId(),
+      now: nextNow(150),
+    });
+
+    await expectRejects(
+      manager.spawnChildSession('parent-session', {
+        spawnedBy: {
+          parentRunId: 'parent-run',
+          parentTurnId: 'parent-turn',
+          toolCallId: 'tool-call-preset-race',
+        },
+        agentProfile: LOCAL_READ_AGENT_PROFILE,
+        subagentId: 'changed-preset',
+        prompt: 'inspect cheaply',
+      }),
+      /profile changed during spawn\. Retry the same agent_spawn call\./,
+    );
+  });
+
   test('child sessions preserve an explicit no-project association', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();

@@ -76,9 +76,10 @@ export function registerAppClientIpc(
   targetIpc.handle('window:setTitlebarControlsVisible', (event, visible: unknown): void => {
     mainWindowController.setTitlebarControlsVisible(event.sender, visible);
   });
-  targetIpc.handle('window:notifyRendererReady', (event): void => {
-    mainWindowController.notifyRendererReady(event.sender, event.senderFrame);
-  });
+  // `window:notifyRendererReady` is registered directly on ipcMain by
+  // early-window.js: it is a window-lifecycle signal that must exist before
+  // this scoped router does, or the first React commit can outrun it.
+
   targetIpc.handle('window:setThemeSource', (event, themePref: unknown): void => {
     mainWindowController.setThemeSource(event.sender, themePref);
   });

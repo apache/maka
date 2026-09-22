@@ -34,8 +34,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-import { type LlmConnection } from '@maka/core/llm-connections';
-import { type SessionSummary } from '@maka/core/session';
 import { type UiLocale } from '@maka/core/ui-locale';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import { useUiLocale, valuesEqual } from '@maka/ui';
@@ -54,11 +52,6 @@ export interface UseOnboardingSnapshotResult {
   snapshot: OnboardingSnapshot | null;
   error: string | null;
   refresh: () => void;
-  /** Sessions from the snapshot — populated on first load, before the separate sessions:list IPC. */
-  getSessions(): SessionSummary[] | null;
-  /** Connections from the snapshot — populated on first load before the live projection refresh. */
-  getConnections(): LlmConnection[] | null;
-  getDefaultSlug(): string | null;
 }
 
 export interface UseOnboardingSnapshotDeps {
@@ -133,24 +126,17 @@ export function onboardingSnapshotProjectionEqual(
  */
 export function useOnboardingSnapshotImpl(
   deps: UseOnboardingSnapshotDeps,
-  initialSnapshot: OnboardingSnapshot | null = null,
 ): UseOnboardingSnapshotResult {
   const locale = useUiLocale();
   const localeRef = useRef(locale);
   localeRef.current = locale;
-  const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(initialSnapshot);
+  const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const sessionsRef = useRef<SessionSummary[] | null>(initialSnapshot?.sessions ?? null);
-  const connectionsRef = useRef<LlmConnection[] | null>(initialSnapshot?.connections ?? null);
-  const defaultSlugRef = useRef<string | null>(initialSnapshot?.defaultSlug ?? null);
   const pollerRef = useRef<OnboardingSnapshotPoller | null>(null);
 
   if (pollerRef.current === null) {
     pollerRef.current = createOnboardingSnapshotPoller(deps, {
       onSnapshot: (next) => {
-        if (next.sessions) sessionsRef.current = next.sessions;
-        if (next.connections) connectionsRef.current = next.connections;
-        defaultSlugRef.current = next.defaultSlug;
         setSnapshot((prev) =>
           prev !== null && onboardingSnapshotProjectionEqual(prev, next) ? prev : next,
         );
@@ -179,17 +165,10 @@ export function useOnboardingSnapshotImpl(
     void pollerRef.current?.pull();
   }, []);
 
-  const getSessions = useCallback((): SessionSummary[] | null => sessionsRef.current, []);
-  const getConnections = useCallback((): LlmConnection[] | null => connectionsRef.current, []);
-  const getDefaultSlug = useCallback((): string | null => defaultSlugRef.current, []);
-
   return {
     snapshot,
     error,
     refresh,
-    getSessions,
-    getConnections,
-    getDefaultSlug,
   };
 }
 
@@ -282,10 +261,10 @@ export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale)
 }
 
 /**
- * Default renderer binding: subscribes to BOTH `sessions:changed`
- * and `connections:event` so any session lifecycle (create / delete /
- * archive / rebound / message-appended) or any connection change
- * (verified / disabled / removed) invalidates the snapshot.
+ * Default renderer binding: subscribes to `sessions:changed` and
+ * `connections:event` so any session lifecycle (create / delete / archive /
+ * rebound / message-appended) or connection change (verified / disabled /
+ * removed) invalidates the snapshot.
  *
  * Settings changes are NOT subscribed: there is no existing
  * settings-wide event channel and PR110c is not inventing one. If a
@@ -296,14 +275,10 @@ export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale)
  * Callers that need a re-pull on a specific UI action (e.g. modal
  * close) should call `refresh()` from the returned object.
  */
-export function useOnboardingSnapshot(initialSnapshot: OnboardingSnapshot | null = null): UseOnboardingSnapshotResult {
+export function useOnboardingSnapshot(): UseOnboardingSnapshotResult {
   // Bind to the live IPC bridge. `deps` is memoized as a module-level
   // object so the effect deps stay stable across re-renders.
-  // `initialSnapshot` comes from main.tsx's pre-mount prefetch: with it,
-  // the very first commit already has sessions + connections, so the
-  // startup path never shows the intermediate loading card ("配置页
-  // 闪了一下"). The mount effect still pulls a fresh snapshot.
-  return useOnboardingSnapshotImpl(LIVE_DEPS, initialSnapshot);
+  return useOnboardingSnapshotImpl(LIVE_DEPS);
 }
 
 const LIVE_DEPS: UseOnboardingSnapshotDeps = {

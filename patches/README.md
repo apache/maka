@@ -243,4 +243,32 @@ alone — no `themeProps`, no `data-*`, no custom property — so the only handl
 is a structural selector that breaks the moment a caller passes
 `scrollButton={null}`. See #3446.
 
+Three hunks fix composer caret anchoring and chip alignment rather than add
+seams. Every programmatic caret move (`placeCaretAtEnd`, `ensureCaretInside`,
+`insertTextAtCursor`, `insertToken`, `expandToken`, the token-paste path and
+the controlled-write restore) anchored a collapsed range on a child offset of
+the contenteditable; Chromium anchors an IME composition to the boundary it
+starts from, and from an element boundary the first preedit commits as its raw
+letters, so the first CJK word after a chip or a caret move arrived as pinyin.
+`landInsideTrailingTextNode` moves the caret into the text node it visually
+points at — appending an empty one when nothing landable remains — and the
+`setStartAfter` sites anchor inside the node they just inserted. No product
+code can reach these ranges: they are created inside the dependency's own
+helpers. Tracked upstream as facebook/astryx#6411.
+
+The inline token chip used `vertical-align: middle`, which centres the box on
+the parent's x-height midline and ignores its height, leaving a 20px chip
+~1.8px low against CJK text on a 22px line. `insertToken`'s span and
+`ChatTokenizedText`'s wrapper both carry `height: 1lh; align-items: center;
+vertical-align: top` — they must stay equal or a token moves when the message
+is sent. Neither is reachable by product CSS without `!important` against an
+inline style and a stylex class. Tracked upstream as facebook/astryx#6412.
+
+The `./Chat` barrel re-export of `placeCaretAtEnd` is a widened surface, not a
+behaviour change: `packages/ui`'s composer restores drafts with its own
+caret-to-end and duplicated the boundary walk because the selection helpers
+are not exported. Delete the re-export when upstream exports
+`chatComposerSelection` or grows an equivalent caret primitive — raised in
+#6411 — keeping the composer call site on whatever upstream ships.
+
 Delete each hunk when the corresponding behavior ships in Astryx.
