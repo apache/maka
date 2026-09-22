@@ -69,6 +69,59 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   assert.deepEqual([...transient.keys()], ['root'], 'a retained local copy cannot resurrect a withdrawn queue entry');
 });
 
+test('a Host queue seeded before the first local snapshot owns accepted and uncertain messages', async () => {
+  const { root } = installReactRenderer();
+  const transient = new Map<string, TransientUserMessageProjection>();
+  let changed!: (sessionId: string) => void;
+  let resolveInitial!: (messages: readonly DesktopLocalMessage[]) => void;
+  const initial = new Promise<readonly DesktopLocalMessage[]>((resolve) => { resolveInitial = resolve; });
+  let messages: DesktopLocalMessage[] = ['accepted', 'unknown', 'followup', 'failed'].map((messageId) => ({
+    sessionId: 'session-1', messageId, createdAt: 1,
+    state: messageId === 'unknown' ? 'unknown' : messageId === 'failed' ? 'failed' : 'accepted',
+    canCancel: messageId === 'failed', text: messageId, attachments: [], inlineReferences: [],
+    placement: messageId === 'followup' ? 'next_turn' : 'current_turn',
+  }));
+  let first = true;
+  const services = {
+    listMessages: async () => {
+      if (!first) return messages;
+      first = false;
+      return initial;
+    },
+    readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in this test'); },
+    subscribeChanges: (handler: (sessionId: string) => void) => { changed = handler; return () => {}; },
+    cancelMessage: async () => {}, reconcileMessage: async () => {},
+    sessions: { readSnapshot: async () => { throw new Error('unexpected snapshot read'); } },
+    skills: { listInvocable: async () => [] },
+    workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
+    newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
+    mcp: { subscribeChanges: () => () => {} },
+  };
+  const queue = messages.filter((message) => message.state !== 'failed').map((message) => ({
+    entryId: `entry-${message.messageId}`, messageId: message.messageId,
+    content: { text: message.text }, placement: message.placement, state: 'queued' as const,
+  }));
+  const render = (entries: typeof queue) => createElement(LocaleProvider, { locale: 'en', children:
+    createElement(ConversationServicesProvider, { services, children: createElement(SessionLocalMessages, {
+      sessionId: 'session-1', queue: entries,
+      publish: (_id, message) => { transient.set(message.id, message); },
+      update: (_id, message) => { if (transient.has(message.id)) transient.set(message.id, message); },
+      retire: (_id, messageId) => { transient.delete(messageId); },
+      canRestoreDraft: () => true,
+      restoreDraft: () => { throw new Error('Failed-message drafts are not used in this test'); },
+    }) }),
+  });
+  await act(async () => root.render(render([])));
+  await act(async () => root.render(render(queue)));
+  await act(async () => resolveInitial(messages));
+  assert.deepEqual([...transient.keys()], ['failed'], 'a late local snapshot cannot duplicate Host-owned queue entries');
+
+  messages = messages.map((message) => message.state === 'unknown' ? { ...message, state: 'accepted' } : message);
+  await act(async () => root.render(render([])));
+  await act(async () => changed('session-1'));
+  assert.deepEqual([...transient.keys()], ['failed'], 'queue disappearance cannot republish handed-off messages or remove a failed draft');
+});
+
 test('queue_update events drive the independent desktop queue projection', () => {
   const controller = createAppShellSessionUiStateController();
   const transientMessages = new Set(['message-steer', 'message-next']);

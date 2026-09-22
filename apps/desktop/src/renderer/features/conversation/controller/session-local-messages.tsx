@@ -68,7 +68,16 @@ export function SessionLocalMessages(props: {
     if (published.current.sessionId !== sessionId) published.current = { sessionId, ids: new Set() };
     if (!sessionId || snapshot?.sessionId !== sessionId) return;
     const copy = getSessionLocalCopy(locale);
+    const queuedIds = new Set(queue?.map((entry) => entry.messageId));
     for (const message of snapshot.messages) {
+      if (message.state !== 'failed' && queuedIds.has(message.messageId)) {
+        // The Host queue may arrive before the first local snapshot. Its exact
+        // identity already owns presentation, including a stale unknown receipt.
+        // Remember the handoff so a later queue removal cannot recreate the row.
+        published.current.ids.add(message.messageId);
+        retire(sessionId, message.messageId);
+        continue;
+      }
       const key = `${sessionId}:${message.messageId}`;
       const run = (operation: () => Promise<void>) => () => {
         if (pending.current) return;
