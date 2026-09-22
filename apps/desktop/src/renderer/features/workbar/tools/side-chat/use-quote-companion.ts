@@ -364,6 +364,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     messageQueueRef.current = next;
     setMessageQueue(next);
   }, []);
+  // Message ids the Host has admitted to its queue. The queue snapshot is the
+  // presentation authority, but it drains when the Host consumes entries — a
+  // reconnect can miss the admission events that would have bound their
+  // Turns, so reseed resolves ownership through this set instead.
+  const queueOwnedMessageIdsRef = useRef(new Set<string>());
   const [execution, setExecution] = useState<SessionExecutionProjection>();
   const [liveTurns, setLiveTurns] = useState<LiveTurnBuffer>();
   const liveTurnsRef = useRef(liveTurns);
@@ -470,6 +475,19 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     const next = mergeSettledMessages(allMessagesRef.current, messages);
     allMessagesRef.current = next;
     setAllMessages(next);
+    // A persisted message carrying a queue-admitted id proves its own Turn —
+    // the admission events that would have bound it may never reach us.
+    let ownershipChanged = false;
+    for (const message of messages) {
+      if (message.turnId === undefined || !queueOwnedMessageIdsRef.current.delete(message.id)) continue;
+      ownTurnIdsRef.current.add(message.turnId);
+      hasContentRef.current = true;
+      ownershipChanged = true;
+    }
+    if (ownershipChanged) {
+      setHasContent(true);
+      setOwnTurnTick((tick) => tick + 1);
+    }
     setLiveTurns((current) => current ? reconcileLiveTurnBuffer(current, next) : current);
     reconcilePendingUserMessages();
   }, [reconcilePendingUserMessages]);
@@ -483,6 +501,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   }, [syncPendingUserMessages]);
 
   const dropQueuedMessage = useCallback((messageId: string) => {
+    queueOwnedMessageIdsRef.current.delete(messageId);
     const current = messageQueueRef.current;
     const entries = current.entries.filter((entry) => entry.messageId !== messageId);
     if (entries.length !== current.entries.length) applyMessageQueue({ ...current, entries });
@@ -526,6 +545,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       // every entry the Host lists retires its local transient copy.
       for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
         pendingUserMessagesRef.current.delete(entry.messageId);
+        queueOwnedMessageIdsRef.current.add(entry.messageId);
       }
       syncPendingUserMessages();
     },
@@ -698,9 +718,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     );
     if (admittedMessage?.turnId) bindAdmittedTurn(forkId, admittedMessage.turnId);
     const messageIds = new Set(pendingUserMessagesRef.current.keys());
-    // Queue-owned ids are already retired from the pending map; reseed still
-    // needs them so a Host-retired entry leaves the plate too.
-    for (const entry of messageQueueRef.current.entries) messageIds.add(entry.messageId);
+    // Queue-admitted ids are already retired from the pending map, and the
+    // queue itself may have drained while we were away — resolve every id the
+    // Host admitted so its Turn still registers.
+    for (const id of queueOwnedMessageIdsRef.current) messageIds.add(id);
     if (pendingAdmissionRef.current) messageIds.add(pendingAdmissionRef.current.messageId);
     if (messageIds.size === 0) return;
     try {
@@ -717,8 +738,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         // Host cannot say yet, and that keeps its slot.
         if (resolution.state === 'cancelled' || resolution.state === 'not_admitted') {
           retired.add(resolution.messageId);
+          queueOwnedMessageIdsRef.current.delete(resolution.messageId);
           if (pending?.messageId === resolution.messageId) releaseAdmission(pending);
         } else if (resolution.state === 'owned') {
+          queueOwnedMessageIdsRef.current.delete(resolution.messageId);
           bindPendingMessageTurn(resolution.messageId, resolution.turnId);
           if (pending?.messageId === resolution.messageId) {
             bindAdmittedTurn(forkId, resolution.turnId);
@@ -990,6 +1013,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           pendingUserMessagesRef.current.clear();
           setPendingUserMessages([]);
           applyMessageQueue({ entries: [] });
+          queueOwnedMessageIdsRef.current.clear();
           onForkVisibilityChangeRef.current?.({
             type: 'cleanup-succeeded',
             sessionId: existing.id,
