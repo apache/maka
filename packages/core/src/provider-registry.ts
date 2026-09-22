@@ -23,28 +23,32 @@ import {
   GENERATED_MODELS_DEV_PROVIDER_FACTS,
 } from './model-metadata.generated.js';
 
-export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
-
 export type ProviderCategory = 'oauth' | 'domestic' | 'overseas' | 'local' | 'custom';
 export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregators' | 'local';
 
 export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
 
 /**
- * Stable reference to provider execution policy implemented by `@maka/runtime`.
- * Core owns only this protocol-level delegation; SDK selection, replay
- * carriers, and request mutation remain Runtime implementation details.
+ * Provider-specific request mutation the Runtime applies to an
+ * `open-responses` SDK request before dispatch.
  */
-export type ProviderRuntimeProfileId = 'alibaba-token-plan';
+export type OpenResponsesCompatibilityProfile = 'alibaba-token-plan';
 
+/**
+ * The provider's declared reasoning contract on the Responses wire: which SDK
+ * dialect serializes the request and which carrier (if any) makes reasoning
+ * replayable. The union enumerates only verified pairings; a provider whose
+ * reasoning carries no replayable state declares `none`.
+ */
 export type ProviderResponsesContract =
   | {
       readonly adapter: 'openai';
-      readonly reasoningReplay: 'encrypted-content';
+      readonly reasoningReplay: 'encrypted-content' | 'none';
     }
   | {
       readonly adapter: 'open-responses';
-      readonly reasoningReplay: 'plaintext-content';
+      readonly reasoningReplay: 'plaintext-content' | 'plaintext-summary';
+      readonly compatibility?: OpenResponsesCompatibilityProfile;
     };
 
 type OpenAiCompatibleRuntimeAdapterBase = {
@@ -58,19 +62,10 @@ type OpenAiCompatibleRuntimeAdapterBase = {
   normalizeBaseUrl?: true;
 };
 
-type OpenAiCompatibleRuntimeAdapter = OpenAiCompatibleRuntimeAdapterBase &
-  (
-    | {
-        /** Presence enables a complete Core-owned Responses contract. */
-        responses?: ProviderResponsesContract;
-        runtimeProfile?: never;
-      }
-    | {
-        responses?: never;
-        /** Explicitly delegates concrete execution policy to `@maka/runtime`. */
-        runtimeProfile: ProviderRuntimeProfileId;
-      }
-  );
+type OpenAiCompatibleRuntimeAdapter = OpenAiCompatibleRuntimeAdapterBase & {
+  /** Presence enables a complete Core-owned Responses contract. */
+  responses?: ProviderResponsesContract;
+};
 
 type ProviderRuntimeAdapterDefinition =
   | {
@@ -84,8 +79,13 @@ type ProviderRuntimeAdapterDefinition =
    * Distinct from a provider that was never wired: see `retired`.
    */
   | { kind: 'unavailable' }
-  | { kind: 'openai'; apiProtocol?: 'openai-chat' | 'openai-responses' }
-  | { kind: 'openai-codex' }
+  | {
+      kind: 'openai';
+      apiProtocol?: 'openai-chat' | 'openai-responses';
+      /** The declared reasoning contract every Responses request on this adapter follows. */
+      responses: ProviderResponsesContract;
+    }
+  | { kind: 'openai-codex'; responses: ProviderResponsesContract }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
   | { kind: 'cohere' }
   | OpenAiCompatibleRuntimeAdapter;
@@ -129,16 +129,9 @@ export interface ProviderDefaults {
   authKind: 'api_key' | 'optional_api_key' | 'oauth_token' | 'none';
   /**
    * The baseline this provider ships: what it offers with no live list to go
-   * on. Read it through `providerFallbackModelIds`, never directly — the
-   * accessor subtracts `brokenModelIds`.
+   * on.
    */
   fallbackModels: string[];
-  /**
-   * A new connection to this provider starts with its whole shipped baseline
-   * enabled instead of nothing. Set where a provider costs the user nothing to
-   * call, so the models are on the moment the connection exists.
-   */
-  enableShippedModelsByDefault?: true;
   status: 'ready' | 'phase3-experimental';
   runtimeAdapter: ProviderRuntimeAdapter;
   /** Additional request protocols; omitted models still use runtimeAdapter. */
@@ -150,13 +143,6 @@ export interface ProviderDefaults {
    * registered so stored connections still decode; it just cannot be used.
    */
   retired?: true;
-  /**
-   * Models with dated evidence of persistent breakage whose failure shape the
-   * send itself cannot surface (e.g. empty completions that still bill).
-   * Vetoed in `authorizeConnectionModel` and omitted from catalog offers —
-   * the one exception to "the user's selection is the authorization".
-   */
-  brokenModelIds?: readonly string[];
   modelDiscovery: ProviderModelDiscovery;
   category: ProviderCategory;
   catalogGroup?: ProviderCatalogGroup;
@@ -647,6 +633,13 @@ const moonshotModelIds = toolCallingModelIds('Moonshot', GENERATED_MODELS_DEV_ME
   'kimi-k2.6',
   'kimi-k2.7-code',
 ]).filter((id) => GENERATED_MODELS_DEV_METADATA.moonshot[id]?.lifecycle !== 'deprecated');
+const moonshotGlobal = GENERATED_MODELS_DEV_PROVIDER_FACTS['moonshot-global'];
+if (!moonshotGlobal.api) throw new Error('models.dev Moonshot Global provider is missing its API');
+const moonshotGlobalModelIds = toolCallingModelIds(
+  'Moonshot Global',
+  GENERATED_MODELS_DEV_METADATA['moonshot-global'],
+  ['kimi-k3'],
+).filter((id) => GENERATED_MODELS_DEV_METADATA['moonshot-global'][id]?.lifecycle !== 'deprecated');
 const cloudflareWorkersAi = GENERATED_MODELS_DEV_PROVIDER_FACTS['cloudflare-workers-ai'];
 if (cloudflareWorkersAi.id !== 'cloudflare-workers-ai') {
   throw new Error(
@@ -684,48 +677,6 @@ const opencodeGoModelIds = toolCallingModelIds(
   GENERATED_MODELS_DEV_METADATA['opencode-go'],
   ['minimax-m3'],
 ).filter((id) => GENERATED_MODELS_DEV_METADATA['opencode-go'][id]?.lifecycle !== 'deprecated');
-// opencode-free is Maka's first-class free anonymous default. It shares the
-// OpenCode Zen endpoint and model ids, exposing the active tool-capable
-// models the models.dev snapshot marks `isFree` (zero input cost). Deriving
-// the set from the snapshot lets routine metadata refreshes rotate free
-// models in and out instead of letting a hardcoded pin rot (#3409).
-//
-// Persistently broken free models, excluded with dated evidence. Deny-only:
-// a stale entry hides at most one healthy model, the opposite failure mode of
-// the allow-list pin this replaced. Entries should be re-probed on snapshot
-// refreshes and removed once the model produces content again.
-// 2026-08-21 muse-spark-1.2-contributor-free: anonymous completions return
-// 200 with an empty message and bill the full token budget (4 consecutive
-// probes, max_tokens 8–200) — a failure shape that even "the send settles it"
-// cannot surface, which is why these ids are also vetoed in
-// `authorizeConnectionModel` rather than merely dropped from this derivation.
-// 2026-08-30 x-preview-f-free (Ox Alpha Free): retired upstream — dropped from
-// the anonymous /models listing and every completion returns HTTP 401
-// {"type":"ModelError","message":"Model x-preview-f-free is not supported"}.
-// models.dev still snapshots it as free+active, so the derivation kept offering
-// it as a default-enabled, picker-visible row until this quarantine. Remove
-// once the snapshot marks it deprecated (or upstream serves it again).
-const OPENCODE_FREE_BROKEN_MODEL_IDS = new Set([
-  'muse-spark-1.2-contributor-free',
-  'x-preview-f-free',
-]);
-const opencodeFreeModelIds = toolCallingModelIds(
-  'OpenCode Free',
-  Object.fromEntries(
-    Object.entries(GENERATED_MODELS_DEV_METADATA.opencode).filter(
-      ([id, model]) =>
-        model.isFree === true &&
-        model.lifecycle !== 'deprecated' &&
-        !OPENCODE_FREE_BROKEN_MODEL_IDS.has(id),
-    ),
-  ),
-  [OPENCODE_FREE_DEFAULT_MODEL],
-);
-if (opencodeFreeModelIds[0] !== OPENCODE_FREE_DEFAULT_MODEL) {
-  throw new Error(
-    `models.dev opencode snapshot no longer serves ${OPENCODE_FREE_DEFAULT_MODEL} as an active tool-capable free model; pick a new OPENCODE_FREE_DEFAULT_MODEL`,
-  );
-}
 const githubCopilot = GENERATED_MODELS_DEV_PROVIDER_FACTS['github-copilot'];
 if (githubCopilot.id !== 'github-copilot') {
   throw new Error('models.dev GitHub Copilot provider facts are missing stable id github-copilot');
@@ -852,7 +803,11 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...volcengineAgentPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    runtimeAdapter: {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
     modelDiscovery: {
       kind: 'fallback',
       reason:
@@ -882,7 +837,11 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai', applyPatchProtocol: 'openai-structured' },
+    runtimeAdapter: {
+      kind: 'openai',
+      applyPatchProtocol: 'openai-structured',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -923,7 +882,6 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      applyPatchProtocol: 'codex-v4a-freeform',
       responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     },
     modelDiscovery: { kind: 'protocol' },
@@ -944,6 +902,23 @@ const providerRegistry = {
     catalogGroup: 'api',
     signupUrl: 'https://platform.kimi.com/console/api-keys',
     catalogOrder: 4,
+  },
+  'moonshot-global': {
+    label: 'Moonshot Global',
+    baseUrl: moonshotGlobal.api,
+    authKind: 'api_key',
+    fallbackModels: moonshotGlobalModelIds,
+    status: 'ready',
+    runtimeAdapter: {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+      responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-summary' },
+    },
+    modelDiscovery: { kind: 'protocol' },
+    category: 'overseas',
+    catalogGroup: 'api',
+    signupUrl: 'https://platform.kimi.ai/console/api-keys',
+    catalogOrder: 4.1,
   },
   'zai-coding-plan': {
     label: 'Z.AI Coding Plan',
@@ -1190,7 +1165,11 @@ const providerRegistry = {
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
-      'openai-responses': { kind: 'openai', apiProtocol: 'openai-responses' },
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
@@ -1207,7 +1186,11 @@ const providerRegistry = {
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
-      'openai-responses': { kind: 'openai', apiProtocol: 'openai-responses' },
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
@@ -1220,23 +1203,15 @@ const providerRegistry = {
     label: 'OpenCode Free',
     baseUrl: opencode.api,
     authKind: 'none',
-    fallbackModels: [...opencodeFreeModelIds],
-    // Free and keyless: nothing is spent by having every shipped model on, and
-    // a user who just added the connection can send immediately.
-    enableShippedModelsByDefault: true,
-    brokenModelIds: [...OPENCODE_FREE_BROKEN_MODEL_IDS],
-    status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    fallbackModels: [],
+    status: 'phase3-experimental',
+    runtimeAdapter: { kind: 'unavailable' },
+    retired: true,
     modelDiscovery: {
       kind: 'fallback',
-      reason:
-        'The anonymous /models listing describes the full Zen catalog with no cost facts; which models are FREE is a models.dev fact, so the derived candidates are the inventory and the send settles availability.',
+      reason: 'OpenCode restricts its free tier to the OpenCode client.',
     },
     category: 'overseas',
-    catalogGroup: 'plans',
-    signupUrl: 'https://opencode.ai/zen',
-    catalogOrder: 0,
-    recommendedOrder: 0,
   },
   togetherai: {
     label: together.name,
@@ -1464,7 +1439,11 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      runtimeProfile: 'alibaba-token-plan',
+      responses: {
+        adapter: 'open-responses',
+        reasoningReplay: 'plaintext-summary',
+        compatibility: 'alibaba-token-plan',
+      },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
@@ -1481,7 +1460,11 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      runtimeProfile: 'alibaba-token-plan',
+      responses: {
+        adapter: 'open-responses',
+        reasoningReplay: 'plaintext-summary',
+        compatibility: 'alibaba-token-plan',
+      },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
@@ -1504,6 +1487,27 @@ const providerRegistry = {
     catalogGroup: 'plans',
     signupUrl: 'https://commandcode.ai/docs/plans/goat',
     catalogOrder: 41.5,
+  },
+  // Retired rather than removed: an existing connection must stay identifiable
+  // and must answer `provider_retired` at readiness. Removing the entry would
+  // leave it *unknown*, which `isConnectionReady` does not reject, so a send
+  // would be admitted and only fail deep in model construction. Its transport
+  // presented the official CLI's identity to a private endpoint, which is why
+  // nothing can send through it any more.
+  'commandcode-go': {
+    label: 'Command Code GO',
+    baseUrl: 'https://api.commandcode.ai',
+    authKind: 'api_key',
+    fallbackModels: [],
+    status: 'phase3-experimental',
+    runtimeAdapter: { kind: 'unavailable' },
+    retired: true,
+    modelDiscovery: {
+      kind: 'fallback',
+      reason: 'The GO plan was reached through the official CLI\u2019s private transport.',
+    },
+    category: 'overseas',
+    catalogGroup: 'plans',
   },
   'cloudflare-workers-ai': {
     label: cloudflareWorkersAi.name,
@@ -1596,7 +1600,11 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    runtimeAdapter: {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
@@ -1628,7 +1636,11 @@ const providerRegistry = {
         normalizeBaseUrl: true,
         includeBetaHeaders: false,
       },
-      'openai-responses': { kind: 'openai', apiProtocol: 'openai-responses' },
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
     },
     modelDiscovery: { kind: 'protocol', auth: 'github-copilot' },
     category: 'oauth',
@@ -1663,7 +1675,10 @@ const providerRegistry = {
     authKind: 'oauth_token',
     fallbackModels: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
     status: 'phase3-experimental',
-    runtimeAdapter: { kind: 'openai-codex' },
+    runtimeAdapter: {
+      kind: 'openai-codex',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
     modelDiscovery: { kind: 'protocol', auth: 'openai-codex' },
     category: 'oauth',
   },
@@ -1697,18 +1712,13 @@ export function providerDefaultsOf(providerType: string): ProviderDefaults | und
 
 /**
  * The models a provider offers with no live list to go on: the baseline it
- * ships, minus anything quarantined. This is the only reader of
+ * ships. This is the only reader of
  * `fallbackModels` — a provider's offline offer has exactly one authority.
- *
- * `brokenModelIds` subtracts here rather than being pruned from the baseline at
- * the source because the ids it names are ones a stored connection may still
- * carry from an older shipped list.
  */
 export function providerFallbackModelIds(
-  defaults: Pick<ProviderDefaults, 'fallbackModels' | 'brokenModelIds'>,
+  defaults: Pick<ProviderDefaults, 'fallbackModels'>,
 ): string[] {
-  const broken = new Set(defaults.brokenModelIds ?? []);
-  return defaults.fallbackModels.filter((id) => !broken.has(id));
+  return [...defaults.fallbackModels];
 }
 
 /**

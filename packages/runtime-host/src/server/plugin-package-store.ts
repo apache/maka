@@ -32,6 +32,7 @@ import {
   type ExtensionPackageManifest,
   loadExtensionPackageManifest,
 } from './extension-package-manifest.js';
+import { PLUGIN_CLIENT_BUNDLE_MAX_BYTES } from '../protocol/plugin-platform.js';
 
 const STORE_DIRECTORY = 'plugin-packages-v2';
 const MAX_FILES = 256;
@@ -47,7 +48,8 @@ export interface InstalledPluginPackage {
   readonly extensionId: string;
   readonly contentDigest: string;
   readonly root: string;
-  readonly entry: string;
+  readonly entry?: string;
+  readonly clientEntry?: string;
   readonly manifest: ExtensionPackageManifest;
 }
 
@@ -455,7 +457,8 @@ async function decodePackage(
   files: readonly PackageFile[],
 ): Promise<{
   readonly manifest: ExtensionPackageManifest;
-  readonly entry: string;
+  readonly entry?: string;
+  readonly clientEntry?: string;
   readonly contentDigest: string;
 }> {
   if (!files.some((file) => file.path === EXTENSION_PACKAGE_MANIFEST_FILE)) {
@@ -463,16 +466,32 @@ async function decodePackage(
   }
   const manifest = await loadExtensionPackageManifest(root);
   if (!manifest) throw invalid(`Plugin package is missing ${EXTENSION_PACKAGE_MANIFEST_FILE}`);
-  if (!manifest.runtime?.entry) throw invalid('Plugin package has no trusted Runtime entry');
-  if (!files.some((file) => file.path === manifest.runtime!.entry)) {
+  if (!manifest.runtime?.entry && !manifest.client?.entry) {
+    throw invalid('Plugin package has no Runtime or Client entry');
+  }
+  if (manifest.runtime && !files.some((file) => file.path === manifest.runtime!.entry)) {
     throw invalid(`Plugin Runtime entry does not exist: ${manifest.runtime.entry}`);
+  }
+  if (manifest.client && !files.some((file) => file.path === manifest.client!.entry)) {
+    throw invalid(`Plugin Client entry does not exist: ${manifest.client.entry}`);
+  }
+  if (manifest.client) {
+    const clientBytes = files.find((file) => file.path === manifest.client!.entry)?.content
+      .byteLength;
+    if (clientBytes === 0) {
+      throw invalid(`Plugin Client entry is empty: ${manifest.client.entry}`);
+    }
+    if (clientBytes !== undefined && clientBytes > PLUGIN_CLIENT_BUNDLE_MAX_BYTES) {
+      throw invalid(`Plugin Client entry exceeds its size limit: ${manifest.client.entry}`);
+    }
   }
   if (manifest.composition && !files.some((file) => file.path === manifest.composition!.patch)) {
     throw invalid(`Plugin Composition patch does not exist: ${manifest.composition.patch}`);
   }
   return Object.freeze({
     manifest,
-    entry: manifest.runtime.entry,
+    ...(manifest.runtime ? { entry: manifest.runtime.entry } : {}),
+    ...(manifest.client ? { clientEntry: manifest.client.entry } : {}),
     contentDigest: extensionPackageContentDigest(files),
   });
 }
@@ -564,7 +583,8 @@ function freezeInstalled(
   root: string,
   decoded: {
     readonly manifest: ExtensionPackageManifest;
-    readonly entry: string;
+    readonly entry?: string;
+    readonly clientEntry?: string;
     readonly contentDigest: string;
   },
 ): InstalledPluginPackage {
@@ -572,7 +592,8 @@ function freezeInstalled(
     extensionId: decoded.manifest.id,
     contentDigest: decoded.contentDigest,
     root,
-    entry: join(root, ...decoded.entry.split('/')),
+    ...(decoded.entry ? { entry: join(root, ...decoded.entry.split('/')) } : {}),
+    ...(decoded.clientEntry ? { clientEntry: join(root, ...decoded.clientEntry.split('/')) } : {}),
     manifest: decoded.manifest,
   });
 }

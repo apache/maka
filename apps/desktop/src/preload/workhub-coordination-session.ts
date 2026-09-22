@@ -18,6 +18,7 @@
  */
 
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import type { WorkHubCoordinationSessionResolution } from '../shared/workhub-conversation.js';
 import {
   desktopSessionKey,
   type DesktopTargetScope,
@@ -27,10 +28,11 @@ export async function resolveDesktopWorkHubCoordinationSession(
   activeRuntimeHost: () => Promise<DesktopTargetScope>,
   resolveOnHost: (
     scope: DesktopTargetScope,
-  ) => Promise<{ readonly sessionId: string }>,
-): Promise<string> {
+  ) => Promise<WorkHubCoordinationSessionResolution>,
+): Promise<string | { readonly kind: 'model_required' }> {
   const scope = await activeRuntimeHost();
   const result = await resolveOnHost(scope);
+  if ('kind' in result) return result;
   return desktopSessionKey({ hostId: scope.hostId, sessionId: result.sessionId });
 }
 

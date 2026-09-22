@@ -19,6 +19,26 @@
 
 import type { ApplyPatchOperation } from './filesystem-executor.js';
 
+export const CODEX_PATCH_DESCRIPTION = `Edit files using a patch enclosed in *** Begin Patch and *** End Patch.
+Use *** Add File: path with each content line prefixed by +; *** Delete File: path;
+or *** Update File: path with @@ context markers and lines prefixed by space (unchanged),
+- (removed), or + (added). Include enough unchanged context to locate each edit.
+One patch may contain multiple file operations. Moves are not supported: add the destination
+and delete the source instead. Read existing files before patching them.`;
+
+// Match the executor's supported subset: intentionally no Move to production.
+export const CODEX_PATCH_GRAMMAR = String.raw`start: begin_patch hunk+ end_patch
+begin_patch: "*** Begin Patch" LF
+end_patch: "*** End Patch" LF?
+hunk: add_hunk | delete_hunk | update_hunk
+add_hunk: "*** Add File: " filename LF add_line+
+delete_hunk: "*** Delete File: " filename LF
+update_hunk: "*** Update File: " filename LF change+
+filename: /[^\r\n]+/
+add_line: "+" /[^\r\n]+/? LF
+change: ("@@" | "@@ " /[^\r\n]+/) LF | ("+" | "-" | " ") /[^\r\n]+/? LF | "*** End of File" LF
+%import common.LF`;
+
 export class CodexV4aPatchError extends Error {
   constructor(message: string) {
     super(message);

@@ -27,7 +27,8 @@ import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connection
 import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
-import { fetchProviderModels, runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
+import { runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
+import { discoverModels } from './model-discovery-fixture.js';
 import { resetStreamUsageFallbackMemory } from '../stream-usage-fallback-fetch.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveOAuthSubscriptionAccessToken } from '../subscription-credentials.js';
@@ -990,7 +991,7 @@ describe('models.dev provider conformance', () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    connection.models = await fetchProviderModels(connection, 'github-account-token');
+    connection.models = await discoverModels(connection, 'github-account-token');
     assert.deepEqual(connection.models.map((model) => model.id).sort(), [
       'claude-sonnet-4.6',
       'gpt-5.4',
@@ -1346,7 +1347,7 @@ describe('models.dev provider conformance', () => {
       updatedAt: 1,
     };
 
-    assert.deepEqual(await fetchProviderModels(connection, 'opencode-test-key'), [{ id: modelId }]);
+    assert.deepEqual(await discoverModels(connection, 'opencode-test-key'), [{ id: modelId }]);
     const result = await generateText({
       model: getAIModel({ connection, apiKey: 'opencode-test-key', modelId }),
       prompt: 'Call echo with hello.',
@@ -1416,36 +1417,6 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requests[1]?.body.messages, [{ role: 'user', content: 'Hi' }]);
     assert.equal(requests[2]?.headers['x-goog-api-key'], 'opencode-test-key');
     assert.deepEqual(requests[2]?.body.contents, [{ role: 'user', parts: [{ text: 'Hi' }] }]);
-  });
-
-  test('OpenCode Free probes reuse identity across candidates and renew it per operation', async () => {
-    const sessions: Array<string | undefined> = [];
-    const server = await startJsonServer(async (request, response) => {
-      sessions.push(request.headers['x-opencode-session'] as string | undefined);
-      respondJson(response, sessions.length % 2 === 1 ? 429 : 200, {
-        choices: [{ message: { role: 'assistant', content: 'ok' } }],
-      });
-    });
-    const connection: LlmConnection = {
-      slug: 'opencode-free',
-      name: 'OpenCode Free',
-      providerType: 'opencode-free',
-      baseUrl: `${server.url}/zen/v1`,
-      defaultModel: 'nemotron-3-ultra-free',
-      enabledModelIds: ['nemotron-3-ultra-free', 'mimo-v2.5-free'],
-      enabled: true,
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    assert.equal((await testConnection(connection, '')).ok, true);
-    assert.equal((await testConnection(connection, '')).ok, true);
-    assert.equal(sessions.length, 4);
-    for (const session of sessions) {
-      assert.match(session ?? '', /^[0-9a-f-]{36}$/);
-    }
-    assert.equal(sessions[0], sessions[1]);
-    assert.equal(sessions[2], sessions[3]);
-    assert.notEqual(sessions[0], sessions[2]);
   });
 
   test('OpenCode Go connection probes identify every supported wire request', async () => {
@@ -1842,7 +1813,7 @@ describe('models.dev provider conformance', () => {
       updatedAt: 1,
     };
 
-    const models = await fetchProviderModels(connection, 'hf-test-token');
+    const models = await discoverModels(connection, 'hf-test-token');
     assert.deepEqual(models, [{ id: discoveredModelId, capabilities: { functionCalling: true } }]);
 
     const result = await generateText({

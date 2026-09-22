@@ -24,6 +24,59 @@ import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { ModelWheelPicker } from '../model-wheel-picker.js';
 
+test('ordinary rerenders keep the layer anchor attached', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb',
+    getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
+  const styleDescriptor = Object.getOwnPropertyDescriptor(window.Element.prototype, 'style')!;
+  const styleProxies = new WeakMap<Element, CSSStyleDeclaration>();
+  const anchorNameWrites: string[] = [];
+  let recordAnchorNameWrites = false;
+  Object.defineProperty(window.Element.prototype, 'style', {
+    configurable: true,
+    get(this: Element) {
+      const existing = styleProxies.get(this);
+      if (existing) return existing;
+      const style = styleDescriptor.get!.call(this) as CSSStyleDeclaration;
+      const proxy = new Proxy(style, {
+        set: (target, property, value) => {
+          if (recordAnchorNameWrites && property === 'anchorName'
+            && this.classList.contains('maka-model-wheel-anchor')) {
+            anchorNameWrites.push(String(value));
+          }
+          return Reflect.set(target, property, value);
+        },
+      });
+      styleProxies.set(this, proxy);
+      return proxy;
+    },
+  });
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const root = createRoot(document.querySelector('#root')!);
+  const options = ['A', 'B'].map((value) => ({ value, label: value }));
+  try {
+    await act(() => root.render(<ModelWheelPicker open options={options} value="A" label="A"
+      ariaLabel="Model" onValueChange={() => {}} />));
+    recordAnchorNameWrites = true;
+
+    await act(() => root.render(<ModelWheelPicker open options={options} value="A" label="renamed"
+      ariaLabel="Model" onValueChange={() => {}} />));
+
+    assert.deepEqual(anchorNameWrites, [], 'rerendering must not remove and restore the CSS anchor name');
+  } finally {
+    await act(() => root.unmount());
+    Object.defineProperty(window.Element.prototype, 'style', styleDescriptor);
+    Object.assign(globalThis, original);
+  }
+});
+
 test('the wheel applies settled selection once and restores the saved model on failure', async () => {
   const original = {
     document: globalThis.document,

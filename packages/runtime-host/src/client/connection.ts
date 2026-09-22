@@ -80,7 +80,10 @@ import {
   type RuntimeHostSessionSubscription,
 } from './session-subscription.js';
 import { ClientCapabilityChannel } from './client-capability-channel.js';
-import type { ClientCapabilityProvider } from './client-capability.js';
+import type {
+  ClientCapabilityProvider,
+  ClientCapabilityRegistrationOptions,
+} from './client-capability.js';
 import {
   readRuntimeHostProcessIdentity,
   type RuntimeHostProcessIdentity,
@@ -134,6 +137,12 @@ export type RuntimeHostUnavailableReason =
   | 'handshake_failed'
   | 'epoch_mismatch';
 
+export interface RuntimeHostConnectionFailure {
+  readonly phase: 'registration' | 'connect';
+  /** An errno identifier only; never include messages or endpoint paths. */
+  readonly code?: string;
+}
+
 export type ConnectRuntimeHostResult =
   | {
       kind: 'connected';
@@ -165,6 +174,7 @@ export type ConnectRuntimeHostResult =
       kind: 'unavailable';
       reason: RuntimeHostUnavailableReason;
       registration?: HostRegistration;
+      connectionFailure?: RuntimeHostConnectionFailure;
     };
 
 export interface ConnectRemoteRuntimeHostInput {
@@ -270,9 +280,11 @@ export interface RuntimeHostConnection {
   close(): Promise<void>;
   replaceClientCapabilities(
     provider: ClientCapabilityProvider,
-    timeoutMs?: number,
+    options?: number | ClientCapabilityRegistrationOptions,
   ): Promise<ClientCapabilityReplaceResult>;
-  unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
+  unregisterClientCapabilities(
+    options?: number | ClientCapabilityRegistrationOptions,
+  ): Promise<ClientCapabilityUnregisterResult>;
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void;
   subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void;
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void;
@@ -659,16 +671,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           () => this.#closeSessionSubscription(result.subscriptionId),
           (query) => this.request('session.transcript.page', query, requestTimeoutMs),
           async () => {
-            try {
-              await this.request(
-                'session.transcript.overlay.release',
-                { subscriptionId: result.subscriptionId },
-                requestTimeoutMs,
-              );
-            } catch (error) {
-              this.#fail(asError(error));
-              throw error;
-            }
+            await this.request(
+              'subscription.ready',
+              { subscriptionId: result.subscriptionId },
+              requestTimeoutMs,
+            );
           },
         );
         this.#subscriptions.set(result.subscriptionId, subscription);
@@ -696,15 +703,19 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   async replaceClientCapabilities(
     provider: ClientCapabilityProvider,
-    timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+    options?: number | ClientCapabilityRegistrationOptions,
   ): Promise<ClientCapabilityReplaceResult> {
-    return this.#clientCapabilities.replace(provider, timeoutMs);
+    const { timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS, sessionId } =
+      typeof options === 'number' ? { timeoutMs: options } : (options ?? {});
+    return this.#clientCapabilities.replace(provider, timeoutMs, sessionId);
   }
 
   async unregisterClientCapabilities(
-    timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+    options?: number | ClientCapabilityRegistrationOptions,
   ): Promise<ClientCapabilityUnregisterResult> {
-    return this.#clientCapabilities.unregister(timeoutMs);
+    const { timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS, sessionId } =
+      typeof options === 'number' ? { timeoutMs: options } : (options ?? {});
+    return this.#clientCapabilities.unregister(timeoutMs, sessionId);
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
@@ -1218,6 +1229,7 @@ function finalizeConnectRuntimeHostResult(
       kind: 'unavailable',
       reason: result.reason,
       ...(result.registration ? { registration: result.registration } : {}),
+      ...(result.connectionFailure ? { connectionFailure: result.connectionFailure } : {}),
     };
   }
   return result;
@@ -1264,7 +1276,12 @@ export async function connectResolvedRuntimeHost(
     if (error instanceof RuntimeHostRegistrationError && error.code === 'invalid_registration') {
       return { kind: 'unavailable', reason: 'invalid_registration', endpointConnected: false };
     }
-    return { kind: 'unavailable', reason: 'connect_failed', endpointConnected: false };
+    return {
+      kind: 'unavailable',
+      reason: 'connect_failed',
+      endpointConnected: false,
+      connectionFailure: connectionFailure('registration', error),
+    };
   }
   if (!registration) {
     return { kind: 'unavailable', reason: 'not_registered', endpointConnected: false };
@@ -1298,6 +1315,7 @@ export async function connectResolvedRuntimeHost(
       reason: 'connect_failed',
       endpointConnected: false,
       registration,
+      connectionFailure: { phase: 'connect', code: 'ETIMEDOUT' },
     };
   }
   let transport: FramedTransport;
@@ -1316,6 +1334,7 @@ export async function connectResolvedRuntimeHost(
       reason: 'connect_failed',
       endpointConnected: false,
       registration,
+      connectionFailure: connectionFailure('connect', error),
     };
   }
   const handshakeDeadline = phaseDeadline(handshakeTimeoutMs, input.electionDeadline);
@@ -1713,7 +1732,7 @@ function openTransport(
       reject(
         exhaustsElection
           ? new ElectionDeadlineElapsedError()
-          : new Error('Timed out connecting to Runtime Host'),
+          : Object.assign(new Error('Timed out connecting to Runtime Host'), { code: 'ETIMEDOUT' }),
       );
     }, timeoutMs);
     const onConnect = () => {
@@ -1734,6 +1753,21 @@ function openTransport(
     socket.once('connect', onConnect);
     socket.once('error', onError);
   });
+}
+
+function connectionFailure(
+  phase: RuntimeHostConnectionFailure['phase'],
+  error: unknown,
+): RuntimeHostConnectionFailure {
+  const cause = error instanceof RuntimeHostRegistrationError ? error.cause : error;
+  const code =
+    cause instanceof Error && 'code' in cause && typeof cause.code === 'string'
+      ? cause.code
+      : undefined;
+  return {
+    phase,
+    ...(code && /^E[A-Z0-9_]{1,63}$/u.test(code) ? { code } : {}),
+  };
 }
 
 function requireTimeout(value: number, label: string): number {

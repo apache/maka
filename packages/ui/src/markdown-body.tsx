@@ -48,6 +48,7 @@ import { getSharedUiCopy } from './shared-ui-copy.js';
 import { MermaidDiagram } from './mermaid-diagram.js';
 import {
   createMarkdownMathCache,
+  MarkdownMath,
   MARKDOWN_MATH_PLUGINS,
   prepareMarkdownMath,
   restoreTransportTokens,
@@ -58,6 +59,7 @@ import { useAttachmentImageSource } from './attachment-image.js';
 const BASE_MARKDOWN_COMPONENTS = {
   link: MarkdownLink,
   image: MarkdownImage,
+  math: MarkdownMath,
 };
 
 export const MAX_AUTOMATIC_MERMAID_DIAGRAMS = 3;
@@ -253,6 +255,9 @@ function MarkdownCode(props: {
       <CodeBlock
         code={props.code}
         language={props.language}
+        // Span highlighting avoids the higher CSS Highlight paint cost during
+        // transcript scrolling, including when virtualized code blocks remount.
+        highlightMode="spans"
         // Markdown fences are block content. Astryx defaults to fit-content
         // with a 400px floor, which leaves short-code fences visibly narrow
         // even when the surrounding transcript has room to stay readable.

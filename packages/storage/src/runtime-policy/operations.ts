@@ -154,6 +154,13 @@ export interface ConnectionTestTicket {
   readonly [operationTicketBrand]: 'connection_test';
 }
 
+/**
+ * A usage read is read-only — nothing is committed — but it still borrows the
+ * connection's material through the same prepare/claim ceremony as a test, so
+ * the credential is resolved once and the egress basis is pinned. The ticket is
+ * consumed at completion and never validated against the catalog, because there
+ * is no state to guard.
+ */
 export interface InteractiveOAuthLoginTicket {
   readonly [operationTicketBrand]: 'interactive_oauth_login';
 }

@@ -22,7 +22,6 @@ import { describe, test } from "node:test";
 import { decodeCanonicalMessage, type StoredMessage } from '@maka/core/session';
 import { foldTimeline } from '../timeline-fold.js';
 import {
-  materializeChat,
   materializeTools,
   materializeTurns,
   overlayLiveTurn,
@@ -51,7 +50,7 @@ test('keeps interrupted and replacement responses distinct live and after reload
     })!;
   }
   for (const turn of [materializeTurns(reloaded, 'en')[0], overlayLiveTurn(materializeTurns([originalUser], 'en'), live, 'en')[0]]) {
-    const responses = foldTimeline(turn!.timeline).filter((entry) => entry.kind === 'text');
+    const responses = foldTimeline(turn!.timeline).entries.filter((entry) => entry.kind === 'text');
     assert.deepEqual(responses.map((entry) => [entry.text, entry.interrupted === true]), [
       ['Partial answer', true], ['Recovered answer', false],
     ]);
@@ -226,7 +225,7 @@ describe("steering timeline", () => {
   });
 });
 
-describe("materializeChat message metadata", () => {
+describe("materializeTurns message metadata", () => {
   test("renders neutral provider dropping guidance for new and legacy records", () => {
     const base = {
       type: "system_note" as const,
@@ -236,8 +235,8 @@ describe("materializeChat message metadata", () => {
       kind: "context_provider_dropping" as const,
       data: { inputTokens: 98_247, priorInputTokens: 124_832 },
     };
-    const current = materializeChat([base], "en")[0]?.text;
-    const legacy = materializeChat([{ ...base, data: undefined }], "en")[0]?.text;
+    const current = materializeTurns([base], "en")[0]?.notes[0]?.text;
+    const legacy = materializeTurns([{ ...base, data: undefined }], "en")[0]?.notes[0]?.text;
     assert.match(current ?? "", /may have been truncated or rewritten/);
     assert.match(legacy ?? "", /may have been truncated or rewritten/);
     assert.doesNotMatch(current ?? "", /Declare a context window|compact first/);
@@ -255,12 +254,8 @@ describe("materializeChat message metadata", () => {
     ];
 
     assert.equal(
-      materializeChat(messages, "en")[0]?.text,
+      materializeTurns(messages, "en")[0]?.notes[0]?.text,
       "Earlier context compacted.",
-    );
-    assert.equal(
-      materializeChat(messages, "zh-CN")[0]?.text,
-      "已压缩较早的上下文。",
     );
     assert.equal(
       materializeTurns(messages, "zh-CN")[0]?.notes[0]?.text,
@@ -279,7 +274,6 @@ describe("materializeChat message metadata", () => {
         inlineReferences: [],
       },
     ];
-    assert.deepEqual(materializeChat(messages, "en")[0]?.inlineReferences, []);
     assert.deepEqual(materializeTurns(messages, "en")[0]?.user?.inlineReferences, []);
   });
 
@@ -295,10 +289,6 @@ describe("materializeChat message metadata", () => {
       },
     ];
 
-    assert.deepEqual(materializeChat(messages, "en")[0]?.hostOrigin, {
-      kind: "goal",
-      goalId: "goal-1",
-    });
     assert.deepEqual(materializeTurns(messages, "en")[0]?.user?.hostOrigin, {
       kind: "goal",
       goalId: "goal-1",

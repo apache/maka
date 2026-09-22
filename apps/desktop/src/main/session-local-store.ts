@@ -348,9 +348,7 @@ export class DesktopSessionLocalStore {
   }
 
   saveTranscript(partition: string, snapshot: DesktopTranscriptReplicaSnapshot): void {
-    // Persist durable evidence only. Live assistant fragments and old running
-    // claims must not masquerade as current execution after restart.
-    const payload = JSON.stringify({ ...snapshot, overlay: [] });
+    const payload = JSON.stringify(snapshot);
     if (Buffer.byteLength(payload) > MAX_CACHE_SESSION_BYTES) return;
     this.#transaction(() => {
       this.#db

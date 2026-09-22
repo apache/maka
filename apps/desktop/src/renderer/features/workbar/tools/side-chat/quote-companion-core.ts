@@ -28,6 +28,7 @@ import {
 import type { PermissionMode } from '@maka/core/permission';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { QuoteRef, SessionEvent } from '@maka/core/events';
+import { isWorkHubCoordinationSessionId } from '@maka/core/session';
 import type {
   SessionSummary,
   TurnRecord,
@@ -48,6 +49,7 @@ import {
   type SessionCopyAttemptKey,
 } from '../../../../session-copy-attempt.js';
 import { sessionEventErrorMessage } from '../../../../model-connection-errors.js';
+import { parseDesktopSessionKey } from '../../../../../shared/runtime-host-identity.js';
 
 /** Structured failure reasons the renderer localizes (no user-facing strings in
  *  core). `fork_setup_failed`: reading the source boundary or creating the fork
@@ -138,6 +140,15 @@ function companionCopyAttemptKey(
   return { scope: `quote-companion:${panelId}`, kind: 'branch', sourceSessionId };
 }
 
+function isWorkHubCoordinationSessionKey(sessionId: string): boolean {
+  if (isWorkHubCoordinationSessionId(sessionId)) return true;
+  try {
+    return isWorkHubCoordinationSessionId(parseDesktopSessionKey(sessionId).sessionId);
+  } catch {
+    return false;
+  }
+}
+
 export async function abandonPendingCompanionCopy(
   api: SideChatSessionPort,
   sourceSessionId: string,
@@ -219,10 +230,12 @@ function scheduleCompanionCleanup(deps: EnsureCompanionForkDeps, sessionId: stri
 }
 
 /**
- * Fork the main session for a companion while preserving the source session's
- * model, collaboration mode, and permission profile. Parent history is still
- * reference-only through the side-conversation system prompt; inherited
- * permission only governs actions explicitly requested inside the side chat.
+ * Fork the main session for a companion while preserving an ordinary source
+ * session's model, collaboration mode, and permission profile. A WorkHub
+ * coordination source instead derives an empty, managed ordinary Session.
+ * Parent history is still reference-only through the side-conversation system
+ * prompt; inherited permission only governs actions explicitly requested
+ * inside an ordinary source's side chat.
  * Source-boundary and creation failures are returned as structured errors
  * instead of escaping as unhandled promise rejections. If the panel is disposed
  * mid-flight, any created fork is removed and `disposed` is returned.
@@ -235,13 +248,16 @@ export async function ensureCompanionFork(
   // Prefer the latest SETTLED turn (durable) as the branch boundary — a fork
   // never starts from a mid-flight turn. When the source has no completed turn
   // yet (most visibly the main session's very first turn is still running), the
-  // side conversation forks with an EMPTY context instead of failing: it
-  // inherits the source model / cwd / permission but copies no messages.
-  let turns: TurnRecord[];
-  try {
-    turns = await api.listTurns(sourceSession.id);
-  } catch {
-    return { status: 'error', code: 'fork_setup_failed' };
+  // side conversation forks with an EMPTY context instead of failing. WorkHub
+  // coordination always uses that empty boundary; the Host derives a managed
+  // ordinary Session rather than copying coordination authority.
+  let turns: TurnRecord[] = [];
+  if (!isWorkHubCoordinationSessionKey(sourceSession.id)) {
+    try {
+      turns = await api.listTurns(sourceSession.id);
+    } catch {
+      return { status: 'error', code: 'fork_setup_failed' };
+    }
   }
   if (isDisposed()) return { status: 'disposed' };
   // The boundary is derived once, persisted in the retry lease, and REPLAYED on

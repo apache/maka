@@ -51,9 +51,11 @@ import type {
   TaskEntryHostRef,
   TaskEntryProjectMutationResult,
   TaskEntryTarget,
+  TaskEntryProjectScope,
 } from '../ports.js';
 import { useTaskEntryServices } from '../services-context.js';
 import type { TaskEntryHostModel } from '../ui/task-entry-host.js';
+import { runtimeHostProjectKey } from '../../../application/contracts/runtime-host-project-key.js';
 
 export interface UseTaskEntryControllerInput {
   reportError(error: TaskEntryError): void;
@@ -76,12 +78,21 @@ export interface TaskEntryControllerSelectors {
   readonly usesDefaultHost: boolean;
   readonly workspacePicker: WorkspacePickerModel;
   readonly canAddProject: boolean;
+  /** Every ready Host's Projects, with the owning Host retained as identity. */
+  readonly projectScopes: readonly TaskEntryProjectScope[];
 }
 
 export interface TaskEntryControllerCommands {
   refresh(): Promise<void>;
   selectLocalProject(projectId: string): boolean;
-  addProject(): void;
+  selectProject(projectKey: string): boolean;
+  renameProject(projectKey: string, name: string): Promise<void>;
+  archiveProject(projectKey: string): Promise<void>;
+  restoreProject(projectKey: string): Promise<void>;
+  relinkProject(projectKey: string): Promise<void>;
+  /** `name` is what the New project dialog collected, when there was one. */
+  addProject(name?: string): void;
+  openNewProject(): void;
   chooseProjectForProfile(profileId: string): Promise<void>;
   resolveWorkBoardTarget(item: WorkBoardItem): WorkBoardStartTargetResult;
   prepareWorkBoardDraft(target: TaskEntryTarget, draft: string): string | undefined;
@@ -100,13 +111,19 @@ const EMPTY_CATALOG: TaskEntryCatalog = {
 
 type DirectoryHandoff = TaskEntryHostRef & {
   readonly name: string;
+  /** The name typed in the New project dialog, applied once a folder is picked. */
+  readonly projectName?: string;
 };
 
-function directoryHandoffForHost(host: ReadyTaskEntryHost): DirectoryHandoff {
+function directoryHandoffForHost(
+  host: ReadyTaskEntryHost,
+  projectName?: string,
+): DirectoryHandoff {
   return {
     profileId: host.profile.id,
     hostId: host.hostId,
     name: host.profile.name,
+    ...(projectName ? { projectName } : {}),
   };
 }
 
@@ -146,6 +163,7 @@ export function useTaskEntryController(
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string>();
   const [directoryHost, setDirectoryHost] = useState<DirectoryHandoff>();
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const directoryOpenerRef = useRef<HTMLElement | null>(null);
   const committedCatalogRef = useRef<TaskEntryCatalog>(EMPTY_CATALOG);
   const refreshRequestSequenceRef = useRef(0);
@@ -279,12 +297,12 @@ export function useTaskEntryController(
     }
   }, [copy.projectUpdateFailedFallback, copy.projectUpdateFailedTitle, locale, refresh, reportError]);
 
-  const addProjectForHost = useCallback(async (host: ReadyTaskEntryHost): Promise<void> => {
+  const addProjectForHost = useCallback(async (host: ReadyTaskEntryHost, name?: string): Promise<void> => {
     if (projectMutationPendingRef.current) return;
     if (host.capabilities.chooseHostDirectory) {
       directoryOpenerRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setDirectoryHost(directoryHandoffForHost(host));
+      setDirectoryHost(directoryHandoffForHost(host, name));
       return;
     }
     if (!host.capabilities.chooseClientDirectory) return;
@@ -293,10 +311,13 @@ export function useTaskEntryController(
     try {
       let result: TaskEntryProjectMutationResult;
       try {
-        result = await service.addProject({
-          profileId: host.profile.id,
-          hostId: host.hostId,
-        });
+        result = await service.addProject(
+          {
+            profileId: host.profile.id,
+            hostId: host.hostId,
+          },
+          name,
+        );
       } catch (cause) {
         reportError({
           title: copy.selectDirectoryFailedTitle,
@@ -359,9 +380,18 @@ export function useTaskEntryController(
     ) return;
     setDirectoryHost(undefined);
     setSelectedProfileId(host.profileId);
+    // Register names the project after the folder — the remote directory browser
+    // has no name field of its own — so the name typed before the folder was
+    // picked is applied here. A failed rename must not lose the project that was
+    // just created, so it falls back to the folder-derived name.
+    if (host.projectName) {
+      await service
+        .renameProject(registeredHost, project.id, host.projectName)
+        .catch(() => undefined);
+    }
     setProjectSelections((current) => new Map(current).set(host.profileId, project.id));
     await refreshAfterProjectMutation(host.profileId);
-  }, [directoryHost, refreshAfterProjectMutation]);
+  }, [directoryHost, refreshAfterProjectMutation, service]);
 
   const relinkProject = useCallback(async (
     host: ReadyTaskEntryHost,
@@ -444,7 +474,7 @@ export function useTaskEntryController(
           selectedProjectId: groupSelectedProjectId,
           onSelectProject: (projectId: string) => selectProject(host, projectId),
           ...(host.capabilities.chooseClientDirectory || host.capabilities.chooseHostDirectory
-            ? { onAdd: () => void addProjectForHost(host) }
+            ? { onAdd: (name: string) => void addProjectForHost(host, name) }
             : {}),
           ...(host.capabilities.chooseClientDirectory
             ? { onRelink: (projectId: string) => void relinkProject(host, projectId) }
@@ -490,6 +520,76 @@ export function useTaskEntryController(
     selectProject(localHost, projectId);
     return true;
   }, [localHost, selectProject]);
+  const projectScopes = useMemo<readonly TaskEntryProjectScope[]>(
+    () =>
+      catalog.hosts.flatMap((host) =>
+        isReadyTaskEntryHost(host)
+          ? host.projects.map((project) => ({
+              key: runtimeHostProjectKey(host.hostId, project.id),
+              profileId: host.profile.id,
+              hostId: host.hostId,
+              profileName: host.profile.name,
+              profileKind: host.profile.kind,
+              project,
+              capabilities: host.capabilities,
+            }))
+          : [],
+      ),
+    [catalog.hosts],
+  );
+  const projectScopesByKey = useMemo(
+    () => new Map(projectScopes.map((scope) => [scope.key, scope])),
+    [projectScopes],
+  );
+  const selectScopedProject = useCallback(
+    (key: string): boolean => {
+      const scope = projectScopesByKey.get(key);
+      const host =
+        scope &&
+        catalog.hosts.find(
+          (candidate): candidate is ReadyTaskEntryHost =>
+            isReadyTaskEntryHost(candidate) &&
+            candidate.hostId === scope.hostId,
+        );
+      if (!host || !scope) return false;
+      const project = findProjectByIdentity(host.projects, scope.project.id);
+      if (!project?.available || project.archivedAt !== undefined) return false;
+      selectProject(host, project.id);
+      return true;
+    },
+    [catalog.hosts, projectScopesByKey, selectProject],
+  );
+  const mutateScopedProject = useCallback(
+    async (
+      key: string,
+      action: (scope: TaskEntryProjectScope) => Promise<unknown>,
+    ): Promise<void> => {
+      const scope = projectScopesByKey.get(key);
+      if (!scope) return;
+      try {
+        await action(scope);
+        await refreshAfterProjectMutation(scope.profileId);
+      } catch (cause) {
+        reportError({
+          title: copy.projectUpdateFailedTitle,
+          description: localizedShellErrorMessage(
+            cause,
+            copy.projectUpdateFailedFallback,
+            locale,
+          ),
+          profileId: scope.profileId,
+        });
+      }
+    },
+    [
+      copy.projectUpdateFailedFallback,
+      copy.projectUpdateFailedTitle,
+      locale,
+      projectScopesByKey,
+      refreshAfterProjectMutation,
+      reportError,
+    ],
+  );
   const resolveWorkBoardTarget = useCallback(
     (item: WorkBoardItem): WorkBoardStartTargetResult =>
       resolveWorkBoardStartTarget(item, catalog),
@@ -507,9 +607,17 @@ export function useTaskEntryController(
     },
     [setProjectSelections, setSelectedProfileId],
   );
-  const addSelectedProject = useCallback(() => {
-    if (selectedHost) void addProjectForHost(selectedHost);
-  }, [addProjectForHost, selectedHost]);
+  const addSelectedProject = useCallback(
+    (name?: string) => {
+      // The workspace-readiness notice hands this straight to an onClick, so a
+      // MouseEvent can arrive where a name is expected. Only a real string is a
+      // name; anything else means "no name given".
+      if (selectedHost) {
+        void addProjectForHost(selectedHost, typeof name === 'string' ? name : undefined);
+      }
+    },
+    [addProjectForHost, selectedHost],
+  );
   const refreshCatalog = useCallback(async (): Promise<void> => {
     await refresh();
   }, [refresh]);
@@ -527,6 +635,11 @@ export function useTaskEntryController(
     [selectedHost],
   );
 
+  const openNewProject = useCallback(() => setNewProjectOpen(true), []);
+  const newProjectDialog = useMemo(() => newProjectOpen ? {
+    close: () => setNewProjectOpen(false),
+    submit: (name: string) => addSelectedProject(name),
+  } : undefined, [newProjectOpen, addSelectedProject]);
   return useMemo(() => ({
     host: {
       ...(directoryHost
@@ -538,6 +651,7 @@ export function useTaskEntryController(
             },
           }
         : {}),
+      newProjectDialog,
       directoryOpener: directoryOpenerRef.current,
       closeDirectoryPicker,
       acceptRegisteredProject,
@@ -545,7 +659,38 @@ export function useTaskEntryController(
     commands: {
       refresh: refreshCatalog,
       selectLocalProject,
+      selectProject: selectScopedProject,
+      renameProject: (key, name) => mutateScopedProject(
+        key,
+        (scope) => service.renameProject(
+          { profileId: scope.profileId, hostId: scope.hostId },
+          scope.project.id,
+          name,
+        ),
+      ),
+      archiveProject: (key) => mutateScopedProject(
+        key,
+        (scope) => service.archiveProject(
+          { profileId: scope.profileId, hostId: scope.hostId },
+          scope.project.id,
+        ),
+      ),
+      restoreProject: (key) => mutateScopedProject(
+        key,
+        (scope) => service.restoreProject(
+          { profileId: scope.profileId, hostId: scope.hostId },
+          scope.project.id,
+        ),
+      ),
+      relinkProject: (key) => mutateScopedProject(key, async (scope) => {
+        if (!scope.capabilities.chooseClientDirectory) return;
+        await service.relinkProject(
+          { profileId: scope.profileId, hostId: scope.hostId },
+          scope.project.id,
+        );
+      }),
       addProject: addSelectedProject,
+      openNewProject,
       chooseProjectForProfile,
       resolveWorkBoardTarget,
       prepareWorkBoardDraft,
@@ -565,18 +710,25 @@ export function useTaskEntryController(
           (selectedHost.capabilities.chooseClientDirectory ||
             selectedHost.capabilities.chooseHostDirectory),
       ),
+      projectScopes,
     },
   }), [
     acceptRegisteredProject,
     addSelectedProject,
+    newProjectDialog,
+    openNewProject,
     catalog.defaultProfileId,
     catalog.hosts.length,
     chooseProjectForProfile,
     closeDirectoryPicker,
     directoryHost,
     projectPath,
+    projectScopes,
     refreshCatalog,
     selectLocalProject,
+    selectScopedProject,
+    mutateScopedProject,
+    service,
     resolveWorkBoardTarget,
     prepareWorkBoardDraft,
     selectedHost,

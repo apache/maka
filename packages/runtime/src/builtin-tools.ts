@@ -188,6 +188,12 @@ export interface BuildBuiltinToolsOptions {
   shellEnvironment?: Readonly<Record<string, string>>;
   permissionProfile?: PermissionProfile;
   sandboxManager?: SandboxManager;
+  /**
+   * Whether Bash advertises `boundary_intent` / `required_boundary`. False for
+   * a session whose boundary cannot be widened (Full access); a declaration no
+   * host enforces is noise in the model's tool selection. Defaults to true.
+   */
+  declareSandboxBoundary?: boolean;
   /** Sandboxed worker used for all local filesystem tools. */
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
   /** Test/embedding override. Production callers use the current process platform. */
@@ -216,6 +222,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         buildManagedBashTool(options.shellRuns, {
           executionFacts,
           shell,
+          declareSandboxBoundary: options.declareSandboxBoundary !== false,
           ...(options.sandboxManager
             ? {
                 transformCommand: ({ command, pty, requiredBoundary, ctx }) => {
@@ -254,6 +261,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         buildExecutorBashTool(executor, shell, {
           ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
           ...(options.sandboxManager ? { sandboxManager: options.sandboxManager } : {}),
+          declareSandboxBoundary: options.declareSandboxBoundary !== false,
           sandboxPlatform,
         }),
       ];
@@ -270,10 +278,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     providerTool: { kind: 'openai-apply-patch' },
     executionFacts,
     impl: async (input, ctx) => {
-      if (typeof input !== 'string') {
+      const patch = typeof input === 'string' ? input : input.patch;
+      if (typeof patch !== 'string') {
         return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
       }
-      const operations = parseCodexV4aPatch(input);
+      const operations = parseCodexV4aPatch(patch);
       return await executeApplyPatchOperations(
         operations,
         async (operation) => {
@@ -414,11 +423,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       name: 'Write',
       activityKind: 'edit',
       description:
-        'Write content to a file. Relative paths resolve from the session cwd; ' +
+        'Create a text file or overwrite its entire contents; does not append. The parent directory must exist. Use Edit for partial changes. Relative paths resolve from the session cwd; ' +
         'how far outside it a path may reach is decided by the session permissions.',
       parameters: z.object({
         path: z.string().describe('A file path; relative paths are resolved from the session cwd'),
-        content: z.string(),
+        content: z.string().describe('The complete text to write to the file.'),
       }),
       executionFacts,
       impl: async ({ path, content }, ctx) => {
@@ -525,7 +534,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       name: 'Glob',
       activityKind: 'search',
       description:
-        'Find files matching a glob pattern (case-insensitive, capped at 200, sorted by walk order).',
+        'Find file and directory paths matching a glob pattern. Case sensitivity follows platform defaults. Hidden entries require an explicit dot-prefixed pattern component. Returns at most 200 matches in traversal order, without sorting.',
       parameters: z.object({
         pattern: z
           .string()
@@ -616,6 +625,7 @@ interface ExecutorBashSandboxOptions {
   permissionProfile?: PermissionProfile;
   sandboxManager?: SandboxManager;
   sandboxPlatform: SandboxPlatform;
+  declareSandboxBoundary?: boolean;
 }
 
 function buildExecutorBashTool(
@@ -623,25 +633,31 @@ function buildExecutorBashTool(
   shell: TurnShellPlan,
   sandboxOptions: ExecutorBashSandboxOptions,
 ): MakaTool {
+  const declareSandboxBoundary = sandboxOptions.declareSandboxBoundary !== false;
+  const executorBashFields = {
+    command: z.string().describe('The shell command to execute'),
+    timeout_ms: z.number().int().positive().max(600_000).optional(),
+  };
   return {
     name: 'Bash',
     activityKind: 'command',
     description:
       withTurnShellGuidance('Run a shell command in the session cwd.', shell) +
-      ' Enforced by the current session sandbox boundary.',
-    parameters: preprocessBashBoundaryDeclaration(
-      z
-        .object({
-          command: z.string().describe('The shell command to execute'),
-          timeout_ms: z.number().int().positive().max(600_000).optional(),
-          boundary_intent: bashBoundaryIntentSchema,
-          required_boundary: sandboxBoundaryExpansionSchema
-            .optional()
-            .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
-        })
-        .strict()
-        .superRefine(refineBashBoundaryDeclaration),
-    ),
+      (declareSandboxBoundary ? ' Enforced by the current session sandbox boundary.' : ''),
+    parameters: declareSandboxBoundary
+      ? preprocessBashBoundaryDeclaration(
+          z
+            .object({
+              ...executorBashFields,
+              boundary_intent: bashBoundaryIntentSchema,
+              required_boundary: sandboxBoundaryExpansionSchema
+                .optional()
+                .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
+            })
+            .strict()
+            .superRefine(refineBashBoundaryDeclaration),
+        )
+      : z.object(executorBashFields).strict(),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
     impl: async (input, ctx) => {

@@ -26,9 +26,33 @@ const TOKEN_PATTERN = /\uE000MAKA_MATH:([012]):([0-9a-f]+)\uE001/g;
 const LITERAL_TOKEN_PATTERN = /^\uE000MAKA_MATH:[012]:[0-9a-f]+\uE001/;
 
 /**
+ * Renders upstream `components.math` nodes through KaTeX. The delimiter-free
+ * `value` arrives exactly as the expression appeared in the source.
+ */
+export function MarkdownMath(props: { value: string; display: 'inline' | 'block' }) {
+  const html = katex.renderToString(props.value, {
+    displayMode: props.display === 'block',
+    output: 'htmlAndMathml',
+    strict: 'warn',
+    throwOnError: false,
+    trust: false,
+  });
+  return (
+    <span
+      className={
+        props.display === 'block'
+          ? 'maka-math maka-math-display'
+          : 'maka-math maka-math-inline'
+      }
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+/**
  * Discardable derived state owned by one MarkdownBody mount. Capacity is two
  * strings no larger than that component's currently displayed source and its
- * transport form; a rewrite resets both and unmounting drops the cache.
+ * translated form; a rewrite resets both and unmounting drops the cache.
  */
 export interface MarkdownMathCache {
   source: string;
@@ -47,8 +71,8 @@ export function prepareMarkdownMath(
 ): string {
   // The caller currently supplies a full string rather than an append token,
   // so proving that a rewrite did not occur requires this prefix check. It
-  // keeps the JavaScript lexer on the changing tail; it does not make the
-  // full-string identity check itself incremental.
+  // keeps the scanner on the changing tail; it does not make the full-string
+  // identity check itself incremental.
   const extendsPrevious = source.startsWith(cache.source);
   if (!extendsPrevious) {
     pendingLabelScans.delete(cache);
@@ -69,8 +93,9 @@ export function prepareMarkdownMath(
   }
   const sourceStart = extendsPrevious ? cache.safeSourceEnd : 0;
   const textStart = extendsPrevious ? cache.safeTextEnd : 0;
-  const protectedTail = protectMarkdownMath(source.slice(sourceStart), {
+  const translatedTail = translateMarkdownMath(source.slice(sourceStart), {
     startsAtLineStart: sourceStart === 0 || source[sourceStart - 1] === '\n',
+    priorTextChar: cache.text[textStart - 1],
     leadingBackslashes: countPrecedingBackslashes(source, sourceStart),
     onLabelPending: (state) => {
       // The scan ran on the sliced tail, so its positions are relative to
@@ -82,12 +107,12 @@ export function prepareMarkdownMath(
       pendingLabelScans.set(cache, state);
     },
   });
-  const text = `${extendsPrevious ? cache.text.slice(0, textStart) : ''}${protectedTail.text}`;
+  const text = `${extendsPrevious ? cache.text.slice(0, textStart) : ''}${translatedTail.text}`;
 
   cache.source = source;
   cache.text = text;
-  cache.safeSourceEnd = sourceStart + protectedTail.safeSourceEnd;
-  cache.safeTextEnd = textStart + protectedTail.safeTextEnd;
+  cache.safeSourceEnd = sourceStart + translatedTail.safeSourceEnd;
+  cache.safeTextEnd = textStart + translatedTail.safeTextEnd;
   return text;
 }
 
@@ -108,7 +133,9 @@ export const MARKDOWN_MATH_PLUGINS = [{
       <span
         key={key}
         className={
-          displayMode ? 'maka-math maka-math-display' : 'maka-math maka-math-inline'
+          displayMode
+            ? 'maka-math maka-math-display'
+            : 'maka-math maka-math-inline'
         }
         dangerouslySetInnerHTML={{ __html: html }}
       />
@@ -116,8 +143,12 @@ export const MARKDOWN_MATH_PLUGINS = [{
   },
 }] satisfies MarkdownInlinePlugin[];
 
-type ProtectMarkdownMathOptions = {
+const ZWSP = '\u200B';
+const WORD_CHAR = /[\w$]/;
+
+type TranslateMarkdownMathOptions = {
   startsAtLineStart?: boolean;
+  priorTextChar?: string;
   allowDisplayMath?: boolean;
   protectEscapedBrackets?: boolean;
   isFinalSegment?: boolean;
@@ -125,16 +156,28 @@ type ProtectMarkdownMathOptions = {
   onLabelPending?: (state: LabelScanState) => void;
 };
 
-function protectMarkdownMath(
+/**
+ * Translate Maka's math delimiters into the upstream grammar and neutralize
+ * bare `$` so prose never forms accidental inline math.
+ *
+ * Maka accepts `\(…\)` inline, `\[…\]` and `$$…$$` display math. Astryx parses
+ * `$…$` inline and `$$…$$` blocks only, so the translation emits `$…$` for
+ * inline math and newline-separated `$$` lines for display math. Every
+ * remaining bare `$` outside code and link destinations is escaped so dollar
+ * amounts, shell variables, and `$x$` prose stay literal; upstream's own
+ * inline-math grammar only ever sees delimiters this transform emitted.
+ */
+function translateMarkdownMath(
   source: string,
   {
     startsAtLineStart = true,
+    priorTextChar,
     allowDisplayMath = true,
     protectEscapedBrackets = false,
     isFinalSegment = false,
     leadingBackslashes = 0,
     onLabelPending,
-  }: ProtectMarkdownMathOptions = {},
+  }: TranslateMarkdownMathOptions = {},
 ): {
   text: string;
   safeSourceEnd: number;
@@ -157,8 +200,6 @@ function protectMarkdownMath(
     if (fence?.kind === 'pending') {
       text += source.slice(index);
       index = source.length;
-      // A bounded nested substring is final: end-of-input uncertainty there
-      // is literal text, so only streaming input stays unsettled here.
       if (isFinalSegment) markSafe();
       break;
     }
@@ -255,42 +296,44 @@ function protectMarkdownMath(
       // escaped brackets survive for Markdown to unescape; inline math still
       // renders inside. Astryx decides later whether the label is an inline
       // link, reference use, shortcut, image, or definition, so all forms
-      // must share this transport representation. Image alt text included:
-      // Astryx keeps alt as a raw string, and the image component below
-      // restores literal tokens, so no private-use characters reach the DOM.
-      const protectedLabel = protectMarkdownMath(source.slice(link.labelStart, link.labelEnd), {
+      // must share this representation. Image alt text included:
+      // Astryx keeps alt as a raw string, and the image component restores
+      // literal tokens, so no private-use characters reach the DOM.
+      const translatedLabel = translateMarkdownMath(source.slice(link.labelStart, link.labelEnd), {
         startsAtLineStart: false,
+        priorTextChar: source[link.labelStart - 1],
         allowDisplayMath: false,
         protectEscapedBrackets: true,
         isFinalSegment: true,
       });
       // The explicit identifier of a full reference must go through the same
       // transform, or use-site and definition IDs diverge and the link breaks.
-      let protectedRefText = '';
+      let translatedRefText = '';
       let refSafe = true;
       if (link.refLabelStart !== undefined && link.refLabelEnd !== undefined) {
-        const protectedRef = protectMarkdownMath(
+        const translatedRef = translateMarkdownMath(
           source.slice(link.refLabelStart, link.refLabelEnd),
           {
             startsAtLineStart: false,
+            priorTextChar: source[link.refLabelStart - 1],
             allowDisplayMath: false,
             protectEscapedBrackets: true,
             isFinalSegment: true,
           },
         );
-        protectedRefText = protectedRef.text;
-        refSafe = protectedRef.safeSourceEnd >= link.refLabelEnd - link.refLabelStart;
+        translatedRefText = translatedRef.text;
+        refSafe = translatedRef.safeSourceEnd >= link.refLabelEnd - link.refLabelStart;
       }
       const refStart = link.refLabelStart ?? link.end;
       const refEnd = link.refLabelEnd ?? link.end;
       text += source.slice(index, link.labelStart)
-        + protectedLabel.text
+        + translatedLabel.text
         + source.slice(link.labelEnd, refStart)
-        + protectedRefText
+        + translatedRefText
         + source.slice(refEnd, link.end);
       index = link.end;
       atLineStart = source[index - 1] === '\n';
-      const labelSafe = protectedLabel.safeSourceEnd >= link.labelEnd - link.labelStart;
+      const labelSafe = translatedLabel.safeSourceEnd >= link.labelEnd - link.labelStart;
       if (labelSafe && refSafe && !mayGrowTail) {
         markSafe();
       } else {
@@ -299,10 +342,50 @@ function protectMarkdownMath(
       continue;
     }
 
-    const inlineDelim = readDelimitedMath(source, index, '\\(', '\\)', false, false);
-    if (inlineDelim?.kind === 'pending') {
-      text += source.slice(index, inlineDelim.end);
-      index = inlineDelim.end;
+    // Destinations take `$` verbatim: escaping there would reach the href,
+    // where `\$` does not round-trip back to `$`.
+    const destination = readLinkDestination(source, index);
+    if (destination !== undefined) {
+      text += source.slice(index, destination);
+      index = destination;
+      atLineStart = false;
+      markSafe();
+      continue;
+    }
+
+    const autolink = readAutolink(source, index);
+    if (autolink !== undefined) {
+      text += source.slice(index, autolink);
+      index = autolink;
+      atLineStart = false;
+      markSafe();
+      continue;
+    }
+
+    const bareUrl = readBareUrl(source, index);
+    if (bareUrl !== undefined) {
+      text += source.slice(index, bareUrl);
+      index = bareUrl;
+      atLineStart = false;
+      markSafe();
+      continue;
+    }
+
+    const reference = atLineStart ? readReferenceDefinition(source, index) : undefined;
+    if (reference !== undefined) {
+      text += source.slice(index, reference);
+      index = reference;
+      markSafe();
+      continue;
+    }
+
+    const delimited =
+      readDelimitedMath(source, index, '\\(', '\\)', false)
+      ?? (allowDisplayMath ? readDelimitedMath(source, index, '\\[', '\\]', true) : undefined)
+      ?? (allowDisplayMath ? readDelimitedMath(source, index, '$$', '$$', true) : undefined);
+    if (delimited?.kind === 'pending') {
+      text += source.slice(index, delimited.end);
+      index = delimited.end;
       atLineStart = false;
       if (isFinalSegment) {
         markSafe();
@@ -311,40 +394,41 @@ function protectMarkdownMath(
       }
       continue;
     }
-    if (inlineDelim?.kind === 'match') {
-      text += mathToken(inlineDelim.formula, inlineDelim.displayMode);
-      index = inlineDelim.end;
-      atLineStart = false;
-      markSafe();
-      continue;
-    }
-
-    if (allowDisplayMath) {
-      const displayDelim =
-        readDelimitedMath(source, index, '\\[', '\\]', true, true)
-        ?? readDelimitedMath(source, index, '$$', '$$', true, true);
-      if (displayDelim?.kind === 'pending') {
-        text += source.slice(index, displayDelim.end);
-        index = displayDelim.end;
-        atLineStart = false;
-        if (isFinalSegment) {
-          markSafe();
-        } else {
-          canMarkSafe = false;
-        }
-        continue;
-      }
-      if (displayDelim?.kind === 'match') {
-        text += mathToken(displayDelim.formula, displayDelim.displayMode);
-        index = displayDelim.end;
-        atLineStart = false;
+    if (delimited?.kind === 'match') {
+      // A `$$`-line block would split a table row, so display math on a line
+      // containing `|` degrades to an inline span inside the cell.
+      const displayInline = delimited.display
+        && !delimited.formula.includes('\n')
+        && lineHasPipe(source, index);
+      if (delimited.display && !displayInline) {
+        text += displayMathSource(delimited.formula, source, index);
+        index = delimited.end;
+        atLineStart = source[index - 1] === '\n';
         markSafe();
         continue;
       }
+      // At the source tail the character after the formula is unknown, so
+      // the span stays uncommitted: the next chunk rescans from the opener
+      // and decides the closing guard with the neighbor in hand.
+      const next = source[delimited.end];
+      if (isFinalSegment || next === undefined) markSafe();
+      text += inlineMathSource(
+        delimited.formula,
+        text.length > 0 ? text[text.length - 1] : priorTextChar,
+        next !== undefined && nextBreaksInlineClose(source, delimited.end),
+      );
+      index = delimited.end;
+      atLineStart = source[index - 1] === '\n';
+      if (isFinalSegment || next !== undefined) markSafe();
+      continue;
     }
 
     const character = source[index] ?? '';
-    text += character;
+    if (character === '$' && !isEscaped(source, index, leadingBackslashes)) {
+      text += '\\$';
+    } else {
+      text += character;
+    }
     index++;
     atLineStart = character === '\n';
     if (
@@ -357,6 +441,142 @@ function protectMarkdownMath(
   }
 
   return { text, safeSourceEnd, safeTextEnd };
+}
+
+/**
+ * Emit upstream `$…$` for a `\(…\)` formula. A zero-width space separates a
+ * delimiter from a neighbor that would trip upstream's guards — a digit or
+ * `$` hugging either side makes the whole span literal — and a backslash
+ * neighbor is doubled so it survives its own escape. The guards only exist
+ * when the neighbor is actually hostile; an unconditional one would leave
+ * invisible characters in copied text.
+ */
+function inlineMathSource(
+  formula: string,
+  previous: string | undefined,
+  nextBreaksClose: boolean,
+): string {
+  const prefix = previous === '\\'
+    ? '\\'
+    : previous !== undefined && /[\d$]/.test(previous)
+      ? ZWSP
+      : '';
+  return `${prefix}$${escapeFormulaDollars(formula)}$${nextBreaksClose ? ZWSP : ''}`;
+}
+
+/**
+ * Whether the token at `index` emits a digit or a `$` — the only neighbors
+ * that invalidate a just-emitted `$…$` closing delimiter. A pending `$$`
+ * opener passes through raw, so it counts even before its closer arrives.
+ */
+function nextBreaksInlineClose(source: string, index: number): boolean {
+  if (/\d/.test(source[index])) return true;
+  const next =
+    readDelimitedMath(source, index, '\\(', '\\)', false)
+    ?? readDelimitedMath(source, index, '\\[', '\\]', true)
+    ?? readDelimitedMath(source, index, '$$', '$$', true);
+  if (!next) return false;
+  if (next.kind === 'pending') return source[index] === '$';
+  return !next.display || (!next.formula.includes('\n') && lineHasPipe(source, index));
+}
+
+/**
+ * Escape bare `$` inside a formula so they cannot terminate the emitted
+ * `$…$` early. A `$` already preceded by an odd run of backslashes is an
+ * escaped dollar and stays `\$`.
+ */
+function escapeFormulaDollars(formula: string): string {
+  let out = '';
+  for (let i = 0; i < formula.length; i++) {
+    if (formula[i] === '$' && !isEscaped(formula, i)) out += '\\';
+    out += formula[i];
+  }
+  return out;
+}
+
+/** Whether the delimiter's enclosing source line contains a `|` — i.e. it may
+ * be a table row that a `$$` line would split apart. */
+function lineHasPipe(source: string, index: number): boolean {
+  const lineStart = source.lastIndexOf('\n', index - 1) + 1;
+  const lineEnd = source.indexOf('\n', index);
+  return source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd).includes('|');
+}
+
+/**
+ * Emit upstream `$$`-line display math. Each emitted line repeats the quote
+ * and indentation context of the line the opener sat on, so `> \[…\]` and
+ * `- \[…\]` stay inside their container. Newlines around the block split any
+ * host paragraph; upstream only recognizes `$$` lines it owns outright.
+ */
+function displayMathSource(
+  formula: string,
+  source: string,
+  index: number,
+): string {
+  const lineStart = source.lastIndexOf('\n', index - 1) + 1;
+  const quotePrefix = /^ {0,3}(?:> ?)*/.exec(source.slice(lineStart, index))?.[0] ?? '';
+  const margin = quotePrefix + ' '.repeat(index - lineStart - quotePrefix.length);
+  const body = formula.replaceAll('\n', `\n${margin}`);
+  return `\n${margin}$$\n${margin}${body}\n${margin}$$\n${margin}`;
+}
+
+/**
+ * Span of `](destination …)`/`![…](destination …)` and `][label]` reference
+ * links. A destination ends at the `)` that returns paren depth to zero; an
+ * unclosed one is prose and gets the ordinary `$` treatment.
+ */
+function readLinkDestination(source: string, index: number): number | undefined {
+  if (source[index] !== ']') return undefined;
+  if (source[index + 1] === '[') {
+    const close = source.indexOf(']', index + 2);
+    return close >= 0 && !source.slice(index + 2, close).includes('\n')
+      ? close + 1
+      : undefined;
+  }
+  if (source[index + 1] !== '(') return undefined;
+  let depth = 0;
+  for (let i = index + 1; i < source.length; i++) {
+    const char = source[i];
+    if (char === '\\') {
+      i++;
+    } else if (char === '(') {
+      depth++;
+    } else if (char === ')') {
+      depth--;
+      if (depth === 0) return i + 1;
+    } else if (char === '\n' && depth === 1) {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** `<scheme:…>` and `<address@host>` autolinks take `$` verbatim. */
+function readAutolink(source: string, index: number): number | undefined {
+  if (source[index] !== '<') return undefined;
+  const match = /^<(?:[a-zA-Z][a-zA-Z0-9+.-]*:|[^<>\s@]+@[^<>\s@]+)[^<>\s]*>/.exec(
+    source.slice(index),
+  );
+  return match ? index + match[0].length : undefined;
+}
+
+/**
+ * Bare URLs and addresses that upstream autolinks (`https?://`, `www.`,
+ * `mailto:`, `user@host.tld`), only when not continuing a word.
+ */
+function readBareUrl(source: string, index: number): number | undefined {
+  const previous = source[index - 1];
+  if (previous !== undefined && WORD_CHAR.test(previous)) return undefined;
+  const match = /^(?:https?:\/\/|www\.|mailto:|[\w.+-]+@[\w-]+(?:\.[\w-]+)+)\S*/.exec(
+    source.slice(index),
+  );
+  return match ? index + match[0].length : undefined;
+}
+
+/** `[label]: destination` reference lines take `$` verbatim. */
+function readReferenceDefinition(source: string, index: number): number | undefined {
+  const match = /^ {0,3}\[[^\]\n]+\]:[^\n]*/.exec(source.slice(index));
+  return match ? index + match[0].length : undefined;
 }
 
 function readFence(
@@ -428,10 +648,9 @@ function readDelimitedMath(
   index: number,
   opening: string,
   closing: string,
-  displayMode: boolean,
   allowNewlines: boolean,
 ):
-  | { kind: 'match'; formula: string; displayMode: boolean; end: number }
+  | { kind: 'match'; formula: string; display: boolean; end: number }
   | { kind: 'pending'; end: number }
   | undefined {
   if (!source.startsWith(opening, index)) return undefined;
@@ -450,7 +669,13 @@ function readDelimitedMath(
   }
   const formula = rawFormula.trim();
   if (formula === '') return undefined;
-  return { kind: 'match', formula, displayMode, end: close + closing.length };
+  // A `$` hugging an emitted inline delimiter trips upstream's `$$` guard and
+  // leaves the span literal; display math takes lines verbatim instead.
+  const display = closing !== '\\)';
+  if (!display && (formula.startsWith('$') || formula.endsWith('$'))) {
+    return undefined;
+  }
+  return { kind: 'match', formula, display, end: close + closing.length };
 }
 
 const MAX_LINK_LABEL_DEPTH = 32;
@@ -557,7 +782,11 @@ function countPrecedingBackslashes(source: string, pos: number): number {
 }
 
 /** Whether the character at `pos` is backslash-escaped (odd run before it). */
-function isEscaped(source: string, pos: number, leadingBackslashes: number): boolean {
+function isEscaped(
+  source: string,
+  pos: number,
+  leadingBackslashes = 0,
+): boolean {
   let count = countPrecedingBackslashes(source, pos);
   if (pos - count === 0) count += leadingBackslashes;
   return count % 2 === 1;
@@ -734,10 +963,6 @@ function findPendingFenceBoundary(source: string, from: number): number {
   fenceMatch.lastIndex = from;
   const fence = fenceMatch.exec(source);
   return fence ? fence.index + (source[fence.index] === '\n' ? 1 : 0) : -1;
-}
-
-function mathToken(formula: string, displayMode: boolean): string {
-  return transportToken(formula, displayMode ? '1' : '0');
 }
 
 function transportToken(value: string, kind: '0' | '1' | '2'): string {

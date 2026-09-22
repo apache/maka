@@ -29,7 +29,7 @@ test('archived-only history boots into a usable new task', async ({ window: page
   await expect(reply).toBeVisible({ timeout: 20_000 });
 
   // Visible streaming text is not proof that the Host has released the Turn.
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1);
+  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1);
 
   // Prove bootstrap can restore this history before archiving it.
   await page.reload();
@@ -45,7 +45,8 @@ test('archived-only history boots into a usable new task', async ({ window: page
         return 'archived';
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (message.includes(`Session ${id} has a live derived effect`)) return message;
+        // IPC carries the Host's raw ID, not the renderer's host-qualified ID.
+        if (message.endsWith(' has a live derived effect')) return message;
         throw error;
       }
     }, sessionId), { timeout: 20_000 }).toBe('archived');

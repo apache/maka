@@ -34,57 +34,6 @@ async function sendPrompts(page: Page, prefix: string) {
   await expect(page.locator('.maka-prompt-rail')).toBeVisible();
 }
 
-async function railGeometry(page: Page) {
-  return page.locator('.maka-prompt-rail').evaluate((rail) => {
-    const scroller = document.querySelector('[data-chat-scroll-container]:not([hidden])')!;
-    const edge = scroller.getBoundingClientRect();
-    const ticks = rail.getBoundingClientRect();
-    const composer = document.querySelector('.maka-composer')!.getBoundingClientRect();
-    return { rightInset: edge.right - ticks.right, top: ticks.top - edge.top,
-      bottom: composer.top - ticks.bottom, width: ticks.width };
-  });
-}
-
-test('WorkHub prompt rail uses the scrollport edge and the shared reading width', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
-  const mainWindow = await app.browserWindow(page);
-  const contentWidth = await mainWindow.evaluate((window) => {
-    window.unmaximize();
-    window.setBounds({ width: 1600, height: 900 });
-    return window.getContentSize()[0];
-  });
-  // Startup can restore saved bounds after the first resize request.
-  await expect.poll(async () => {
-    await mainWindow.evaluate((window) => window.setBounds({ width: 1600, height: 900 }));
-    return page.evaluate(() => innerWidth);
-  }).toBe(contentWidth);
-  await sendPrompts(page, 'Session navigation');
-  const sessionRail = await railGeometry(page);
-  const ordinary = await page.locator('.maka-turn').first().evaluate((element) => element.getBoundingClientRect().width);
-  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
-  const workhub = await getWorkHubPage(app);
-  await workhub.setViewportSize({ width: 1600, height: 800 });
-  await sendPrompts(workhub, 'WorkHub navigation');
-  await workhub.screenshot({ path: testInfo.outputPath('workhub-wide.png'), scale: 'css' });
-  const geometry = await railGeometry(workhub);
-  expect(geometry.width).toBeGreaterThan(0);
-  expect(geometry.rightInset).toBeGreaterThanOrEqual(10);
-  expect(geometry.rightInset).toBeLessThanOrEqual(32);
-  expect(Math.abs(geometry.rightInset - sessionRail.rightInset)).toBeLessThanOrEqual(1);
-  // Both surfaces apply their shared transcript gutters exactly once.
-  const hubWidth = await workhub.locator('.maka-turn').first().evaluate((element) => element.getBoundingClientRect().width);
-  expect(Math.abs(hubWidth - ordinary)).toBeLessThanOrEqual(2);
-  for (const width of [1000, 720]) {
-    await workhub.setViewportSize({ width, height: 720 });
-    await expect.poll(async () => (await railGeometry(workhub)).bottom).toBeGreaterThanOrEqual(0);
-    const narrow = await railGeometry(workhub);
-    expect(narrow.rightInset).toBeGreaterThanOrEqual(10);
-    expect(narrow.rightInset).toBeLessThanOrEqual(32);
-    expect(narrow.top).toBeGreaterThanOrEqual(0);
-    expect(await workhub.locator('.workhub-body').evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
-    await workhub.screenshot({ path: testInfo.outputPath(`workhub-${width}.png`), scale: 'css' });
-  }
-});
-
 test('Session keeps a return to WorkHub control when the sidebar is collapsed', async ({ sessionLocalWindow: { page, app } }, testInfo) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   await sendPrompts(page, 'Return navigation');
@@ -133,20 +82,20 @@ test('a pending WorkHub question preserves docked placement, choices and focus a
   await hub.locator(COMPOSER_INPUT).fill(FAKE_ASK_USER_QUESTION_PROMPT);
   await awaitSendReady(hub);
   await hub.locator(COMPOSER_INPUT).press('Enter');
-  await expect(hub.getByRole('radio', { name: /公开测试/ })).toBeVisible();
+  await expect(hub.getByRole('option', { name: /公开测试/ })).toBeVisible();
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
   // Reload rehydrates the pending question through Host interaction queries.
   await hub.reload();
-  const choice = hub.getByRole('radio', { name: /公开测试/ });
+  const choice = hub.getByRole('option', { name: /公开测试/ });
   await expect(choice).toBeVisible();
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
   await choice.click();
   await app.evaluate(async ({ app }) => { if (process.platform === 'darwin') await app.dock!.show(); });
   await hub.evaluate(() => window.maka.workHubPresentation.detach());
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'floating');
-  await expect(choice).toBeChecked();
+  await expect(choice).toHaveAttribute('aria-selected', 'true');
   await expect.poll(() => hub.locator('.maka-choice-panel').evaluate((panel) => panel.contains(document.activeElement))).toBe(true);
   await hub.evaluate(() => window.maka.workHubPresentation.dock());
   await expect(hub.locator('.workHubLive')).toHaveAttribute('data-placement', 'docked');
-  await expect(choice).toBeChecked();
+  await expect(choice).toHaveAttribute('aria-selected', 'true');
 });

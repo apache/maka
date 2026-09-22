@@ -34,10 +34,15 @@ export type HostOperationErrorCode =
   | 'capability_unavailable'
   | 'slug_taken'
   | 'invalid_request'
+  // WorkHub coordination cannot be created until the user selects an
+  // executable default model.
+  | 'model_required'
   // External-session import: no usable model connection to attach the task to.
   | 'model_unavailable'
   // External-session import: the source could not be read or converted.
   | 'source_unreadable'
+  // External-session catalog: the source exceeds an adapter-owned read bound.
+  | 'source_limit_exceeded'
   | 'projection_incomplete'
   | 'stale_cursor'
   | 'persistence_failed'

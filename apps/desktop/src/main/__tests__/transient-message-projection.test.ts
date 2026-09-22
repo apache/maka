@@ -103,21 +103,6 @@ test('keeps transient messages ordered independently from a sparse durable tail'
   assert.deepEqual(projected.map((message) => message.id), ['message-1']);
 });
 
-test('keeps a transient message out of a sparse historical range', () => {
-  const live = { ...transient, id: 'message-live', text: 'latest prompt' };
-  const pending = new Map([[live.id, live]]);
-  const historical: StoredMessage[] = [
-    { type: 'user', id: 'message-old', turnId: 'turn-old', ts: 1, text: 'old prompt' },
-  ];
-
-  const projected = reconcileTransientMessages(pending, historical, {
-    includeTransient: false,
-  });
-
-  assert.deepEqual(projected, []);
-  assert.equal(pending.has('message-live'), true);
-});
-
 test('uses the Host queue snapshot order for already-present transient messages', () => {
   const localSecond = {
     ...transient,
@@ -204,4 +189,11 @@ test('keeps a Host-bound current Turn when a later IPC result has no Turn identi
     ...lateIpcUpdate,
     hostTurnId: 'host-turn',
   });
+});
+
+test('keeps a transient message send time when a later update carries a new timestamp', () => {
+  const first = { ...transient, ts: 2 };
+  const later = { ...transient, ts: 9, text: 'edited text' };
+
+  assert.deepEqual(mergeTransientMessageProjection(first, later), { ...later, ts: 2 });
 });

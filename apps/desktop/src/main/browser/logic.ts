@@ -73,11 +73,29 @@ export function viewportBounds(rect: BrowserViewRect | null): BrowserViewRect | 
   return { x: Math.max(0, Math.round(rect.x)), y: Math.max(0, Math.round(rect.y)), width, height };
 }
 
+/** Convert a renderer CSS-pixel rect to native View bounds in window DIP. */
+export function viewportBoundsAtScale(
+  rect: BrowserViewRect | null,
+  scaleFactor: number,
+): BrowserViewRect | null {
+  const cssBounds = viewportBounds(rect);
+  if (!cssBounds || !Number.isFinite(scaleFactor) || scaleFactor <= 0) return null;
+  const x = Math.round(cssBounds.x * scaleFactor);
+  const y = Math.round(cssBounds.y * scaleFactor);
+  // Scale the far edges, then subtract the scaled origin. Scaling width and
+  // height independently can leave a one-DIP seam after rounding.
+  const right = Math.round((cssBounds.x + cssBounds.width) * scaleFactor);
+  const bottom = Math.round((cssBounds.y + cssBounds.height) * scaleFactor);
+  const width = right - x;
+  const height = bottom - y;
+  return width > 0 && height > 0 ? { x, y, width, height } : null;
+}
+
 /** What a browser action does to the page, for the visible-lease gate below. */
 export type BrowserActionKind = 'observe' | 'mutate' | 'navigate';
 
 /**
- * The visible-lease policy. The agent runs in a conversation's runtime, which may
+ * The ordinary-session visible-lease policy. The agent runs in a conversation's runtime, which may
  * NOT be the conversation on screen; without this gate it could drive a hidden,
  * zero-bounds view after the user switches away. EVERY action — including a
  * read (observe) — must happen in the conversation the user is looking at:

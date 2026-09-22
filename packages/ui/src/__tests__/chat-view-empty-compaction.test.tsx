@@ -28,6 +28,7 @@ import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import type { LiveTurnProjection } from '../live-turn-projection.js';
 import { LocaleProvider } from '../locale-context.js';
+import { renderTranscriptMarkup } from './transcript-test-dom.js';
 
 const activeSession = {
   id: 'session-1',
@@ -36,8 +37,8 @@ const activeSession = {
   labels: [] as string[],
 } as unknown as SessionSummary;
 
-function renderChat(liveTurn?: LiveTurnProjection, overrides: Partial<ComponentProps<typeof ChatView>> = {}): string {
-  return renderToStaticMarkup(
+function renderChat(liveTurn?: LiveTurnProjection, overrides: Partial<ComponentProps<typeof ChatView>> = {}): Promise<string> {
+  return renderTranscriptMarkup(
     <LocaleProvider locale="en">
       <ChatSurfaceLayout composer={null}>
         <ChatView
@@ -53,8 +54,8 @@ function renderChat(liveTurn?: LiveTurnProjection, overrides: Partial<ComponentP
   );
 }
 
-test('renders the live compaction row in a session with no settled messages', () => {
-  const markup = renderChat({
+test('renders the live compaction row in a session with no settled messages', async () => {
+  const markup = await renderChat({
     turnId: 'turn-compact',
     rootExecutionKind: 'context_compact',
     startedAt: 0,
@@ -66,34 +67,34 @@ test('renders the live compaction row in a session with no settled messages', ()
   assert.match(markup, /Compacting context/);
 });
 
-test('retains tool and compaction evidence without activity after observation loss', () => {
+test('retains tool and compaction evidence without activity after observation loss', async () => {
   const messages = [{ type: 'user' as const, id: 'user', turnId: 'prior', text: 'Earlier request', ts: 1 }];
   const tool: LiveTurnProjection = { turnId: 'tool-turn', steps: [{ stepId: 'step', tools: [
     { toolUseId: 'bash', toolName: 'Bash', args: { command: 'echo retained' }, status: 'running' },
   ] }] };
   const compact: LiveTurnProjection = { turnId: 'compact', rootExecutionKind: 'context_compact', steps: [] };
   for (const observed of [true, false, true]) {
-    const toolDocument = parseHTML(renderChat(tool, { messages, activeTurn: observed ? { turnId: tool.turnId } : undefined })).document;
+    const toolDocument = parseHTML(await renderChat(tool, { messages, activeTurn: observed ? { turnId: tool.turnId } : undefined })).document;
     assert.equal(toolDocument.querySelector('.maka-tool-activity-card')?.getAttribute('data-activity-observed'), String(observed));
     assert.match(toolDocument.querySelector('.maka-tool-activity-card')?.textContent ?? '', /echo retained/);
-    const compactDocument = parseHTML(renderChat(compact, { messages, activeTurn: observed ? { turnId: compact.turnId, compacting: true } : undefined })).document;
+    const compactDocument = parseHTML(await renderChat(compact, { messages, activeTurn: observed ? { turnId: compact.turnId, compacting: true } : undefined })).document;
     assert.equal(compactDocument.querySelector('[data-compaction-state]')?.getAttribute('data-compaction-state'), observed ? 'running' : 'unavailable');
     assert.equal(compactDocument.querySelectorAll('.maka-compaction-status .astryx-spinner').length, observed ? 1 : 0);
   }
   assert.equal(tool.steps[0]?.tools[0]?.status, 'running', 'availability never rewrites retained execution evidence');
 });
 
-test('shows one waiting indicator before a named live Turn reaches the transcript', () => {
+test('shows one waiting indicator before a named live Turn reaches the transcript', async () => {
   const liveTurn: LiveTurnProjection = { turnId: 'pending-turn', steps: [], unconfirmed: true };
   const pending = { id: 'pending-user', hostTurnId: liveTurn.turnId, text: 'Please help', ts: 1000, transientPlacement: 'current_turn' as const };
   for (const messages of [[], [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }]]) {
-    const markup = renderChat(liveTurn, { messages, transientMessages: [pending], activeTurn: { turnId: liveTurn.turnId! } });
+    const markup = await renderChat(liveTurn, { messages, transientMessages: [pending], activeTurn: { turnId: liveTurn.turnId! } });
     assert.equal((markup.match(/class="maka-turn-processing"/g) ?? []).length, 1);
-    assert.match(markup, /Waiting for model output/);
+    assert.match(markup, /Pondering/);
     assert.match(markup, /Please help/);
     assert.doesNotMatch(markup, /data-transcript-turn-id="pending-turn"/);
   }
-  const committed = renderChat(liveTurn, {
+  const committed = await renderChat(liveTurn, {
     messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
     activeTurn: { turnId: liveTurn.turnId! },
   });
@@ -101,7 +102,7 @@ test('shows one waiting indicator before a named live Turn reaches the transcrip
   assert.match(committed, /data-transcript-turn-id="pending-turn"/);
 });
 
-test('a new Host Turn owns its waiting footer while the previous answer remains buffered', () => {
+test('a new Host Turn owns its waiting footer while the previous answer remains buffered', async () => {
   const oldTurn: LiveTurnProjection = {
     turnId: 'old-turn', terminal: true,
     steps: [{ stepId: 'old-answer', text: { text: 'Previous answer', complete: true, truncated: false }, tools: [] }],
@@ -109,24 +110,24 @@ test('a new Host Turn owns its waiting footer while the previous answer remains 
   const messages = [{ type: 'user' as const, id: 'old-user', turnId: 'old-turn', text: 'Earlier request', ts: 1 }];
   const transientMessages = [{ id: 'new-user', hostTurnId: 'new-turn', text: 'New request', ts: 2, transientPlacement: 'current_turn' as const }];
   for (const content of [oldTurn, undefined]) {
-    const markup = renderChat(content, { messages, transientMessages, activeTurn: { turnId: 'new-turn' } });
+    const markup = await renderChat(content, { messages, transientMessages, activeTurn: { turnId: 'new-turn' } });
     const { document } = parseHTML(markup);
     assert.equal(document.querySelectorAll('.maka-turn-processing').length, 1);
     assert.equal(document.querySelector('[data-transcript-turn-id="old-turn"] .maka-turn-processing'), null);
     assert.ok(markup.indexOf('New request') < markup.indexOf('maka-turn-processing'));
     if (content) assert.match(markup, /Previous answer/);
   }
-  const idle = renderChat({ ...oldTurn, terminal: undefined }, { messages });
+  const idle = await renderChat({ ...oldTurn, terminal: undefined }, { messages });
   assert.doesNotMatch(idle, /maka-turn-processing/);
 });
 
-test('renders the empty hero when an empty session has no live compaction row', () => {
-  const markup = renderChat(undefined);
+test('renders the empty hero when an empty session has no live compaction row', async () => {
+  const markup = await renderChat(undefined);
 
   assert.doesNotMatch(markup, /Compacting context/);
 });
 
-test('the pending Turn clock ticks from send time and hands over without a duplicate status', async (t) => {
+test('the pending Turn waits without a clock until the Turn start time reaches the client', async (t) => {
   const now = 1_700_000_000_000;
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
   const original = {
@@ -164,14 +165,16 @@ test('the pending Turn clock ticks from send time and hands over without a dupli
   };
   await render({});
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
-  assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /0s/);
+  // No Turn start yet, so no clock.
+  assert.equal(container.querySelector('.maka-turn-elapsed'), null);
   await act(() => t.mock.timers.tick(2_000));
-  assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
+  assert.equal(container.querySelector('.maka-turn-elapsed'), null);
   await render({
     transientMessages: [],
     messages: [{ type: 'user', id: 'durable-user', turnId: liveTurn.turnId, text: pending.text, ts: pending.ts }],
   });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 1);
+  // The Turn's own start drives the clock.
   assert.match(container.querySelector('.maka-turn-elapsed')?.textContent ?? '', /2s/);
   await render({ liveTurns: undefined, activeTurn: undefined, transientMessages: [] });
   assert.equal(container.querySelectorAll('.maka-turn-processing').length, 0);
@@ -189,9 +192,9 @@ test('ChatSurfaceLayout preserves the public emptyState for absent children', ()
 });
 
 
-test('turn identity stays on its exact durable anchor and is absent from ordinary transcripts', () => {
+test('turn identity stays on its exact durable anchor and is absent from ordinary transcripts', async () => {
   const messages = ['one', 'two'].map((turnId) => ({ type: 'user' as const, id: `user-${turnId}`, turnId, text: turnId, ts: 1 }));
-  const { document } = parseHTML(renderChat(undefined, {
+  const { document } = parseHTML(await renderChat(undefined, {
     messages,
     turnDecorations: new Map([['one', { header: <span>Workspace / Work</span>, accentColor: 'red', promptStatus: <span data-test-status>Running work</span> }]]),
   }));
@@ -202,12 +205,12 @@ test('turn identity stays on its exact durable anchor and is absent from ordinar
   assert.equal(document.querySelector('[data-transcript-turn-id="two"] [data-test-status]'), null);
   assert.match(one.querySelector('.maka-message-meta')!.textContent!, /Running work/);
   assert.equal(document.querySelector('[data-transcript-turn-id="two"]')!.getAttribute('data-turn-accent'), null);
-  assert.doesNotMatch(renderChat(undefined, { messages }), /data-turn-accent|Workspace \/ Work/);
+  assert.doesNotMatch(await renderChat(undefined, { messages }), /data-turn-accent|Workspace \/ Work/);
 });
 
 
-test('an initial optimistic prompt uses the same status projection as a durable prompt', () => {
-  const { document } = parseHTML(renderChat(undefined, {
+test('an initial optimistic prompt uses the same status projection as a durable prompt', async () => {
+  const { document } = parseHTML(await renderChat(undefined, {
     messages: [], transientMessages: [{ id: 'pending', hostTurnId: 'choosing', text: 'Choose work', ts: 1, transientPlacement: 'current_turn' }],
     turnDecorations: new Map([['choosing', { header: <></>, promptStatus: <span data-test-status>Waiting for user</span> }]]),
   }));

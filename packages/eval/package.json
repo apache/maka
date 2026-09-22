@@ -36,9 +36,12 @@
     "simulate:fleet": "npm run build && node dist/fleet-simulation.js",
     "test:egress-proxy:live": "python3 harbor/test_egress_filter_live.py"
   },
+  "devDependencies": {
+    "@maka/storage": "0.1.0"
+  },
   "dependencies": {
     "@maka/core": "0.1.0",
     "@maka/runtime-host": "0.1.0",
-    "undici": "^8.10.1"
+    "undici": "^8.10.2"
   }
 }

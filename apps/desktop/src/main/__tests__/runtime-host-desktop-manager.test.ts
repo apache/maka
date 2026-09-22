@@ -30,6 +30,7 @@ import {
   RuntimeHostRequestInterruptedError,
   type RuntimeHostSpawnedProcess,
   type HostHandoffView,
+  type HostHandoffAttentionView,
   type HostHandoffAction,
   type OpenHostHandoffSurface,
   HostHandoffRequiredError,
@@ -49,6 +50,7 @@ import {
   RuntimeHostPairingFinalizationInterruptedError,
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopManager,
+  type RuntimeHostDesktopTargetState,
 } from '../runtime-host-desktop-manager.js';
 
 test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, async () => {
@@ -1729,7 +1731,8 @@ test('cancelling a live handoff does not authorize any replacement', async () =>
   const observed = upgradeRequired(false);
   const conflict = { ...observed,
     registration: { ...observed.registration, lifecycleMode: 'service' as const } };
-  await assert.rejects(startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+  let state: RuntimeHostDesktopTargetState | undefined;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async () => conflict,
     handoffSurface: decideHandoff(() => 'cancel'),
     resolveLocalHostReplacement: async () => ({
@@ -1737,7 +1740,47 @@ test('cancelling a live handoff does not authorize any replacement', async () =>
       replace: async () => assert.fail('cancel must not mutate the service'),
     }),
     onFatalError: () => undefined,
-  }), RuntimeHostUpgradeCancelledError);
+    onTargetStateChanged: (next) => { state = next; },
+  });
+  assert.equal(state?.readiness, 'unavailable');
+  if (state?.readiness === 'unavailable') {
+    assert.ok(state.error instanceof RuntimeHostUpgradeCancelledError);
+  }
+  await owner.close();
+});
+
+test('recovers a degraded Local start through a fresh target generation', async () => {
+  const recovered = candidateHarness();
+  let starts = 0;
+  const readiness: string[] = [];
+  const epochs = new Set<string>();
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => {
+      starts += 1;
+      if (starts === 1) throw new Error('connect failed');
+      return ready(recovered.candidate);
+    },
+    onFatalError: () => undefined,
+    onTargetStateChanged: (state) => {
+      readiness.push(state.readiness);
+      epochs.add(state.epoch);
+    },
+  });
+  const failed = owner.entries().at(-1);
+  assert.equal(starts, 1);
+  assert.equal(failed?.readiness, 'unavailable');
+  if (failed?.readiness === 'unavailable') {
+    assert.equal(failed.error.message, 'connect failed');
+  }
+
+  await owner.retryLocalStart();
+
+  assert.equal(starts, 2);
+  assert.equal(owner.current()?.readiness, 'ready');
+  assert.equal(owner.current()?.hostId, 'test-host');
+  assert.equal(epochs.size, 2, 'the retry runs on a fresh epoch');
+  assert.deepEqual(readiness, ['connecting', 'unavailable', 'connecting', 'ready']);
+  await owner.close();
 });
 
 test('keeps a known repair actionable when its first authority inspection fails', async () => {
@@ -1777,7 +1820,7 @@ test('keeps a known repair actionable when its first authority inspection fails'
 });
 
 function decideHandoff(
-  choose: (view: HostHandoffView) => HostHandoffAction,
+  choose: (view: HostHandoffAttentionView) => HostHandoffAction,
 ): OpenHostHandoffSurface {
   return (submit) => ({
     update(view) { if (view.state === 'attention') submit(view.revision, choose(view)); },

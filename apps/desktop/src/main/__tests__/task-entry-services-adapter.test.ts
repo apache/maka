@@ -23,7 +23,7 @@ import type { MakaBridge } from '../../preload/bridge-contract.js';
 import { createDesktopTaskEntryServices } from '../../renderer/platform/desktop/create-task-entry-services.js';
 
 describe('createDesktopTaskEntryServices', () => {
-  it('maps only the Task Entry catalog and Project selection operations', async () => {
+  it('maps Task Entry catalog and Host-scoped Project operations', async () => {
     const calls: Array<{ name: string; args: unknown[] }> = [];
     let changeHandler: (() => void) | undefined;
     let changes = 0;
@@ -52,7 +52,15 @@ describe('createDesktopTaskEntryServices', () => {
           return cancelled;
         },
       },
-    } as unknown as Pick<MakaBridge, 'newTasks'>;
+      projects: {
+        rename: async (...args: unknown[]) =>
+          calls.push({ name: 'renameProject', args }),
+        archive: async (...args: unknown[]) =>
+          calls.push({ name: 'archiveProject', args }),
+        restore: async (...args: unknown[]) =>
+          calls.push({ name: 'restoreProject', args }),
+      },
+    } as unknown as Pick<MakaBridge, 'newTasks' | 'projects'>;
     const services = createDesktopTaskEntryServices(bridge);
     const host = { profileId: 'remote', hostId: 'host-1' };
 
@@ -63,6 +71,9 @@ describe('createDesktopTaskEntryServices', () => {
     changeHandler?.();
     await services.catalog.addProject(host);
     await services.catalog.relinkProject(host, 'project-1');
+    await services.catalog.renameProject(host, 'project-1', 'Renamed');
+    await services.catalog.archiveProject(host, 'project-1');
+    await services.catalog.restoreProject(host, 'project-1');
     unsubscribe();
 
     assert.deepEqual(calls, [
@@ -70,6 +81,9 @@ describe('createDesktopTaskEntryServices', () => {
       { name: 'subscribeChanges', args: [] },
       { name: 'addProject', args: [host] },
       { name: 'relinkProject', args: [host, 'project-1'] },
+      { name: 'renameProject', args: ['project-1', 'Renamed', host] },
+      { name: 'archiveProject', args: ['project-1', host] },
+      { name: 'restoreProject', args: ['project-1', host] },
     ]);
     assert.equal(changes, 1);
     assert.equal(disposed, 1);

@@ -33,7 +33,7 @@ import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
   type SessionEvent,
-  type ShellRunSnapshotResult,
+  type ShellRunStateResult,
   type ShellRunUpdate,
 } from '@maka/core/events';
 import { isSideConversationSession } from '@maka/core/side-conversation';
@@ -171,6 +171,7 @@ type RuntimeHostSessionDriverConnection = Pick<
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionRequest): Promise<SessionSummary>;
   readMessages(): Promise<StoredMessage[]>;
+  getWorkspaceTarget(): WorkspaceTarget | undefined;
   resumeLatest(): AsyncIterable<SessionEvent>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
@@ -390,7 +391,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
 
   async runUserCommand(command: string): Promise<{
     commandId: string;
-    result: ShellRunSnapshotResult;
+    result: ShellRunStateResult;
     takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
   }> {
     const stopGeneration = this.#userCommandStopGeneration;
@@ -1132,6 +1133,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#sessionId;
   }
 
+  getWorkspaceTarget(): WorkspaceTarget | undefined {
+    return this.#workspace.target;
+  }
+
   getGoal(): GoalProjection | null {
     // The session subscription's continuity snapshot carries the goal
     // projection and is folded on every pushed frame, so this read is as
@@ -1482,11 +1487,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       sessionId,
       transcript: { kind: 'none' },
     });
-    const draining = (async () => {
-      for await (const _frame of subscription) {
-        // Keep the bounded subscription healthy until turn.stop settles.
-      }
-    })();
     try {
       const turn = subscription.snapshot.rootTurn;
       if (!turn || isTerminalTurn(turn)) return;
@@ -1497,7 +1497,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       });
     } finally {
       await subscription.close().catch(() => undefined);
-      await draining.catch(() => undefined);
     }
   }
 
@@ -1717,17 +1716,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     owner: { readonly sessionId: string; readonly commandId: string },
   ): Promise<void> {
     if (this.#activeUserCommands.get(ref) !== owner) return;
-    const stopped = await this.#request('runtime.resource.stop', {
+    await this.#request('runtime.resource.stop', {
       sessionId: owner.sessionId,
       ref,
     });
-    this.#publishShellRunUpdate({
-      sessionId: owner.sessionId,
-      ownership: { kind: 'local' },
-      sourceTurnId: owner.commandId,
-      sourceToolCallId: owner.commandId,
-      result: stopped.resource,
-    });
+    this.#activeUserCommands.delete(ref);
+    this.#publishRuntimeResource(owner.sessionId, ref);
   }
 
   #publishShellRunUpdate(update: ShellRunUpdate): void {
@@ -1864,16 +1858,11 @@ async function loadCurrentMessages(
     sessionId,
     transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
   });
-  const draining = (async () => {
-    for await (const _frame of subscription) {
-      // The transcript is pinned to the subscription snapshot. Drain newer
-      // frames only to preserve the bounded transport while the read runs.
-    }
-  })();
+  // This read never declares readiness, so the Host holds every frame instead
+  // of queueing them against a consumer that will not take them.
   try {
     return await subscription.loadTranscript(decodeStoredMessage);
   } finally {
     await subscription.close().catch(() => undefined);
-    await draining.catch(() => undefined);
   }
 }

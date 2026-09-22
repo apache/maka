@@ -96,14 +96,7 @@
   box-shadow: none;
 }
 
-.agents-chat-panel {
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-}
-
+.agents-chat-panel,
 .agents-chat-view-root {
   min-width: 0;
   min-height: 0;

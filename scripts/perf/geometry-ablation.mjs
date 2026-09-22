@@ -122,11 +122,19 @@ if (process.versions.electron) {
     const metrics = () =>
       page.evaluate(() => {
         const root = document.querySelector('[data-chat-scroll-container]');
+        const origin = root.getBoundingClientRect().top;
+        const mounted = [...root.querySelectorAll('.maka-transcript-turn')];
         return {
           h: root.scrollHeight,
           t: root.scrollTop,
           v: root.clientHeight,
-          count: root.querySelectorAll('.maka-transcript-turn').length,
+          count: mounted.length,
+          tops: Object.fromEntries(
+            mounted.map((turn) => [
+              turn.dataset.transcriptTurnId,
+              turn.getBoundingClientRect().top - origin,
+            ]),
+          ),
         };
       });
     for (const [scene, turns] of scenes) {
@@ -134,12 +142,25 @@ if (process.versions.electron) {
         await page.goto(
           `${server.baseUrl}/iframe.html?id=product-shell-official-appshell--${scene}&viewMode=story`,
         );
-        await expect(page.locator('.maka-transcript-turn')).toHaveCount(turns);
-        // Completed process content is now collapsed by default. Measure its
+        // Only the rows near the viewport are mounted, so the fixture's
+        // membership is checked across the sweep instead of here.
+        await expect(page.locator('.maka-transcript-turn').first()).toBeAttached();
+        const seen = new Set();
+        // Completed process content is collapsed by default. Measure its
         // expanded reading state, otherwise the 45-tool scene has no overflow.
-        const summaries = page.locator('.maka-processing-sequence:not([open]) > summary');
-        const expandedProcess = (await summaries.count()) > 0;
-        for (const summary of await summaries.all()) await summary.click();
+        // Clicked from inside the page: opening one can unmount a row, which
+        // Playwright's own click retries as a detached element until it times
+        // out.
+        const expandProcesses = () =>
+          page.evaluate(() => {
+            const collapsed = [
+              ...document.querySelectorAll('.maka-processing-sequence:not([open]) > summary'),
+            ];
+            for (const summary of collapsed) summary.click();
+            return collapsed.length;
+          });
+        const expandedProcess = (await expandProcesses()) > 0;
+        for (let round = 0; round < 10 && (await expandProcesses()) > 0; round++);
         await page.evaluate(() => document.fonts.ready);
         await expect(page.locator('.maka-markdown-pending')).toHaveCount(0);
         if (expandedProcess) {
@@ -153,7 +174,7 @@ if (process.versions.electron) {
             return m.h - m.v - m.t;
           })
           .toBeLessThanOrEqual(4);
-        const initial = await metrics();
+        const { tops: _mountedAtRest, ...initial } = await metrics();
         expect(initial.h).toBeGreaterThan(initial.v * 3);
         const start = await page.evaluate(() => {
           window.__geometry.phase = 'cold-up';
@@ -161,13 +182,33 @@ if (process.versions.electron) {
         });
         const beforeCpu = await cdp.send('Performance.getMetrics');
         const box = await page.locator('[data-chat-scroll-container]').boundingBox();
+        // The row the reader's eye is on: the last one whose top has passed the
+        // viewport edge, or the first row when none has. A row measured for the
+        // first time inside the viewport necessarily pushes what is below it,
+        // so this anchor — not every mounted row — is what must hold still.
+        const anchorOf = (m) => {
+          const rows = Object.entries(m.tops);
+          const passed = rows.filter(([, top]) => top <= 0.5);
+          return passed.length
+            ? passed.reduce((a, b) => (b[1] > a[1] ? b : a))
+            : rows.reduce((a, b) => (b[1] < a[1] ? b : a), rows[0]);
+        };
+        // Returns how far the reader's anchor moved away from what the wheel
+        // asked for, how many ticks moved it at all, and every scrollHeight the
+        // sweep passed through.
         const sweep = async (phase, deltaY) => {
           await page.evaluate((phase) => {
             window.__geometry.phase = phase;
           }, phase);
+          let displacement = 0;
+          let slips = 0;
+          const heights = [];
           for (let tick = 0; tick < 350; tick++) {
             const before = await metrics();
-            if (deltaY < 0 ? before.t <= 1 : before.h - before.v - before.t <= 1) return;
+            heights.push(before.h);
+            for (const id of Object.keys(before.tops)) seen.add(id);
+            const room = deltaY < 0 ? before.t : before.h - before.v - before.t;
+            if (room <= 1) return { displacement, slips, heights };
             await cdp.send('Input.dispatchMouseEvent', {
               type: 'mouseWheel',
               x: box.x + box.width / 2,
@@ -177,12 +218,33 @@ if (process.versions.electron) {
             });
             await paint();
             const after = await metrics();
-            expect(after.count, 'fixed fixture membership changed').toBe(turns);
+            heights.push(after.h);
+            for (const id of Object.keys(after.tops)) seen.add(id);
+            expect(after.count, 'the transcript unmounted under the reader').toBeGreaterThan(0);
+            // The wheel asks for `deltaY`, or for whatever is left at the edge.
+            // Content must travel exactly that far: a virtualizer correcting a
+            // row's size above the reader is free to move `scrollTop`, but not
+            // the words the reader is looking at.
+            const asked = -Math.sign(deltaY) * Math.min(Math.abs(deltaY), room);
+            const anchor = anchorOf(before);
+            if (anchor && anchor[0] in after.tops) {
+              const moved = Math.abs(after.tops[anchor[0]] - anchor[1] - asked);
+              displacement = Math.max(displacement, moved);
+              if (moved > 1) slips += 1;
+            }
           }
           throw new Error(`${scene}/${phase} did not reach the edge within 350 wheel ticks`);
         };
-        await sweep('cold-up', -600);
+        const cold = await sweep('cold-up', -600);
+        // A sweep from the tail to the head passes every row, so the whole
+        // fixture must have been mounted at some point and nothing beyond it.
+        expect(seen.size, 'fixed fixture membership changed').toBe(turns);
         const afterCpu = await cdp.send('Performance.getMetrics');
+        // Every row has now been measured, so the document's height is no
+        // longer an estimate. Reading back over it must not resize it at all —
+        // that is the difference between the cost of estimating and a defect.
+        const warmDown = await sweep('warm-down', 600);
+        const warmUp = await sweep('warm-up', -600);
         await page.evaluate(() => {
           window.__geometry.phase = 'done';
         });
@@ -197,9 +259,7 @@ if (process.versions.electron) {
           };
         });
         expect(state.remainingAuto, 'missed a lazy boundary').toBe(0);
-        const up = state.frames.filter((f) => f.phase === 'cold-up');
-        const heights = [initial.h, ...up.map((f) => f.h)];
-        const maxReverse = Math.max(0, ...up.slice(1).map((f, i) => f.t - up[i].t));
+        const spread = (list) => Math.max(...list) - Math.min(...list);
         const metric = (list, name) => list.metrics.find((m) => m.name === name)?.value ?? 0;
         const row = {
           scene,
@@ -210,8 +270,12 @@ if (process.versions.electron) {
           mountLayoutMs: metric(beforeCpu, 'LayoutDuration') * 1000,
           mountTaskMs: metric(beforeCpu, 'TaskDuration') * 1000,
           firstRootMs: state.firstRootMs,
-          heightDrift: Math.max(...heights) - Math.min(...heights),
-          maxReverse,
+          coldHeightDrift: spread([initial.h, ...cold.heights]),
+          warmHeightDrift: spread([...warmDown.heights, ...warmUp.heights]),
+          coldReaderDisplacement: cold.displacement,
+          coldReaderSlips: cold.slips,
+          warmReaderDisplacement: Math.max(warmDown.displacement, warmUp.displacement),
+          warmReaderSlips: warmDown.slips + warmUp.slips,
           maxTaskMs: Math.max(0, ...state.tasks.map((t) => t.duration)),
           scrollMaxTaskMs: Math.max(
             0,
@@ -231,7 +295,7 @@ if (process.versions.electron) {
               viewport: '1200x900',
               repetitions,
               conditions:
-                'Same Electron; fresh DOM per trial; fonts and Markdown ready; no offscreen box reads; real CDP upward wheel. Synthetic fixed-range production stories, no Host or paging.',
+                'Same Electron; fresh DOM per trial; fonts and Markdown ready; no offscreen box reads; real CDP wheel, once up over unmeasured rows and then down and up again over measured ones. Synthetic fixed-range production stories, no Host or paging.',
               rows,
             },
             null,
@@ -242,8 +306,11 @@ if (process.versions.electron) {
           JSON.stringify({
             scene,
             trial,
-            heightDrift: row.heightDrift,
-            maxReverse,
+            coldHeightDrift: row.coldHeightDrift,
+            warmHeightDrift: row.warmHeightDrift,
+            coldReaderDisplacement: row.coldReaderDisplacement,
+            coldReaderSlips: row.coldReaderSlips,
+            warmReaderSlips: row.warmReaderSlips,
             readyMs: Math.round(start),
             maxTaskMs: row.maxTaskMs,
             scrollMaxTaskMs: row.scrollMaxTaskMs,
@@ -251,8 +318,19 @@ if (process.versions.electron) {
           }),
         );
         if (process.argv.includes('--assert-stable')) {
-          expect(row.heightDrift, `${scene}: fixed-range height drift`).toBeLessThanOrEqual(1);
-          expect(maxReverse, `${scene}: upward scroll reversed`).toBeLessThanOrEqual(1);
+          // Once every row has been measured there is nothing left to correct,
+          // so a measured transcript owes the reader an exact ride.
+          expect(row.warmReaderSlips, `${scene}: measured transcript moved the reader`).toBe(0);
+          expect(row.warmHeightDrift, `${scene}: measured height drift`).toBeLessThanOrEqual(1);
+          // Reading over unmeasured rows costs at most one slip: a Turn taller
+          // than the measure-ahead margin cannot be measured before it reaches
+          // the reader, and a correction to a row already straddling the
+          // viewport edge is the one virtua does not absorb. More than one and
+          // rows are being measured too late again.
+          expect(
+            row.coldReaderSlips,
+            `${scene}: unmeasured rows moved the reader, worst ${row.coldReaderDisplacement}px`,
+          ).toBeLessThanOrEqual(1);
         }
       }
     }
@@ -265,7 +343,7 @@ if (process.versions.electron) {
         conditions:
           'One Electron process, production layout, fresh DOM per trial. Mount metrics include document navigation and readiness polling; not disk-cold startup or screen presentation.',
         limits:
-          'Synthetic fixed-range production components, no Host or paging. Three samples per scene by default; p95 is the maximum. --assert-stable gates cold upward height and monotonicity; timing measurements have no threshold. Scroll layout/task samples cover only the cold upward sweep.',
+          'Synthetic fixed-range production components, no Host or paging. Three samples per scene by default; p95 is the maximum. --assert-stable gates a measured transcript exactly — no reader slip, no height drift — and allows the first read over unmeasured rows one slip, for a Turn taller than the measure-ahead margin. How far that one slip moves the reader, and how much the document resizes while it is being measured, are recorded without thresholds, like the timing measurements. Scroll layout/task samples cover only the cold upward sweep.',
       },
       scenes.flatMap(([scene]) => {
         const group = rows.filter((r) => r.scene === scene);
@@ -276,8 +354,11 @@ if (process.versions.electron) {
           'maxTaskMs',
           'scrollMaxTaskMs',
           'layoutMs',
-          'heightDrift',
-          'maxReverse',
+          'coldHeightDrift',
+          'warmHeightDrift',
+          'coldReaderDisplacement',
+          'coldReaderSlips',
+          'warmReaderSlips',
         ].map((metric) => ({
           scenario: scene,
           metric,

@@ -26,6 +26,7 @@
 /* ──────────────────────────────────────────────────────────────────────── */
 
 .maka-detail-with-artifacts {
+  position: relative;
   display: grid;
   grid-template-areas:
     "main right-handle right"
@@ -57,7 +58,7 @@
   grid-template-rows: var(--maka-plate-titlebar-clearance) minmax(0, 1fr);
   /* Plate, on the same terms as the conversation beside it: same surface and
      same corner. The right workbar's tab toolbar owns the shared titlebar band
-     instead of starting below it, so tabs and the panel toggle form one row. */
+     instead of starting below it, keeping tabs clear of native window controls. */
   background: var(--agents-content-area-bg);
   border-radius: var(--radius-modal);
   box-sizing: border-box;
@@ -75,8 +76,8 @@
 
 /* On a wide window the right column eases open and shut the way the sidebar
    does. The children keep the open width and hang off the box's right edge,
-   so the face and the toggle stay where they will rest and the box's left
-   edge sweeps over them; left-anchored they would ride in from the toggle.
+   so the panel contents stay in place while the box's left edge sweeps over
+   them.
    The lone grid track grows to the children's width, so it is the track that
    sits at the end: `end` alignment overflows at the start edge. An auto
    margin would resolve to 0 instead. */
@@ -176,7 +177,7 @@
   box-sizing: border-box;
   /* The rail belongs to the bar, not to the tab strip. `TabList hasDivider`
      draws it on the strip's own box, which ends where the tabs do, so it ran
-     out from under `[+]` and the collapse toggle and read as a line beneath
+     out from under `[+]` and read as a line beneath
      half a row. This is the second idiom Astryx's `Tab` names for the rail
      ("TabList `hasDivider` or a Toolbar with a bottom divider"): the bar
      carries it, and hands the tabs `--_tab-indicator-bottom` so the selected
@@ -214,9 +215,7 @@
   --maka-workbar-rail-gap: calc(
     (var(--maka-plate-titlebar-clearance) - var(--size-element-sm)) / 2
   );
-  /* The right pad is the window titlebar strip's gutter: the collapse toggle
-     is one control that moves between the two bands, and
-     `app-shell.stories.tsx` holds it to the same x in both. */
+  /* Keep tabs clear of the native window controls in the shared titlebar band. */
   padding-inline: var(--space-2) var(--maka-titlebar-gutter-right);
   -webkit-app-region: drag;
 }
@@ -262,10 +261,7 @@
   animation: maka-spin 1s linear infinite;
 }
 
-.maka-workbar-panel-toggle {
-  flex: 0 0 auto;
-  margin-left: var(--space-1);
-}
+
 
 .maka-session-workbar-panel {
   min-height: 0;
@@ -299,4 +295,93 @@
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
+}
+
+.maka-workbar-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-inline-start: var(--space-1);
+  border-radius: var(--radius-sm);
+}
+.maka-workbar-tab-close:hover { background: var(--state-hover-bg); }
+
+/* The conversation's renderer paints this overlay. No grid track is reserved:
+   native WorkHub cannot be covered by controls painted in Main's DOM. */
+button.maka-workbar-edge {
+  grid-area: main;
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  z-index: 3;
+  width: 12px;
+  height: 112px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+button.maka-workbar-edge:is(:hover, :active, :focus-visible) { background: transparent; }
+.maka-detail-with-artifacts:has(.workHubDock[data-native-edge]:not([hidden])) .maka-workbar-edge {
+  visibility: hidden;
+  pointer-events: none;
+}
+/* Leave space between the anchor targets and the edge control, without moving
+   the conversation or its scrollbar. The resize separator stays outside both. */
+:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail { right: 30px; }
+:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail:hover { right: 33px; }
+.maka-workbar-edge-glass {
+  position: absolute;
+  top: 50%;
+  right: -12px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 112px;
+  /* The ends attach to the boundary; the middle bows into the conversation. */
+  clip-path: path('M28 0 C28 22 0 27 0 56 C0 85 28 90 28 112 Z');
+  background: linear-gradient(105deg, color-mix(in oklch, var(--foreground) 16%, transparent), color-mix(in oklch, var(--background-elevated) 62%, transparent) 48%, color-mix(in oklch, var(--foreground) 6%, transparent));
+  backdrop-filter: blur(16px) saturate(135%);
+  box-shadow: inset -1px 0 color-mix(in oklch, var(--foreground) 12%, transparent);
+  opacity: 0;
+  transform-origin: right center;
+  transform: translateY(-50%) scaleX(.08);
+  transition: opacity 180ms ease, transform 340ms cubic-bezier(.2,.8,.2,1);
+  pointer-events: none;
+}
+.maka-workbar-edge-glass svg { translate: -4px 0; }
+.maka-workbar-edge:is(:hover, :focus-visible) .maka-workbar-edge-glass {
+  opacity: 1;
+  transform: translateY(-50%) scaleX(1);
+}
+.maka-workbar-edge:active .maka-workbar-edge-glass { transform: translateY(-50%) scaleX(.86); }
+.maka-workbar-edge:focus-visible { outline: none; }
+.maka-workbar-edge:focus-visible .maka-workbar-edge-glass { background-color: color-mix(in oklch, var(--focus-ring) 24%, var(--background-elevated)); }
+/* An explicit placement comes from Main for the native WorkHub renderer,
+   whose own width is not the workspace's responsive breakpoint. */
+.maka-workbar-edge[data-placement="bottom"] {
+  top: auto; right: auto; bottom: 12px; left: 50%; transform: translateX(-50%); width: 112px; height: 12px;
+}
+.maka-workbar-edge[data-placement="bottom"] .maka-workbar-edge-glass {
+  top: auto; right: auto; bottom: -12px; left: 50%; width: 112px; height: 28px;
+  clip-path: path('M0 28 C22 28 27 0 56 0 C85 0 90 28 112 28 Z');
+  transform-origin: center bottom; transform: translateX(-50%) scaleY(.08);
+}
+.maka-workbar-edge[data-placement="bottom"]:is(:hover, :focus-visible) .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(1); }
+.maka-workbar-edge[data-placement="bottom"]:active .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(.86); }
+.maka-workbar-edge[data-placement="bottom"] svg { rotate: 90deg; translate: 0 -4px; }
+@media (prefers-reduced-motion: reduce) {
+  .maka-workbar-edge-glass { transition: none; }
+}
+@media (hover: none) {
+  .maka-workbar-edge-glass { opacity: .7; transform: translateY(-50%) scaleX(1); }
+  .maka-workbar-edge[data-placement="bottom"] .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(1); }
+}
+@media (forced-colors: active) {
+  .maka-workbar-edge-glass { background: ButtonFace; color: ButtonText; backdrop-filter: none; }
 }

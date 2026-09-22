@@ -25,6 +25,7 @@ import type {
   ToolActivityKind,
 } from '@maka/core/events';
 import { TOOL_ACTIVITY_KINDS } from '@maka/core/events';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { isExecutorId } from '@maka/core/executor-id';
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import {
@@ -50,6 +51,10 @@ export interface PluginExecutorRequest {
   readonly conversationKey: string;
   readonly text: string;
   readonly cwd: string;
+  /** Executor-specific model selected for this Session. */
+  readonly model?: string;
+  /** Executor-specific reasoning depth; null restores the provider default. */
+  readonly reasoningEffort?: ThinkingLevel | null;
   /** Child-agent instruction when this request belongs to a linked child Session. */
   readonly instructions?: string;
   readonly attachments?: readonly AttachmentRef[];

@@ -20,14 +20,17 @@
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
 import {
+  ExternalSessionCatalogCursorError,
   ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
   type ExternalSessionAdapter,
   type ExternalSessionAdapterRegistry,
   type ExternalSessionSummary,
 } from '@maka/core/external-session';
+import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
-import type { ExternalSessionImportLookupResult } from '@maka/storage/session-store';
+import type { ExternalSessionImportLookupResult } from '@maka/storage/execution-stores';
 import type { SessionCatalogRecord } from '@maka/storage/execution-stores';
 import { ExternalSessionImporter } from '@maka/storage/external-sessions';
 import {
@@ -58,6 +61,7 @@ type ExternalSessionStore = {
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
+    options?: { readonly onCommitStarted?: () => void },
   ): Promise<SessionHeader>;
   lookupExternalSessionImports(
     adapterId: string,
@@ -134,7 +138,15 @@ export class HostExternalSessionCoordinator {
     const headers = await this.#sessions.listHeaders();
     for (const header of headers) {
       if (header.transcriptLedgerVersion === 0) {
-        await this.#prepareStagedSession(header.id);
+        try {
+          await this.#prepareStagedSession(header.id);
+        } catch (error) {
+          // One staged Session can remain unpublished for a later recovery
+          // attempt without preventing unrelated Sessions or Host startup.
+          console.error(
+            `[runtime-host] staged import recovery deferred (${header.id}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+          );
+        }
       }
     }
   }
@@ -171,52 +183,76 @@ export class HostExternalSessionCoordinator {
       const cwd = input.workspace
         ? (await this.#workspaceResolver.resolve(input.workspace)).cwd
         : undefined;
-      const offset = input.cursor === undefined ? 0 : Number(input.cursor);
-      const sessions =
-        // The term reaches the adapter rather than being applied to the page
-        // below: paging happens after this call, so filtering afterwards would
-        // search the 16 rows already fetched instead of the source.
-        (
-          await adapter.listSessions({
-            ...(cwd === undefined ? {} : { cwd }),
-            ...(input.includeArchived === undefined
-              ? {}
-              : { includeArchived: input.includeArchived }),
-            ...(input.text === undefined ? {} : { text: input.text }),
-          })
-        )
-          .map(toWireSummary)
-          .filter((summary): summary is ExternalSessionCatalogItem => summary !== undefined);
-      const candidates = sessions.slice(offset, offset + EXTERNAL_SESSION_PAGE_MAX_ITEMS);
+      const query = {
+        ...(cwd === undefined ? {} : { cwd }),
+        ...(input.includeArchived === undefined ? {} : { includeArchived: input.includeArchived }),
+        ...(input.text === undefined ? {} : { text: input.text }),
+        limit: EXTERNAL_SESSION_PAGE_MAX_ITEMS + 1,
+      };
+      const sourcePage = await adapter.listSessionPage({
+        ...query,
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      });
+      const hasMore =
+        sourcePage.hasMore || sourcePage.items.length > EXTERNAL_SESSION_PAGE_MAX_ITEMS;
+      const sourceItems = sourcePage.items.slice(0, EXTERNAL_SESSION_PAGE_MAX_ITEMS);
+      const sourcePageEndCursor = sourceItems.at(-1)?.nextCursor;
+      const candidates = sourceItems.flatMap(({ summary, nextCursor }) => {
+        const session = toWireSummary(summary);
+        return session ? [{ session, nextSourceCursor: nextCursor }] : [];
+      });
       const imports = await this.#sessions.lookupExternalSessionImports(
         input.adapterId,
-        candidates.map(({ id }) => id),
+        candidates.map(({ session }) => session.id),
         EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
       );
       const importsBySource = new Map(imports.map((state) => [state.sourceSessionId, state]));
-      const enrichedCandidates = candidates.map((session) => {
+      const enrichedCandidates = candidates.map(({ session, nextSourceCursor }) => {
         const state = importsBySource.get(session.id);
         return {
-          ...session,
-          importState: {
-            importedCount: state?.livePublishedImportCount ?? 0,
-            importedSessionIds: state?.recentSessionIds ?? [],
-            isImporting: this.#importsInFlight.has(importKey(input.adapterId, session.id)),
+          session: {
+            ...session,
+            importState: {
+              importedCount: state?.livePublishedImportCount ?? 0,
+              // Every field of a row is bounded here, so the page budget can
+              // only ever be filled by several rows: one row is capped well
+              // below it, and the assembly would otherwise have to choose
+              // between overspending and hiding a Session. An id is a key, not
+              // display text, so one that cannot go on the wire is dropped
+              // rather than truncated into an id that resolves to nothing.
+              importedSessionIds: (state?.recentSessionIds ?? []).filter(wireSessionId),
+              isImporting: this.#importsInFlight.has(importKey(input.adapterId, session.id)),
+            },
           },
+          nextSourceCursor,
         };
       });
-      const page = boundedCatalogPage(enrichedCandidates, offset, sessions.length);
-      const nextOffset = offset + page.length;
+      const page = boundedCatalogPage(enrichedCandidates, hasMore);
+      const nextCursor =
+        page.nextSourceCursor !== undefined
+          ? String(page.nextSourceCursor)
+          : hasMore && sourcePageEndCursor !== undefined
+            ? String(sourcePageEndCursor)
+            : null;
       return {
         ok: true,
         result: {
-          sessions: page,
-          nextCursor: nextOffset < sessions.length ? String(nextOffset) : null,
+          sessions: page.sessions,
+          nextCursor,
         },
       };
     } catch (error) {
       if (error instanceof WorkspaceResolutionError) {
         return queryFailure('invalid_request', error.message);
+      }
+      if (error instanceof ExternalSessionCatalogCursorError) {
+        return queryFailure('invalid_request', 'External Session catalog cursor is invalid');
+      }
+      if (error instanceof ExternalSessionLimitError) {
+        return queryFailure(
+          'source_limit_exceeded',
+          'External Session source exceeds the catalog read limit',
+        );
       }
       return queryFailure('persistence_failed', 'External Session catalog could not be read');
     }
@@ -262,8 +298,11 @@ export class HostExternalSessionCoordinator {
     let commitAttempted = false;
     const importer = new ExternalSessionImporter(this.#adapters, {
       createImportedSession: async (sessionInput, messages, externalOrigin) => {
-        commitAttempted = true;
-        return this.#sessions.createImportedSession(sessionInput, messages, externalOrigin);
+        return this.#sessions.createImportedSession(sessionInput, messages, externalOrigin, {
+          onCommitStarted: () => {
+            commitAttempted = true;
+          },
+        });
       },
     });
     let header: SessionHeader;
@@ -285,8 +324,8 @@ export class HostExternalSessionCoordinator {
           };
         }
         return importFailure(
-          isSourceSessionNotFound(error) ? 'not_found' : 'source_unreadable',
-          isSourceSessionNotFound(error)
+          error instanceof ExternalSessionNotFoundError ? 'not_found' : 'source_unreadable',
+          error instanceof ExternalSessionNotFoundError
             ? 'External Session does not exist'
             : 'External Session could not be read or converted',
         );
@@ -350,7 +389,7 @@ export class HostExternalSessionCoordinator {
 
 function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogItem | undefined {
   if (
-    !wireSourceSessionId(summary.id) ||
+    !wireSessionId(summary.id) ||
     typeof summary.name !== 'string' ||
     typeof summary.cwd !== 'string'
   ) {
@@ -371,27 +410,39 @@ function toWireSummary(summary: ExternalSessionSummary): ExternalSessionCatalogI
   };
 }
 
+/** One page of the catalog, under the encoded-result budget. */
 function boundedCatalogPage(
-  candidates: readonly ExternalSessionCatalogItem[],
-  offset: number,
-  totalCount: number,
-): ExternalSessionCatalogItem[] {
+  candidates: readonly {
+    session: ExternalSessionCatalogItem;
+    nextSourceCursor: string;
+  }[],
+  hasMore: boolean,
+): { sessions: ExternalSessionCatalogItem[]; nextSourceCursor?: string } {
   const page: ExternalSessionCatalogItem[] = [];
   const budget = new JsonArrayPageBudget(EXTERNAL_SESSION_RESULT_MAX_BYTES, {
     sessions: [],
     nextCursor: null,
   });
-  for (const candidate of candidates) {
-    const nextOffset = offset + page.length + 1;
-    if (!budget.tryAppend(candidate, nextOffset < totalCount ? String(nextOffset) : null)) {
-      break;
+  for (const [index, candidate] of candidates.entries()) {
+    const fits = budget.tryAppend(
+      candidate.session,
+      hasMore || index + 1 < candidates.length ? String(candidate.nextSourceCursor) : null,
+    );
+    if (fits) {
+      page.push(candidate.session);
+      continue;
     }
-    page.push(candidate);
+    // Every wire-valid row must fit by itself; the wire caps are chosen to
+    // make that true independently of surrounding rows.
+    if (index === 0) throw new Error('External Session catalog row exceeds the page budget');
+    // Resume after the last row returned, so the candidate that did not fit
+    // remains visible on the next page.
+    return { sessions: page, nextSourceCursor: candidates[index - 1]!.nextSourceCursor };
   }
-  return page;
+  return { sessions: page };
 }
 
-function wireSourceSessionId(value: unknown): value is string {
+function wireSessionId(value: unknown): value is string {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
@@ -424,10 +475,6 @@ function safeTimestamp(value: number | undefined): number | undefined {
     value <= 8_640_000_000_000_000
     ? value
     : undefined;
-}
-
-function isSourceSessionNotFound(error: unknown): boolean {
-  return error instanceof Error && /Session not found|Session does not exist/i.test(error.message);
 }
 
 function importKey(adapterId: string, sourceSessionId: string): string {

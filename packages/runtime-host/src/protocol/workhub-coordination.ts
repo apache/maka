@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { AttachmentRef } from '@maka/core/events';
 import { isWorkHubActionResult, type WorkHubActionResult } from '@maka/core/workhub-action-result';
 import { decodeMessageContent } from './turn.js';
@@ -53,24 +54,35 @@ import {
 
 export interface WorkHubCoordinationConfigureModelInput {
   readonly expectedRevision: number;
+  /** The coordinator stays native because its WorkHub tools are provided by Maka. */
   readonly modelTarget: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
+  readonly thinkingLevel: ThinkingLevel | null;
 }
 
 export function decodeWorkHubCoordinationConfigureModelInput(
   value: unknown,
 ): WorkHubCoordinationConfigureModelInput {
-  const input = requireExactRecord(value, 'WorkHub model configuration', [
-    'expectedRevision',
-    'modelTarget',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'WorkHub model configuration',
+    ['expectedRevision', 'modelTarget', 'thinkingLevel'],
+    [],
+  );
   const decoded = decodeSessionConfigurationUpdateInput({
     sessionId: WORKHUB_COORDINATION_SESSION_ID,
     expectedRevision: input.expectedRevision,
-    patch: { modelTarget: input.modelTarget },
+    patch: {
+      modelTarget: input.modelTarget,
+      thinkingLevel: input.thinkingLevel,
+    },
   });
   return {
     expectedRevision: decoded.expectedRevision,
-    modelTarget: decoded.patch.modelTarget!,
+    modelTarget: decoded.patch.modelTarget as Extract<
+      SessionModelTarget,
+      { readonly kind: 'explicit' }
+    >,
+    thinkingLevel: decoded.patch.thinkingLevel ?? null,
   };
 }
 
@@ -78,12 +90,15 @@ export const WORKHUB_COORDINATION_TEXT_MAX_BYTES = 48 * 1024;
 const COORDINATION_TITLE_MAX_BYTES = 512;
 const CANDIDATE_SET_ID_MAX_BYTES = 96;
 export const WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS = 32;
+export const WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE =
+  'WorkHub Coordination Session requires an available default model';
 
 const RESOLVE_ERRORS = [
   'host_not_ready',
   'host_draining',
   'operation_unavailable',
   'operation_conflict',
+  'model_required',
   'persistence_failed',
   'commit_outcome_unknown',
   'internal_failure',
@@ -255,7 +270,10 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
         {
           sessionId: WORKHUB_COORDINATION_SESSION_ID,
           expectedRevision: input.expectedRevision,
-          patch: { modelTarget: input.modelTarget },
+          patch: {
+            modelTarget: input.modelTarget,
+            thinkingLevel: input.thinkingLevel,
+          },
         },
         output,
       ),
