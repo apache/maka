@@ -2106,18 +2106,6 @@ function AppShellContent({
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
-    <Conversation.SessionLocalMessages
-      sessionId={activeId}
-      queue={activeMessageQueue?.entries}
-      session={activeSession}
-      publish={addTransientMessage} update={updateTransientMessage}
-      retire={removeTransientMessage}
-      {...Conversation.composerMessageRecovery({
-        sessionId: activeId, directoryHostId, composerRef,
-        enabled: navSelection.section === 'sessions' && canStageComposerContext && !revisionDraft,
-        hasPendingContext, pendingQuotes, restoreMessageContext, restoreQuotes,
-      })}
-    />
     <CatalogRowWatch
       catalog={sessionCatalogController}
       sessionIds={[revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId]}
@@ -2136,6 +2124,18 @@ function AppShellContent({
     <ModuleHub.ModuleHubSkillCatalogRevisionBoundary
       render={renderComposerMentionsProvider(composerMentionsSurface)}
     >
+    <Conversation.SessionLocalMessages
+      sessionId={activeId}
+      queue={activeMessageQueue?.entries}
+      session={activeSession}
+      publish={addTransientMessage} update={updateTransientMessage}
+      retire={removeTransientMessage}
+      {...Conversation.composerMessageRecovery({
+        sessionId: activeId, directoryHostId, composerRef,
+        enabled: navSelection.section === 'sessions' && canStageComposerContext && !revisionDraft,
+        hasPendingContext, pendingQuotes, restoreMessageContext, restoreQuotes,
+      })}
+    />
     <SessionCollaboration.SessionTurnRequestInboxProvider
       catalog={sessionCatalogController}
       onOpenSession={openSession}

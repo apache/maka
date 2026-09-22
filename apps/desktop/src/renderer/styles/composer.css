@@ -672,7 +672,14 @@
   white-space: nowrap;
 }
 
-.maka-composer-queue-delivery {
+.maka-composer-queue-feedback {
   font-size: 11px;
   color: var(--muted-foreground);
+}
+
+.maka-composer-queue-delivery-detail {
+  display: block;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }

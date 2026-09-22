@@ -201,7 +201,12 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                   <span className="maka-composer-queue-text" title={entry.content.displayText ?? entry.content.text}>
                     {entry.content.displayText ?? entry.content.text}
                   </span>
-                  {entry.localMessage?.deliveryStatus && <span className="maka-composer-queue-delivery" role="status" title={entry.localMessage.deliveryDetail}>{entry.localMessage.deliveryStatus}</span>}
+                  {entry.localMessage && <span className="maka-composer-queue-feedback" role="status">
+                    {entry.localMessage.deliveryStatus && <span className="maka-composer-queue-delivery">{entry.localMessage.deliveryStatus}</span>}
+                    {entry.localMessage.deliveryDetail && <span className="maka-composer-queue-delivery-detail">
+                      {entry.localMessage.deliveryStatus && ' '}{entry.localMessage.deliveryDetail}
+                    </span>}
+                  </span>}
                 </>
               )}
               style={{ minHeight: 28, paddingBlock: 0 }}
@@ -226,7 +231,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
               endContent={(
                 <span className="maka-composer-queue-actions">
                   {entry.localMessage?.deliveryActions?.length ? entry.localMessage.deliveryActions.map((action) => (
-                    <Button key={action.label} variant="ghost" size="sm" type="button" label={action.label} onClick={action.onClick} />
+                    <Button key={action.label} variant="ghost" size="sm" type="button" label={action.label} isDisabled={action.disabled} onClick={action.onClick} />
                   )) : editing ? (
                     <>
                       <IconButton

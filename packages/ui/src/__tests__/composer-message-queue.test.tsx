@@ -27,6 +27,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { act, createElement } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
+import type { ComposerMessageQueueProps } from '../composer-message-queue.js';
 import { getConversationCopy } from '../conversation-copy.js';
 import { installDom } from './mermaid-test-dom.js';
 
@@ -42,14 +43,7 @@ function queued(entryId: string, text: string): MessageQueueEntryProjection {
   };
 }
 
-async function mountQueue(props: {
-  queuedMessages: readonly MessageQueueEntryProjection[];
-  queueRevision?: number;
-  onUpdateEntry?(entryId: string, expectedQueueRevision: number, text: string): void | Promise<void>;
-  onDeleteEntry?(entryId: string): void | Promise<void>;
-  onPromoteEntry?(entryId: string): void | Promise<void>;
-  onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
-}) {
+async function mountQueue(props: Omit<ComposerMessageQueueProps, 'copy'>) {
   const dom = installDom();
   const { createRoot } = await import('react-dom/client');
   const { ComposerMessageQueue } = await import('../composer-message-queue.js');
@@ -172,6 +166,64 @@ test('queue actions stay disabled until the entry is Host-admitted', async () =>
     );
     assert.equal(edits.length, 2);
     assert.ok(edits.every((button) => button.disabled), 'no row is editable without a queue revision');
+  } finally {
+    await view.close();
+  }
+});
+
+test('local delivery actions suppress activation while disabled and become usable again', async () => {
+  const { projectComposerMessageQueue } = await import('../composer-message-queue.js');
+  const label = 'Edit and resend';
+  for (const placement of ['current_turn', 'next_turn'] as const) {
+    let calls = 0;
+    const pending = (disabled: boolean) => projectComposerMessageQueue([], [{
+      id: 'local', text: 'unsent message', ts: 1, transientPlacement: placement,
+      pendingSteering: placement === 'current_turn',
+      deliveryActions: [{ label, disabled, onClick() { calls++; } }],
+    }]);
+    const view = await mountQueue({ queuedMessages: pending(true) });
+    try {
+      const button = actionButton(view.document, label);
+      assert.ok(button.disabled, 'unavailable actions use native button disabling');
+      await click(button);
+      assert.equal(calls, 0, 'disabled delivery actions cannot invoke recovery');
+      await view.rerender({ queuedMessages: pending(false) });
+      assert.equal(actionButton(view.document, label).disabled, false);
+      await click(actionButton(view.document, label));
+      assert.equal(calls, 1, 'recovery becomes usable when the pending operation settles');
+    } finally {
+      await view.close();
+    }
+  }
+});
+
+test('local delivery feedback stays visible in one stable polite status region', async () => {
+  const { projectComposerMessageQueue } = await import('../composer-message-queue.js');
+  const deliveryStatus = 'Message not sent';
+  const details = [
+    'Finish or clear the current draft, attachments and quotes before editing this message.',
+    'Could not update the saved message. Try again.',
+    'The message is ready in the composer. Review it before sending.',
+  ];
+  const message = { id: 'local', text: 'unsent message', ts: 1, transientPlacement: 'next_turn' as const };
+  const view = await mountQueue({ queuedMessages: projectComposerMessageQueue([], [message]) });
+  try {
+    const statusSelector = '.maka-composer-queue-feedback[role="status"]';
+    const status = view.document.querySelector(statusSelector);
+    assert.ok(status, 'the live region exists before feedback is available');
+    assert.equal(status.textContent, '');
+    for (const detail of details) {
+      await view.rerender({ queuedMessages: projectComposerMessageQueue([], [{
+        ...message, deliveryStatus, deliveryDetail: detail,
+      }]) });
+      assert.equal(view.document.querySelectorAll(statusSelector).length, 1);
+      assert.equal(view.document.querySelector(statusSelector), status, 'updates reuse the live region');
+      assert.equal(status.getAttribute('aria-live'), null, 'role=status already supplies polite announcements');
+      assert.equal(status.getAttribute('title'), null, 'feedback is not hidden in a pointer-only title');
+      assert.ok(status.textContent?.includes(deliveryStatus));
+      assert.ok(status.textContent?.includes(detail));
+      assert.ok(view.document.body.textContent?.includes(detail), 'recovery guidance is visible page text');
+    }
   } finally {
     await view.close();
   }

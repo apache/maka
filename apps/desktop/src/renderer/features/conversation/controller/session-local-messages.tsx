@@ -23,6 +23,7 @@ import { useUiLocale, type TransientUserMessageProjection } from '@maka/ui';
 import type { DesktopLocalMessage, DesktopLocalMessageDraft } from '../../../../shared/session-local-contract.js';
 import { getSessionLocalCopy } from '../../../locales/session-local-copy.js';
 import { useConversationServices } from '../services.js';
+import { useComposerMentionsContext } from '../ui/composer-mentions-provider.js';
 import { localMessagePresentation } from './local-message-presentation.js';
 
 export function SessionLocalMessages(props: {
@@ -37,8 +38,9 @@ export function SessionLocalMessages(props: {
 }): null {
   const services = useConversationServices();
   const locale = useUiLocale();
-  const latest = useRef(props);
-  latest.current = props;
+  const hasPendingSessionReferences = useComposerMentionsContext()?.hasPendingSessionReferences;
+  const latest = useRef({ ...props, hasPendingSessionReferences });
+  latest.current = { ...props, hasPendingSessionReferences };
   const pending = useRef<string | undefined>(undefined);
   const [busy, setBusy] = useState<string>();
   const [feedback, setFeedback] = useState<Record<string, string>>({});
@@ -94,12 +96,12 @@ export function SessionLocalMessages(props: {
       const actions: NonNullable<TransientUserMessageProjection['deliveryActions']>[number][] = [];
       if (message.state === 'failed') actions.push({ label: copy.edit, disabled: !!busy, onClick: run(async () => {
         const owner = generation.current;
-        if (!latest.current.canRestoreDraft()) {
+        if (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.()) {
           setFeedback((current) => ({ ...current, [key]: copy.draftBlocked })); return;
         }
         const draft = await services.readFailedMessage(sessionId, message.messageId);
         if (generation.current !== owner || latest.current.sessionId !== sessionId) return;
-        if (!latest.current.canRestoreDraft()) {
+        if (!latest.current.canRestoreDraft() || latest.current.hasPendingSessionReferences?.()) {
           setFeedback((current) => ({ ...current, [key]: copy.draftBlocked })); return;
         }
         latest.current.restoreDraft(draft);
@@ -125,7 +127,7 @@ export function SessionLocalMessages(props: {
       published.current.ids.add(message.messageId);
       project(sessionId, {
         id: message.messageId, text: message.text, ts: message.createdAt,
-        transientPlacement: message.placement, attachments: message.attachments,
+        transientPlacement: message.turnId ? 'current_turn' : message.placement, attachments: message.attachments,
         directoryReferences: message.directoryReferences, quotes: message.quotes,
         inlineReferences: message.inlineReferences, hostTurnId: message.turnId,
         deliveryStatus: presentation.status,

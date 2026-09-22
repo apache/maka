@@ -29,14 +29,14 @@ import { createAppShellSessionUiStateController } from '../../renderer/app-shell
 
 afterEach(cleanupFakeDom);
 
-test('local delivery recovery cannot republish accepted Host queue rows', async () => {
+test('local delivery recovery respects started Turns without republishing accepted Host queue rows', async () => {
   const { root } = installReactRenderer();
   const transient = new Map<string, TransientUserMessageProjection>();
   let changed!: (sessionId: string) => void;
   let messages: DesktopLocalMessage[] = ['steering', 'followup', 'root'].map((messageId) => ({
     sessionId: 'session-1', messageId, createdAt: 1, state: 'unknown', canCancel: false,
     text: messageId, attachments: [], inlineReferences: [],
-    placement: messageId === 'followup' ? 'next_turn' : 'current_turn',
+    placement: messageId === 'steering' ? 'current_turn' : 'next_turn',
   }));
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(ConversationServicesProvider, { services: {
@@ -50,7 +50,7 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
       mcp: { subscribeChanges: () => () => {} },
     }, children: createElement(SessionLocalMessages, {
-      sessionId: 'session-1',
+      sessionId: 'session-1', session: { localState: 'cached' }, queue: [],
       publish: (_id, message) => { transient.set(message.id, message); },
       update: (_id, message) => { if (transient.has(message.id)) transient.set(message.id, message); },
       retire: (_id, messageId) => { transient.delete(messageId); },
@@ -59,12 +59,16 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     }) }),
   })));
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
+  assert.equal(transient.get('steering')?.transientPlacement, 'current_turn');
+  assert.equal(transient.get('root')?.transientPlacement, 'next_turn', 'a follow-up without Turn ownership stays in the pending queue');
   transient.delete('steering');
   transient.delete('followup');
-  messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn' } : {}) }));
+  messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn', admission: 'turn_started' as const } : {}) }));
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root']);
   assert.equal(transient.get('root')?.transientPlacement, 'current_turn');
+  assert.equal(transient.get('root')?.hostTurnId, 'started-turn');
+  assert.equal(transient.get('root')?.deliveryStatus, 'Reply started · waiting for an update', 'a cached receipt does not claim the Turn is still running');
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root'], 'a retained local copy cannot resurrect a withdrawn queue entry');
 });
