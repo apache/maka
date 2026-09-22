@@ -29,6 +29,7 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-retirement';
 import { openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
@@ -161,7 +162,9 @@ async function testConnectionStrict(
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }
-  if (defaults.retired) return retiredProviderTestResult(connection.providerType);
+  if (isRetiredProvider(connection.providerType)) {
+    return retiredProviderTestResult(connection.providerType);
+  }
   const sessionId = connection.providerType === 'opencode-go' ? randomUUID() : undefined;
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
