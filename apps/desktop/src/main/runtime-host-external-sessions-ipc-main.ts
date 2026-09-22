@@ -61,7 +61,7 @@ export interface RuntimeHostExternalSessionsIpcDeps {
   readonly client: ExternalSessionClient;
   readonly emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
   /** Resolves the Desktop-selected workspace on the target Host. */
-  readonly resolveImportWorkspace?: () => Promise<WorkspaceTarget>;
+  readonly resolveImportWorkspace: () => Promise<WorkspaceTarget>;
 }
 
 export function registerRuntimeHostExternalSessionsIpc(
@@ -84,13 +84,11 @@ export function registerRuntimeHostExternalSessionsIpc(
   });
   ipcMain.handle('external-sessions:import', async (_event, input: unknown) => {
     const request = decodeExternalSessionImportInput(input);
-    const workspace = deps.resolveImportWorkspace
-      ? await deps.resolveImportWorkspace()
-      : undefined;
+    const workspace = await deps.resolveImportWorkspace();
     try {
       const result = await deps.client.importExternalSession({
         ...request,
-        ...(workspace === undefined ? {} : { workspace }),
+        workspace,
       });
       if (result.kind === 'source_limit_exceeded') {
         return {

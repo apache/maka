@@ -117,13 +117,17 @@ export class HostExternalSessionCoordinator {
    * be unmounted mid-import by design, and its in-flight state goes with it —
    * as would a second window's, or the CLI's.
    *
-   * Coalesced, not rejected: the second caller gets the first one's outcome,
-   * success or failure, because it is the same operation. Entries are keyed on
-   * a JSON pair so no separator can be forged out of the ids themselves.
+   * Requests for the same destination share the first outcome. A different
+   * destination is a conflicting intent: it must not receive a successful
+   * Session in a workspace it did not request. The source key also owns the
+   * catalog's isImporting projection, regardless of the chosen destination.
    */
   readonly #importsInFlight = new Map<
     string,
-    Promise<OperationOutcome<'external-session.import'>>
+    {
+      readonly workspace: ExternalSessionImportInput['workspace'];
+      readonly outcome: Promise<OperationOutcome<'external-session.import'>>;
+    }
   >();
 
   constructor(options: HostExternalSessionCoordinatorOptions) {
@@ -266,9 +270,16 @@ export class HostExternalSessionCoordinator {
   ): Promise<OperationOutcome<'external-session.import'>> {
     const key = importKey(input.adapterId, input.sourceSessionId);
     const running = this.#importsInFlight.get(key);
-    if (running) return running;
+    if (running) {
+      return sameImportWorkspace(running.workspace, input.workspace)
+        ? running.outcome
+        : importFailure(
+            'operation_conflict',
+            'This source is already being imported into a different workspace',
+          );
+    }
     const attempt = this.#importSession(input);
-    this.#importsInFlight.set(key, attempt);
+    this.#importsInFlight.set(key, { workspace: input.workspace, outcome: attempt });
     try {
       return await attempt;
     } finally {
@@ -493,6 +504,16 @@ function safeTimestamp(value: number | undefined): number | undefined {
 
 function importKey(adapterId: string, sourceSessionId: string): string {
   return JSON.stringify([adapterId, sourceSessionId]);
+}
+
+function sameImportWorkspace(
+  left: ExternalSessionImportInput['workspace'],
+  right: ExternalSessionImportInput['workspace'],
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.kind === 'project'
+    ? right.kind === 'project' && left.projectId === right.projectId
+    : right.kind === 'host_path' && left.path === right.path;
 }
 
 function queryFailure(

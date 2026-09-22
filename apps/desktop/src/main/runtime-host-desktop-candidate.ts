@@ -150,7 +150,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
   /** Resolves the selected import destination on the target Host. */
-  readonly resolveExternalSessionImportWorkspace?: (
+  readonly resolveExternalSessionImportWorkspace: (
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
   readonly emitSessionsChanged: (
@@ -901,12 +901,7 @@ export async function createDesktopRuntimeHostCandidate(
         {
           client,
           emitSessionsChanged,
-          ...(deps.resolveExternalSessionImportWorkspace
-            ? {
-                resolveImportWorkspace: () =>
-                  deps.resolveExternalSessionImportWorkspace!(target),
-              }
-            : {}),
+          resolveImportWorkspace: () => deps.resolveExternalSessionImportWorkspace(target),
         },
         ipc,
       );
