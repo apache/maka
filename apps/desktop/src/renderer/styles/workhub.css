@@ -45,6 +45,16 @@
 
   .workHubLive, .workHubDock { width: 100%; height: 100%; min-width: 0; min-height: 0; }
   .workHubLive { position: relative; display: flex; flex-direction: column; background: var(--background); }
+  /* The native dock viewport may become narrower than the conversation
+     layout while the Electron window keeps shrinking. Keep WorkHub's own
+     layout floor so Composer and its fixed right-hand action slot are clipped
+     as one surface instead of reflowing into the left controls. */
+  .workHubLive[data-placement='docked'] {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: max(100%, var(--maka-conversation-min-width));
+    min-width: var(--maka-conversation-min-width);
+  }
   .workHubWorkspace { display: flex; flex: 1; min-height: 0; }
   .workHubWorkspace > .mainColumn { display: flex; flex: 1; min-width: 0; min-height: 0; }
   .workHubWorkspace > .mainColumn > .maka-chat-layout { flex: 1; min-height: 0; }
@@ -124,6 +134,16 @@
   .workHubExpandButton { position: absolute; top: 6px; right: 8px; z-index: 2; color: var(--muted-foreground); -webkit-app-region: no-drag; }
 
 html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { background: transparent; }
+/* WorkHub owns an explicit layout boundary because its live surface is a
+   separate document painted inside a native WebContentsView. Keep overflow
+   left-anchored and clipped by this boundary instead of relying on the
+   renderer root's centered preload layout. */
+.workhub-application {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: clip;
+}
 
 /* Progress and conversation share the same editor, including its IME state. */
 .workHubLive[data-placement='floating'][data-progress='true'] {
@@ -150,7 +170,7 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 .workHubProgressText { margin: 0; height: 36px; font-size: 13px; line-height: 18px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .workHubLive[data-progress='true'] .workHubComposerSurface { border-top: 1px solid color-mix(in oklch, var(--foreground) 8%, transparent); }
 .workHubLive[data-progress='true'] .maka-composer { --color-background-popover: transparent; }
-.workHubLive[data-progress='true'][data-progress-editing='false'] .maka-composer-astryx > div > div:has(.maka-composer-left-controls) { display: none; }
+.workHubLive[data-progress='true'][data-progress-editing='false'] .maka-composer-footer-leading { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .workHubLive[data-placement='floating'], .workHubLive[data-placement='floating']::before, body:has(.workHubLive[data-placement='floating'])::after, .workHubLive[data-conversation-expanded] .workHubHistory { transition: none; }

@@ -236,6 +236,10 @@ test('moves a shared native container while keeping renderer and browser coordin
   assert.ok(container.children.has(renderer));
   assert.deepEqual({ ...container.boundsUpdates.at(-1) }, host.rect);
   assert.deepEqual({ ...renderer.boundsUpdates.at(-1) }, { x: 0, y: 0, width: 800, height: 760 });
+  h.main.setBounds({ x: 0, y: 0, width: 650, height: 800 });
+  assert.deepEqual({ ...container.boundsUpdates.at(-1) }, { x: 200, y: 40, width: 450, height: 760 });
+  assert.deepEqual({ ...renderer.boundsUpdates.at(-1) }, { x: 0, y: 0, width: 450, height: 760 },
+    'the native viewport clips to Desktop while CSS preserves the inner layout');
   await h.command(renderer.webContents, 'detach');
   assert.equal(h.container, container);
   assert.ok(h.windows[1]!.children.has(container));
@@ -322,6 +326,9 @@ test('opens an empty floating conversation at its composer height', async () => 
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 160 });
   assert.equal(h.windows[1]!.resizable, false);
   assert.equal(h.windows[1]!.bounds.height, 160, 'compact input still grows programmatically');
+  h.windows[1]!.setBounds({ ...h.windows[1]!.bounds, width: 320 });
+  await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 160 });
+  assert.equal(h.windows[1]!.bounds.width, 360, 'programmatic compact layout keeps the native minimum width');
   await h.command(view.webContents, 'dock');
   await h.command(view.webContents, 'conversation-layout', { expanded: false, compactHeight: 110 });
   h.movePointer({ x: 1600, y: -900, width: 1000, height: 800 });
@@ -991,6 +998,30 @@ test('editing progress grows at its existing bottom and opening interpolates bot
   assert.equal(floating.focused, 0);
   assert.equal(h.main.focused, 0);
   assert.equal(view.webContents.sent.some(([channel]) => channel.endsWith('focus-composer')), false);
+  h.controller.dispose();
+});
+
+test('external floating bounds changes are not overwritten by an in-flight layout animation', async () => {
+  const h = await harness(true);
+  await h.controller.toggle(true);
+  const view = h.views[0]!;
+  const floating = h.windows[1]!;
+  floating.setBounds({ ...floating.bounds, width: 360 });
+  await h.command(view.webContents, 'conversation-layout', { expanded: true, compactHeight: 160 });
+  const nativeSetBounds = floating.setBounds.bind(floating);
+  let deferredBounds: Electron.Rectangle | undefined;
+  floating.setBounds = (bounds) => {
+    if (bounds.width === 520 && !deferredBounds) {
+      deferredBounds = bounds;
+      return;
+    }
+    nativeSetBounds(bounds);
+  };
+  floating.setBounds({ ...floating.bounds, width: 520 });
+  h.advance(100);
+  nativeSetBounds(deferredBounds!);
+  h.advance(500);
+  assert.equal(floating.bounds.width, 520);
   h.controller.dispose();
 });
 

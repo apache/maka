@@ -48,7 +48,10 @@
    paint to the window top (Codex / Claude Desktop / Cursor). */
 .maka-shell-astryx {
   width: 100%;
-  min-width: 0;
+  /* Include the nav column: the shell floor leaves the conversation's
+     fixed layout width available while the native window remains resizable
+     and clips the shell below this content floor. */
+  min-width: calc(var(--maka-sidenav-width) + var(--maka-conversation-min-width) + var(--agents-content-area-gap));
   min-height: 0;
   overflow: hidden;
 }
@@ -160,6 +163,11 @@
    the ease dead for every collapse after the handle had once been touched. */
 .maka-shell-astryx .maka-sidenav-motion {
   display: flex;
+  /* The sidebar is the coordinate origin for the Desktop content and the
+     native WorkHub host. Keep its declared width when the window is narrower
+     than the shell floor; only its explicit resize/collapse state may change
+     it. */
+  flex: 0 0 auto;
   min-width: 0;
   min-height: 0;
   /* The nav sizes itself against a definite height (`.maka-session-panel`

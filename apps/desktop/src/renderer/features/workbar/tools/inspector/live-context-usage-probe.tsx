@@ -20,7 +20,7 @@
 import { useWorkbarServices } from '../../services-context.js';
 import type { ReactElement, ReactNode } from 'react';
 import type { LiveContextUsage } from '../../../../application/contracts/session-inspector/live-context-usage.js';
-import { useLiveContextUsage } from '../../../../application/contracts/session-inspector/use-live-context-usage.js';
+import { useLiveContextUsageState } from '../../../../application/contracts/session-inspector/use-live-context-usage.js';
 
 /**
  * Render-prop boundary for the composer context gauge (#4717).
@@ -28,22 +28,28 @@ import { useLiveContextUsage } from '../../../../application/contracts/session-i
  * The live reading needs a subscription and state, and both live here — in
  * the feature that owns the inspector's context snapshot — so the shell only
  * renders the reading, the same division of labour as the goal projection's
- * render-prop consumer around the same composer. `undefined` means the
- * snapshot cannot vouch for the composer's active route; the caller falls
- * back to the per-turn anchor.
+ * render-prop consumer around the same composer. The pending bit lets the
+ * caller distinguish a new target's first read from a settled refusal;
+ * `undefined` usage still makes the caller try the per-turn anchor.
  */
 export function LiveContextUsageProbe(props: {
   readonly sessionId: string | undefined;
   readonly model: string | undefined;
   readonly providerType: string | undefined;
-  readonly children: (usage: LiveContextUsage | undefined) => ReactNode;
+  readonly children: (
+    usage: LiveContextUsage | undefined,
+    usagePending: boolean,
+  ) => ReactNode;
 }): ReactElement {
   const { inspector } = useWorkbarServices();
-  const usage = useLiveContextUsage({
+  const usageState = useLiveContextUsageState({
     inspector,
     sessionId: props.sessionId,
     model: props.model,
     providerType: props.providerType,
   });
-  return <>{props.children(usage)}</>;
+  return <>{props.children(
+    usageState.status === 'available' ? usageState.usage : undefined,
+    usageState.status === 'pending',
+  )}</>;
 }

@@ -33,6 +33,13 @@
 .maka-model-wheel-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted-foreground); transform: scale(0.96); transform-origin: left center; transition: transform 180ms ease-out, color 180ms ease-out; }
 .maka-model-wheel-option[data-active='true'] .maka-model-wheel-label { font-weight: 600; color: var(--foreground); transform: scale(1); }
 .maka-model-wheel-viewport[aria-disabled='true'] { opacity: 0.5; overflow-y: hidden; }
+
+.maka-context-usage-value {
+  display: inline-block;
+  min-width: 3ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 @media (prefers-reduced-motion: reduce) { .maka-model-wheel-label { transition: none; } }
 .maka-model-wheel-provider { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--muted-foreground); }
 .maka-model-wheel-check { position: absolute; right: 8px; top: 50%; translate: 0 -50%; color: var(--muted-foreground); }

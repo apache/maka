@@ -474,6 +474,8 @@ export const Composer = forwardRef<
     /** Read-only usage indicator for the active model's latest request. */
     contextUsage?: {
       usageTokens?: number;
+      /** The active target is still resolving its first authoritative reading. */
+      pending?: boolean;
       declaredContextWindow?: number;
       /**
        * The window the usage number was metered against, frozen at call time.
@@ -2128,7 +2130,7 @@ export const Composer = forwardRef<
             </div>
           )}
           footerActions={(
-            <div className="maka-composer-left-controls">
+            <div className="maka-composer-footer-leading maka-composer-left-controls">
               {/* Resting order: ＋ leftmost, then permission icon. */}
               {showPlusMenu ? (
                 <span className="maka-composer-plus-menu">
@@ -2479,40 +2481,48 @@ export const Composer = forwardRef<
                   }}
                 />
               </MakaClientSessionScope>
-              {props.footerAccessory}
             </div>
           )}
-          sendButton={stopShown ? (
-            <IconButton
-              variant="secondary"
-              type="button"
-              isDisabled={props.stopPending}
-              label={props.stopPending ? copy.stopping : copy.stopLabel}
-              aria-busy={props.stopPending ? 'true' : undefined}
-              data-pending={props.stopPending ? 'true' : undefined}
-              tooltip={props.stopPending ? copy.stopping : copy.stopLabel}
-              onClick={() => {
-                if (props.stopPending) return;
-                void props.onStop();
-              }}
-              icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
-            />
-          ) : (
-            // GLOBAL ANCHOR — DO NOT RESTYLE. This Send/Stop slot (its size,
-            // shape, glyph, and placement) is the one control the whole app
-            // navigates by; it has regressed multiple times from well-meaning
-            // "improvements". Queue affordances live in the pending plate
-            // above the card, never in this button.
-            <IconButton
-              variant="primary"
-              type="submit"
-              isDisabled={sendDisabled}
-              label={copy.sendLabel}
-              aria-busy={sendPending ? 'true' : undefined}
-              data-pending={sendPending ? 'true' : undefined}
-              tooltip={sendTitle}
-              icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
-            />
+          sendActions={props.footerAccessory ? (
+            <div className="maka-composer-footer-trailing">
+              {props.footerAccessory}
+            </div>
+          ) : undefined}
+          sendButton={(
+            <span className="maka-composer-send-slot">
+              {stopShown ? (
+                <IconButton
+                  variant="secondary"
+                  type="button"
+                  isDisabled={props.stopPending}
+                  label={props.stopPending ? copy.stopping : copy.stopLabel}
+                  aria-busy={props.stopPending ? 'true' : undefined}
+                  data-pending={props.stopPending ? 'true' : undefined}
+                  tooltip={props.stopPending ? copy.stopping : copy.stopLabel}
+                  onClick={() => {
+                    if (props.stopPending) return;
+                    void props.onStop();
+                  }}
+                  icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
+                />
+              ) : (
+                // GLOBAL ANCHOR — DO NOT RESTYLE. This Send/Stop slot (its size,
+                // shape, glyph, and placement) is the one control the whole app
+                // navigates by; it has regressed multiple times from well-meaning
+                // "improvements". Queue affordances live in the pending plate
+                // above the card, never in this button.
+                <IconButton
+                  variant="primary"
+                  type="submit"
+                  isDisabled={sendDisabled}
+                  label={copy.sendLabel}
+                  aria-busy={sendPending ? 'true' : undefined}
+                  data-pending={sendPending ? 'true' : undefined}
+                  tooltip={sendTitle}
+                  icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
+                />
+              )}
+            </span>
           )}
         />
       </form>
@@ -2536,6 +2546,7 @@ export const Composer = forwardRef<
 
 function ContextUsageAction(props: {
   usageTokens?: number;
+  pending?: boolean;
   declaredContextWindow?: number;
   meteredContextWindow?: number;
   metadataContextWindow?: number;
@@ -2551,12 +2562,23 @@ function ContextUsageAction(props: {
   // at all the usage stands on its own.
   const window =
     props.declaredContextWindow ?? props.meteredContextWindow ?? props.metadataContextWindow;
+  const usageTokens = props.usageTokens;
+  const share =
+    usageTokens !== undefined && window !== undefined && window > 0
+      ? `${Math.round((usageTokens / window) * 100)}%`
+      : undefined;
+  const hasShare = share !== undefined;
+  const pending = props.pending && !hasShare;
   const label =
-    props.usageTokens !== undefined && window !== undefined && window > 0
-      ? `${Math.round((props.usageTokens / window) * 100)}%`
+    pending
+      ? '--%'
+      : hasShare
+      ? share
       : copy.systemNotes.contextUsageLabel;
   const tooltip =
-    props.usageTokens === undefined
+    pending
+      ? copy.systemNotes.contextUsageOpen
+      : props.usageTokens === undefined
       ? copy.systemNotes.contextUsageUnavailable
       : window !== undefined && window > 0
         ? copy.systemNotes.contextUsageShare(props.usageTokens, window)
@@ -2565,12 +2587,13 @@ function ContextUsageAction(props: {
     <UiButton
       variant="ghost"
       size="sm"
+      className="maka-context-usage-action"
       icon={<CircleGauge size={ICON_SIZE.meta} aria-hidden="true" />}
       label={copy.systemNotes.contextUsageOpen}
       tooltip={tooltip}
       onClick={props.onOpen}
     >
-      {label}
+      <span className="maka-context-usage-value" aria-busy={pending || undefined}>{label}</span>
     </UiButton>
   );
 }

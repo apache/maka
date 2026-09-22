@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import type { WorkbarTogglePosition } from '@maka/core/settings';
 import { isNativeSurfaceOccluded, watchNativeSurface, type NativeSurfaceWatch } from '../../../application/contracts/native-surface-occlusion.js';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core';
@@ -27,12 +26,22 @@ import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
 /** The main window owns only this landing space; the live view keeps its React owner. */
-export function WorkHubDock({ enabled, visible = true, workbarCollapsed, workbarTogglePosition = 'edge' }: { enabled: boolean; visible?: boolean; workbarCollapsed: boolean; workbarTogglePosition?: WorkbarTogglePosition }) {
+export function WorkHubDock({ enabled, visible = true, workbar }: {
+  enabled: boolean;
+  visible?: boolean;
+  workbar: { bottomOpen: boolean; rightCollapsed: boolean };
+}) {
   const { presentation } = useWorkHubServices();
   const t = workHubLiveCopy[useUiLocale()];
   const element = useRef<HTMLElement>(null);
-  const workbarState = useRef({ collapsed: workbarCollapsed, togglePosition: workbarTogglePosition });
-  workbarState.current = { collapsed: workbarCollapsed, togglePosition: workbarTogglePosition };
+  const workbarRef = useRef({
+    placement: workbar.bottomOpen ? 'bottom' as const : 'right' as const,
+    collapsed: workbar.bottomOpen ? false : workbar.rightCollapsed,
+  });
+  workbarRef.current = {
+    placement: workbar.bottomOpen ? 'bottom' : 'right',
+    collapsed: workbar.bottomOpen ? false : workbar.rightCollapsed,
+  };
   const [snapshot, setSnapshot] = useState<WorkHubPresentationSnapshot>();
   const [backdrop, setBackdrop] = useState<string>();
   const [error, setError] = useState<string>();
@@ -66,7 +75,7 @@ export function WorkHubDock({ enabled, visible = true, workbarCollapsed, workbar
       const host = {
         visible: enabled && visible && rect.width > 0 && rect.height > 0,
         occluded,
-        workbar: { ...workbarState.current, placement: window.matchMedia('(max-width: 990px)').matches ? 'bottom' as const : 'right' as const },
+        workbar: workbarRef.current,
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
       const key = JSON.stringify(host);
@@ -92,6 +101,7 @@ export function WorkHubDock({ enabled, visible = true, workbarCollapsed, workbar
         .catch(() => undefined);
     };
   }, [enabled, presentation, visible, snapshot?.placement]);
+  useEffect(() => surface.current?.refresh(), [workbar.bottomOpen, workbar.rightCollapsed]);
   // The host also reports Workbar state, which can change without moving this node.
   useEffect(() => surface.current?.refresh(), [workbarCollapsed, workbarTogglePosition]);
   return (

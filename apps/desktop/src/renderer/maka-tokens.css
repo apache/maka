@@ -946,6 +946,14 @@
   --maka-reading-measure: 800px;
   --maka-transcript-gutter: clamp(var(--space-3), 4vw, var(--space-10));
 
+  /* === conversation layout contract =====================================
+     The Desktop and WorkHub renderers are separate documents, but both load
+     this token sheet. Keep the minimum conversation footprint in one place so
+     their host and live surface cannot drift apart when the native viewport
+     becomes narrower than the layout. This is a layout floor, not a native
+     window minimum: narrow windows clip the right edge of the fixed layout. */
+  --maka-conversation-min-width: 520px;
+
   /* === settings ==========================================================
      One right-edge cap for a settings row's end slot — the read-only value
      and the control cluster share it, so the two kinds of row end stop at
