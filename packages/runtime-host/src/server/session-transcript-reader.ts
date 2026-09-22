@@ -27,6 +27,7 @@ import {
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventUserMessage,
 } from '@maka/runtime/runtime-event-read-model';
+import { RuntimeReadModelError } from '@maka/runtime/runtime-read-model';
 import {
   type CanonicalPermissionOutcomeReader,
   type CanonicalPermissionOutcomeRecord,
@@ -157,8 +158,26 @@ function createDurableLedgerTranscriptReader(input: {
     turn: PendingTranscriptRun,
   ): Promise<{ sequence: number; message: StoredMessage }[]> => {
     const projected = await turn.projection.finish(input.canonicalPermissionOutcomes);
-    if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
-      throw new Error('Durable RuntimeEvent transcript projection is incomplete');
+    const hardDiagnostics = projected.diagnostics.filter(isHardRuntimeEventReadModelDiagnostic);
+    if (hardDiagnostics.length > 0) {
+      // Host diagnostics format the Error stack, so keep the failure's location
+      // and reasons in its message without serializing raw diagnostic detail.
+      throw new RuntimeReadModelError(
+        `Durable RuntimeEvent transcript projection is incomplete: ${JSON.stringify({
+          sessionId: turn.invocation.sessionId,
+          invocationId: turn.invocation.invocationId,
+          runId: turn.invocation.runId,
+          turnId: turn.invocation.turnId,
+          diagnostics: hardDiagnostics.map(({ code, eventId, runId, turnId, message }) => ({
+            code,
+            eventId,
+            runId,
+            turnId,
+            message,
+          })),
+        })}`,
+        hardDiagnostics,
+      );
     }
     const admission =
       turn.invocation.sessionId === WORKHUB_COORDINATION_SESSION_ID
