@@ -97,10 +97,14 @@ function catalog(host: TaskEntryHost = readyHost()): TaskEntryCatalog {
 }
 let latestController: TaskEntryController | undefined;
 
-function ControllerProbe(props: { reportError(error: unknown): void }) {
+function ControllerProbe(props: {
+  reportError(error: unknown): void;
+  reportProjectAdded?(handoff: { fromKey: string; toKey: string }): void;
+}) {
   latestController = useTaskEntryController({
     reportError: props.reportError,
     manageProjects() {},
+    reportProjectAdded: props.reportProjectAdded,
   });
   return null;
 }
@@ -114,6 +118,7 @@ function renderController(
   root: ReturnType<typeof installReactRenderer>['root'],
   services: TaskEntryServices,
   errors: unknown[] = [],
+  reportProjectAdded?: (handoff: { fromKey: string; toKey: string }) => void,
 ) {
   root.render(
     createElement(LocaleProvider, {
@@ -123,6 +128,7 @@ function renderController(
         { services },
         createElement(ControllerProbe, {
           reportError: (error: unknown) => errors.push(error),
+          reportProjectAdded,
         }),
       ),
     }),
@@ -326,6 +332,30 @@ describe('useTaskEntryController', () => {
     assert.equal(controller().selectors.target?.projectId, 'project-b');
     assert.equal(controller().selectors.workspacePicker.pending, false);
   });
+
+  it('reports a draft handoff after adding a Project on the selected Host', async () => {
+    const { root } = installReactRenderer();
+    const handoffs: Array<{ fromKey: string; toKey: string }> = [];
+    let reads = 0;
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => ++reads === 1
+          ? catalog()
+          : catalog(readyHost({ projects: [project('project-a'), project('project-b')] })),
+        addProject: async () => ({ ok: true, project: project('project-b') }),
+      },
+    });
+
+    await act(async () => renderController(root, services, [], (handoff) => handoffs.push(handoff)));
+    const sourceKey = controller().selectors.draftKey;
+    await act(async () => controller().commands.addProject());
+
+    assert.equal(handoffs.length, 1);
+    assert.equal(handoffs[0]?.fromKey, sourceKey);
+    assert.match(handoffs[0]?.toKey ?? '', /project-b/);
+  });
+
 
   it('deduplicates relink requests and selects the returned Project before refreshing', async () => {
     const { root } = installReactRenderer();
@@ -711,6 +741,7 @@ describe('useTaskEntryController', () => {
     const { root } = installReactRenderer();
     const refreshed = deferred<TaskEntryCatalog>();
     const errors: unknown[] = [];
+    const handoffs: Array<{ fromKey: string; toKey: string }> = [];
     let reads = 0;
     const services = createFakeTaskEntryServices({
       catalog: {
@@ -723,7 +754,7 @@ describe('useTaskEntryController', () => {
       },
     });
 
-    await act(async () => renderController(root, services, errors));
+    await act(async () => renderController(root, services, errors, (handoff) => handoffs.push(handoff)));
     await act(async () => {
       controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
       await Promise.resolve();
@@ -738,5 +769,6 @@ describe('useTaskEntryController', () => {
       description: 'The project could not be updated. Try again later.',
       profileId: 'local',
     }]);
+    assert.deepEqual(handoffs, []);
   });
 });

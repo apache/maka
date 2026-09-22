@@ -24,8 +24,13 @@ import {
   useLayoutEffect,
   useMemo,
   useSyncExternalStore,
+  useRef,
   type ReactNode,
 } from 'react';
+import {
+  createNewTaskChoiceProjectHandoffStore,
+  NewTaskChoiceProjectHandoffProvider,
+} from '../../../application/contracts/new-task-choice-project-handoff.js';
 import { useToast, type WorkspacePickerModel } from '@maka/ui';
 import {
   useTaskEntryController,
@@ -272,6 +277,8 @@ function useTaskEntryOwnership(): TaskEntryShellProjection & { readonly owner: T
 export function TaskEntryRoot({ children }: TaskEntryRootProps) {
   const ownership = useTaskEntryOwnership();
   const owner = ownership.owner as ReturnType<typeof createTaskEntryOwner>;
+  const handoffStoreRef = useRef<ReturnType<typeof createNewTaskChoiceProjectHandoffStore> | undefined>(undefined);
+  handoffStoreRef.current ??= createNewTaskChoiceProjectHandoffStore();
   const toastApi = useToast();
   const reportError = useCallback(
     ({ title, description, profileId }: TaskEntryError) => {
@@ -279,7 +286,11 @@ export function TaskEntryRoot({ children }: TaskEntryRootProps) {
     },
     [toastApi],
   );
-  const controller = useTaskEntryController({ reportError, manageProjects: ignoreManageProjects });
+  const controller = useTaskEntryController({
+    reportError,
+    manageProjects: ignoreManageProjects,
+    reportProjectAdded: handoffStoreRef.current.publish,
+  });
   useLayoutEffect(() => owner.publish(controller), [controller, owner]);
   const taskEntry = useMemo<TaskEntryShellProjection>(
     () => ({ commands: ownership.commands, selectors: ownership.selectors }),
@@ -287,9 +298,11 @@ export function TaskEntryRoot({ children }: TaskEntryRootProps) {
   );
   const frame = useMemo(() => children(taskEntry), [children, taskEntry]);
   return (
-    <TaskEntryOwnerContext.Provider value={owner}>
-      {frame}
-    </TaskEntryOwnerContext.Provider>
+    <NewTaskChoiceProjectHandoffProvider store={handoffStoreRef.current}>
+      <TaskEntryOwnerContext.Provider value={owner}>
+        {frame}
+      </TaskEntryOwnerContext.Provider>
+    </NewTaskChoiceProjectHandoffProvider>
   );
 }
 

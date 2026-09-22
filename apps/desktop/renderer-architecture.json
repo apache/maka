@@ -831,7 +831,7 @@
           "react": 1
         },
         "importSpecifiers": 98,
-        "nonTriviaTokens": 12729
+        "nonTriviaTokens": 12727
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -3870,16 +3870,12 @@
       "src/renderer/use-new-task-choice.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 1,
-          "useState": 1
-        },
+        "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./new-task-reload-intent.js": 1,
-          "react": 1
+          "./application/contracts/new-task-choice.js": 1
         }
       },
       "src/renderer/use-onboarding-snapshot.ts": {
