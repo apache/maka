@@ -199,30 +199,38 @@ test('Glob reports a complete result when the limit is met exactly', async (t) =
   assert.equal(result.truncated, false);
 });
 
-test('Glob does not fail a capped result over an error the walk only reaches past the cap', {
-  skip: process.platform === 'win32' || process.getuid?.() === 0,
-}, async (t) => {
+test('Glob does not fail a capped result over an error the walk only reaches past the cap', async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-glob-capped-error-')));
-  const blocked = join(root, 'zblocked');
-  await mkdir(blocked);
-  t.after(async () => {
-    await chmod(blocked, 0o700);
-    await rm(root, { recursive: true, force: true });
-  });
+  t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, 'a.txt'), 'a');
   await writeFile(join(root, 'b.txt'), 'b');
-  await writeFile(join(blocked, 'hidden.txt'), 'hidden');
-  await chmod(blocked, 0);
-  await assert.rejects(
-    readdir(blocked),
-    (error: unknown) => ['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? ''),
-    'permission fixture must actually deny reads',
-  );
+  const late = join(root, 'zlate');
+  await mkdir(late);
+  await writeFile(join(late, 'hidden.txt'), 'hidden');
+  // Make the directory vanish exactly when the walk descends into it. The cap
+  // fills from the root entries first, so this is only observable past the cap.
+  const originalReaddir = nodeFs.readdir;
+  let reachedAfterCap = false;
+  t.mock.method(nodeFs, 'readdir', ((
+    path: string,
+    options: { withFileTypes: true },
+    callback: (error: NodeJS.ErrnoException | null, entries: nodeFs.Dirent[]) => void,
+  ) => {
+    if (String(path) === late && !reachedAfterCap) {
+      reachedAfterCap = true;
+      nodeFs.rmSync(late, { recursive: true });
+    }
+    originalReaddir(path, options, callback);
+  }) as typeof nodeFs.readdir);
+  syncBuiltinESMExports();
+  try {
+    const result = await globFiles({ cwd: root, pattern: '**/*.txt', limit: 2 });
 
-  // The cap fills from the root entries before the walk descends into the
-  // unreadable directory, so this error is only observable past the cap.
-  const result = await globFiles({ cwd: root, pattern: '**/*.txt', limit: 2 });
-
-  assert.deepEqual(result.files, ['b.txt', 'a.txt']);
-  assert.equal(result.truncated, false);
+    assert.equal(reachedAfterCap, true, 'the vanishing directory must be reached after the cap');
+    assert.deepEqual([...result.files].sort(), ['a.txt', 'b.txt']);
+    assert.equal(result.truncated, false);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });
