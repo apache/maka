@@ -741,7 +741,7 @@ export const QueuedSteeringInTranscript: Story = {
             placement: 'current_turn',
             state: 'queued',
           }],
-        }, { locale: 'zh-CN', retract: async () => true }),
+        }, { locale: 'zh-CN', editable: true, retract: async () => true }),
       }}
     />
   ),

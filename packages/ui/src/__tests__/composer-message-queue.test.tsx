@@ -89,7 +89,7 @@ async function click(button: HTMLButtonElement): Promise<void> {
   });
 }
 
-test('editing a queued entry reports the captured queue revision and closes on success', async () => {
+test('editing a queued entry CAS-checks the latest known queue revision and closes on success', async () => {
   const updates: Array<{ entryId: string; revision: number; text: string }> = [];
   const view = await mountQueue({
     queuedMessages: [queued('entry-1', 'first follow-up'), queued('entry-2', 'second follow-up')],
@@ -115,7 +115,7 @@ test('editing a queued entry reports the captured queue revision and closes on s
       editor.dispatchEvent(new window.Event('input', { bubbles: true }));
     });
     await click(actionButton(view.document, copy.saveQueuedEntry));
-    assert.deepEqual(updates, [{ entryId: 'entry-1', revision: 7, text: 'edited first follow-up' }]);
+    assert.deepEqual(updates, [{ entryId: 'entry-1', revision: 8, text: 'edited first follow-up' }]);
     assert.equal(view.document.querySelector('textarea.maka-composer-queue-edit'), null);
     assert.deepEqual(queueTexts(view.document), ['first follow-up', 'second follow-up']);
   } finally {
@@ -150,6 +150,42 @@ test('a rejected queue edit keeps the row in edit mode instead of reading as reo
       view.document.querySelector<HTMLTextAreaElement>('textarea.maka-composer-queue-edit')?.value,
       'edited first follow-up',
     );
+  } finally {
+    await view.close();
+  }
+});
+
+test('a rejected queue edit retries against the refreshed revision instead of dead-locking', async () => {
+  const updates: Array<{ entryId: string; revision: number; text: string }> = [];
+  let conflicts = 1;
+  const onUpdateEntry = (entryId: string, expectedQueueRevision: number, text: string) => {
+    updates.push({ entryId, revision: expectedQueueRevision, text });
+    return conflicts-- > 0 ? Promise.reject(new Error('operation_conflict')) : Promise.resolve();
+  };
+  const view = await mountQueue({
+    queuedMessages: [queued('entry-1', 'first follow-up'), queued('entry-2', 'second follow-up')],
+    queueRevision: 3,
+    onUpdateEntry,
+  });
+  try {
+    await click(actionButton(view.document, copy.editQueuedEntry, 0));
+    const editor = view.document.querySelector<HTMLTextAreaElement>('textarea.maka-composer-queue-edit')!;
+    await act(async () => {
+      editor.value = 'edited first follow-up';
+      editor.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    await click(actionButton(view.document, copy.saveQueuedEntry));
+    assert.equal(updates.length, 1);
+    assert.ok(view.document.querySelector('textarea.maka-composer-queue-edit'), 'the edit stays open after the conflict');
+    await view.rerender({
+      queuedMessages: [queued('entry-1', 'first follow-up'), queued('entry-2', 'second follow-up')],
+      queueRevision: 4,
+      onUpdateEntry,
+    });
+    await click(actionButton(view.document, copy.saveQueuedEntry));
+    assert.deepEqual(updates.at(-1), { entryId: 'entry-1', revision: 4, text: 'edited first follow-up' },
+      'the retry carries the revision the conflicting mutation landed on, not the stale capture');
+    assert.equal(view.document.querySelector('textarea.maka-composer-queue-edit'), null);
   } finally {
     await view.close();
   }

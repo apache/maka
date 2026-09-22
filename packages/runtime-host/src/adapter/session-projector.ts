@@ -165,10 +165,9 @@ export class RuntimeHostSessionProjector {
     const root = this.#snapshot.rootTurn;
     if (!root) return [];
     const events: SessionEvent[] = [];
-    const queueEvents =
-      this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)
-        ? [projectQueueUpdate(this.#snapshot.queue, root.turnId, this.#now())]
-        : [];
+    // The seed is the only queue evidence a re-observing or reconnecting client
+    // receives — an empty queue must still clear its last-seen entries.
+    const queueEvents = [projectQueueUpdate(this.#snapshot.queue, root.turnId, this.#now())];
     if (this.#projectMessageAdmissions) {
       events.push(
         ...projectMessageAdmissionEvents(
@@ -767,10 +766,6 @@ function rootQueueInFlight(
     (entry): entry is Extract<SteeringMessageSnapshot, { state: 'in_flight' }> =>
       entry.state === 'in_flight',
   );
-}
-
-function queueHasEntries(queue: SessionMessageQueueProjection): boolean {
-  return queue.steering.length > 0 || queue.followup.length > 0;
 }
 
 function projectQueueUpdate(

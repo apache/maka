@@ -68,7 +68,6 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
 ) {
   const [pendingEntryId, setPendingEntryId] = useState<string | null>(null);
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
-  const [editingQueueRevision, setEditingQueueRevision] = useState(0);
   const [editingText, setEditingText] = useState('');
   const dragEntryId = useRef<string | null>(null);
   const mountedRef = useMountedRef();
@@ -115,26 +114,26 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     if (pendingEntryId || !props.onUpdateEntry || props.queueRevision === undefined) return;
     setEditingEntryId(entry.entryId);
     const text = entry.content.displayText ?? entry.content.text;
-    setEditingQueueRevision(props.queueRevision);
     setEditingText(text);
   }
 
   async function commitEdit(entryId: string) {
     const text = editingText.trim();
-    if (!text) return;
+    if (!text || props.queueRevision === undefined) return;
+    // CAS against the latest known revision: a conflict surfaces once via the
+    // caller's toast, and an explicit re-save retries against fresh state
+    // instead of dead-locking on the revision captured when editing began.
     const updated = await runEntryAction(entryId, () =>
-      props.onUpdateEntry?.(entryId, editingQueueRevision, text)
+      props.onUpdateEntry?.(entryId, props.queueRevision ?? 0, text)
     );
     if (updated && mountedRef.current) {
       setEditingEntryId(null);
-      setEditingQueueRevision(0);
       setEditingText('');
     }
   }
 
   function cancelEdit() {
     setEditingEntryId(null);
-    setEditingQueueRevision(0);
     setEditingText('');
   }
 

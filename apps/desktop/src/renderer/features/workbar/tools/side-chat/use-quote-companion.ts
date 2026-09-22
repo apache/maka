@@ -1739,6 +1739,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
   const transientMessages = withQueuedSteeringTransients(pendingUserMessages, messageQueue, {
     locale: localeRef.current,
+    editable: input.restoreDraft !== undefined,
     retract: async (entry, draftText) => {
       const forkId = companionIdRef.current;
       if (!forkId) return false;

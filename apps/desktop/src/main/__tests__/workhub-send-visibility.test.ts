@@ -52,6 +52,8 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
   const queueMutations: unknown[][] = [];
   const steers: Array<Parameters<WorkHubServices['enqueueMessage']>> = [];
   let steerResult: Awaited<ReturnType<WorkHubServices['enqueueMessage']>> = 'admitted';
+  const executionQueries: string[][] = [];
+  let executionResolutions: Awaited<ReturnType<WorkHubServices['queryMessageExecutions']>>['resolutions'] = [];
   let newWorkDefaults: Awaited<ReturnType<WorkHubServices['getNewWorkDefaults']>> = {};
   let onSteer: ((input: Parameters<WorkHubServices['enqueueMessage']>) => void) | undefined;
   const interrupts: Array<{ sessionId: string; turnId: string; runId: string }> = [];
@@ -118,6 +120,10 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     updateQueueEntry: async (...input: Parameters<WorkHubServices['updateQueueEntry']>) => { queueMutations.push(['update', ...input]); },
     reorderQueueEntries: async (...input: Parameters<WorkHubServices['reorderQueueEntries']>) => { queueMutations.push(['reorder', ...input]); },
     enqueueMessage: async (...input: Parameters<WorkHubServices['enqueueMessage']>) => { steers.push(input); onSteer?.(input); return steerResult; },
+    queryMessageExecutions: async (_id: string, messageIds: readonly string[]) => {
+      executionQueries.push([...messageIds]);
+      return { resolutions: executionResolutions };
+    },
     listActiveInteractions: async () => [],
     subscribeActiveInteractions: () => () => {},
     respondToUserForm: async () => {},
@@ -144,6 +150,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     complete(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'completed' }; projectExecution(); },
     onSteer(handler: typeof onSteer) { onSteer = handler; },
     queueMutations, steers, setSteerResult(value: typeof steerResult) { steerResult = value; },
+    executionQueries, setExecutionResolutions(value: typeof executionResolutions) { executionResolutions = value; },
     setStopRetractions(ids: string[]) { stopRetractions = ids; },
     sessionId, requests, get admission() { return admission; }, interrupts,
     resetAdmission() { admission = deferred<{ turnId: string }>(); },
@@ -592,6 +599,44 @@ test('Host retraction resolves an uncertain WorkHub attempt before the next draf
   h.setSteerResult('admitted');
   await act(async () => { assert.equal(await h.controller.send('new direction', [], 'steer'), true); });
   assert.notEqual(h.steers[1]![1], messageId);
+});
+
+test('an unobserved retraction resolves an uncertain WorkHub send on reseed', async () => {
+  const h = await mountController();
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
+  h.setSteerResult('unknown');
+  await act(async () => { assert.equal(await h.controller.send('old direction', [], 'steer'), false); });
+  const messageId = h.steers[0]![1];
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.id), [messageId]);
+  // The Host retracted the entry while Desktop was away: no admission event
+  // replays and the reseeded queue arrives already empty — only the
+  // resolution record can still say what happened to the send.
+  h.setExecutionResolutions([{ messageId, state: 'cancelled' }]);
+  await act(async () => h.reconnect());
+  assert.deepEqual(h.executionQueries, [[messageId]]);
+  assert.deepEqual(h.controller.transientMessages, []);
+  h.setSteerResult('admitted');
+  await act(async () => { assert.equal(await h.controller.send('new direction', [], 'steer'), true); });
+  assert.notEqual(h.steers[1]![1], messageId);
+});
+
+test('a queued send consumed while away keeps its row until the durable merge but unblocks retry', async () => {
+  const h = await mountController();
+  await act(() => { h.admit('active-turn'); h.emit({ type: 'text_delta', id: 'live', turnId: 'active-turn', messageId: 'answer', ts: 1, text: 'Working' }); });
+  h.setSteerResult('unknown');
+  await act(async () => { assert.equal(await h.controller.send('do this next', []), false); });
+  const messageId = h.steers[0]![1];
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.id), [messageId]);
+  // The Host drained the entry into a successor Turn during the gap.
+  h.setExecutionResolutions([{ messageId, state: 'owned', turnId: 'followup-turn', runId: 'run-2' }]);
+  await act(async () => h.reconnect());
+  assert.deepEqual(h.executionQueries, [[messageId]]);
+  assert.deepEqual(h.controller.transientMessages.map((message) => message.id), [messageId],
+    'the placeholder stays until its durable row lands — never dropped, never stuck in the plate');
+  await act(() => h.publish([{ type: 'user', id: messageId, turnId: 'followup-turn', ts: 3, text: 'do this next' } as StoredMessage]));
+  assert.deepEqual(h.controller.transientMessages, []);
+  h.setSteerResult('admitted');
+  await act(async () => { assert.equal(await h.controller.send('another message', []), true); });
 });
 
 test('steering observed before its admission response renders once and outranks an uncertain receipt', async () => {

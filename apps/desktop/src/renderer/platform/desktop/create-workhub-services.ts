@@ -194,6 +194,8 @@ export function createDesktopWorkHubServices(
       if (result.ok) return result.disposition === (placement === 'current_turn' ? 'steering' : 'followup') ? 'admitted' : 'rejected';
       return result.reason === 'outcome_unknown' ? 'unknown' : 'rejected';
     },
+    queryMessageExecutions: (sessionId, messageIds) =>
+      bridge.sessions.queryMessageExecutions(sessionId, messageIds),
     retractQueueEntry: (sessionId, entryId) => bridge.sessions.retractQueueEntry(sessionId, entryId),
     promoteQueueEntry: (sessionId, entryId) => bridge.sessions.promoteQueueEntry(sessionId, entryId),
     updateQueueEntry: (sessionId, entryId, revision, text) => bridge.sessions.updateQueueEntry(sessionId, entryId, revision, text),

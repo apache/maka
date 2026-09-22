@@ -181,6 +181,7 @@ test('queued steering derives a transcript bubble that lives and dies with the s
   const retracted: (string | undefined)[][] = [];
   const actions = {
     locale: 'en' as const,
+    editable: true,
     retract: async (_entry: unknown, draftText?: string) => {
       retracted.push([draftText]);
       return true;

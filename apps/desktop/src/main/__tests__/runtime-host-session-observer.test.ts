@@ -133,7 +133,7 @@ test("joins an active Turn without losing or replaying assistant text", async ()
     },
   ]);
   await Promise.all([watching, observing]);
-  await waitFor(() => target.events.length === 2);
+  await waitFor(() => target.events.length === 3);
 
   assert.deepEqual(
     target.events.map((event) => [
@@ -143,6 +143,7 @@ test("joins an active Turn without losing or replaying assistant text", async ()
     ]),
     [
       ["text_delta", "Hello", 0],
+      ["queue_update", undefined, undefined],
       ["text_delta", " world", 5],
     ],
   );
@@ -233,7 +234,7 @@ test("restores renderer observation after the Host connection is replaced", asyn
   observations.detach(firstObserver);
   await firstObserver.close();
   assert.deepEqual(await observations.attach(secondObserver), ["session-1"]);
-  await waitFor(() => target.events.length === 1);
+  await waitFor(() => target.events.length === 3);
 
   secondEvents.push(deltaFrame(1, 5, " again"));
   secondEvents.push({
@@ -261,7 +262,9 @@ test("restores renderer observation after the Host connection is replaced", asyn
       "text" in event ? event.text : undefined,
     ]),
     [
+      ["queue_update", undefined],
       ["text_delta", "Hello"],
+      ["queue_update", undefined],
       ["text_delta", " again"],
       ["text_complete", "Hello again"],
       ["complete", undefined],
@@ -2227,13 +2230,13 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
   await waitFor(() => openCount === 2);
   assert.equal(target.observations.at(-1)?.type, 'host_observation_pending',
     'observation is invalidated while reopen is still waiting');
-  assert.equal(target.events.length, 1, 'no replacement content is accepted before reopen completes');
+  assert.equal(target.events.length, 2, 'no replacement content is accepted before reopen completes');
   reopen.resolve();
-  await waitFor(() => target.events.length === 2);
+  await waitFor(() => target.events.length === 4);
   assert.equal(target.observations.at(-1)?.type, 'host_observation_seed');
 
   secondEvents.push(deltaFrame(1, 5, " world"));
-  await waitFor(() => target.events.length === 3);
+  await waitFor(() => target.events.length === 5);
   assert.deepEqual(
     target.events.map((event) => [
       event.type,
@@ -2241,8 +2244,10 @@ test("reopens an evicted active subscription without a renderer resubscribe", as
       "startOffset" in event ? event.startOffset : undefined,
     ]),
     [
+      ["queue_update", undefined, undefined],
       ["text_delta", "Hel", 0],
       ["text_delta", "Hello", 0],
+      ["queue_update", undefined, undefined],
       ["text_delta", " world", 5],
     ],
   );
@@ -2531,7 +2536,7 @@ test("seeds a joining observer from the attempt that survives repeated catch-up 
     joiningTarget.events.map((event) =>
       event.type === "text_delta" ? event.text : event.type,
     ),
-    ["Hello"],
+    ["queue_update", "Hello", "queue_update"],
   );
   await observer.close();
 });
@@ -2792,10 +2797,10 @@ test("shares one Host subscription and one delivery per renderer target", async 
     observer.observe("session-1", "observer-2", target),
   ]);
   events.push(deltaFrame(1, 0, "one"));
-  await waitFor(() => target.events.length === 1);
+  await waitFor(() => target.events.length === 2);
 
   assert.equal(openCount, 1);
-  assert.equal(target.events.length, 1);
+  assert.equal(target.events.length, 2);
   await observer.unobserve("observer-1");
   assert.equal(closeCount, 0);
   await observer.unobserve("observer-2");
@@ -2894,7 +2899,7 @@ test("rehydrates pending interactions and publishes answer acknowledgements", as
 
   assert.deepEqual(
     await observer.readActiveInteractions("session-1"),
-    target.events,
+    target.events.filter((event) => event.type !== "queue_update"),
   );
   observer.publishInteractionAnswer(
     {
@@ -2999,7 +3004,7 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
       },
     }),
   });
-  await waitFor(() => target.events.length === 1);
+  await waitFor(() => target.events.length === 2);
   events.push({
     kind: "subscription.session_projection",
     hostEpoch: "host-1",
@@ -3015,13 +3020,13 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
       },
     }),
   });
-  await waitFor(() => target.events.length === 3);
+  await waitFor(() => target.events.length === 4);
 
   assert.deepEqual(
     target.events.map((event) => event.type),
-    ["queue_update", "steering_message", "queue_update"],
+    ["queue_update", "queue_update", "steering_message", "queue_update"],
   );
-  assert.deepEqual(target.events[0], {
+  assert.deepEqual(target.events[1], {
     type: "queue_update",
     id: "host-queue:host-1:1",
     turnId: "turn-1",
@@ -3032,7 +3037,7 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
     steeringEntries: [queued],
     followupEntries: [],
   });
-  assert.deepEqual(target.events[1], {
+  assert.deepEqual(target.events[2], {
     type: "steering_message",
     id: "host-queue:host-1:2:entry-1",
     turnId: "turn-1",

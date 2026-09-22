@@ -47,17 +47,22 @@ export interface RestoredDraftContent {
 /**
  * Edit/delete controls for steering the Host queued but has not consumed.
  * Both retract the queue entry; edit also hands the text back to the caller's
- * draft restore. `retract` resolves false when the Host call failed.
+ * draft restore, so it is only offered when the caller can actually restore —
+ * without one, edit would silently behave like delete. `retract` resolves
+ * false when the Host call failed.
  */
 export function queuedSteeringDeliveryActions(input: {
   locale: UiLocale;
   draftText: string;
+  editable: boolean;
   retract: (draftText?: string) => Promise<boolean>;
 }): NonNullable<TransientUserMessage['deliveryActions']> {
   const copy = getConversationCopy(input.locale).composer;
   const icon = (glyph: typeof Pencil) => createElement(glyph, { size: ICON_SIZE.control, 'aria-hidden': true });
   return [
-    { label: copy.editQueuedEntry, icon: icon(Pencil), onClick: async () => { await input.retract(input.draftText); } },
+    ...(input.editable
+      ? [{ label: copy.editQueuedEntry, icon: icon(Pencil), onClick: async () => { await input.retract(input.draftText); } }]
+      : []),
     { label: copy.deleteQueuedEntry, icon: icon(Trash2), onClick: async () => { await input.retract(); } },
   ];
 }
@@ -80,6 +85,8 @@ export function withQueuedSteeringTransients(
     | undefined,
   actions: {
     locale: UiLocale;
+    /** Offer the retract-and-restore edit action. */
+    editable: boolean;
     /** Retract the queue entry; resolves false when the Host call failed. */
     retract(entry: MessageQueueEntryProjection, draftText?: string): Promise<boolean>;
   },
@@ -106,6 +113,7 @@ export function withQueuedSteeringTransients(
     deliveryActions: queuedSteeringDeliveryActions({
       locale: actions.locale,
       draftText: entry.content.displayText ?? entry.content.text,
+      editable: actions.editable,
       retract: (draftText) => actions.retract(entry, draftText),
     }),
   }));

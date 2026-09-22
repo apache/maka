@@ -26,7 +26,8 @@ import {
   type ComposerHandle,
   type TransientUserMessageProjection,
 } from '@maka/ui';
-import { ConversationServicesProvider, SessionLocalMessages, useSessionMessageQueue } from '../../renderer/features/conversation/index.js';
+import { ConversationServicesProvider, SessionLocalMessages } from '../../renderer/features/conversation/index.js';
+import { useSessionMessageQueue } from '../../renderer/features/conversation/testing.js';
 import type { RestoredDraftContent } from '../../renderer/application/contracts/transient-message-projection.js';
 import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
@@ -174,6 +175,54 @@ test('queue_update stores the snapshot and retires every listed local placeholde
     outcome: 'retracted',
   });
   assert.equal(transientMessages.size, 0);
+});
+
+test('an empty queue_update clears the last-seen snapshot after an unobserved drain', async () => {
+  const controller = createAppShellSessionUiStateController();
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'en',
+    activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true,
+    refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    setMessageQueueBySession: controller.setMessageQueueBySession,
+    showModelSetupToast() {},
+    toastApi: { error() {} },
+  });
+
+  handlers.handleEvent('session-1', {
+    type: 'queue_update',
+    id: 'queue-drained-before',
+    turnId: 'turn-1',
+    ts: 1,
+    queueRevision: 2,
+    steering: [],
+    followup: ['do this next'],
+    steeringEntries: [],
+    followupEntries: [{
+      entryId: 'entry-next',
+      messageId: 'message-next',
+      content: { text: 'do this next' },
+      placement: 'next_turn',
+      state: 'queued',
+    }],
+  });
+  assert.equal(controller.getState().messageQueueBySession['session-1']?.entries.length, 1);
+
+  handlers.handleEvent('session-1', {
+    type: 'queue_update',
+    id: 'queue-drained-after',
+    turnId: 'turn-1',
+    ts: 2,
+    queueRevision: 3,
+    steering: [],
+    followup: [],
+    steeringEntries: [],
+    followupEntries: [],
+  });
+  assert.equal(controller.getState().messageQueueBySession['session-1'], undefined);
 });
 
 test('steering delivery clears a promoted follow-up from the desktop queue', () => {
