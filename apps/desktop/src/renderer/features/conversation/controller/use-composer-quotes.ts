@@ -24,6 +24,54 @@ const MAX_QUOTE_CHARS = 32_000;
 
 type PendingQuotes = Record<string, QuoteRef[]>;
 
+// An emptied note removes the field rather than keeping the old one:
+// the excerpt is still staged, it simply carries nothing now.
+function updateQuoteCommentIn(bucket: QuoteRef[], index: number, comment: string): void {
+  const quote = bucket[index];
+  if (!quote) return;
+  const { comment: _previous, ...rest } = quote;
+  bucket[index] = comment ? { ...rest, comment } : rest;
+}
+
+export interface StageQuoteInput {
+  text: string;
+  turnId?: string;
+  label?: string;
+  comment?: string;
+  sourceSessionId?: string;
+  sourceSessionName?: string;
+  sourceCapturedAt?: number;
+  sourceTruncated?: boolean;
+}
+
+export function stageQuoteInBucket(bucket: QuoteRef[], input: StageQuoteInput): void {
+  const text = input.text.slice(0, MAX_QUOTE_CHARS).trim();
+  if (!text) return;
+  const comment = input.comment?.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
+  // (text, sourceTurnId) is the identity the transcript's marks and the
+  // edit re-resolve already assume — a byte-identical second stage can
+  // only steal the first quote's pin and writes, so it folds into the
+  // existing one instead of duplicating.
+  const existing = bucket.findIndex(
+    (quote) => quote.text === text && quote.sourceTurnId === input.turnId,
+  );
+  if (existing !== -1) {
+    if (comment) updateQuoteCommentIn(bucket, existing, comment);
+    return;
+  }
+  const quote: QuoteRef = {
+    text,
+    ...(input.label ? { label: input.label } : {}),
+    ...(comment ? { comment } : {}),
+    ...(input.turnId ? { sourceTurnId: input.turnId } : {}),
+    ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),
+    ...(input.sourceSessionName ? { sourceSessionName: input.sourceSessionName } : {}),
+    ...(input.sourceCapturedAt !== undefined ? { sourceCapturedAt: input.sourceCapturedAt } : {}),
+    ...(input.sourceTruncated !== undefined ? { sourceTruncated: input.sourceTruncated } : {}),
+  };
+  bucket.push(quote);
+}
+
 export function useComposerQuotes(options: { readonly draftKey: string }) {
   // React state triggers rendering, while each bucket is kept mutable so a
   // send callback from the current render observes a quote selected in the
@@ -43,41 +91,13 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     bumpVersion((version) => version + 1);
   }, []);
 
-  const addQuote = useCallback((input: {
-    text: string;
-    turnId?: string;
-    label?: string;
-    comment?: string;
-    sourceSessionId?: string;
-    sourceSessionName?: string;
-    sourceCapturedAt?: number;
-    sourceTruncated?: boolean;
-  }): void => {
-    const text = input.text.slice(0, MAX_QUOTE_CHARS).trim();
-    if (!text) return;
-    const comment = input.comment?.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
-    const quote: QuoteRef = {
-      text,
-      ...(input.label ? { label: input.label } : {}),
-      ...(comment ? { comment } : {}),
-      ...(input.turnId ? { sourceTurnId: input.turnId } : {}),
-      ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),
-      ...(input.sourceSessionName ? { sourceSessionName: input.sourceSessionName } : {}),
-      ...(input.sourceCapturedAt !== undefined ? { sourceCapturedAt: input.sourceCapturedAt } : {}),
-      ...(input.sourceTruncated !== undefined ? { sourceTruncated: input.sourceTruncated } : {}),
-    };
-    bucket.push(quote);
+  const addQuote = useCallback((input: StageQuoteInput): void => {
+    stageQuoteInBucket(bucket, input);
     publish();
-  }, [bucket, options.draftKey, publish]);
+  }, [bucket, publish]);
 
   const updateQuoteComment = useCallback((index: number, comment: string): void => {
-    const next = comment.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim();
-    const quote = bucket[index];
-    if (!quote) return;
-    // An emptied note removes the field rather than keeping the old one:
-    // the excerpt is still staged, it simply carries nothing now.
-    const { comment: _previous, ...rest } = quote;
-    bucket[index] = next ? { ...rest, comment: next } : rest;
+    updateQuoteCommentIn(bucket, index, comment.slice(0, QUOTE_COMMENT_MAX_LENGTH).trim());
     publish();
   }, [bucket, publish]);
 

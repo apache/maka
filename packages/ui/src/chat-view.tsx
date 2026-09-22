@@ -124,6 +124,9 @@ const MEASURE_AHEAD_MARGIN = 4000;
  * window when the excerpt it hangs from sits near the bottom edge.
  */
 const QUOTE_ANNOTATION_PANEL_HEIGHT = 280;
+// Half the panel's fixed 320px width plus an edge margin — the panel is
+// center-anchored, so x must stay this far inside the window.
+const QUOTE_ANNOTATION_PANEL_HALF = 168;
 
 interface QuoteMark {
   index: number;
@@ -768,7 +771,10 @@ export function ChatView(props: {
   const openQuoteAnnotation = useCallback(
     (request: { index: number; text: string; turnId?: string; comment?: string }): boolean => {
       const root = scrollRef.current;
-      if (!root || !request.turnId) return false;
+      // Taking over an in-flight annotation would discard the note already
+      // typed into it — decline so the token falls back to its own popover
+      // and the draft survives.
+      if (!root || !request.turnId || quoteAnnotation !== null) return false;
       const escaped =
         typeof CSS !== 'undefined' && CSS.escape
           ? CSS.escape(request.turnId)
@@ -807,7 +813,7 @@ export function ChatView(props: {
       });
       return true;
     },
-    [scrollRef],
+    [scrollRef, quoteAnnotation],
   );
   useImperativeHandle(props.handleRef, () => ({ openQuoteAnnotation }), [openQuoteAnnotation]);
 
@@ -899,14 +905,24 @@ export function ChatView(props: {
   });
 
   // The panel hangs from the live quote once the restored selection settles
-  // into one; until then the anchor measured at open time holds it. A
-  // selection resolving to a different excerpt never moves the panel.
+  // into one. When the live quote is gone — the excerpt scrolled out of the
+  // measured band — the mark machinery's range still knows where the excerpt
+  // is, so the panel follows it; the open-time anchor is only the pre-measure
+  // placeholder. A selection resolving to a different excerpt never moves it.
+  const annotationMarkIndex =
+    quoteAnnotation?.kind === 'edit' ? quoteAnnotation.index : props.pendingQuotes?.length ?? -1;
+  const annotationRange = quoteAnnotation
+    ? quoteMarkRangesRef.current.find((mark) => mark.index === annotationMarkIndex)?.range
+    : undefined;
+  const annotationRangeBox = annotationRange?.getBoundingClientRect();
   const annotationAnchor = quoteAnnotation
     ? selectionQuote &&
       selectionQuote.turnId === quoteAnnotation.turnId &&
       selectionQuote.text === quoteAnnotation.text
       ? selectionQuote.anchor
-      : quoteAnnotation.anchor
+      : annotationRangeBox
+        ? { x: annotationRangeBox.left + annotationRangeBox.width / 2, y: annotationRangeBox.top }
+        : quoteAnnotation.anchor
     : null;
 
   if (!props.activeSession) {
@@ -1257,7 +1273,13 @@ export function ChatView(props: {
                 ) : null}
               </div>,
               {
-                x: annotationAnchor.x,
+                // Center-anchored on the excerpt, clamped into the window —
+                // the layer dismisses only through its own buttons, so they
+                // must always stay reachable on screen.
+                x: Math.min(
+                  Math.max(annotationAnchor.x, QUOTE_ANNOTATION_PANEL_HALF),
+                  Math.max(QUOTE_ANNOTATION_PANEL_HALF, window.innerWidth - QUOTE_ANNOTATION_PANEL_HALF),
+                ),
                 // Below the excerpt, clamped so the panel's lower edge stays
                 // inside the window when a selection sits near the bottom.
                 y: Math.min(
