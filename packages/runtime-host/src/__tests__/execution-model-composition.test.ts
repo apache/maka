@@ -974,11 +974,17 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   const assertProjectedImage = (body: Record<string, unknown> | undefined) => {
     assert.ok(body);
     assert.doesNotMatch(JSON.stringify(body), /raw execution fact/u);
-    assert.deepEqual(JSON.parse(latestToolResultText(body) ?? 'null'), [
+    const toolText = latestToolResultText(body);
+    assert.ok(toolText);
+    assert.equal(toolText.includes(pngBytes.toString('base64')), false);
+    const images = (Array.isArray(body.messages) ? body.messages : [])
+      .filter((message) => message.role === 'user' && Array.isArray(message.content))
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'image_url');
+    assert.deepEqual(images, [
       {
-        type: 'file',
-        mediaType: 'image/png',
-        data: { type: 'data', data: pngBytes.toString('base64') },
+        type: 'image_url',
+        image_url: { url: `data:image/png;base64,${pngBytes.toString('base64')}` },
       },
     ]);
   };
