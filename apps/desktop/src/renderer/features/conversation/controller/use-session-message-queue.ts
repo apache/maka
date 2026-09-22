@@ -19,7 +19,6 @@
 
 import { useCallback, useMemo, useRef, type RefObject } from 'react';
 import {
-  appendPromptContextDraft,
   useToast,
   useUiLocale,
   type ComposerHandle,
@@ -89,14 +88,7 @@ export function useSessionMessageQueue(options: {
     draftContextRestorer.current?.(targetSessionId, draft);
     const handle = composer.current;
     if (!handle || !draft.text.trim()) return;
-    if (handle.appendDraft) {
-      handle.appendDraft(targetSessionId, draft.text);
-    } else {
-      handle.setDraft(
-        targetSessionId,
-        appendPromptContextDraft(handle.getDraft(targetSessionId), draft.text),
-      );
-    }
+    handle.appendDraft(targetSessionId, draft.text);
   }, []);
   // Surfaces the failure, then rethrows so the pending plate can settle its
   // in-flight action state without guessing with a timer.

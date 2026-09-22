@@ -29,3 +29,4 @@ export {
   activeExecutionBoundaryUnreadable,
   startActiveExecutionBoundaryRead,
 } from './controller/use-active-execution-boundary.js';
+export { useSessionMessageQueue } from './controller/use-session-message-queue.js';

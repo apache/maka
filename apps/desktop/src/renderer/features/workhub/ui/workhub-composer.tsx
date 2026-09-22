@@ -19,7 +19,6 @@
 
 import { forwardRef, useRef, useState, type MutableRefObject } from 'react';
 import {
-  appendPromptContextDraft,
   Composer,
   useToast,
   useUiLocale,
@@ -87,8 +86,7 @@ export const WorkHubComposer = forwardRef<ComposerHandle, WorkHubComposerProps>(
       if (draft.attachments?.length) staged.restoreAttachments(key, draft.attachments);
       const handle = self.current;
       if (!handle || !draft.text.trim()) return;
-      if (handle.appendDraft) handle.appendDraft(key, draft.text);
-      else handle.setDraft(key, appendPromptContextDraft(handle.getDraft(key), draft.text));
+      handle.appendDraft(key, draft.text);
     };
   }
   return <Composer {...composer}

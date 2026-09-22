@@ -63,7 +63,6 @@ export { desktopSlashCommandPresentation } from './model/slash-command-presentat
 export { useComposerQuotes } from './controller/use-composer-quotes.js';
 export { useActiveExecutionBoundary } from './controller/use-active-execution-boundary.js';
 export { useSessionReferenceComposer } from './controller/use-session-reference-composer.js';
-export { useSessionMessageQueue } from './controller/use-session-message-queue.js';
 export {
   ComposerMentionsProvider,
   useComposerMentionsContext,
