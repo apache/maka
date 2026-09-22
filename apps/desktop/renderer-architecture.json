@@ -327,7 +327,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 9,
-        "nonTriviaTokens": 3596
+        "nonTriviaTokens": 3594
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 2,
@@ -525,7 +525,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 860
+        "nonTriviaTokens": 858
       },
       "src/renderer/app-shell-project-actions.ts": {
         "importDeclarations": 4,
@@ -558,7 +558,7 @@
         "nonTriviaTokens": 2157
       },
       "src/renderer/app-shell-revision-actions.ts": {
-        "importDeclarations": 3,
+        "importDeclarations": 2,
         "bridgePaths": {
           "window.maka.sessions.abandonSessionCopy": 2,
           "window.maka.sessions.reviseBeforeTurn": 1
@@ -577,8 +577,8 @@
           "./session-workspace-errors.js": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 4,
-        "nonTriviaTokens": 537
+        "importSpecifiers": 3,
+        "nonTriviaTokens": 482
       },
       "src/renderer/app-shell-session-events.ts": {
         "importDeclarations": 1,
@@ -678,10 +678,10 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 1245
+        "nonTriviaTokens": 1243
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 63,
+        "importDeclarations": 61,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -830,8 +830,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 88,
-        "nonTriviaTokens": 12957
+        "importSpecifiers": 86,
+        "nonTriviaTokens": 12682
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -848,7 +848,7 @@
         "nonTriviaTokens": 24
       },
       "src/renderer/use-app-shell-session-list.ts": {
-        "importDeclarations": 5,
+        "importDeclarations": 4,
         "bridgePaths": {
           "window.maka.sessions.list": 1
         },
@@ -873,7 +873,7 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 8,
+        "importSpecifiers": 5,
         "nonTriviaTokens": 486
       },
       "src/renderer/use-app-shell-session-ui-reads.ts": {

@@ -304,6 +304,12 @@ describe('revision draft lifecycle over a prepared send', () => {
       },
       messages: [userMessage('turn-1', 'original message')],
       hasPendingAttachments: () => false,
+      stagedContext: () => ({
+        quotes: [],
+        attachments: [],
+        restoreQuotes: (_ownerKey: string, _quotes: unknown[]) => {},
+        clearQuotes: (_ownerKey: string) => {},
+      }),
       openSessionInChat: (sessionId: string) => {
         selectionRevision += 1;
         activeIdRef.current = sessionId;
