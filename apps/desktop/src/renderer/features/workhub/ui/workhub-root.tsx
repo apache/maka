@@ -25,6 +25,7 @@ import { useLiveContextUsage } from '../../../application/contracts/session-insp
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
 import { getShellCopy } from '../../../locales/shell-copy.js';
@@ -72,7 +73,12 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
 
 export function WorkHubRoot() {
   const highlight = useWorkHubHighlightState();
-  const controller = useWorkHubController(() => highlight.selectWork(undefined));
+  const composer = useRef<ComposerHandle>(null);
+  const draftRestore = useRef<((sessionId: string, draft: RestoredDraftContent) => void) | undefined>(undefined);
+  const controller = useWorkHubController(
+    () => highlight.selectWork(undefined),
+    (sessionId, draft) => draftRestore.current?.(sessionId, draft),
+  );
   const { services, session, transcript, busy } = controller;
   useEffect(() => {
     services.bindBrowserSession(controller.sessionId ?? null);
@@ -105,7 +111,6 @@ export function WorkHubRoot() {
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
   const shortcutLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘⇧K' : 'Ctrl+Shift+K';
-  const composer = useRef<ComposerHandle>(null);
   const composerSurface = useRef<HTMLDivElement>(null);
   const revealMark = useRef<HTMLDivElement>(null);
   const history = useRef<HTMLDivElement>(null);
@@ -346,6 +351,7 @@ export function WorkHubRoot() {
               onReorderQueuedEntries={controller.reorderQueuedEntries}
               placeholder={progress ? t.progressInput : t.welcome}
               ref={composer}
+              draftRestore={draftRestore}
               sessionId={controller.sessionId}
               streaming={busy}
               sendBlocked={!controller.sessionId || controller.sending || !session?.model}

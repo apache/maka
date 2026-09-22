@@ -34,6 +34,7 @@ import {
   type ComposerHandle,
 } from '@maka/ui';
 import type { SessionSummary } from '@maka/core/session';
+import type { QuoteRef } from '@maka/core/events';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
@@ -78,6 +79,8 @@ export function QuoteCompanionPanel(props: {
   modelChoices: readonly ChatModelChoice[];
   confirmBypass: () => Promise<boolean>;
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
+  /** Re-stages quotes a retracted send carried, so an edit restores them. */
+  onRestoreQuotes?: (panelId: string, quotes: readonly QuoteRef[]) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
@@ -113,6 +116,7 @@ export function QuoteCompanionPanel(props: {
     pendingAttachments,
     pickAttachments,
     attachFilePaths,
+    restoreAttachments,
     removeAttachment,
     clearSubmittedAttachments,
   } = useComposerAttachments({
@@ -165,6 +169,15 @@ export function QuoteCompanionPanel(props: {
         undefined,
         { sessionId },
       );
+    },
+    restoreDraft: (_sessionId, draft) => {
+      if (draft.attachments?.length) restoreAttachments(draftKey, draft.attachments);
+      if (draft.quotes?.length) props.onRestoreQuotes?.(props.panelId, draft.quotes);
+      const input = composerRef.current;
+      if (!input || !draft.text.trim()) return;
+      if (input.getText().trim()) input.appendText(draft.text);
+      else input.setText(draft.text);
+      input.focus();
     },
   });
   useEffect(() => {

@@ -39,6 +39,7 @@ import {
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel, LiveTurnBuffer } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
+import { withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
 import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
 import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
@@ -707,6 +708,50 @@ export const PromptSentBeforeTurnLands: Story = {
     await expect(canvasElement.querySelector('.maka-turn-processing')).not.toBeNull();
     // No clock before the Turn's own start arrives.
     await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
+  },
+};
+
+// Real path: a steering send the Host queued but has not consumed yet derives
+// from the queue snapshot at the render boundary — the transcript bubble is
+// that entry, with retract-backed edit/delete. The plate shows follow-ups only.
+export const QueuedSteeringInTranscript: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        activeTurn: { turnId: 'turn-s' },
+        messages: [
+          user('msg-s-1', 'turn-s', 3, '把整套测试跑一遍，看看那三个失败用例是不是同一个原因。'),
+          { type: 'turn_state', id: 'state-s', turnId: 'turn-s', ts: NOW - 30_000, status: 'running' },
+        ],
+        liveTurns: [{
+          turnId: 'turn-s', steps: [{
+            stepId: 'msg-assistant-s',
+            text: { text: '先把失败用例的栈对上。', truncated: false, complete: false },
+            tools: [],
+          }],
+        }],
+        transientMessages: withQueuedSteeringTransients([], {
+          turnId: 'turn-s',
+          ts: NOW - 10_000,
+          entries: [{
+            entryId: 'entry-steer',
+            messageId: 'msg-steer-queued',
+            content: { text: '顺便确认一下 coverage 阈值没有变。' },
+            placement: 'current_turn',
+            state: 'queued',
+          }],
+        }, { locale: 'zh-CN', editable: true, retract: async () => true }),
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const bubble = canvasElement.querySelector('[data-transient-message-id="msg-steer-queued"]');
+    await expect(bubble).not.toBeNull();
+    await expect(bubble?.textContent).toContain('coverage');
+    await expect(bubble?.querySelector('[aria-label="编辑"]')).not.toBeNull();
+    await expect(bubble?.querySelector('[aria-label="删除"]')).not.toBeNull();
+    await expect(canvasElement.querySelector('.maka-composer-queue')).toBeNull();
   },
 };
 

@@ -85,7 +85,7 @@ test('applies authoritative replacement once and does not complete it again at T
 
   assert.deepEqual(
     projector.seedActive(true).map((event) => event.type),
-    ['text_delta'],
+    ['text_delta', 'queue_update'],
   );
   assert.deepEqual(projector.accept(deltaFrame(1, 0, 'final', { reset: true })).events, []);
   const completed = projector.accept(
@@ -96,7 +96,10 @@ test('applies authoritative replacement once and does not complete it again at T
     completed.map((event) => [event.type, 'text' in event ? event.text : '']),
     [['text_complete', 'final']],
   );
-  assert.deepEqual(projector.seedActive(true), []);
+  assert.deepEqual(
+    projector.seedActive(true).map((event) => event.type),
+    ['queue_update'],
+  );
 
   const terminal = projector.accept({
     kind: 'subscription.session_projection',
@@ -454,7 +457,7 @@ test('reseeds the latest provider retry when the active Turn still carries one',
   );
 
   const seeded = projector.seedActive(true);
-  assert.equal(seeded.length, 1);
+  assert.equal(seeded.length, 2);
   assert.equal(seeded[0]?.type, 'provider_retry');
   assert.equal(seeded[0] && 'phase' in seeded[0] ? seeded[0].phase : undefined, 'scheduled');
 });
@@ -594,7 +597,7 @@ test('emits a live provider retry when the snapshot overlay appears, then drops 
   });
   assert.deepEqual(
     projector.seedActive(true).map((event) => event.type),
-    ['text_delta'],
+    ['text_delta', 'queue_update'],
   );
 });
 
@@ -617,7 +620,10 @@ test('seeds only streams identified as active by the Host catch-up state', () =>
     projector
       .seedActive(true)
       .map((event) => [event.type, 'messageId' in event && event.messageId]),
-    [['thinking_delta', 'active-step']],
+    [
+      ['thinking_delta', 'active-step'],
+      ['queue_update', false],
+    ],
   );
 });
 
@@ -657,6 +663,7 @@ test('does not replay settled transcript steps when the active step reaches term
     [
       ['thinking_delta', 'active-step', 'active thought'],
       ['text_delta', 'active-step', 'partial answer'],
+      ['queue_update', false, false],
     ],
   );
 
@@ -1037,7 +1044,7 @@ test('seeds a context-compaction-started event for a running compaction Turn', (
     () => 10,
   );
   const seeded = projector.seedActive(true);
-  assert.equal(seeded.length, 1);
+  assert.equal(seeded.length, 2);
   assert.equal(seeded[0]?.type, 'context_compaction_started');
   assert.equal(seeded[0]?.turnId, 'turn-compact');
 });

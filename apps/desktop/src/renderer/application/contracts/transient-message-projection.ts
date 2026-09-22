@@ -17,26 +17,111 @@
  * under the License.
  */
 
+import { createElement } from 'react';
+import type {
+  AttachmentRef,
+  DirectoryReference,
+  MessageQueueEntryProjection,
+  QuoteRef,
+} from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
-import type { TransientUserMessageProjection } from '@maka/ui';
+import type { UiLocale } from '@maka/core/ui-locale';
+import { getConversationCopy, type TransientUserMessageProjection } from '@maka/ui';
+import { ICON_SIZE, Pencil, Trash2 } from '@maka/ui/icons';
 
 type TransientUserMessage = TransientUserMessageProjection;
 
 /**
- * Replace the queue-backed subset in the exact order supplied by the Host.
- * Other local intents keep their relative position because queue absence is
- * not cancellation or delivery proof.
+ * What a retracted send hands back to the composer: the editable text plus
+ * the staged context (attachments, directory references, quotes) that rode
+ * with it. `text` is the editable serialization — `displayText` when the
+ * content carries a separate model-facing `text`.
  */
-export function projectQueuedTransientMessages(
-  transient: Map<string, TransientUserMessage>,
-  queued: readonly TransientUserMessage[],
-): void {
-  if (queued.length === 0) return;
-  const queuedIds = new Set(queued.map((message) => message.id));
-  const retained = [...transient.entries()].filter(([id]) => !queuedIds.has(id));
-  transient.clear();
-  for (const [id, message] of retained) transient.set(id, message);
-  for (const message of queued) transient.set(message.id, message);
+export interface RestoredDraftContent {
+  text: string;
+  attachments?: readonly AttachmentRef[];
+  directoryReferences?: readonly DirectoryReference[];
+  quotes?: readonly QuoteRef[];
+}
+
+/**
+ * Edit/delete controls for steering the Host queued but has not consumed.
+ * Both retract the queue entry; edit also hands the text back to the caller's
+ * draft restore, so it is only offered when the caller can actually restore —
+ * without one, edit would silently behave like delete. `retract` resolves
+ * false when the Host call failed.
+ */
+export function queuedSteeringDeliveryActions(input: {
+  locale: UiLocale;
+  draftText: string;
+  editable: boolean;
+  retract: (draftText?: string) => Promise<boolean>;
+}): NonNullable<TransientUserMessage['deliveryActions']> {
+  const copy = getConversationCopy(input.locale).composer;
+  const icon = (glyph: typeof Pencil) => createElement(glyph, { size: ICON_SIZE.control, 'aria-hidden': true });
+  return [
+    ...(input.editable
+      ? [{ label: copy.editQueuedEntry, icon: icon(Pencil), onClick: async () => { await input.retract(input.draftText); } }]
+      : []),
+    { label: copy.deleteQueuedEntry, icon: icon(Trash2), onClick: async () => { await input.retract(); } },
+  ];
+}
+
+/**
+ * Queued steering is a thin projection of the Host queue snapshot, not a stored
+ * transient: the bubble appears, updates and disappears with `queue` alone.
+ * Appends one transcript bubble per queued current_turn entry — with the
+ * retract-backed edit/delete actions — and drops any stored transient the
+ * queue now owns, so a message never renders twice.
+ */
+export function withQueuedSteeringTransients(
+  transientMessages: readonly TransientUserMessage[],
+  queue:
+    | {
+        readonly entries: readonly MessageQueueEntryProjection[];
+        readonly turnId?: string;
+        readonly ts?: number;
+      }
+    | undefined,
+  actions: {
+    locale: UiLocale;
+    /** Offer the retract-and-restore edit action. */
+    editable: boolean;
+    /** Retract the queue entry; resolves false when the Host call failed. */
+    retract(entry: MessageQueueEntryProjection, draftText?: string): Promise<boolean>;
+  },
+): TransientUserMessage[] {
+  const steering = (queue?.entries ?? []).filter(
+    (entry) => entry.placement === 'current_turn' && entry.state === 'queued',
+  );
+  if (steering.length === 0) return [...transientMessages];
+  const bubbles = steering.map((entry): TransientUserMessage => ({
+    id: entry.messageId,
+    transientPlacement: 'current_turn',
+    pendingSteering: true,
+    hostTurnId: queue?.turnId,
+    ts: queue?.ts ?? 0,
+    text: entry.content.displayText ?? entry.content.text,
+    ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
+    ...(entry.content.directoryReferences && {
+      directoryReferences: entry.content.directoryReferences,
+    }),
+    ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
+    ...(entry.content.inlineReferences && {
+      inlineReferences: [...entry.content.inlineReferences],
+    }),
+    deliveryActions: queuedSteeringDeliveryActions({
+      locale: actions.locale,
+      draftText: entry.content.displayText ?? entry.content.text,
+      editable: actions.editable,
+      retract: (draftText) => actions.retract(entry, draftText),
+    }),
+  }));
+  const ids = new Set(bubbles.map((message) => message.id));
+  return [
+    ...transientMessages.filter((message) => !ids.has(message.id)),
+    ...bubbles,
+  ];
 }
 
 /**

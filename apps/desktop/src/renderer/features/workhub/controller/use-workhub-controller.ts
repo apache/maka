@@ -18,6 +18,11 @@
  */
 
 import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
+import { deriveMessageQueueProjection } from '../../../application/contracts/message-queue-projection.js';
+import {
+  withQueuedSteeringTransients,
+  type RestoredDraftContent,
+} from '../../../application/contracts/transient-message-projection.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnBufferEvent,
@@ -59,13 +64,18 @@ interface SendAttempt {
 }
 interface MessagePresentation {
   transientMessages: TransientUserMessageProjection[];
-  messageQueue: { entries: MessageQueueEntryProjection[]; revision?: number };
+  messageQueue: { entries: readonly MessageQueueEntryProjection[]; revision?: number; turnId?: string; ts?: number };
 }
-export function useWorkHubController(onSubmit?: () => void) {
+export function useWorkHubController(
+  onSubmit?: () => void,
+  restoreDraft?: (sessionId: string, draft: RestoredDraftContent) => void,
+) {
   const services = useWorkHubServices();
   const locale = useUiLocale();
   const localeRef = useRef(locale);
   localeRef.current = locale;
+  const restoreDraftRef = useRef(restoreDraft);
+  restoreDraftRef.current = restoreDraft;
   const [sessionId, setSessionId] = useState<string>();
   const [sessions, setSessions] = useState<Awaited<ReturnType<WorkHubServices['listSessions']>>>(
     [],
@@ -211,6 +221,37 @@ export function useWorkHubController(onSubmit?: () => void) {
       if (pendingSend.current === attempt && currentSessionId.current === attempt.sessionId) report(reason);
     } finally {
       attempt.reconciling = false;
+    }
+  }
+
+  // An unobserved queued send has no proof of admission or retraction. On
+  // reseed the Host's resolution record is the only authority left — a queue
+  // it already drained cannot answer, and admission events do not replay.
+  async function resolvePendingQueued(): Promise<void> {
+    const queued = pendingQueued.current;
+    if (!queued || queued.observed || queued.sessionId !== currentSessionId.current) return;
+    try {
+      const { resolutions } = await services.queryMessageExecutions(queued.sessionId, [queued.messageId]);
+      if (pendingQueued.current !== queued || queued.observed) return;
+      const resolution = resolutions.find((entry) => entry.messageId === queued.messageId);
+      // `pending` or an omitted identity means the Host cannot say yet —
+      // keep the placeholder until canonical evidence arrives.
+      if (!resolution || resolution.state === 'pending') return;
+      pendingQueued.current = undefined;
+      // `owned` means the message already runs as a Turn; the durable
+      // transcript merge retires its placeholder. `cancelled`/`not_admitted`
+      // prove it never will, so the placeholder drops here.
+      setMessagePresentation((previous) => ({
+        messageQueue: {
+          ...previous.messageQueue,
+          entries: previous.messageQueue.entries.filter((entry) => entry.messageId !== queued.messageId),
+        },
+        transientMessages: resolution.state === 'owned'
+          ? previous.transientMessages
+          : previous.transientMessages.filter((message) => message.id !== queued.messageId),
+      }));
+    } catch {
+      // A failed proof query says nothing about the send — presentation stays.
     }
   }
 
@@ -383,13 +424,15 @@ export function useWorkHubController(onSubmit?: () => void) {
         setInteractions((current) => terminal ? clearInteractions(current, sessionId) : reduceInteractionQueues(current, sessionId, event));
         if (terminal) setTurnStates((current) => Object.fromEntries([...Object.entries(current), [event.turnId, event.type === 'complete' ? 'completed' : event.type === 'abort' ? 'aborted' : 'failed']].slice(-64)));
         if (event.type === 'queue_update') {
-          const entries = [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])];
-          // Host evidence retires local submission placeholders. Queue state
-          // lives only in messageQueue, including after reconnect or withdrawal.
-          const ids = new Set(entries.map((entry) => entry.messageId));
+          const queue = deriveMessageQueueProjection(event);
+          // Host evidence retires local submission placeholders; queued
+          // steering renders from the snapshot itself as transcript bubbles.
+          const ids = new Set(
+            [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])].map((entry) => entry.messageId),
+          );
           if (pendingQueued.current && ids.has(pendingQueued.current.messageId)) pendingQueued.current.observed = true;
           setMessagePresentation((previous) => ({
-            messageQueue: { entries: entries.filter((entry) => entry.state === 'queued'), revision: event.queueRevision },
+            messageQueue: { entries: queue.entries, revision: event.queueRevision, turnId: event.turnId, ts: event.ts },
             transientMessages: previous.transientMessages.filter((message) => !ids.has(message.id)),
           }));
         }
@@ -447,7 +490,11 @@ export function useWorkHubController(onSubmit?: () => void) {
         if (disposed) return;
         observationPhase = phase;
         handle?.observationChanged(phase);
-        if (phase === 'ready') { refreshInteractions.current(); void recoverSend(); }
+        if (phase === 'ready') {
+          refreshInteractions.current();
+          void recoverSend();
+          void resolvePendingQueued();
+        }
       },
       (projection) => { if (!disposed) setExecution(projection); },
     );
@@ -699,7 +746,24 @@ export function useWorkHubController(onSubmit?: () => void) {
       if (!sessionId) throw new Error('WorkHub Session is unavailable');
       await services.respondToUserQuestion(sessionId, response);
     },
-    transientMessages,
+    transientMessages: withQueuedSteeringTransients(transientMessages, messageQueue, {
+      locale,
+      editable: restoreDraft !== undefined,
+      retract: async (entry, draftText) => {
+        if (!sessionId) return false;
+        try { await services.retractQueueEntry(sessionId, entry.entryId); }
+        catch (reason) { report(reason); return false; }
+        if (draftText !== undefined) {
+          restoreDraftRef.current?.(sessionId, {
+            text: draftText,
+            attachments: entry.content.attachments,
+            directoryReferences: entry.content.directoryReferences,
+            quotes: entry.content.quotes,
+          });
+        }
+        return true;
+      },
+    }),
     messageQueue,
     updateQueuedEntry: (entryId: string, revision: number, text: string) => mutateQueue((target) => services.updateQueueEntry(target, entryId, revision, text)),
     deleteQueuedEntry: (entryId: string) => mutateQueue((target) => services.retractQueueEntry(target, entryId)),

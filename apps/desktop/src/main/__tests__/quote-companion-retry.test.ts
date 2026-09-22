@@ -2665,6 +2665,93 @@ test('retires a cancelled queued Side Conversation message after observation res
   assert.ok(queriedMessageIds.some((messageIds) => messageIds.includes(queuedMessageId as string)));
 });
 
+test('binds a drained queued follow-up to its completed Turn when reseeding', async () => {
+  let queuedMessageId: string | undefined;
+  let markSeeded: (() => void) | undefined;
+  let seedCount = 0;
+  let reconnected = false;
+  const { container, emit, send, queue, hostTurn } = await renderOwnershipProbe({
+    subscribeEvents: (_sessionId, _handler, onSeeded) => {
+      markSeeded = onSeeded;
+      if (seedCount === 0) {
+        seedCount += 1;
+        onSeeded?.();
+      }
+      return () => undefined;
+    },
+    send: async () => ({ ok: true as const, turnId: 'old-turn' }),
+    submitFollowUp: async (_sessionId, placement, _text, messageId) => {
+      assert.equal(placement, 'next_turn');
+      queuedMessageId = messageId;
+      return { kind: 'queued' as const };
+    },
+    readSettledMessages: async () => ({
+      messages: reconnected
+        ? [
+            {
+              type: 'user' as const,
+              id: queuedMessageId as string,
+              turnId: 'successor-turn',
+              ts: 3,
+              text: 'drained while disconnected',
+            },
+            {
+              type: 'assistant' as const,
+              id: 'successor-answer',
+              turnId: 'successor-turn',
+              ts: 4,
+              text: 'successor answer',
+              modelId: 'test-model',
+            },
+            {
+              type: 'turn_state' as const,
+              id: 'successor-done',
+              turnId: 'successor-turn',
+              ts: 5,
+              status: 'completed' as const,
+            },
+          ]
+        : [],
+      settled: true,
+    }),
+    queryMessageExecutions: async (_sessionId, messageIds) => ({
+      resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })),
+    }),
+  });
+
+  await act(async () => {
+    assert.equal(await send('initial prompt'), true);
+    hostTurn('old-turn');
+  });
+  await act(async () => {
+    assert.equal(await queue('drained while disconnected'), true);
+    emit(
+      queueUpdateEvent('queued-follow-up', 'old-turn', 2, [], [
+        {
+          entryId: 'follow-up-entry',
+          messageId: queuedMessageId as string,
+          content: { text: 'drained while disconnected' },
+          placement: 'next_turn',
+          state: 'queued',
+        },
+      ]),
+    );
+    await Promise.resolve();
+  });
+  // The Host drained the queue while the panel was disconnected, so the
+  // post-reconnect snapshot lists nothing and the admission events are gone —
+  // only the reseed can bind the completed Turn.
+  await act(async () => {
+    emit(queueUpdateEvent('drained-queue', 'old-turn', 3));
+    reconnected = true;
+    markSeeded?.();
+    await Promise.resolve();
+  });
+  await waitUntil(() =>
+    (container.firstElementChild?.getAttribute('data-message-texts') ?? '')
+      .includes('drained while disconnected|successor answer'));
+});
+
 for (const resolutionState of ['cancelled', 'owned'] as const) {
   test(`releases an outcome-unknown Side Conversation steer when reseeding proves it ${resolutionState}`, async () => {
     let admissionId: string | undefined;

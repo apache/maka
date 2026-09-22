@@ -242,7 +242,7 @@ export interface ComposerHandle {
   /** Read a specific draft without changing the active input. */
   getDraft(draftKey: string): string;
   /** Append to a specific session draft without replacing newer text. */
-  appendDraft?(draftKey: string, text: string): void;
+  appendDraft(draftKey: string, text: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
   /** Open the active Session's existing account-and-model picker. */
@@ -1617,8 +1617,6 @@ export const Composer = forwardRef<
   const stopShown =
     props.streaming === true
     && (props.sendBlocked === true || (!text.trim() && !hasStagedContext));
-  // A Host receipt is not model consumption. Keep steering above the composer
-  // until the host surface retires its transient on steering_message.
   const queuedMessages = projectComposerMessageQueue(props.queuedMessages ?? [], props.pendingMessages ?? []);
   const queueCount = queuedMessages.length;
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;

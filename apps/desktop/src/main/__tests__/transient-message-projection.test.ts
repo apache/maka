@@ -24,8 +24,8 @@ import type { TransientUserMessageProjection } from '@maka/ui';
 import { deriveMessageQueueProjection } from '../../renderer/application/contracts/message-queue-projection.js';
 import {
   mergeTransientMessageProjection,
-  projectQueuedTransientMessages,
   reconcileTransientMessages,
+  withQueuedSteeringTransients,
 } from '../../renderer/application/contracts/transient-message-projection.js';
 
 /** The durable Message that replaces the transient row above. */
@@ -103,35 +103,13 @@ test('keeps transient messages ordered independently from a sparse durable tail'
   assert.deepEqual(projected.map((message) => message.id), ['message-1']);
 });
 
-test('uses the Host queue snapshot order for already-present transient messages', () => {
-  const localSecond = {
-    ...transient,
-    id: 'message-2',
-    turnId: 'message-2',
-    text: 'second',
-  };
-  const remoteFirst = {
-    ...transient,
-    id: 'message-1',
-    turnId: 'message-1',
-    text: 'first',
-  };
-  const pending = new Map([[localSecond.id, localSecond]]);
-
-  projectQueuedTransientMessages(pending, [remoteFirst, localSecond]);
-
-  assert.deepEqual(
-    reconcileTransientMessages(pending, []).map((message) => message.id),
-    ['message-1', 'message-2'],
-  );
-});
-
 test('derives one queue projection for main and Side Conversation consumers', () => {
   const projection = deriveMessageQueueProjection({
     type: 'queue_update',
     id: 'queue-1',
     turnId: 'turn-1',
     ts: 7,
+    queueRevision: 3,
     steering: ['in flight', 'steer'],
     followup: ['next'],
     steeringEntries: [
@@ -145,7 +123,7 @@ test('derives one queue projection for main and Side Conversation consumers', ()
       {
         entryId: 'steer',
         messageId: 'message-steer',
-        content: { text: 'raw', displayText: 'steer', quotes: [{ text: 'context' }] },
+        content: { text: 'raw', displayText: 'steer' },
         placement: 'current_turn',
         state: 'queued',
       },
@@ -161,24 +139,80 @@ test('derives one queue projection for main and Side Conversation consumers', ()
     ],
   });
 
-  assert.deepEqual(projection.entries.map((entry) => entry.entryId), ['steer', 'next']);
-  assert.deepEqual(projection.transientMessages, [
-    {
-      id: 'message-steer',
-      pendingSteering: true,
-      transientPlacement: 'current_turn',
-      hostTurnId: 'turn-1',
-      ts: 7,
-      text: 'steer',
-      quotes: [{ text: 'context' }],
+  assert.deepEqual(projection, {
+    turnId: 'turn-1',
+    ts: 7,
+    queueRevision: 3,
+    entries: [
+      {
+        entryId: 'steer',
+        messageId: 'message-steer',
+        content: { text: 'raw', displayText: 'steer' },
+        placement: 'current_turn',
+        state: 'queued',
+      },
+      {
+        entryId: 'next',
+        messageId: 'message-next',
+        content: { text: 'next' },
+        placement: 'next_turn',
+        state: 'queued',
+      },
+    ],
+  });
+});
+
+test('queued steering derives a transcript bubble that lives and dies with the snapshot', async () => {
+  const queueEntry = {
+    entryId: 'steer',
+    messageId: 'message-steer',
+    content: { text: 'raw', displayText: 'steer', quotes: [{ text: 'context' }] },
+    placement: 'current_turn' as const,
+    state: 'queued' as const,
+  };
+  const followupEntry = {
+    entryId: 'next',
+    messageId: 'message-next',
+    content: { text: 'follow up' },
+    placement: 'next_turn' as const,
+    state: 'queued' as const,
+  };
+  const queue = { turnId: 'turn-1', ts: 7, entries: [queueEntry, followupEntry] };
+  const retracted: (string | undefined)[][] = [];
+  const actions = {
+    locale: 'en' as const,
+    editable: true,
+    retract: async (_entry: unknown, draftText?: string) => {
+      retracted.push([draftText]);
+      return true;
     },
-    {
-      id: 'message-next',
-      transientPlacement: 'next_turn',
-      ts: 7,
-      text: 'next',
-    },
-  ]);
+  };
+  const localCopy = { ...transient, id: 'message-steer', text: 'local copy' };
+
+  const derived = withQueuedSteeringTransients([transient, localCopy], queue, actions);
+
+  assert.deepEqual(derived.map((message) => message.id), ['message-1', 'message-steer'],
+    'the queue-owned bubble replaces its stored local copy, and a queued follow-up stays out of the transcript');
+  const bubble = derived.at(-1);
+  assert.equal(bubble?.pendingSteering, true);
+  assert.equal(bubble?.hostTurnId, 'turn-1');
+  assert.equal(bubble?.text, 'steer');
+  assert.deepEqual(bubble?.quotes, [{ text: 'context' }]);
+  assert.deepEqual(bubble?.deliveryActions?.map((action) => action.label), ['Edit', 'Delete']);
+  await bubble?.deliveryActions?.[0]?.onClick();
+  assert.deepEqual(retracted, [['steer']], 'edit hands the text back to the composer');
+  await bubble?.deliveryActions?.[1]?.onClick();
+  assert.deepEqual(retracted.at(-1), [undefined], 'delete retracts without a draft');
+
+  assert.equal(
+    withQueuedSteeringTransients([transient], { ...queue, entries: [] }, actions).length,
+    1,
+    'an entry gone from the snapshot leaves no bubble behind',
+  );
+  assert.equal(
+    withQueuedSteeringTransients([transient], undefined, actions).length,
+    1,
+  );
 });
 
 test('keeps a Host-bound current Turn when a later IPC result has no Turn identity', () => {

@@ -23,3 +23,4 @@ export {
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
 export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-state.js';
+export { useSessionMessageQueue } from './controller/use-session-message-queue.js';

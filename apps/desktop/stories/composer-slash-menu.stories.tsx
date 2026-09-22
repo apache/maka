@@ -157,6 +157,10 @@ const conversationServices: ConversationServices = {
     readSnapshot: async () => {
       throw new Error('Session snapshots are not used in slash menu stories');
     },
+    promoteQueueEntry: async () => undefined,
+    updateQueueEntry: async () => undefined,
+    retractQueueEntry: async () => undefined,
+    reorderQueueEntries: async () => undefined,
   },
   skills: { listInvocable: loadProjection },
   workspace: { searchFiles: async () => ({ ok: true, files: [] }) },

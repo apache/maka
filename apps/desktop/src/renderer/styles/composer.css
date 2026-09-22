@@ -62,6 +62,7 @@
 }
 
 .maka-composer-queue {
+  position: relative;
   width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
   max-width: var(--maka-reading-measure);
   margin: 0 auto var(--space-1);
@@ -642,20 +643,4 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-}
-
-.maka-composer-queue-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  color: var(--muted-foreground);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.maka-composer-queue-delivery {
-  font-size: 11px;
-  color: var(--muted-foreground);
 }

@@ -440,7 +440,7 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(prompt).toHaveCount(1);
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
   await expect(stop).toBeVisible();
-  const followups = workhub.locator('[data-queue-placement="next_turn"] .maka-composer-queue-text');
+  const followups = workhub.locator('.maka-composer-queue .maka-composer-queue-text');
   const queuedTexts = ['下一轮整理测试结果', '再下一轮补充使用说明'] as const;
   await workhub.locator(COMPOSER_INPUT).fill(queuedTexts[0]);
   await workhub.getByRole('button', { name: /^(发送|Send)$/ }).click();
@@ -451,17 +451,6 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await awaitSendReady(workhub);
   await workhub.locator(COMPOSER_INPUT).press('Enter');
   await expect(followups).toHaveText(queuedTexts);
-  const shortcuts = workhub.getByRole('button', { name: '发送快捷键', exact: true });
-  await expect(shortcuts).toHaveCount(1);
-  await shortcuts.hover();
-  const shortcutHint = workhub.getByRole('tooltip');
-  const steerModifier = process.platform === 'darwin' ? 'Cmd' : 'Ctrl';
-  await expect(shortcutHint).toHaveText(`${steerModifier}+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行`);
-  await expect.poll(() => shortcutHint.evaluate((element) => {
-    const bounds = element.getBoundingClientRect();
-    return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
-  })).toBe(true);
-  await workhub.screenshot({ path: testInfo.outputPath('workhub-queue-shortcuts.png') });
   for (const text of queuedTexts) {
     await expect(workhub.locator('.maka-user-message').filter({ hasText: text })).toHaveCount(0);
   }

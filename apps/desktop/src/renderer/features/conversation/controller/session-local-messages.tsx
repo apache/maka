@@ -19,7 +19,9 @@
 
 import { useEffect } from 'react';
 import { useUiLocale, type TransientUserMessageProjection } from '@maka/ui';
+import { ICON_SIZE, Pencil, Search, Trash2 } from '@maka/ui/icons';
 import { getSessionLocalCopy } from '../../../locales/session-local-copy.js';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 import { useConversationServices } from '../services.js';
 
 export function SessionLocalMessages(props: {
@@ -27,10 +29,12 @@ export function SessionLocalMessages(props: {
   readonly publish: (sessionId: string, message: TransientUserMessageProjection) => void;
   readonly retire: (sessionId: string, messageId: string) => void;
   readonly reportError: (message: string) => void;
+  /** Puts a never-dispatched message's content back into the composer for editing. */
+  readonly restoreDraft?: (sessionId: string, draft: RestoredDraftContent) => void;
 }): null {
   const services = useConversationServices();
   const locale = useUiLocale();
-  const { sessionId, publish, retire, reportError } = props;
+  const { sessionId, publish, retire, reportError, restoreDraft } = props;
   useEffect(() => {
     if (!sessionId) return;
     let disposed = false;
@@ -49,9 +53,8 @@ export function SessionLocalMessages(props: {
               retire(sessionId, message.messageId);
               continue;
             }
-            const action = (operation: () => Promise<void>) => () => {
-              void operation().catch(() => reportError(copy.updateError));
-            };
+            const action = (operation: () => Promise<void>) => () =>
+              operation().catch(() => reportError(copy.updateError));
             publish(sessionId, {
               id: message.messageId,
               text: message.text,
@@ -64,23 +67,43 @@ export function SessionLocalMessages(props: {
               hostTurnId: message.turnId,
               deliveryStatus: copy[message.state],
               deliveryDetail: message.error,
-              deliveryActions: message.canCancel
+              deliveryActions: message.state === 'unknown'
                 ? [
                     {
-                      label: copy.remove,
-                      onClick: action(async () => {
-                        await services.cancelMessage(sessionId, message.messageId);
-                        retire(sessionId, message.messageId);
-                      }),
+                      label: copy.check,
+                      icon: <Search size={ICON_SIZE.control} style={{ color: 'var(--warning-text)' }} aria-hidden="true" />,
+                      onClick: action(() =>
+                        services.reconcileMessage(sessionId, message.messageId),
+                      ),
                     },
                   ]
-                : message.state === 'unknown'
+                : message.canCancel
                   ? [
+                      ...(restoreDraft
+                        ? [{
+                            label: copy.edit,
+                            icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />,
+                            onClick: action(async () => {
+                              await services.cancelMessage(sessionId, message.messageId);
+                              retire(sessionId, message.messageId);
+                              restoreDraft(sessionId, {
+                                text: message.text,
+                                attachments: message.attachments,
+                                directoryReferences: message.directoryReferences,
+                                quotes: message.quotes,
+                              });
+                            }),
+                          }]
+                        : []),
                       {
-                        label: copy.check,
-                        onClick: action(() =>
-                          services.reconcileMessage(sessionId, message.messageId),
-                        ),
+                        label: message.state === 'failed' ? copy.remove : copy.cancel,
+                        icon: message.state === 'failed'
+                          ? <Trash2 size={ICON_SIZE.control} style={{ color: 'var(--destructive-text)' }} aria-hidden="true" />
+                          : <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
+                        onClick: action(async () => {
+                          await services.cancelMessage(sessionId, message.messageId);
+                          retire(sessionId, message.messageId);
+                        }),
                       },
                     ]
                   : [],
@@ -97,6 +120,6 @@ export function SessionLocalMessages(props: {
       disposed = true;
       unsubscribe();
     };
-  }, [sessionId, services, publish, retire, reportError, locale]);
+  }, [sessionId, services, publish, retire, reportError, restoreDraft, locale]);
   return null;
 }

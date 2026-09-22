@@ -118,7 +118,6 @@ export function createAppShellSessionEventHandlers(options: {
   } = options;
   const scheduleFrame = options.scheduleFrame ?? createConversationDisplayFrameScheduler();
   const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
-
   function applyProjectionEvents(
     projection: LiveTurnBuffer | undefined,
     events: readonly SessionEvent[],
@@ -302,6 +301,9 @@ export function createAppShellSessionEventHandlers(options: {
     switch (event.type) {
       case 'queue_update': {
         const queue = deriveMessageQueueProjection(event);
+        // Queued steering renders from this snapshot as transcript bubbles —
+        // the store only holds local intents, so every entry the Host lists
+        // retires its local copy here.
         for (const entry of [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]) {
           removeTransientMessage?.(sessionId, entry.messageId);
         }
@@ -314,10 +316,7 @@ export function createAppShellSessionEventHandlers(options: {
           }
           return {
             ...current,
-            [sessionId]: {
-              queueRevision: event.queueRevision,
-              entries: queue.entries,
-            },
+            [sessionId]: queue,
           };
         });
         break;

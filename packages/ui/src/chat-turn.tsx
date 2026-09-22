@@ -188,7 +188,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             {timeOrDelivery}
           </span> : timeOrDelivery}
           {props.delivery?.deliveryActions?.map((action) => (
-            <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+            <UiIconButton key={action.label} label={action.label} tooltip={action.label} variant="ghost" size="sm" icon={action.icon} clickAction={action.onClick} />
           ))}
           <CopyButton
             copyKey="message"

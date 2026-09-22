@@ -94,6 +94,10 @@ function installCatalogRenderer(t: TestContext) {
       readSnapshot: async () => {
         throw new Error('Session snapshot is not used in catalog tests');
       },
+      promoteQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      retractQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
     },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
     newTasks: {

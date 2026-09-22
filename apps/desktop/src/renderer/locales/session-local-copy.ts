@@ -25,40 +25,48 @@ interface SessionLocalCopy {
   accepted: string;
   unknown: string;
   failed: string;
+  edit: string;
   remove: string;
+  cancel: string;
   check: string;
   updateError: string;
 }
 
 const catalog = {
   en: {
-    saved: 'Saved locally · waiting to send',
-    sending: 'Delivering to Host',
-    accepted: 'Host accepted',
-    unknown: 'Host outcome unknown',
-    failed: 'Not sent · local copy retained',
-    remove: 'Remove local copy',
-    check: 'Check status',
+    saved: 'Waiting to send',
+    sending: 'Sending…',
+    accepted: 'Delivered',
+    unknown: 'Delivery unconfirmed. Do not send again.',
+    failed: 'Could not send · message kept',
+    edit: 'Edit',
+    remove: 'Delete unsent message',
+    cancel: 'Cancel sending',
+    check: 'Check delivery',
     updateError: 'Unable to update the saved message',
   },
   'zh-CN': {
-    saved: '已本地保存 · 等待发送',
-    sending: '正在投递到 Host',
-    accepted: 'Host 已接受',
-    unknown: 'Host 接受结果未知',
-    failed: '未发送 · 本地副本已保留',
-    remove: '移除本地副本',
-    check: '核对状态',
+    saved: '等待发送',
+    sending: '正在发送…',
+    accepted: '已送达',
+    unknown: '暂时无法确认是否送达，请勿重复发送',
+    failed: '未能发送 · 消息已保留',
+    edit: '编辑',
+    remove: '删除未发送的消息',
+    cancel: '取消发送',
+    check: '检查是否送达',
     updateError: '无法更新已保存的消息',
   },
   'zh-TW': {
-    saved: '已儲存於本機 · 等待傳送',
-    sending: '正在投遞至 Host',
-    accepted: 'Host 已接受',
-    unknown: 'Host 接受結果未知',
-    failed: '未傳送 · 本機副本已保留',
-    remove: '移除本機副本',
-    check: '核對狀態',
+    saved: '等待傳送',
+    sending: '正在傳送…',
+    accepted: '已送達',
+    unknown: '暫時無法確認是否送達，請勿重複傳送',
+    failed: '無法傳送 · 訊息已保留',
+    edit: '編輯',
+    remove: '刪除未傳送的訊息',
+    cancel: '取消傳送',
+    check: '檢查是否送達',
     updateError: '無法更新已儲存的訊息',
   },
 } satisfies UiCatalog<SessionLocalCopy>;
