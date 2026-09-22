@@ -1495,7 +1495,10 @@ export const Composer = forwardRef<
     // The mounted composer can be hosted in a dismissible preview. Give that
     // host first refusal after the editor's local trigger menu has handled Esc.
     if (event.key === 'Escape' && !event.currentTarget.dispatchEvent(
-      new CustomEvent('maka-composer-escape', { bubbles: true, cancelable: true }),
+      new event.currentTarget.ownerDocument.defaultView!.CustomEvent(
+        'maka-composer-escape',
+        { bubbles: true, cancelable: true },
+      ),
     )) {
       event.preventDefault();
       return;
