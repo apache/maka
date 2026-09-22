@@ -34,10 +34,13 @@ import {
 } from './pi-transcript.js';
 import type { TranscriptDocument } from './pi-tui-transcript-viewer.js';
 
-interface ViewportAwareEditor extends Component {
+interface ViewportAwareComponent extends Component {
   setViewportRows(rows: number): void;
-  isShowingAutocomplete(): boolean;
   minimumViewportRows(): number;
+}
+
+interface ViewportAwareEditor extends ViewportAwareComponent {
+  isShowingAutocomplete(): boolean;
 }
 
 export function fitPendingQueueLines(lines: readonly string[], maxRows: number): string[] {
@@ -165,7 +168,7 @@ export class MakaPiLayoutComponent extends Container {
    * model output. The runner owns the interaction lifecycle; this component
    * owns the resulting terminal geometry.
    */
-  private blockingInteraction: Component | undefined;
+  private blockingInteraction: ViewportAwareComponent | undefined;
 
   constructor(
     private readonly state: MakaPiTranscriptState,
@@ -186,7 +189,7 @@ export class MakaPiLayoutComponent extends Container {
     this.addChild(statusLine);
   }
 
-  setBlockingInteraction(interaction: Component | undefined): void {
+  setBlockingInteraction(interaction: ViewportAwareComponent | undefined): void {
     if (this.blockingInteraction === interaction) return;
     if (this.blockingInteraction) this.removeChild(this.blockingInteraction);
     this.blockingInteraction = interaction;
@@ -199,55 +202,61 @@ export class MakaPiLayoutComponent extends Container {
     const allPendingLines = this.pendingQueue.render(width);
     const statusLines = this.statusLine.render(width);
     const blockingInteraction = this.blockingInteraction;
-    const blockingInteractionLines = blockingInteraction?.render(width) ?? [];
-    // Supplementary information must not steal the composer's minimum space.
-    const todoLines =
-      this.terminal.rows >
-      activityLines.length +
-        allPendingLines.length +
-        statusLines.length +
-        this.editor.minimumViewportRows()
-        ? (this.todoIndicator?.render(width) ?? []).slice(0, 1)
-        : [];
-    const pendingRowsAvailable = this.editor.isShowingAutocomplete()
-      ? Math.max(
-          0,
-          this.terminal.rows -
-            activityLines.length -
-            statusLines.length -
-            todoLines.length -
-            this.editor.minimumViewportRows(),
-        )
-      : allPendingLines.length;
-    const pendingLines = fitPendingQueueLines(allPendingLines, pendingRowsAvailable);
-    let editorLines: string[] = [];
-    if (blockingInteraction === undefined) {
-      this.editor.setViewportRows(
-        this.terminal.rows -
-          activityLines.length -
-          pendingLines.length -
-          statusLines.length -
-          todoLines.length,
-      );
-      editorLines = this.editor.render(width);
-    }
-    // #1064: when the activity strip is showing (a turn is running), separate
-    // it from the last transcript line with a blank row. Without this, a
-    // thinking or tool row (the agent-work stack, which has no internal blank
-    // gaps) sits directly against `Working… 12s`.
+    // #1064: separate an active strip from the last transcript line. Reserve
+    // both that gap and a content row before budgeting a blocking question.
     const activityActive =
       activityLines.length > 0 && activityLines.some((line) => line.length > 0);
     const lastTranscriptLine = transcriptLines[transcriptLines.length - 1];
     const needGap =
       activityActive && lastTranscriptLine !== undefined && lastTranscriptLine.length > 0;
     const paddedTranscript = needGap ? [...transcriptLines, ''] : transcriptLines;
+    const transcriptRows = blockingInteraction
+      ? Math.min(paddedTranscript.length, needGap ? 2 : 1)
+      : 0;
+    const interactionMargin = blockingInteraction ? 1 : 0;
+    const input = blockingInteraction ?? this.editor;
+    const minimumInputRows = input.minimumViewportRows();
+    // Supplementary information yields to the active input and transcript.
+    const todoLines =
+      this.terminal.rows >
+      activityLines.length +
+        allPendingLines.length +
+        statusLines.length +
+        transcriptRows +
+        interactionMargin +
+        minimumInputRows
+        ? (this.todoIndicator?.render(width) ?? []).slice(0, 1)
+        : [];
+    const pendingRowsAvailable =
+      blockingInteraction || this.editor.isShowingAutocomplete()
+        ? Math.max(
+            0,
+            this.terminal.rows -
+              activityLines.length -
+              statusLines.length -
+              todoLines.length -
+              transcriptRows -
+              interactionMargin -
+              minimumInputRows,
+          )
+        : allPendingLines.length;
+    const pendingLines = fitPendingQueueLines(allPendingLines, pendingRowsAvailable);
+    input.setViewportRows(
+      this.terminal.rows -
+        activityLines.length -
+        pendingLines.length -
+        statusLines.length -
+        todoLines.length -
+        transcriptRows -
+        interactionMargin,
+    );
+    const inputLines = input.render(width);
     const chromeRows =
       activityLines.length +
       pendingLines.length +
       todoLines.length +
-      (blockingInteraction === undefined
-        ? editorLines.length
-        : blockingInteractionLines.length + 1) +
+      inputLines.length +
+      interactionMargin +
       statusLines.length;
     const viewportRows = Math.max(0, this.terminal.rows - chromeRows);
     const paddingRows = Math.max(0, viewportRows - paddedTranscript.length);
@@ -257,7 +266,8 @@ export class MakaPiLayoutComponent extends Container {
       ...activityLines,
       ...pendingLines,
       ...todoLines,
-      ...(blockingInteraction === undefined ? editorLines : [...blockingInteractionLines, '']),
+      ...inputLines,
+      ...(blockingInteraction ? [''] : []),
       ...statusLines,
     ];
     // #1097: record where pi-tui's live viewport starts for this render, in

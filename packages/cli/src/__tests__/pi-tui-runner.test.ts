@@ -2856,7 +2856,7 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('keeps the transcript tail visible above a pending user question', async () => {
+  test('keeps the transcript tail visible above a long pending question across resizes', async () => {
     const terminal = new FakeTerminal(80, 24);
     const driver = new TranscriptThenQuestionDriver();
     const run = runMakaPiTui({
@@ -2874,11 +2874,23 @@ Slug openai-work<cursor>
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('Choose an approach'),
     );
-    const screen = plainTerminalOutput(terminal.screenOutput());
+    let screen = plainTerminalOutput(terminal.screenOutput());
     assert.ok(
       screen.includes('MODEL-OUTPUT-19'),
       'the latest transcript output must remain visible above the question prompt',
     );
+    for (const rows of [12, 18, 24]) {
+      const writesBeforeResize = terminal.writes.length;
+      terminal.resize(60, rows);
+      await waitFor(
+        () => terminal.writes.length > writesBeforeResize,
+        'the resized question frame',
+      );
+      screen = plainTerminalOutput(terminal.screenOutput());
+      assert.ok(screen.includes('MODEL-OUTPUT-19'), `transcript tail at ${rows} rows:\n${screen}`);
+      assert.ok(screen.includes('Other: type your answer'), `answer field at ${rows} rows`);
+      for (const label of ['Extend', 'Separate', 'Other']) assert.ok(screen.includes(label));
+    }
 
     terminal.input('\r');
     await waitFor(() => driver.responses.length === 1);
@@ -11470,9 +11482,15 @@ class TranscriptThenQuestionDriver extends ToolOutputDriver {
         {
           question: 'Choose an approach',
           options: [
-            { label: 'Extend', description: 'Keep the transcript readable while waiting' },
-            { label: 'Separate', description: 'Move the prompt into a separate surface' },
-            { label: 'Other', description: 'Use another interaction layout' },
+            {
+              label: 'Extend',
+              description: 'Keep the transcript readable while waiting '.repeat(30),
+            },
+            {
+              label: 'Separate',
+              description: 'Move the prompt into a separate surface '.repeat(30),
+            },
+            { label: 'Other', description: 'Use another interaction layout '.repeat(30) },
           ],
         },
       ],

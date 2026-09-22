@@ -2322,10 +2322,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       hint: '↑↓ move · type to answer · Enter select · Esc unanswered · Ctrl+C stop',
       placeholder: 'Other: type your answer…',
       options: question.options,
-      // Live budget: terminal.rows changes on resize, so read it per render
-      // rather than at prompt construction. Leave one row for the layout's
-      // bottom margin and one for the status line.
-      maxRows: () => Math.max(1, terminal.rows - BOTTOM_PICKER_MARGIN_ROWS),
       onSelectOption: (index) => advance(question.options[index]?.label ?? null),
       onSubmitText: (value) => advance(value),
       onSkip: () => advance(null),
