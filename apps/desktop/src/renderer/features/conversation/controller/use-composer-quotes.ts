@@ -25,11 +25,11 @@ const MAX_QUOTE_CHARS = 32_000;
 type PendingQuotes = Record<string, QuoteRef[]>;
 
 export function useComposerQuotes(options: { readonly draftKey: string }) {
-  const [pendingByKey, setPendingByKey] = useState<PendingQuotes>({});
   // React state triggers rendering, while each bucket is kept mutable so a
   // send callback from the current render observes a quote selected in the
   // same tick as the snapshot read. This avoids making AppShell reach into a
   // second quote getter solely to bridge React's commit timing.
+  const [, bumpVersion] = useState(0);
   const pendingByKeyRef = useRef<PendingQuotes>({});
   const bucket = pendingByKeyRef.current[options.draftKey] ??
     (pendingByKeyRef.current[options.draftKey] = []);
@@ -37,10 +37,10 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
   // snapshot selected before React commits the state update. Consumers must
   // read its contents, not use the array identity as a useMemo/useEffect
   // dependency; the identity is stable while the bucket is mutated in place.
-  const pendingQuotes = pendingByKey[options.draftKey] ?? bucket;
+  const pendingQuotes = bucket;
 
   const publish = useCallback((): void => {
-    setPendingByKey({ ...pendingByKeyRef.current });
+    bumpVersion((version) => version + 1);
   }, []);
 
   const addQuote = useCallback((input: {
