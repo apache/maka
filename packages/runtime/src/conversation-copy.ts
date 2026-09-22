@@ -36,6 +36,7 @@ import {
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
 } from '@maka/core/model-call-attempt';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildHistoryCompactCheckpoint,
   historyCompactSourceDigest,
@@ -652,10 +653,20 @@ export async function cloneConversationRuntimeLedger(
     finished.add(sourceId);
   };
   for (const sourceId of clonedEventBySourceId.keys()) finishTarget(sourceId);
+  // A call whose provider-visible arguments the copy rewrote, keyed the way
+  // the ledger scanner pairs a dispatch with its call. The T1 dispatch fact
+  // authenticated the source bytes, so it is re-authenticated below against
+  // the rewritten bytes; otherwise the copy fails `canonical_args_hash_conflict`
+  // on import. A dispatch that did not match its source call is left alone:
+  // the copy reproduces that defect rather than papering over it.
+  const rewrittenCalls = new Map<string, { sourceArgsHash: string | undefined }>();
+  const rewrittenCallKey = (event: RuntimeEvent, toolCallId: string): string =>
+    JSON.stringify([event.invocationId, toolCallId]);
   for (const event of clonedEventBySourceId.values()) {
     if (event.content?.kind === 'function_call' && event.content.name === 'Read') {
       const args = event.content.args;
-      if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string')
+      if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string') {
+        const sourceArgsHash = tryCanonicalToolArgsHash(event.content.name, args);
         event.content = {
           ...event.content,
           args: {
@@ -667,17 +678,42 @@ export async function cloneConversationRuntimeLedger(
             ),
           },
         };
+        rewrittenCalls.set(rewrittenCallKey(event, event.content.id), { sourceArgsHash });
+      }
     }
     if (event.content?.kind === 'text')
       event.content.text = rewriteCopiedText(event.content.text, references, clonedEventBySourceId);
     if (event.content?.kind === 'function_call' && event.content.name === 'ArchiveRead') {
       const args = event.content.args;
       if (args && typeof args === 'object' && 'ref' in args && typeof args.ref === 'string') {
+        const sourceArgsHash = tryCanonicalToolArgsHash(event.content.name, args);
         event.content = {
           ...event.content,
           args: { ...args, ref: rewriteLedgerArchiveText(args.ref, references) },
         };
+        rewrittenCalls.set(rewrittenCallKey(event, event.content.id), { sourceArgsHash });
       }
+    }
+  }
+  if (rewrittenCalls.size > 0) {
+    const rewrittenCallEvents = new Map<string, RuntimeEvent>();
+    for (const event of clonedEventBySourceId.values()) {
+      if (event.content?.kind !== 'function_call') continue;
+      const key = rewrittenCallKey(event, event.content.id);
+      if (rewrittenCalls.has(key)) rewrittenCallEvents.set(key, event);
+    }
+    for (const event of clonedEventBySourceId.values()) {
+      const dispatch = event.actions?.toolDispatch;
+      if (!dispatch) continue;
+      const key = rewrittenCallKey(event, dispatch.providerToolCallId);
+      const rewritten = rewrittenCalls.get(key);
+      const call = rewrittenCallEvents.get(key);
+      if (!rewritten || call?.content?.kind !== 'function_call') continue;
+      if (rewritten.sourceArgsHash !== dispatch.canonicalArgsHash) continue;
+      const canonicalArgsHash = tryCanonicalToolArgsHash(dispatch.toolName, call.content.args);
+      if (canonicalArgsHash === undefined || canonicalArgsHash === dispatch.canonicalArgsHash)
+        continue;
+      event.actions = { ...event.actions, toolDispatch: { ...dispatch, canonicalArgsHash } };
     }
   }
   const preparedPlans = flattenedPlans.map((plan) => {
@@ -820,6 +856,18 @@ function rewriteCopiedText(
     /maka:\/\/read\/[A-Za-z0-9_-]+\?at=\d+&sha=[a-f0-9]{32}(?![A-Za-z0-9_?&#=%/-])/g,
     (path) => rewriteReadInput({ path }, references, clonedEvents).path,
   );
+}
+
+/**
+ * The T1 identity of a provider-visible call, or `undefined` when the arguments
+ * are not strict JSON and so never authenticated a dispatch in the first place.
+ */
+function tryCanonicalToolArgsHash(toolName: string, args: unknown): string | undefined {
+  try {
+    return canonicalToolArgsHash(toolName, args);
+  } catch {
+    return undefined;
+  }
 }
 
 function rewriteReadInput(

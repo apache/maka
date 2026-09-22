@@ -1525,6 +1525,185 @@ test('conversation copy rewrites the parent operation id of a nested Code Mode c
   }
 });
 
+test('conversation copy re-authenticates the dispatch of a Read whose tool-result address it rewrote', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-copy-read-dispatch-'));
+  const runStore = createSqliteAgentRunStore(root);
+  const runtimeEventStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+  try {
+    await runStore.ready?.();
+    // A Read continuation names the source-owned RuntimeEvent id of the result
+    // it pages. The copy rewrites that id, so the call's args change and the
+    // T1 dispatch fact must be re-authenticated against the rewritten args or
+    // the copied ledger fails `canonical_args_hash_conflict` on import.
+    const readArgs = { path: 'maka://runtime/tool-results/event-bash-result' };
+    const sourceEvents: RuntimeEvent[] = [
+      invocationOpenedEvent({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
+      runtimeEvent({
+        id: 'event-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'run and page' },
+      }),
+      runtimeEvent({
+        id: 'event-bash-call',
+        ts: 2,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'provider-call-1',
+          name: 'Bash',
+          args: { command: 'ls' },
+        },
+      }),
+      runtimeEvent({
+        id: 'event-bash-dispatch',
+        ts: 3,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'operation-1',
+            providerToolCallId: 'provider-call-1',
+            toolName: 'Bash',
+            canonicalArgsHash: canonicalToolArgsHash('Bash', { command: 'ls' }),
+            recoveryMode: 'never_auto_retry',
+          },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+      }),
+      runtimeEvent({
+        id: 'event-bash-result',
+        ts: 4,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-1',
+          name: 'Bash',
+          result: { kind: 'text', text: 'a\nb\n' },
+          isError: false,
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+      }),
+      runtimeEvent({
+        id: 'event-read-call',
+        ts: 5,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'provider-call-2',
+          name: 'Read',
+          args: readArgs,
+        },
+      }),
+      runtimeEvent({
+        id: 'event-read-dispatch',
+        ts: 6,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'operation-2',
+            providerToolCallId: 'provider-call-2',
+            toolName: 'Read',
+            canonicalArgsHash: canonicalToolArgsHash('Read', readArgs),
+            recoveryMode: 'replay_safe',
+          },
+        },
+        refs: { operationId: 'operation-2', toolCallId: 'provider-call-2' },
+      }),
+      runtimeEvent({
+        id: 'event-read-result',
+        ts: 7,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-2',
+          name: 'Read',
+          result: { kind: 'text', text: 'a\nb\n' },
+          isError: false,
+        },
+        refs: { operationId: 'operation-2', toolCallId: 'provider-call-2' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal',
+        ts: 8,
+        status: 'completed',
+      }),
+    ];
+    await runtimeEventStore.importConversationCopyRuntimeEvents('session-source', [
+      { runId: 'run-source', events: sourceEvents },
+    ]);
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'model_stream_completed',
+      id: 'completed-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 8,
+    });
+    const source = await new RuntimeReadModel({
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const [targetRun] = await runtimeEventStore.listSessionInvocations('session-target');
+    assert.ok(targetRun);
+    const targetEvents = await runtimeEventStore.readRuntimeEvents(
+      'session-target',
+      targetRun.runId,
+    );
+    const readCall = targetEvents.find(
+      (event) => event.content?.kind === 'function_call' && event.content.name === 'Read',
+    );
+    assert.ok(readCall && readCall.content?.kind === 'function_call');
+    const copiedBashResult = targetEvents.find(
+      (event) => event.content?.kind === 'function_response' && event.content.name === 'Bash',
+    );
+    assert.ok(copiedBashResult);
+    // The address now names the copied result, not the source-owned one.
+    assert.deepEqual(readCall.content.args, {
+      path: `maka://runtime/tool-results/${encodeURIComponent(copiedBashResult.id)}`,
+    });
+    const readDispatch = targetEvents.find(
+      (event) => event.actions?.toolDispatch?.toolName === 'Read',
+    )?.actions?.toolDispatch;
+    assert.ok(readDispatch);
+    assert.equal(
+      readDispatch.canonicalArgsHash,
+      canonicalToolArgsHash('Read', readCall.content.args),
+    );
+    // An untouched call keeps its original identity bytes.
+    const bashDispatch = targetEvents.find(
+      (event) => event.actions?.toolDispatch?.toolName === 'Bash',
+    )?.actions?.toolDispatch;
+    assert.equal(bashDispatch?.canonicalArgsHash, canonicalToolArgsHash('Bash', { command: 'ls' }));
+  } finally {
+    runtimeEventStore.close();
+    runStore.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('conversation copy rewrites the nested identity of a model call attempt', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-model-call-copy-'));
   try {
