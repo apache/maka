@@ -296,7 +296,7 @@ export function WorkHubRoot() {
     <WorkHubHighlightContext.Provider value={highlight}>
     <WorkHubHueProvider sessionIds={[...tasks.map((task) => task.target.sessionId), ...delegatedSessionIds]}>
     <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-maka-content-ready data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
-      {!floating && presentation?.workbar && <WorkbarEdgeToggle label={getShellCopy(locale).chrome[presentation.workbar.collapsed ? 'expandWorkbar' : 'collapseWorkbar']} {...presentation.workbar} onToggle={() => call(services.presentation.toggleWorkbar())} />}
+      {!floating && presentation?.workbar && presentation.workbar.togglePosition !== 'titlebar' && <WorkbarEdgeToggle label={getShellCopy(locale).chrome[presentation.workbar.collapsed ? 'expandWorkbar' : 'collapseWorkbar']} {...presentation.workbar} onToggle={() => call(services.presentation.toggleWorkbar())} />}
       {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
         setConversationExpanded(true);
         if (presentation.progressRequest !== undefined) call(services.presentation.expandProgress(presentation.progressRequest));

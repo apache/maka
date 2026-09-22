@@ -330,7 +330,7 @@
         "nonTriviaTokens": 3590
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
-        "importDeclarations": 4,
+        "importDeclarations": 1,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
@@ -340,14 +340,13 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./features/workbar": 1,
           "./locales/shell-copy": 1,
-          "@astryxdesign/core/Icon": 1,
-          "@astryxdesign/core/Tooltip": 1,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1
+          "./shell/window-titlebar": 1,
+          "@maka/ui": 1
         },
-        "importSpecifiers": 7,
-        "nonTriviaTokens": 408
+        "importSpecifiers": 1,
+        "nonTriviaTokens": 122
       },
       "src/renderer/app-shell-command-actions.ts": {
         "importDeclarations": 5,
@@ -831,7 +830,7 @@
           "react": 1
         },
         "importSpecifiers": 98,
-        "nonTriviaTokens": 12719
+        "nonTriviaTokens": 12718
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -3940,7 +3939,7 @@
         },
         "environmentCapabilities": {},
         "hookCalls": {
-          "useState": 5
+          "useState": 4
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,

@@ -53,6 +53,7 @@ export type {
 } from './model-protocol.js';
 
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
+import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 import {
   plaintextResponsesReasoningProviderOptions,
   withoutMakaResponsesState,
@@ -142,6 +143,8 @@ export interface ModelAdapterStreamInput {
   historyCompactBoundary?: ContextDiagnosticsCompaction;
   /** Turn-scoped continuation lane. Omitted callers keep the full-request path. */
   continuationKey?: string;
+  /** Per-request cap after the caller has accounted for the current context. */
+  maxOutputTokens?: number;
 }
 
 export class ModelAdapter {
@@ -223,6 +226,43 @@ export class ModelAdapter {
     );
   }
 
+  /**
+   * Keep a provider-derived output limit from making a resumed request
+   * impossible. The token count is the last request the provider accepted, so
+   * it is a conservative lower bound for the next request. Leave a small
+   * amount of room for newly appended user/tool content because Runtime does
+   * not estimate the final prompt locally.
+   */
+  maxOutputTokensForInput(knownInputTokens: number | undefined): number | undefined {
+    const outputLimit = this.maxOutputTokens();
+    if (
+      outputLimit === undefined ||
+      knownInputTokens === undefined ||
+      !Number.isFinite(knownInputTokens) ||
+      knownInputTokens < 0
+    ) {
+      return outputLimit;
+    }
+    const contextWindow = resolveSelectedModelContextWindow(
+      this.input.connection,
+      this.input.modelId,
+    );
+    if (contextWindow === undefined) return outputLimit;
+    const thinkingBudget =
+      this.runtime.wire === 'anthropic-messages'
+        ? fixedAnthropicThinkingBudget(this.input.providerOptions)
+        : 0;
+    const available =
+      contextWindow - Math.ceil(knownInputTokens) - CONTEXT_INPUT_GROWTH_HEADROOM - thinkingBudget;
+    // Do not turn a near-window request into a one-token success. A useful
+    // floor deliberately lets the provider reject the request, which keeps
+    // the existing reactive compaction path in control of recovery.
+    return Math.max(
+      Math.min(outputLimit, CONTEXT_RECOVERY_OUTPUT_FLOOR),
+      Math.min(outputLimit, available),
+    );
+  }
+
   async startStream(input: ModelAdapterStreamInput): Promise<ModelStreamResult> {
     const ai = await import('ai').catch((err) => {
       throw new Error(
@@ -234,12 +274,14 @@ export class ModelAdapter {
       wrapLanguageModel: (input: Record<string, unknown>) => unknown;
     };
 
-    const maxOutputTokens = selectedModelMaxOutputTokens(
-      this.input.connection,
-      this.input.modelId,
-      this.input.providerOptions,
-      this.runtime,
-    );
+    const maxOutputTokens =
+      input.maxOutputTokens ??
+      selectedModelMaxOutputTokens(
+        this.input.connection,
+        this.input.modelId,
+        this.input.providerOptions,
+        this.runtime,
+      );
     let settleAccounting: ((outcome: ModelStepOutcome) => Promise<void>) | undefined;
     const terminalModel = withProviderFinishBoundary(input.model, wrapLanguageModel);
     const trackedModel = input.providerRequestTracker
@@ -651,6 +693,13 @@ function failedStepOutcome(
     continuation: 'none',
   };
 }
+
+/**
+ * A persisted provider count describes the preceding request, not the new
+ * user message or tool result that may be appended after a restart.
+ */
+const CONTEXT_INPUT_GROWTH_HEADROOM = 8_000;
+const CONTEXT_RECOVERY_OUTPUT_FLOOR = 8_000;
 
 function selectedModelMaxOutputTokens(
   connection: RuntimeExecutionConnection,
