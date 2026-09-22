@@ -27,7 +27,7 @@ import type { ArtifactKind, ArtifactRecord } from '@maka/core/artifacts';
 import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
-import { emptyPlanSessionState } from '@maka/core/plan';
+import { emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import { readLogicalRuntimeExecutionForRun } from '@maka/core/runtime-logical-execution';
 import { foldForMatch } from '@maka/core/transcript-search';
 import type { PermissionMode } from '@maka/core/permission';
@@ -298,6 +298,17 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
 export interface ExecutionRuntimeHostCompositionDependencies {
   readonly executionPersistenceProvider?: ExecutionPersistenceProvider;
   readonly primaryBackendFactory?: BackendFactory;
+  /**
+   * Test-only observer for the composed interactive Plan authority, in the same
+   * spirit as a candidate entrypoint that selects a test-only entry module: the
+   * Desktop E2E composition is its only consumer, and no production caller
+   * passes it.
+   *
+   * The Plan tools are built from exactly this instance, so a caller that holds
+   * it can drive the real Plan lifecycle. An unset observer adds no work and no
+   * error path to composition.
+   */
+  readonly observePlanStore?: (store: PlanStore) => void;
   readonly workHubRoutingModel?: HostWorkHubRoutingModel;
   readonly oauthAuthorization?: Pick<
     HostOAuthCoordinatorInput,
@@ -939,6 +950,7 @@ export async function createExecutionRuntimeHostComposition(
       (sessionId) => continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'plan'),
       context.requestDrain,
     );
+    dependencies.observePlanStore?.(planStore);
     unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
       continuityCoordinator.enqueueCanonicalRefresh(sessionId),
     );
