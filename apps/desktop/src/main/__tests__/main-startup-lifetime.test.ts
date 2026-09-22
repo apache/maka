@@ -30,12 +30,24 @@ const bootSource = readFileSync(
   fileURLToPath(new URL('../../../src/main/runtime-host-boot.ts', import.meta.url)),
   'utf8',
 );
-const appIpcSource = readFileSync(
-  fileURLToPath(new URL('../../../src/main/app-ipc-main.ts', import.meta.url)),
+const earlyWindowSource = readFileSync(
+  fileURLToPath(new URL('../../../src/main/early-window.ts', import.meta.url)),
   'utf8',
 );
 const mainWindowSource = readFileSync(
   fileURLToPath(new URL('../../../src/main/main-window.ts', import.meta.url)),
+  'utf8',
+);
+const appShellSource = readFileSync(
+  fileURLToPath(new URL('../../../src/renderer/app-shell.tsx', import.meta.url)),
+  'utf8',
+);
+const appSource = readFileSync(
+  fileURLToPath(new URL('../../../src/renderer/app.tsx', import.meta.url)),
+  'utf8',
+);
+const indexHtmlSource = readFileSync(
+  fileURLToPath(new URL('../../../src/renderer/index.html', import.meta.url)),
   'utf8',
 );
 
@@ -60,51 +72,51 @@ test('retains process lifetime before a standalone startup dialog can close', ()
   );
   assert.match(
     windowAllClosed,
-    /process\.platform !== "darwin" && !windowsAppTray\.hasTray\(\) && !isBrowserMessageBoxPresentationActive\(\) &&\s*!isDesktopStartupInProgress\(\)/u,
+    /process\.platform !== "darwin" && !windowsAppTray\.hasTray\(\) && !isBrowserMessageBoxPresentationActive\(\)/u,
   );
 });
 
 test('registers one shared quit cleanup before the initial Host handoff', () => {
-  const hostStart = bootSource.indexOf('runtimeHostManager = await startLocalRuntimeHostManager');
-  const quitRegistration = bootSource.indexOf('app.on("before-quit", quitCoordinator.handleBeforeQuit)');
-  const workBoardDeclaration = bootSource.indexOf('let workBoardIpc:');
-  assert.ok(workBoardDeclaration >= 0 && workBoardDeclaration < quitRegistration);
-  assert.ok(quitRegistration >= 0 && quitRegistration < hostStart);
-  assert.equal(bootSource.match(/createAppQuitCoordinator\(\{/gu)?.length, 1);
-  assert.equal(bootSource.match(/app\.on\("before-quit"/gu)?.length, 1);
-  assert.match(bootSource, /cleanup: closeRuntimeHostDesktop/u);
+  const earlyWindowImport = mainSource.indexOf("import('./early-window.js')");
+  const bootImport = mainSource.indexOf("import('./runtime-host-boot.js')");
+  const hostStart = bootSource.indexOf('await runtimeHostManager?.start()');
+  const quitRegistration = earlyWindowSource.indexOf(
+    'app.on("before-quit", quitCoordinator.handleBeforeQuit)',
+  );
+  assert.ok(earlyWindowImport >= 0 && earlyWindowImport < bootImport);
+  assert.ok(quitRegistration >= 0);
+  assert.ok(hostStart >= 0);
+  assert.equal(earlyWindowSource.match(/createAppQuitCoordinator\(\{/gu)?.length, 1);
+  assert.equal(earlyWindowSource.match(/app\.on\("before-quit"/gu)?.length, 1);
+  assert.match(bootSource, /bootContext\.cleanup = closeRuntimeHostDesktop/u);
   assert.match(bootSource, /return runtimeHostDesktopShutdown \?\?= disposeRuntimeHostDesktop\(\)/u);
   assert.match(bootSource, /workBoardIpc\?\.close\(\)/u);
 });
 
-test('drains startup resources before cancellation quit or fatal presentation', () => {
-  const callbackStart = bootSource.indexOf('onFatalError: (error, target) => {');
-  const callback = bootSource.slice(callbackStart, bootSource.indexOf('\n);', callbackStart));
-  assert.ok(callback.indexOf('if (!runtimeHostManager) return;') < callback.indexOf('app.quit()'));
-
-  const hostStart = bootSource.indexOf('runtimeHostManager = await startLocalRuntimeHostManager');
-  const failure = bootSource.slice(hostStart, bootSource.indexOf('// Runtime Host is the only', hostStart));
-  const cleanup = failure.indexOf('await closeRuntimeHostDesktop()');
-  assert.ok(cleanup >= 0 && cleanup < failure.indexOf('app.quit()'));
-  assert.ok(cleanup < failure.indexOf('throw error'));
-  assert.doesNotMatch(failure, /retireOwnedLocalHost|forceTerminate/u);
-  assert.match(bootSource, /await runtimeHostPeerMeshComponent\?\.close\(\)[\s\S]*await runtimeHostPeerEndpointOwner\?\.close\(\)/u);
+test('mounts the handoff overlay inside the locale providers', () => {
+  const provider = appShellSource.indexOf('<LocaleProvider');
+  const overlay = appShellSource.indexOf('<RuntimeHostHandoffOverlay');
+  assert.ok(provider >= 0 && overlay > provider);
+  // Above the providers it crashes the root: useUiLocale() throws without
+  // the context, and the window never reports renderer-ready.
+  assert.doesNotMatch(appSource, /RuntimeHostHandoffOverlay/u);
 });
 
-test('presents startup before Host boot and hands off only when the main window is shown', () => {
-  const ready = mainSource.indexOf("console.log('[startup] app ready')");
-  const presentation = mainSource.indexOf('showDesktopStartupProgress(', ready);
-  const hostBoot = mainSource.indexOf("import('./runtime-host-boot.js')", ready);
-  assert.ok(ready >= 0 && presentation > ready && hostBoot > presentation);
-  assert.match(bootSource, /onShow: closeDesktopStartupProgress/u);
-  assert.match(mainWindowSource, /mainWindow\.once\('show', \(\) => deps\.onShow\?\.\(\)\)/u);
+test('creates the main window before starting Local Host reconciliation', () => {
+  const managerCreate = bootSource.indexOf('runtimeHostManager = createLocalRuntimeHostManager()');
+  const lifecycleWire = bootSource.indexOf('wireLifecycle();', managerCreate);
+  const hostStart = bootSource.indexOf('await runtimeHostManager?.start()', managerCreate);
+  assert.ok(managerCreate >= 0);
+  assert.ok(lifecycleWire > managerCreate && hostStart > lifecycleWire);
+  assert.match(earlyWindowSource, /quitCoordinator\.focusOrCreateWindow\(\)/u);
+  assert.doesNotMatch(mainSource, /startup-presentation/u);
 });
 
 test('resolves persisted locale before first post-settings recovery prompt', () => {
-  const rendererRecoveryStart = bootSource.indexOf('onRendererProcessGone: async');
-  const rendererRecovery = bootSource.slice(
+  const rendererRecoveryStart = earlyWindowSource.indexOf('onRendererProcessGone: async');
+  const rendererRecovery = earlyWindowSource.slice(
     rendererRecoveryStart,
-    bootSource.indexOf('resolveBrowserDialogParent =', rendererRecoveryStart),
+    earlyWindowSource.indexOf('resolveBrowserDialogParent = () =>', rendererRecoveryStart),
   );
   const defaultHostRecoveryStart = bootSource.indexOf(
     'async function promptForDefaultRuntimeHostRecovery',
@@ -112,7 +124,7 @@ test('resolves persisted locale before first post-settings recovery prompt', () 
   const defaultHostRecovery = bootSource.slice(defaultHostRecoveryStart);
 
   assert.match(rendererRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
-  assert.match(bootSource, /handoffSurface: createDesktopHostHandoffSurface\(\(\) => desktopLocale\.resolve\(\)\)/u);
+  assert.match(bootSource, /resolveLocale: \(\) => desktopLocale\.resolve\(\)/u);
   assert.match(defaultHostRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
   assert.doesNotMatch(rendererRecovery, /desktopLocale\.current\(\)/u);
   assert.doesNotMatch(defaultHostRecovery, /resolveSystemUiLocale/u);
@@ -120,9 +132,13 @@ test('resolves persisted locale before first post-settings recovery prompt', () 
 
 test('lets the Runtime Host migrate its State Root before Desktop opens shared tables', () => {
   const hostStart = bootSource.indexOf(
-    'runtimeHostManager = await startLocalRuntimeHostManager',
+    'await runtimeHostManager?.start()',
   );
   const workBoardOpen = bootSource.indexOf(
+    'registerDesktopWorkBoard();',
+    hostStart,
+  );
+  const workBoardStore = bootSource.indexOf(
     'store: createWorkBoardStore(workspaceRoot',
   );
   const sessionCopyOpen = bootSource.indexOf(
@@ -133,8 +149,9 @@ test('lets the Runtime Host migrate its State Root before Desktop opens shared t
   assert.notEqual(workBoardOpen, -1);
   assert.notEqual(sessionCopyOpen, -1);
   assert.ok(hostStart < workBoardOpen);
+  assert.notEqual(workBoardStore, -1);
   assert.match(
-    bootSource.slice(workBoardOpen, bootSource.indexOf('});', workBoardOpen)),
+    bootSource.slice(workBoardStore, bootSource.indexOf('});', workBoardStore)),
     /schemaMigration: 'require_current'/u,
   );
   assert.match(
@@ -144,12 +161,12 @@ test('lets the Runtime Host migrate its State Root before Desktop opens shared t
 });
 
 test('routes the first-paint IPC only to the active Renderer recovery listener', () => {
-  const ipcHandlerStart = appIpcSource.indexOf(
-    "targetIpc.handle('window:notifyRendererReady'",
+  const ipcHandlerStart = earlyWindowSource.indexOf(
+    'ipcMain.handle("window:notifyRendererReady"',
   );
-  const ipcHandler = appIpcSource.slice(
+  const ipcHandler = earlyWindowSource.slice(
     ipcHandlerStart,
-    appIpcSource.indexOf("targetIpc.handle('window:setThemeSource'", ipcHandlerStart),
+    earlyWindowSource.indexOf('const firstWindowLaunch = quitCoordinator.focusOrCreateWindow()', ipcHandlerStart),
   );
   const readyHandlerStart = mainWindowSource.indexOf(
     'notifyRendererReady(sender, senderFrame)',
@@ -191,4 +208,35 @@ test('routes the first-paint IPC only to the active Renderer recovery listener',
     /if \(rendererRecoveryReadiness === readiness\) \{\s*if \(loaded\) rendererRecoveryReadiness = undefined;\s*else readiness\.listener = undefined;\s*\}/u,
   );
   assert.match(readyHandler, /revealGate\.markReady\(mainWindow\)/u);
+});
+
+test('retires the launch overlay only when a surface marks ready content', () => {
+  // The overlay's dismissal and its emitters live in different files; pinning
+  // both sides keeps the attribute from drifting into a permanent logo.
+  const readRenderer = (path: string) =>
+    readFileSync(
+      fileURLToPath(new URL(`../../../src/renderer/${path}`, import.meta.url)),
+      'utf8',
+    );
+  const workHubRoot = readRenderer('features/workhub/ui/workhub-root.tsx');
+  const handoffOverlay = readRenderer(
+    'features/runtime-host-management/ui/runtime-host-handoff-overlay.tsx',
+  );
+  const errorBoundary = readRenderer('error-boundary.tsx');
+  const chatMessageSurface = readRenderer('chat-message-surface.tsx');
+
+  assert.match(
+    indexHtmlSource,
+    /body:has\(#root \[data-maka-content-ready\]\) > \.maka-preload/u,
+  );
+  assert.doesNotMatch(indexHtmlSource, /body:has\(#root > \*\)/u);
+  // The shell marks ready only once the first snapshot settles; the floating
+  // composer is content-complete at mount; a pending handoff decision and the
+  // error surface must not wait on either.
+  assert.match(appShellSource, /data-maka-content-ready=\{!isOnboardingLoading/u);
+  assert.match(workHubRoot, /data-maka-content-ready/u);
+  assert.match(handoffOverlay, /data-maka-content-ready/u);
+  assert.match(errorBoundary, /data-maka-content-ready/u);
+  // The second loading surface is deleted: the overlay alone covers the gap.
+  assert.doesNotMatch(chatMessageSurface, /maka-onboarding-loading/u);
 });

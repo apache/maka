@@ -18,7 +18,7 @@
  */
 
 export * from './host-handoff.js';
-export { formatHostHandoff } from './host-handoff-copy.js';
+export { formatHostHandoff, type HostHandoffPresentation } from './host-handoff-copy.js';
 export {
   RuntimeHostManagedActivationError,
   activateRuntimeHostManagedDeployment,

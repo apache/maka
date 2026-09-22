@@ -186,23 +186,16 @@
 }
 
 .maka-chatContent {
-  position: relative;
   width: 100%;
   box-sizing: border-box;
   padding-inline: var(--maka-transcript-gutter);
 }
 
 .maka-chat-layout {
-  width: 100%;
-  min-height: 0;
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
   overscroll-behavior: contain;
 }
 
 .maka-chat-shell {
-  position: relative;
   min-height: 0;
   display: flex;
   flex-direction: column;

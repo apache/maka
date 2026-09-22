@@ -101,9 +101,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 172 as const;
-// 172: Agent Graph operator snapshots carry bounded output previews and metrics.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 173 as const;
+// 173: Agent Graph operator snapshots carry bounded output previews and metrics.
 // Older peers reject the additional `output` field on strict operator shapes.
+// 172: Usage screen requests and results accept fractional timestamps in the
+// persisted domain. Older peers reject these otherwise valid wire values.
 // 171: Removed the `connection.usage.read` operation along with the Command
 // Code GO provider it served. A peer older than this epoch may still advertise
 // or submit that operation, which this Host no longer answers.

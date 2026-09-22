@@ -18,6 +18,7 @@
  */
 
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
+import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
 import {
   useCallback,
   useEffect,
@@ -110,9 +111,6 @@ import {
   usePlanModeState,
 } from './plan-mode-panel';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
-import type {
-  OnboardingSnapshot,
-} from '../preload/bridge-contract.js';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
@@ -213,13 +211,7 @@ type ComposerImportOwner = {
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const { useSessionCollaborationDialog } = SessionCollaboration;
-
-type AppShellProps = {
-  /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
-  initialOnboardingSnapshot?: OnboardingSnapshot | null;
-};
-
-export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {}) {
+export function AppShell() {
   const [uiLocalePreference, setUiLocalePreference] = useState<UiLocalePreference>('auto');
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
   const systemUiLocale = useSystemUiLocale();
@@ -250,13 +242,14 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
         <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
+              <RuntimeHostHandoffOverlay />
               <WorkHubControlOverlay />
               <TaskEntry.TaskEntryRoot>
                 {(taskEntry) => (
                   <Overlays.OverlaysRoot>
                     {(overlays) => (
                       <AppShellContent
-                        {...{ initialOnboardingSnapshot, taskEntry, overlays, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                        {...{ taskEntry, overlays, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
                       />
                     )}
                   </Overlays.OverlaysRoot>
@@ -282,7 +275,6 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
 const SESSION_RAIL = <SessionListPanel />;
 
 function AppShellContent({
-  initialOnboardingSnapshot = null,
   taskEntry,
   overlays,
   uiLocale,
@@ -290,7 +282,6 @@ function AppShellContent({
   setUiLocaleOverride,
   setUiLocalePreference,
 }: {
-  initialOnboardingSnapshot?: OnboardingSnapshot | null;
   taskEntry: TaskEntryShellProjection;
   overlays: OverlaysShellProjection;
   uiLocale: UiLocale;
@@ -306,7 +297,6 @@ function AppShellContent({
     sessionsRef,
     refreshSessions,
     refreshChangedSession,
-    seedSessions,
     activeId,
     activeIdRef,
     requestedSessionId,
@@ -369,7 +359,7 @@ function AppShellContent({
   const { searchScrollTarget } = overlays.selectors;
   const settingsOpen = overlays.selectors.settings.open;
 
-  const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
+  const onboarding = useOnboardingSnapshot();
   // The owner bridge keeps commands stable while TaskEntryRoot swaps the
   // current feature-owned implementation below the shell.
   const { resolveWorkBoardTarget, prepareWorkBoardDraft } = taskEntry.commands;
@@ -1027,29 +1017,6 @@ function AppShellContent({
   // `sessions:changed` + `connections:event`. The hero renders only
   // when sessions.length === 0; any session (including archived /
   // aborted) takes over with the existing chat surface.
-  // Re-entrancy lock only — a ref, not state, because nothing renders
-  // from it (#1433 removed its last reader with the first-run hero).
-  // Seed a snapshot captured before React mounted so the sidebar can paint
-  // immediately. The subscription bootstrap reconciles once through the live
-  // Session catalog on the next frame; later onboarding pulls still own
-  // readiness and connection data, but never overwrite that catalog.
-  const initialSnapshotSeededRef = useRef(false);
-  // useLayoutEffect, NOT useEffect: the snapshot render flips
-  // `isOnboardingLoading` off while `sessions` is still []. A passive
-  // effect seeds sessions AFTER the browser paints that frame, so users
-  // with history saw a one-frame flash of the empty-state hero (the
-  // "配置页闪了一下" startup flash). Layout effects run before paint,
-  // so the seeded sessions and the un-gated frame commit together.
-  useLayoutEffect(() => {
-    if (initialSnapshotSeededRef.current || !initialOnboardingSnapshot) return;
-    initialSnapshotSeededRef.current = true;
-    // This prop settled before React mounted, so it is the only onboarding
-    // value allowed to seed the catalog. Later snapshots must go through the
-    // authoritative refresher or they can overwrite a newer Guest-inclusive
-    // catalog with an older point-in-time view.
-    const next = seedSessions(initialOnboardingSnapshot.sessions);
-    bootstrapSelectionLease.reconcile(collapseSessionRevisions(next));
-  }, [initialOnboardingSnapshot]);
   useEffect(() => {
     const snapshot = onboarding.snapshot;
     if (snapshot) {
@@ -1058,17 +1025,18 @@ function AppShellContent({
         defaultConnection: snapshot.defaultSlug,
         chatModelChoices: snapshot.chatModelChoices,
       });
-    } else if (onboarding.error && !initialOnboardingSnapshot) {
+    } else if (onboarding.error) {
       // Session bootstrap is independent above. If onboarding itself failed,
       // retain the previous connection-specific recovery path as well.
       void defaultHostConnections.refreshConnections();
     }
-  }, [initialOnboardingSnapshot, onboarding.error, onboarding.snapshot]);
-  // PR110c (@kenji review): suppress hero AND the fallback EmptyChatHero
-  // while the initial snapshot is in flight. Otherwise sessions.length===0
-  // + snapshot===null flashes the prompt-suggestion EmptyChatHero before
-  // the state-routed OnboardingHero mounts.
-  const isOnboardingLoading = sessionCount === 0 && onboardingState === undefined && !onboardingSettled;
+  }, [onboarding.error, onboarding.snapshot]);
+  // Nothing settled to show while the first snapshot pull is in flight. The
+  // flag keeps the composer hidden and — through `data-maka-content-ready` on
+  // .appFrame — holds the launch overlay until a real frame exists: sessions,
+  // a hero, or the load-error fallback.
+  const isOnboardingLoading =
+    sessionCount === 0 && onboardingState === undefined && !onboardingSettled && !onboarding.error;
   // Only unfinished setup takes the chat surface over. A configured user with
   // no sessions is not onboarding: they land on the normal empty chat and use
   // the one real Composer, which creates the session on its first send.
@@ -1352,13 +1320,13 @@ function AppShellContent({
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
     openSettingsSection,
     refreshSessions,
+    sessionCatalog: sessionCatalogController,
     setActiveId,
     setNavSelection,
     openSearchModal: openSearch,
     setSessionListCollapsed: sessionRailLayoutStore.setCollapsed,
     workbar: {
-      rightCollapsed: selectors.rightCollapsed,
-      toggleRight: commands.toggleRight,
+      setWorkbarCollapsed: commands.setWorkbarCollapsed,
       openTool: commands.openTool,
     },
     setThemePref,
@@ -1433,7 +1401,6 @@ function AppShellContent({
     hasPendingAttachments: () => hasPendingContext,
     openSessionInChat,
     refreshSessions,
-    setMessages,
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
@@ -1694,6 +1661,7 @@ function AppShellContent({
     const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
+      targetSessionId: expectedRevisionDraft?.draftSessionId,
       onSessionResolved: workbar.commands.bindNewTaskSessionResolver(readSelectionRevision()),
       ...directoryOptions,
       ...(quotes ? { quotes } : {}),
@@ -1846,6 +1814,7 @@ function AppShellContent({
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
     createSession,
     handleConnectionEvent,
+
     openHelp,
     openSettings,
     clearPendingTurnActions: turnActionRegistry.clearAll,
@@ -2174,6 +2143,7 @@ function AppShellContent({
     <div
       className="appFrame agents-layout-root"
       data-agents-page
+      data-maka-content-ready={!isOnboardingLoading || undefined}
       /* The single writer for sidebar state in the DOM. It sits on the frame,
          above both the chrome strip and the shell, so every rule that keys on
          it (shell-layout.css, sidebar.css) reaches its target as a descendant.
@@ -2221,7 +2191,7 @@ function AppShellContent({
       <header
         className="maka-window-titlebar"
         aria-hidden={shellObscured ? 'true' : undefined}
-        inert={hasModalOpen ? true : undefined}
+        inert={hasModalOpen || undefined}
       >
         {/* Settings owns the full window chrome. Keep this empty header mounted
             as the frameless window's drag authority, but remove every control
@@ -2292,7 +2262,7 @@ function AppShellContent({
         contentPadding={0}
         mobileNav={{ breakpoint: 'none', hasToggle: false }}
         aria-hidden={shellObscured ? 'true' : undefined}
-        inert={shellObscured ? true : undefined}
+        inert={shellObscured || undefined}
         sideNav={
           <ModuleHub.ModuleHubScheduledTasksBoundary
             render={(scheduledTasks) => (
@@ -2634,7 +2604,6 @@ function AppShellContent({
                 }
                 showOnboardingHero={showOnboardingHero}
                 onboardingState={onboardingState}
-                isOnboardingLoading={isOnboardingLoading}
                 onOpenSettings={openSettingsSection}
                 onOpenConnectionDetail={openConnectionDetail}
                 onAddProvider={openProviderCreate}

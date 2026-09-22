@@ -2633,7 +2633,9 @@ export class SessionManager {
     }
     const resolvedPreset = await this.deps.subagentCatalog.resolve(input.subagentId);
     if (resolvedPreset.profile !== input.agentProfile) {
-      throw new Error(`Subagent preset "${input.subagentId}" profile changed during spawn`);
+      throw new Error(
+        `Subagent preset "${input.subagentId}" profile changed during spawn. Retry the same agent_spawn call.`,
+      );
     }
     return { ...input, resolvedPreset };
   }

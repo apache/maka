@@ -217,7 +217,10 @@ describe('incremental transcript projection', () => {
     assert.strictEqual(settled[0], live[0], 'the handoff is not a whole-transcript event');
     assert.strictEqual(settled[1], live[1]);
     assert.notStrictEqual(settled[2], live[2], 'the turn genuinely changed, so its reference must move');
-    assert.equal(settled[2]?.assistant?.text, 'half an answer');
+    assert.equal(
+      settled[2]?.timeline.some((item) => item.kind === 'text' && item.text === 'half an answer'),
+      true,
+    );
     assert.equal(
       settled[2]?.timeline.some((item) => item.kind === 'text' && item.live === true),
       false,
@@ -335,7 +338,10 @@ describe('incremental transcript projection', () => {
       ],
     });
     assert.notStrictEqual(other[0], first[0], 'a turn from the previous session must not be retained');
-    assert.equal(other[1]?.assistant?.text, 'a different answer');
+    assert.equal(
+      other[1]?.timeline.some((item) => item.kind === 'text' && item.text === 'a different answer'),
+      true,
+    );
 
     // Nothing of session-1 survived: re-projecting it rebuilds every turn.
     const back = projection.project({ locale: 'en', sessionId: SESSION, messages: history() });
@@ -495,7 +501,7 @@ describe('turn identity moves across structural change classes', () => {
       refresh: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit', failureMessage: 'Quota exceeded (status=429, requestId=req-4502)' }],
     },
     {
-      field: 'assistant',
+      field: 'timeline',
       refresh: [
         base[0]!,
         { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 4, text: 'a longer answer', modelId: 'model-1' },

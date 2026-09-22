@@ -34,6 +34,7 @@ import {
 } from 'react';
 import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
+import { isAppleShortcutPlatform } from './utils.js';
 import {
   ICON_SIZE,
   ArrowUp,
@@ -77,6 +78,7 @@ import {
   createTriggerSearchSource,
   fileTransferContainsFiles,
   isChatInputComposing,
+  mentionMatchRank,
   mentionQueryMatches,
   selectedSkillIds,
   slashCommandQuery,
@@ -102,6 +104,7 @@ import {
   ChatComposerInput,
   IconButton,
   Lightbox,
+  placeCaretAtEnd,
   Token,
   Tooltip,
   useChatPasteAsToken,
@@ -192,6 +195,11 @@ type ComposerMentionSuggestion = {
  */
 function skillTokenValue(id: string): string {
   return `/skill:${id}`;
+}
+
+/** What a `/` command is named by, for `mentionMatchRank`: not its description. */
+function commandPrimaryText(command: ComposerSlashCommandOption): string {
+  return `${command.id} ${command.name} ${(command.keywords ?? []).join(' ')}`;
 }
 
 /**
@@ -671,12 +679,7 @@ export const Composer = forwardRef<
       return;
     }
     caretPendingRef.current = false;
-    const selection = document.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(editable);
-    range.collapse(false);
-    selection?.removeAllRanges();
-    selection?.addRange(range);
+    placeCaretAtEnd(editable);
   }
   function focusInput() {
     inputHandleRef.current?.focus();
@@ -1032,6 +1035,9 @@ export const Composer = forwardRef<
       const commandQuery = slashCommandQuery(textBeforeCaret, textAfterCaret, rawQuery);
       const query = skillMentionQuery(rawQuery);
       const selectedSkills = selectedSkillIds(textPort.getValue(), rawQuery);
+      // Ranked, then catalog order: a candidate whose own id/name answers the
+      // query leads the ones only their description mentions (mentionMatchRank).
+      // `Array.prototype.sort` is stable, so equal ranks keep the catalog order.
       const commandItems = commandQuery === null
         ? []
         : (source.slashCommands ?? [])
@@ -1040,6 +1046,10 @@ export const Composer = forwardRef<
                 commandQuery,
                 `${command.id} ${command.name} ${command.description ?? ''} ${(command.keywords ?? []).join(' ')}`,
               ),
+            )
+            .sort((left, right) =>
+              mentionMatchRank(commandQuery, commandPrimaryText(left)) -
+              mentionMatchRank(commandQuery, commandPrimaryText(right)),
             )
             .map((command) => ({
               id: `command:${command.id}`,
@@ -1054,6 +1064,10 @@ export const Composer = forwardRef<
         .filter((skill) => !selectedSkills.has(skill.id.toLowerCase()))
         .filter((skill) =>
           mentionQueryMatches(query, `${skill.id} ${skill.name} ${skill.description ?? ''}`),
+        )
+        .sort((left, right) =>
+          mentionMatchRank(query, `${left.id} ${left.name}`) -
+          mentionMatchRank(query, `${right.id} ${right.name}`),
         )
         .map((skill) => ({
           id: `skill:${skill.id}`,
@@ -1430,7 +1444,7 @@ export const Composer = forwardRef<
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     // Mid-turn the host queues the draft as a follow-up by default; only
-    // Shift+Enter (see onInputKeyDown) steers it into the active Turn.
+    // Cmd/Ctrl+Enter (see onInputKeyDown) steers it into the active Turn.
     void sendCurrent();
   }
 
@@ -1493,15 +1507,18 @@ export const Composer = forwardRef<
       if (handleArrowKey(event)) return;
     }
     if (event.key !== 'Enter') return;
-    // Alt+Enter always inserts a line break. During a running turn, Shift+Enter
-    // steers this one draft into the active Turn; plain Enter queues it.
-    if (event.altKey || (event.shiftKey && !props.streaming)) {
+    // Shift+Enter and Alt+Enter always insert a line break. The platform
+    // primary modifier steers this one draft mid-turn; plain Enter queues it.
+    if (event.altKey || event.shiftKey) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
       return;
     }
     event.preventDefault();
-    void sendCurrent(props.streaming && event.shiftKey ? 'steer' : undefined);
+    const primaryModifier = isAppleShortcutPlatform(navigator.platform)
+      ? event.metaKey
+      : event.ctrlKey;
+    void sendCurrent(props.streaming && primaryModifier ? 'steer' : undefined);
   }
 
   function onInputChange(next: string) {
