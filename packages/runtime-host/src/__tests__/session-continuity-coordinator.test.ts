@@ -1134,21 +1134,33 @@ test('open returns a bounded immutable durable tail', async () => {
   coordinator.close();
 });
 
-test('reports a durable bootstrap read failure as unavailable persistence', async () => {
+test('logs a durable bootstrap failure before reporting unavailable persistence', async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => {
+    logs.push(args.map(String).join(' '));
+  });
+  const failure = new Error(
+    `injected durable bootstrap failure: api_key=sk-secretvalue123\n${'细'.repeat(4096)}`,
+  );
+  const publicationFailures: unknown[] = [];
   const reader: SessionTranscriptReader = {
     ...transcriptReader([]),
     readDurableHighWater: async () => 0,
     readDurablePage: async () => {
-      throw new Error('injected durable bootstrap failure');
+      throw failure;
     },
   };
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async () => canonical(),
     new SessionAdmissionGate(),
-    undefined,
+    (error) => {
+      assert.equal(logs.length, 1, 'log the cause before the publication-failure hook');
+      publicationFailures.push(error);
+    },
     reader,
   );
+  t.after(() => coordinator.close());
   attachTestConnection(coordinator, 'connection-failed-bootstrap', new RecordingSink());
   const outcome = await coordinator.handlers['subscription.open'](
     {
@@ -1161,7 +1173,16 @@ test('reports a durable bootstrap read failure as unavailable persistence', asyn
     ok: false,
     error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
   });
-  coordinator.close();
+  assert.deepEqual(publicationFailures, [failure]);
+  assert.equal(logs.length, 1);
+  const prefix = '[runtime-host] subscription.open transcript bootstrap failed: ';
+  const diagnostic = logs[0] ?? '';
+  assert.ok(diagnostic.startsWith(prefix));
+  assert.match(diagnostic, /Error: injected durable bootstrap failure/);
+  assert.match(diagnostic, /\[redacted\]/i);
+  assert.doesNotMatch(diagnostic, /sk-secretvalue123/);
+  assert.match(diagnostic, /<diagnostic truncated>$/);
+  assert.ok(Buffer.byteLength(diagnostic.slice(prefix.length), 'utf8') <= 8 * 1024);
 });
 
 test('rejects a subscription open whose connection closes during transcript bootstrap', async () => {
