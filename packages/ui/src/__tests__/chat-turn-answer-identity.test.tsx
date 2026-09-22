@@ -854,3 +854,15 @@ test('states the outcome without a duration when none is recorded, and localizes
     /^已完成 · 用时 3 分 33 秒$/,
   );
 });
+
+
+test('WorkHub feedback is labelled as a task result rather than a user request', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root,{
+    ...turnWith([]),
+    user:{id:'feedback',role:'user',text:'Release report',ts:1,hostOrigin:{kind:'workhub_result',eventId:'feedback',actionId:'action',delegationId:'delegation',targetSessionId:'target',targetTurnId:'target-turn'}},
+  });
+  assert.ok(container.textContent.includes('Task result update'));
+  assert.ok(container.textContent.includes('Release report'));
+  assert.ok(container.querySelector('article[aria-label="Task result update"]'));
+});

@@ -1318,6 +1318,210 @@ test('default production WorkHub selects and delegates through its durable Host 
   });
 });
 
+for (const restart of [false, true]) {
+  test(`WorkHub result returns after ${restart ? 'Host restart' : 'Desktop reconnect'} without another user message`, async () => {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const connectionId = await configureFakeDefaultTarget(owner);
+      const received: BackendSendInput[] = [];
+      let { composition, manager } = await createCapturedExecutionComposition(owner, {
+        onWorkHubResult: (input) => received.push(input),
+      });
+      const context: ConnectionContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'workhub-feedback-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      let desktop:
+        | ReturnType<NonNullable<typeof composition.clientCapabilities>['attachConnection']>
+        | undefined;
+      let restartedOwner: InteractiveRootOwner | undefined;
+      const reopen = async () => {
+        await desktop?.close();
+        desktop = undefined;
+        await composition.close();
+        await owner.close();
+        restartedOwner = await tryAcquireInteractiveRootOwner(
+          await resolveStorageRoot({ path: root, kind: 'interactive' }),
+        );
+        assert.ok(restartedOwner);
+        owner = restartedOwner;
+        ({ composition, manager } = await createCapturedExecutionComposition(owner, {
+          onWorkHubResult: (input) => received.push(input),
+        }));
+      };
+      try {
+        await composition.handlers['workhub.coordination.resolve']({}, context);
+        const result = await actWorkHub(
+          composition,
+          {
+            actionId: 'feedback-assignment',
+            userText: 'Create a task to produce a report',
+            proposal: { disposition: 'create_new', title: 'Report' },
+            create: { workspace: { kind: 'host_path', path: root } },
+            newWorkDefaults: {
+              model: {
+                llmConnectionId: connectionId,
+                llmConnectionSlug: 'fake',
+                model: 'fake-model',
+              },
+            },
+          },
+          context,
+        );
+        assert.ok(result.ok, JSON.stringify(result));
+        if (!result.ok || result.result.disposition !== 'create_new') return;
+        const target = result.result.targetSessionId;
+        await waitFor(async () =>
+          (await manager.listTurns(target)).some((t) => t.status === 'completed'),
+        );
+        if (restart) await reopen();
+        desktop = composition.clientCapabilities!.attachConnection(
+          clientCapabilityConnectionIdentity(context.connectionId),
+          { send: async () => {} },
+        );
+        const registered = await composition.handlers['client.capability.replace'](
+          { registrationId: randomUUID(), offers: workHubDesktopCapabilityOffers() },
+          context,
+        );
+        assert.ok(registered.ok, JSON.stringify(registered));
+        await waitFor(async () => received.length === 1, 12000);
+        assert.ok(received[0]!.text.includes('feedback-assignment'));
+        const transcript = await manager.getMessages(WORKHUB_COORDINATION_SESSION_ID);
+        const notification = transcript.find(
+          (m) => m.type === 'user' && m.origin?.kind === 'workhub_result',
+        );
+        assert.ok(notification?.type === 'user');
+        assert.equal(notification.origin?.kind, 'workhub_result');
+        assert.equal(notification.displayText, 'Report');
+        const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+        {
+          const delivery = await stores.agentRunStore.readRootTurnAdmission(
+            WORKHUB_COORDINATION_SESSION_ID,
+            notification.turnId,
+          );
+          assert.equal(delivery?.execution.kind, 'workhub_coordination');
+          assert.ok(
+            delivery?.execution.kind === 'workhub_coordination' && delivery.execution.feedback,
+          );
+          assert.equal(
+            delivery?.execution.kind === 'workhub_coordination' &&
+              delivery.execution.routingDecision,
+            undefined,
+          );
+        }
+        await waitFor(async () =>
+          (await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID)).some(
+            (t) => t.turnId === notification.turnId && t.status === 'completed',
+          ),
+        );
+        if (restart) {
+          await reopen();
+          desktop = composition.clientCapabilities!.attachConnection(
+            clientCapabilityConnectionIdentity(context.connectionId),
+            { send: async () => {} },
+          );
+          const registration = await composition.handlers['client.capability.replace'](
+            { registrationId: randomUUID(), offers: workHubDesktopCapabilityOffers() },
+            context,
+          );
+          assert.ok(registration.ok);
+          // Two reconciliation polls must observe the existing durable receipt.
+          await new Promise((resolve) => setTimeout(resolve, 5500));
+          const notifications = (await manager.getMessages(WORKHUB_COORDINATION_SESSION_ID)).filter(
+            (m) => m.type === 'user' && m.origin?.kind === 'workhub_result',
+          );
+          assert.equal(notifications.length, 1);
+        }
+        assert.equal(received.length, 1);
+      } finally {
+        await desktop?.close();
+        await composition.close();
+        await restartedOwner?.close();
+      }
+    });
+  });
+}
+
+test('WorkHub receives a pending question and then the result after the target resumes', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(owner);
+    const received: BackendSendInput[] = [];
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      onWorkHubResult: (input) => received.push(input),
+    });
+    const context: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'workhub-question-client',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    let desktop:
+      | ReturnType<NonNullable<typeof composition.clientCapabilities>['attachConnection']>
+      | undefined;
+    try {
+      await composition.handlers['workhub.coordination.resolve']({}, context);
+      const created = await actWorkHub(
+        composition,
+        {
+          actionId: 'question-assignment',
+          userText: FAKE_ASK_USER_QUESTION_PROMPT,
+          proposal: { disposition: 'create_new', title: 'Release questions' },
+          create: { workspace: { kind: 'host_path', path: root } },
+          newWorkDefaults: {
+            model: {
+              llmConnectionId: connectionId,
+              llmConnectionSlug: 'fake',
+              model: 'fake-model',
+            },
+          },
+        },
+        context,
+      );
+      assert.ok(created.ok, JSON.stringify(created));
+      if (!created.ok || created.result.disposition !== 'create_new') return;
+      const target = created.result.targetSessionId;
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      await waitFor(
+        async () => (await stores.interactionStore.listPending({ sessionId: target })).length === 1,
+      );
+      desktop = composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity(context.connectionId),
+        { send: async () => {} },
+      );
+      const registered = await composition.handlers['client.capability.replace'](
+        { registrationId: randomUUID(), offers: workHubDesktopCapabilityOffers() },
+        context,
+      );
+      assert.ok(registered.ok);
+      await waitFor(async () => received.length === 1, 12000);
+      assert.match(received[0]!.text, /"status":"waiting_for_user"/u);
+      const pending = (await stores.interactionStore.listPending({ sessionId: target }))[0]!;
+      assert.ok(received[0]!.text.includes(pending.requestId));
+      const answered = await composition.handlers['interaction.answer'](
+        {
+          sessionId: target,
+          interactionId: pending.requestId,
+          answer: { kind: 'question', answers: ['邀请制', '本周', '是'] },
+        },
+        context,
+      );
+      assert.ok(answered.ok, JSON.stringify(answered));
+      await waitFor(async () => received.length === 2, 12000);
+      assert.match(received[1]!.text, /"status":"completed"/u);
+      assert.equal(
+        (await manager.getMessages(WORKHUB_COORDINATION_SESSION_ID)).filter(
+          (m) => m.type === 'user' && m.origin?.kind === 'workhub_result',
+        ).length,
+        2,
+      );
+    } finally {
+      await desktop?.close();
+      await composition.close();
+    }
+  });
+});
+
 test('WorkHub creates new work through the production assignment composition', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner, ['fake-model', 'fake-model-b']);
@@ -2996,6 +3200,7 @@ async function createCapturedExecutionComposition(
     >;
     readonly safeBoundaryResume?: boolean;
     readonly defaultWorkHubRouting?: boolean;
+    readonly onWorkHubResult?: (input: BackendSendInput) => void;
     readonly primaryBackendFactory?: BackendFactory;
     readonly residencies?: HostResidencyRegistry;
   } = {},
@@ -3037,7 +3242,12 @@ async function createCapturedExecutionComposition(
           context.sessionId === WORKHUB_COORDINATION_SESSION_ID
             ? new (class extends FakeBackend {
                 override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-                  yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+                  if (input.text.startsWith('Host notification:')) {
+                    options.onWorkHubResult?.(input);
+                    yield* super.send({ ...input, text: 'The delegated result was received.' });
+                  } else {
+                    yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+                  }
                 }
               })(context)
             : primaryBackendFactory(context),

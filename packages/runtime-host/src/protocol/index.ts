@@ -101,7 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 177 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 178 as const;
+// 178: WorkHub result turns carry a Host-owned workhub_result origin. Older
+// Clients reject that origin and cannot render the result notification.
 // 177: External Session import input may carry an optional Host-resolved
 // workspace target. Epoch-176 peers reject the unknown `workspace` key.
 // 176: Session-scoped capability publication and MCP admission require compatible

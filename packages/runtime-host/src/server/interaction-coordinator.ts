@@ -914,6 +914,25 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     );
   }
 
+  /** Only forwards an actual answer collected by a Host-owned WorkHub question tool. */
+  answerDelegatedQuestion(
+    input: InteractionAnswerInput,
+    lease: SessionAdmissionLease,
+  ): ReturnType<InteractionOperationHandlerMap['interaction.answer']> {
+    return this.#sessionAdmission.runAdmitted(input.sessionId, lease, async () => {
+      this.#throwIfPoisoned();
+      const record = await this.#readInteraction(input.interactionId);
+      if (
+        !record ||
+        record.request.sessionId !== input.sessionId ||
+        record.request.request.kind !== 'question' ||
+        input.answer.kind !== 'question'
+      )
+        return interactionNotFound();
+      return this.#answerStoredInteraction(record, input.answer, lease);
+    });
+  }
+
   async #answerStoredInteraction(
     record: InteractionRecord,
     answer: InteractionAnswerInput['answer'],

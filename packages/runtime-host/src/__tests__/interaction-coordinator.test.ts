@@ -218,6 +218,44 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('WorkHub forwards a collected answer under the target admission exactly once', async () => {
+    await withStore(async ({ store }) => {
+      const gate = new SessionAdmissionGate();
+      const answers: (readonly (string | null)[])[] = [];
+      const coordinator = createCoordinator(store, { sessionAdmission: gate });
+      const owner = coordinator.bindRun(RUN);
+      try {
+        await owner.acceptUserQuestionRequest({
+          request: questionEvent('relay-question', 10),
+          continuation: questionContinuation('relay-question', {
+            answer: (value) => {
+              answers.push(value);
+            },
+          }),
+        });
+        const input = {
+          sessionId: RUN.sessionId,
+          interactionId: 'relay-question',
+          answer: { kind: 'question' as const, answers: ['Yes'] },
+        };
+        const forward = () =>
+          gate.run(RUN.sessionId, (lease) => coordinator.answerDelegatedQuestion(input, lease));
+        assert.equal((await forward()).ok, true);
+        assert.equal((await forward()).ok, true);
+        assert.deepEqual(answers, [['Yes']]);
+        assert.equal(await coordinator.hasPendingSession(RUN.sessionId), false);
+        const wrongSession = await gate.run('other-session', (lease) =>
+          coordinator.answerDelegatedQuestion({ ...input, sessionId: 'other-session' }, lease),
+        );
+        assert.equal(wrongSession.ok, false);
+      } finally {
+        await owner.close('turn_terminal');
+        owner.release();
+        await coordinator.close();
+      }
+    });
+  });
+
   test('admits a durable question before continuity and returns one canonical answer to concurrent clients', async () => {
     await withStore(async ({ store }) => {
       const order: string[] = [];

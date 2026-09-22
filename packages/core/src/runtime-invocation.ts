@@ -26,6 +26,7 @@
  * writer could set independently of the events.
  */
 
+import type { WorkHubResultOrigin } from './turn-origin.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 import type {
   RuntimeEvent,
@@ -250,6 +251,8 @@ export type RootExecutionDescriptor =
       inputDigest: `sha256:${string}`;
       /** Model-derived, Policy-owned advice bound before the main Turn starts. */
       routingDecision?: WorkHubRoutingDecision;
+      /** Host-owned result delivery; never admitted by the public answer endpoint. */
+      feedback?: WorkHubResultOrigin;
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }

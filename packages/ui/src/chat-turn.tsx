@@ -557,6 +557,12 @@ export const TurnView = memo(function TurnView(props: {
           <span>{copy.goalContinued}</span>
         </Marker>
       )}
+      {turn.user?.hostOrigin?.kind === 'workhub_result' && (
+        <Marker variant="host-origin" role="note" title={turn.user.hostOrigin.targetSessionId}>
+          <GitBranch size={ICON_SIZE.meta} aria-hidden="true" />
+          <span>{copy.workHubResultReceived}</span>
+        </Marker>
+      )}
       {turn.user?.hostOrigin?.kind === 'agent_graph' && (
         <Marker
           variant="host-origin"
@@ -573,7 +579,9 @@ export const TurnView = memo(function TurnView(props: {
       {turn.user && (
         <LocalizedChatMessage
           accessibleLabel={
-            turn.user.hostOrigin?.kind === 'legacy_automation'
+            turn.user.hostOrigin?.kind === 'workhub_result'
+              ? copy.workHubResultReceived
+              : turn.user.hostOrigin?.kind === 'legacy_automation'
               ? copy.legacyAutomationTriggered
               : copy.userAriaLabel
           }

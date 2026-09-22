@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { decodeTurnOrigin } from '@maka/core/turn-origin';
 import { isDeepStrictEqual } from 'node:util';
 import {
   normalizeSubmittedTurnIntent,
@@ -1129,6 +1130,7 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
   }
   if (value.kind === 'workhub_coordination') {
     const routingDecision = normalizeWorkHubRoutingDecision(value.routingDecision);
+    const feedback = decodeTurnOrigin(value.feedback);
     if (
       !hasExactKeys(value, [
         'kind',
@@ -1137,7 +1139,12 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
         ...(value.routingDecision === undefined ? [] : ['routingDecision']),
         ...(value.operation === undefined ? [] : ['operation']),
         ...(value.actionId === undefined ? [] : ['actionId']),
+        ...(value.feedback === undefined ? [] : ['feedback']),
       ]) ||
+      (value.feedback !== undefined &&
+        (feedback?.kind !== 'workhub_result' ||
+          value.operation !== undefined ||
+          value.routingDecision !== undefined)) ||
       (value.capabilityBinding !== undefined && !isSha256Digest(value.capabilityBinding)) ||
       (value.actionId !== undefined && value.operation !== 'action') ||
       (value.operation !== undefined && routingDecision !== undefined) ||
@@ -1157,6 +1164,7 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
         : {}),
       ...(typeof value.actionId === 'string' ? { actionId: value.actionId } : {}),
       ...(routingDecision ? { routingDecision } : {}),
+      ...(feedback?.kind === 'workhub_result' ? { feedback } : {}),
     });
   }
   if (value.kind === 'regenerate') {
