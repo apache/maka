@@ -70,26 +70,44 @@ function isDesktopTargetScope(value: unknown): boolean {
   return typeof candidate.hostId === 'string' && typeof candidate.targetEpoch === 'string';
 }
 
+const runtimeHostReadyByScope = new Map<string, Promise<void>>();
+
+function runtimeHostScopeKey(scope: { readonly hostId: string; readonly targetEpoch: string }): string {
+  return `${scope.hostId}\u0000${scope.targetEpoch}`;
+}
+
 function shouldAwaitRuntimeHost(channel: string, value: unknown): boolean {
   return !RUNTIME_HOST_INDEPENDENT_SCOPED_CHANNELS.has(channel) && isDesktopTargetScope(value);
 }
 
 async function awaitRuntimeHostReady(scope: unknown): Promise<void> {
-  try {
-    const result = await bootReady.then(() =>
-      ipcRenderer.invoke('runtime-host:awaitReady', scope),
-    ) as { readonly ready?: unknown };
-    if (result?.ready !== true) throw new Error('Runtime Host target is unavailable');
-  } catch (error) {
-    // Keep the same fail-open behavior as the bootstrap gate for older or
-    // partially initialized main processes. The real channel still decides
-    // whether the scoped operation is available.
-    const message =
-      error && typeof error === 'object' && 'message' in error
-        ? String((error as { readonly message?: unknown }).message)
-        : String(error);
-    if (!message.includes("No handler registered for 'runtime-host:awaitReady'")) throw error;
+  const target = scope as { readonly hostId: string; readonly targetEpoch: string };
+  const key = runtimeHostScopeKey(target);
+  let ready = runtimeHostReadyByScope.get(key);
+  if (!ready) {
+    ready = bootReady.then(async () => {
+      try {
+        const result = await ipcRenderer.invoke('runtime-host:awaitReady', scope) as {
+          readonly ready?: unknown;
+        };
+        if (result?.ready !== true) throw new Error('Runtime Host target is unavailable');
+      } catch (error) {
+        // Keep the same fail-open behavior as the bootstrap gate for older or
+        // partially initialized main processes. The real channel still decides
+        // whether the scoped operation is available.
+        const message =
+          error && typeof error === 'object' && 'message' in error
+            ? String((error as { readonly message?: unknown }).message)
+            : String(error);
+        if (!message.includes("No handler registered for 'runtime-host:awaitReady'")) throw error;
+      }
+    });
+    runtimeHostReadyByScope.set(key, ready);
+    void ready.catch(() => {
+      if (runtimeHostReadyByScope.get(key) === ready) runtimeHostReadyByScope.delete(key);
+    });
   }
+  return ready;
 }
 
 export const invokeWhenReady: typeof ipcRenderer.invoke = (channel, ...args) =>

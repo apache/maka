@@ -100,10 +100,16 @@ test('scoped Runtime Host calls wait for target IPC registration after first pai
 
   targetGate.resolve({ ready: true });
   assert.deepEqual(await call, { projects: [] });
+  assert.deepEqual(
+    await bridge.projects.getSnapshot(undefined, { profileId: 'local', hostId: owner.hostId }),
+    { projects: [] },
+  );
   assert.deepEqual(seen, [
     'app:bootstrapReady',
     'runtime-host:identities',
     'runtime-host:awaitReady',
+    'projects:getSnapshot',
+    'runtime-host:identities',
     'projects:getSnapshot',
   ]);
 });
