@@ -327,7 +327,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3592
+        "nonTriviaTokens": 3590
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 4,
@@ -831,7 +831,7 @@
           "react": 1
         },
         "importSpecifiers": 98,
-        "nonTriviaTokens": 12839
+        "nonTriviaTokens": 12729
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
