@@ -20,6 +20,7 @@
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -81,6 +82,7 @@ export interface WorkbarControllerCommands {
   respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
   toggleRight(): void;
   toggleTool(kind: SessionWorkbarTabKind): void;
+  setWorkbarCollapsed(collapsed: boolean): void;
   /**
    * Accepts the Session produced by a projected first send that belongs to the
    * pending Work Board start claim. The claim is owned by one specific
@@ -682,6 +684,45 @@ export function useWorkbarController(
     [layout.closeWorkbarTabs, sideConversations, terminal, input.toastApi, terminalCopy.stopFailed, locale],
   );
 
+  const retireDeletedSessionSideChats = useEffectEvent((sourceSessionId: string) => {
+    const retiredPanelIds = new Set(
+      sideConversations.panels
+        .filter((panel) => panel.sourceSessionId === sourceSessionId)
+        .map((panel) => panel.id),
+    );
+    if (retiredPanelIds.size === 0) return;
+    setPendingSideChatClose((current) => {
+      const retained = current.filter(
+        ({ tab }) =>
+          tab.kind !== 'side-chat' ||
+          !retiredPanelIds.has(tab.id.slice('side-chat:'.length)),
+      );
+      return retained.length === current.length ? current : retained;
+    });
+    for (const placement of ['right', 'bottom'] as const) {
+      const tabs = panelsStateRef.current[placement].tabs.filter(
+        (tab) =>
+          tab.kind === 'side-chat' &&
+          retiredPanelIds.has(tab.id.slice('side-chat:'.length)),
+      );
+      closeTabsWithoutConfirmation(placement, tabs, {
+        preserveVisibility: true,
+      });
+    }
+    // Dropping the quote unmounts QuoteCompanionPanel, which runs the same
+    // durable fork cleanup as an explicit close. An orphan record without a
+    // matching tab must take that path too.
+    sideConversations.removePanels(retiredPanelIds);
+  });
+
+  useEffect(() => sideChat.subscribeSessionChanges((event) => {
+    // A catalog refresh can omit a still-live source temporarily. Only the
+    // Host's committed deletion signal may destroy its ephemeral fork.
+    if (event.reason === 'deleted' && event.sessionId) {
+      retireDeletedSessionSideChats(event.sessionId);
+    }
+  }), [sideChat]);
+
   const closeTabs = useCallback(
     (
       placement: SessionWorkbarPlacement,
@@ -736,32 +777,6 @@ export function useWorkbarController(
     setPendingSideChatClose([]);
   }, [activeSessionId]);
 
-  useLayoutEffect(() => {
-    const stalePanels = sideConversations.panels.filter(
-      (panel) => panel.sourceSessionId !== activeSessionId,
-    );
-    if (stalePanels.length === 0) return;
-    const staleIds = new Set(stalePanels.map((panel) => panel.id));
-    for (const panel of stalePanels) {
-      const tabId = `side-chat:${panel.id}`;
-      const placement = layout.workbarPanelsState.right.tabs.some(
-        (tab) => tab.id === tabId,
-      )
-        ? 'right'
-        : 'bottom';
-      layout.closeWorkbarTabs(placement, [tabId], {
-        preserveVisibility: true,
-      });
-    }
-    sideConversations.removePanels(staleIds);
-  }, [
-    activeSessionId,
-    layout.closeWorkbarTabs,
-    layout.workbarPanelsState,
-    sideConversations.panels,
-    sideConversations.removePanels,
-  ]);
-
   const companionRecoveryStartedRef = useRef(false);
   useLayoutEffect(() => {
     if (companionRecoveryStartedRef.current) return;
@@ -799,12 +814,23 @@ export function useWorkbarController(
 
   const toggleTool = useCallback((kind: SessionWorkbarTabKind) => {
     if (!workbarToolsForWorkspace(workspace).some((tool) => tool.kind === kind)) return;
+    const activeSideChatTabIds = kind === 'side-chat'
+      ? new Set(
+        sideConversations.panels
+          .filter((panel) => panel.sourceSessionId === activeSessionIdRef.current)
+          .map((panel) => `side-chat:${panel.id}`),
+      )
+      : undefined;
+    const matchesTool = (candidate: SessionWorkbarTab) =>
+      candidate.kind === kind &&
+      (!activeSideChatTabIds || activeSideChatTabIds.has(candidate.id));
     const panels = panelsStateRef.current;
     const placements = [panels.focusedPanel, 'right', 'bottom'] as const;
     for (const placement of placements) {
       const panel = panels[placement];
-      const tab = panel.tabs.find((candidate) => candidate.id === panel.activeTabId && candidate.kind === kind)
-        ?? panel.tabs.find((candidate) => candidate.kind === kind);
+      const tab = panel.tabs.find(
+        (candidate) => candidate.id === panel.activeTabId && matchesTool(candidate),
+      ) ?? panel.tabs.find(matchesTool);
       if (!tab) continue;
       const visible = placement === 'right' ? !layout.workbarCollapsed : layout.bottomPanelOpen;
       if (visible && !panel.launcherOpen && panel.activeTabId === tab.id) {
@@ -817,8 +843,9 @@ export function useWorkbarController(
       return;
     }
     openTool(kind);
-  }, [workspace, layout.workbarCollapsed, layout.bottomPanelOpen, layout.setWorkbarCollapsed,
-    layout.setBottomPanelOpen, layout.activateWorkbarTab, revealPlacement, openTool]);
+  }, [workspace, sideConversations.panels, layout.workbarCollapsed, layout.bottomPanelOpen,
+    layout.setWorkbarCollapsed, layout.setBottomPanelOpen, layout.activateWorkbarTab,
+    revealPlacement, openTool]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -882,6 +909,7 @@ export function useWorkbarController(
       respondToClientCapability,
       respondToUserForm: sideChat.respondToUserForm,
       toggleRight,
+      setWorkbarCollapsed: layout.setWorkbarCollapsed,
       bindNewTaskSessionResolver,
     }),
     [
@@ -892,6 +920,7 @@ export function useWorkbarController(
       respondToClientCapability,
       sideChat.respondToUserForm,
       toggleRight,
+      layout.setWorkbarCollapsed,
     ],
   );
 
@@ -927,9 +956,11 @@ export function useWorkbarController(
       },
       rightResizable: layout.workbarResizable,
       bottomResizable: layout.bottomPanelResizable,
-      quotes: sideConversations.panels.filter(
-        (panel) => panel.sourceSessionId === activeSessionId,
-      ),
+      // Keep every Side Chat mounted while another main Session is selected.
+      // WorkbarSurface projects only the active Session's tabs, but retaining
+      // the inactive panels preserves their hook state and prevents an ordinary
+      // navigation from running the explicit-dismiss cleanup path.
+      quotes: sideConversations.panels,
       onQuotesConsumed: (snapshot) =>
         sideConversations.updatePanel(snapshot.panelId, (panel) =>
           consumeCompanionQuoteSnapshot(panel, snapshot) ?? panel,

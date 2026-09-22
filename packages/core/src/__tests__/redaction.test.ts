@@ -413,6 +413,21 @@ describe('generalizedErrorMessage', () => {
     );
   });
 
+  test('does not mistake builder update metadata 404s for authentication failures', () => {
+    const error = new Error(`404 Not Found
+Please double check that your authentication token is correct. Due to security reasons, actual status maybe not reported, but 404.`);
+    Object.assign(error, { code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' });
+
+    assert.equal(
+      generalizedErrorMessage(error, 'Update metadata is unavailable'),
+      'Update metadata is unavailable',
+    );
+    assert.equal(
+      generalizedErrorMessageForLocale(error, '更新元数据不可用', 'zh-CN'),
+      '更新元数据不可用',
+    );
+  });
+
   test('recognizes provider authentication error spellings', () => {
     for (const message of [
       'AuthenticationError',

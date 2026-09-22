@@ -30,12 +30,24 @@ import { desktopSessionKey } from '../src/shared/runtime-host-identity.js';
 // Real host: a persistent WebContentsView mounts WorkHubRoot once and moves between windows.
 const sessionId = desktopSessionKey({ hostId: 'story-host', sessionId: 'maka_workhub_coordination' });
 const targetId = desktopSessionKey({ hostId: 'story-host', sessionId: 'payments' });
-const writes = { panel: fn(), answer: fn(), model: fn(), upload: fn(), open: fn(), question: fn(), form: fn() };
+const writes = { panel: fn(), answer: fn(), model: fn(), defaults: fn(), upload: fn(), open: fn(), question: fn(), form: fn() };
 const choices = ['model-a', 'model-b'].map((model, index) => ({
   connectionId: 'connection-test', connectionSlug: 'test', connectionName: 'Test', providerType: 'openai' as const,
   providerLabel: 'OpenAI', model, label: model, contextWindow: 100_000, isDefault: index === 0, thinkingLevels: ['low', 'high'] as ThinkingLevel[],
 }));
-function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false): WorkHubServices {
+const repairChoices = [
+  ['coding-plan', 'Coding Plan', 'qwen3.8-32b', 'Qwen 3.8 32B'],
+  ['deepseek', 'DeepSeek', 'deepseek-v4-pro', 'DeepSeek V4 Pro'],
+  ['anthropic', 'Anthropic', 'claude-sonnet-4.5', 'Claude Sonnet 4.5'],
+  ['openai', 'OpenAI', 'gpt-5.4', 'GPT-5.4'],
+  ['google', 'Google', 'gemini-3-pro', 'Gemini 3 Pro'],
+  ['moonshot', 'Moonshot', 'kimi-k2.5', 'Kimi K2.5'],
+].map(([connectionSlug, connectionName, model, label], index) => ({
+  connectionId: `connection-${connectionSlug}`, connectionSlug, connectionName,
+  providerType: 'openai' as const, providerLabel: connectionName, model, label,
+  contextWindow: 100_000, isDefault: index === 0, thinkingLevels: [] as ThinkingLevel[],
+}));
+function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false, repairModel = false): WorkHubServices {
   let failures = failFirst ? 1 : 0;
   let session: SessionSummary & { revision: number } = {
     id: sessionId, name: 'WorkHub', revision: 1, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
@@ -73,6 +85,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let updateExecution: Parameters<WorkHubServices['observe']>[4];
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
+  let newWorkDefaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'> = {};
   const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
   const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, ready: true }); };
   return {
@@ -92,12 +105,13 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
     enqueueMessage: async () => 'admitted',
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
-    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right' } }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right' } }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, openSettings: async () => {}, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
     bindBrowserSession: () => {},
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,
-    listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => choices,
+    listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => repairModel ? repairChoices : choices,
+    setDefaultModel: async () => {},
     delegationFeedback: async (references) => references.map(({ id }) => ({
       id,
       state: coloredHistory && id === 'link-1' ? 'waiting_for_user' as const : coloredHistory && id === 'link-2' ? 'running' as const : 'completed' as const,
@@ -129,11 +143,16 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     },
     answer: async (id, input) => {
       writes.answer(id, input);
-      if (selectTarget) {
+      if (selectTarget || repairModel) {
         pendingForm = { type: 'form_request', id: `form-${input.turnId}`, requestId: `selection-${input.turnId}`, turnId: input.turnId,
-          ts: 5, toolUseId: 'select-and-delegate', message: '选择要继续的工作', requester: { name: 'WorkHub' },
-          fields: [{ kind: 'single_select', name: 'target', label: '工作 / 工作区', required: true,
-            options: [{ value: 'candidate-0', label: '支付回调幂等性 / maka' }, { value: 'candidate-1', label: '发布检查清单 / desktop' }] }] };
+          ts: 5, toolUseId: repairModel ? 'repair-target-model' : 'select-and-delegate',
+          message: repairModel
+            ? '任务“支付回调幂等性”使用的模型“qwen3.8-27b-sglang”已不可用。请选择替代模型以继续。'
+            : '选择要继续的工作', requester: { name: 'WorkHub' },
+          fields: [repairModel
+            ? { kind: 'string', name: 'targetModel', label: '替代模型', required: true, presentation: 'model_picker', minLength: 1 }
+            : { kind: 'single_select', name: 'target', label: '工作 / 工作区', required: true,
+                options: [{ value: 'candidate-0', label: '支付回调幂等性 / maka' }, { value: 'candidate-1', label: '发布检查清单 / desktop' }] }] };
         messages = [...messages, { type: 'user', id: input.turnId, turnId: input.turnId, ts: 4, text: input.text }];
         interactionUpdate?.({ sessionId, interactions: [pendingForm] });
         publish(); return { kind: 'admitted', turnId: input.turnId };
@@ -145,6 +164,11 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     configureModel: async (id, input) => {
       writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget.model, thinkingLevel: input.thinkingLevel ?? undefined }; updateSessions?.();
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
+    },
+    getNewWorkDefaults: async () => newWorkDefaults,
+    setNewWorkDefaults: async (id, defaults) => {
+      writes.defaults(id, defaults);
+      newWorkDefaults = defaults;
     },
     observe: (_id, _event, _error, _phase, execution) => { updateExecution = execution; publishExecution(); return () => { updateExecution = undefined; }; },
     openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, loadEarlier: async () => {}, close: async () => { updateTranscript = undefined; } }; },
@@ -159,10 +183,10 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
 
   };
 }
-function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false }: { failFirst?: boolean; history?: boolean | 'usage'; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean }) {
+function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false, repairModel = false }: { failFirst?: boolean; history?: boolean | 'usage'; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean; repairModel?: boolean }) {
   const [progressHeight, setProgressHeight] = useState(112);
   const [services] = useState(() => {
-    const services = makeServices(failFirst, history, colors, selectTarget, question, progress);
+    const services = makeServices(failFirst, history, colors, selectTarget, question, progress, repairModel);
     // Storybook has no BrowserWindow: honor the production renderer's native
     // height request and use the native progress card's 360px width.
     if (progress) services.presentation.resizeProgress = async (_request, height) => { setProgressHeight(height); };
@@ -221,7 +245,9 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvas.getByRole('button', { name: '打开用量追踪' }).textContent).toContain('1%'));
     await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
     await userEvent.click(page.getByRole('option', { name: /model-b/ }));
-    await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ expectedRevision: 1, modelTarget: expect.objectContaining({ model: 'model-b' }) })));
+    await waitFor(() => expect(writes.defaults).toHaveBeenCalledWith(sessionId, {
+      model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-b' },
+    }));
     await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
     await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
@@ -242,11 +268,16 @@ export const ThinkingLevelPicker: Story = {
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
     await userEvent.click(page.getByRole('option', { name: /^高$/ }));
     await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 高' })).toBeEnabled());
-    await expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ thinkingLevel: 'high' }));
+    await expect(writes.defaults).toHaveBeenCalledWith(sessionId, {
+      model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-a' },
+      thinkingLevel: 'high',
+    });
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 高' }));
     await userEvent.click(page.getByRole('option', { name: /^默认$/ }));
     await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
-    await expect(writes.model).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ expectedRevision: 2, thinkingLevel: null }));
+    await expect(writes.defaults).toHaveBeenLastCalledWith(sessionId, {
+      model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-a' },
+    });
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
     await expect(page.getByRole('option', { name: /^默认$/ })).toHaveAttribute('aria-selected', 'true');
   },
@@ -257,6 +288,7 @@ export const ProgressModelPicker: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvasElement.querySelector('.workHubLive')).toHaveAttribute('data-progress', 'true'));
+    expect(canvas.queryByRole('combobox', { name: /思考级别/ })).toBeNull();
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
     await userEvent.click(editor);
     await userEvent.type(editor, 'Keep this draft readable while choosing a model.');
@@ -396,6 +428,23 @@ export const TargetSelection: Story = {
     await waitFor(() => expect(canvasElement.querySelector('.maka-form-interaction-prompt')).toBeInTheDocument());
     expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
     expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
+  },
+};
+
+// Real path: a selected target's saved model disappeared, so WorkHub asks before changing that Session and delegating.
+export const TargetModelRepair: Story = {
+  render: () => <Surface repairModel />,
+  play: async ({ canvasElement }) => {
+    const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
+    await userEvent.click(editor);
+    await userEvent.type(editor, '继续支付回调幂等性，补充重复投递测试点。');
+    await userEvent.keyboard('{Enter}');
+    const prompt = await within(canvasElement).findByText(/qwen3\.8-27b-sglang.*已不可用/);
+    expect(prompt).toBeVisible();
+    await userEvent.click(within(canvasElement).getByRole('button', { name: '替代模型' }));
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByRole('listbox', { name: '替代模型' })).toBeVisible());
+    await waitFor(() => expect(page.getByRole('option', { name: /Qwen 3.8 32B/ })).toBeVisible());
   },
 };
 

@@ -190,6 +190,8 @@ import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
 
+const EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS = 120;
+
 export interface MakaPiTuiInput {
   /** Launcher command used in resume and recovery instructions. */
   cliCommand?: string;
@@ -3147,35 +3149,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     let search: SessionSearchOverlay | undefined;
     let byValue = new Map<string, ExternalSessionCatalogItem>();
 
-    const dropScheduledSearch = (): void => {
+    const dropScheduledSearch = (): boolean => {
+      const hadScheduledSearch = cancelScheduledSearch !== undefined;
       if (cancelScheduledSearch) cancelScheduledExternalSearches.delete(cancelScheduledSearch);
       cancelScheduledSearch?.();
       cancelScheduledSearch = undefined;
+      return hadScheduledSearch;
+    };
+    const resetCatalogPage = (): void => {
+      sessions = [];
+      nextCursor = null;
+      byValue = new Map();
+      render();
     };
     const closeOverlay = (): void => {
       pageClosed = true;
       dropScheduledSearch();
       revision += 1;
       overlay?.hide();
-    };
-    const load = async (append: boolean, cursor?: string, scheduledRevision?: number) => {
-      const requestRevision = scheduledRevision ?? ++revision;
-      try {
-        const page = await input.externalSessions!.listSessions({
-          adapterId,
-          scope,
-          ...(cursor ? { cursor } : {}),
-          ...(query ? { text: query } : {}),
-        });
-        if (requestRevision !== revision || pageClosed || closed || turnRunning) return;
-        sessions = append ? [...sessions, ...page.sessions] : page.sessions;
-        nextCursor = page.nextCursor;
-        render();
-      } catch {
-        if (requestRevision !== revision || pageClosed || closed) return;
-        state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
-        requestRender();
-      }
     };
     const toggleScope = (): void => {
       const alternate = input.externalSessions
@@ -3184,10 +3175,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       if (!alternate) return;
       dropScheduledSearch();
       scope = alternate;
-      sessions = [];
-      nextCursor = null;
-      byValue = new Map();
-      render();
+      resetCatalogPage();
       void load(false);
     };
     const render = (): void => {
@@ -3261,9 +3249,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           if (nextNormalizedQuery === normalizedQuery) return;
           normalizedQuery = nextNormalizedQuery;
           dropScheduledSearch();
-          sessions = [];
-          nextCursor = null;
-          render();
+          resetCatalogPage();
+          // Retire an older in-flight response immediately. Waiting until the
+          // debounce fires would let it repaint results for the previous query.
           const requestRevision = ++revision;
           let cancel: (() => void) | undefined;
           const handle = setTimeout(() => {
@@ -3331,6 +3319,29 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         onToggleScope: toggleScope,
       });
       overlay = showBottomPicker(search);
+    };
+    const load = async (
+      append: boolean,
+      cursor?: string,
+      scheduledRevision?: number,
+    ): Promise<void> => {
+      const requestRevision = scheduledRevision ?? ++revision;
+      try {
+        const page = await input.externalSessions!.listSessions({
+          adapterId,
+          scope,
+          ...(cursor ? { cursor } : {}),
+          ...(query ? { text: query } : {}),
+        });
+        if (requestRevision !== revision || pageClosed || closed || turnRunning) return;
+        sessions = append ? [...sessions, ...page.sessions] : page.sessions;
+        nextCursor = page.nextCursor;
+        render();
+      } catch {
+        if (requestRevision !== revision || pageClosed || closed) return;
+        state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
+        requestRender();
+      }
     };
     await load(false);
   };

@@ -34,12 +34,6 @@ export interface ModelMetadata {
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
   lastUpdated?: string;
-  /**
-   * models.dev prices the model at zero input cost. Marks free-tier
-   * candidates (e.g. opencode-free); display names are not a contract for
-   * this, several free models carry no "Free" suffix.
-   */
-  isFree?: boolean;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**
@@ -399,6 +393,93 @@ function ollamaCloudThinkingModels(active: ModelsDevMetadata): Record<string, Mo
   );
 }
 
+// Command Code declares no reasoning metadata over its API — the public
+// `/provider/v1/models` listing carries only id/object/created/owned_by/name/
+// context_length/supported_endpoints, and `/provider/v1/models/<id>` is not a
+// route. The selectable `reasoning_effort` levels therefore live only in the
+// official CLI's bundled model table, which the MIT `pi-commandcode-provider`
+// project and its derivative `Mars-Sea/dsh-commandcode-provider`
+// (`src/capabilities.ts`, `KNOWN_EFFORTS`) are the traceable extraction of.
+//
+// Ported from `dsh-commandcode-provider`'s `KNOWN_EFFORTS`, which was
+// re-verified against `command-code@1.53.0` (`dist/cli.mjs`'s provider effort
+// map). The reference keeps a running changelog of which CLI release added or
+// removed each line; that history is summarized here per entry. We pin
+// `command-code@1.54.0`, so a future re-sync should re-read that release's
+// bundle — a wrong effort word is refused by the wire or ignored by the model,
+// it is not silently mis-billed.
+//
+// Two rules from the reference that must survive re-syncs:
+//  - Models that reason automatically under a depth Command Code chooses
+//    (Tencent Hy3/Hy4 without levels, GLM-5/5.1/5.2-Fast, and the previews in
+//    the reference's `KNOWN_THINKING_MODELS`) carry no selectable effort, so
+//    they are absent here and the picker offers no selector for them.
+//  - Only the Provider-API table is authoritative for this route. Do not add
+//    levels observed on the OAuth (anthropic/openai) tables.
+const COMMAND_CODE_MODEL_METADATA: Record<string, ModelMetadata> = {
+  'Qwen/Qwen3.8-Max': { thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] } },
+  'Qwen/Qwen3.8-Max-0902': { thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] } },
+  'Qwen/Qwen3.8-27B': { thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] } },
+  'Qwen/Qwen3.8-Flash': { thinkingOptions: { efforts: ['low', 'medium', 'xhigh'] } },
+  'claude-fable-5-1': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-fable-5': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-opus-4-7': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-opus-4-8': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-opus-5': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-sonnet-4-6': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'claude-sonnet-5': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  // 1.39.0 added the model; 1.39.1 dropped `medium`; 1.39.2 ships this set.
+  'deepseek/deepseek-v4-flash-fast': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  // 1.53.0 added DeepSeek V4.1 Flash with this set.
+  'deepseek/deepseek-v4.1-flash': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  'deepseek/deepseek-v4-flash': { thinkingOptions: { efforts: ['high', 'max'] } },
+  'deepseek/deepseek-v4-flash-vision-exp': { thinkingOptions: { efforts: ['high', 'max'] } },
+  'deepseek/deepseek-v4-pro': { thinkingOptions: { efforts: ['high', 'max'] } },
+  'google/gemini-3.1-flash-lite': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'google/gemini-3.5-flash': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'google/gemini-3.5-flash-lite': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'google/gemini-3.6-flash': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'google/gemini-3.7-flash': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  // 1.43.0 added Gemini 3.8 Flash with the family's three-level set.
+  'google/gemini-3.8-flash': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'gpt-5.3-codex': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'gpt-5.4': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'gpt-5.4-mini': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'gpt-5.5': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'gpt-5.6-luna': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'gpt-5.6-sol': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  'gpt-5.6-terra': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  // 1.39.3 gained selectable levels (previously thought automatically).
+  'moonshotai/Kimi-K3': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  'sakana/fugu-ultra': { thinkingOptions: { efforts: ['high', 'xhigh'] } },
+  // 1.38.0 gained selectable levels (previously thought automatically).
+  'tencent/hy4-preview': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'xai/grok-4.5': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+  'xai/grok-4.6': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  // Successor of `stealth/ox-alpha`, removed in 1.34.0 with the same set.
+  'z-ai/glm-5.3-flash': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  'zai-org/GLM-5.2': { thinkingOptions: { efforts: ['high', 'max'] } },
+  'zai-org/GLM-5.3': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+  // Muse Spark gained selectable levels in 1.45.0; 1.48.0 added `max` to 1.3
+  // only, so 1.3 and 1.3-contributor now differ.
+  'meta/muse-spark-1.1': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'meta/muse-spark-1.2': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] } },
+  'meta/muse-spark-1.2-contributor': {
+    thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+  },
+  'meta/muse-spark-1.3': {
+    thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  },
+  'meta/muse-spark-1.3-contributor': {
+    thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },
+  },
+  // 1.49.0 added GPT-6 Astra with the five-level set.
+  'gpt-6-astra': { thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] } },
+  // 1.51.3 gave MiniMax M3 selectable levels (read from the bundle; the
+  // 1.51.1–1.51.3 changelog had not been published at extraction time).
+  'MiniMaxAI/MiniMax-M3': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
+};
+
 // Facts that models.dev cannot express: provider wire controls and
 // access-path-specific aliases/limits. Standard model facts stay generated.
 //
@@ -408,6 +489,8 @@ function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata 
   return {
     anthropic: ANTHROPIC_MODEL_OVERRIDES,
     'claude-subscription': claudeSubscriptionModelMetadata(active),
+    // The Command Code Provider-API plan rides the same effort table.
+    commandcode: COMMAND_CODE_MODEL_METADATA,
     'alibaba-token-plan-cn': {
       'qwen3.8-max': {
         thinkingOptions: { efforts: ['none', 'low', 'medium', 'xhigh'], toggle: true },

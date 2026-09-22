@@ -154,6 +154,7 @@ import {
   type TurnMessageSubmitInput,
   type TurnMessageSubmitResult,
   type WorkspaceProjection,
+  type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 
 const decodeStoredMessage = (value: unknown): StoredMessage =>
@@ -211,6 +212,10 @@ export interface DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
+  readonly transcriptWatermark: number | null;
+  /** The subscription's own death certificate. Read this before trusting a
+   * `connection_closed` mask thrown by a racing transcript read. */
+  readonly deathCause: Error | undefined;
   readonly events: AsyncIterable<SubscriptionFrame>;
   /** Frames are held by the Host until this resolves. */
   ready(): Promise<void>;
@@ -713,6 +718,17 @@ export class DesktopRuntimeHostClient {
     }
   }
 
+  /**
+   * Recall over this Host's own corpus.
+   *
+   * Recall runs inside the Host — the Session manager, fact store, and
+   * material fetch are all Host-owned — so this is a request, not a scan.
+   * Desktop issues one per Host and merges; it never reads the transcripts.
+   */
+  queryRecall(input: OperationInput<'recall.query'>): Promise<OperationOutput<'recall.query'>> {
+    return this.request('recall.query', input);
+  }
+
   async listSessions(): Promise<SessionCatalogProjection[]> {
     this.#assertOpen();
     try {
@@ -1083,6 +1099,30 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  /**
+   * Re-point an existing Session at another workspace, at the revision the
+   * caller read.
+   *
+   * Deliberately a single attempt. The target can carry a working directory the
+   * caller read from that same revision — a `host_path` taken from the Session
+   * while detaching it from every project — and retrying against a fresher one
+   * would commit that stale directory under the new revision, undoing whatever
+   * the concurrent write did. A conflict is the answer, not a replay.
+   */
+  async relocateSessionWorkspace(
+    sessionId: string,
+    expectedRevision: number,
+    workspace: WorkspaceTarget,
+  ): Promise<SessionCatalogProjection> {
+    const result = await this.request("session.workspace.relocate", {
+      sessionId,
+      expectedRevision,
+      workspace,
+    });
+    if (result.kind === "committed") return requireSessionProjection(result.session);
+    throw revisionConflict("relocate", sessionId);
+  }
+
   async setSessionReadMarker(
     sessionId: string,
     readThroughMessageId: string,
@@ -1387,12 +1427,6 @@ export class DesktopRuntimeHostClient {
     return this.request("turn.stop", input);
   }
 
-  regenerateTurn(
-    input: OperationInput<"turn.regenerate">,
-  ): Promise<OperationOutput<"turn.regenerate">> {
-    return this.request("turn.regenerate", input);
-  }
-
   queryTurnResume(
     input: OperationInput<"turn.resume.query">,
   ): Promise<OperationOutput<"turn.resume.query">> {
@@ -1561,12 +1595,6 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"agent.graph.stop">,
   ): Promise<OperationOutput<"agent.graph.stop">> {
     return this.request("agent.graph.stop", input);
-  }
-
-  queryDeepResearch(
-    sessionId: string,
-  ): Promise<OperationOutput<"deep-research.query">> {
-    return this.request("deep-research.query", { sessionId });
   }
 
   async listRuntimeResources(sessionId: string): Promise<ShellRunUpdate[]> {
@@ -1851,6 +1879,14 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     this.activeAssistantStreams = subscription.activeAssistantStreams;
     this.transcriptBootstrap = subscription.transcriptBootstrap;
     this.events = subscription;
+  }
+
+  get transcriptWatermark(): number | null {
+    return this.subscription.transcriptWatermark;
+  }
+
+  get deathCause(): Error | undefined {
+    return this.subscription.deathCause;
   }
 
   ready(): Promise<void> {

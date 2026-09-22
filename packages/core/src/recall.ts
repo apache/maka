@@ -54,12 +54,15 @@
  * density reflects machine output rather than relevance.
  */
 
+import { isCanonicalArtifactEntityId } from './artifacts.js';
+import { formatAttachmentResourceRef, MAX_ATTACHMENT_COUNT } from './attachments.js';
+import { isAttachmentRef, type AttachmentRef } from './events.js';
 import { validateWorkspacePrivacyContext } from './incognito.js';
 import { redactSecrets } from './redaction.js';
 import { SEARCH_QUERY_MAX_CHARS } from './search.js';
 import { collapseSessionRevisions } from './session-revisions.js';
 import type { SessionSummary, StoredMessage } from './session.js';
-import { foldForMatch, MAX_SESSIONS_SCANNED, threadSearchMatchKind } from './thread-search.js';
+import { foldForMatch, MAX_SESSIONS_SCANNED, threadSearchMatchKind } from './transcript-search.js';
 
 /** Okapi BM25 term-frequency saturation, Lucene's default. */
 export const RECALL_BM25_K1 = 1.2;
@@ -195,6 +198,104 @@ function stripSyntheticText(text: string, patterns: readonly RegExp[] | undefine
   return stripped;
 }
 
+/**
+ * One file a message carried. Metadata only: recall never returns bytes, and a
+ * material is worth returning precisely because its bytes are expensive.
+ */
+export interface RecallMaterial {
+  readonly name: string;
+  readonly kind: AttachmentRef['kind'];
+  readonly mimeType: string;
+  readonly bytes: number;
+  /**
+   * Address `Read` accepts, present only when `Read` would answer it from the
+   * Session asking. Attachment reads resolve against the calling Session and
+   * refuse anything stored elsewhere, and refuse a PDF wherever it is stored,
+   * so offering the address in either case would invite a call that can only
+   * fail.
+   */
+  readonly resource?: string;
+  /**
+   * Where the material is stored, present exactly when `resource` is not: a
+   * file `Read` cannot answer from here is still worth naming, and naming it
+   * is only useful if it can also be asked for. A retrieval tool takes this
+   * pair, checks the Session is one recall itself can see, and brings the
+   * file into the asking Session.
+   */
+  readonly sourceSessionId?: string;
+  readonly materialId?: string;
+}
+
+/**
+ * The files a message carried. A screenshot pasted under "have a look" leaves
+ * no trace in the text, so without this the message is unreachable by any
+ * term the user would think to search.
+ */
+export function recallMaterials(message: StoredMessage): readonly RecallMaterial[] {
+  if (message.type !== 'user') return [];
+  const attachments = message.attachments;
+  if (!Array.isArray(attachments) || attachments.length === 0) return [];
+  // Shape first, then the cap: a record older or stranger than the current
+  // shape projects nothing, and a run of those ahead of a valid attachment
+  // must not spend the cap that valid one needed.
+  return attachments
+    .filter(isAttachmentRef)
+    .slice(0, MAX_ATTACHMENT_COUNT)
+    .map((attachment) => {
+      const resource = readableAttachmentResource(attachment);
+      const location = retrievableMaterialLocation(attachment);
+      return {
+        name: attachment.name,
+        kind: attachment.kind,
+        mimeType: attachment.mimeType,
+        bytes: attachment.bytes,
+        ...(resource ? { resource } : {}),
+        ...(location ?? {}),
+      };
+    });
+}
+
+/**
+ * The address `Read` accepts, present only for a material `Read` can actually
+ * return. `Read` answers an image with the image and anything else with the
+ * file's text, and refuses a PDF outright — so a PDF's address is one the
+ * caller can only fail on, which is the same reason a material in another
+ * Session carries no address.
+ */
+function readableAttachmentResource(attachment: AttachmentRef): string | null {
+  if (attachment.kind === 'pdf') return null;
+  return formatAttachmentResourceRef(attachment.ref);
+}
+
+/**
+ * The pair that names a material a retrieval tool can fetch: the Session that
+ * holds it and the artifact inside it. Only a durable Session artifact can be
+ * fetched, so a ref of any other kind names nothing.
+ */
+function retrievableMaterialLocation(
+  attachment: AttachmentRef,
+): { sourceSessionId: string; materialId: string } | null {
+  if (attachment.ref.kind !== 'session_file') return null;
+  if (!isCanonicalArtifactEntityId(attachment.ref.relativePath)) return null;
+  return {
+    sourceSessionId: attachment.ref.sessionId,
+    materialId: attachment.ref.relativePath,
+  };
+}
+
+/**
+ * What the predicate runs on: a message's prose plus the names of the files it
+ * carried, so a material is reachable by the name a person would remember.
+ * Names are matched but not returned as text — they come back as materials.
+ */
+function recallMatchableText(message: StoredMessage): string | undefined {
+  const prose = recallSearchableText(message);
+  const materials = recallMaterials(message);
+  if (materials.length === 0) return prose;
+  const names = materials.map((material) => material.name).join('\n');
+  return prose === undefined || prose.length === 0 ? names : `${prose}\n${names}`;
+}
+
 /** Visits every string value in a JSON-like value, in document order, until the visitor declines. */
 function collectStringLeaves(value: unknown, visit: (leaf: string) => boolean): boolean {
   if (typeof value === 'string') return visit(value);
@@ -250,6 +351,8 @@ export interface RecallPassageMessage {
   readonly text: string;
   readonly timestamp: number;
   readonly isAnchor: boolean;
+  /** Files this message carried; omitted when it carried none. */
+  readonly materials?: readonly RecallMaterial[];
 }
 
 export interface RecallPassage {
@@ -257,6 +360,21 @@ export interface RecallPassage {
   readonly sessionTitle: string;
   readonly turnId?: string;
   readonly anchorMessageId: string;
+  /**
+   * Zero-based index of the anchor message within its Session transcript, the
+   * same coordinate a transcript reader scrolls by.
+   *
+   * A UI that navigates into a Session needs a position, not just an identity:
+   * the transcript reader scrolls by sequence, and a message id alone would
+   * force it to page the whole transcript to find the anchor. Recall already
+   * has the index — it locates the anchor by `findIndex` — so carrying it costs
+   * nothing and spares every consumer a second lookup.
+   *
+   * Present only when the anchor was located in the transcript it was
+   * assembled from; `buildPassage` returns undefined in the other case, so
+   * this is always defined on a passage that exists.
+   */
+  readonly sequence: number;
   readonly messages: readonly RecallPassageMessage[];
   readonly matchedTerms: readonly string[];
   readonly score: number;
@@ -340,6 +458,11 @@ export interface RecallDeps {
   countSearchableMessages?(input: {
     readonly sessionIds: readonly string[];
   }): Promise<number | null>;
+  /**
+   * Brings a material into the asking Session and answers it. Absent when the
+   * host has no artifact store, which makes materials name-only.
+   */
+  fetchMaterial?: RecallMaterialFetch;
   /**
    * Text the transcript projection writes that was never stored: a truncation
    * marker, a fallback caption for a result that lost its body. Matching runs
@@ -464,7 +587,12 @@ export async function runRecall(
 
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
   const anchors = applySessionQuota(collected.hits, limit);
-  const passages = assemblePassages(collected.transcripts, anchors, sessionById);
+  const passages = assemblePassages(
+    collected.transcripts,
+    anchors,
+    sessionById,
+    options.activeSessionId,
+  );
 
   return {
     ok: true,
@@ -557,8 +685,7 @@ export async function expandRecallPassage(
   }
 
   const message = transcript.find(
-    (candidate) =>
-      candidate.id === anchorMessageId && recallSearchableText(candidate) !== undefined,
+    (candidate) => candidate.id === anchorMessageId && isPassageMessage(candidate),
   );
   if (!message) {
     return { ok: false, reason: 'not_found', message: 'That passage anchor was not found.' };
@@ -587,12 +714,113 @@ export async function expandRecallPassage(
     transcript,
     session,
     RECALL_PASSAGE_MAX_BYTES,
+    options.activeSessionId,
     { before, after },
   );
   if (!built) {
     return { ok: false, reason: 'not_found', message: 'That passage could not be rebuilt.' };
   }
   return { ok: true, passage: built.passage };
+}
+
+/**
+ * What a host must do to bring a material into the asking Session: copy the
+ * artifact and answer it the way `Read` answers one stored here.
+ *
+ * Copying rather than referencing is what makes the answer durable. A tool
+ * result holds its file as a ref and every later turn re-materializes it, so a
+ * ref into another Session would break the moment that Session was cleaned up
+ * — the conversation would stop reproducing. A copy belongs to the asking
+ * Session and survives whatever happens to the original.
+ */
+export interface RecallMaterialFetch {
+  (input: {
+    readonly sourceSessionId: string;
+    readonly materialId: string;
+    readonly targetSessionId: string;
+    readonly abortSignal?: AbortSignal;
+  }): Promise<RecallMaterialFetchResult>;
+}
+
+export type RecallMaterialFetchResult =
+  | { readonly ok: true; readonly content: unknown }
+  | { readonly ok: false; readonly reason: 'not_found' | 'unsupported'; readonly message: string };
+
+export interface RecallMaterialRequest {
+  readonly sessionId: string;
+  readonly materialId: string;
+}
+
+/**
+ * Brings one material named by a passage into the asking Session.
+ *
+ * The Session check is the point of this function, not a formality: without it
+ * the tool would be a way to read any artifact by id, including from the
+ * Sessions recall itself refuses to surface — incognito, retired simulator
+ * transcripts, whatever a future rule excludes. A material is retrievable
+ * exactly when recall could have shown you the Session it sits in.
+ */
+export async function fetchRecallMaterial(
+  request: unknown,
+  deps: RecallDeps,
+  options: RecallOptions = {},
+): Promise<{ readonly ok: true; readonly content: unknown } | RecallFailure> {
+  if (options.abortSignal?.aborted) return aborted();
+  if (!deps.fetchMaterial) {
+    return { ok: false, reason: 'not_found', message: 'Materials are unavailable here.' };
+  }
+  if (typeof request !== 'object' || request === null || Array.isArray(request)) {
+    return { ok: false, reason: 'invalid_query', message: 'Material request must be an object.' };
+  }
+  const record = request as Record<string, unknown>;
+  const sessionId = optionalString(record.sessionId);
+  const materialId = optionalString(record.materialId);
+  if (!sessionId || !materialId) {
+    return {
+      ok: false,
+      reason: 'invalid_query',
+      message: 'A material is named by its Session and its material id.',
+    };
+  }
+  if (!options.activeSessionId) {
+    return { ok: false, reason: 'not_found', message: 'Materials need an active Session.' };
+  }
+
+  const privacyPayload = await deps.getPrivacyContext();
+  if (options.abortSignal?.aborted) return aborted();
+  const privacy = validateWorkspacePrivacyContext(privacyPayload);
+  if (!privacy.ok || privacy.value.incognitoActive) {
+    return {
+      ok: false,
+      reason: 'incognito_active',
+      message: 'Recall is unavailable while incognito is active.',
+    };
+  }
+
+  const sessions = eligibleSessions(
+    collapseSessionRevisions(await deps.listSessions(), options.activeSessionId),
+    { sessionId, includeArchived: options.includeArchived === true },
+  );
+  if (options.abortSignal?.aborted) return aborted();
+  if (!sessions.some((candidate) => candidate.id === sessionId)) {
+    return { ok: false, reason: 'not_found', message: 'That material was not found.' };
+  }
+
+  const fetched = await deps.fetchMaterial({
+    sourceSessionId: sessionId,
+    materialId,
+    targetSessionId: options.activeSessionId,
+    ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+  });
+  if (options.abortSignal?.aborted) return aborted();
+  if (!fetched.ok) {
+    return {
+      ok: false,
+      reason: fetched.reason === 'unsupported' ? 'invalid_query' : 'not_found',
+      message: fetched.message,
+    };
+  }
+  return { ok: true, content: fetched.content };
 }
 
 function normalizeSpan(value: unknown): number | undefined {
@@ -866,7 +1094,7 @@ function verify(
     return undefined;
   }
 
-  const raw = recallSearchableText(message);
+  const raw = recallMatchableText(message);
   if (raw === undefined) return undefined;
   // A hit is a term that occurs in the text as it was stored *and* still
   // occurs once secrets are redacted. Redaction alone is the security
@@ -1006,6 +1234,7 @@ function assemblePassages(
   transcripts: ReadonlyMap<string, readonly StoredMessage[]>,
   anchors: readonly VerifiedHit[],
   sessionById: ReadonlyMap<string, SessionSummary>,
+  activeSessionId: string | undefined,
 ): RecallPassage[] {
   if (anchors.length === 0) return [];
   const passages: RecallPassage[] = [];
@@ -1014,7 +1243,13 @@ function assemblePassages(
     if (remaining <= 0) break;
     const transcript = transcripts.get(anchor.sessionId);
     if (!transcript) continue;
-    const built = buildPassage(anchor, transcript, sessionById.get(anchor.sessionId), remaining);
+    const built = buildPassage(
+      anchor,
+      transcript,
+      sessionById.get(anchor.sessionId),
+      remaining,
+      activeSessionId,
+    );
     if (!built) continue;
     remaining -= built.bytes;
     passages.push(built.passage);
@@ -1027,6 +1262,7 @@ function buildPassage(
   transcript: readonly StoredMessage[],
   session: SessionSummary | undefined,
   budget: number,
+  activeSessionId: string | undefined,
   span: { readonly before: number; readonly after: number } = {
     before: RECALL_PASSAGE_NEIGHBOURS,
     after: RECALL_PASSAGE_NEIGHBOURS,
@@ -1051,7 +1287,7 @@ function buildPassage(
 
   const render = (message: StoredMessage, isAnchor: boolean): void => {
     if (rendered.has(message.id)) return;
-    const projected = projectPassageMessage(message, isAnchor);
+    const projected = projectPassageMessage(message, isAnchor, activeSessionId);
     if (!projected) return;
     const overhead = Buffer.byteLength(JSON.stringify({ ...projected, text: '' }), 'utf8');
     if (remaining <= overhead) {
@@ -1090,17 +1326,17 @@ function buildPassage(
   // same way one beyond the span does. Reporting otherwise would tell a caller
   // there is nothing more in a direction recall just cut short.
   const omitted = (entries: readonly { message: StoredMessage }[]): boolean =>
-    entries.some(
-      (entry) =>
-        !rendered.has(entry.message.id) &&
-        projectPassageMessage(entry.message, false) !== undefined,
-    );
+    entries.some((entry) => !rendered.has(entry.message.id) && isPassageMessage(entry.message));
 
   const passage: RecallPassage = {
     sessionId: anchor.sessionId,
     sessionTitle: redactSecrets(session?.name ?? ''),
     ...(anchor.turnId ? { turnId: anchor.turnId } : {}),
     anchorMessageId: anchor.message.id,
+    // The anchor's position in the transcript this passage was built from.
+    // `anchorIndex` is already `findIndex` over that exact array, so this is
+    // the same coordinate the transcript reader addresses.
+    sequence: anchorIndex,
     messages,
     matchedTerms: anchor.matchedTerms,
     score: Number(anchor.score.toFixed(4)),
@@ -1167,14 +1403,39 @@ function isPassageNeighbour(message: StoredMessage): boolean {
   return message.type === 'user' || message.type === 'assistant' || message.type === 'tool_call';
 }
 
+/**
+ * Whether a message can appear in a passage at all. Redaction rewrites text
+ * but never empties it, so this decides the same set `projectPassageMessage`
+ * does without paying for redaction on every message a lookup walks past.
+ */
+function isPassageMessage(message: StoredMessage): boolean {
+  const raw = recallSearchableText(message);
+  if (raw !== undefined && raw.trim().length > 0) return true;
+  return recallMaterials(message).length > 0;
+}
+
 function projectPassageMessage(
   message: StoredMessage,
   isAnchor: boolean,
+  activeSessionId?: string,
 ): RecallPassageMessage | undefined {
   const raw = recallSearchableText(message);
-  if (raw === undefined) return undefined;
-  const text = redactSecrets(raw).trim();
-  if (text.length === 0) return undefined;
+  const text = raw === undefined ? '' : redactSecrets(raw).trim();
+  // A message whose whole content was a pasted file has no text of its own.
+  // Dropping it would make the file unreachable in exactly the case this
+  // layer exists for.
+  // A file name is user-authored text like any other, so it leaves through the
+  // same redaction the passage body does; the address beside it is a runtime
+  // identifier and carries nothing to redact.
+  const materials = recallMaterials(message).map((material) => ({
+    ...material,
+    name: redactSecrets(material.name),
+  }));
+  if (text.length === 0 && materials.length === 0) return undefined;
+  // A material carries an address or a location, never both: the address says
+  // "read this now", the location says "ask for it and it will be brought
+  // here". Offering an address `Read` would refuse is the mistake this split
+  // exists to prevent.
   return {
     messageId: message.id,
     role: passageRole(message),
@@ -1182,6 +1443,33 @@ function projectPassageMessage(
     text,
     timestamp: message.ts,
     isAnchor,
+    ...(materials.length > 0
+      ? { materials: materials.map((material) => addressOrLocation(material, activeSessionId)) }
+      : {}),
+  };
+}
+
+/**
+ * Reachability is a fact about where the material itself is stored, not about
+ * the passage that mentioned it. Keying it on the passage would offer an
+ * address for a ref pointing into another Session — the doomed address this
+ * split exists to prevent, with the polarity inverted.
+ */
+function addressOrLocation(
+  material: RecallMaterial,
+  activeSessionId: string | undefined,
+): RecallMaterial {
+  const { resource, sourceSessionId, materialId, ...named } = material;
+  if (resource && sourceSessionId !== undefined && sourceSessionId === activeSessionId) {
+    return { ...named, resource };
+  }
+  // A location is a thing to ask for, so it is only worth carrying when
+  // asking could succeed. A PDF is refused wherever it is stored.
+  return {
+    ...named,
+    ...(sourceSessionId && materialId && named.kind !== 'pdf'
+      ? { sourceSessionId, materialId }
+      : {}),
   };
 }
 

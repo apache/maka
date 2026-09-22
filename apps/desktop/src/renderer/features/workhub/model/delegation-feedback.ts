@@ -30,6 +30,9 @@ export function projectWorkHubDelegationState(input: {
 }): WorkHubDelegationState {
   if (input.executionReadFailed || !input.resolution) return 'recovering';
   if (input.resolution.state === 'cancelled') return 'aborted';
+  // The Host positively reported this identity was never admitted: the
+  // delegation's Message never became work, so it can only be reported failed.
+  if (input.resolution.state === 'not_admitted') return 'failed';
   if (input.resolution.state === 'pending') return 'accepted';
   if (input.turn?.statusSource === 'recorded' && input.turn.status !== 'running') {
     return input.turn.status;

@@ -17,25 +17,13 @@
  * under the License.
  */
 
-import type { DeepResearchReportSectionKey } from '@maka/core/deep-research-run';
 import type { ProviderRetryReason } from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionBlockedReason, SessionStatus } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-import {
-  DEEP_RESEARCH_EVIDENCE_CHECKLIST,
-  DEEP_RESEARCH_PROGRESS_CHECKPOINTS,
-  DEEP_RESEARCH_REPORT_SECTIONS,
-  DEEP_RESEARCH_SCOPE_OPTIONS,
-  DEEP_RESEARCH_STARTER_PROMPTS,
-  DEEP_RESEARCH_WORKFLOW_STEPS,
-} from '@maka/core/deep-research';
 
 export type DayPeriod = 'morning' | 'noon' | 'afternoon' | 'evening';
-type ResearchItem = Readonly<{ title: string; body: string }>;
-type ResearchOption = Readonly<{ label: string; body: string }>;
-type ResearchStarter = Readonly<{ label: string; prompt: string }>;
 
 /** Compact token count: 999 → "999", 45,200 → "45.2k", 128,000 → "128k", 1,048,576 → "1M". */
 function formatCompactTokenCount(count: number): string {
@@ -96,28 +84,6 @@ export interface ConversationCopy {
     headlineWithLabel: (greeting: string, label: string) => string;
     headlineFallback: (greeting: string, tail: string) => string;
   };
-  deepResearchEmpty: {
-    ariaLabel: string;
-    eyebrow: string;
-    title: string;
-    intro: string;
-    workflowAriaLabel: string;
-    workflow: readonly ResearchItem[];
-    reportAriaLabel: string;
-    reportTitle: string;
-    report: readonly ResearchItem[];
-    scopeAriaLabel: string;
-    scopeTitle: string;
-    scope: readonly ResearchOption[];
-    evidenceAriaLabel: string;
-    evidenceTitle: string;
-    evidence: readonly ResearchItem[];
-    progressAriaLabel: string;
-    progressTitle: string;
-    progress: readonly ResearchItem[];
-    startersAriaLabel: string;
-    starters: readonly ResearchStarter[];
-  };
   composer: {
     placeholder: string;
     textareaAriaLabel: string;
@@ -132,7 +98,7 @@ export interface ConversationCopy {
     steeringPending: string;
     followupPending: string;
     queueShortcutsLabel: string;
-    queueShortcuts: string;
+    queueShortcuts: { apple: string; other: string };
     promoteQueuedEntry: string;
     editQueuedEntry: string;
     saveQueuedEntry: string;
@@ -141,10 +107,6 @@ export interface ConversationCopy {
     reorderQueuedEntry: string;
     stopLabel: string;
     stopping: string;
-    streaming: string;
-    processing: string;
-    continuing: string;
-    interruptHint: string;
     addContext: string;
     /** Noun label for the composer drawer's staged quotes/attachments — the
      *  collapsed badge, the drawer group's accessible name, and the collapse
@@ -198,6 +160,8 @@ export interface ConversationCopy {
     model: string;
     switchAriaLabel: string;
     switchWarning: string;
+    /** Secondary line on the cache warning row: activating the row dismisses it. */
+    switchWarningDismiss: string;
     newChatAriaLabel: (label: string) => string;
     newChatTitle: (label: string) => string;
     configureAriaLabel: (label: string) => string;
@@ -258,19 +222,37 @@ export interface ConversationCopy {
   };
   mentions: {
     noFiles: string;
+    noFilesOrSessions: string;
     noSkills: string;
     noCommandsOrSkills: string;
     filesAriaLabel: string;
+    filesAndSessionsAriaLabel: string;
+    sessionsGroup: string;
     skillsAriaLabel: string;
     commandsAndSkillsAriaLabel: string;
     commandsGroup: string;
     skillsGroup: string;
     loading: string;
+    sessionReferenceUnavailableTitle: string;
+    sessionReferenceUnavailableDetail: string;
+    sessionReferenceEmptyTitle: string;
+    sessionReferenceEmptyDetail: string;
+    sessionReferenceReadFailedTitle: string;
+    sessionReferenceReadFailedDetail: string;
+    sessionReferenceLimitDetail: string;
   };
   workspace: {
     choose: string;
     current: string;
-    addProject: string;
+    /** The picker's create action; the dialog that follows names the project. */
+    newProject: string;
+    /** Header of the New project dialog. */
+    newProjectTitle: string;
+    /** One line under the header: name first, folder next. */
+    newProjectDescription: string;
+    newProjectNameLabel: string;
+    /** The dialog's submit, which opens the folder picker. */
+    newProjectSubmit: string;
     manageProjects: string;
     noProject: string;
     relink: string;
@@ -282,10 +264,12 @@ export interface ConversationCopy {
     you: string;
     assistant: string;
     processing: string;
-    continuing: string;
     workingPhrases: readonly string[];
     processDetails: string;
     processDuration: (minutes: number, seconds: number) => string;
+    turnStatusCompleted: (elapsed?: string) => string;
+    turnStatusAborted: (elapsed?: string) => string;
+    turnStatusFailed: (elapsed?: string) => string;
     providerRetryScheduled: (seconds: number, attempt: number, maxAttempts: number) => string;
     providerRetryStarted: (attempt: number, maxAttempts: number) => string;
     providerRetryWaiting: (attempt: number, maxAttempts: number) => string;
@@ -325,11 +309,12 @@ export interface ConversationCopy {
     outputTruncatedTitle: string;
     removeAttachmentAriaLabel: (name: string) => string;
     quoteLabel: string;
+    sessionSnapshotLabel(name: string): string;
+    sessionSnapshotPending: string;
+    sessionSnapshotCaptured(iso: string, truncated: boolean): string;
     quoteExpandAriaLabel: string;
     quoteCollapseAriaLabel: string;
     removeQuoteAriaLabel: string;
-    aborted: string;
-    abortedByStop: string;
     systemNotes: {
       contextCompacting: string;
       contextCompactionUnobserved: string;
@@ -353,26 +338,6 @@ export interface ConversationCopy {
     memory: string;
     memoryAriaLabel: string;
     memoryTitle: string;
-    deepResearch: string;
-    deepResearchAriaLabel: string;
-    deepResearchTitle: string;
-    deepResearchProgress: {
-      ariaLabel: string;
-      title: string;
-      completedSummary: string;
-      activeSummary: (stage: string, scope: string, round: number) => string;
-      handoffTitle: string;
-      handoffAction: string;
-      checklistTitle: string;
-      reportTitle: string;
-      inspectedTitle: string;
-      inspectedEmpty: string;
-      executionTitle: string;
-      executionSummary: (steps: number, artifacts: number) => string;
-      workersLabel: string;
-      noBlockers: string;
-      sectionLabels: Record<DeepResearchReportSectionKey, string>;
-    };
     clearGoal: (condition: string, iteration: number, max: number, status: string) => string;
     clearGoalAriaLabel: (iteration: number, max: number) => string;
     goalProgress: (iteration: number, max: number) => string;
@@ -436,6 +401,10 @@ export interface ConversationCopy {
     archive: string;
     unarchive: string;
     delete: string;
+    /** Row-menu submenu that re-files one task into another project. */
+    moveToProject: string;
+    /** The submenu's clearing choice: leave the task with no project. */
+    moveToNoProject: string;
     pinned: string;
     /** Time-sort unpinned section title (SideNavSection). */
     recent: string;
@@ -475,27 +444,17 @@ const CONVERSATION_COPY = {
       greetingTail: { morning: '清醒的早晨适合理清思路', noon: '专注的午间适合一鼓作气', afternoon: '舒缓的下午适合慢慢推进', evening: '安静的夜晚适合深度思考' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做点什么？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
     },
-    deepResearchEmpty: {
-      ariaLabel: '深度研究空任务', eyebrow: '深度研究 · 只读探索', title: '先把项目读透，再决定怎么改。', intro: '这个任务固定在只读权限：优先阅读、搜索和分析代码；需要动手实现时，先输出文件、风险和验证命令。',
-      workflowAriaLabel: '深度研究流程', workflow: DEEP_RESEARCH_WORKFLOW_STEPS,
-      reportAriaLabel: '深度研究输出结构', reportTitle: '输出必须能直接落地', report: DEEP_RESEARCH_REPORT_SECTIONS,
-      scopeAriaLabel: '深度研究范围', scopeTitle: '默认按标准深度研究', scope: DEEP_RESEARCH_SCOPE_OPTIONS,
-      evidenceAriaLabel: '深度研究证据清单', evidenceTitle: '每次研究都要留证据', evidence: DEEP_RESEARCH_EVIDENCE_CHECKLIST,
-      progressAriaLabel: '深度研究检查点', progressTitle: '多步研究要按检查点推进', progress: DEEP_RESEARCH_PROGRESS_CHECKPOINTS,
-      startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
-    },
     composer: {
-      placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
+      placeholder: '描述任务，@ 引用文件或会话，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
       steeringPending: '调整方向 · 等待整批生效',
       followupPending: '下一轮 · 每轮一条',
       queueShortcutsLabel: '发送快捷键',
-      queueShortcuts: 'Shift+Enter：转向（Steering）\nEnter：下一轮（Follow-up）',
+      queueShortcuts: { apple: 'Cmd+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行', other: 'Ctrl+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行' },
       promoteQueuedEntry: '调整方向', editQueuedEntry: '编辑', saveQueuedEntry: '保存', cancelQueuedEntryEdit: '取消编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
-      streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
-      interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
+      addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件', referenceFolder: '引用文件夹',
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
       setGoal: '设定 Goal…', goalAlreadySet: '当前会话已有进行中的 Goal',
@@ -516,6 +475,7 @@ const CONVERSATION_COPY = {
       level: { off: '关', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
       switching: '切换中', model: '模型', switchAriaLabel: '切换当前任务模型',
       switchWarning: '切换模型可能需要重建服务商提示缓存，使下一次请求更慢或成本更高。',
+      switchWarningDismiss: '选择即可关闭',
       newChatAriaLabel: (label) => `选择新任务模型，当前 ${label}`, newChatTitle: (label) => `新任务使用的模型：${label}`,
       configureAriaLabel: (label) => `配置模型连接，当前 ${label}`, configureTitle: '配置模型连接',
     },
@@ -547,17 +507,17 @@ const CONVERSATION_COPY = {
     },
     questions: { otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     forms: { keyboardHint: '1–9 选择 · ↑↓ 切换 · Enter 确认 · Esc 取消', requester: (name) => `由 ${name} 请求`, requesterWithSource: (name, source) => `由 ${name} 请求 · ${source}`, required: '必填', optional: '选填', include: (label) => `提供：${label}`, enabled: (label) => `启用：${label}`, enterValue: '输入内容', enterNumber: '输入数字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 个字符` : maximum === undefined ? `至少 ${minimum} 个字符` : `长度 ${minimum}–${maximum} 个字符`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `范围 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多选择 ${maximum} 项` : maximum === undefined ? `至少选择 ${minimum} 项` : `选择 ${minimum}–${maximum} 项`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '请提供符合要求的值。', cancel: '取消', decline: '拒绝', accept: '提交', submitting: '正在提交…' },
-    mentions: { noFiles: '未找到文件', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '加载中…' },
+    mentions: { noFiles: '未找到文件', noFilesOrSessions: '未找到文件或会话', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', filesAndSessionsAriaLabel: '工作区文件和会话', sessionsGroup: '会话', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '加载中…', sessionReferenceUnavailableTitle: '无法引用会话', sessionReferenceUnavailableDetail: '该会话已不可用，请刷新任务列表后重试。', sessionReferenceEmptyTitle: '会话没有可引用内容', sessionReferenceEmptyDetail: '只会引用用户和助手文本；工具调用等内部记录不会注入当前任务。', sessionReferenceReadFailedTitle: '读取会话失败', sessionReferenceReadFailedDetail: '无法读取该会话的快照，请稍后重试。', sessionReferenceLimitDetail: '引用总数最多为 16，请移除部分引用后重试。' },
     workspace: {
-      choose: '选择项目', current: '当前项目', addProject: '添加项目', manageProjects: '管理项目', noProject: '无项目', relink: '重新定位', unavailable: '不可用',
+      choose: '选择项目', current: '当前项目', newProject: '新建项目', newProjectTitle: '新建项目', newProjectDescription: '先给项目起个名字，再选择它所在的文件夹。', newProjectNameLabel: '项目名称', newProjectSubmit: '选择文件夹', manageProjects: '管理项目', noProject: '无项目', relink: '重新定位', unavailable: '不可用',
       chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
       chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], processDetails: '执行过程', processDuration: (minutes, seconds) => `用时 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小时', minute: '分', second: '秒' })}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '响应中途断开', network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, failureDetailsUnavailable: '无可用诊断详情。', safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
+      you: '你', assistant: 'Maka', processing: '正在处理…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], processDetails: '执行过程', processDuration: (minutes, seconds) => `用时 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusCompleted: (elapsed?: string) => ['已完成', elapsed].filter(Boolean).join(' · '), turnStatusAborted: (elapsed?: string) => ['已中止', elapsed].filter(Boolean).join(' · '), turnStatusFailed: (elapsed?: string) => ['失败', elapsed].filter(Boolean).join(' · '), providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小时', minute: '分', second: '秒' })}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '响应中途断开', network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, failureDetailsUnavailable: '无可用诊断详情。', safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
       editMessageDisabledDirectoryReferences: '包含文件夹引用的历史消息暂不支持编辑并重发',
       userAriaLabel: '你发送的消息', systemAriaLabel: '系统消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}消息${context ? `：${context}` : ''}`, sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', scheduledTaskTriggered: '定时任务触发', scheduledTaskTitle: (id) => `由定时任务触发 · ${id}`, legacyAutomationTriggered: '旧版自动化（仅历史）', legacyAutomationTitle: (id) => `由旧版自动化触发 · ${id} · 仅保留历史，不会再次执行`, goalContinued: 'Goal 自动继续', goalTitle: (id) => `由 Goal 继续执行 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
-      thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '已中断', abortedByStop: '已中断 · 由停止按钮触发',
+      thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `会话：${name}`, sessionSnapshotPending: '发送时截取快照', sessionSnapshotCaptured: (iso, truncated) => `快照时间 ${iso}${truncated ? ' · 内容已截断' : ''}`, quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用',
       systemNotes: {
         contextCompacting: '正在压缩上下文…',
         contextCompactionUnobserved: '上下文压缩状态暂不可用',
@@ -587,30 +547,7 @@ const CONVERSATION_COPY = {
     },
     chat: {
       conversationAriaLabel: (name) => `对话：${name}`,
-      memory: '记忆', memoryAriaLabel: '本地记忆已启用', memoryTitle: '本地 MEMORY.md 已加入 agent 系统提示。点击进入设置 · 记忆管理。', deepResearch: '深度研究', deepResearchAriaLabel: '深度研究，只读探索', deepResearchTitle: '深度研究任务使用只读探索边界：先阅读和分析，默认不改文件。',
-      deepResearchProgress: {
-        ariaLabel: '深度研究实时进度',
-        title: '研究进度',
-        completedSummary: '研究完成 · 原任务保持只读',
-        activeSummary: (stage, scope, round) => `${stage} · ${scope} · 第 ${round} 轮`,
-        handoffTitle: '新建普通任务并填入研究 handoff；不会自动发送，也不会改变原研究任务权限',
-        handoffAction: '在新任务中继续实现',
-        checklistTitle: '检查清单',
-        reportTitle: '报告草稿',
-        inspectedTitle: '已检查位置',
-        inspectedEmpty: '等待记录文件、符号或来源。',
-        executionTitle: '执行与阻塞',
-        executionSummary: (steps, artifacts) => `${steps} 个研究步骤 · ${artifacts} 个持久化证据`,
-        workersLabel: 'Workers',
-        noBlockers: '当前无阻塞。',
-        sectionLabels: {
-          conclusion: '结论',
-          source_evidence: '证据',
-          borrow_diverge_risk_gate: '取舍与风险',
-          implementation_recommendations: '实施建议',
-          verification: '验证',
-        },
-      },
+      memory: '记忆', memoryAriaLabel: '本地记忆已启用', memoryTitle: '本地 MEMORY.md 已加入 agent 系统提示。点击进入设置 · 记忆管理。',
       clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalProgress: (iteration, max) => `目标 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目标正在运行', goalWaitingAriaLabel: '自主目标正在等待条件变化',
       goalPausedAriaLabel: '自主目标已暂停', pauseGoalAriaLabel: (iteration, max) => `暂停自主执行目标（已进行 ${iteration}/${max} 轮）`, resumeGoalAriaLabel: (iteration, max) => `恢复自主执行目标（已进行 ${iteration}/${max} 轮）`, pauseGoal: (condition, iteration, max, status) => `暂停自主执行目标：「${condition}」（第 ${iteration}/${max} 轮，${status}）。暂停后立即停止自动续行，不再消耗令牌；可随时恢复。`, resumeGoal: (condition, iteration, max) => `恢复自主执行目标：「${condition}」（第 ${iteration}/${max} 轮）。恢复后立即继续自动续行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分钟', hour: ' 小时', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', loadEarlierHistory: '载入更早的记录', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
@@ -622,7 +559,7 @@ const CONVERSATION_COPY = {
     sessions: {
       status: { active: '可继续', running: '进行中', waiting_for_user: '等你确认', blocked: '需要处理', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待配置可用模型连接', auth: '需要重新登录', permission_required: '等待权限确认', tool_failed: '工具调用失败', unknown: '运行中断，可重试' },
-      listAriaLabel: '任务列表', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多任务`, renameAriaLabel: '重命名任务', renameProjectTitle: '重命名项目', renameSubmit: '保存', respondingAriaLabel: '正在响应', respondingTitle: '任务正在流式响应中', staleTitle: '此任务使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '任务已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: (name) => `${name} 任务操作`, pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', pinned: '置顶', recent: '最近', projects: '项目', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '任务分组方式', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`, pickedAriaLabel: '已选中', pinCount: (count) => `置顶 ${count} 项`, unpinCount: (count) => `取消置顶 ${count} 项`, archiveCount: (count) => `归档 ${count} 项`,
+      listAriaLabel: '任务列表', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多任务`, renameAriaLabel: '重命名任务', renameProjectTitle: '重命名项目', renameSubmit: '保存', respondingAriaLabel: '正在响应', respondingTitle: '任务正在流式响应中', staleTitle: '此任务使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '任务已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: (name) => `${name} 任务操作`, pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', moveToProject: '移动到项目', moveToNoProject: '移出项目', pinned: '置顶', recent: '最近', projects: '项目', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '任务分组方式', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`, pickedAriaLabel: '已选中', pinCount: (count) => `置顶 ${count} 项`, unpinCount: (count) => `取消置顶 ${count} 项`, archiveCount: (count) => `归档 ${count} 项`,
     },
   },
   'zh-TW': {
@@ -633,15 +570,6 @@ const CONVERSATION_COPY = {
       greetingTail: { morning: '清醒的早晨適合理清思路', noon: '專注的午間適合一鼓作氣', afternoon: '舒緩的下午適合慢慢推進', evening: '安靜的夜晚適合深度思考' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做點什麼？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
     },
-    deepResearchEmpty: {
-      ariaLabel: '深度研究空任務', eyebrow: '深度研究 · 只讀探索', title: '先把專案讀透，再決定怎麼改。', intro: '這個任務固定在只讀權限：優先閱讀、搜尋和分析程式碼；需要動手實現時，先輸出檔案、風險和驗證命令。',
-      workflowAriaLabel: '深度研究流程', workflow: DEEP_RESEARCH_WORKFLOW_STEPS,
-      reportAriaLabel: '深度研究輸出結構', reportTitle: '輸出必須能直接落地', report: DEEP_RESEARCH_REPORT_SECTIONS,
-      scopeAriaLabel: '深度研究範圍', scopeTitle: '預設按標準深度研究', scope: DEEP_RESEARCH_SCOPE_OPTIONS,
-      evidenceAriaLabel: '深度研究證據清單', evidenceTitle: '每次研究都要留證據', evidence: DEEP_RESEARCH_EVIDENCE_CHECKLIST,
-      progressAriaLabel: '深度研究檢查點', progressTitle: '多步研究要按檢查點推進', progress: DEEP_RESEARCH_PROGRESS_CHECKPOINTS,
-      startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
-    },
     composer: {
       placeholder: '描述任務，@ 引用檔案，/ 選擇技能…', textareaAriaLabel: '訊息輸入框', pastedQuoteLabel: '貼上的文本', selectedSkillsAriaLabel: '已選擇的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你確認權限…',
       sending: '正在傳送…', importing: '正在匯入…', sendLabel: '傳送',
@@ -649,11 +577,10 @@ const CONVERSATION_COPY = {
       steeringPending: '調整方向 · 等待整批生效',
       followupPending: '下一輪 · 每輪一條',
       queueShortcutsLabel: '傳送快速鍵',
-      queueShortcuts: 'Shift+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）',
+      queueShortcuts: { apple: 'Cmd+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）\nShift+Enter：換行', other: 'Ctrl+Enter：轉向（Steering）\nEnter：下一輪（Follow-up）\nShift+Enter：換行' },
       promoteQueuedEntry: '調整方向', editQueuedEntry: '編輯', saveQueuedEntry: '儲存', cancelQueuedEntryEdit: '取消編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',
       stopLabel: '停止', stopping: '停止中…',
-      streaming: 'Maka 正在回答…', processing: 'Maka 正在處理…', continuing: 'Maka 繼續中…',
-      interruptHint: '或點停止中斷', addContext: '新增上下文', stagedContext: '附加內容',
+      addContext: '新增上下文', stagedContext: '附加內容',
       selectModel: '選擇模型', dropToImport: '鬆開以匯入檔案內容', addingAttachment: '正在新增附件', addFileOrDirectory: '新增檔案或目錄', referenceFolder: '引用資料夾',
       chooseSkill: '選擇技能', noSkillsAvailable: '目前沒有可用技能',
       setGoal: '設定 Goal…', goalAlreadySet: '目前會話已有進行中的 Goal',
@@ -674,6 +601,7 @@ const CONVERSATION_COPY = {
       level: { off: '關', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
       switching: '切換中', model: '模型', switchAriaLabel: '切換目前任務模型',
       switchWarning: '切換模型可能需要重建服務商提示快取，使下一次請求更慢或成本更高。',
+      switchWarningDismiss: '選擇即可關閉',
       newChatAriaLabel: (label) => `選擇新任務模型，目前 ${label}`, newChatTitle: (label) => `新任務使用的模型：${label}`,
       configureAriaLabel: (label) => `設定模型連線，目前 ${label}`, configureTitle: '設定模型連線',
     },
@@ -705,17 +633,17 @@ const CONVERSATION_COPY = {
     },
     questions: { otherAriaLabel: '其他答案', otherPlaceholder: '輸入你的答案', stop: '停止', stopping: '停止中…', previous: '上一題', submitting: '正在提交…', submit: '提交答案', next: '下一題' },
     forms: { keyboardHint: '1–9 選擇 · ↑↓ 切換 · Enter 確認 · Esc 取消', requester: (name) => `由 ${name} 請求`, requesterWithSource: (name, source) => `由 ${name} 請求 · ${source}`, required: '必填', optional: '選填', include: (label) => `提供：${label}`, enabled: (label) => `啟用：${label}`, enterValue: '輸入內容', enterNumber: '輸入數字', constraintSeparator: '；', lengthConstraint: (minimum, maximum) => minimum === undefined ? `最多 ${maximum} 個字元` : maximum === undefined ? `至少 ${minimum} 個字元` : `長度 ${minimum}–${maximum} 個字元`, numberConstraint: (minimum, maximum) => minimum === undefined ? `最大值 ${maximum}` : maximum === undefined ? `最小值 ${minimum}` : `範圍 ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `最多選取 ${maximum} 項` : maximum === undefined ? `至少選取 ${minimum} 項` : `選取 ${minimum}–${maximum} 項`, formatConstraint: { email: '格式：email', uri: '格式：URI', date: '格式：date（YYYY-MM-DD）', 'date-time': '格式：date-time（RFC 3339）' }, invalid: '請提供符合要求的值。', cancel: '取消', decline: '拒絕', accept: '提交', submitting: '正在提交…' },
-    mentions: { noFiles: '未找到檔案', noSkills: '暫無技能', noCommandsOrSkills: '沒有符合的命令或技能', filesAriaLabel: '工作區檔案', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '載入中…' },
+    mentions: { noFiles: '未找到檔案', noFilesOrSessions: '未找到檔案或作業階段', noSkills: '暫無技能', noCommandsOrSkills: '沒有符合的命令或技能', filesAriaLabel: '工作區檔案', filesAndSessionsAriaLabel: '工作區檔案和作業階段', sessionsGroup: '作業階段', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '載入中…', sessionReferenceUnavailableTitle: '無法引用作業階段', sessionReferenceUnavailableDetail: '這個作業階段已無法使用，請重新整理任務清單後再試一次。', sessionReferenceEmptyTitle: '沒有可引用的內容', sessionReferenceEmptyDetail: '只會引用使用者和助理的文字；工具呼叫等內部記錄不會注入目前任務。', sessionReferenceReadFailedTitle: '讀取作業階段失敗', sessionReferenceReadFailedDetail: '無法讀取這個作業階段的快照，請稍後再試。', sessionReferenceLimitDetail: '引用總數最多為 16，請移除部分引用後再試。' },
     workspace: {
-      choose: '選擇專案', current: '目前專案', addProject: '新增專案', manageProjects: '管理專案', noProject: '無專案', relink: '重新定位', unavailable: '不可用',
+      choose: '選擇專案', current: '目前專案', newProject: '新增專案', newProjectTitle: '新增專案', newProjectDescription: '先為專案命名，再選擇它所在的資料夾。', newProjectNameLabel: '專案名稱', newProjectSubmit: '選擇資料夾', manageProjects: '管理專案', noProject: '無專案', relink: '重新定位', unavailable: '不可用',
       chooseTitle: (branch) => branch ? `選擇專案 · ${branch}` : '選擇專案',
       chooseAriaLabel: (label, branch) => branch ? `選擇專案：${label}，目前分支 ${branch}` : `選擇專案：${label}`,
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在處理…', continuing: '繼續中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盤算…', '正在鑽研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓搗…', '正在醞釀…', '正在攻堅…', '正在權衡…', '正在拾掇…'], processDetails: '執行過程', processDuration: (minutes, seconds) => `用時 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小時', minute: '分', second: '秒' })}後重試（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重試（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重試（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '回應中途斷開', network: '網路中斷', provider_capacity: '模型服務暫時滿載', provider_unavailable: '模型服務暫時不可用', rate_limit: '觸發模型速率限制', timeout: '請求超時', unknown: '模型請求失敗' }, failureDetailsUnavailable: '無可用診斷詳情。', safeResumePending: '正在檢查…', safeResume: '繼續這一輪', thinking: '深度思考', truncated: '已截斷', copied: '已複製', copying: '複製中', copyFailed: '複製失敗', copy: '複製', editMessage: '編輯並重發', editMessageDisabledRunning: '目前回答仍在進行中，結束後再編輯', editMessageDisabledAttachments: '包含附件的歷史訊息暫不支援編輯並重發', editMessageDisabledQuotes: '包含引用的歷史訊息暫不支援編輯並重發', editMessageDisabledTransformedText: '包含已展開上下文的歷史訊息暫不支援編輯並重發',
+      you: '你', assistant: 'Maka', processing: '正在處理…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盤算…', '正在鑽研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓搗…', '正在醞釀…', '正在攻堅…', '正在權衡…', '正在拾掇…'], processDetails: '執行過程', processDuration: (minutes, seconds) => `用時 ${minutes > 0 ? `${minutes} 分 ` : ''}${seconds} 秒`, turnStatusCompleted: (elapsed?: string) => ['已完成', elapsed].filter(Boolean).join(' · '), turnStatusAborted: (elapsed?: string) => ['已中止', elapsed].filter(Boolean).join(' · '), turnStatusFailed: (elapsed?: string) => ['失敗', elapsed].filter(Boolean).join(' · '), providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, { day: '天', hour: '小時', minute: '分', second: '秒' })}後重試（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重試（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重試（${attempt}/${maxAttempts}）`, providerRetryReason: { stream_truncated: '回應中途斷開', network: '網路中斷', provider_capacity: '模型服務暫時滿載', provider_unavailable: '模型服務暫時不可用', rate_limit: '觸發模型速率限制', timeout: '請求超時', unknown: '模型請求失敗' }, failureDetailsUnavailable: '無可用診斷詳情。', safeResumePending: '正在檢查…', safeResume: '繼續這一輪', thinking: '深度思考', truncated: '已截斷', copied: '已複製', copying: '複製中', copyFailed: '複製失敗', copy: '複製', editMessage: '編輯並重發', editMessageDisabledRunning: '目前回答仍在進行中，結束後再編輯', editMessageDisabledAttachments: '包含附件的歷史訊息暫不支援編輯並重發', editMessageDisabledQuotes: '包含引用的歷史訊息暫不支援編輯並重發', editMessageDisabledTransformedText: '包含已展開上下文的歷史訊息暫不支援編輯並重發',
       editMessageDisabledDirectoryReferences: '包含資料夾引用的歷史訊息暫不支援編輯並重發',
       userAriaLabel: '你傳送的訊息', systemAriaLabel: '系統訊息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}訊息${context ? `：${context}` : ''}`, sourceAriaLabel: '本輪迴答的來源', derivativesAriaLabel: '本輪迴答的衍生', scheduledTaskTriggered: '定時任務觸發', scheduledTaskTitle: (id) => `由定時任務觸發 · ${id}`, legacyAutomationTriggered: '舊版自動化（僅歷史）', legacyAutomationTitle: (id) => `由舊版自動化觸發 · ${id} · 僅保留歷史，不會再次執行`, goalContinued: 'Goal 自動繼續', goalTitle: (id) => `由 Goal 繼續執行 · ${id}`, agentGraphTriggered: 'Agent Graph 自動繼續', agentGraphTitle: (graphId) => `由 Agent Graph 排程器觸發 · ${graphId}`,
-      thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中斷)', abortedByStop: '(已中斷 · 由停止按鈕觸發)',
+      thinkingTruncatedTitle: '部分 reasoning 已截斷；顯示的是最近的內容', outputTruncatedTitle: '助手輸出已超過單次回合上限，超出部分未渲染。如需完整內容請重新生成或檢視持久化的任務記錄。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', sessionSnapshotLabel: (name) => `作業階段：${name}`, sessionSnapshotPending: '傳送時擷取快照', sessionSnapshotCaptured: (iso, truncated) => `快照時間 ${iso}${truncated ? ' · 內容已截斷' : ''}`, quoteExpandAriaLabel: '展開引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用',
       systemNotes: {
         contextCompacting: '正在壓縮上下文…',
         contextCompactionUnobserved: '上下文壓縮狀態暫不可用',
@@ -745,30 +673,7 @@ const CONVERSATION_COPY = {
     },
     chat: {
       conversationAriaLabel: (name) => `對話：${name}`,
-      memory: '記憶', memoryAriaLabel: '本地記憶已啟用', memoryTitle: '本地 MEMORY.md 已加入 agent 系統提示。點選進入設定 · 記憶管理。', deepResearch: '深度研究', deepResearchAriaLabel: '深度研究，只讀探索', deepResearchTitle: '深度研究任務使用只讀探索邊界：先閱讀和分析，預設不改檔案。',
-      deepResearchProgress: {
-        ariaLabel: '深度研究即時進度',
-        title: '研究進度',
-        completedSummary: '研究完成 · 原任務保持只讀',
-        activeSummary: (stage, scope, round) => `${stage} · ${scope} · 第 ${round} 輪`,
-        handoffTitle: '建立普通任務並填入研究 handoff；不會自動傳送，也不會改變原研究任務權限',
-        handoffAction: '在新任務中繼續實現',
-        checklistTitle: '檢查清單',
-        reportTitle: '報告草稿',
-        inspectedTitle: '已檢查位置',
-        inspectedEmpty: '等待記錄檔案、符號或來源。',
-        executionTitle: '執行與阻塞',
-        executionSummary: (steps, artifacts) => `${steps} 個研究步驟 · ${artifacts} 個持久化證據`,
-        workersLabel: 'Workers',
-        noBlockers: '目前無阻塞。',
-        sectionLabels: {
-          conclusion: '結論',
-          source_evidence: '證據',
-          borrow_diverge_risk_gate: '取捨與風險',
-          implementation_recommendations: '實施建議',
-          verification: '驗證',
-        },
-      },
+      memory: '記憶', memoryAriaLabel: '本地記憶已啟用', memoryTitle: '本地 MEMORY.md 已加入 agent 系統提示。點選進入設定 · 記憶管理。',
       clearGoal: (condition, iteration, max, status) => `自主執行目標進行中：「${condition}」（第 ${iteration}/${max} 輪，${status}）。系統每輪後自動續行；點選可清除目標、停止續行。`, clearGoalAriaLabel: (iteration, max) => `清除自主執行目標（已進行 ${iteration}/${max} 輪）`, goalProgress: (iteration, max) => `目標 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目標正在執行', goalWaitingAriaLabel: '自主目標正在等待條件變化',
       goalPausedAriaLabel: '自主目標已暫停', pauseGoalAriaLabel: (iteration, max) => `暫停自主執行目標（已進行 ${iteration}/${max} 輪）`, resumeGoalAriaLabel: (iteration, max) => `恢復自主執行目標（已進行 ${iteration}/${max} 輪）`, pauseGoal: (condition, iteration, max, status) => `暫停自主執行目標：「${condition}」（第 ${iteration}/${max} 輪，${status}）。暫停後立即停止自動續行，不再消耗權杖；可隨時恢復。`, resumeGoal: (condition, iteration, max) => `恢復自主執行目標：「${condition}」（第 ${iteration}/${max} 輪）。恢復後立即繼續自動續行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分鐘', hour: ' 小時', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: '任務載入失敗', loading: '載入中…', retryLoad: '重試載入', loadEarlierHistory: '載入更早的記錄', quoteSelection: '引用', askInSidePanel: '在側欄追問', noMessages: '暫無訊息',
@@ -780,7 +685,7 @@ const CONVERSATION_COPY = {
     sessions: {
       status: { active: '可繼續', running: '進行中', waiting_for_user: '等你確認', blocked: '需要處理', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待設定可用模型連線', auth: '需要重新登入', permission_required: '等待權限確認', tool_failed: '工具呼叫失敗', unknown: '執行中斷，可重試' },
-      listAriaLabel: '任務列表', showMore: '顯示更多', showMoreAriaLabel: (count) => `顯示 ${count} 條更多工`, renameAriaLabel: '重新命名任務', renameProjectTitle: '重新命名專案', renameSubmit: '儲存', respondingAriaLabel: '正在響應', respondingTitle: '任務正在流式響應中', staleTitle: '此任務使用的模型連線已不可用，傳送時會切換到預設連線', staleAriaLabel: '任務已過期', stale: '已過期', unreadAriaLabel: '未讀訊息', actionsAriaLabel: (name) => `${name} 任務操作`, pin: '置頂', unpin: '取消置頂', rename: '重新命名', archive: '歸檔', unarchive: '取消歸檔', delete: '刪除', pinned: '置頂', recent: '最近', projects: '專案', groupByTime: '按時間', groupByProject: '按專案', groupingAriaLabel: '任務分組方式', projectActionsAriaLabel: (name) => `${name} 專案操作`, projectNewTask: '建立任務', projectRename: '重新命名', projectArchive: '歸檔', projectRestore: '恢復', projectRelink: '重新定位', projectUnavailable: '專案目錄不可用', archivedProjects: '已歸檔專案', archivedProjectsAriaLabel: '展開已歸檔專案', worktreeAriaLabel: 'Git 工作樹', promptRailAriaLabel: '按提問跳轉', emptyPrompt: '（空提問）', jumpToPrompt: (preview) => `跳到提問：${preview}`, pickedAriaLabel: '已選取', pinCount: (count) => `置頂 ${count} 項`, unpinCount: (count) => `取消置頂 ${count} 項`, archiveCount: (count) => `歸檔 ${count} 項`,
+      listAriaLabel: '任務列表', showMore: '顯示更多', showMoreAriaLabel: (count) => `顯示 ${count} 條更多工`, renameAriaLabel: '重新命名任務', renameProjectTitle: '重新命名專案', renameSubmit: '儲存', respondingAriaLabel: '正在響應', respondingTitle: '任務正在流式響應中', staleTitle: '此任務使用的模型連線已不可用，傳送時會切換到預設連線', staleAriaLabel: '任務已過期', stale: '已過期', unreadAriaLabel: '未讀訊息', actionsAriaLabel: (name) => `${name} 任務操作`, pin: '置頂', unpin: '取消置頂', rename: '重新命名', archive: '歸檔', unarchive: '取消歸檔', delete: '刪除', moveToProject: '移動到專案', moveToNoProject: '移出專案', pinned: '置頂', recent: '最近', projects: '專案', groupByTime: '按時間', groupByProject: '按專案', groupingAriaLabel: '任務分組方式', projectActionsAriaLabel: (name) => `${name} 專案操作`, projectNewTask: '建立任務', projectRename: '重新命名', projectArchive: '歸檔', projectRestore: '恢復', projectRelink: '重新定位', projectUnavailable: '專案目錄不可用', archivedProjects: '已歸檔專案', archivedProjectsAriaLabel: '展開已歸檔專案', worktreeAriaLabel: 'Git 工作樹', promptRailAriaLabel: '按提問跳轉', emptyPrompt: '（空提問）', jumpToPrompt: (preview) => `跳到提問：${preview}`, pickedAriaLabel: '已選取', pinCount: (count) => `置頂 ${count} 項`, unpinCount: (count) => `取消置頂 ${count} 項`, archiveCount: (count) => `歸檔 ${count} 項`,
     },
   },
   en: {
@@ -791,56 +696,17 @@ const CONVERSATION_COPY = {
       greetingTail: { morning: 'A clear morning is good for untangling ideas', noon: 'A focused midday is good for a single big push', afternoon: 'A calm afternoon is good for steady progress', evening: 'A quiet evening is good for deep thinking' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label} — what shall we tackle today?`, headlineFallback: (greeting, tail) => `${greeting} — ${tail}.`,
     },
-    deepResearchEmpty: {
-      ariaLabel: 'Empty Deep Research task', eyebrow: 'Deep Research · Read-only exploration', title: 'Understand the project before deciding what to change.', intro: 'This task stays read only: inspect, search, and analyze first. When implementation is needed, report the files, risks, and verification commands.',
-      workflowAriaLabel: 'Deep Research workflow', workflow: [
-        { title: 'Find the entry points', body: 'Read the directory layout, configuration, startup path, and test entry points to build a project map.' },
-        { title: 'Trace the data flow', body: 'Follow key modules through IPC, storage, permissions, and runtime boundaries to the real implementation.' },
-        { title: 'Compare references', body: 'Break each reusable idea into borrow / diverge / risk / gate.' },
-        { title: 'Propose a mergeable plan', body: 'List files, risk boundaries, and verification commands without changing files in read-only mode.' },
-      ],
-      reportAriaLabel: 'Deep Research report structure', reportTitle: 'The report must be actionable', report: [
-        { title: 'Lead with conclusions', body: 'Use three to five points to explain the current state, major gaps, and priorities.' },
-        { title: 'Cite source evidence', body: 'Name files, functions, configuration, tests, and runtime paths instead of relying on impressions.' },
-        { title: 'Break down what to borrow', body: 'Describe each idea as borrow / diverge / risk / gate.' },
-        { title: 'Make it implementable', body: 'Give a small-step file plan, boundaries, and verification commands.' },
-      ],
-      scopeAriaLabel: 'Deep Research scope', scopeTitle: 'Standard depth by default', scope: [
-        { label: 'Quick', body: 'Scan entry points, key files, and the likeliest data flow for a narrowly scoped question.' },
-        { label: 'Standard', body: 'Trace the core path, related tests, and major risks before recommending changes.' },
-        { label: 'Deep', body: 'Run multi-pass investigation across modules, references, and edge cases only when explicitly requested.' },
-      ],
-      evidenceAriaLabel: 'Deep Research evidence checklist', evidenceTitle: 'Leave evidence for every investigation', evidence: [
-        { title: 'Project entry points', body: 'Check the README, package/config files, startup scripts, and directory layers to confirm how the project runs.' },
-        { title: 'Core path', body: 'Trace UI entry points, IPC/services, storage, runtime calls, and error handling.' },
-        { title: 'Boundaries', body: 'Check permissions, privacy mode, token/path exposure, retries, and user-visible feedback.' },
-        { title: 'Verification evidence', body: 'Find tests, fixtures, smoke documentation, and reproducible commands; call out missing evidence.' },
-      ],
-      progressAriaLabel: 'Deep Research checkpoints', progressTitle: 'Advance multi-step research through checkpoints', progress: [
-        { title: 'Build a checklist', body: 'When the scope has more than three related areas, list verifiable checks before tracing code.' },
-        { title: 'Mark the current check', body: 'State what is being verified and move on only after collecting evidence.' },
-        { title: 'Record blockers', body: 'Mark missing source, runtime, or test evidence as blocked instead of guessing.' },
-        { title: 'Converge on a plan', body: 'Roll completed checks into borrow / diverge / risk / gate and actionable improvements.' },
-      ],
-      startersAriaLabel: 'Deep Research starters', starters: [
-        { label: 'Research a reference project', prompt: 'Read this project without changing files. Map its structure, core modules, startup path, data flow, and tests; then list reusable design ideas, risks, and an implementation order for Maka.' },
-        { label: 'Read a reference project end to end', prompt: 'Perform a deep, read-only study of this project. Map modules and trace core features, runtime, storage, permissions, UI, tests, and docs. Express each idea as borrow / diverge / risk / gate and recommend an implementation order for Maka.' },
-        { label: 'Compare a feature implementation', prompt: 'Compare this feature in the reference project and Maka without changing files. Identify key files, runtime boundaries, UI entry points, persistence, tests, and the smallest mergeable improvement.' },
-        { label: 'Audit security boundaries', prompt: 'Audit this feature read only: permissions, token and secret flow, IPC/renderer exposure, file paths, privacy mode, logs, and telemetry. Report blocking risks and corresponding contract tests.' },
-      ],
-    },
     composer: {
-      placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
+      placeholder: 'Describe a task, @ to reference files or sessions, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
       steeringPending: 'Steering · Applied together',
       followupPending: 'Follow-up · One per turn',
       queueShortcutsLabel: 'Send shortcuts',
-      queueShortcuts: 'Shift+Enter: Steering\nEnter: Follow-up',
+      queueShortcuts: { apple: 'Cmd+Enter: Steering\nEnter: Follow-up\nShift+Enter: New line', other: 'Ctrl+Enter: Steering\nEnter: Follow-up\nShift+Enter: New line' },
       promoteQueuedEntry: 'Steer', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
-      streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
-      interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
+      addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add files', referenceFolder: 'Reference folder',
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
       setGoal: 'Set a goal…', goalAlreadySet: 'This session already has a goal in progress',
@@ -858,6 +724,7 @@ const CONVERSATION_COPY = {
       level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
       switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this task',
       switchWarning: 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.',
+      switchWarningDismiss: 'Select to dismiss',
       newChatAriaLabel: (label) => `Choose a model for the new task, currently ${label}`, newChatTitle: (label) => `Model for the new task: ${label}`,
       configureAriaLabel: (label) => `Configure model connections, currently ${label}`, configureTitle: 'Configure model connections',
     },
@@ -889,17 +756,17 @@ const CONVERSATION_COPY = {
     },
     questions: { otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     forms: { keyboardHint: '1–9 select · ↑↓ navigate · Enter confirm · Esc cancel', requester: (name) => `Requested by ${name}`, requesterWithSource: (name, source) => `Requested by ${name} · ${source}`, required: 'Required', optional: 'Optional', include: (label) => `Provide ${label}`, enabled: (label) => `Enable ${label}`, enterValue: 'Enter a value', enterNumber: 'Enter a number', constraintSeparator: ' · ', lengthConstraint: (minimum, maximum) => minimum === undefined ? `At most ${maximum} characters` : maximum === undefined ? `At least ${minimum} characters` : `${minimum}–${maximum} characters`, numberConstraint: (minimum, maximum) => minimum === undefined ? `Maximum ${maximum}` : maximum === undefined ? `Minimum ${minimum}` : `Range ${minimum}–${maximum}`, itemConstraint: (minimum, maximum) => minimum === undefined ? `Select at most ${maximum}` : maximum === undefined ? `Select at least ${minimum}` : `Select ${minimum}–${maximum}`, formatConstraint: { email: 'Format: email', uri: 'Format: URI', date: 'Format: date (YYYY-MM-DD)', 'date-time': 'Format: date-time (RFC 3339)' }, invalid: 'Provide a value that meets the requirements.', cancel: 'Cancel', decline: 'Decline', accept: 'Submit', submitting: 'Submitting…' },
-    mentions: { noFiles: 'No files found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…' },
+    mentions: { noFiles: 'No files found', noFilesOrSessions: 'No files or sessions found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', filesAndSessionsAriaLabel: 'Workspace files and sessions', sessionsGroup: 'Sessions', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…', sessionReferenceUnavailableTitle: 'Session reference unavailable', sessionReferenceUnavailableDetail: 'This session is no longer available. Refresh the task list and try again.', sessionReferenceEmptyTitle: 'No referenceable content', sessionReferenceEmptyDetail: 'Only user and assistant text is shared; tool calls and internal records stay out of the current task.', sessionReferenceReadFailedTitle: 'Could not read session', sessionReferenceReadFailedDetail: 'The session snapshot could not be read. Try again later.', sessionReferenceLimitDetail: 'A message can contain at most 16 quotes. Remove a quote and try again.' },
     workspace: {
-      choose: 'Choose project', current: 'Current project', addProject: 'Add project', manageProjects: 'Manage projects', noProject: 'No project', relink: 'Relink', unavailable: 'Unavailable',
+      choose: 'Choose project', current: 'Current project', newProject: 'New project', newProjectTitle: 'New project', newProjectDescription: 'Name the project, then choose the folder it lives in.', newProjectNameLabel: 'Project name', newProjectSubmit: 'Choose folder', manageProjects: 'Manage projects', noProject: 'No project', relink: 'Relink', unavailable: 'Unavailable',
       chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
       chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
     },
     messages: {
-      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], processDetails: 'Execution process', processDuration: (minutes, seconds) => `Worked for ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`, providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, { day: 'd', hour: 'h', minute: 'm', second: 's' })} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { stream_truncated: 'Response stream ended before completion', network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, failureDetailsUnavailable: 'No diagnostic details are available.', safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
+      you: 'You', assistant: 'Maka', processing: 'Working…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], processDetails: 'Execution process', processDuration: (minutes, seconds) => `Worked for ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`, turnStatusCompleted: (elapsed?: string) => ['Done', elapsed].filter(Boolean).join(' · '), turnStatusAborted: (elapsed?: string) => ['Stopped', elapsed].filter(Boolean).join(' · '), turnStatusFailed: (elapsed?: string) => ['Failed', elapsed].filter(Boolean).join(' · '), providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, { day: 'd', hour: 'h', minute: 'm', second: 's' })} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { stream_truncated: 'Response stream ended before completion', network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, failureDetailsUnavailable: 'No diagnostic details are available.', safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
       editMessageDisabledDirectoryReferences: 'Edit & resend does not yet support messages with folder references',
       userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: (context) => `Response actions${context ? `: ${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action} response${context ? `: ${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action} message${context ? `: ${context}` : ''}`, sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', scheduledTaskTriggered: 'Triggered by scheduled task', scheduledTaskTitle: (id) => `Triggered by scheduled task · ${id}`, legacyAutomationTriggered: 'Legacy Automation (history only)', legacyAutomationTitle: (id) => `Triggered by legacy Automation · ${id} · Historical only; it will not run again`, goalContinued: 'Continued by Goal', goalTitle: (id) => `Continued by Goal · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
-      thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
+      thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', sessionSnapshotLabel: (name) => `Session: ${name}`, sessionSnapshotPending: 'snapshot captured when sent', sessionSnapshotCaptured: (iso, truncated) => `captured ${iso}${truncated ? ' · truncated' : ''}`, quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote',
       systemNotes: {
         contextCompacting: 'Compacting context…',
         contextCompactionUnobserved: 'Context compaction status unavailable',
@@ -929,30 +796,7 @@ const CONVERSATION_COPY = {
     },
     chat: {
       conversationAriaLabel: (name) => `Conversation: ${name}`,
-      memory: 'Memory', memoryAriaLabel: 'Local memory enabled', memoryTitle: 'Local MEMORY.md is included in the agent system prompt. Click to manage it in Settings · Memory.', deepResearch: 'Deep Research', deepResearchAriaLabel: 'Deep Research, read-only exploration', deepResearchTitle: 'Deep Research uses a read-only boundary: inspect and analyze first, without changing files by default.',
-      deepResearchProgress: {
-        ariaLabel: 'Live Deep Research progress',
-        title: 'Research progress',
-        completedSummary: 'Research complete · Original task remains read-only',
-        activeSummary: (stage, scope, round) => `${stage} · ${scope} · Round ${round}`,
-        handoffTitle: 'Create a normal task with the research handoff. It will not send automatically or change the original research task permissions.',
-        handoffAction: 'Continue implementation in a new task',
-        checklistTitle: 'Checklist',
-        reportTitle: 'Report draft',
-        inspectedTitle: 'Inspected locations',
-        inspectedEmpty: 'Waiting for recorded files, symbols, or sources.',
-        executionTitle: 'Execution and blockers',
-        executionSummary: (steps, artifacts) => `${steps} research steps · ${artifacts} persisted evidence items`,
-        workersLabel: 'Workers',
-        noBlockers: 'No current blockers.',
-        sectionLabels: {
-          conclusion: 'Conclusion',
-          source_evidence: 'Evidence',
-          borrow_diverge_risk_gate: 'Tradeoffs and risks',
-          implementation_recommendations: 'Implementation recommendations',
-          verification: 'Verification',
-        },
-      },
+      memory: 'Memory', memoryAriaLabel: 'Local memory enabled', memoryTitle: 'Local MEMORY.md is included in the agent system prompt. Click to manage it in Settings · Memory.',
       clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running', goalWaitingAriaLabel: 'Autonomous goal waiting for conditions to change',
       goalPausedAriaLabel: 'Autonomous goal paused', pauseGoalAriaLabel: (iteration, max) => `Pause autonomous goal after ${iteration}/${max} iterations`, resumeGoalAriaLabel: (iteration, max) => `Resume autonomous goal after ${iteration}/${max} iterations`, pauseGoal: (condition, iteration, max, status) => `Pause autonomous goal: “${condition}” (iteration ${iteration}/${max}, ${status}). Pausing stops autonomous continuation immediately — no more tokens burn; resume any time.`, resumeGoal: (condition, iteration, max) => `Resume autonomous goal: “${condition}” (iteration ${iteration}/${max}). Resuming continues autonomous iteration immediately.`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: 's', minute: 'm', hour: 'h', day: 'd' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', loadEarlierHistory: 'Load earlier history', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
@@ -964,7 +808,7 @@ const CONVERSATION_COPY = {
     sessions: {
       status: { active: 'Ready', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', aborted: 'Stopped' },
       blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },
-      listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', recent: 'Recent', projects: 'Projects', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
+      listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', moveToProject: 'Move to project', moveToNoProject: 'Remove from project', pinned: 'Pinned', recent: 'Recent', projects: 'Projects', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
     },
   },
 } satisfies UiCatalog<ConversationCopy>;

@@ -35,6 +35,8 @@ export function createDesktopSessionSettingsServices(
   return {
     setModelConfiguration: async (sessionId, input) =>
       expectSessionUpdate(await bridge.sessions.setModelConfiguration(sessionId, input)),
+    setExecutorConfiguration: async (sessionId, input) =>
+      expectSessionUpdate(await bridge.sessions.setExecutorConfiguration(sessionId, input)),
     setPermissionMode: async (sessionId, mode) =>
       expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
     setOrchestrationMode: async (sessionId, mode) =>

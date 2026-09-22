@@ -284,7 +284,7 @@ export class HostSessionRetirementCoordinator {
           handles.goal.commit();
           handles.scheduledTasks.commit();
           await this.#graphWake.retireSessions(family.sessionIds);
-          this.#capabilities.retireSessions(family.sessionIds);
+          await this.#capabilities.retireSessions(family.sessionIds);
           this.#messages.retireSessions(family.sessionIds);
           await this.#refreshFamily(family);
           return lifecycleSuccess(
@@ -357,7 +357,7 @@ export class HostSessionRetirementCoordinator {
           await this.#graphWake.retireSessions(allSessionIds);
           this.#rememberRetiredWorktrees(committableRemove, removedSessionIds);
           this.#scheduleCleanup(removedSessionIds);
-          this.#capabilities.retireSessions(allSessionIds);
+          await this.#capabilities.retireSessions(allSessionIds);
           this.#messages.retireSessions(allSessionIds);
           await this.#continuity.retireSessions(plan.remove.sessionIds, plan.remove.admission);
           await this.#refreshFamily(plan.archive);

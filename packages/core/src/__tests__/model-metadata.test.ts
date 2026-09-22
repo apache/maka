@@ -28,6 +28,7 @@ import {
   resolveModelVisionSupport,
 } from '../model-metadata.js';
 import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
+import { isThinkingLevel, type ThinkingLevel } from '../model-thinking.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
 
 describe('provider model-catalog completeness', () => {
@@ -280,5 +281,54 @@ describe('Volcengine Agent Plan official catalog mirror', () => {
         modelId,
       );
     }
+  });
+});
+
+describe('Command Code static reasoning metadata', () => {
+  const commandCodeProviders = ['commandcode'] as const;
+  // The reference table this is ported from (dsh-commandcode-provider's
+  // KNOWN_EFFORTS, re-verified against command-code@1.53.0).
+  const expectedEfforts: Record<string, readonly ThinkingLevel[]> = {
+    'claude-fable-5-1': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'claude-opus-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'deepseek/deepseek-v4.1-flash': ['low', 'high', 'max'],
+    'deepseek/deepseek-v4-pro': ['high', 'max'],
+    'gpt-5.5': ['low', 'medium', 'high', 'xhigh'],
+    'gpt-6-astra': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'google/gemini-3.8-flash': ['low', 'medium', 'high'],
+    'meta/muse-spark-1.3': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'meta/muse-spark-1.3-contributor': ['low', 'medium', 'high', 'xhigh'],
+    'MiniMaxAI/MiniMax-M3': ['low', 'medium', 'high'],
+    'moonshotai/Kimi-K3': ['low', 'high', 'max'],
+    'Qwen/Qwen3.8-Max': ['low', 'medium', 'xhigh'],
+    'sakana/fugu-ultra': ['high', 'xhigh'],
+    'tencent/hy4-preview': ['low', 'medium', 'high'],
+    'zai-org/GLM-5.2': ['high', 'max'],
+  };
+
+  it('serves the effort table to the Command Code provider', () => {
+    for (const providerType of commandCodeProviders) {
+      for (const [modelId, efforts] of Object.entries(expectedEfforts)) {
+        assert.deepEqual(
+          lookupModelMetadata(providerType, modelId).thinkingOptions?.efforts,
+          efforts,
+          `${providerType}/${modelId}`,
+        );
+      }
+    }
+  });
+
+  it('keeps every declared effort a known ThinkingLevel', () => {
+    for (const providerType of commandCodeProviders) {
+      for (const id of modelMetadataIdsForProvider(providerType)) {
+        for (const effort of lookupModelMetadata(providerType, id).thinkingOptions?.efforts ?? []) {
+          assert.ok(isThinkingLevel(effort), `${providerType}/${id} declares "${effort}"`);
+        }
+      }
+    }
+  });
+
+  it('leaves a model without a declared level uncovered', () => {
+    assert.equal(lookupModelMetadata('commandcode', 'tencent/hy3-paid').thinkingOptions, undefined);
   });
 });

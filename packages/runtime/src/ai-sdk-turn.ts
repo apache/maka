@@ -121,6 +121,7 @@ import {
   type ContextDiagnosticsCompaction,
 } from './context-diagnostics.js';
 import { AiSdkCompaction, hasBlockingReplayDiagnostics } from './ai-sdk-compaction.js';
+import { portableApplyPatchTool } from './apply-patch-profile.js';
 import { RunTrace } from './run-trace.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
@@ -453,6 +454,12 @@ function nestableToolSnapshot(
   const active = new Set(activeToolNames);
   return new Map(
     providerTools
+      .map((tool) =>
+        tool.providerTool?.kind === 'openai-apply-patch' ||
+        tool.providerTool?.kind === 'codex-apply-patch'
+          ? portableApplyPatchTool(tool)
+          : tool,
+      )
       .filter(
         (tool) =>
           active.has(tool.name) &&

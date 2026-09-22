@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { chmod, copyFile, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -781,7 +781,7 @@ test('rolls back every scope when migration publication fails', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-rollback-'));
   const databasePath = join(root, 'runtime.sqlite');
   try {
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     const legacy = new DatabaseSync(databasePath);
     legacy.exec('DELETE FROM automation_pending_fires; DELETE FROM automation_definitions');
     const versions = legacy
@@ -847,11 +847,55 @@ test('rolls back every scope when migration publication fails', async () => {
   }
 });
 
+test('preserves retired research events through upgrade, reopen, and backup', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-retired-research-'));
+  const restoredRoot = join(root, 'restored');
+  const record = '{"kind":"started","objective":"Existing research"}';
+  try {
+    const databasePath = join(root, 'runtime.sqlite');
+    await restoreV016Database(databasePath);
+    const legacy = new DatabaseSync(databasePath);
+    try {
+      legacy.exec('DELETE FROM automation_pending_fires; DELETE FROM automation_definitions');
+      legacy
+        .prepare(`
+        INSERT INTO workflow_deep_research_events(session_id, sequence, event_id, record_json)
+        VALUES ('legacy-research', 0, 'start', ?)
+      `)
+        .run(record);
+    } finally {
+      legacy.close();
+    }
+
+    acquireOperationalStateDatabase(root).close();
+    await mkdir(restoredRoot);
+    for (const stateRoot of [root, restoredRoot]) {
+      const lease = acquireOperationalStateDatabase(stateRoot, {
+        schemaMigration: 'require_current',
+      });
+      try {
+        const row = lease.database
+          .prepare(`
+          SELECT record_json FROM workflow_deep_research_events
+          WHERE session_id = 'legacy-research' AND event_id = 'start'
+        `)
+          .get();
+        assert.equal(row?.record_json, record);
+        if (stateRoot === root) await lease.backup(join(restoredRoot, 'runtime.sqlite'));
+      } finally {
+        lease.close();
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('migrates released Reminder state after Automation is retired', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-'));
   try {
     const databasePath = join(root, 'runtime.sqlite');
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     const legacy = new DatabaseSync(databasePath);
     legacy.exec('DELETE FROM automation_pending_fires; DELETE FROM automation_definitions');
     legacy.close();
@@ -916,7 +960,7 @@ test('finishes a released cleanup backfill interrupted after adding its column',
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-interrupted-cleanup-'));
   const databasePath = join(root, 'runtime.sqlite');
   try {
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
       DELETE FROM automation_pending_fires;
@@ -944,7 +988,7 @@ test('leaves released Automation unchanged when its configuration cannot be pres
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-automation-'));
   const databasePath = join(root, 'runtime.sqlite');
   try {
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     assert.throws(() => acquireOperationalStateDatabase(root), /cannot be migrated without losing/);
     const preserved = new DatabaseSync(databasePath, { readOnly: true });
     assert.equal(
@@ -967,7 +1011,7 @@ test('rejects legacy Automation tables without their registry authority', async 
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-missing-automation-scope-'));
   const databasePath = join(root, 'runtime.sqlite');
   try {
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     const legacy = new DatabaseSync(databasePath);
     legacy.exec("DELETE FROM operational_schema_migrations WHERE scope = 'automation'");
     legacy.close();
@@ -988,7 +1032,7 @@ test('rejects a released Workflow registry whose reminder table is missing', asy
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-v016-missing-reminders-'));
   const databasePath = join(root, 'runtime.sqlite');
   try {
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
       DROP TABLE workflow_plan_reminders;
@@ -1147,7 +1191,7 @@ test('cleans the known removed Automation v2 scope', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-automation-v2-'));
   const databasePath = join(root, 'runtime.sqlite');
   try {
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
       DELETE FROM automation_pending_fires;
@@ -1174,7 +1218,7 @@ test('leaves an oversized released scheduling catalog unchanged', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-oversized-catalog-'));
   const databasePath = join(root, 'runtime.sqlite');
   try {
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
       WITH RECURSIVE sequence(value) AS (
@@ -1221,7 +1265,7 @@ test('does not classify a SQLite write failure as a migration blocker', {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-readonly-'));
   const databasePath = join(root, 'runtime.sqlite');
   try {
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
       DELETE FROM automation_pending_fires;
@@ -1524,11 +1568,17 @@ function createLegacyImportSourceTables(database: DatabaseSync): void {
   `);
 }
 
-async function copyV016Database(databasePath: string): Promise<void> {
-  await copyFile(
-    new URL('../../test-fixtures/v0.1.6-operational-state/runtime.sqlite', import.meta.url),
-    databasePath,
+async function restoreV016Database(databasePath: string): Promise<void> {
+  const sql = await readFile(
+    new URL('../../test-fixtures/v0.1.6-operational-state/runtime.sql', import.meta.url),
+    'utf8',
   );
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec(sql);
+  } finally {
+    database.close();
+  }
 }
 
 async function assertReleasedReminderRejected(
@@ -1540,7 +1590,7 @@ async function assertReleasedReminderRejected(
   const root = await mkdtemp(join(tmpdir(), `maka-operational-v016-${name}-`));
   const databasePath = join(root, 'runtime.sqlite');
   try {
-    await copyV016Database(databasePath);
+    await restoreV016Database(databasePath);
     const database = new DatabaseSync(databasePath);
     const stored = database.prepare('SELECT record_json FROM workflow_plan_reminders').get() as {
       record_json: string;

@@ -19,7 +19,7 @@
 
 import { resolveUsageRange } from "@maka/core/model-call-usage-projection";
 import { tryResult } from "@maka/core/result";
-import type { UsageRange, UsageStats, UsageScreenQuery, UsageScreenFailure, UsageScreenRequest } from "@maka/core/settings";
+import type { UsageRange, UsageStats, UsageScreenQuery, UsageScreenFailure } from "@maka/core/settings";
 import {
   normalizePricingConfig,
   normalizePricingModelKey,
@@ -30,6 +30,7 @@ import type {
   UsageQuery,
 } from "@maka/core/usage-stats/types";
 import {
+  decodeUsageQueryInput,
   USAGE_PAGE_MAX_ITEMS,
 } from "@maka/runtime-host/protocol";
 import {
@@ -65,8 +66,10 @@ export function registerRuntimeHostUsageIpc(
     (_event, range: UsageRange = "24h", query?: UsageScreenQuery) =>
       loadUsageStats(deps.client, normalizeUsageRange(range), query),
   );
-  handleReconnectableRead(deps.ipcMain, "usage:activity", async (_event, input: Extract<UsageScreenRequest, {kind: "activity"}>) => {
-    const result = await deps.client.queryUsage(input);
+  handleReconnectableRead(deps.ipcMain, "usage:activity", async (_event, input: unknown) => {
+    const request = decodeUsageQueryInput(input);
+    if (request.kind !== "activity") throw invalidUsageProjection();
+    const result = await deps.client.queryUsage(request);
     if (result.kind !== "activity" && result.kind !== "revision_changed" && result.kind !== "screen_response_too_large") throw invalidUsageProjection();
     return result;
   });

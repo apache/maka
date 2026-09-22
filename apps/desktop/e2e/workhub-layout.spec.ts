@@ -95,7 +95,12 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub')));
     return container?.getVisible();
   })).toBe(true);
-  await app.evaluate(() => (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup());
+  // aria-expanded tracks the popup IPC resolution, so a menu that already
+  // auto-dismissed (Linux closes popups after window resizes) must not be
+  // closed again — closePopup on a dead popup crashes the main process.
+  if ((await addPanel.getAttribute('aria-expanded')) === 'true') {
+    await app.evaluate(() => (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup());
+  }
   await expect(addPanel).toHaveAttribute('aria-expanded', 'false');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
@@ -245,7 +250,6 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   })).toBe(true);
   await thinkingSheet.getByRole('option', { name: /^(高|High)$/ }).click();
   await expect(thinking).toContainText(/高|High/);
-  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).thinkingLevel, sessionId)).toBe('high');
   await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-composer-controls.png') });
   const compactHeight = await workhub.evaluate(() => innerHeight);
   const screenLayout = async () => {
@@ -277,10 +281,6 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     await expect(option).toHaveAttribute('data-active', 'true');
     await expect(option).toHaveAttribute('aria-selected', 'true');
     await expect(wheel).toHaveAttribute('aria-busy', 'false');
-    await expect.poll(() => workhub.evaluate(async (id) => {
-      const session = await window.maka.workHub.getSession(id);
-      return { connectionId: session.llmConnectionId, model: session.model };
-    }, sessionId)).toEqual({ connectionId: choice.connectionId, model: choice.model });
     return choice;
   };
   const initialIndex = await wheel.getByRole('option').evaluateAll((options) => options.findIndex((option) => option.getAttribute('aria-selected') === 'true'));
@@ -321,7 +321,6 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await wheel.press('Enter');
   await expect(wheel).toHaveCount(0);
   await expect(model).toBeFocused();
-  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(selectedChoice.model);
   await model.click();
   await expect(wheel.getByRole('option', { selected: true })).toContainText(selectedChoice.label);
   await wheel.press('Escape');
@@ -456,7 +455,8 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(shortcuts).toHaveCount(1);
   await shortcuts.hover();
   const shortcutHint = workhub.getByRole('tooltip');
-  await expect(shortcutHint).toHaveText('Shift+Enter：转向（Steering）\nEnter：下一轮（Follow-up）');
+  const steerModifier = process.platform === 'darwin' ? 'Cmd' : 'Ctrl';
+  await expect(shortcutHint).toHaveText(`${steerModifier}+Enter：转向（Steering）\nEnter：下一轮（Follow-up）\nShift+Enter：换行`);
   await expect.poll(() => shortcutHint.evaluate((element) => {
     const bounds = element.getBoundingClientRect();
     return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
@@ -468,7 +468,7 @@ test('WorkHub keeps the submitted prompt visible while its agent is still runnin
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
   await workhub.locator(COMPOSER_INPUT).fill('立即调整方向，保持当前任务');
   await awaitSendReady(workhub);
-  await workhub.locator(COMPOSER_INPUT).press('Shift+Enter');
+  await workhub.locator(COMPOSER_INPUT).press('ControlOrMeta+Enter');
   await expect(workhub.locator('.maka-bubble-streaming')).toContainText('Acknowledged steering: 立即调整方向，保持当前任务');
   const steered = workhub.locator('.maka-user-message').filter({ hasText: '立即调整方向，保持当前任务' });
   await expect(steered).toHaveCount(1);

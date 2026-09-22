@@ -45,10 +45,10 @@ function sessionRow(sidebar: Locator, sessionId: string): Locator {
 }
 
 async function steerActiveTurn(composer: Locator, text: string): Promise<void> {
-  // Mid-turn steering is Shift+Enter: the one Send stays Send, and the shifted
+  // Mid-turn steering is Cmd/Ctrl+Enter: Send stays Send, and the modified
   // submit hands the draft to the active Turn once.
   await composer.fill(text);
-  await composer.press('Shift+Enter');
+  await composer.press('ControlOrMeta+Enter');
 }
 
 test('ordinary Enter queues on an already-running Session before observation recovers', async ({ window: page }) => {
@@ -235,7 +235,7 @@ test('returning to a live conversation settles output accumulated while away', a
     'Fake backend received: temporary second conversation',
     { timeout: 20_000 },
   );
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, {
     timeout: 20_000,
   });
   const backgroundSteering = 'background output accumulated while away';

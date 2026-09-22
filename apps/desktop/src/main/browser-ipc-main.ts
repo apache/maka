@@ -22,7 +22,7 @@ import { isWorkHubCoordinationSessionId } from '@maka/core/session';
 import { createBrowserViewHost } from './browser/automation-host.js';
 import { provideBrowserViewHost } from './browser/browser-host.js';
 import { releaseBrowserSession, revokeHiddenBrowserActions } from './browser/session.js';
-import type { BrowserViewRect } from './browser/logic.js';
+import { type BrowserViewRect, viewportBoundsAtScale } from './browser/logic.js';
 import type { createMainWindowController } from './main-window.js';
 import {
   desktopSessionResourceKey,
@@ -46,6 +46,8 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     documentId?: string;
     generation: number;
     sessionId: string | null;
+    /** Last renderer CSS-pixel rect, retained so native bounds follow zoom changes. */
+    viewport: BrowserViewRect | null;
   }
 
   const selections = new Map<Electron.WebContents, RendererSelection>();
@@ -86,6 +88,34 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     revokeHiddenBrowserActions((sessionId) => isSessionShown(sessionId) || canRunInBackground(sessionId));
   };
 
+  const applyViewport = (
+    contents: Electron.WebContents,
+    selection: RendererSelection,
+    options: { reparent: boolean },
+  ): void => {
+    const sessionId = selection.sessionId;
+    if (!sessionId) return;
+    const view = views.get(sessionId);
+    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    if (!view || !parent) return;
+    if (!selection.viewport) {
+      if (view.hasParent(parent)) view.park();
+      return;
+    }
+    // getBoundingClientRect reports renderer CSS px, while native View bounds
+    // use window DIP. They are equal only at 100% renderer zoom.
+    const bounds = viewportBoundsAtScale(selection.viewport, contents.getZoomFactor());
+    if (!bounds) {
+      if (view.hasParent(parent)) view.setViewport(null);
+      return;
+    }
+    // A zoom event from a renderer that no longer presents a shared page must
+    // not steal it back from its current native parent.
+    if (!options.reparent && !view.hasParent(parent)) return;
+    if (options.reparent) view.setParent(parent);
+    view.setViewport(bounds);
+  };
+
   const relinquishSession = (contents: Electron.WebContents): void => {
     const selection = selections.get(contents);
     const sessionId = selection?.sessionId;
@@ -93,6 +123,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const view = views.get(sessionId);
     const parent = deps.mainWindowController.browserParentForRenderer(contents);
     selection.sessionId = null;
+    selection.viewport = null;
     if (view && parent && view.hasParent(parent)) {
       view.park();
     }
@@ -116,11 +147,16 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
         if (view?.hasParent(parent) && !view.hasOwner(parent)) view.park();
       }
     };
+    const syncZoomedViewport = () => {
+      const selection = selections.get(contents);
+      if (selection?.viewport) applyViewport(contents, selection, { reparent: false });
+    };
     window?.on('close', parkPresentedPages);
     window?.on('hide', revokeHiddenActions);
     window?.on('minimize', revokeHiddenActions);
     window?.on('show', revokeHiddenActions);
     window?.on('restore', revokeHiddenActions);
+    contents.on('zoom-changed', syncZoomedViewport);
     contents.on('render-process-gone', () => clearRendererSelection(contents));
     contents.once('destroyed', () => {
       window?.removeListener('close', parkPresentedPages);
@@ -128,6 +164,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       window?.removeListener('minimize', revokeHiddenActions);
       window?.removeListener('show', revokeHiddenActions);
       window?.removeListener('restore', revokeHiddenActions);
+      contents.removeListener('zoom-changed', syncZoomedViewport);
       const owned = views.sessionIds().filter((sessionId) =>
         parent && views.get(sessionId)?.hasOwner(parent),
       );
@@ -201,13 +238,16 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const previousOwner = sessionId ? ownerForSession(sessionId) : undefined;
     if (previousOwner && previousOwner !== contents && (!isCoordination(sessionId!) ||
       deps.mainWindowController.isMainRenderer(previousOwner) === deps.mainWindowController.isMainRenderer(contents))) return;
-    if (selection.sessionId && selection.sessionId !== sessionId) relinquishSession(contents);
+    const changed = selection.sessionId !== sessionId;
+    if (selection.sessionId && changed) relinquishSession(contents);
     if (!sessionId) {
       selection.sessionId = null;
+      selection.viewport = null;
       revokeHiddenActions();
       return;
     }
     selection.sessionId = sessionId;
+    if (changed) selection.viewport = null;
     if (isCoordination(sessionId) && !deps.mainWindowController.isMainRenderer(contents)) {
       const parent = deps.mainWindowController.browserParentForRenderer(contents);
       if (parent) views.get(sessionId)?.setOwner(parent);
@@ -235,7 +275,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const selection = selections.get(contents);
     if (documentId === selection?.documentId) return;
     relinquishSession(contents);
-    selections.set(contents, { documentId, generation: 0, sessionId: null });
+    selections.set(contents, { documentId, generation: 0, sessionId: null, viewport: null });
     revokeHiddenActions();
   });
 
@@ -267,15 +307,10 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       return;
     }
     if (!target) return;
-    const view = views.get(target);
-    const parent = deps.mainWindowController.browserParentForRenderer(contents);
-    if (!view || !parent) return;
-    if (input.rect) {
-      view.setParent(parent);
-      view.setViewport(input.rect);
-    } else if (view.hasParent(parent)) {
-      view.park();
-    }
+    const selection = selections.get(contents);
+    if (!selection) return;
+    selection.viewport = input?.rect ?? null;
+    applyViewport(contents, selection, { reparent: true });
   });
 
   ipcMain.handle('browser:capture-page', (event, scope: unknown, target: unknown) => {

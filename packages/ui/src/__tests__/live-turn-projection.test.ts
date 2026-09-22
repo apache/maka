@@ -282,6 +282,7 @@ describe('applyLiveTurnEvent', () => {
       text: '完整思考',
       truncated: false,
       complete: true,
+      sourceEndOffset: 4,
     });
   });
 
@@ -710,13 +711,14 @@ describe('reconcileTerminalLiveTurn', () => {
 
   it('keeps terminal live steering until the terminal transcript catches up', () => {
     const message = { id: 'steer-1', content: { text: 'change direction' }, ts: 2 };
+    const boundary = { stepId: 'steering:steer-1', tools: [], steering: message };
     const withSteering: LiveTurnProjection = {
       ...toolOnly,
-      steps: [{ ...toolOnly.steps[0]!, leadingSteering: [message] }],
+      steps: [...toolOnly.steps, boundary],
     };
 
     assert.equal(reconcileTerminalLiveTurn(withSteering, []), withSteering);
-    const steeringOnly = { ...withSteering, steps: [] };
+    const steeringOnly = { ...toolOnly, steps: [boundary] };
     assert.equal(reconcileTerminalLiveTurn(steeringOnly, []), steeringOnly);
     assert.deepEqual(reconcileTerminalLiveTurn(withSteering, [{
       type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
@@ -735,7 +737,7 @@ describe('reconcileTerminalLiveTurn', () => {
     });
 
     assert.equal(aborted?.terminal, true);
-    assert.deepEqual(aborted?.pendingSteering, [message]);
+    assert.deepEqual(aborted?.steps[0]?.steering, message);
   });
 
   it('retains interrupted live output until a persisted result covers it', () => {

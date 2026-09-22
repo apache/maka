@@ -5,8 +5,11 @@ apps/desktop/src/renderer/app-shell-overlays.tsx
 apps/desktop/src/renderer/app-shell.tsx
 apps/desktop/src/renderer/app.tsx
 apps/desktop/src/renderer/application/contracts/feature-services.tsx
+apps/desktop/src/renderer/application/contracts/session-catalog/catalog-row-watch.tsx
+apps/desktop/src/renderer/application/contracts/session-catalog/catalog-sessions.tsx
 apps/desktop/src/renderer/application/contracts/session-inspector/session-inspector-panel.tsx
 apps/desktop/src/renderer/application/contracts/settings-presentation/runtime-host-settings-target.tsx
+apps/desktop/src/renderer/application/contracts/settings-presentation/settings-navigation.tsx
 apps/desktop/src/renderer/application/contracts/settings-presentation/settings-route-header.tsx
 apps/desktop/src/renderer/application/contracts/settings-presentation/settings-section.tsx
 apps/desktop/src/renderer/application/contracts/workbar-edge-toggle.tsx
@@ -21,7 +24,8 @@ apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/app-update/services-context.tsx
 apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx
-apps/desktop/src/renderer/features/connection-settings/commandcode-browser-login-section.tsx
+apps/desktop/src/renderer/features/client-plugins/client-plugin-root.tsx
+apps/desktop/src/renderer/features/client-plugins/services-context.tsx
 apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx
@@ -30,6 +34,7 @@ apps/desktop/src/renderer/features/connection-settings/services-context.tsx
 apps/desktop/src/renderer/features/conversation/controller/live-turn-reconciler.tsx
 apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx
 apps/desktop/src/renderer/features/conversation/controller/transcript-reading-position-controller.tsx
+apps/desktop/src/renderer/features/conversation/ui/composer-mentions-provider.tsx
 apps/desktop/src/renderer/features/external-agent-settings/page.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
@@ -49,6 +54,7 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-add-computer-menu.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-button.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-dialog.tsx
+apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-handoff-overlay.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-resource-dialog.tsx
@@ -165,7 +171,6 @@ apps/desktop/src/renderer/styles/composer-mention.css
 apps/desktop/src/renderer/styles/composer.css
 apps/desktop/src/renderer/styles/custom-pet-companion.css
 apps/desktop/src/renderer/styles/daily-review.css
-apps/desktop/src/renderer/styles/deep-research.css
 apps/desktop/src/renderer/styles/desktop-assistant.css
 apps/desktop/src/renderer/styles/error.css
 apps/desktop/src/renderer/styles/help.css
@@ -229,6 +234,8 @@ packages/ui/src/chat-turn.tsx
 packages/ui/src/chat-view.tsx
 packages/ui/src/choice-panel.tsx
 packages/ui/src/client-capability-prompt.tsx
+packages/ui/src/client-plugin-runtime.tsx
+packages/ui/src/client-plugin-slots.tsx
 packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer.tsx
@@ -249,6 +256,7 @@ packages/ui/src/model-picker.tsx
 packages/ui/src/model-wheel-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
+packages/ui/src/new-project-dialog.tsx
 packages/ui/src/permission-mode-menu.tsx
 packages/ui/src/platform-shortcut-text.tsx
 packages/ui/src/primitives/chat.tsx

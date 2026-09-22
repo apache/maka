@@ -43,6 +43,11 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
       listMessages: async () => messages,
       subscribeChanges: (handler) => { changed = handler; return () => {}; },
       cancelMessage: async () => {}, reconcileMessage: async () => {},
+      sessions: { readSnapshot: async () => { throw new Error('unexpected snapshot read'); } },
+      skills: { listInvocable: async () => [] },
+      workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
+      newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
+      mcp: { subscribeChanges: () => () => {} },
     }, children: createElement(SessionLocalMessages, {
       sessionId: 'session-1',
       publish: (_id, message) => { transient.set(message.id, message); },

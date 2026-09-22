@@ -9,6 +9,10 @@
       "tests": 1,
       "electron": "the folder reference has to survive a renderer reload and still agree with the Host's session record"
     },
+    "composer-session-reference.spec.ts": {
+      "tests": 1,
+      "electron": "the referenced transcript snapshot crosses renderer, preload, main process, and Runtime Host boundaries before the staged quote can be sent"
+    },
     "expected-failure-feedback.spec.ts": {
       "tests": 2,
       "electron": "WorkHub attachment rejection crosses a native file dialog, preload and main; Session settings and Plan failures must preserve their codes through a real contextBridge IPC round trip"
@@ -55,11 +59,7 @@
     },
     "side-chat-followups.spec.ts": {
       "tests": 1,
-      "electron": "queue mutations and successive Side Chat Turns cross renderer/preload/main/Host; native dragging must pass the main-window drop guard and Host reconnect must restore the live fork without remounting it"
-    },
-    "skill-draft-lifecycle.spec.ts": {
-      "tests": 2,
-      "electron": "revision retry and cancel are Host-owned draft transitions across a parent and a child Session"
+      "electron": "native queue dragging must pass the main-window drop guard, queued follow-ups drain in order across real Host turn handoffs, and closing the Desktop transport while an external client drives the fork exercises observation reseed without remount"
     },
     "slash-command-compact.spec.ts": {
       "tests": 1,

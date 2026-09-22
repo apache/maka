@@ -39,6 +39,7 @@ import {
   requireRecord,
   requireShapedRecord,
   requireString,
+  requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
@@ -499,6 +500,34 @@ export function decodeConnectionTestRunResult(value: unknown): ConnectionTestRun
     };
   }
   return decodeNonEffectResult(result, 'connection test result');
+}
+
+function optionalText(value: unknown, label: string): string | null {
+  return value === null ? null : requireUtf8String(value, label, 256);
+}
+
+function optionalCount(value: unknown, label: string): number | null {
+  return value === null ? null : requireCount(value, label);
+}
+
+function requireAmount(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  return value;
+}
+
+function optionalAmount(value: unknown, label: string): number | null {
+  return value === null ? null : requireAmount(value, label);
+}
+
+function optionalMillis(value: unknown, label: string): number | null {
+  return value === null ? null : requireCount(value, label);
+}
+
+function requireBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') throw invalidProtocolFrame(`Invalid ${label}`);
+  return value;
 }
 
 function decodeConnectionTestProjection(value: unknown): ConnectionTestProjection {

@@ -178,7 +178,8 @@ export const Default: Story = {
 
 // Real path: an existing conversation -> composer footer model control. The
 // cache notice belongs inside this picker's open decision surface; the resting
-// trigger and the new-chat picker below stay quiet.
+// trigger and the new-chat picker below stay quiet. Activating the notice row
+// acknowledges it for the Session and leaves the list open.
 export const ExistingConversation: Story = {
   render: function ExistingConversationRender() {
     const [activeChoice, setActiveChoice] = useState(CHOICES[4]!);
@@ -219,23 +220,41 @@ export const ExistingConversation: Story = {
     const warning = english
       ? 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.'
       : '切换模型可能需要重建服务商提示缓存，使下一次请求更慢或成本更高。';
-    const trigger = within(canvasElement).getByRole('button', {
-      name: /切换当前任务模型|Switch model for this task/,
-    });
+    // The row's accessible name is the warning plus its "select to dismiss" line.
+    const noticeName = (name: string) => name.startsWith(warning);
+    const triggerName = /切换当前任务模型|Switch model for this task/;
+    const trigger = () => within(canvasElement).getByRole('button', { name: triggerName });
+    const body = within(document.body);
 
-    await userEvent.click(trigger);
-    // The cache warning leads the open list as a disabled row, announced by its
-    // option text — reachable but never pickable.
-    const warningRow = await within(document.body).findByRole('option', { name: warning });
-    await expect(warningRow).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(trigger());
+    // The cache notice leads the open list as a regular row, announced by its
+    // option text — reachable, and activating it is the acknowledgement.
+    const notice = await body.findByRole('option', { name: noticeName });
+    await expect(notice).not.toHaveAttribute('aria-disabled', 'true');
 
     await userEvent.keyboard('{Escape}');
-    // Closing restores focus to the same trigger next frame.
-    await waitFor(() => expect(within(canvasElement).getByRole('button', {
-      name: /切换当前任务模型|Switch model for this task/,
-    })).toHaveFocus());
+    // Closing restores focus to the same trigger next frame, and is not an
+    // acknowledgement: the notice is back on reopen.
+    await waitFor(() => expect(trigger()).toHaveFocus());
     await userEvent.keyboard('{ArrowDown}');
-    await within(document.body).findByRole('option', { name: warning });
+    await body.findByRole('option', { name: noticeName });
+    // Opening with ArrowDown highlights the first row, the notice; Enter on it
+    // is the keyboard acknowledgement (a click on the row is the pointer one).
+    await userEvent.keyboard('{Enter}');
+
+    // Acknowledged: the list is open again without the notice, the model rows
+    // are still there, and nothing was switched.
+    await waitFor(() => expect(trigger()).toHaveAttribute('aria-expanded', 'true'));
+    await body.findByRole('option', { name: /Claude Sonnet 4/ });
+    await expect(body.queryByRole('option', { name: noticeName })).toBeNull();
+    await expect(trigger()).toHaveTextContent('Claude Sonnet 4');
+
+    // The acknowledgement holds for the Session across close and reopen.
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(trigger()).toHaveFocus());
+    await userEvent.keyboard('{ArrowDown}');
+    await body.findByRole('option', { name: /Claude Sonnet 4/ });
+    await expect(body.queryByRole('option', { name: noticeName })).toBeNull();
   },
 };
 

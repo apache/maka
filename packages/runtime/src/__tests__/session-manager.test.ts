@@ -61,7 +61,6 @@ import {
   createWorkspaceWritePermissionProfile,
   isReadOnlyPermissionProfile,
 } from '@maka/core/permission-profile';
-import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/deep-research';
 import { RUNTIME_CONTINUATION_AUTHORITY_V1 } from '@maka/core/runtime-event-store';
 import { deriveTurnRecords } from '@maka/core/session';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -2836,6 +2835,43 @@ describe('SessionManager child-session runtime primitive', () => {
 
     parentGate.release();
     while (!(await parentTurn.next()).done) {}
+  });
+
+  test('tells callers to retry when a subagent preset profile changes during spawn', async () => {
+    const manager = new SessionManager({
+      store: new MemorySessionStore(),
+      backends: new BackendRegistry(),
+      subagentCatalog: {
+        list: async () => [],
+        resolve: async (id) => ({
+          connectionId: '33333333-3333-4333-8333-333333333333',
+          id,
+          name: 'Changed preset',
+          description: 'Changed while spawning',
+          profile: IMPLEMENTATION_AGENT_DEFINITION.profile,
+          connectionSlug: 'worker-connection',
+          model: 'worker-model',
+          thinkingLevel: 'low',
+          enabled: true,
+        }),
+      },
+      newId: nextId(),
+      now: nextNow(150),
+    });
+
+    await expectRejects(
+      manager.spawnChildSession('parent-session', {
+        spawnedBy: {
+          parentRunId: 'parent-run',
+          parentTurnId: 'parent-turn',
+          toolCallId: 'tool-call-preset-race',
+        },
+        agentProfile: LOCAL_READ_AGENT_PROFILE,
+        subagentId: 'changed-preset',
+        prompt: 'inspect cheaply',
+      }),
+      /profile changed during spawn\. Retry the same agent_spawn call\./,
+    );
   });
 
   test('child sessions preserve an explicit no-project association', async () => {
@@ -5696,7 +5732,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(summary.permissionMode, 'bypass');
   });
 
-  test('the setPermissionMode wrapper delegates deep research cleanup to configuration authority', async () => {
+  test('legacy research Sessions stay read-only after restart until explicitly changed', async () => {
     const store = new VersionedConfigurationMemorySessionStore();
     const backends = new BackendRegistry();
     backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
@@ -5704,15 +5740,33 @@ describe('SessionManager permission mode updates', () => {
     const session = await manager.createSession(
       makeInput({
         permissionMode: 'explore',
-        labels: [DEEP_RESEARCH_SESSION_LABEL, 'kept'],
+        labels: ['mode:deep_research', 'kept'],
       }),
     );
 
-    const summary = await manager.setPermissionMode(session.id, 'ask');
+    const boundaryBeforeRestart = await manager.readExecutionBoundary(session.id);
+    const restarted = new SessionManager({
+      store,
+      backends,
+      newId: nextId('restarted'),
+      now: nextNow(6_100),
+    });
+    await drain(
+      restarted.sendMessage(session.id, {
+        turnId: 'legacy-follow-up',
+        text: 'Read the existing report',
+      }),
+    );
+    assert.equal((await store.readHeader(session.id)).permissionMode, 'explore');
+    assert.deepEqual(await restarted.readExecutionBoundary(session.id), boundaryBeforeRestart);
+    const summary = await restarted.setPermissionMode(session.id, 'ask');
 
     assert.strictEqual(summary.permissionMode, 'ask');
-    assert.deepStrictEqual(summary.labels, ['kept']);
-    assert.deepStrictEqual((await store.readHeader(session.id)).labels, ['kept']);
+    assert.deepStrictEqual(summary.labels, ['mode:deep_research', 'kept']);
+    assert.deepStrictEqual((await store.readHeader(session.id)).labels, [
+      'mode:deep_research',
+      'kept',
+    ]);
   });
 
   test('temporarily preserves setPermissionMode for legacy SessionStore implementations', async () => {
@@ -10057,182 +10111,6 @@ describe('SessionManager permission mode updates', () => {
         'assistant:fast:104',
         'turn_state:fast:105',
       ],
-    );
-  });
-
-  test('regenerate finds completed source turns through the RuntimeEvent-primary view', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const backends = new BackendRegistry();
-    backends.register(
-      'ai-sdk',
-      (ctx) => new EventBackend(ctx, [{ type: 'complete', stopReason: 'end_turn' }]),
-    );
-    const manager = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      newId: nextId(),
-      now: nextNow(6_770),
-    });
-    const session = await manager.createSession(makeInput());
-    await seedRuntimeReadTurn({
-      store,
-      runStore,
-      sessionId: session.id,
-      turnId: 'source',
-      runId: 'source-run',
-      userText: 'runtime regenerate text',
-      assistantText: 'runtime answer',
-      legacyIdPrefix: 'legacy',
-      legacyUserText: 'stale transcript text',
-    });
-
-    await drain(manager.regenerateTurn(session.id, { sourceTurnId: 'source', turnId: 'regen-1' }));
-
-    const messages = await manager.getMessages(session.id);
-    const regenUser = messages.find(
-      (message) => message.type === 'user' && message.turnId === 'regen-1',
-    );
-    assert.strictEqual(
-      regenUser?.type === 'user' ? regenUser.text : undefined,
-      'runtime regenerate text',
-    );
-    const regenState = deriveTurnRecords(messages).find((turn) => turn.turnId === 'regen-1');
-    assert.strictEqual(regenState?.regeneratedFromTurnId, 'source');
-  });
-
-  test('regenerate is stop-visible during its first source-ledger preflight', async () => {
-    const preflightStarted = makeGate();
-    const releasePreflight = makeGate();
-    let gatePreflight = false;
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore({
-      beforeListSessionRuns: async () => {
-        if (!gatePreflight) return;
-        gatePreflight = false;
-        preflightStarted.release();
-        await releasePreflight.promise;
-      },
-    });
-    const backends = new BackendRegistry();
-    let backend: TestBackend | undefined;
-    backends.register('ai-sdk', (ctx) => {
-      backend = new TestBackend(ctx);
-      return backend;
-    });
-    const manager = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      newId: nextId(),
-      now: nextNow(6_775),
-    });
-    const session = await manager.createSession(makeInput());
-    await seedRuntimeReadTurn({
-      store,
-      runStore,
-      sessionId: session.id,
-      turnId: 'source',
-      runId: 'source-run',
-      userText: 'do not regenerate after stop',
-      assistantText: 'source answer',
-      legacyIdPrefix: 'legacy-stop',
-    });
-
-    gatePreflight = true;
-    const regenerating = manager
-      .regenerateTurn(session.id, {
-        sourceTurnId: 'source',
-        turnId: 'regen-stopped-preflight',
-      })
-      [Symbol.asyncIterator]();
-    const firstEvent = regenerating.next();
-    await preflightStarted.promise;
-    let stopSettled = false;
-    const stopping = manager.stopSession(session.id, { source: 'stop_button' }).finally(() => {
-      stopSettled = true;
-    });
-    await Promise.resolve();
-    assert.strictEqual(stopSettled, false);
-
-    releasePreflight.release();
-    await stopping;
-    assert.strictEqual((await firstEvent).done, true);
-    assert.deepStrictEqual(backend?.sendInputs, []);
-    const regenerated = (await runStore.listSessionInvocations(session.id)).find(
-      (run) => run.turnId === 'regen-stopped-preflight',
-    );
-    assert.strictEqual(regenerated && runtimeInvocationOutcome(regenerated), 'cancelled');
-    assert.strictEqual((await store.readHeader(session.id)).status === 'blocked', false);
-  });
-
-  test('regenerate accepts an aborted source turn (retry semantics merged into regenerate)', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const backends = new BackendRegistry();
-    backends.register(
-      'ai-sdk',
-      (ctx) => new EventBackend(ctx, [{ type: 'complete', stopReason: 'end_turn' }]),
-    );
-    const manager = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      newId: nextId(),
-      now: nextNow(6_780),
-    });
-    const session = await manager.createSession(makeInput());
-    await seedRuntimeRun(
-      runStore,
-      makeRunHeader({
-        sessionId: session.id,
-        runId: 'source-run',
-        turnId: 'source',
-        status: 'cancelled',
-        createdAt: 100,
-        updatedAt: 102,
-        completedAt: 102,
-      }),
-      [
-        runtimeEvent({
-          id: 'source-user',
-          sessionId: session.id,
-          runId: 'source-run',
-          turnId: 'source',
-          ts: 101,
-          role: 'user',
-          author: 'user',
-          content: { kind: 'text', text: 'aborted turn text' },
-        }),
-        runtimeEvent({
-          id: 'source-abort',
-          sessionId: session.id,
-          runId: 'source-run',
-          turnId: 'source',
-          ts: 102,
-          role: 'system',
-          author: 'system',
-          status: 'aborted',
-          actions: { endInvocation: true, stateDelta: { abortSource: 'renderer.stop_button' } },
-        }),
-      ],
-    );
-    // The transcript store holds no source rows at all, so what regenerate
-    // finds can only have come from the ledger.
-    await drain(
-      manager.regenerateTurn(session.id, { sourceTurnId: 'source', turnId: 'regen-aborted' }),
-    );
-
-    const regenUser = (await manager.getMessages(session.id)).find(
-      (message) => message.type === 'user' && message.turnId === 'regen-aborted',
-    );
-    assert.strictEqual(
-      regenUser?.type === 'user' ? regenUser.text : undefined,
-      'aborted turn text',
     );
   });
 

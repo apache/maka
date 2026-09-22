@@ -31,7 +31,6 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { type ModelOverride } from '@maka/core/model-thinking';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -63,6 +62,7 @@ import {
   HostSessionCatalogCoordinator,
   NoUsableImportModelError,
   SessionOperationFailure,
+  WorkHubDefaultModelRequiredError,
   type HostSessionCatalogCoordinatorOptions,
 } from '../server/session-catalog-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
@@ -263,7 +263,7 @@ test('read marker pages past a hidden tail to reach the newest visible message',
 
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
   const fixture = createFixture({
-    labels: ['old-user-label', DEEP_RESEARCH_SESSION_LABEL],
+    labels: ['old-user-label', 'mode:deep_research'],
     manager: {
       runningTurnIds: () => ['turn-live'],
     },
@@ -274,7 +274,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
       sessionId: fixture.sessionId,
       expectedRevision: fixture.revision(),
       patch: {
-        labels: ['new-user-label', DEEP_RESEARCH_SESSION_LABEL],
+        labels: ['new-user-label', 'mode:deep_research'],
       },
     },
     context,
@@ -287,7 +287,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
   if ('kind' in outcome.result.session) {
     assert.fail('Metadata replacement returned an unsupported Session projection');
   }
-  assert.deepEqual(outcome.result.session.labels, ['new-user-label', DEEP_RESEARCH_SESSION_LABEL]);
+  assert.deepEqual(outcome.result.session.labels, ['new-user-label', 'mode:deep_research']);
   assert.equal(Object.hasOwn(outcome.result.session, 'liveRunState'), false);
   assert.equal(fixture.drainRequests(), 0);
 });
@@ -546,7 +546,7 @@ test('creation rejects reserved execution labels before claiming a Session ident
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      labels: [DEEP_RESEARCH_SESSION_LABEL],
+      labels: ['mode:deep_research'],
       modelTarget: { kind: 'default' },
     },
     context,
@@ -789,6 +789,93 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(persistedConnectionId, 'connection-1');
 });
 
+test("creation applies the selected model's configured thinking default", async () => {
+  let persistedThinkingLevel: unknown;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'openai-compatible',
+      enabledModelIds: ['relay-model'],
+      models: [{ id: 'relay-model' }],
+      modelOverrides: {
+        'relay-model': {
+          thinkingLevels: ['low', 'high'],
+          defaultThinkingLevel: 'high',
+        },
+      },
+    },
+    stores: {
+      createStableSession: async (args) => {
+        persistedThinkingLevel = args.input.thinkingLevel;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(persistedThinkingLevel, 'high');
+});
+
+test('creation can explicitly bypass a configured model thinking default', async () => {
+  let persistedThinkingLevel: unknown = 'not-called';
+  const fixture = createFixture({
+    connection: {
+      providerType: 'openai-compatible',
+      enabledModelIds: ['relay-model'],
+      models: [{ id: 'relay-model' }],
+      modelOverrides: {
+        'relay-model': {
+          thinkingLevels: ['low', 'high'],
+          defaultThinkingLevel: 'high',
+        },
+      },
+    },
+    stores: {
+      createStableSession: async (args) => {
+        persistedThinkingLevel = args.input.thinkingLevel;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
+      thinkingLevel: null,
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(persistedThinkingLevel, undefined);
+});
+
 test('plugin executor creation bypasses model resolution and persists the executor route', async () => {
   let persistedInput: Parameters<CatalogStores['createStableSession']>[0]['input'] | undefined;
   const externalHeader = (sessionId: string): SessionHeader => {
@@ -798,7 +885,7 @@ test('plugin executor creation bypasses model resolution and persists the execut
       backend: 'plugin-executor',
       executorId: 'codex',
       llmConnectionSlug: 'executor:codex',
-      model: 'codex',
+      model: 'gpt-codex',
     };
   };
   const fixture = createFixture({
@@ -822,6 +909,8 @@ test('plugin executor creation bypasses model resolution and persists the execut
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
       executorId: 'codex',
+      executorModel: 'gpt-codex',
+      thinkingLevel: 'high',
     },
     context,
   );
@@ -830,7 +919,8 @@ test('plugin executor creation bypasses model resolution and persists the execut
   assert.equal(persistedInput?.executorId, 'codex');
   assert.equal(persistedInput?.llmConnectionId, undefined);
   assert.equal(persistedInput?.llmConnectionSlug, 'executor:codex');
-  assert.equal(persistedInput?.model, 'codex');
+  assert.equal(persistedInput?.model, 'gpt-codex');
+  assert.equal(persistedInput?.thinkingLevel, 'high');
   if (outcome.ok && !('kind' in outcome.result)) {
     assert.equal(outcome.result.backend, 'plugin-executor');
     assert.equal(outcome.result.executorId, 'codex');
@@ -1217,41 +1307,6 @@ test('new tasks snapshot the current global Code Mode setting', async () => {
     'direct',
   );
   assert.deepEqual(modes.slice(2), ['code_mode', 'direct']);
-});
-
-test('creation materializes Deep Research semantics inside the Host transaction', async () => {
-  let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
-  const fixture = createFixture({
-    stores: {
-      createStableSession: async (request) => {
-        created = request;
-        return {
-          kind: 'existing',
-          record: headerSnapshot(sessionHeader(request.sessionId, request.input.labels ?? []), 3),
-        };
-      },
-    },
-  });
-
-  const outcome = await fixture.coordinator.handlers['session.create'](
-    {
-      sessionId: fixture.sessionId,
-      workspace: { kind: 'host_path', path: process.cwd() },
-      mode: 'deep_research',
-      name: 'Caller override',
-      labels: ['customer-label'],
-      modelTarget: { kind: 'default' },
-      permissionMode: 'ask',
-    },
-    context,
-  );
-
-  assert.equal(outcome.ok, true);
-  assert.ok(created);
-  assert.equal(created.input.name, DEEP_RESEARCH_SESSION_NAME);
-  assert.deepEqual(created.input.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
-  assert.equal(created.input.permissionMode, 'explore');
-  assert.equal(fixture.drainRequests(), 0);
 });
 
 test('bot mode grants explore while keeping the Bot-supplied Session name', async () => {
@@ -1995,7 +2050,7 @@ test('autonomous create target fails closed when no default is set, even with a 
   await assert.rejects(
     fixture.coordinator.resolveDefaultCreateTarget(),
     (error: unknown) =>
-      error instanceof SessionOperationFailure &&
+      error instanceof WorkHubDefaultModelRequiredError &&
       error.code === 'operation_unavailable' &&
       /No default Session model is configured/i.test(error.message),
   );

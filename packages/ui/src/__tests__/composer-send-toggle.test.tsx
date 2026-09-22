@@ -61,6 +61,21 @@ test('an idle composer offers Send alone', () => {
   assert.deepEqual(controls, ['aria-label="Send"']);
 });
 
+test('a host-owned send gate disables Send without an inline notice', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        sendBlocked
+        sendBlockedReason="Choose a model before sending."
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  assert.equal(sendButtonAriaDisabled(markup), 'true');
+  assert.doesNotMatch(markup, /maka-composer-no-model-hint/);
+});
+
 test('a turn in flight turns the same single control into Stop', () => {
   const controls = sendSlotControls(renderComposer(true));
   assert.deepEqual(controls, ['aria-label="Stop"']);
@@ -172,6 +187,43 @@ test('the three send gates agree about a staged quote while streaming (#4804)', 
       await Promise.resolve();
     });
     assert.deepEqual(sends, ['']);
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
+test('the actual submit waits for Session references and keeps the draft on refusal', async () => {
+  const original = { document: globalThis.document, window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({ direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' }) as unknown as CSSStyleDeclaration;
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root')!;
+  const root = createRoot(container);
+  const sends: string[] = [];
+  let release!: (ready: boolean) => void;
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          pendingSessionReferences={[{ id: 'source', name: 'Research' }]}
+          waitForSessionReference={() => new Promise((resolve) => { release = resolve; })}
+          onSend={(text) => { sends.push(text); }}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    const form = container.querySelector('form')!;
+    for (const ready of [false, true]) {
+      await act(async () => {
+        form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+      assert.deepEqual(sends, [], 'no send may precede snapshot resolution');
+      await act(async () => { release(ready); await Promise.resolve(); });
+      assert.deepEqual(sends, ready ? [''] : []);
+    }
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);

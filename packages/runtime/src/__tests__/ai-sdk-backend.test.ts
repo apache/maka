@@ -246,7 +246,7 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     }
   });
 
-  test('keeps Write and Edit when DeepSeek cannot carry custom apply_patch', async () => {
+  test('uses portable ApplyPatch for DeepSeek', async () => {
     const model = completionModel();
     const backend = createBackend({
       connection: {
@@ -267,9 +267,9 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
 
     const names = modelToolNames(model);
-    assert.equal(names.includes('apply_patch'), false);
-    assert.equal(names.includes('Write'), true);
-    assert.equal(names.includes('Edit'), true);
+    assert.equal(names.includes('apply_patch'), true);
+    assert.equal(names.includes('Write'), false);
+    assert.equal(names.includes('Edit'), false);
   });
 
   test('replays a durable apply_patch failure as native provider JSON', async () => {
@@ -416,13 +416,14 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     );
   };
 
-  test('downgrades durable DeepSeek freeform apply_patch history to a fact', async () => {
+  test('downgrades disabled DeepSeek freeform apply_patch history to a fact', async () => {
     await assertApplyPatchHistoryDowngraded(
       {
         ...connection(),
         slug: 'deepseek',
         providerType: 'deepseek',
         defaultModel: 'deepseek-v4-flash',
+        modelOverrides: { 'deepseek-v4-flash': { applyPatch: false } },
       },
       'deepseek-v4-flash',
     );

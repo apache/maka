@@ -257,7 +257,6 @@ rejected even if a path is listed here.
 - `docs/images/**/*.png`: screenshots of Maka's own user interface committed as review evidence, including pull requests #3584 and #3588.
 - `packages/runtime-host/src/protocol/artifact.ts`: Apache-licensed protocol source containing literal C0 and DEL characters in the control-character rejection expression.
 - `packages/storage/src/__tests__/mcp-config-store.test.ts`: Apache-licensed validation fixture containing a literal control character in a rejected MCP tool name.
-- `packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite`: migration fixture created through Maka's public storage APIs at tag `v0.1.6`; its exact origin and SHA-256 are recorded in the adjacent `README.md`.
 - `patches/@xterm+xterm+6.0.0.patch`: MIT-licensed xterm.js patch attributed in root `LICENSE`; upstream context includes literal terminal control characters whose bytes must be preserved for patch application.
 
 ### Website build dependency boundary

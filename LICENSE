@@ -251,9 +251,11 @@ Theme revision: ea888ef33283ea44e37817d36bc8e84a0568bc30
 Copyright (c) 2026 Meta Platforms, Inc.
 License: MIT
 
-Maka includes an ejected adaptation of Astryx ChatReasoning v0.1.9 and generated
-theme artifacts based on Astryx theme-neutral v0.6.1. Maka also redistributes
-`patches/@astryxdesign+core+0.6.1.patch`, which modifies the MIT-licensed Astryx
+Maka includes an ejected adaptation of Astryx ChatReasoning v0.1.9 in
+`packages/ui/src/astryx-chat-reasoning.tsx` and generated theme artifacts in
+`apps/desktop/src/renderer/astryx-theme/`, based on Astryx theme-neutral v0.6.2.
+Maka also redistributes
+`patches/@astryxdesign+core+0.6.2.patch`, which modifies the MIT-licensed Astryx
 core package. The following MIT License applies to that material:
 
 MIT License
@@ -465,16 +467,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-electron-builder dependency patch
+electron-builder dependency patches
 
 Source: https://www.npmjs.com/package/app-builder-lib/v/26.15.3
+        https://www.npmjs.com/package/electron-updater/v/6.8.9
 Repository: https://github.com/electron-userland/electron-builder
-Version: 26.15.3
+Versions: app-builder-lib 26.15.3; electron-updater 6.8.9
 Dependency patch: patches/app-builder-lib+26.15.3.patch
+                  patches/electron-updater+6.8.9.patch
 License: MIT
 
-Maka redistributes a source patch that omits modification and access times
-from ZIP archives. The following MIT License applies to that material:
+Maka redistributes source patches that omit modification and access times
+from ZIP archives and skip withdrawn prereleases whose update metadata is
+missing. The following MIT License applies to that material:
 
 The MIT License (MIT)
 
@@ -576,7 +581,9 @@ Revision: 8c921b2b3bf13494724ead4f0a814d80c56a7e8b
 Copyright (c) 2025 Cua AI, Inc.
 License: MIT
 
-Maka's agent-cursor renderer and palette include adaptations of this component.
+`apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` and
+`apps/desktop/src/renderer/computer-use-overlay/engine/palette.ts` include
+adaptations of this component.
 The following MIT License applies to that material:
 
 MIT License
@@ -764,8 +771,10 @@ SOFTWARE.
 
 Desktop renderer vendored source assets
 
-The source archive includes third-party SVG paths and source assets used by the
-desktop renderer. Their file-by-file inventory, immutable upstream revisions,
+The source archive includes third-party SVG paths and source assets from
+Lobe Icons (MIT), LocalAI (MIT), Simple Icons (CC0-1.0), TDesign Icons (MIT),
+MingCute (Apache-2.0), Allogo (MIT), Ant Design Icons (MIT), and Semi Design
+(MIT), used by the desktop renderer. Their file-by-file inventory, immutable upstream revisions,
 copyright notices, and license texts are in:
 
   apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt

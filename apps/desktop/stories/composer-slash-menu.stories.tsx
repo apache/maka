@@ -42,6 +42,15 @@ import {
   ComposerMentionsProvider,
   useComposerMentionsContext,
 } from '../src/renderer/composer-mentions';
+import {
+  ConversationServicesProvider,
+  type ConversationServices,
+} from '../src/renderer/features/conversation';
+import {
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
+import type { DesktopSessionSummary } from '../src/shared/desktop-session-projection.js';
 import { desktopSlashCommandAvailability } from '../src/renderer/desktop-slash-command';
 import { getShellCopy } from '../src/renderer/locales/shell-copy';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -49,6 +58,38 @@ import { withScopedMakaBridge } from './maka-bridge';
 const COMPOSER_INPUT = '.maka-composer-editor [contenteditable="true"]';
 const MENU_LABEL = '命令和技能';
 const SESSION_ID = 'session-slash-menu';
+const sessionCatalog = createSessionCatalogController();
+const sessionRow: DesktopSessionSummary = {
+  id: SESSION_ID,
+  revision: 1,
+  activityAt: 100,
+  name: 'Slash menu session',
+  isFlagged: false,
+  isArchived: false,
+  labels: [],
+  hasUnread: false,
+  status: 'active',
+  backend: 'ai-sdk',
+  llmConnectionSlug: 'default',
+  connectionLocked: false,
+  model: 'model',
+  permissionMode: 'ask',
+  runtimeHostId: 'host',
+  profileId: 'profile',
+  profileName: 'Local',
+  profileKind: 'local',
+};
+sessionCatalog.commitSessions([sessionRow]);
+let sessionRowRevision = sessionRow.revision;
+/** Publish a Session row change, the way a thinking-level change does. */
+function publishSessionUpdate() {
+  sessionRowRevision += 1;
+  sessionCatalog.commitPatch(SESSION_ID, {
+    ...sessionRow,
+    revision: sessionRowRevision,
+    thinkingLevel: sessionRowRevision % 2 === 0 ? 'high' : 'low',
+  });
+}
 
 /**
  * What app-shell.tsx builds for `slashCommands`, from the same three
@@ -74,8 +115,6 @@ const invocableSkills = [
   { ref: 'workspace/workspace-only', id: 'workspace-only', name: 'Workspace Only', description: 'Maka workspace suggestion.' },
 ];
 
-/** Publish a Session 'updated' event, the way a thinking-level change does. */
-let publishSessionUpdate: (() => void) | undefined;
 /** Projection loads served so far, so a story can wait for one to land. */
 let projectionLoads = 0;
 let holdNextProjection = false;
@@ -105,16 +144,28 @@ const makaBridge = {
     searchFiles: async () => ({ ok: true, files: [] }),
     subscribeChanges: () => () => {},
   },
-  sessions: {
-    subscribeChanges(listener: (event: { sessionId: string; reason: string }) => void) {
-      publishSessionUpdate = () => listener({ sessionId: SESSION_ID, reason: 'updated' });
-      return () => {
-        publishSessionUpdate = undefined;
-      };
-    },
-  },
   mcp: { subscribeChanges: () => () => {} },
   workspace: { searchFiles: async () => ({ ok: true, files: [] }) },
+};
+
+const conversationServices: ConversationServices = {
+  listMessages: async () => [],
+  cancelMessage: async () => undefined,
+  reconcileMessage: async () => undefined,
+  subscribeChanges: () => () => undefined,
+  sessions: {
+    readSnapshot: async () => {
+      throw new Error('Session snapshots are not used in slash menu stories');
+    },
+  },
+  skills: { listInvocable: loadProjection },
+  workspace: { searchFiles: async () => ({ ok: true, files: [] }) },
+  newTasks: {
+    subscribeChanges: () => () => undefined,
+    listInvocableSkills: loadProjection,
+    searchFiles: async () => ({ ok: true, files: [] }),
+  },
+  mcp: { subscribeChanges: () => () => undefined },
 };
 
 function SlashMenuComposer({
@@ -154,18 +205,22 @@ function SlashMenuHarness({
 }): React.ReactElement {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-end', height: 520, padding: 24 }}>
-      <ComposerMentionsProvider
-        skillCatalogRevision={0}
-        sessionId={hasSession ? SESSION_ID : undefined}
-        projectPath="/workspace/maka-agent"
-        newTaskTarget={
-          hasSession
-            ? undefined
-            : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }
-        }
-      >
-        <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
-      </ComposerMentionsProvider>
+      <ConversationServicesProvider services={conversationServices}>
+        <SessionCatalogContext.Provider value={sessionCatalog}>
+          <ComposerMentionsProvider
+            skillCatalogRevision={0}
+            sessionId={hasSession ? SESSION_ID : undefined}
+            projectPath="/workspace/maka-agent"
+            newTaskTarget={
+              hasSession
+                ? undefined
+                : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }
+            }
+          >
+            <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
+          </ComposerMentionsProvider>
+        </SessionCatalogContext.Provider>
+      </ConversationServicesProvider>
     </div>
   );
 }
@@ -184,17 +239,47 @@ function ContextSwitchHarness(): React.ReactElement {
         Switch to new task
       </button>
       <div style={{ display: 'flex', flex: 1, alignItems: 'flex-end' }}>
-        <ComposerMentionsProvider
-          skillCatalogRevision={0}
-          sessionId={hasSession ? SESSION_ID : undefined}
-          projectPath="/workspace/maka-agent"
-          newTaskTarget={hasSession
-            ? undefined
-            : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }}
-        >
-          <SlashMenuComposer hasSession={hasSession} streaming={false} />
-        </ComposerMentionsProvider>
+        <ConversationServicesProvider services={conversationServices}>
+          <SessionCatalogContext.Provider value={sessionCatalog}>
+            <ComposerMentionsProvider
+              skillCatalogRevision={0}
+              sessionId={hasSession ? SESSION_ID : undefined}
+              projectPath="/workspace/maka-agent"
+              newTaskTarget={hasSession
+                ? undefined
+                : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }}
+            >
+              <SlashMenuComposer hasSession={hasSession} streaming={false} />
+            </ComposerMentionsProvider>
+          </SessionCatalogContext.Provider>
+        </ConversationServicesProvider>
       </div>
+    </div>
+  );
+}
+
+let releaseSessionSearch: (() => void) | undefined;
+let holdSessionSearch = false;
+const sessionSuggestions = [{ id: 'source-session', name: 'Reference source' }];
+
+function SessionPickerHarness(): React.ReactElement {
+  return (
+    <div style={{ display: 'grid', alignItems: 'end', height: 520, width: 900, maxWidth: '100%', padding: 24 }}>
+      <Composer
+        draftKey="story-session-picker-width"
+        onSearchMentionFiles={async () => {
+          if (holdSessionSearch) {
+            holdSessionSearch = false;
+            await new Promise<void>((resolve) => { releaseSessionSearch = resolve; });
+            releaseSessionSearch = undefined;
+          }
+          return [];
+        }}
+        sessionReferences={sessionSuggestions}
+        onPickSessionReference={() => {}}
+        onSend={() => {}}
+        onStop={() => {}}
+      />
     </div>
   );
 }
@@ -220,6 +305,32 @@ function editor(canvasElement: HTMLElement): HTMLElement {
 function overlay(): ReturnType<typeof within> {
   return within(document.body);
 }
+
+export const SessionPickerKeepsItsWidth: Story = {
+  render: () => <SessionPickerHarness />,
+  play: async ({ canvasElement }) => {
+    holdSessionSearch = true;
+    const composer = editor(canvasElement);
+    const surface = canvasElement.querySelector<HTMLElement>('.maka-composer-astryx');
+    if (!surface) throw new Error('composer surface is missing');
+    const assertWidth = (menu: HTMLElement) => {
+      expect(Math.abs(menu.getBoundingClientRect().width - surface.getBoundingClientRect().width))
+        .toBeLessThan(2);
+    };
+    await userEvent.click(composer);
+    await userEvent.keyboard('@');
+    const menu = await overlay().findByRole('listbox', { name: '工作区文件和会话' });
+    await waitFor(() => expect(within(menu).getByRole('status')).toBeVisible());
+    assertWidth(menu);
+    await waitFor(() => expect(releaseSessionSearch).toBeDefined());
+    releaseSessionSearch?.();
+    await waitFor(() => expect(within(menu).getByRole('option', { name: 'Reference source' })).toBeVisible());
+    assertWidth(menu);
+    await userEvent.keyboard('no-matching-session-zzzz');
+    await waitFor(() => expect(within(menu).getByText('未找到文件或会话')).toBeVisible());
+    assertWidth(menu);
+  },
+};
 
 async function openMenu(canvasElement: HTMLElement): Promise<HTMLElement> {
   const composer = editor(canvasElement);
@@ -434,7 +545,7 @@ export const SurvivesASameContentProjectionRefresh: Story = {
     try {
       for (let round = 0; round < 3; round += 1) {
         const before = projectionLoads;
-        publishSessionUpdate?.();
+        publishSessionUpdate();
         await waitFor(() => expect(projectionLoads).toBeGreaterThan(before));
         await new Promise<void>((resolve) => {
           requestAnimationFrame(() => requestAnimationFrame(() => resolve()));

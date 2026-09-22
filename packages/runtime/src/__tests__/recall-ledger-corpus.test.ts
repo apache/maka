@@ -232,6 +232,77 @@ describe('recall over the corpus a live workspace actually has', () => {
     });
   });
 
+  /**
+   * The file name has to survive into the event payload for a payload scan to
+   * offer the Session, and into the projection for the predicate to match it.
+   * A double could satisfy either half alone.
+   */
+  test('a pasted file is reachable by name through the real stores', async () => {
+    await withWorkspace(async (workspace) => {
+      const session = await workspace.sessions.create(makeInput('screenshots'));
+      const runId = 'run-shot';
+      const turnId = `turn-${runId}`;
+      const identity = { sessionId: session.id, invocationId: runId, runId, turnId };
+      await workspace.runtime.appendRuntimeEvent(
+        session.id,
+        runId,
+        testInvocationOpenedEvent({ sessionId: session.id, runId, turnId, openedAt: 100 }),
+      );
+      await workspace.runtime.appendRuntimeEvent(session.id, runId, {
+        ...identity,
+        id: `${runId}-user`,
+        ts: 101,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: {
+          kind: 'text',
+          text: '你看看',
+          attachments: [
+            {
+              kind: 'image',
+              name: 'pipeline-failure.png',
+              mimeType: 'image/png',
+              bytes: 2048,
+              ref: {
+                kind: 'session_file',
+                sessionId: session.id,
+                relativePath: 'art_01HQ8Z3K4M5N6P7Q8R9S0T1V2W',
+              },
+            },
+          ],
+        },
+      });
+      await workspace.runtime.appendRuntimeEvent(session.id, runId, {
+        ...identity,
+        id: `${runId}-end`,
+        ts: 103,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        actions: { endInvocation: true },
+      });
+
+      const options = { includeArchived: true, activeSessionId: session.id };
+      for (const [name, deps] of [
+        ['full', scanDeps(workspace)],
+        ['narrowed', narrowedDeps(workspace)],
+      ] as const) {
+        const result = await runRecall({ terms: ['pipeline-failure'] }, deps, options);
+        assert.ok(result.ok, name);
+        assert.deepEqual(anchors(result), [`${runId}-user`], name);
+        const material = result.passages[0]?.messages[0]?.materials?.[0];
+        assert.equal(material?.name, 'pipeline-failure.png', name);
+        assert.equal(
+          material?.resource,
+          'maka://runtime/attachments/art_01HQ8Z3K4M5N6P7Q8R9S0T1V2W',
+          name,
+        );
+      }
+    });
+  });
+
   test('narrowing reads only the Sessions that can match', async () => {
     await withWorkspace(async (workspace) => {
       const hit = await workspace.sessions.create(makeInput('hit'));
