@@ -684,38 +684,37 @@ export function ChatView(props: {
     scrollRef,
     Boolean(props.onQuoteSelection || props.onAskAboutSelection),
   );
-  // The excerpt the annotation panel is open over, held apart from the live
-  // selection so writing a note cannot move the quote it belongs to.
-  const [annotatingSelection, setAnnotatingSelection] = useState<{
-    text: string;
-    turnId: string;
-    anchor: { x: number; y: number };
-  } | null>(null);
-  // A staged quote whose note is being edited back at its own excerpt, opened
-  // through the handle rather than the selection gesture. `anchor` covers the
-  // settle window before the restored selection produces a live quote.
-  const [editingQuote, setEditingQuote] = useState<{
-    index: number;
-    text: string;
-    turnId?: string;
-    comment?: string;
-    anchor: { x: number; y: number };
-  } | null>(null);
+  // The annotation session in flight — either a fresh note held apart from
+  // the live selection so writing cannot move the quote it belongs to, or an
+  // edit of an already-staged quote opened through the handle. `anchor`
+  // covers the settle window before the restored selection produces a live
+  // quote. The two kinds never coexist, so they share one slot.
+  const [quoteAnnotation, setQuoteAnnotation] = useState<
+    | { kind: 'annotate'; text: string; turnId: string; anchor: { x: number; y: number } }
+    | {
+        kind: 'edit';
+        index: number;
+        text: string;
+        turnId?: string;
+        comment?: string;
+        anchor: { x: number; y: number };
+      }
+    | null
+  >(null);
   // The turn a note is being written on must survive virtualization: once
   // the note input takes the DOM selection, selectionEnds no longer keeps
   // that turn mounted, and unmounting it drops the mark and the panel's
   // excerpt mid-write.
-  for (const turnId of [annotatingSelection?.turnId, editingQuote?.turnId]) {
-    const index = turnId ? orderedTurnIds.indexOf(turnId) : -1;
+  {
+    const index = quoteAnnotation?.turnId ? orderedTurnIds.indexOf(quoteAnnotation.turnId) : -1;
     if (index !== -1) keepMountedIndexes.add(index);
   }
   // Every staged quote keeps a numbered pin at its own excerpt's end — the
   // ordinal the composer list shows for it — plus the excerpt a fresh
   // annotation is about to take.
   const [quoteMarks, setQuoteMarks] = useState<{ index: number; x: number; y: number }[]>([]);
-  const barVisible =
-    selectionQuote !== null && annotatingSelection === null && editingQuote === null;
-  const panelVisible = annotatingSelection !== null || editingQuote !== null;
+  const barVisible = selectionQuote !== null && quoteAnnotation === null;
+  const panelVisible = quoteAnnotation !== null;
   // The bar and the panel are separate layers on purpose: useLayer maps
   // lightDismiss onto the popover attribute, and flipping auto↔manual on an
   // open popover closes it (the browser fires toggle:closed). A single layer
@@ -732,8 +731,7 @@ export function ChatView(props: {
     mode: 'fixed',
     lightDismiss: false,
     onHide: () => {
-      setAnnotatingSelection(null);
-      setEditingQuote(null);
+      setQuoteAnnotation(null);
       clearSelectionQuote();
     },
   });
@@ -749,8 +747,7 @@ export function ChatView(props: {
   // staged list is per-draft, and ChatView survives a session switch unkeyed,
   // so an annotation left open would submit into the wrong session's bucket.
   useEffect(() => {
-    setAnnotatingSelection(null);
-    setEditingQuote(null);
+    setQuoteAnnotation(null);
   }, [props.activeSession?.id]);
   const selectionActionsLabel = [
     props.onQuoteSelection ? copy.quoteSelection : null,
@@ -763,8 +760,7 @@ export function ChatView(props: {
   /** Ends the gesture: the layer closes and the excerpt the host just took is
    *  no longer selected, so the bar cannot offer it a second time. */
   function dismissSelectionActions(): void {
-    setAnnotatingSelection(null);
-    setEditingQuote(null);
+    setQuoteAnnotation(null);
     clearSelectionQuote();
     window.getSelection()?.removeAllRanges();
   }
@@ -804,8 +800,8 @@ export function ChatView(props: {
       selection?.addRange(range);
       // A fresh annotation and an edit never coexist: the token click takes
       // over whichever excerpt the panel was writing on.
-      setAnnotatingSelection(null);
-      setEditingQuote({
+      setQuoteAnnotation({
+        kind: 'edit',
         ...request,
         anchor: { x: box.left + box.width / 2, y: box.top },
       });
@@ -822,7 +818,7 @@ export function ChatView(props: {
   // re-found after every commit because the virtualizer remounts turns
   // underneath us, and positions re-measure on capture-phase scroll because
   // a scroll that swaps nothing produces no commit.
-  const measureQuoteMarks = useCallback((): { index: number; range: Range }[] => {
+  const measureQuoteMarks = (): { index: number; range: Range }[] => {
     const found: { index: number; range: Range }[] = [];
     const root = scrollRef.current;
     const collect = (index: number, turnId: string | undefined, text: string) => {
@@ -836,34 +832,29 @@ export function ChatView(props: {
       // transcript — a colliding turn id must not pin them here.
       if (!quote.sourceSessionId) collect(index, quote.sourceTurnId, quote.text);
     });
-    if (annotatingSelection) {
-      collect(props.pendingQuotes?.length ?? 0, annotatingSelection.turnId, annotatingSelection.text);
+    if (quoteAnnotation?.kind === 'annotate') {
+      collect(props.pendingQuotes?.length ?? 0, quoteAnnotation.turnId, quoteAnnotation.text);
     }
     return found;
-  }, [props.pendingQuotes, annotatingSelection, scrollRef]);
+  };
 
   const quoteMarkRangesRef = useRef<{ index: number; range: Range }[]>([]);
-  const quoteHighlightRef = useRef<Highlight | null>(null);
   useLayoutEffect(() => {
     const found = measureQuoteMarks();
     quoteMarkRangesRef.current = found;
     const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
+    let highlight: Highlight | null = null;
     if (found.length > 0 && typeof Highlight !== 'undefined' && highlights) {
-      const highlight = new Highlight(...found.map(({ range }) => range));
+      highlight = new Highlight(...found.map(({ range }) => range));
       highlights.set('maka-quote-mark', highlight);
-      quoteHighlightRef.current = highlight;
-    } else {
-      quoteHighlightRef.current = null;
     }
     const marks = quoteMarksAt(scrollRef.current, found);
     setQuoteMarks((current) => (sameQuoteMarks(current, marks) ? current : marks));
     // The registry is document-global: only remove an entry this ChatView
     // still owns, never one a co-mounted transcript painted over it.
     return () => {
-      const mine = quoteHighlightRef.current;
-      if (mine && highlights?.get('maka-quote-mark') === mine) {
+      if (highlight && highlights?.get('maka-quote-mark') === highlight) {
         highlights.delete('maka-quote-mark');
-        quoteHighlightRef.current = null;
       }
     };
   });
@@ -886,43 +877,37 @@ export function ChatView(props: {
   // edited quote by identity so submit cannot write onto a different quote —
   // or keep the panel alive for one that is gone.
   useLayoutEffect(() => {
-    if (!editingQuote || !props.pendingQuotes) return;
-    const staged = props.pendingQuotes[editingQuote.index];
+    if (quoteAnnotation?.kind !== 'edit' || !props.pendingQuotes) return;
+    const staged = props.pendingQuotes[quoteAnnotation.index];
     if (
       staged &&
-      staged.text === editingQuote.text &&
-      staged.sourceTurnId === editingQuote.turnId
+      staged.text === quoteAnnotation.text &&
+      staged.sourceTurnId === quoteAnnotation.turnId
     ) {
       return;
     }
     const relocated = props.pendingQuotes.findIndex(
       (quote) =>
         !quote.sourceSessionId &&
-        quote.text === editingQuote.text &&
-        quote.sourceTurnId === editingQuote.turnId,
+        quote.text === quoteAnnotation.text &&
+        quote.sourceTurnId === quoteAnnotation.turnId,
     );
-    if (relocated === -1) setEditingQuote(null);
-    else if (relocated !== editingQuote.index) {
-      setEditingQuote({ ...editingQuote, index: relocated });
+    if (relocated === -1) setQuoteAnnotation(null);
+    else if (relocated !== quoteAnnotation.index) {
+      setQuoteAnnotation({ ...quoteAnnotation, index: relocated });
     }
   });
 
   // The panel hangs from the live quote once the restored selection settles
   // into one; until then the anchor measured at open time holds it. A
   // selection resolving to a different excerpt never moves the panel.
-  const annotationAnchor = editingQuote
+  const annotationAnchor = quoteAnnotation
     ? selectionQuote &&
-      selectionQuote.turnId === editingQuote.turnId &&
-      selectionQuote.text === editingQuote.text
+      selectionQuote.turnId === quoteAnnotation.turnId &&
+      selectionQuote.text === quoteAnnotation.text
       ? selectionQuote.anchor
-      : editingQuote.anchor
-    : annotatingSelection
-      ? selectionQuote &&
-        selectionQuote.turnId === annotatingSelection.turnId &&
-        selectionQuote.text === annotatingSelection.text
-        ? selectionQuote.anchor
-        : annotatingSelection.anchor
-      : null;
+      : quoteAnnotation.anchor
+    : null;
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -1222,44 +1207,31 @@ export function ChatView(props: {
         </ChatMessageList>
         {annotationAnchor && panelVisible
           ? annotationLayer.render(
-              editingQuote ? (
-                <div
-                  className="maka-quote-annotation-layer"
-                  // Keep the restored selection alive while the note is edited
-                  // — but not inside the note input itself, where cancelling
-                  // the default would also cancel caret placement and
-                  // drag-selection.
-                  onMouseDown={(event) => {
-                    if (!(event.target as HTMLElement).closest('[contenteditable]')) {
-                      event.preventDefault();
-                    }
-                  }}
-                >
+              <div
+                className="maka-quote-annotation-layer"
+                // Keep the live/restored selection alive while the note is
+                // written — except inside the note input, where the default
+                // is what places the caret.
+                onMouseDown={(event) => {
+                  if (!(event.target as HTMLElement).closest('[contenteditable]')) {
+                    event.preventDefault();
+                  }
+                }}
+              >
+                {quoteAnnotation?.kind === 'edit' ? (
                   <QuoteCommentPanel
-                    key={editingQuote.text}
-                    comment={editingQuote.comment}
+                    key={quoteAnnotation.text}
+                    comment={quoteAnnotation.comment}
                     title={conversationCopy.composer.quoteCommentTitle}
                     submitLabel={conversationCopy.composer.quoteCommentSave}
                     skipLabel={conversationCopy.composer.quoteCommentCancel}
                     onSubmit={(comment) => {
-                      props.onQuoteAnnotationSubmit?.(editingQuote.index, comment);
+                      props.onQuoteAnnotationSubmit?.(quoteAnnotation.index, comment);
                       dismissSelectionActions();
                     }}
                     onSkip={dismissSelectionActions}
                   />
-                </div>
-              ) : annotatingSelection ? (
-                <div
-                  className="maka-quote-annotation-layer"
-                  // Keep the live selection alive while the note is written —
-                  // except inside the note input, where the default is what
-                  // places the caret.
-                  onMouseDown={(event) => {
-                    if (!(event.target as HTMLElement).closest('[contenteditable]')) {
-                      event.preventDefault();
-                    }
-                  }}
-                >
+                ) : quoteAnnotation ? (
                   <QuoteCommentPanel
                     title={copy.quoteCommentTitle}
                     submitLabel={copy.quoteSelection}
@@ -1267,20 +1239,23 @@ export function ChatView(props: {
                     cancelLabel={conversationCopy.composer.quoteCommentCancel}
                     onSubmit={(comment) => {
                       props.onQuoteSelection?.({
-                        text: annotatingSelection.text,
-                        turnId: annotatingSelection.turnId,
+                        text: quoteAnnotation.text,
+                        turnId: quoteAnnotation.turnId,
                         comment,
                       });
                       dismissSelectionActions();
                     }}
                     onSkip={() => {
-                      props.onQuoteSelection?.(annotatingSelection);
+                      props.onQuoteSelection?.({
+                        text: quoteAnnotation.text,
+                        turnId: quoteAnnotation.turnId,
+                      });
                       dismissSelectionActions();
                     }}
                     onCancel={dismissSelectionActions}
                   />
-                </div>
-              ) : null,
+                ) : null}
+              </div>,
               {
                 x: annotationAnchor.x,
                 // Below the excerpt, clamped so the panel's lower edge stays
@@ -1330,7 +1305,8 @@ export function ChatView(props: {
                         type="button"
                         label={copy.quoteSelection}
                         onClick={() =>
-                          setAnnotatingSelection({
+                          setQuoteAnnotation({
+                            kind: 'annotate',
                             text: selectionQuote.text,
                             turnId: selectionQuote.turnId,
                             anchor: selectionQuote.anchor,

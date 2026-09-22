@@ -1686,14 +1686,21 @@ export const Composer = forwardRef<
   // The pendingQuotes bucket is mutated in place, so its identity cannot
   // signal a splice — the staged quotes' own identities can. Either index
   // state left pointing past a removal or a send would reopen a panel or a
-  // hover suppression onto whatever now occupies that slot.
-  const stagedQuoteKey = props.pendingQuotes
-    ?.map((quote) => `${quote.sourceTurnId ?? ''}${quote.text}`)
-    .join('');
+  // hover suppression onto whatever now occupies that slot. The ref holds a
+  // snapshot: storing the live array would compare it against itself.
+  const stagedQuotesRef = useRef<readonly QuoteRef[]>([]);
   useEffect(() => {
-    setEditingQuoteIndex(null);
-    setAnnotatedQuoteIndex(null);
-  }, [stagedQuoteKey]);
+    const previous = stagedQuotesRef.current;
+    const next = props.pendingQuotes ?? [];
+    stagedQuotesRef.current = next.slice();
+    const spliced =
+      previous.length !== next.length ||
+      previous.some((quote, index) => quote !== next[index]);
+    if (spliced) {
+      setEditingQuoteIndex(null);
+      setAnnotatedQuoteIndex(null);
+    }
+  });
   useEffect(() => {
     if (attachmentLightboxOpen || !attachmentLightbox) return;
     // Unmount one commit AFTER the closed render, never in it: child effects
