@@ -533,7 +533,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   }, [bindPendingMessageTurn, reconcilePendingUserMessages]);
 
   const projectMessageQueue = useCallback(
-    (forkId: string, event: Extract<SessionEvent, { type: 'queue_update' }>) => {
+    (event: Extract<SessionEvent, { type: 'queue_update' }>) => {
       const queue = deriveMessageQueueProjection(event);
       applyMessageQueue({
         entries: queue.entries,
@@ -845,7 +845,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       (event: SessionEvent) => {
         if (!mountedRef.current || disposed || companionIdRef.current !== forkId) return;
         if (event.type === 'queue_update') {
-          projectMessageQueue(forkId, event);
+          projectMessageQueue(event);
           return;
         }
         const admission = pendingAdmissionRef.current;

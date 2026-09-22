@@ -62,7 +62,6 @@ export {
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
 export { useComposerQuotes } from './controller/use-composer-quotes.js';
 export { useSessionReferenceComposer } from './controller/use-session-reference-composer.js';
-export { useSessionMessageQueue } from './controller/use-session-message-queue.js';
 export {
   ComposerMentionsProvider,
   useComposerMentionsContext,

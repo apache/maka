@@ -242,7 +242,7 @@ export interface ComposerHandle {
   /** Read a specific draft without changing the active input. */
   getDraft(draftKey: string): string;
   /** Append to a specific session draft without replacing newer text. */
-  appendDraft?(draftKey: string, text: string): void;
+  appendDraft(draftKey: string, text: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
   /** Open the active Session's existing account-and-model picker. */
