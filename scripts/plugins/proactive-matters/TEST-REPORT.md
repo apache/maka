@@ -1,0 +1,78 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+# 持续跟进插件验证记录
+
+日期：2026-09-22。Maka 基线：main `c6e3eb0cd0535736f328252ab137f9cc06496da3`。使用独立 worktree 读取主干源码，主干 `git status --short` 为空。实现、构建产物、测试数据均位于插件目录。
+
+## 自动化验证
+
+26 项通过：20 项持久化/状态事务测试，4 项真实 PluginPlatform 集成测试，1 项真实 Client Runtime DOM 测试，1 项发布包安装测试。TypeScript 检查通过。
+
+覆盖绝对时间唤醒、同一 session 续跑、旧轮次/旧版本拒写、未提交退出时暂停、完成后清空唤醒、重启恢复、不可变历史、用户修改要求、排队唤醒的领取竞态、面板暂停与 Remote generation 隔离，以及 `.maka-extension` 直接安装后注册 Host/Client 并启动/取消任务。
+
+安装测试最初有一个测试代码错误：把 workspace 返回对象当成事项对象取 id，导致取消 RPC 参数缺失。修正为读取事项列表中的 id 后通过；包本身的导入和工具注册已经成功。
+
+## 真实模型场景
+
+模型：`deepseek-flash`。调用 main 的 AiSdkBackend；PluginPlatform、工具服务、提示词服务和包加载器使用 main 实现。用于接续会话的 Host Agent driver 是测试适配器，业务 API 是本地 HTTP 模拟服务，不访问真实网盘/日历/项目账户。
+
+任务：跟进设计交付，在最新稿件审核满足要求后建会并更新项目任务；六分钟内给出结果；不发送邀请。过程注入新增无障碍审核要求、三个稿件版本、旧版本审核通过、最新版审核拒绝/通过、日历时段变化及并发冲突。
+
+| 相对开始时间 | 行为与结果 |
+| --- | --- |
+| 0–29 秒 | 第一轮检查 v1，审核未通过；写状态、总结并登记下次唤醒。 |
+| 60–82 秒 | 用户补充“最新版必须通过无障碍审核”；第二轮接收要求并继续等待。 |
+| 185–201 秒 | 第三轮看到 v1 已通过、v2 被拒、v3 审核待定；没有用旧版提前建会。 |
+| 220 秒 | 模拟外部服务中 v3 的无障碍审核通过；插件不监听文件变化，等待下一次时间唤醒。 |
+| 304 秒 | 第四轮由定时器唤醒，重新确认最新版与审核结果。 |
+| 312–316 秒 | 首次建会遇到时段被抢占；重查后改到 16:30。第二次建会已提交但响应丢失；按请求标识查询确认，未重复创建。 |
+| 317–320 秒 | 项目任务更新遇到版本冲突；重读后成功更新，并保留项目经理新增备注。 |
+| 330–332 秒 | 提交完成状态，结束本轮。 |
+| 338 秒 | 完成后再加入 v4 并观察六秒；无新增模型轮次或业务调用，唤醒列表为空。 |
+
+结果：一场会议、一次有效项目任务更新、均引用 design-v3；无邀请发送；三个故障分支实际触发并恢复；任务在六分钟以内完成。
+
+共 4 轮、35 次模型请求、50 次工具调用。后三轮起始请求携带的历史工具结果分别为 11、23、32 条，验证没有在唤醒时清空对话。累计输入 731,443 tokens、输出 18,130 tokens（输入包含每步重复携带的历史，不等于唯一上下文大小）。长对话加完整历史会增加成本。
+
+仍存在可优化行为：第二轮模型把已入库的用户补充又调用 MatterMessage 登记一次；第四轮成功后额外查询了一次 CalendarEvents。前者已在最终协议中明确禁止重复登记运行时唤醒/inbox/request 中的输入，但这条提示词修改没有再跑一遍付费模型场景，不能声称实测消除。
+
+原始证据：`.artifacts/live/handoff-9p75CT/report.json` 和同目录 `trace.jsonl`。密钥仅通过进程环境传入，报告不包含密钥。
+
+## 覆盖边界
+
+- 真实模型运行期间另补了队列领取竞态修复；最终代码由专门的排队回归测试覆盖。本次模型场景使用立即启动的宿主返回路径。
+- Client 使用真实 Slots/Remote 的 DOM 测试，尚未做发布版 Electron 的人工点击全流程。
+- 主干插件 API 不提供全局业务工具拦截；Matter 状态写入有硬校验，settle 后禁止继续调用其他业务工具属于 agent 协议。
+- 完成后静默只观察六秒；长期后台运行、系统休眠和生产服务故障仍需后续运行验证。
+- 插件只负责持续跟进与状态。实际连接外部应用依赖原 session 可用的工具及权限。
+
+## 2026-09-22：只读浮窗改版
+
+面板改为缩略任务列表，点击后显示当前进展、最近一轮已完成工作及后续安排。取消面板中的新增、暂停、继续、聊天、更多和编辑操作；内部状态文件不再显示。展示摘要来自持久化的 update / summary / next，时间来自已登记的 wake，不从状态文件截取。
+
+更新后的 26 项测试全部通过，类型检查通过。Client 集成测试现在覆盖展开、返回、收起、只读性与真实 Remote Stream 刷新；先前记录的面板暂停按钮测试已被替换。后台暂停接口及其测试保留。
+
+使用实际组件在 Chrome 渲染列表和详情，并检查 1160px、390px 窗口。截图使用明确标记的示例数据与聊天背景，不是实际 Maka 桌面截图；新简短摘要协议没有重新调用付费模型验证。入口因主干可用槽限制仍位于 sidebar.footer，尚未移到 Workhub 上方。Maka 源码未修改。
+
+截图：`.artifacts/preview/task-list.png`、`task-detail.png`。可用 `node scripts/preview.mjs` 重新生成独立组件预览 HTML。
+
+## 仓库内集成验证
+
+插件迁入 `scripts/plugins/proactive-matters/`，PR 基线更新为 main `5263fb78a`。测试用代码默认从所在仓库解析，无需依赖原独立目录。重新运行构建、当前 main PluginPlatform / Client Runtime 集成测试、发布包导入及类型检查：26 项全部通过。真实 Flash 场景为前述历史验证，本次迁移没有重复调用付费模型。变更只在插件目录，不增加根 workspace，也不改 Maka 核心实现。
