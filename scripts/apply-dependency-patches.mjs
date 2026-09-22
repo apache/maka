@@ -90,7 +90,6 @@ if (strict) {
 const result = spawnSync(process.execPath, patchPackageArguments, {
   cwd: repoRoot,
   stdio: 'inherit',
-  timeout: 30_000,
 });
 
 if (result.error) {

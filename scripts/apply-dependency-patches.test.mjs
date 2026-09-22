@@ -71,6 +71,7 @@ function runScript(root, args = [], env = {}) {
     cwd: root,
     encoding: 'utf8',
     env: { ...process.env, ...env },
+    timeout: 30_000,
   });
 }
 
