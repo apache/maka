@@ -30,7 +30,7 @@ import { desktopSessionKey } from '../src/shared/runtime-host-identity.js';
 // Real host: a persistent WebContentsView mounts WorkHubRoot once and moves between windows.
 const sessionId = desktopSessionKey({ hostId: 'story-host', sessionId: 'maka_workhub_coordination' });
 const targetId = desktopSessionKey({ hostId: 'story-host', sessionId: 'payments' });
-const writes = { panel: fn(), answer: fn(), model: fn(), upload: fn(), open: fn(), question: fn(), form: fn() };
+const writes = { panel: fn(), answer: fn(), model: fn(), defaults: fn(), upload: fn(), open: fn(), question: fn(), form: fn() };
 const choices = ['model-a', 'model-b'].map((model, index) => ({
   connectionId: 'connection-test', connectionSlug: 'test', connectionName: 'Test', providerType: 'openai' as const,
   providerLabel: 'OpenAI', model, label: model, contextWindow: 100_000, isDefault: index === 0, thinkingLevels: ['low', 'high'] as ThinkingLevel[],
@@ -166,7 +166,8 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
     },
     getNewWorkDefaults: async () => newWorkDefaults,
-    setNewWorkDefaults: async (_id, defaults) => {
+    setNewWorkDefaults: async (id, defaults) => {
+      writes.defaults(id, defaults);
       newWorkDefaults = defaults;
     },
     observe: (_id, _event, _error, _phase, execution) => { updateExecution = execution; publishExecution(); return () => { updateExecution = undefined; }; },
@@ -244,7 +245,9 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvas.getByRole('button', { name: '打开用量追踪' }).textContent).toContain('1%'));
     await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
     await userEvent.click(page.getByRole('option', { name: /model-b/ }));
-    await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ expectedRevision: 1, modelTarget: expect.objectContaining({ model: 'model-b' }) })));
+    await waitFor(() => expect(writes.defaults).toHaveBeenCalledWith(sessionId, {
+      model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-b' },
+    }));
     await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
     await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
@@ -265,11 +268,16 @@ export const ThinkingLevelPicker: Story = {
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
     await userEvent.click(page.getByRole('option', { name: /^高$/ }));
     await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 高' })).toBeEnabled());
-    await expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ thinkingLevel: 'high' }));
+    await expect(writes.defaults).toHaveBeenCalledWith(sessionId, {
+      model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-a' },
+      thinkingLevel: 'high',
+    });
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 高' }));
     await userEvent.click(page.getByRole('option', { name: /^默认$/ }));
     await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
-    await expect(writes.model).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ expectedRevision: 2, thinkingLevel: null }));
+    await expect(writes.defaults).toHaveBeenLastCalledWith(sessionId, {
+      model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-a' },
+    });
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
     await expect(page.getByRole('option', { name: /^默认$/ })).toHaveAttribute('aria-selected', 'true');
   },
