@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import { resolveExistingStorageRoot } from '@maka/storage/root-authority';
+import {
+  reapStaleRootControlDirectories,
+  reapRootControlDirectoryBatches,
+  resolveExistingStorageRoot,
+} from '@maka/storage/root-authority';
 import {
   currentRuntimeHostProcessLaunch,
   tryAcquireRuntimeHostLaunch,
@@ -50,6 +54,8 @@ export interface InteractiveRuntimeHostCandidateDependencies {
   readonly managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
   /** Test-only process-identity override. Production derives this from the running process. */
   readonly processLaunch?: RuntimeHostManagedProcessLaunch;
+  /** Test-only background reaper override. */
+  readonly rootControlDirectoryReaper?: () => ReturnType<typeof reapStaleRootControlDirectories>;
 }
 
 export type InteractiveRuntimeHostCandidateResult =
@@ -59,6 +65,55 @@ export type InteractiveRuntimeHostCandidateResult =
 export type InteractiveRuntimeHostCompositionFactory = (
   managedConfig: RuntimeHostManagedDeploymentConfig | undefined,
 ) => RuntimeHostCompositionSource | Promise<RuntimeHostCompositionSource>;
+
+let rootControlDirectoryReaper: Promise<void> | undefined;
+const reapingHosts = new Set<RuntimeHostKernel>();
+
+async function sweepRootControlDirectories(): Promise<void> {
+  let failures = 0;
+  for await (const summary of reapRootControlDirectoryBatches()) {
+    failures += summary.failed;
+    if (reapingHosts.size === 0) break;
+    // Retain the iterator across batches; do not restart at the same busy prefix.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  if (failures > 0)
+    console.error('[runtime-host] stale control-directory sweep failures:', failures);
+}
+
+function scheduleRootControlDirectoryReaper(
+  host: RuntimeHostKernel,
+  reap?: () => ReturnType<typeof reapStaleRootControlDirectories>,
+): void {
+  reapingHosts.add(host);
+  void host.closed.then(
+    () => reapingHosts.delete(host),
+    () => reapingHosts.delete(host),
+  );
+  setImmediate(() => {
+    if (rootControlDirectoryReaper || reapingHosts.size === 0) return;
+    const run = Promise.resolve()
+      .then(async () => {
+        if (reap) return await reap();
+        await sweepRootControlDirectories();
+        return undefined;
+      })
+      .then((summary) => {
+        if (summary && summary.failed > 0) {
+          console.error('[runtime-host] stale control-directory reaper completed with failures:', {
+            ...summary,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        console.error('[runtime-host] stale control-directory reaper failed:', error);
+      });
+    rootControlDirectoryReaper = run;
+    void run.finally(() => {
+      if (rootControlDirectoryReaper === run) rootControlDirectoryReaper = undefined;
+    });
+  });
+}
 
 export async function startInteractiveRuntimeHostCandidate(
   options: InteractiveRuntimeHostCandidateOptions,
@@ -108,6 +163,7 @@ export async function startInteractiveRuntimeHostCandidate(
           }
         : {}),
     });
+    scheduleRootControlDirectoryReaper(host, dependencies.rootControlDirectoryReaper);
     return { kind: 'winner', host };
   } catch (error) {
     if (!owner.closed) await owner.close();

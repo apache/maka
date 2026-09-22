@@ -17,9 +17,21 @@
  * under the License.
  */
 
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { BigIntStats } from 'node:fs';
-import { chmod, lstat, mkdir, open, realpath, stat, type FileHandle } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  opendir,
+  realpath,
+  rename,
+  rmdir,
+  unlink,
+  stat,
+  type FileHandle,
+} from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { isAbsolute, join, normalize, parse, resolve } from 'node:path';
 import { tryLock, unlock, waitForLock } from 'fs-native-extensions';
@@ -29,9 +41,17 @@ import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 import { syncDirectoryChain } from './stable-storage.js';
 
 export const STORAGE_ROOT_MARKER_FILE = '.maka-storage-root.json';
+export const ARTIFACT_WRITER_LOCK_FILE = '.maka-artifact-writer.lock';
 export const STORAGE_ROOT_MARKER_SCHEMA_VERSION = 1 as const;
 const MAX_STORAGE_ROOT_MARKER_BYTES = 1_024;
 const ARTIFACT_WRITER_BOOTSTRAP_DIRECTORY = 'artifact-writer-bootstrap';
+const ROOT_CONTROL_REAP_DIRECTORY = '.reap';
+const ROOT_ID_PATTERN = /^[a-f0-9]{64}$/;
+const ROOT_CONTROL_REAP_GRACE_MS = 24 * 60 * 60 * 1_000;
+const ROOT_CONTROL_REAP_MAX_ENTRIES = 1_024;
+const ROOT_CONTROL_REAP_MAX_DURATION_MS = 500;
+const ROOT_CONTROL_REAP_CLAIM_RETRIES = 3;
+const ROOT_CONTROL_CLAIM_LOCK = '.claim.lock';
 
 export type StorageRootKind = 'interactive';
 export type StorageRootAccess = 'read' | 'write';
@@ -127,6 +147,24 @@ export interface StateRootReader<K extends StorageRootKind = StorageRootKind> {
 
 export type InteractiveRootOwner = StateRootOwner<'interactive'>;
 export type InteractiveRootReader = StateRootReader<'interactive'>;
+
+export interface ReapStaleRootControlDirectoriesOptions {
+  /** Test-only namespace override; production uses the account control namespace. */
+  controlRoot?: string;
+  graceMs?: number;
+  maxEntries?: number;
+  maxDurationMs?: number;
+}
+
+export interface RootControlDirectoryReapSummary {
+  scanned: number;
+  eligible: number;
+  reaped: number;
+  busy: number;
+  skipped: number;
+  failed: number;
+  budgetExhausted: boolean;
+}
 
 interface RootIdentity {
   dev: bigint;
@@ -558,6 +596,23 @@ export function resolveRootControlNamespace(): string {
   }
 }
 
+/** Recreates the private diagnostic parent after a failed Candidate releases its owner. */
+export async function prepareRootControlDirectoryForDiagnostic(rootId: string): Promise<string> {
+  if (!ROOT_ID_PATTERN.test(rootId)) {
+    throw new StorageRootAuthorityError('invalid_root', 'Invalid Runtime Host root identity');
+  }
+  return withAuthorityFailure(
+    'control_io_failed',
+    'Unable to prepare the Runtime Host diagnostic directory',
+    async () => {
+      const controlRoot = await preparePrivateControlRoot();
+      const controlDirectory = join(controlRoot, rootId);
+      await ensurePrivateDirectory(controlDirectory);
+      return controlDirectory;
+    },
+  );
+}
+
 /**
  * Resolves the durable namespace that owns State Root process election.
  *
@@ -585,6 +640,160 @@ export function resolveRootOwnershipNamespace(): string {
       'Unable to resolve the State Root ownership namespace',
     );
   }
+}
+
+/**
+ * Runs one bounded batch. Callers needing a complete sweep should consume
+ * reapRootControlDirectoryBatches(), which retains its streaming cursor.
+ */
+export async function reapStaleRootControlDirectories(
+  options: ReapStaleRootControlDirectoriesOptions = {},
+): Promise<RootControlDirectoryReapSummary> {
+  for await (const summary of reapRootControlDirectoryBatches(options)) return summary;
+  return emptyReapSummary();
+}
+
+/** A finite sweep, retaining directory handles across cooperative batch boundaries. */
+export async function* reapRootControlDirectoryBatches(
+  options: ReapStaleRootControlDirectoriesOptions = {},
+): AsyncGenerator<RootControlDirectoryReapSummary> {
+  const graceMs = requireNonNegativeFiniteOption(
+    options.graceMs ?? ROOT_CONTROL_REAP_GRACE_MS,
+    'graceMs',
+  );
+  const maxEntries = requireNonNegativeIntegerOption(
+    options.maxEntries ?? ROOT_CONTROL_REAP_MAX_ENTRIES,
+    'maxEntries',
+  );
+  const maxDurationMs = requireNonNegativeFiniteOption(
+    options.maxDurationMs ?? ROOT_CONTROL_REAP_MAX_DURATION_MS,
+    'maxDurationMs',
+  );
+  let summary = emptyReapSummary();
+  if (maxEntries === 0 || maxDurationMs === 0) {
+    yield { ...summary, budgetExhausted: true };
+    return;
+  }
+  let workItems = 0;
+  let startedAt = performance.now();
+  const controlRoot = resolve(options.controlRoot ?? resolveRootControlNamespace());
+  for await (const event of rootControlReapEvents(controlRoot, graceMs)) {
+    summary.scanned += event.scanned ?? 0;
+    summary.eligible += event.eligible ?? 0;
+    summary.reaped += event.reaped ?? 0;
+    summary.busy += event.busy ?? 0;
+    summary.skipped += event.skipped ?? 0;
+    summary.failed += event.failed ?? 0;
+    workItems += 1;
+    if (workItems >= maxEntries || performance.now() - startedAt >= maxDurationMs) {
+      yield { ...summary, budgetExhausted: true };
+      summary = emptyReapSummary();
+      workItems = 0;
+      startedAt = performance.now();
+    }
+  }
+  yield summary;
+}
+
+function emptyReapSummary(): RootControlDirectoryReapSummary {
+  return {
+    scanned: 0,
+    eligible: 0,
+    reaped: 0,
+    busy: 0,
+    skipped: 0,
+    failed: 0,
+    budgetExhausted: false,
+  };
+}
+
+type ReapEvent = Partial<Omit<RootControlDirectoryReapSummary, 'budgetExhausted'>>;
+
+async function* rootControlReapEvents(
+  controlRoot: string,
+  graceMs: number,
+): AsyncGenerator<ReapEvent> {
+  if (!(await lstatPathIfPresent(controlRoot))) return;
+  await assertPrivateDirectory(controlRoot);
+  const namespaceIdentity = await lstat(controlRoot, { bigint: true });
+  // Claims are scanned first; both streams continue across batches, so neither
+  // repeatedly scans an uncollectable prefix on every budget boundary.
+  const reapRoot = join(controlRoot, ROOT_CONTROL_REAP_DIRECTORY);
+  if (await lstatPathIfPresent(reapRoot)) {
+    await assertPrivateDirectory(reapRoot);
+    const reapIdentity = await lstat(reapRoot, { bigint: true });
+    const claims = await opendir(reapRoot);
+    try {
+      for await (const entry of claims) {
+        yield { scanned: 1 };
+        await assertDirectoryIdentity(controlRoot, namespaceIdentity);
+        await assertDirectoryIdentity(reapRoot, reapIdentity);
+        if (!isReapClaimName(entry.name) || !entry.isDirectory()) {
+          yield { skipped: 1 };
+          continue;
+        }
+        const claimDirectory = join(reapRoot, entry.name);
+        try {
+          const metadata = await lstatPathIfPresent(claimDirectory);
+          if (!metadata?.isDirectory() || Date.now() - Number(metadata.mtimeMs) < graceMs) {
+            yield { skipped: 1 };
+            continue;
+          }
+          yield { eligible: 1 };
+          yield* removeRootControlClaim(controlRoot, claimDirectory);
+        } catch (error) {
+          yield reapFailureEvent(error);
+        }
+      }
+    } finally {
+      await claims.close().catch(() => undefined);
+    }
+  }
+
+  const roots = await opendir(controlRoot);
+  try {
+    for await (const entry of roots) {
+      yield { scanned: 1 };
+      if (!ROOT_ID_PATTERN.test(entry.name) || !entry.isDirectory()) {
+        yield { skipped: 1 };
+        continue;
+      }
+      let result: QuarantineRootControlDirectoryResult | undefined;
+      try {
+        await assertDirectoryIdentity(controlRoot, namespaceIdentity);
+        const metadata = await lstatPathIfPresent(join(controlRoot, entry.name));
+        if (!metadata?.isDirectory() || Date.now() - Number(metadata.mtimeMs) < graceMs) {
+          yield { skipped: 1 };
+          continue;
+        }
+        yield { eligible: 1 };
+        result = await quarantineRootControlDirectory({
+          controlRoot,
+          rootId: entry.name,
+          expectedDirectoryIdentity: metadata,
+          minimumDirectoryAgeMs: graceMs,
+        });
+        if (result.kind === 'quarantined') {
+          yield* removeRootControlClaim(controlRoot, result.claimDirectory, result.claimHandle);
+        } else {
+          yield { [result.kind]: 1 };
+        }
+      } catch (error) {
+        yield reapFailureEvent(error);
+      } finally {
+        if (result?.kind === 'quarantined') await closeReapLock(result.claimHandle);
+      }
+    }
+  } finally {
+    await roots.close().catch(() => undefined);
+  }
+}
+
+function reapFailureEvent(error: unknown): ReapEvent {
+  return isMissingPathError(error) ||
+    (error instanceof StorageRootAuthorityError && error.code === 'invalid_lock_artifact')
+    ? { skipped: 1 }
+    : { failed: 1 };
 }
 
 export async function tryAcquireInteractiveRootOwner(
@@ -817,11 +1026,27 @@ async function acquireStateRootLock<K extends StorageRootKind>(
   let compatibilityHandle: FileHandle | undefined;
   let controlDirectory: string;
   try {
-    ({ controlDirectory } = await prepareStorageRootControlDirectory(capability));
-    compatibilityHandle = await tryAcquireStableRootLock(
-      join(controlDirectory, 'owner.lock'),
-      access,
-    );
+    for (let attempt = 0; ; attempt += 1) {
+      ({ controlDirectory } = await prepareStorageRootControlDirectory(capability));
+      try {
+        compatibilityHandle = await tryAcquireStableRootLock(
+          join(controlDirectory, 'owner.lock'),
+          access,
+        );
+        break;
+      } catch (error) {
+        // A stale-directory reaper can rename the compatibility lock after it
+        // is opened but before its identity is checked. The durable lock held
+        // above makes one retry safe and prevents two owners from emerging.
+        if (
+          attempt !== 0 ||
+          !(error instanceof StorageRootAuthorityError) ||
+          error.code !== 'invalid_lock_artifact'
+        ) {
+          throw error;
+        }
+      }
+    }
     if (!compatibilityHandle) {
       releaseLock(durableHandle);
       await durableHandle.close();
@@ -868,10 +1093,45 @@ async function acquireStateRootLock<K extends StorageRootKind>(
       async () => {
         await waitForOperations();
         const errors: unknown[] = [];
+        let quarantined:
+          | Extract<QuarantineRootControlDirectoryResult, { kind: 'quarantined' }>
+          | undefined;
+        if (access === 'write') {
+          try {
+            const result = await quarantineRootControlDirectory({
+              controlRoot: resolve(resolveRootControlNamespace()),
+              rootId: capabilityRecord.rootId,
+              heldOwnerHandle: compatibilityHandle,
+            });
+            if (result.kind === 'quarantined') quarantined = result;
+          } catch {
+            // A disposable-cache cleanup failure must not fail Runtime Host shutdown.
+          }
+        }
         releaseLock(compatibilityHandle);
         await compatibilityHandle.close().catch((error: unknown) => errors.push(error));
         releaseLock(durableHandle);
         await durableHandle.close().catch((error: unknown) => errors.push(error));
+        if (quarantined) {
+          try {
+            // Removal is bounded on shutdown as well. A partial claim is safe to
+            // resume at a later Host startup.
+            const deadline = performance.now() + ROOT_CONTROL_REAP_MAX_DURATION_MS;
+            let workItems = 0;
+            for await (const _event of removeRootControlClaim(
+              resolve(resolveRootControlNamespace()),
+              quarantined.claimDirectory,
+              quarantined.claimHandle,
+            )) {
+              if (++workItems >= ROOT_CONTROL_REAP_MAX_ENTRIES || performance.now() >= deadline)
+                break;
+            }
+          } catch {
+            // Retain the claim for a later sweep.
+          } finally {
+            await closeReapLock(quarantined.claimHandle);
+          }
+        }
         if (errors.length > 0) {
           throw new AggregateError(errors, 'Unable to close every State Root owner lock');
         }
@@ -911,6 +1171,296 @@ async function tryAcquireStableRootLock(
     await handle.close().catch(() => undefined);
     throw error;
   }
+}
+
+type QuarantineRootControlDirectoryResult =
+  | { kind: 'quarantined'; claimDirectory: string; claimHandle: FileHandle }
+  | { kind: 'busy' }
+  | { kind: 'skipped' };
+
+interface QuarantineRootControlDirectoryInput {
+  controlRoot: string;
+  rootId: string;
+  expectedDirectoryIdentity?: BigIntStats;
+  minimumDirectoryAgeMs?: number;
+  heldOwnerHandle?: FileHandle;
+}
+
+async function quarantineRootControlDirectory(
+  input: QuarantineRootControlDirectoryInput,
+): Promise<QuarantineRootControlDirectoryResult> {
+  if (!ROOT_ID_PATTERN.test(input.rootId)) return { kind: 'skipped' };
+  const controlRoot = resolve(input.controlRoot);
+  const controlDirectory = join(controlRoot, input.rootId);
+  if (parse(controlDirectory).dir !== controlRoot) return { kind: 'skipped' };
+
+  const initialDirectoryStat =
+    input.expectedDirectoryIdentity ?? (await lstatPathIfPresent(controlDirectory));
+  if (!initialDirectoryStat?.isDirectory() || initialDirectoryStat.isSymbolicLink()) {
+    return { kind: 'skipped' };
+  }
+
+  let ownerHandle = input.heldOwnerHandle;
+  const ownsOwnerHandle = ownerHandle === undefined;
+  let writerHandle: FileHandle | undefined;
+  try {
+    if (ownerHandle) {
+      await assertStableLockArtifact(ownerHandle, join(controlDirectory, 'owner.lock'));
+    } else {
+      ownerHandle = await tryAcquireStableRootLock(join(controlDirectory, 'owner.lock'), 'write');
+      if (!ownerHandle) return { kind: 'busy' };
+    }
+
+    writerHandle = await tryAcquireStableRootLock(
+      join(controlDirectory, ARTIFACT_WRITER_LOCK_FILE),
+      'write',
+    );
+    if (!writerHandle) return { kind: 'busy' };
+
+    const currentDirectoryStat = await lstatPathIfPresent(controlDirectory);
+    if (!sameFilesystemIdentity(initialDirectoryStat, currentDirectoryStat)) {
+      return { kind: 'skipped' };
+    }
+    if (!(await containsOnlyDisposableRootControlEntries(controlDirectory))) {
+      return { kind: 'skipped' };
+    }
+    const directoryStatBeforeClaim = await lstatPathIfPresent(controlDirectory);
+    if (
+      directoryStatBeforeClaim === undefined ||
+      !sameFilesystemIdentity(initialDirectoryStat, directoryStatBeforeClaim)
+    ) {
+      return { kind: 'skipped' };
+    }
+    await Promise.all([
+      assertStableLockArtifact(ownerHandle, join(controlDirectory, 'owner.lock')),
+      assertStableLockArtifact(writerHandle, join(controlDirectory, ARTIFACT_WRITER_LOCK_FILE)),
+    ]);
+
+    const claimDirectory = await createRootControlReapClaim(controlRoot);
+    const claimHandle = await tryAcquireStableRootLock(
+      join(claimDirectory, ROOT_CONTROL_CLAIM_LOCK),
+      'write',
+    );
+    if (!claimHandle) return { kind: 'busy' };
+    try {
+      await assertDirectoryIdentity(controlDirectory, initialDirectoryStat);
+      await assertStableLockArtifact(ownerHandle, join(controlDirectory, 'owner.lock'));
+      await assertStableLockArtifact(
+        writerHandle,
+        join(controlDirectory, ARTIFACT_WRITER_LOCK_FILE),
+      );
+      if (!(await containsOnlyDisposableRootControlEntries(controlDirectory))) {
+        await closeReapLock(claimHandle);
+        await unlink(join(claimDirectory, ROOT_CONTROL_CLAIM_LOCK));
+        await rmdir(claimDirectory);
+        return { kind: 'skipped' };
+      }
+      const preRenameDirectoryStat = await lstatPathIfPresent(controlDirectory);
+      if (
+        input.minimumDirectoryAgeMs !== undefined &&
+        (preRenameDirectoryStat === undefined ||
+          !sameFilesystemIdentity(initialDirectoryStat, preRenameDirectoryStat) ||
+          (preRenameDirectoryStat.mtimeNs !== directoryStatBeforeClaim.mtimeNs &&
+            Date.now() - Number(preRenameDirectoryStat.mtimeMs) < input.minimumDirectoryAgeMs))
+      ) {
+        await closeReapLock(claimHandle);
+        await unlink(join(claimDirectory, ROOT_CONTROL_CLAIM_LOCK));
+        await rmdir(claimDirectory);
+        return { kind: 'skipped' };
+      }
+      await rename(controlDirectory, join(claimDirectory, input.rootId));
+    } catch (error) {
+      await closeReapLock(claimHandle);
+      if (isMissingPathError(error) || isNodeError(error, 'EBUSY') || isNodeError(error, 'EPERM')) {
+        return isMissingPathError(error) ? { kind: 'skipped' } : { kind: 'busy' };
+      }
+      throw error;
+    }
+    return { kind: 'quarantined', claimDirectory, claimHandle };
+  } finally {
+    if (writerHandle) {
+      releaseLock(writerHandle);
+      await writerHandle.close().catch(() => undefined);
+    }
+    if (ownsOwnerHandle && ownerHandle) {
+      releaseLock(ownerHandle);
+      await ownerHandle.close().catch(() => undefined);
+    }
+  }
+}
+
+/** Unknown entries are retained: the control directory also hosts durable Runtime Host data. */
+async function containsOnlyDisposableRootControlEntries(
+  controlDirectory: string,
+): Promise<boolean> {
+  const directory = await opendir(controlDirectory);
+  try {
+    for await (const entry of directory) {
+      if (!isDisposableRootControlEntry(entry.name)) return false;
+    }
+    return true;
+  } finally {
+    await directory.close().catch(() => undefined);
+  }
+}
+
+function isDisposableRootControlEntry(name: string): boolean {
+  return (
+    name === 'owner.lock' ||
+    name === ARTIFACT_WRITER_LOCK_FILE ||
+    name === 'registration.json' ||
+    name === 'bundle-imports-v1' ||
+    /^registration\.json\.\d+\.[0-9a-f-]{36}\.tmp$/u.test(name) ||
+    /^startup-diagnostic(?:\.[0-9a-f-]{36})?\.json(?:\.\d+\.[0-9a-f-]{36}\.tmp)?$/u.test(name) ||
+    /^runtime-host-access-delivery-[0-9a-f-]{36}\.json$/u.test(name)
+  );
+}
+
+async function createRootControlReapClaim(controlRoot: string): Promise<string> {
+  const reapRoot = join(controlRoot, ROOT_CONTROL_REAP_DIRECTORY);
+  try {
+    await mkdir(reapRoot, { mode: 0o700 });
+  } catch (error) {
+    if (!isNodeError(error, 'EEXIST')) throw error;
+  }
+  await assertPrivateDirectory(reapRoot);
+
+  for (let attempt = 0; attempt < ROOT_CONTROL_REAP_CLAIM_RETRIES; attempt += 1) {
+    const claimDirectory = join(reapRoot, randomUUID());
+    try {
+      await mkdir(claimDirectory, { mode: 0o700 });
+      return claimDirectory;
+    } catch (error) {
+      if (!isNodeError(error, 'EEXIST')) throw error;
+    }
+  }
+  throw new Error('Unable to allocate a unique Runtime Host control-directory reap claim');
+}
+
+async function closeReapLock(handle: FileHandle): Promise<void> {
+  releaseLock(handle);
+  await handle.close().catch(() => undefined);
+}
+
+async function assertDirectoryIdentity(path: string, expected: BigIntStats): Promise<void> {
+  if (!sameFilesystemIdentity(expected, await lstatPathIfPresent(path))) {
+    throw invalidLockArtifact(path);
+  }
+}
+
+/**
+ * The claim lock serializes deletion, including against a quarantiner paused
+ * after rename. Each filesystem entry yields back to the batch budget.
+ */
+async function* removeRootControlClaim(
+  controlRoot: string,
+  claimDirectory: string,
+  heldClaimHandle?: FileHandle,
+): AsyncGenerator<ReapEvent> {
+  const reapRoot = join(controlRoot, ROOT_CONTROL_REAP_DIRECTORY);
+  if (parse(claimDirectory).dir !== reapRoot || !isReapClaimName(parse(claimDirectory).base)) {
+    throw invalidLockArtifact(claimDirectory);
+  }
+  await assertPrivateDirectory(controlRoot);
+  await assertPrivateDirectory(reapRoot);
+  await assertPrivateDirectory(claimDirectory);
+  const rootIdentity = await lstat(controlRoot, { bigint: true });
+  const reapIdentity = await lstat(reapRoot, { bigint: true });
+  const claimIdentity = await lstat(claimDirectory, { bigint: true });
+  const lockPath = join(claimDirectory, ROOT_CONTROL_CLAIM_LOCK);
+  const handle = heldClaimHandle ?? (await tryAcquireStableRootLock(lockPath, 'write'));
+  if (!handle) {
+    yield { busy: 1 };
+    return;
+  }
+  try {
+    const guard = async () => {
+      await assertDirectoryIdentity(controlRoot, rootIdentity);
+      await assertDirectoryIdentity(reapRoot, reapIdentity);
+      await assertDirectoryIdentity(claimDirectory, claimIdentity);
+      await assertStableLockArtifact(handle, lockPath);
+    };
+    await guard();
+    yield* removeClaimContents(claimDirectory, guard, 0);
+    await guard();
+  } finally {
+    if (!heldClaimHandle) await closeReapLock(handle);
+  }
+  // No payload remains. Closing the claim lock here permits only competing
+  // removers of this empty claim, never an opener of the original root path.
+  if (heldClaimHandle) await closeReapLock(heldClaimHandle);
+  await unlink(lockPath).catch((error: unknown) => {
+    if (!isMissingPathError(error)) throw error;
+  });
+  await rmdir(claimDirectory).catch((error: unknown) => {
+    if (!isMissingPathError(error)) throw error;
+  });
+  yield { reaped: 1 };
+}
+
+async function* removeClaimContents(
+  path: string,
+  guard: () => Promise<void>,
+  depth: number,
+): AsyncGenerator<ReapEvent> {
+  // Bound open directory handles and call-stack depth independently of width.
+  if (depth > 64) throw new Error('Runtime Host tombstone exceeds deletion depth limit');
+  await guard();
+  const identity = await lstat(path, { bigint: true });
+  if (!identity.isDirectory()) throw invalidLockArtifact(path);
+  const guardCurrent = async () => {
+    await guard();
+    await assertDirectoryIdentity(path, identity);
+  };
+  const directory = await opendir(path);
+  try {
+    for await (const entry of directory) {
+      if (depth === 0 && entry.name === ROOT_CONTROL_CLAIM_LOCK) continue;
+      yield {};
+      await guardCurrent();
+      const child = join(path, entry.name);
+      const metadata = await lstatPathIfPresent(child);
+      if (!metadata) continue;
+      if (metadata.isDirectory()) {
+        yield* removeClaimContents(child, guardCurrent, depth + 1);
+        await guardCurrent();
+        await assertDirectoryIdentity(child, metadata);
+        await rmdir(child);
+      } else {
+        // unlink removes symlinks themselves, never their targets.
+        await unlink(child);
+      }
+    }
+  } finally {
+    await directory.close().catch(() => undefined);
+  }
+}
+
+function isReapClaimName(name: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(name);
+}
+
+function sameFilesystemIdentity(expected: BigIntStats, actual: BigIntStats | undefined): boolean {
+  return (
+    actual?.isDirectory() === true &&
+    !actual.isSymbolicLink() &&
+    expected.dev === actual.dev &&
+    expected.ino === actual.ino
+  );
+}
+
+function requireNonNegativeFiniteOption(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative finite number`);
+  }
+  return value;
+}
+
+function requireNonNegativeIntegerOption(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative safe integer`);
+  }
+  return value;
 }
 
 function createStateRootLock<K extends StorageRootKind>(

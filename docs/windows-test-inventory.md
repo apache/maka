@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 35 |
-| platform-contract | 38 |
+| portable-candidate | 45 |
+| platform-contract | 39 |
 
-Total Windows-excluded declarations: **100**
+Total Windows-excluded declarations: **111**
 
 ## Inventory
 
@@ -105,6 +105,17 @@ Total Windows-excluded declarations: **100**
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects a lock path that aliases another filesystem object | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
 | portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` cache deletion cannot create a second State Root owner | `process.platform === 'win32' ? 'Windows does not unlink an open native lock file' : false` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` validates an existing control directory without repairing its permissions | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` removes the disposable control directory when a write owner closes normally | `process.platform === 'win32' ? 'Windows may reject rename while lock handles are open' : false` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` retries owner acquisition when a reaper renames the opened control directory | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` rechecks directory freshness immediately before quarantine rename | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` reaps an old crash directory in full but preserves a directory inside the grace period | `process.platform === 'win32' ? 'Windows may reject rename while lock handles are open' : false` |
+| platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` skips invalid names and symlinked root-control candidates | `process.platform === 'win32' ? 'Windows symlink permissions are not guaranteed in CI' : false` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` allows only one of two process reapers to claim a stale directory | `process.platform === 'win32' ? 'Windows may reject rename while lock handles are open' : false` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` public Writer retries when owner close reclaims its prepared lock path | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` a successor process reaps a SIGKILL tombstone without deleting a rebuilt owner | `process.platform === 'win32' \|\| !RUN_PROCESS_LOCK_TESTS` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` a sweep advances beyond an uncollectable prefix across bounded batches | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` rename isolation preserves a new owner created before old-claim deletion | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` revalidates lock identity after claim allocation before rename | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` reports unknown outcome when credential persistence fails after clearing verified state | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` validates proxy policy mutations before clearing and reports failed follow-up commits as unknown | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` reports unknown outcome when active proxy password persistence fails after clearing | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
