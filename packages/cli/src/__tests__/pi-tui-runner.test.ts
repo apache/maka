@@ -5990,8 +5990,9 @@ Slug openai-work<cursor>
   test('/resume opens a picker containing only resumable sessions when none is attached', async () => {
     const terminal = new FakeTerminal();
     const resumable = fakeSessionSummary('resumable', '/repo');
-    const unavailable = fakeSessionSummary('unavailable', '');
-    const driver = new SlashCommandDriver([resumable, unavailable]);
+    const unavailable = fakeSessionSummary('unavailable', '/repo');
+    const driver = new BoundedResumeAvailabilityDriver([resumable, unavailable]);
+    driver.unavailableSessionIds.add(unavailable.id);
     (driver as unknown as { sessionId: string | null }).sessionId = null;
     const run = runMakaPiTui({
       title: 'Maka',
@@ -6014,6 +6015,31 @@ Slug openai-work<cursor>
     await waitFor(() => driver.resumeCalls === 1);
     terminal.input('/exit');
     terminal.input('\r');
+    await run;
+  });
+
+  test('/resume fails closed when candidate discovery is unavailable', async () => {
+    const terminal = new FakeTerminal();
+    const session = fakeSessionSummary('attachable-only', '/repo', 'Attachable only');
+    const driver = new SlashCommandDriver([session]);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /Attachable only/);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
     await run;
   });
 
@@ -6072,12 +6098,12 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('/resume checks only the current cwd before rendering the default scope', async () => {
+  test('/resume bounds total candidate checks after switching to All', async () => {
     const terminal = new FakeTerminal();
     const sessions = [
-      fakeSessionSummary('current-session', '/repo'),
-      ...Array.from({ length: 16 }, (_, index) =>
-        fakeSessionSummary(`other-session-${index}`, `/other/${index}`),
+      ...Array.from({ length: 100 }, (_, index) => fakeSessionSummary(`current-${index}`, '/repo')),
+      ...Array.from({ length: 124 }, (_, index) =>
+        fakeSessionSummary(`other-${index}`, `/other/${index}`),
       ),
     ];
     const driver = new BoundedResumeAvailabilityDriver(sessions);
@@ -6095,9 +6121,52 @@ Slug openai-work<cursor>
     terminal.input('/resume');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.equal(driver.availabilityCalls, 101);
+
+    terminal.input('\t');
+    await waitFor(() => driver.availabilityCalls === 201);
+    assert.equal(driver.availabilityCalls, 201);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume checks only the current cwd before rendering the default scope', async () => {
+    const terminal = new FakeTerminal();
+    const sessions = [
+      fakeSessionSummary('current-session', '/repo'),
+      fakeSessionSummary('unavailable-current-session', '/repo'),
+      ...Array.from({ length: 16 }, (_, index) =>
+        fakeSessionSummary(`other-session-${index}`, `/other/${index}`),
+      ),
+    ];
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    driver.unavailableSessionIds.add('unavailable-current-session');
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+      sessionListScope: 'all',
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
     assert.ok(driver.availabilitySessionIds.length > 0);
-    assert.ok(driver.availabilitySessionIds.every((sessionId) => sessionId === 'current-session'));
+    assert.ok(
+      driver.availabilitySessionIds.every(
+        (sessionId) =>
+          sessionId === 'current-session' || sessionId === 'unavailable-current-session',
+      ),
+    );
     assert.doesNotMatch(plainTerminalOutput(terminal.output()), /other-session/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /unavailable-current-session/);
 
     terminal.input('\x1b');
     exitMaka(terminal);
@@ -6117,14 +6186,33 @@ Slug openai-work<cursor>
       transcriptPath: '/home/u/.claude/projects/-repo/foreign-resume.jsonl',
     };
     let listSessionsCalls = 0;
+    let listSourcesCalls = 0;
     let readDigestCalls = 0;
-    const foreignSessions = {
-      availableSources: async () => ['claude-code' as const],
+    const externalSessions = {
+      listScopes: () => ['all'] as const,
+      listSources: async () => {
+        listSourcesCalls += 1;
+        return ['claude-code'] as const;
+      },
       listSessions: async () => {
         listSessionsCalls += 1;
-        return [foreignSession];
+        return {
+          sessions: [
+            {
+              id: foreignSession.id,
+              name: foreignSession.title,
+              hostCwd: foreignSession.cwd,
+              importState: {
+                importedCount: 0,
+                importedSessionIds: [],
+                isImporting: false,
+              },
+            },
+          ],
+          nextCursor: null,
+        };
       },
-      readDigest: async () => {
+      importSession: async () => {
         readDigestCalls += 1;
         throw new Error('foreign import must not run from /resume');
       },
@@ -6137,7 +6225,7 @@ Slug openai-work<cursor>
       connectionSlug: 'c',
       permissionMode: 'bypass',
       terminal,
-      foreignSessions,
+      externalSessions,
     });
 
     terminal.input('/resume');
@@ -6145,6 +6233,7 @@ Slug openai-work<cursor>
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
     const output = plainTerminalOutput(terminal.output());
     assert.doesNotMatch(output, /Foreign interrupted work/);
+    assert.equal(listSourcesCalls, 0);
     assert.equal(listSessionsCalls, 0);
 
     terminal.input('\x1b');
@@ -11996,6 +12085,12 @@ class SlashCommandDriver extends FakeSessionDriver {
 class RejectingSwitchSessionDriver extends SlashCommandDriver {
   switchCalls = 0;
 
+  async getSessionResumeCandidateAvailability(
+    _session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    return { available: true };
+  }
+
   override async switchSession(_sessionId: string): Promise<MakaSessionSwitchResult> {
     this.switchCalls += 1;
     throw new Error('session became unavailable');
@@ -12005,6 +12100,7 @@ class RejectingSwitchSessionDriver extends SlashCommandDriver {
 class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
   availabilityCalls = 0;
   readonly availabilitySessionIds: string[] = [];
+  readonly unavailableSessionIds = new Set<string>();
   activeCalls = 0;
   maxActiveCalls = 0;
 
@@ -12017,7 +12113,9 @@ class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
     this.maxActiveCalls = Math.max(this.maxActiveCalls, this.activeCalls);
     await delay(1);
     this.activeCalls -= 1;
-    return { available: true };
+    return this.unavailableSessionIds.has(session.id)
+      ? { available: false, reason: 'resume_candidate_missing' }
+      : { available: true };
   }
 }
 
