@@ -106,6 +106,12 @@
   flex: 0 0 auto;
 }
 
+.maka-composer-queue-local-actions {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 0 var(--space-2) var(--space-1);
+}
+
 .maka-composer-queue-edit {
   width: 100%;
   min-width: 0;
@@ -673,6 +679,8 @@
 }
 
 .maka-composer-queue-feedback {
+  display: block;
+  padding: 0 var(--space-2) var(--space-1);
   font-size: 11px;
   color: var(--muted-foreground);
 }
