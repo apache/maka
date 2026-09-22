@@ -52,6 +52,7 @@ test('Windows file rules keep test code and renderer side-files out of the app',
     'dist/main/__tests__/about.test.js',
     'dist/main/test-only/bootstrap.js',
     'dist/renderer/agent-graph-panel.js',
+    'scripts/plugins/codex-app-server-executor/index.mjs',
   ]) {
     const path = join(root, name);
     await mkdir(dirname(path), { recursive: true });

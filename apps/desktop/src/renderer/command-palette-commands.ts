@@ -39,7 +39,6 @@ import {
   Plus,
   Settings as SettingsIcon,
   ShieldCheck,
-  Sparkles,
   Sun,
   SunMoon,
   Wifi,
@@ -49,7 +48,6 @@ import type { ChatDefaultPermissionMode, SettingsSection, ThemePreference } from
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
@@ -70,7 +68,6 @@ export function buildCommandList(args: {
   defaultSlug: string | null;
   onNewChat(): Promise<void> | void;
   onOpenSideChat?(): Promise<void> | void;
-  onStartDeepResearch?(): Promise<void> | void;
   onOpenSettings(): void;
   onOpenSettingsSection(section: SettingsSection): void;
   onOpenShortcuts(): void;
@@ -84,7 +81,6 @@ export function buildCommandList(args: {
   onSetDefaultConnection?(slug: string): Promise<void> | void;
   onOpenWorkspace?(): Promise<void> | void;
   onOpenProjectFolder?(): Promise<void> | void;
-  onOpenSkillsFolder?(): Promise<void> | void;
   /** Copy the active conversation as Markdown to the clipboard. */
   onExportActiveConversation?(): Promise<void> | void;
   /**
@@ -140,7 +136,7 @@ export function buildCommandList(args: {
   /**
    * PR-CMD-PALETTE-ENRICH-0: jump to an app module (会话 / 计划 /
    * 技能 / 每日回顾) directly from the palette. Search itself is
-   * already covered by the existing thread-search hookup, so the
+   * already covered by the existing recall-search hookup, so the
    * `search` module nav id is intentionally omitted here.
    */
   onSelectModule?(selection: NavSelection): void;
@@ -166,18 +162,6 @@ export function buildCommandList(args: {
             Icon: MessageCircleQuestion,
             keywords: [...copy.staticKeywords['action:side-chat']],
             run: args.onOpenSideChat,
-          },
-        ]
-      : []),
-    ...(args.onStartDeepResearch
-      ? [
-          {
-          id: 'action:new-deep-research',
-          kind: 'action' as const,
-            ...staticCopy('action:new-deep-research'),
-          Icon: Sparkles,
-            keywords: [...copy.staticKeywords['action:new-deep-research']],
-          run: () => args.onStartDeepResearch!(),
           },
         ]
       : []),
@@ -321,16 +305,6 @@ export function buildCommandList(args: {
       Icon: FolderOpen,
       keywords: [...copy.staticKeywords['diag:open-project-folder']],
       run: () => args.onOpenProjectFolder!(),
-    });
-  }
-  if (args.onOpenSkillsFolder) {
-    cmds.push({
-      id: 'diag:open-skills',
-      kind: 'action',
-      ...staticCopy('diag:open-skills'),
-      Icon: FolderOpen,
-      keywords: [...copy.staticKeywords['diag:open-skills']],
-      run: () => args.onOpenSkillsFolder!(),
     });
   }
   if (args.onExportActiveConversation && args.activeSessionId) {
@@ -490,36 +464,5 @@ export function buildCommandList(args: {
     }
   }
 
-  return cmds;
-}
-
-/**
- * Session rows for the palette's 会话 group, derived separately from the
- * base command list (#1045): the base list is frozen per palette open/close,
- * while these rebuild only when the visible session catalog or the active
- * session actually changes, so background session creates/renames stay live
- * without reintroducing per-render list rebuilds.
- */
-export function buildSessionCommands(args: {
-  locale: UiLocale;
-  sessions: SessionSummary[];
-  activeSessionId: string | undefined;
-  onSelectSession(id: string): void;
-}): Command[] {
-  const copy = getShellCopy(args.locale).commandPalette;
-  const cmds: Command[] = [];
-  for (const session of args.sessions) {
-    if (session.isArchived) continue;
-    cmds.push({
-      id: `session:${session.id}`,
-      kind: 'session',
-      label: session.name,
-      hint: session.id === args.activeSessionId ? copy.current : undefined,
-      group: copy.groups.conversations,
-      Icon: session.isFlagged ? Palette : MessageSquare,
-      keywords: ['session', 'chat', session.name],
-      run: () => args.onSelectSession(session.id),
-    });
-  }
   return cmds;
 }

@@ -20,15 +20,14 @@
 /**
  * The one attribute that names a Session workspace's interaction container.
  *
- * AppShell and the WorkHub `WorkbarWorkspace` both own a
- * `.maka-detail-with-artifacts` frame, so a global lookup can land in a
- * workspace the user is not looking at. Marking both hosts with the same
- * semantic attribute lets the parent-focus action resolve the workspace that
+ * AppShell owns a `.maka-detail-with-artifacts` frame. A global lookup
+ * can land in a workspace the user is not looking at. The semantic
+ * attribute lets the parent-focus action resolve the workspace that
  * owns the Side Conversation it was invoked from.
  */
 export const SESSION_INTERACTION_CONTAINER_ATTRIBUTE = 'data-maka-interaction-container';
 export const SESSION_INTERACTION_CONTAINER_SELECTOR =
-  `[${SESSION_INTERACTION_CONTAINER_ATTRIBUTE}]`;
+  `.maka-detail-with-artifacts, [${SESSION_INTERACTION_CONTAINER_ATTRIBUTE}]`;
 
 /**
  * The parent conversation region inside that frame. The Workbar column is a
@@ -37,7 +36,7 @@ export const SESSION_INTERACTION_CONTAINER_SELECTOR =
  */
 export const SESSION_PARENT_INTERACTION_ATTRIBUTE = 'data-maka-parent-interaction';
 export const SESSION_PARENT_INTERACTION_SELECTOR =
-  `[${SESSION_PARENT_INTERACTION_ATTRIBUTE}]`;
+  `:scope > .mainColumn, [${SESSION_PARENT_INTERACTION_ATTRIBUTE}]`;
 
 // Question and form controls first, the parent composer second: both sit in the
 // parent region, and only the first tier can answer a pending interaction.

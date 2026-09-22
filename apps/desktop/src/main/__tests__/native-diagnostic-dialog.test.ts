@@ -86,6 +86,7 @@ test('keeps Default Runtime Host errors in diagnostics instead of dialog copy', 
   const error = new Error('Authorization: Bearer very-secret-token');
   const recovery = defaultRuntimeHostRecoveryDialog({
     locale: 'en',
+    profileId: 'shared',
     profileName: 'Shared Host',
     error,
   });

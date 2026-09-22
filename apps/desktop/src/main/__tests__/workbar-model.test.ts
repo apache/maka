@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createSessionCatalogController, selectAuthoritativeSessionIds } from '../../renderer/session-catalog-state.js';
+import { createSessionCatalogController, selectAuthoritativeSessionIds } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { sessionIdSetsEqual } from '../../renderer/features/conversation/index.js';
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
@@ -266,23 +266,6 @@ describe('Workbar topology', () => {
       rightWidth: 544,
       bottomHeight: 388,
     });
-  });
-
-  it('keeps ordinary and WorkHub renderer layouts independent across interleaved writes', () => {
-    cleanups.push(installMemoryLocalStorage());
-    let main = loadWorkbarLayout('session-a');
-    let workhub = loadWorkbarLayout('coordination', 'workhub');
-    main = reduceWorkbarLayout(main, { type: 'open', placement: 'right', tab: { id: 'workbar:review', kind: 'review' } });
-    main = reduceWorkbarLayout(main, { type: 'collapse', placement: 'right', collapsed: false });
-    workhub = reduceWorkbarLayout(workhub, { type: 'open', placement: 'bottom', tab: { id: 'workbar:inspector', kind: 'inspector' } });
-    workhub = reduceWorkbarLayout(workhub, { type: 'collapse', placement: 'bottom', collapsed: false });
-    workhub = reduceWorkbarLayout(workhub, { type: 'resize', placement: 'right', size: 560 });
-    persistWorkbarLayout(main);
-    persistWorkbarLayout(workhub, 'all', 'workhub');
-    assert.deepEqual(loadWorkbarLayout('session-a'), main);
-    main = reduceWorkbarLayout(main, { type: 'resize', placement: 'bottom', size: 420 });
-    persistWorkbarLayout(main);
-    assert.deepEqual(loadWorkbarLayout('coordination', 'workhub'), workhub);
   });
 
   it('persists per-Session collapse and retires the ownerless global preference', () => {

@@ -68,6 +68,7 @@ import type { SelectorOptionData } from '@astryxdesign/core/Selector';
 import {
   DropdownMenu,
   DropdownMenuItem,
+  DropdownMenuSubMenu,
 } from '@astryxdesign/core/DropdownMenu';
 import { ModulePage } from './primitives/module-page.js';
 import { CapabilityAuditStrip, capabilityAuditIssues } from './capability-audit-strip.js';
@@ -80,7 +81,7 @@ import {
   skillStatusDotVariant,
 } from './skill-status.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
-import type { BundledSkillCatalogEntry, ManagedSkillCategory, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry } from './module-panel-types.js';
+import type { BundledSkillCatalogEntry, ManagedSkillCategory, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillLocation, SkillLocationRef } from './module-panel-types.js';
 import { getSkillsCopy } from './skills-copy.js';
 import { useUiLocale } from './locale-context.js';
 import { useToast } from './toast.js';
@@ -95,10 +96,11 @@ export function SkillsModuleMain(props: {
   managedSkillSources?: ManagedSkillSourceEntry[];
   bundledSkillCatalog?: BundledSkillCatalogEntry[];
   auditReport?: CapabilityAuditReport;
+  skillLocations?: SkillLocation[];
   onRefreshSkills?(): void | Promise<void>;
   onOpenSkill?(skillId: string): void | Promise<void>;
   onUseSkill?(skillId: string, skillName: string): void;
-  onOpenSkillsFolder?(): void | Promise<void>;
+  onOpenSkillLocation?(ref: SkillLocationRef, createIfMissing: boolean): void | Promise<void>;
   onRefreshManagedSkillSources?(): void | Promise<void>;
   onRefreshBundledSkillCatalog?(): void | Promise<void>;
   onImportManagedSkillSource?(): void | Promise<void>;
@@ -115,6 +117,7 @@ export function SkillsModuleMain(props: {
   const toast = useToast();
   const mountedRef = useMountedRef();
   const skills = props.skills ?? [];
+  const skillLocations = props.skillLocations ?? [];
 
   // Designer audit P1-5: land on skills the user can actually run, not the
   // marketplace — every market card is still 即将上线, and leading with
@@ -642,7 +645,7 @@ export function SkillsModuleMain(props: {
           />
         ) : undefined}
         actions={
-          props.onOpenSkillsFolder || props.onImportManagedSkillSource || canRefreshSkillData ? (
+          props.onOpenSkillLocation || props.onImportManagedSkillSource || canRefreshSkillData ? (
             <DropdownMenu
               button={{
                 label: copy.page.moreActions,
@@ -652,12 +655,40 @@ export function SkillsModuleMain(props: {
                 isDisabled: skillActionBusy,
               }}
             >
-              {props.onOpenSkillsFolder ? (
-                <DropdownMenuItem
+              {props.onOpenSkillLocation && skillLocations.length > 0 ? (
+                <DropdownMenuSubMenu
                   icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
-                  label={copy.page.openFolder}
-                  onClick={() => runPageActionAfterMenuClose('folder', props.onOpenSkillsFolder)}
-                />
+                  label={copy.page.locations}
+                  menuWidth={420}
+                >
+                  {skillLocations.map((location) => {
+                    const disabled = location.status === 'blocked_path' || location.status === 'read_failed';
+                    const endContent = location.status === 'available'
+                      ? copy.locations.count(location.skillCount)
+                      : location.status === 'missing'
+                        ? copy.locations.missing
+                        : location.status === 'blocked_path'
+                          ? copy.locations.blocked
+                          : copy.locations.readFailed;
+                    return (
+                      <DropdownMenuItem
+                        key={location.ref}
+                        icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
+                        label={copy.locations.labels[location.ref]}
+                        description={location.path}
+                        endContent={endContent}
+                        isDisabled={disabled}
+                        onClick={() => runPageActionAfterMenuClose(
+                          `location:${location.ref}`,
+                          () => props.onOpenSkillLocation?.(
+                            location.ref,
+                            location.status === 'missing',
+                          ),
+                        )}
+                      />
+                    );
+                  })}
+                </DropdownMenuSubMenu>
               ) : null}
               {props.onImportManagedSkillSource ? (
                 <DropdownMenuItem

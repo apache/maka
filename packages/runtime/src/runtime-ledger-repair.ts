@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { deriveTurnRecords } from '@maka/core/session';
+import { deriveTurnRecords, isConversationTextMessage } from '@maka/core/session';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
@@ -83,10 +83,11 @@ export class RuntimeLedgerRepair {
 
       for await (const scanned of this.readTurnsInPages(sessionId)) {
         const turnMessages = scanned.messages;
-        // A turn whose only user row was steering is not a turn of its own: the
-        // steering was said into a Turn some durable Root already owns, so
-        // converting it would stand a second, synthetic run beside that one.
-        if (!turnMessages.some((message) => message.type === 'user')) continue;
+        // The page reader already removed steering projections. What remains
+        // starts a transcript-derived turn when it carries conversation text,
+        // regardless of whether the Session originated inside or outside Maka.
+        const startsATurn = turnMessages.some(isConversationTextMessage);
+        if (!startsATurn) continue;
         const [turn] = deriveTurnRecords(turnMessages);
         if (!turn) continue;
         if (ownedTurnIds.has(turn.turnId)) continue;
@@ -157,45 +158,52 @@ export class RuntimeLedgerRepair {
   /**
    * The Session's legacy rows, one turn at a time, read a page at a time.
    *
-   * A turn is only complete once a row of another turn follows it, so the rows
-   * of the page's last turn are carried into the next page rather than
-   * converted early. Peak memory is therefore one page plus one turn — the same
-   * bound the transcript reader keeps, and not the Session's whole history.
+   * A turn is complete at its last row, not its first state row: a transcript
+   * can record running, failed, and then completed for the same turn. Rows from
+   * other turns can be interleaved across page boundaries. First locate each
+   * turn's last sequence using bounded pages, then group and convert through
+   * that sequence on a second pass. A turn with no state row is still repaired
+   * with the explicit missing-terminal outcome.
    */
   private async *readTurnsInPages(
     sessionId: string,
   ): AsyncGenerator<{ messages: StoredMessage[]; firstSequence: number; highWater: number }> {
-    let carried: { messages: StoredMessage[]; firstSequence: number } | undefined;
-    let afterSequence: number | undefined;
-    while (true) {
-      const page = await this.deps.readMessagesAfter(sessionId, {
-        ...(afterSequence === undefined ? {} : { afterSequence }),
-        maxMessages: TRANSCRIPT_CONVERSION_PAGE_MAX_MESSAGES,
-        maxStoredBytes: TRANSCRIPT_CONVERSION_PAGE_MAX_BYTES,
-      });
-      const highWater = page.highWaterSequence;
-      if (highWater === null) return;
-      const scanned = page.records.filter(
-        ({ message }) => message.type !== 'user' || message.steeringEventId === undefined,
-      );
-      const grouped = new Map<string, { messages: StoredMessage[]; firstSequence: number }>();
-      if (carried) grouped.set(turnIdOf(carried.messages[0]) ?? '', carried);
-      for (const { sequence, message } of scanned) {
-        const turnId = turnIdOf(message);
-        if (!turnId) continue;
-        const bucket = grouped.get(turnId);
-        if (bucket) bucket.messages.push(message);
-        else grouped.set(turnId, { messages: [message], firstSequence: sequence });
+    const lastSequenceByTurn = new Map<string, number>();
+    const openTurns = new Map<string, { messages: StoredMessage[]; firstSequence: number }>();
+    let highWater: number | null = null;
+    for (let pass = 0; pass < 2; pass += 1) {
+      let afterSequence: number | undefined;
+      while (true) {
+        const page = await this.deps.readMessagesAfter(sessionId, {
+          ...(afterSequence === undefined ? {} : { afterSequence }),
+          maxMessages: TRANSCRIPT_CONVERSION_PAGE_MAX_MESSAGES,
+          maxStoredBytes: TRANSCRIPT_CONVERSION_PAGE_MAX_BYTES,
+        });
+        if (highWater === null) highWater = page.highWaterSequence;
+        if (highWater === null) return;
+        for (const { sequence, message } of page.records) {
+          if (sequence > highWater) break;
+          if (message.type === 'user' && message.steeringEventId !== undefined) continue;
+          const turnId = turnIdOf(message);
+          if (!turnId) continue;
+          if (pass === 0) {
+            lastSequenceByTurn.set(turnId, sequence);
+            continue;
+          }
+          const bucket = openTurns.get(turnId);
+          if (bucket) bucket.messages.push(message);
+          else openTurns.set(turnId, { messages: [message], firstSequence: sequence });
+          if (lastSequenceByTurn.get(turnId) === sequence) {
+            const closed = openTurns.get(turnId);
+            openTurns.delete(turnId);
+            lastSequenceByTurn.delete(turnId);
+            if (closed) yield { ...closed, highWater };
+          }
+        }
+        const lastSequence = page.records.at(-1)?.sequence;
+        if (lastSequence === undefined || lastSequence >= highWater) break;
+        afterSequence = lastSequence;
       }
-      const turns = [...grouped.values()];
-      const lastSequence = page.records.at(-1)?.sequence;
-      // The last turn of a page may continue into the next one, so it is held
-      // back rather than converted from a prefix of its own rows. A page with
-      // nothing left to read ends the scan, and what was held back is whole.
-      carried = lastSequence === undefined ? undefined : turns.pop();
-      for (const turn of turns) yield { ...turn, highWater };
-      if (lastSequence === undefined) return;
-      afterSequence = lastSequence;
     }
   }
 

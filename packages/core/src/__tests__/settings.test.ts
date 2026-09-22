@@ -35,6 +35,23 @@ import {
   UI_FONT_SIZE_MIN,
 } from '../settings.js';
 
+test('defaults new sessions to bypass while preserving saved choices and rejecting invalid modes', () => {
+  assert.equal(createDefaultSettings().chatDefaults.permissionMode, 'bypass');
+  assert.equal(normalizeSettings({}).chatDefaults.permissionMode, 'bypass');
+  assert.equal(normalizeSettings({ chatDefaults: {} }).chatDefaults.permissionMode, 'bypass');
+  for (const permissionMode of ['ask', 'bypass'] as const) {
+    assert.equal(
+      normalizeSettings({ chatDefaults: { permissionMode } }).chatDefaults.permissionMode,
+      permissionMode,
+    );
+  }
+  assert.equal(
+    normalizeSettings({ chatDefaults: { permissionMode: 'invalid' as never } }).chatDefaults
+      .permissionMode,
+    'ask',
+  );
+});
+
 test('normalizes user-approved subagent presets without widening the catalog', () => {
   const normalized = normalizeSettings({
     subagents: {
@@ -154,7 +171,7 @@ test('shell settings default, normalize, and merge through their shared boundary
   );
 });
 
-test('a chat-default thinking level the app does not recognize drops to no preference', () => {
+test('an unrecognized legacy chat thinking field drops to no preference', () => {
   const normalized = normalizeSettings({
     chatDefaults: { thinkingLevel: 'ultra' as unknown as undefined },
   });

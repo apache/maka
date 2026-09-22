@@ -19,7 +19,12 @@
 
 import type { MessageQueueEntryProjection, ShellRunUpdate } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import { createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnBuffer } from '@maka/ui';
+import {
+  createTranscriptViewportNavigation,
+  valuesEqual,
+  type InteractionQueues,
+  type LiveTurnBuffer,
+} from '@maka/ui';
 import { createObservableState } from './observable-state.js';
 import {
   advanceExecutionHistory,
@@ -72,7 +77,6 @@ export interface SessionPendingClaim {
 
 export interface TranscriptReadingAnchor {
   readonly turnId: string;
-  readonly sequence?: number;
 }
 
 const SESSION_UI_MAP_KEYS = [
@@ -208,11 +212,13 @@ export function createAppShellSessionUiStateController(
     messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
     stopPending: createPendingClaim('stopPendingBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
-    setExecution: (sessionId: string, projection: SessionExecutionProjection | undefined) => {
+    setExecution: (sessionId: string, projection: SessionExecutionProjection | null | undefined) => {
       const latest = state.getState();
       const previous = latest.executionBySession[sessionId];
-      const next = projection ?? (previous?.available ? { ...previous, available: false } : previous);
-      if (next === previous) return;
+      // null is an observed failure; undefined is ordinary subscription cleanup.
+      const next = projection === null ? unavailableExecutionProjection(previous)
+        : projection ?? (previous ? { ...previous, available: false, observationPending: true } : undefined);
+      if (next === previous || (previous !== undefined && valuesEqual(previous, next))) return;
       const advanced = advanceExecutionHistory(
         { sessionId, projection: previous, historyEpoch: latest.executionHistoryEpochBySession[sessionId] ?? 0 },
         sessionId,
@@ -223,29 +229,6 @@ export function createAppShellSessionUiStateController(
         executionBySession: next === undefined
           ? omitSessionKey(latest.executionBySession, sessionId)
           : { ...latest.executionBySession, [sessionId]: next },
-        executionHistoryEpochBySession: advanced.historyEpoch === (latest.executionHistoryEpochBySession[sessionId] ?? 0)
-          ? latest.executionHistoryEpochBySession
-          : { ...latest.executionHistoryEpochBySession, [sessionId]: advanced.historyEpoch },
-      });
-    },
-    /**
-     * Observer failure: publish unavailability without dropping the root turn a
-     * previous successful seed already reported. Leaves the cleanup path
-     * (`setExecution(id, undefined)`) alone, which must not claim a failure.
-     */
-    setExecutionUnavailable: (sessionId: string) => {
-      const latest = state.getState();
-      const previous = latest.executionBySession[sessionId];
-      const next = unavailableExecutionProjection(previous);
-      if (next === previous) return;
-      const advanced = advanceExecutionHistory(
-        { sessionId, projection: previous, historyEpoch: latest.executionHistoryEpochBySession[sessionId] ?? 0 },
-        sessionId,
-        next,
-      );
-      replaceState({
-        ...latest,
-        executionBySession: { ...latest.executionBySession, [sessionId]: next },
         executionHistoryEpochBySession: advanced.historyEpoch === (latest.executionHistoryEpochBySession[sessionId] ?? 0)
           ? latest.executionHistoryEpochBySession
           : { ...latest.executionHistoryEpochBySession, [sessionId]: advanced.historyEpoch },
@@ -299,12 +282,8 @@ function createTranscriptReadingAnchorRegistry() {
         registry.clear(sessionId);
         return;
       }
-      const next = previous?.turnId === anchor.turnId &&
-          previous.sequence !== undefined && anchor.sequence === undefined
-        ? previous
-        : anchor;
-      if (next === previous) return;
-      ref.current = { ...ref.current, [sessionId]: next };
+      if (previous?.turnId === anchor.turnId) return;
+      ref.current = { ...ref.current, [sessionId]: anchor };
     },
   };
 }

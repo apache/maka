@@ -53,7 +53,7 @@ test("client settings updates filter Host policy and return newly submitted secr
   const result = await handlers.get("settings:client:update")?.({}, {
     appearance: { theme: "dark" },
     botChat: { channels: { telegram: { token: "fresh-bot-token" } } },
-    chatDefaults: { permissionMode: "bypass" },
+    chatDefaults: { permissionMode: "ask" },
   });
 
   assert.deepEqual(storedPatch, {
@@ -65,6 +65,6 @@ test("client settings updates filter Host policy and return newly submitted secr
     (result as { settings: typeof settings }).settings.botChat.channels.telegram.token,
     "fresh-bot-token",
   );
-  assert.equal(settings.chatDefaults.permissionMode, "ask");
+  assert.equal(settings.chatDefaults.permissionMode, "bypass");
   assert.equal(applied, 1);
 });

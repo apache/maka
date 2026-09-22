@@ -30,6 +30,11 @@
  */
 
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
+import {
+  countRecallSearchableMessages,
+  listRecallCandidateSessions,
+  type RecallCandidateStores,
+} from './recall-candidates.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -45,7 +50,7 @@ import type {
   ShellRunUpdate,
   MessageContent,
 } from '@maka/core/events';
-import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
+import { messageContentsEqual } from '@maka/core/events';
 import type {
   SessionHeader,
   SessionHeaderPatch,
@@ -63,7 +68,6 @@ import type {
 } from '@maka/core/session';
 import type {
   CreateSessionInput,
-  RegenerateTurnInput,
   UserMessageInput,
   SessionListFilter,
 } from '@maka/core/runtime-inputs';
@@ -85,13 +89,13 @@ import {
   PLAN_USER_ABANDON_REASON,
   PLAN_USER_CANCEL_REASON,
   PlanConflictError,
+  activePlanExecution,
   type ApprovePlanProposalInput,
   type PlanMutationResult,
   type PlanSessionState,
   type PlanStore,
 } from '@maka/core/plan';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
-import { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from '@maka/core/deep-research';
 import {
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
@@ -579,24 +583,19 @@ export class SessionConfigurationRevisionConflictError extends Error {
   }
 }
 
-export class RuntimeRegenerateTurnError extends Error {
-  readonly name = 'RuntimeRegenerateTurnError';
-
-  constructor(
-    readonly code: 'not_found' | 'operation_conflict',
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export interface RegenerateTurnSource {
-  readonly sourceTurnId: string;
-  readonly content: MessageContent;
-}
-
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
+  /**
+   * Recall's narrowing over pre-ledger transcripts: the Sessions among the
+   * given ones whose transcript rows contain a folded term. A superset, never
+   * an answer; `undefined` declines the fast path. See `recall-candidates.ts`.
+   */
+  listLegacyTranscriptCandidateSessions?(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined>;
+  /** Pre-ledger transcript rows of searchable types, for recall's idf term. */
+  countLegacyTranscriptMessages?(sessionIds: readonly string[]): Promise<number>;
   createSubagent(
     input: CreateSessionInput,
     initialBoundary?: ExecutionBoundary,
@@ -1204,12 +1203,7 @@ export class SessionManager {
         current.header,
         input.configuration.collaborationMode,
       );
-      const leavingDeepResearch =
-        isDeepResearchSession(current.header.labels) &&
-        input.configuration.permissionMode !== 'explore';
-      const labels = leavingDeepResearch
-        ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-        : current.header.labels;
+      const labels = current.header.labels;
       return () =>
         store.updateSessionConfiguration(sessionId, {
           expectedVersion: input.expectedRevision,
@@ -1330,6 +1324,31 @@ export class SessionManager {
 
   async getMessages(sessionId: string): Promise<StoredMessage[]> {
     return (await this.getSessionView(sessionId)).messages;
+  }
+
+  /**
+   * Recall's narrowing: which of the given Sessions could hold a message
+   * containing a folded term, from the ledger and the pre-ledger transcript
+   * tables together. A superset of the Sessions that match, never an answer;
+   * `undefined` means the fast path declined and recall reads every transcript.
+   */
+  async listRecallCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    return listRecallCandidateSessions(this.recallCandidateStores(), sessionIds, terms);
+  }
+
+  /** Corpus size for recall's idf term, across both transcript stores. */
+  async countRecallSearchableMessages(sessionIds: readonly string[]): Promise<number | undefined> {
+    return countRecallSearchableMessages(this.recallCandidateStores(), sessionIds);
+  }
+
+  private recallCandidateStores(): RecallCandidateStores {
+    return {
+      transcripts: this.deps.store,
+      ...(this.deps.runtimeEventStore ? { ledger: this.deps.runtimeEventStore } : {}),
+    };
   }
 
   async getContextDiagnostics(sessionId: string): Promise<ContextDiagnostics> {
@@ -1668,18 +1687,14 @@ export class SessionManager {
   ): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);
-    const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
     if (
       previous.permissionMode === mode &&
-      executionBoundaryMatchesPermissionMode(boundary, mode) &&
-      !leavingDeepResearch
+      executionBoundaryMatchesPermissionMode(boundary, mode)
     ) {
       return headerToSummary(previous);
     }
 
-    const labels = leavingDeepResearch
-      ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-      : previous.labels;
+    const labels = previous.labels;
     const kind = mode === 'bypass' ? 'bypass' : 'managed';
     await this.commitExecutionBoundaryTransition(sessionId, boundary, mode, async () => {
       const current = await this.deps.store.readHeader(sessionId);
@@ -2140,6 +2155,52 @@ export class SessionManager {
     return planStore.interruptActiveExecution(sessionId, reason, operationId);
   }
 
+  async settleActivePlanExecutionAfterRootTurn(
+    sessionId: string,
+    rootStatus: 'completed' | 'failed' | 'cancelled',
+    operationId: string,
+  ): Promise<PlanMutationResult | null> {
+    // A surface without Plan authority has no Plan state to settle, and the
+    // natural "unavailable" error must not be raised into the root Turn's
+    // terminal transition.
+    if (!this.hasPlanAuthority()) return null;
+    if (rootStatus === 'failed' || rootStatus === 'cancelled') {
+      return this.interruptActivePlanExecution(
+        sessionId,
+        rootStatus === 'cancelled'
+          ? 'Plan execution was interrupted because the Runtime root Turn was cancelled.'
+          : 'Plan execution was interrupted because the Runtime root Turn failed.',
+        operationId,
+      );
+    }
+
+    const planStore = this.requirePlanStore();
+    const state = await planStore.readState(sessionId);
+    const execution = activePlanExecution(state);
+    if (!execution) return null;
+    const terminal = execution.steps.every(
+      (step) => step.status === 'completed' || step.status === 'skipped',
+    );
+    if (!terminal) {
+      return this.interruptActivePlanExecution(
+        sessionId,
+        'Plan execution was interrupted because the Runtime root Turn completed before all Plan steps reached a terminal state.',
+        operationId,
+      );
+    }
+
+    // The root Turn is already terminal, so there is no live Run to stop and no
+    // backend to dispose. The write stays idempotent on both routes: replaying
+    // the operation is reconciled by the store's receipt, and reaching this line
+    // again after the commit finds no active execution left to update.
+    return planStore.updateExecution({
+      operationId,
+      sessionId,
+      executionId: execution.executionId,
+      steps: execution.steps.map((step) => ({ id: step.id, status: step.status })),
+    });
+  }
+
   async remove(sessionId: string): Promise<void> {
     const shellRunClose = await this.deps.shellRuns?.terminateSession(sessionId);
     try {
@@ -2572,7 +2633,9 @@ export class SessionManager {
     }
     const resolvedPreset = await this.deps.subagentCatalog.resolve(input.subagentId);
     if (resolvedPreset.profile !== input.agentProfile) {
-      throw new Error(`Subagent preset "${input.subagentId}" profile changed during spawn`);
+      throw new Error(
+        `Subagent preset "${input.subagentId}" profile changed during spawn. Retry the same agent_spawn call.`,
+      );
     }
     return { ...input, resolvedPreset };
   }
@@ -4142,66 +4205,6 @@ export class SessionManager {
     return authority
       ? authority.stopRoot(identity, input)
       : this.runtimeKernel.stopSession(identity.sessionId, input);
-  }
-
-  async *regenerateTurn(
-    sessionId: string,
-    input: RegenerateTurnInput,
-  ): AsyncIterable<SessionEvent> {
-    const execution = this.runtimeKernel.claimExecution(sessionId);
-    try {
-      const source = await this.prepareRegenerateTurn(sessionId, input.sourceTurnId);
-      yield* this.sendMessage(
-        sessionId,
-        {
-          turnId: input.turnId ?? this.deps.newId(),
-          ...source.content,
-          parentTurnId: source.sourceTurnId,
-          regeneratedFromTurnId: source.sourceTurnId,
-        },
-        { execution },
-      );
-    } finally {
-      execution.release();
-    }
-  }
-
-  async prepareRegenerateTurn(
-    sessionId: string,
-    sourceTurnId: string,
-  ): Promise<RegenerateTurnSource> {
-    const view = await this.getSessionView(sessionId);
-    const source = view.turns.find((candidate) => candidate.turnId === sourceTurnId);
-    if (!source) {
-      throw new RuntimeRegenerateTurnError(
-        'not_found',
-        `Cannot regenerate unknown Turn ${sourceTurnId}`,
-      );
-    }
-    if (
-      source.status !== 'failed' &&
-      source.status !== 'aborted' &&
-      source.status !== 'completed'
-    ) {
-      throw new RuntimeRegenerateTurnError(
-        'operation_conflict',
-        `Cannot regenerate Turn ${sourceTurnId} while it is ${source.status}`,
-      );
-    }
-    const user = view.messages.find(
-      (message): message is UserMessage =>
-        message.type === 'user' && message.turnId === sourceTurnId,
-    );
-    if (!user) {
-      throw new RuntimeRegenerateTurnError(
-        'operation_conflict',
-        `Turn ${sourceTurnId} has no UserMessage`,
-      );
-    }
-    return {
-      sourceTurnId,
-      content: normalizeMessageContent(user),
-    };
   }
 
   /** Canonical, repaired source view for a Host-owned cross-Session copy. */

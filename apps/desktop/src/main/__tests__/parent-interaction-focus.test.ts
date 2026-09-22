@@ -20,7 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { parseHTML } from 'linkedom';
-import { focusParentConversation } from '../../renderer/features/workbar/model/parent-interaction-focus.js';
+import { focusParentConversation } from '../../renderer/features/workbar/testing.js';
 
 /**
  * The action resolves its workspace from the element the user acted on, so the

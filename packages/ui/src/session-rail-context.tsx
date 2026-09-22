@@ -41,6 +41,20 @@ export type SessionViewMode = 'conversation' | 'project';
  * identity is the producer's business alone: hold this value still and the
  * ~1,000 fibers below do not render.
  */
+/** One place a Session may be moved to, and the row that offers it. */
+export interface SessionMoveTarget {
+  /** The rail row's `data-project-id`. */
+  readonly groupKey: string;
+  /**
+   * The owning Host's own Project id, or null for the row that leaves every
+   * project. Never the scoped key a row carries for its own menu actions.
+   */
+  readonly projectId: string | null;
+  /** What the menu calls it. Absent for the row that leaves every project:
+   * the rail already names that one. */
+  readonly name?: string;
+}
+
 export interface SessionRailData {
   sessions: readonly SessionSummary[];
   activeId?: string;
@@ -57,6 +71,33 @@ export interface SessionRailData {
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
+  /**
+   * Rows that may receive a dragged task at all.
+   *
+   * The window's drop guard runs in the capture phase, before React, so it
+   * cannot ask which task is in the air — it decides from the marker these rows
+   * carry in the DOM. This is the static half of the question `moveTargets`
+   * answers per Session: a row here is a place a task *could* land, and the
+   * exact answer still comes from the Session being dragged.
+   */
+  moveDropGroupKeys?: ReadonlySet<string>;
+  /**
+   * Where one Session may be moved, or undefined when the shell cannot move
+   * Sessions at all.
+   *
+   * Group keys name rail rows; `projectId` is the owning Host's own id, never
+   * the scoped key the rows carry for their own actions, because the Host whose
+   * project it is has never seen that key. The shell answers this per Session so
+   * a task is never offered a project from a Host that does not hold it.
+   */
+  moveTargets?(sessionId: string): readonly SessionMoveTarget[];
+  /**
+   * Create a project from the rail. Drawn as the ＋ on the Projects section
+   * heading, and absent when the shell has no host that can make one.
+   */
+  onNewProject?: () => void;
+  /** Opaque Project ids whose Host can choose a replacement client directory. */
+  relinkableProjectIds?: ReadonlySet<string>;
 }
 
 /**

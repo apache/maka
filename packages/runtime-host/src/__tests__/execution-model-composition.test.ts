@@ -159,7 +159,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:5cd4bc0df70d35f251065a3163fbaf1c54763b73838406514a21bccfb4552f2e';
+  'sha256:9ef90b13f64829ae5baba777e929177838b59c9ed73e12a8c0b24c418ea2e473';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -915,12 +915,7 @@ test('backend creation admits an enabled model a live list omits', async () => {
 });
 
 test('backend creation admits an enabled model a snapshot never listed', async () => {
-  // `opencode-free` has no model-list endpoint, so its discovery run replays
-  // the array this build shipped and records `modelSource: 'fallback'`. The
-  // user enabled this id; a release snapshot cannot rule on what an account
-  // serves (#1584). Until now the only id that could get through an absent
-  // inventory was a hardcoded `deepseek` / `deepseek-v4-flash` pair (#2896) —
-  // the same situation, conceded for one provider.
+  // User-selected models remain usable when a fallback catalog has not listed them.
   const modelId = 'claude-opus-5';
   const backend = await createHostAiSdkBackend(
     backendCreationFixture({
@@ -930,10 +925,10 @@ test('backend creation admits an enabled model a snapshot never listed', async (
         kind: 'ready',
         connection: {
           slug: 'backend-creation-connection',
-          providerType: 'opencode-free',
+          providerType: 'volcengine-ark',
           enabledModelIds: [modelId],
           models: [{ id: 'grok-code' }],
-          modelSource: 'fetched' as const,
+          modelSource: 'fallback' as const,
         },
         networkProxy: { enabled: false },
         secretMaterial: {},
@@ -3993,6 +3988,25 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       }),
       '## Goal',
     );
+    const providerRequestsBeforePluginTitle = provider.requests.length;
+    assert.equal(
+      await sessionEffects.generateTitle({
+        sessionId: session.id,
+        header: {
+          ...session,
+          backend: 'plugin-executor',
+          executorId: 'codex.app-server',
+          llmConnectionId: undefined,
+          llmConnectionSlug: 'executor:codex.app-server',
+          model: 'gpt-5.6-sol',
+          thinkingLevel: 'high',
+        },
+        sourceText: 'Run this task through the Codex plugin executor',
+        abortSignal: new AbortController().signal,
+      }),
+      undefined,
+    );
+    assert.equal(provider.requests.length, providerRequestsBeforePluginTitle);
     const recap = await sessionEffects.generateRecap({
       sessionId: session.id,
       effectId: 'recap-effect-1',

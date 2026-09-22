@@ -17,13 +17,24 @@
  * under the License.
  */
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+} from 'react';
+import { Virtualizer, type CustomContainerComponentProps, type VirtualizerHandle } from 'virtua';
 import {
   ICON_SIZE,
   AlertTriangle,
-  ArrowRight,
 } from './icons.js';
-import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
+import { EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import {
   mergePromptAnchorRailTurns,
@@ -31,35 +42,31 @@ import {
   type PromptAnchorRailTurn,
 } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
-import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import { isUserVisibleSessionSystemNote, type SessionSummary, type StoredMessage } from '@maka/core/session';
 import type {
   AttachmentRef,
   InlineReference,
   QuoteRef,
   ShellRunUpdate,
 } from '@maka/core/events';
-import { isDeepResearchSession } from '@maka/core/deep-research';
-import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
+import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
-import { finalAssistantReplyText, materializeChat } from './materialize.js';
+import { finalAssistantReplyText } from './materialize.js';
 import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
-import type { LiveTurnProjection } from './live-turn-projection.js';
+import type { LiveProviderRetry, LiveTurnProjection } from './live-turn-projection.js';
 import {
   ModelProviderRetryIndicator,
   LocalizedChatMessage,
-  ProcessingBlock,
-  TurnFooter,
+  TurnStatusBar,
   TurnView,
   TransientUserMessage,
   type TurnFooterActionMeta,
   type TurnPresentationDeriver,
 } from './chat-turn.js';
-import { useChatScroll } from './use-chat-scroll.js';
-import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
+import { useChatScroll, useTranscriptStartMargin } from './use-chat-scroll.js';
 import type { TranscriptViewportNavigation } from './transcript-viewport-navigation.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
@@ -69,6 +76,43 @@ import {
   SessionAttachmentProvider,
   type ReadAttachmentBytes,
 } from './attachment-image.js';
+import {
+  MakaClientSessionScope,
+  MakaClientSlotOutlet,
+  useMakaClientSlotOccupied,
+} from './client-plugin-slots.js';
+
+/**
+ * How far outside the viewport, in pixels, rows are mounted.
+ *
+ * virtua only corrects `scrollTop` for a row whose measurement lands while the
+ * row is entirely above the viewport; a row still straddling the top edge is
+ * left to push the reader. virtua's default is 200px and a wheel notch travels
+ * 600, so a row went from unmounted to straddling within one notch and was
+ * always measured too late: reading upwards through the 24-Turn geometry scene
+ * jumped 13 times, by 5 to 194px.
+ *
+ * 2000px fixed the tall-Turn cases it was measured against but not the tallest
+ * ones: a Turn whose real height exceeds the margin still reaches the reader
+ * unmeasured, and the correction that lands then is the one virtua does not
+ * absorb. On the 24-Turn geometry scene that row is ~3000px, so the cold sweep
+ * slipped twice, displacing the reading anchor by 365px — and the gate caught it
+ * in most runs, not rarely.
+ *
+ * The value is bounded on BOTH sides, which is why it is 4000 and not "as large
+ * as possible". Under the tallest Turn, the gate fails as described. Far above
+ * it — 6000 made the first upward reader step mount enough rows at once to move
+ * the anchor by a full step (`per-step drift: -200` in
+ * `upward-traversal-holds-turn-geometry`, a story that walks the transcript in
+ * 200px reader steps). 4000 leaves the tall Turn measured before the reader
+ * arrives while the first step still mounts a viewport's worth of rows, not a
+ * page: the gate now slips at most once and displaces the anchor by ≤25px, and
+ * the traversal story stays within its 1px budget.
+ *
+ * Mounting further ahead costs layout but not responsiveness: the gate's own
+ * `layoutMs` reads 27–33ms here, no higher than at 2000px.
+ */
+const MEASURE_AHEAD_MARGIN = 4000;
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -85,35 +129,6 @@ export interface ChatViewGoalIndicatorProps {
    * turn.
    */
   goalIndicator?: SessionContextGoal;
-}
-
-/** A rail click's outstanding request that the reveal for its Turn agree with it. */
-export type RailAlignmentClaim = { turnId: string; nonce?: number };
-
-/**
- * Which edge the transcript's reveal should use for the target the shell is
- * publishing, and what is left of the rail's claim afterwards.
- *
- * A claim belongs to the one navigation its click asked for, not to the Turn:
- * it binds to the first target that arrives for that Turn and is spent on
- * anything else. A later search for the same Turn is a different command with
- * its own nonce, and gets the search contract back.
- */
-export function resolveRailAlignedTarget<T extends { turnId: string; nonce: number }>(
-  claim: RailAlignmentClaim | undefined,
-  target: T | undefined,
-): {
-  claim: RailAlignmentClaim | undefined;
-  target: (T & { align: 'start' | 'center' }) | undefined;
-} {
-  if (!target) return { claim, target: undefined };
-  const aimedByRail = claim !== undefined
-    && claim.turnId === target.turnId
-    && (claim.nonce === undefined || claim.nonce === target.nonce);
-  return {
-    claim: aimedByRail ? { turnId: target.turnId, nonce: target.nonce } : undefined,
-    target: { ...target, align: aimedByRail ? 'start' : 'center' },
-  };
 }
 
 /**
@@ -165,10 +180,6 @@ export function ChatView(props: {
    */
   activeTurn?: { readonly turnId: string; readonly awaitingInput?: boolean; readonly compacting?: boolean };
   activeSession?: SessionSummary;
-  /** Durable Deep Research projection supplied by the host for visible progress and resume state. */
-  deepResearchRun?: DeepResearchClientProgress;
-  /** Explicitly starts a normal implementation task from a completed read-only research run. */
-  onContinueDeepResearchHandoff?(run: DeepResearchClientProgress): void;
   activeConnectionLabel?: string;
   activeModel?: string;
   activeModelLabel?: string;
@@ -259,21 +270,25 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number; preserveFocus?: boolean };
-  /** Runtime-only reading position restored without search focus or highlight. */
+  /**
+   * Runtime-only reading position restored without search focus or highlight.
+   * `unavailable`: the Turn is not in `messages` and no earlier history remains.
+   */
   restoreTargetTurn?: { turnId: string; unavailable?: boolean };
   viewportNavigation?: TranscriptViewportNavigation;
   onReadingAnchorChange?(turnId?: string): void;
   scrollBehavior: ScrollBehavior;
-  hasOlderHistory?: boolean;
-  hasNewerHistory?: boolean;
-  /** Fills the window at an edge the reader is approaching. */
-  onPrefetchHistory?(edge: 'older' | 'newer'): Promise<boolean>;
-  onRetainWindow?(window: { firstTurnId: string; lastTurnId: string }): void;
+  /** Turns older than the first one in `messages` exist and can be loaded. */
+  hasEarlierHistory?: boolean;
+  /** Prepends whole earlier Turns to `messages`. */
+  onLoadEarlierHistory?(): void | Promise<void>;
+  /** Turns outside `messages`, from the Session's Turn index, oldest first. */
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
+  /** Loads `messages` back to the start of an indexed Turn. */
+  onLoadTranscriptTurn?(turn: { turnId: string; sequence: number }): void | Promise<void>;
   /** Optional identity decorations shared with a host's work navigation. */
   promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
   onPromptRailHighlight?(turnId: string | undefined): void;
-  onLoadTranscriptTurn?(target: { turnId: string; sequence: number }): void;
   /**
    * PR109f: when the active session is a branched session
    * (`parentSessionId` set on its summary), show a banner above the
@@ -315,8 +330,6 @@ export function ChatView(props: {
    * reconciliation on the hot streaming path (ChatView also ref-wraps this).
    */
   onOpenLinkedSession?(sessionId: string): void;
-  /** Resolve a requires-bypass tool refusal, then regenerate its owning turn. */
-  onSwitchToBypassAndRetry?(turnId: string): void | Promise<void>;
   onNew(): void;
   onPromptSuggestion?(prompt: string): void;
   /**
@@ -338,14 +351,12 @@ export function ChatView(props: {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.chat;
-  // chat survives for the empty-state path; the main message log is driven by
-  // `turns` (per @kenji UI-04 turn-grouping projection).
-  const drainingMessageIdsKey = JSON.stringify(
-    props.liveTurns?.flatMap((turn) => turn.steps.flatMap((step) => step.text ? [step.stepId] : [])) ?? [],
-  );
+  const drainingStepIdsKey = (props.liveTurns ?? [])
+    .flatMap((turn) => turn.steps.flatMap((step) => (step.text ? [step.stepId] : [])))
+    .join('\u0000');
   const drainingMessageIds = useMemo(
-    () => new Set<string>(JSON.parse(drainingMessageIdsKey) as string[]),
-    [drainingMessageIdsKey],
+    () => new Set<string>(drainingStepIdsKey ? drainingStepIdsKey.split('\u0000') : []),
+    [drainingStepIdsKey],
   );
   const visibleMessages = useMemo(
     () => drainingMessageIds.size > 0
@@ -353,7 +364,16 @@ export function ChatView(props: {
       : props.messages,
     [drainingMessageIds, props.messages],
   );
-  const chat = useMemo(() => materializeChat(visibleMessages, locale), [visibleMessages, locale]);
+  // Whether anything would render in the log — the empty-state gate, answered
+  // by a scan rather than materializing every row.
+  const hasVisibleChatContent = useMemo(
+    () => visibleMessages.some(
+      (message) => message.type === 'user'
+        || message.type === 'assistant'
+        || (message.type === 'system_note' && isUserVisibleSessionSystemNote(message.kind)),
+    ),
+    [visibleMessages],
+  );
   const transientMessages = (props.transientMessages ?? []).filter((message) => !message.pendingSteering && message.transientPlacement !== 'next_turn');
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
@@ -396,19 +416,20 @@ export function ChatView(props: {
   const isCompactionLive = props.activeTurn?.compacting === true;
   // overlayLiveTurn renders one "compacting" system row for a live compaction
   // Turn that has no assistant steps — including in a session with no settled
-  // chat messages yet. The empty-state decision (below) keys off `chat.length`,
-  // which does not see that overlaid row, so it must treat this as visible
-  // content or the row is hidden behind the empty hero.
+  // chat messages yet. The empty-state decision (below) keys off
+  // `hasVisibleChatContent`, which does not see that overlaid row, so it must
+  // treat this as visible content or the row is hidden behind the empty hero.
   const hasLiveCompactionRow = isCompactionLive && (activeContent?.steps.length ?? 0) === 0;
   const streamingActive = props.activeTurn !== undefined && !isCompactionLive;
   const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
   const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
   const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
+  const preTurnRetry =
+    activeContent !== undefined && activeContent.turnId === tailTurnId
+      ? activeContent.providerRetry
+      : undefined;
   const boundaryOverlayTurnId = activeContent?.turnId
     ?? (streamingActive ? tailTurnId : undefined);
-  // One rail tick per turn that carries a user prompt (Codex-style prompt
-  // navigation). Memoized so the rail's IntersectionObserver isn't rebuilt
-  // on every render.
   const transformedUserTurnIds = useMemo(
     () => new Set(
       props.messages.flatMap((message) =>
@@ -421,12 +442,12 @@ export function ChatView(props: {
     ),
     [props.messages],
   );
-  // The rail's entries change only when a turn's persisted prompt/answer text
-  // does, but `turns` gets a new array on every delta. Handing the previous
-  // array back when nothing it reads moved keeps the memoized rail — and its
-  // transcript-wide IntersectionObserver — out of the streaming path. The
-  // per-entry comparison is O(1) per turn because an unaffected turn keeps its
-  // object identity, so its text is the same string reference.
+  // One rail tick per turn that carries a user prompt. The rail's entries
+  // change only when a turn's persisted prompt/answer text does, but `turns`
+  // gets a new array on every delta. Handing the previous array back when
+  // nothing it reads moved keeps the memoized rail out of the streaming path.
+  // The per-entry comparison is O(1) per turn because an unaffected turn keeps
+  // its object identity, so its text is the same string reference.
   const promptRailTurnsRef = useRef<ReadonlyArray<{ turnId: string; label: string; reply: string }>>([]);
   const loadedPromptRailTurns = useMemo(() => {
     const next = turns
@@ -449,15 +470,25 @@ export function ChatView(props: {
     promptRailTurnsRef.current = next;
     return next;
   }, [turns]);
+  const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
   const promptRailTurns = useMemo(
     () => {
-      const merged = mergePromptAnchorRailTurns(loadedPromptRailTurns, props.transcriptTurnIndex);
+      const merged = mergePromptAnchorRailTurns(loadedPromptRailTurns, props.transcriptTurnIndex, turnIds);
       return props.promptRailDecorations
         ? merged.map((turn) => ({ ...turn, ...props.promptRailDecorations?.get(turn.turnId) }))
         : merged;
     },
-    [loadedPromptRailTurns, props.transcriptTurnIndex, props.promptRailDecorations],
+    [loadedPromptRailTurns, props.transcriptTurnIndex, turnIds, props.promptRailDecorations],
   );
+  // Turn identity and order only, so a streaming delta keeps the same array.
+  const orderedTurnIdsRef = useRef<readonly string[]>([]);
+  if (
+    orderedTurnIdsRef.current.length !== turns.length
+    || turns.some((turn, index) => orderedTurnIdsRef.current[index] !== turn.turnId)
+  ) {
+    orderedTurnIdsRef.current = turns.map((turn) => turn.turnId);
+  }
+  const orderedTurnIds = orderedTurnIdsRef.current;
   // Stable event wrappers (advanced-use-latest): parent handlers are
   // recreated per render upstream; routing through refs keeps the
   // memoized TurnView's function props identity-stable without
@@ -486,13 +517,6 @@ export function ChatView(props: {
     (sessionId: string) => onOpenLinkedSessionRef.current?.(sessionId),
     [],
   );
-  const onSwitchToBypassAndRetryRef = useRef(props.onSwitchToBypassAndRetry);
-  onSwitchToBypassAndRetryRef.current = props.onSwitchToBypassAndRetry;
-  const stableSwitchToBypassAndRetry = useCallback(
-    (turnId: string) => onSwitchToBypassAndRetryRef.current?.(turnId),
-    [],
-  );
-  const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
   const conversationItemPlacement = useMemo(() => placeChatConversationItems(
     (props.conversationItems ?? []).map((item) => ({
       afterTurnId: item.afterTurnId,
@@ -501,28 +525,12 @@ export function ChatView(props: {
     })),
     turnIds,
   ), [props.conversationItems, turnIds]);
-  const turnIdsRef = useRef(turnIds);
-  turnIdsRef.current = turnIds;
-  const loadTranscriptTurnRef = useRef(props.onLoadTranscriptTurn);
-  loadTranscriptTurnRef.current = props.onLoadTranscriptTurn;
   const chatLayout = useChatLayoutContext();
   if (!chatLayout) {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
   }
   const scrollRef = chatLayout.scrollContainerRef;
-  const scrollAuthority = useTranscriptScrollAuthority();
-  // The rail uses the same semantic navigation as search, but asks the shared
-  // reveal to place the prompt at the top without animation.
-  const railClaimRef = useRef<RailAlignmentClaim | undefined>(undefined);
-  const navigatePromptRail = useCallback((turn: PromptAnchorRailTurn) => {
-    if (turn.sequence !== undefined) {
-      railClaimRef.current = { turnId: turn.turnId };
-      loadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
-    }
-  }, []);
-  const railAlignment = resolveRailAlignedTarget(railClaimRef.current, props.scrollTargetTurn);
-  railClaimRef.current = railAlignment.claim;
-  const scrollTargetTurn = railAlignment.target;
+  const virtualizerRef = useRef<VirtualizerHandle>(null);
   // Ownership also groups retained prompts after their Turn stops running or
   // a successor starts. Execution recency must not move a prompt below its reply.
   const turnsById = new Map(turns.map((turn) => [turn.turnId, turn]));
@@ -548,20 +556,55 @@ export function ChatView(props: {
     inlineTransientMessageIds,
     turns,
   );
-  const { highlightedTurnId } = useChatScroll({
+  const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
+  const { highlightedTurnId, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
     scrollRef,
+    measureStartMargin,
+    virtualizerRef,
     sessionId: props.activeSession?.id,
-    messages: props.messages,
-    target: scrollTargetTurn,
+    turnIds: orderedTurnIds,
+    target: props.scrollTargetTurn,
     restoreTarget: props.restoreTargetTurn,
     viewportNavigation: props.viewportNavigation,
     onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
-    hasOlderHistory: props.hasOlderHistory,
-    hasNewerHistory: props.hasNewerHistory,
-    onPrefetchHistory: props.onPrefetchHistory,
-    onRetainWindow: props.onRetainWindow,
   });
+  const onLoadTranscriptTurnRef = useRef(props.onLoadTranscriptTurn);
+  onLoadTranscriptTurnRef.current = props.onLoadTranscriptTurn;
+  const navigatePromptRail = useCallback(
+    (turn: PromptAnchorRailTurn) => {
+      const load = turn.sequence !== undefined && !orderedTurnIdsRef.current.includes(turn.turnId)
+        ? onLoadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence })
+        : undefined;
+      revealTurnAtStart(turn.turnId, Promise.resolve(load));
+    },
+    [revealTurnAtStart],
+  );
+  const interaction = useTurnsHoldingInteraction(scrollRef);
+  const keepMountedIndexes = new Set<number>();
+  for (const turnId of [tailTurnId, commandTurnId, highlightedTurnId, interaction.focusTurnId]) {
+    const index = turnId ? orderedTurnIds.indexOf(turnId) : -1;
+    if (index !== -1) keepMountedIndexes.add(index);
+  }
+  // Unmounting a Turn inside a selection would drop that part of it.
+  const selectionIndexes = interaction.selectionEnds
+    .map((end) => end === 'before' ? 0 : end === 'after' ? orderedTurnIds.length - 1 : orderedTurnIds.indexOf(end.turnId))
+    .filter((index) => index !== -1);
+  if (selectionIndexes.length > 0) {
+    for (let index = Math.min(...selectionIndexes); index <= Math.max(...selectionIndexes); index += 1) {
+      keepMountedIndexes.add(index);
+    }
+  }
+  const [loadingEarlierHistory, setLoadingEarlierHistory] = useState(false);
+  const loadEarlierHistory = (): void => {
+    const pending = props.onLoadEarlierHistory?.();
+    if (!pending) return;
+    setLoadingEarlierHistory(true);
+    void pending.then(
+      () => setLoadingEarlierHistory(false),
+      () => setLoadingEarlierHistory(false),
+    );
+  };
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
     Boolean(props.onQuoteSelection || props.onAskAboutSelection),
@@ -579,6 +622,9 @@ export function ChatView(props: {
     props.onQuoteSelection ? copy.quoteSelection : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
   ].filter((label): label is string => label !== null).join(' / ');
+  const hasConversationHeaderActions = useMakaClientSlotOccupied(
+    'conversation.header.actions',
+  );
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -609,7 +655,7 @@ export function ChatView(props: {
             left controls so the new-session screen and active-session
             screen share the same "create / pick mode / send" rhythm. */}
         {/* No status strip on the empty-session screen: it has no session, so
-            none of the chips (memory / deep-research / goal) can apply. The
+            none of the chips (memory / goal) can apply. The
             header used to be rendered here anyway, holding a lone spacer, to
             occupy the window titlebar line — which the shell's titlebar row now
             owns. */}
@@ -645,24 +691,18 @@ export function ChatView(props: {
                   ))}
                 </section>
               )}
-              {/* The pre-Turn cue is the same summary row the process uses. */}
-              {runningStatus && (
-                <section className="maka-turn" data-live-streaming="true">
-                  <ProcessingBlock entries={[]} running activity={{}} />
-                </section>
-              )}
+              {/* The pre-Turn cue is the same status row the Turn will show. */}
+              {runningStatus && <PreTurnCue running />}
             </>
           ) : null}
         </ChatMessageList>
       </section>
     );
   }
-
-  const deepResearchActive = isDeepResearchSession(props.activeSession.labels);
   const hasVisibleConversationItem =
     conversationItemPlacement.byTurn.size > 0 || conversationItemPlacement.orphan !== undefined;
   const showEmptyState =
-    chat.length === 0
+    !hasVisibleChatContent
     && transientMessages.length === 0
     && !streamingActive
     && !hasVisibleConversationItem
@@ -692,18 +732,35 @@ export function ChatView(props: {
           />
         )
       : props.emptyOverride ?? (
-          deepResearchActive ? (
-            <DeepResearchEmptyHero onPromptSuggestion={props.onPromptSuggestion} />
-          ) : (
-            <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
-          )
+          <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
         );
+  /**
+   * Nothing to show is exactly when this matters most: WorkHub filters the
+   * transcript to one Work, and a Work whose Turns are all still in unloaded
+   * history filters it down to nothing. So the control rides along with the
+   * empty state rather than sitting in the branch that replaces it — which
+   * also keeps the list's only child a single `null`, the shape that lets
+   * `ChatMessageList` render an empty state at all.
+   */
+  const loadEarlierHistoryControl = props.hasEarlierHistory && props.onLoadEarlierHistory ? (
+    <HStack hAlign="center">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        label={copy.loadEarlierHistory}
+        isDisabled={loadingEarlierHistory}
+        onClick={loadEarlierHistory}
+      />
+    </HStack>
+  ) : null;
 
   return (
-    <SessionAttachmentProvider
-      sessionId={props.activeSession.id}
-      readBytes={props.onReadAttachmentBytes}
-    >
+    <MakaClientSessionScope sessionId={props.activeSession.id}>
+      <SessionAttachmentProvider
+        sessionId={props.activeSession.id}
+        readBytes={props.onReadAttachmentBytes}
+      >
       <section
         className="maka-main agents-chat-panel agents-chat-view-root"
         role="region"
@@ -717,16 +774,14 @@ export function ChatView(props: {
         onRevisionNavigate={props.onRevisionNavigate}
         memoryActive={props.memoryActive}
         onOpenMemorySettings={props.onOpenMemorySettings}
-        deepResearchActive={deepResearchActive}
         goal={props.goalIndicator}
+        actions={hasConversationHeaderActions ? (
+          <MakaClientSlotOutlet
+            name="conversation.header.actions"
+            owner={{ sessionName: props.activeSession.name }}
+          />
+        ) : undefined}
       />
-      {deepResearchActive && props.deepResearchRun && (
-        <DeepResearchProgressPanel
-          run={props.deepResearchRun}
-          onContinue={props.onContinueDeepResearchHandoff}
-          copy={copy.deepResearchProgress}
-        />
-      )}
       <div className="maka-chat-shell">
         {/* ChatSurfaceLayout hosts the rail outside bounded transcript columns. */}
         <PromptAnchorRail
@@ -734,89 +789,105 @@ export function ChatView(props: {
           onHighlightTurn={props.onPromptRailHighlight ? (turn) => props.onPromptRailHighlight?.(turn?.turnId) : undefined}
           scrollRef={scrollRef}
           onNavigateTurn={navigatePromptRail}
-          onNavigateStart={scrollAuthority.releasePin}
         />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
           data-turn-source-count={turns.length}
           isStreaming={streamingActive}
-          emptyState={showEmptyState ? emptyContent : undefined}
+          emptyState={showEmptyState ? (
+            <>
+              {loadEarlierHistoryControl}
+              {emptyContent}
+            </>
+          ) : undefined}
         >
           {showEmptyState ? null : (
             <>
               {/* A transient is already the first visible conversation row.
                   Do not prepend the empty-chat Maka hero while that optimistic
                   message waits for durable transcript or live-turn identity. */}
-              {chat.length === 0
+              {!hasVisibleChatContent
                 && transientMessages.length === 0
                 && !streamingActive
                 ? emptyContent
                 : null}
-              {turns.map((turn) => {
-                const decoration = props.turnDecorations?.get(turn.turnId);
-                return (
-                  <div
-                    key={`${props.activeSession?.id}:${turn.turnId}`}
-                    className="maka-transcript-turn"
-                    data-transcript-turn-id={turn.turnId}
-                    data-turn-accent={decoration?.accentColor ? 'true' : undefined}
-                    style={decoration?.accentColor
-                      ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined}
-                  >
-                    <TurnView
-                      turn={turn}
-                      activityObserved={turn.turnId === props.activeTurn?.turnId}
-                      messageHeader={decoration?.header}
-                      messageRail={decoration?.messageRail}
-                      promptStatus={decoration?.promptStatus}
-                      transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
-                      userLabel={props.userLabel}
-                      footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
-                      onFooterAction={stableTurnFooterAction}
-                      onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
-                      editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
-                      editUserMessageDisabled={
-                        props.activeTurn !== undefined
-                      }
-                      failedReasonLabel={turnPresentation?.failedReasonLabels[turn.turnId]}
-                      failedSeverity={turnPresentation?.failedSeverities[turn.turnId]}
-                      failedExecutionStateLabel={
-                        turnPresentation?.failedExecutionStateLabels[turn.turnId]
-                      }
-                      safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
-                        ? props.safeResumeAction
-                        : undefined}
-                      lineageBadges={turnPresentation?.lineageBadgesByTurn[turn.turnId]}
-                      onLineageBadgeClick={stableLineageBadgeClick}
-                      onOpenLinkedSession={
-                        props.onOpenLinkedSession ? stableOpenLinkedSession : undefined
-                      }
-                      onSwitchToBypassAndRetry={
-                        props.onSwitchToBypassAndRetry
-                          ? stableSwitchToBypassAndRetry
-                          : undefined
-                      }
-                      searchHighlighted={highlightedTurnId === turn.turnId}
-                      liveStreaming={
-                        turn.turnId === tailTurnId
-                          ? {
-                              onStreamingSettled: props.onStreamingSettled,
-                              runningStatus,
-                              providerRetry: activeContent?.turnId === tailTurnId ? activeContent.providerRetry : undefined,
-                              initialLiveContent: activeContent?.turnId
-                                === props.initialLiveContentSnapshot?.turnId
-                                ? props.initialLiveContentSnapshot?.entries
-                                : undefined,
-                            }
-                          : undefined
-                      }
-                    />
-                    {conversationItemPlacement.byTurn.get(turn.turnId)?.map((item) => (
-                      <Fragment key={item.id}>{item.content}</Fragment>
-                    ))}
-                  </div>
-                );
-              })}
+              {loadEarlierHistoryControl}
+              <div key={props.activeSession.id} ref={listRef} className="maka-chat-session-swap">
+                <Virtualizer
+                  key={measurement.generation}
+                  ref={virtualizerRef}
+                  as={TranscriptRows}
+                  scrollRef={scrollRef as RefObject<HTMLElement | null>}
+                  data={turns}
+                  startMargin={startMargin}
+                  bufferSize={MEASURE_AHEAD_MARGIN}
+                  shift={measurement.shift}
+                  keepMounted={[...keepMountedIndexes]}
+                >
+                  {(turn, index) => {
+                    const decoration = props.turnDecorations?.get(turn.turnId);
+                    return (
+                      <div
+                        key={`${props.activeSession?.id}:${turn.turnId}`}
+                        className="maka-transcript-turn"
+                        data-transcript-turn-id={turn.turnId}
+                        data-turn-accent={decoration?.accentColor ? 'true' : undefined}
+                        style={{
+                          // The list's row gap does not reach inside the virtualizer.
+                          paddingBlockEnd: index < turns.length - 1 ? 'var(--spacing-4)' : undefined,
+                          ...(decoration?.accentColor
+                            ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined),
+                        }}
+                      >
+                        <TurnView
+                          turn={turn}
+                          activityObserved={turn.turnId === props.activeTurn?.turnId}
+                          messageHeader={decoration?.header}
+                          messageRail={decoration?.messageRail}
+                          promptStatus={decoration?.promptStatus}
+                          transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
+                          userLabel={props.userLabel}
+                          footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
+                          onFooterAction={stableTurnFooterAction}
+                          onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
+                          editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
+                          editUserMessageDisabled={props.activeTurn !== undefined}
+                          failedReasonLabel={turnPresentation?.failedReasonLabels[turn.turnId]}
+                          failedSeverity={turnPresentation?.failedSeverities[turn.turnId]}
+                          failedExecutionStateLabel={
+                            turnPresentation?.failedExecutionStateLabels[turn.turnId]
+                          }
+                          safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
+                            ? props.safeResumeAction
+                            : undefined}
+                          lineageBadges={turnPresentation?.lineageBadgesByTurn[turn.turnId]}
+                          onLineageBadgeClick={stableLineageBadgeClick}
+                          onOpenLinkedSession={
+                            props.onOpenLinkedSession ? stableOpenLinkedSession : undefined
+                          }
+                          searchHighlighted={highlightedTurnId === turn.turnId}
+                          liveStreaming={
+                            turn.turnId === tailTurnId
+                              ? {
+                                  onStreamingSettled: props.onStreamingSettled,
+                                  runningStatus,
+                                  providerRetry: activeContent?.turnId === tailTurnId ? activeContent.providerRetry : undefined,
+                                  initialLiveContent: activeContent?.turnId
+                                    === props.initialLiveContentSnapshot?.turnId
+                                    ? props.initialLiveContentSnapshot?.entries
+                                    : undefined,
+                                }
+                              : undefined
+                          }
+                        />
+                        {conversationItemPlacement.byTurn.get(turn.turnId)?.map((item) => (
+                          <Fragment key={item.id}>{item.content}</Fragment>
+                        ))}
+                      </div>
+                    );
+                  }}
+                </Virtualizer>
+              </div>
               {/* A local copy the transcript already shows as the tail Turn's
                   own user row must not render again below the running status;
                   the inline slot drops it, so the tail slot drops it too.
@@ -834,23 +905,14 @@ export function ChatView(props: {
               )}
               {/* A send arm already names its Turn, but the transcript may not
                   contain it yet. Keep feedback below the pending prompt until
-                  that same TurnView can take over. */}
+                  that same TurnView can take over — and show it the way the
+                  TurnView will, so the handoff does not shift the row. */}
               {streamingActive && !hasRenderedLiveTurn && (
-                <section className="maka-turn" data-live-streaming="true">
-                  {activeContent && activeContent.turnId === tailTurnId && activeContent.providerRetry ? (
-                    <LocalizedChatMessage
-                      accessibleLabel={conversationCopy.messages.assistantAriaLabel}
-                      sender="assistant"
-                      className="maka-chat-message maka-assistant-answer"
-                    >
-                      <TurnFooter actions={[]} live context="" activity={
-                        <ModelProviderRetryIndicator retry={activeContent.providerRetry} />
-                      } />
-                    </LocalizedChatMessage>
-                  ) : runningStatus ? (
-                    <ProcessingBlock entries={[]} running activity={{}} />
-                  ) : null}
-                </section>
+                preTurnRetry ? (
+                  <PreTurnCue providerRetry={preTurnRetry} />
+                ) : runningStatus ? (
+                  <PreTurnCue running />
+                ) : null
               )}
               {conversationItemPlacement.orphan && (
                 <Fragment key={conversationItemPlacement.orphan.id}>
@@ -914,105 +976,99 @@ export function ChatView(props: {
         ) : null}
       </div>
       </section>
-    </SessionAttachmentProvider>
+      </SessionAttachmentProvider>
+    </MakaClientSessionScope>
   );
 }
 
-export function DeepResearchProgressPanel({
-  run,
-  onContinue,
-  copy,
-}: {
-  run: DeepResearchClientProgress;
-  onContinue?: (run: DeepResearchClientProgress) => void;
-  copy: ReturnType<typeof getConversationCopy>['chat']['deepResearchProgress'];
-}) {
-  const completedItems = run.checklist.filter(
-    (item) => item.status === 'completed' || item.status === 'skipped',
-  ).length;
-
+/** Turns holding document focus or a selection endpoint; virtualization must not unmount them. */
+/**
+ * The cue shown before the transcript contains the Turn: the same status row
+ * the TurnView will render, so the handoff does not shift the row.
+ */
+function PreTurnCue(props: { running?: boolean; providerRetry?: LiveProviderRetry }) {
+  const copy = getConversationCopy(useUiLocale()).messages;
   return (
-    <section
-      className="maka-deep-research-run-panel"
-      aria-label={copy.ariaLabel}
-      data-status={run.status}
-    >
-      <div className="maka-deep-research-run-summary">
-        <div>
-          <strong>{copy.title}</strong>
-          <span>
-            {run.status === 'completed'
-              ? copy.completedSummary
-              : copy.activeSummary(run.stage, run.scopeLevel, run.round)}
-          </span>
+    <section className="maka-turn" data-live-streaming="true">
+      <LocalizedChatMessage
+        accessibleLabel={copy.assistantAriaLabel}
+        sender="assistant"
+        className="maka-chat-message maka-assistant-answer"
+      >
+        <div className="maka-assistant-answer-content">
+          <TurnStatusBar status="running" running={props.running} providerRetry={props.providerRetry} />
+          {props.providerRetry ? <ModelProviderRetryIndicator retry={props.providerRetry} /> : null}
         </div>
-        <div className="maka-deep-research-run-actions">
-          <span className="maka-deep-research-run-count">
-            {completedItems}/{run.checklist.length}
-          </span>
-          {run.status === 'completed' && run.implementationPrompt && onContinue && (
-            <Button
-              type="button"
-              label={copy.handoffAction}
-              endContent={<ArrowRight size={ICON_SIZE.meta} aria-hidden="true" />}
-              variant="secondary"
-              size="sm"
-              className="maka-deep-research-handoff-button"
-              onClick={() => onContinue(run)}
-              tooltip={copy.handoffTitle}
-            />
-          )}
-        </div>
-      </div>
-      <div className="maka-deep-research-run-grid">
-        <div>
-          <h3>{copy.checklistTitle}</h3>
-          <ul>
-            {run.checklist.map((item) => (
-              <li key={item.itemId} data-status={item.status}>
-                <span>{item.status === 'completed' ? '✓' : item.status === 'blocked' ? '!' : '·'}</span>
-                {item.title}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <h3>{copy.reportTitle}</h3>
-          <ul>
-            {run.reportSections.map((section) => (
-              <li key={section.key} data-status={section.status}>
-                <span>{section.status === 'completed' ? '✓' : section.status === 'drafted' ? '◐' : '·'}</span>
-                {copy.sectionLabels[section.key]}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <h3>{copy.inspectedTitle}</h3>
-          {run.recentInspectedRefs.length > 0 ? (
-            <ul>
-              {run.recentInspectedRefs.map((ref, index) => (
-                <li key={`${ref.kind}-${ref.locator}-${index}`}>
-                  <span>{ref.kind}</span>
-                  <code>{ref.locator}</code>
-                </li>
-              ))}
-            </ul>
-          ) : <p>{copy.inspectedEmpty}</p>}
-        </div>
-        <div>
-          <h3>{copy.executionTitle}</h3>
-          <p>{copy.executionSummary(run.stepsCount, run.artifactsCount)}</p>
-          {run.workerRunIds.length > 0 && <p>{copy.workersLabel}: {run.workerRunIds.join(', ')}</p>}
-          {run.blockers.length > 0 ? (
-            <ul className="maka-deep-research-run-blockers">
-              {run.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
-            </ul>
-          ) : <p>{copy.noBlockers}</p>}
-        </div>
-      </div>
+      </LocalizedChatMessage>
     </section>
   );
+}
+
+/**
+ * virtua disables pointer events while its scroller moves, and a streaming
+ * answer moves the pinned scroller every frame, which would leave every Turn
+ * unclickable for the whole stream.
+ */
+function TranscriptRows({ style, ...props }: CustomContainerComponentProps) {
+  return <div {...props} style={{ ...style, pointerEvents: undefined }} />;
+}
+
+/** Where a selection end lies: in a Turn, or before or after every Turn. */
+type SelectionEnd = { turnId: string } | 'before' | 'after';
+
+function useTurnsHoldingInteraction(scrollRef: RefObject<HTMLElement | null>): {
+  focusTurnId?: string;
+  selectionEnds: readonly SelectionEnd[];
+} {
+  const [held, setHeld] = useState<{ focusTurnId?: string; selectionEnds: readonly SelectionEnd[] }>(
+    { selectionEnds: [] },
+  );
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const doc = root.ownerDocument;
+    const turnOf = (node: Node | null | undefined): string | undefined => {
+      const element = node instanceof Element ? node : node?.parentElement;
+      if (!element || !root.contains(element)) return undefined;
+      return element.closest<HTMLElement>('[data-transcript-turn-id]')?.dataset.transcriptTurnId;
+    };
+    // An end outside every Turn — the load-earlier control, the pending tail —
+    // still bounds the selection: everything between it and the other end is
+    // selected, so it counts as the first or last Turn by document order.
+    const endOf = (node: Node | null): SelectionEnd | undefined => {
+      const turnId = turnOf(node);
+      if (turnId !== undefined) return { turnId };
+      const row = root.querySelector('[data-transcript-turn-id]');
+      if (!node || !row) return undefined;
+      return row.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING ? 'before' : 'after';
+    };
+    const update = (): void => {
+      const focusTurnId = turnOf(doc.activeElement);
+      const selection = doc.getSelection();
+      const touchesTranscript = selection !== null && !selection.isCollapsed
+        && (root.contains(selection.anchorNode) || root.contains(selection.focusNode));
+      const selectionEnds = touchesTranscript
+        ? [endOf(selection.anchorNode), endOf(selection.focusNode)]
+          .filter((end): end is SelectionEnd => end !== undefined)
+        : [];
+      const key = (end: SelectionEnd): string => typeof end === 'string' ? end : `turn:${end.turnId}`;
+      setHeld((previous) =>
+        previous.focusTurnId === focusTurnId
+        && previous.selectionEnds.length === selectionEnds.length
+        && previous.selectionEnds.every((end, index) => key(end) === key(selectionEnds[index]!))
+          ? previous
+          : { focusTurnId, selectionEnds });
+    };
+    doc.addEventListener('focusin', update);
+    doc.addEventListener('focusout', update);
+    doc.addEventListener('selectionchange', update);
+    return () => {
+      doc.removeEventListener('focusin', update);
+      doc.removeEventListener('focusout', update);
+      doc.removeEventListener('selectionchange', update);
+    };
+  }, [scrollRef]);
+  return held;
 }
 /**
  * Locale-aware copy bundle for the empty-chat hero. Mirrors the

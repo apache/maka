@@ -51,6 +51,33 @@ describe('the unconfirmed claim an arm carries', () => {
   });
 });
 
+describe('the start a live Turn carries', () => {
+  it('stays at its first event while later tools arrive, before the transcript reaches the Turn', () => {
+    let projection = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+      type: 'text_delta',
+      id: 'event-1',
+      turnId: 'turn-1',
+      messageId: 'step-1',
+      ts: 100,
+      text: 'a',
+    });
+    const first = overlayLiveTurn([], projection, 'en')[0]?.startedAt;
+    projection = applyLiveTurnEvent(projection, {
+      type: 'tool_start',
+      id: 'event-2',
+      turnId: 'turn-1',
+      stepId: 'step-2',
+      toolUseId: 'tool-1',
+      toolName: 'Read',
+      args: { path: 'README.md' },
+      ts: 5_000,
+    });
+
+    assert.equal(first, 100);
+    assert.equal(overlayLiveTurn([], projection, 'en')[0]?.startedAt, 100);
+  });
+});
+
 describe('provider retry copy', () => {
   it('describes capacity retries without collapsing them into generic unavailability', () => {
     assert.match(getConversationCopy('zh-CN').messages.providerRetryReason.provider_capacity, /满载/);
@@ -255,6 +282,7 @@ describe('applyLiveTurnEvent', () => {
       text: '完整思考',
       truncated: false,
       complete: true,
+      sourceEndOffset: 4,
     });
   });
 
@@ -683,13 +711,14 @@ describe('reconcileTerminalLiveTurn', () => {
 
   it('keeps terminal live steering until the terminal transcript catches up', () => {
     const message = { id: 'steer-1', content: { text: 'change direction' }, ts: 2 };
+    const boundary = { stepId: 'steering:steer-1', tools: [], steering: message };
     const withSteering: LiveTurnProjection = {
       ...toolOnly,
-      steps: [{ ...toolOnly.steps[0]!, leadingSteering: [message] }],
+      steps: [...toolOnly.steps, boundary],
     };
 
     assert.equal(reconcileTerminalLiveTurn(withSteering, []), withSteering);
-    const steeringOnly = { ...withSteering, steps: [] };
+    const steeringOnly = { ...toolOnly, steps: [boundary] };
     assert.equal(reconcileTerminalLiveTurn(steeringOnly, []), steeringOnly);
     assert.deepEqual(reconcileTerminalLiveTurn(withSteering, [{
       type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
@@ -708,7 +737,7 @@ describe('reconcileTerminalLiveTurn', () => {
     });
 
     assert.equal(aborted?.terminal, true);
-    assert.deepEqual(aborted?.pendingSteering, [message]);
+    assert.deepEqual(aborted?.steps[0]?.steering, message);
   });
 
   it('retains interrupted live output until a persisted result covers it', () => {

@@ -28,6 +28,8 @@ export type HostPendingInteractionKind = InteractionRequest['kind'];
 export interface SessionExecutionProjection {
   readonly type: 'host_execution';
   readonly available: boolean;
+  /** Renderer cleanup retains root identity while awaiting a new observation. */
+  readonly observationPending?: boolean;
   readonly rootTurn: TurnSnapshot | null;
   /** Type-only pending Interaction summary. Empty when none are pending. */
   readonly pendingInteractionKinds: readonly HostPendingInteractionKind[];

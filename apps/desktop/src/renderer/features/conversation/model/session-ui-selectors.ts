@@ -58,11 +58,11 @@ export const sessionUiSelectors = {
   active: (state: AppShellSessionUiState, id: string | undefined) => ({
     activeExecution: selectExecution(state, id),
     /** Carried so a batched invalidation still re-renders its readers. */
-    activeExecutionHistoryEpoch: selectExecutionHistoryEpoch(state, id),
+    parentExecutionHistoryEpoch: selectExecutionHistoryEpoch(state, id),
     activeLiveTurnSnapshot: selectActiveSnapshot(state, id),
   }),
-  activeEqual: (a: { activeExecution: unknown; activeExecutionHistoryEpoch: number | undefined; activeLiveTurnSnapshot: import('./live-turn-snapshot.js').LiveTurnSnapshot }, b: typeof a) =>
+  activeEqual: (a: { activeExecution: unknown; parentExecutionHistoryEpoch: number | undefined; activeLiveTurnSnapshot: import('./live-turn-snapshot.js').LiveTurnSnapshot }, b: typeof a) =>
     a.activeExecution === b.activeExecution
-    && a.activeExecutionHistoryEpoch === b.activeExecutionHistoryEpoch
+    && a.parentExecutionHistoryEpoch === b.parentExecutionHistoryEpoch
     && liveTurnSnapshotsEqual(a.activeLiveTurnSnapshot, b.activeLiveTurnSnapshot),
 };

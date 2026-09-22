@@ -74,6 +74,7 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
+  valuesEqual,
 } from '@maka/ui';
 import { EmptyState as AstryxEmptyState } from '@astryxdesign/core';
 import { ArtifactPreview } from './artifact-preview';
@@ -149,7 +150,9 @@ export function ArtifactPane(props: {
       if (artifactPaneMountedRef.current && requestSeq === artifactListRequestSeqRef.current) {
         recordsSessionIdRef.current = sessionId;
         setRecordsSessionId(sessionId);
-        setRecords(next);
+        // The 2s poll re-reads an unchanged list almost every tick; keep the
+        // published identity so a no-change answer does not re-render the pane.
+        setRecords((previous) => (valuesEqual(previous, next) ? previous : next));
         setListError(null);
       }
     } catch (error) {

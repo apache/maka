@@ -1184,7 +1184,7 @@ test('default production WorkHub selects and delegates through its durable Host 
 
 test('WorkHub creates new work through the production assignment composition', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
-    const connectionId = await configureFakeDefaultTarget(owner);
+    const connectionId = await configureFakeDefaultTarget(owner, ['fake-model', 'fake-model-b']);
     const { composition, manager } = await createCapturedExecutionComposition(owner);
     const context = {
       hostEpoch: 'execution-composition-test',
@@ -1202,6 +1202,13 @@ test('WorkHub creates new work through the production assignment composition', a
           userText: 'Fix login stability',
           proposal: { disposition: 'create_new', title: 'Login stability' },
           create: { workspace: { kind: 'host_path', path: root } },
+          newWorkDefaults: {
+            model: {
+              llmConnectionId: connectionId,
+              llmConnectionSlug: 'fake',
+              model: 'fake-model-b',
+            },
+          },
         },
         context,
       );
@@ -1212,6 +1219,7 @@ test('WorkHub creates new work through the production assignment composition', a
       const session = (await manager.listSessions()).find(({ id }) => id === targetSessionId);
       assert.equal(session?.name, 'Login stability');
       assert.equal(session?.llmConnectionId, connectionId);
+      assert.equal(session?.model, 'fake-model-b');
 
       const current = await composition.handlers['workhub.coordination.candidates']({}, context);
       assert.equal(current.ok, true);
@@ -2740,7 +2748,10 @@ function compositionContext(owner: InteractiveRootOwner) {
   };
 }
 
-async function configureFakeDefaultTarget(owner: InteractiveRootOwner): Promise<string> {
+async function configureFakeDefaultTarget(
+  owner: InteractiveRootOwner,
+  modelIds: readonly string[] = ['fake-model'],
+): Promise<string> {
   const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
   const created = await policy.connectionCatalog.create({
     expectedCatalogRevision: 0,
@@ -2749,7 +2760,7 @@ async function configureFakeDefaultTarget(owner: InteractiveRootOwner): Promise<
       name: 'Fake',
       providerType: 'ollama',
       enabled: true,
-      enabledModelIds: ['fake-model'],
+      enabledModelIds: [...modelIds],
     },
   });
   assert.equal(created.kind, 'committed');
@@ -2761,7 +2772,7 @@ async function configureFakeDefaultTarget(owner: InteractiveRootOwner): Promise<
   assert.equal(fetch.kind, 'ready');
   if (fetch.kind !== 'ready') throw new Error('Fake model fetch did not start');
   const fetched = await policy.operations.completeModelFetch(fetch.ticket, {
-    models: [{ id: 'fake-model' }],
+    models: modelIds.map((id) => ({ id })),
     source: 'fetched',
     fetchedAt: Date.now(),
   });

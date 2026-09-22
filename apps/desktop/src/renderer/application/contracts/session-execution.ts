@@ -83,7 +83,10 @@ export function activeHostTurn(projection: SessionExecutionProjection | undefine
 export function unavailableExecutionProjection(
   previous: SessionExecutionProjection | undefined,
 ): SessionExecutionProjection {
-  if (previous?.available) return { ...previous, available: false };
+  if (previous?.available || previous?.observationPending) {
+    const { observationPending: _pending, ...known } = previous;
+    return { ...known, available: false };
+  }
   return previous ?? {
     type: 'host_execution',
     available: false,

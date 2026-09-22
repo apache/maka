@@ -25,13 +25,16 @@ import {
 } from './legacy-run-header.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
-import { TERMINAL_RUNTIME_EVENT_SQL } from './runtime-transcript-query.js';
+import {
+  rebuildTranscriptTurnExtents,
+  TERMINAL_RUNTIME_EVENT_SQL,
+} from './runtime-transcript-query.js';
 import {
   buildInvocationOpenedEvent,
   buildSyntheticTerminalRuntimeEvent,
 } from '@maka/core/runtime-invocation';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 18;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 19;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -622,6 +625,20 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     CREATE INDEX IF NOT EXISTS runtime_events_terminal ON runtime_events(invocation_id, event_seq) WHERE ${TERMINAL_RUNTIME_EVENT_SQL};
   `,
   ],
+  [
+    19,
+    `
+    CREATE TABLE IF NOT EXISTS runtime_session_turn_extents (
+      session_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      first_ordinal INTEGER NOT NULL CHECK (first_ordinal > 0),
+      last_ordinal INTEGER NOT NULL CHECK (last_ordinal >= first_ordinal),
+      PRIMARY KEY (session_id, turn_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS runtime_session_turn_extents_by_first
+      ON runtime_session_turn_extents(session_id, first_ordinal, last_ordinal);
+  `,
+  ],
 ]);
 
 /**
@@ -638,6 +655,7 @@ const DATA_MIGRATIONS: ReadonlyMap<number, (db: DatabaseSync) => void> = new Map
       projectContinuationClaimOpenings(db);
     },
   ],
+  [19, (db) => rebuildTranscriptTurnExtents(db)],
 ]);
 
 /**

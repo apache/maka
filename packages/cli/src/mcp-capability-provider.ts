@@ -110,6 +110,13 @@ export function createMcpCapabilityProvider(
         await manager.callTool(binding, frame.arguments, {
           signal: options.signal,
           requestInteraction: options.requestInteraction,
+          ...(options.progress
+            ? {
+                onProgress: (current, total) => {
+                  options.progress?.(current, total);
+                },
+              }
+            : {}),
         }),
       );
     },

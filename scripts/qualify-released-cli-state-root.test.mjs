@@ -18,21 +18,29 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   assertExpectedEpochRelation,
   durableStateLocations,
   parseQualificationArgs,
   qualificationSandboxArgs,
   qualificationSandboxInvocation,
+  runInstalledRuntimeHost,
   sha256File,
 } from './qualify-released-cli-state-root.mjs';
 
 const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
+const FIXTURE_LIFECYCLE = {
+  startupTimeoutMs: 1_000,
+  livenessMs: 50,
+  shutdownKillAfterMs: 1_000,
+};
+const workspaceCliPath = fileURLToPath(new URL('../packages/cli/dist/cli.js', import.meta.url));
 
 test('parses two exact artifacts and an epoch relation', () => {
   const source = resolve(tmpdir(), 'source.tgz');
@@ -247,5 +255,106 @@ test('a workspace target replaces tarball identity instead of weakening it', () 
         SHA_B,
       ]),
     /cannot also name a tarball target/u,
+  );
+});
+
+async function runRuntimeHostFixture(source, lifecycleOptions) {
+  const scope = mkdtempSync(join(tmpdir(), 'maka-runtime-host-fixture-'));
+  try {
+    const cliPath = join(scope, 'runtime-host.mjs');
+    writeFileSync(cliPath, source);
+    return await runInstalledRuntimeHost(
+      {
+        artifact: { role: 'fixture', cliPath },
+        rootPath: join(scope, 'state-root'),
+        scope,
+      },
+      { ...FIXTURE_LIFECYCLE, ...lifecycleOptions },
+    );
+  } finally {
+    rmSync(scope, { recursive: true, force: true });
+  }
+}
+
+// Windows terminates on kill('SIGINT') instead of delivering it, and the
+// qualification these exercise runs on Linux only.
+test('starts the liveness window after a delayed Runtime Host Ready', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const ready = await runRuntimeHostFixture(
+    `
+        setTimeout(() => {
+          console.log(JSON.stringify({ event: 'runtime_host_ready', rootId: 'root', hostEpoch: 'epoch' }));
+        }, 150);
+        process.once('SIGINT', () => process.exit(0));
+        setInterval(() => undefined, 1000);
+      `,
+  );
+  assert.deepEqual(ready, { rootId: 'root', hostEpoch: 'epoch' });
+});
+
+test('starts the liveness window after the real Runtime Host is ready', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  if (!existsSync(workspaceCliPath)) {
+    t.skip('build the workspace CLI before running the real Runtime Host regression');
+    return;
+  }
+  const scope = mkdtempSync(join(tmpdir(), 'maka-runtime-host-workspace-'));
+  const home = join(scope, 'home');
+  const temporaryDirectory = join(home, 'tmp');
+  mkdirSync(temporaryDirectory, { recursive: true });
+  try {
+    const ready = await runInstalledRuntimeHost(
+      {
+        artifact: { role: 'workspace', cliPath: workspaceCliPath },
+        rootPath: join(scope, 'state-root'),
+        scope,
+      },
+      {
+        ...FIXTURE_LIFECYCLE,
+        environment: {
+          ...process.env,
+          HOME: home,
+          XDG_CONFIG_HOME: join(home, '.config'),
+          XDG_DATA_HOME: join(home, '.local', 'share'),
+          XDG_STATE_HOME: join(home, '.local', 'state'),
+          TMPDIR: temporaryDirectory,
+        },
+        startupTimeoutMs: 10_000,
+      },
+    );
+    assert.ok(ready.rootId);
+    assert.ok(ready.hostEpoch);
+  } finally {
+    rmSync(scope, { recursive: true, force: true });
+  }
+});
+
+test('rejects a Runtime Host that exits cleanly after Ready', async () => {
+  await assert.rejects(
+    runRuntimeHostFixture(
+      `
+          console.log(JSON.stringify({ event: 'runtime_host_ready', rootId: 'root', hostEpoch: 'epoch' }));
+          setTimeout(() => process.exit(0), 20);
+        `,
+      { livenessMs: 200 },
+    ),
+    /exited with status 0 after Ready/u,
+  );
+});
+
+test('rejects a Runtime Host that fails verifier shutdown', {
+  skip: process.platform === 'win32',
+}, async () => {
+  await assert.rejects(
+    runRuntimeHostFixture(
+      `
+          console.log(JSON.stringify({ event: 'runtime_host_ready', rootId: 'root', hostEpoch: 'epoch' }));
+          process.once('SIGINT', () => process.exit(7));
+          setInterval(() => undefined, 1000);
+        `,
+    ),
+    /completed verifier shutdown with status 7/u,
   );
 });

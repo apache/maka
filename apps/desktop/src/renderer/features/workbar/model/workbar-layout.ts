@@ -92,25 +92,21 @@ function clampSize(size: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(size)));
 }
 
-function scopedKey(key: string, scope?: string): string {
-  return scope ? `${scope}:${key}` : key;
-}
-
 /**
  * Reads the persisted width without applying bounds. `loadWorkbarLayout`
  * applies the shared reducer policy so hydration and resize actions use one
  * clamping rule.
  */
-export function readSessionWorkbarWidth(scope?: string): number {
-  const stored = Number(safeLocalStorageGet(scopedKey('maka-session-workbar-width-v1', scope)));
+export function readSessionWorkbarWidth(): number {
+  const stored = Number(safeLocalStorageGet('maka-session-workbar-width-v1'));
   return Number.isFinite(stored) && stored > 0 ? Math.round(stored) : SESSION_WORKBAR_DEFAULT_WIDTH;
 }
 
 const SESSION_COLLAPSE_KEY = 'maka-session-workbar-collapsed-v2';
 
-function readSessionWorkbarCollapsed(scope?: string): Record<string, boolean> {
+function readSessionWorkbarCollapsed(): Record<string, boolean> {
   try {
-    const stored: unknown = JSON.parse(safeLocalStorageGet(scopedKey(SESSION_COLLAPSE_KEY, scope)) ?? '{}');
+    const stored: unknown = JSON.parse(safeLocalStorageGet(SESSION_COLLAPSE_KEY) ?? '{}');
     if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
     return Object.fromEntries(
       Object.entries(stored).filter(([, value]) => typeof value === 'boolean'),
@@ -133,30 +129,30 @@ function withRightCollapsed(state: WorkbarLayoutState, collapsed: boolean): Work
   return { ...state, collapsedBySession: { ...state.collapsedBySession, [id]: collapsed } };
 }
 
-export function readSessionBottomPanelHeight(scope?: string): number {
-  const stored = Number(safeLocalStorageGet(scopedKey('maka-session-bottom-panel-height-v1', scope)));
+export function readSessionBottomPanelHeight(): number {
+  const stored = Number(safeLocalStorageGet('maka-session-bottom-panel-height-v1'));
   return Number.isFinite(stored) && stored > 0
     ? Math.round(stored)
     : SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT;
 }
 
-export function readSessionBottomPanelOpen(scope?: string): boolean {
-  return safeLocalStorageGet(scopedKey('maka-session-bottom-panel-open-v1', scope)) === 'true';
+export function readSessionBottomPanelOpen(): boolean {
+  return safeLocalStorageGet('maka-session-bottom-panel-open-v1') === 'true';
 }
 
-export function loadWorkbarLayout(activeSessionId?: string, scope?: string): WorkbarLayoutState {
+export function loadWorkbarLayout(activeSessionId?: string): WorkbarLayoutState {
   return {
-    panels: parseSessionWorkbarPanels(safeLocalStorageGet(scopedKey('maka-session-workbar-panels-v3', scope))),
+    panels: parseSessionWorkbarPanels(safeLocalStorageGet('maka-session-workbar-panels-v3')),
     activeSessionId,
-    collapsedBySession: readSessionWorkbarCollapsed(scope),
-    bottomOpen: readSessionBottomPanelOpen(scope),
+    collapsedBySession: readSessionWorkbarCollapsed(),
+    bottomOpen: readSessionBottomPanelOpen(),
     rightWidth: clampSize(
-      readSessionWorkbarWidth(scope),
+      readSessionWorkbarWidth(),
       SESSION_WORKBAR_MIN_WIDTH,
       SESSION_WORKBAR_MAX_WIDTH,
     ),
     bottomHeight: clampSize(
-      readSessionBottomPanelHeight(scope),
+      readSessionBottomPanelHeight(),
       SESSION_BOTTOM_PANEL_MIN_HEIGHT,
       SESSION_BOTTOM_PANEL_MAX_HEIGHT,
     ),
@@ -166,42 +162,41 @@ export function loadWorkbarLayout(activeSessionId?: string, scope?: string): Wor
 export function persistWorkbarLayout(
   state: WorkbarLayoutState,
   target: WorkbarLayoutPersistenceTarget = 'all',
-  scope?: string,
 ): void {
   if (target === 'all' || target === 'topology') {
     safeLocalStorageSet(
-      scopedKey('maka-session-workbar-panels-v3', scope),
+      'maka-session-workbar-panels-v3',
       JSON.stringify(persistableSessionWorkbarPanels(state.panels)),
     );
   }
   if (target === 'all' || target === 'right-visibility') {
     safeLocalStorageSet(
-      scopedKey(SESSION_COLLAPSE_KEY, scope),
+      SESSION_COLLAPSE_KEY,
       JSON.stringify(state.collapsedBySession),
     );
     // The old global preference has no Session owner and cannot be migrated
     // without giving an unrelated conversation its expanded state.
     try {
-      localStorage.removeItem(scopedKey('maka-session-workbar-collapsed-v1', scope));
+      localStorage.removeItem('maka-session-workbar-collapsed-v1');
     } catch {
       // Storage may be unavailable in restricted renderer contexts.
     }
   }
   if (target === 'all' || target === 'bottom-visibility') {
     safeLocalStorageSet(
-      scopedKey('maka-session-bottom-panel-open-v1', scope),
+      'maka-session-bottom-panel-open-v1',
       state.bottomOpen ? 'true' : 'false',
     );
   }
   if (target === 'all' || target === 'right-size') {
     safeLocalStorageSet(
-      scopedKey('maka-session-workbar-width-v1', scope),
+      'maka-session-workbar-width-v1',
       String(state.rightWidth),
     );
   }
   if (target === 'all' || target === 'bottom-size') {
     safeLocalStorageSet(
-      scopedKey('maka-session-bottom-panel-height-v1', scope),
+      'maka-session-bottom-panel-height-v1',
       String(state.bottomHeight),
     );
   }

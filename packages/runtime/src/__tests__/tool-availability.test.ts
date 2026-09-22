@@ -130,6 +130,16 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.deepEqual(plan.activeTools, ['Skill', 'SkillSearch', TOOL_SEARCH_NAME]);
   });
 
+  test('Plan execution tools stay direct when search is enabled', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('update_plan'), tool('cancel_plan'), tool('custom')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['cancel_plan', TOOL_SEARCH_NAME, 'update_plan']);
+    assert.doesNotMatch(searchTool(plan).description, /update_plan|cancel_plan/);
+  });
+
   test('provider-routed apply_patch inherits direct editing visibility', () => {
     const plan = new ToolAvailabilityRuntime(
       [tool('apply_patch'), tool('custom')],

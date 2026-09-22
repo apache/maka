@@ -110,7 +110,7 @@ export function parentTaskStatusFromFacts(input: {
   readonly latestTurnRead: ParentTaskLatestTurnRead;
 }): ParentTaskStatusKind | null {
   const execution = input.execution;
-  if (!execution) return null;
+  if (!execution || execution.observationPending) return null;
   if (!execution.available) return 'unavailable';
 
   let hasInput = false;

@@ -22,6 +22,7 @@ import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { AsyncEventQueue } from './async-queue.js';
 import type {
   PluginExecutorBinding,
@@ -38,6 +39,8 @@ export interface PluginExecutorBackendInput {
   readonly sessionId: string;
   readonly cwd: string;
   readonly instructions?: string;
+  readonly model?: string;
+  readonly thinkingLevel?: ThinkingLevel;
   readonly binding: PluginExecutorBinding;
   readonly newId?: () => string;
   readonly now?: () => number;
@@ -49,6 +52,8 @@ export class PluginExecutorBackend implements AgentBackend {
   readonly sessionId: string;
   readonly #cwd: string;
   readonly #instructions?: string;
+  readonly #model?: string;
+  readonly #thinkingLevel?: ThinkingLevel;
   readonly #binding: PluginExecutorBinding;
   readonly #newId: () => string;
   readonly #now: () => number;
@@ -59,6 +64,8 @@ export class PluginExecutorBackend implements AgentBackend {
     this.sessionId = input.sessionId;
     this.#cwd = input.cwd;
     this.#instructions = input.instructions;
+    this.#model = input.model;
+    this.#thinkingLevel = input.thinkingLevel;
     this.#binding = input.binding;
     this.#newId = input.newId ?? randomUUID;
     this.#now = input.now ?? Date.now;
@@ -129,6 +136,8 @@ export class PluginExecutorBackend implements AgentBackend {
           conversationKey: this.sessionId,
           text: input.text,
           cwd: this.#cwd,
+          ...(this.#model ? { model: this.#model } : {}),
+          reasoningEffort: this.#thinkingLevel ?? null,
           ...(this.#instructions ? { instructions: this.#instructions } : {}),
           ...(input.attachments ? { attachments: input.attachments } : {}),
           ...(input.directoryReferences ? { directoryReferences: input.directoryReferences } : {}),

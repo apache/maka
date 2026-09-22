@@ -38,6 +38,16 @@ export interface TaskEntryTarget extends TaskEntryHostRef {
   readonly projectId: string | null;
 }
 
+/** A Project together with the Runtime Host that owns its identity and mutations. */
+export interface TaskEntryProjectScope extends TaskEntryHostRef {
+  /** Opaque Desktop-wide identity for this Host-local Project. */
+  readonly key: string;
+  readonly profileName: string;
+  readonly profileKind: RuntimeHostProfileKind;
+  readonly project: ProjectRecord;
+  readonly capabilities: TaskEntryProjectCapabilities;
+}
+
 export interface TaskEntryProjectCapabilities {
   readonly chooseClientDirectory: boolean;
   readonly chooseHostDirectory: boolean;
@@ -93,11 +103,23 @@ export type TaskEntryProjectMutationResult =
 export interface TaskEntryCatalogService {
   getCatalog(): Promise<TaskEntryCatalog>;
   subscribeChanges(handler: () => void): TaskEntryUnsubscribe;
-  addProject(host: TaskEntryHostRef): Promise<TaskEntryProjectMutationResult>;
+  addProject(host: TaskEntryHostRef, name?: string): Promise<TaskEntryProjectMutationResult>;
   relinkProject(
     host: TaskEntryHostRef,
     projectId: string,
   ): Promise<TaskEntryProjectMutationResult>;
+  /**
+   * Name a project that was just registered. A remote Host's directory browser
+   * has no name field of its own, so the name typed before it opened is applied
+   * here, once the folder is known.
+   */
+  renameProject(
+    host: TaskEntryHostRef,
+    projectId: string,
+    name: string,
+  ): Promise<void>;
+  archiveProject(host: TaskEntryHostRef, projectId: string): Promise<void>;
+  restoreProject(host: TaskEntryHostRef, projectId: string): Promise<void>;
 }
 
 export interface TaskEntryServices {

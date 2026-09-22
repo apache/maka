@@ -148,7 +148,8 @@
 
   .workHubLive, .workHubDock { width: 100%; height: 100%; min-width: 0; min-height: 0; }
   .workHubLive { position: relative; display: flex; flex-direction: column; background: var(--background); }
-  .workHubWorkspace { --maka-plate-titlebar-clearance: var(--size-element-sm); }
+  .workHubWorkspace { display: flex; flex: 1; min-height: 0; }
+  .workHubWorkspace > .mainColumn { display: flex; flex: 1; min-width: 0; min-height: 0; }
   .workHubWorkspace > .mainColumn > .maka-chat-layout { flex: 1; min-height: 0; }
   .workHubLiveWelcome, .workHubDockPlaceholder { display: grid; justify-items: center; align-content: center; gap: var(--space-3); padding: var(--space-6); min-height: 220px; text-align: center; }
   .workHubDockPlaceholder { height: 100%; }
@@ -162,19 +163,10 @@
   .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-model-wheel-anchor[data-open='true'] {
     width: min(264px, 55vw); height: var(--maka-model-wheel-height);
   }
-  .workHubLive .maka-thinking-level-menu {
+  /* Selector popups stay translucent over the transparent WorkHub surface. */
+  .workHubLive .astryx-selector-popup {
     background: color-mix(in oklch, var(--background-elevated) 94%, transparent);
     backdrop-filter: blur(12px);
-  }
-  /* A compact native window cannot paint the thinking menu outside its bounds.
-     Keep the menu in the window and scroll its options without resizing the composer. */
-  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] [popover]:has(> .maka-thinking-level-menu) {
-    position-area: none !important;
-    inset: 4px max(4px, calc(100vw - anchor(right))) auto auto;
-    margin: 0;
-  }
-  .workHubLive[data-placement='floating'][data-conversation-expanded='false'] .maka-thinking-level-menu {
-    max-height: min(300px, calc(100dvh - 8px));
   }
   .workHubComposerActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
   .workHubRevealMark { position: absolute; inset: 32px 0 calc(var(--workhub-composer-height, 96px) + 12px); display: grid; place-items: center; z-index: 3; color: var(--foreground); opacity: 0; pointer-events: none; }
@@ -232,7 +224,7 @@
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor { padding-right: 24px; }
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor [contenteditable='true'] { padding-block: 6px; overscroll-behavior-y: contain; scrollbar-gutter: stable; scrollbar-width: thin; scroll-padding-block: 6px; }
   .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface { position: relative; -webkit-app-region: drag; }
-  .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], a) { -webkit-app-region: no-drag; }
+  .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], dialog, a) { -webkit-app-region: no-drag; }
   .workHubExpandButton { position: absolute; top: 6px; right: 8px; z-index: 2; color: var(--muted-foreground); -webkit-app-region: no-drag; }
 
 html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { background: transparent; }

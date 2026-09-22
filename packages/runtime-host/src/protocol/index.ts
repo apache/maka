@@ -101,7 +101,44 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 157 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 175 as const;
+// 175: WorkHub coordinator model configuration again accepts only native
+// explicit targets. Epoch-174 peers may send an executor target it must reject.
+// 174: WorkHub new-Work defaults may select an executor-specific model and
+// thinking level. Epoch-173 peers reject these fields on strict action shapes.
+// 173: Plugin executor Sessions may select an executor-specific model at
+// creation and configuration time, and propagate its reasoning effort.
+// 172: Usage screen requests and results accept fractional timestamps in the
+// persisted domain. Older peers reject these otherwise valid wire values.
+// 171: Removed the `connection.usage.read` operation along with the Command
+// Code GO provider it served. A peer older than this epoch may still advertise
+// or submit that operation, which this Host no longer answers.
+// 169: The message execution query reports an identity the Host can prove was
+// never admitted as a positive `not_admitted` resolution instead of omitting
+// it, so silence stops meaning both "not admitted" and "cannot say yet".
+// Epoch-168 peers reject the new state as an invalid frame.
+// 167: Removed the turn.regenerate operation. Older peers can no longer
+// safely interoperate because they may submit or advertise that operation.
+// 166: Connection usage reads add an operation, an accepted availability reason
+// (`unauthorized`), a report field (`partiallyUnauthorized`), and a bounded
+// window list. Peers older than this epoch take the added operation for an
+// unknown key and reject the new reason and field.
+// 165: WorkHub coordination resolve adds a model_required error code. Older
+// peers reject the new operation outcome rather than misdiagnosing prose.
+// 164: Client Plugin bundles, desktop-ui composition, generation-fenced Host
+// Remote calls, and pull streams are projected through strict Host contracts.
+// 163: Session reference quotes carry strict capture and truncation provenance.
+// Epoch-162 peers reject the added QuoteRef fields.
+// 162: Runtime Resource control and stop replies drop the unused resource
+// snapshot; start replies allow compact state. Older peers require snapshots.
+// 161: Session transcript reads return the whole transcript under a byte budget,
+// and every page says whether it stops between two Turns. The windowed read's
+// range edges are gone, and the Turn landmark query takes a Turn to look up, so
+// a peer older than this epoch asks for what this Host no longer answers.
+// 160: Usage queries add revision-consistent screens and revision-bound activity pages.
+// 159: External Session catalog queries distinguish adapter source limits from
+// persistence failures. Older Clients reject the new closed error code.
+// 158: Session transcripts advance per committed RuntimeEvent; the active overlay is gone.
 // 154: External Session import results distinguish committed Sessions from typed source limits.
 // 153: Sessions may select plugin executors and Plugin Platform queries expose them.
 // 152: Assistant completions and transcript rows preserve interrupted responses.

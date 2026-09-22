@@ -28,7 +28,6 @@ import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@
 import { deriveTurnRecords, decodeCanonicalMessage } from '@maka/core/session';
 import type { CanonicalPermissionOutcomeRecord } from '../interaction-authority.js';
 import {
-  activePresentationRuntimeEvents,
   createRuntimeEventStoredMessageProjector,
   isHardRuntimeEventReadModelDiagnostic,
   isUnclaimedRuntimeEventDiagnostic,
@@ -305,36 +304,112 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
   });
 
-  test('active streaming projection settles model partials and inserts thinking-only rows in source order', () => {
+  // A transcript page may cut an invocation at any committed event. Rows that
+  // appear for a prefix must be exactly the rows the whole invocation later
+  // attributes to those same events, or a page would change once the Turn ends.
+  test('every event prefix projects the rows the full ledger attributes to it', () => {
     const events = [
       ev({
-        id: 'evt-thinking-partial',
+        id: 'evt-prefix-user',
         ts: ts + 1,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'thinking', text: 'still thinking' },
-        refs: { providerEventId: 'step-thinking-only' },
-      }),
-      ev({
-        id: 'evt-later-user',
-        ts: ts + 2,
         role: 'user',
         author: 'user',
-        content: { kind: 'text', text: 'steer' },
+        content: { kind: 'text', text: 'read the file' },
+      }),
+      ev({
+        id: 'evt-prefix-thinking',
+        ts: ts + 2,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'thinking', text: 'look first', signature: 'sig' },
+        refs: { providerEventId: 'step-1' },
+      }),
+      ev({
+        id: 'evt-prefix-text',
+        ts: ts + 3,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'Reading it.' },
+        refs: { providerEventId: 'step-1' },
+      }),
+      ev({
+        id: 'evt-prefix-call',
+        ts: ts + 4,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'tool-p', name: 'Read', args: { path: '/a' } },
+        refs: { toolCallId: 'tool-p', providerEventId: 'step-1' },
+      }),
+      ev({
+        id: 'evt-prefix-result',
+        ts: ts + 5,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-p',
+          name: 'Read',
+          result: { kind: 'text', text: 'contents' },
+        },
+        refs: { toolCallId: 'tool-p' },
+      }),
+      ev({
+        id: 'evt-prefix-usage',
+        ts: ts + 6,
+        actions: { tokenUsage: { input: 10, output: 5 } },
+      }),
+      ev({
+        id: 'evt-prefix-ended',
+        ts: ts + 7,
+        status: 'completed',
+        actions: { endInvocation: true },
       }),
     ];
-    const streamed = createRuntimeEventStoredMessageProjector({
-      invocations: [invocation],
-      active: true,
+    const project = (prefix: readonly RuntimeEvent[]) =>
+      projectRuntimeEventsToStoredMessages(prefix, { invocations: [invocation] });
+    const full = project(events);
+    assert.deepStrictEqual(full.diagnostics, []);
+    assert.deepStrictEqual(
+      full.messages.map((message) => message.type),
+      ['user', 'assistant', 'tool_call', 'tool_result', 'token_usage', 'turn_state'],
+    );
+
+    for (let k = 1; k <= events.length; k += 1) {
+      const seen = new Set(events.slice(0, k).map((event) => event.id));
+      const expected = full.messages.filter((_, index) => seen.has(full.sourceEventIds[index]!));
+      const prefix = project(events.slice(0, k));
+      assert.deepStrictEqual(prefix.messages, expected, `prefix of ${k} events`);
+      assert.deepStrictEqual(prefix.diagnostics, [], `prefix of ${k} events`);
+    }
+    assert.deepStrictEqual(
+      project(events.slice(0, 2)).messages.map((message) => message.type),
+      ['user'],
+    );
+  });
+
+  test('unclaimed thinking is a defect only once its invocation has ended', () => {
+    const thinking = ev({
+      id: 'evt-orphan-thinking',
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'thinking', text: 'no answer followed' },
+      refs: { providerEventId: 'step-orphan' },
     });
-    for (const event of events) streamed.push(event);
+    const ended = ev({
+      id: 'evt-orphan-ended',
+      status: 'completed',
+      actions: { endInvocation: true },
+    });
 
     assert.deepStrictEqual(
-      streamed.finish(),
-      projectRuntimeEventsToStoredMessages(activePresentationRuntimeEvents(events), {
+      projectRuntimeEventsToStoredMessages([thinking], { invocations: [invocation] }).diagnostics,
+      [],
+    );
+    assert.deepStrictEqual(
+      projectRuntimeEventsToStoredMessages([thinking, ended], {
         invocations: [invocation],
-      }),
+      }).diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.eventId]),
+      [['unsupported_event', 'evt-orphan-thinking']],
     );
   });
 
@@ -1743,11 +1818,15 @@ describe('projectRuntimeEventsToStoredMessages', () => {
             result: 'plain string is not ToolResultContent',
           },
         }),
+        ev({ id: 'evt-ended', status: 'completed', actions: { endInvocation: true } }),
       ],
       { invocations: [invocation] },
     );
 
-    assert.deepStrictEqual(out.messages, []);
+    assert.deepStrictEqual(
+      out.messages.map((message) => message.type),
+      ['turn_state'],
+    );
     // The orphaned permission decision carries no content, so its catch-all is
     // the soft code — but the projector that tried to build its row and failed
     // still reports `incomplete_event`, which stays hard. Downgrading the

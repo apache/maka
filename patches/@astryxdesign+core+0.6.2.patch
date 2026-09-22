@@ -1,0 +1,2127 @@
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
+index 90022b3..36c0637 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.d.ts
+@@ -62,6 +62,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+ export type ChatComposerTrigger = {
+     /** Character that activates this trigger menu (e.g. '@', '/') */
+     character: string;
++    /** Optional element to align the menu with instead of the caret. */
++    menuAnchorRef?: {readonly current: HTMLElement | null};
+     /**
+      * Search source providing items for this trigger.
+      * Reuses the same SearchSource interface as Typeahead \u2014
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
+index 87dfdea..e3982e9 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatComposerInput.js
+@@ -22,7 +22,7 @@
+  * - /apps/storybook/stories/ChatComposer.stories.tsx
+  * - /packages/cli/assets/templates/blocks/components/ChatComposerInput/ (block examples)
+  */
+-import { useRef, useState, useCallback, useEffect, useImperativeHandle } from 'react';
++import { useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle } from 'react';
+ import { createPortal } from 'react-dom';
+ import * as stylex from '@stylexjs/stylex';
+ import "../theme/tokens.stylex.js";
+@@ -30,7 +30,7 @@ import { colorVars, spacingVars, typeScaleVars, typographyVars } from "../theme/
+ import { mergeProps, isImeKeyEvent } from "../utils/index.js";
+ import { useTriggerMenu } from "./useTriggerMenu.js";
+ import { useChatComposerTokens, isCustomToken } from "./useChatComposerTokens.js";
+-import { ensureCaretInside, insertTextAtCursor, isSelectionAtStart, isSelectionAtEnd, placeCaretAtEnd, getSelectionRangeInside, restoreSelectionRange } from "./chatComposerSelection.js";
++import { ensureCaretInside, insertTextAtCursor, isSelectionAtStart, isSelectionAtEnd, landInsideTrailingTextNode, placeCaretAtEnd, getSelectionRangeInside, restoreSelectionRange } from "./chatComposerSelection.js";
+ import { ChatPastedTextToken } from "./ChatPastedTextToken.js";
+ import { useChatPasteAsToken } from "./useChatPasteAsToken.js";
+ import { Badge } from "../Badge/index.js";
+@@ -261,7 +261,7 @@ export function ChatComposerInput(props) {
+       inputControlRef.current = null;
+     };
+   }, [inputControlRef, focusEditableAtEnd]);
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (controlledValue === undefined || !editableRef.current) {
+       return;
+     }
+@@ -293,6 +293,7 @@ export function ChatComposerInput(props) {
+           const range = document.createRange();
+           range.selectNodeContents(editable);
+           range.collapse(false);
++          landInsideTrailingTextNode(range);
+           selection.removeAllRanges();
+           selection.addRange(range);
+         }
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
+index ff34874..28aaaab 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.d.ts
+@@ -69,8 +69,17 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+      * @default 'balanced'
+      */
+     density?: Density;
++    /**
++     * Whether the layout's own auto-follow runs. Forwards `useChatStreamScroll`'s
++     * published `enabled` option, for hosts that position the transcript
++     * themselves; off, the layout installs no scroll listeners and never writes
++     * `scrollTop`, so the host is the only writer.
++     *
++     * @default true
++     */
++    autoScroll?: boolean;
+ }
+-export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
++export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, autoScroll, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
+ export declare namespace ChatLayout {
+     var displayName: string;
+ }
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
+index ff9b9fa..28afe4e 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
+@@ -85,7 +85,8 @@ const styles = {
+     kfzvcC: "x47corl",
+     k6WDB: "xvn2z4z",
+     keRtuK: "x67t5t6",
+-    kZKoxP: "xpyat2d",
++    kZKoxP: "x5yr21d",
++    kY2c9j: "x8knxv4",
+     kX1K2I: "xw26lqc",
+     kAExgp: "x1bv1mxo",
+     $$css: true
+@@ -120,19 +121,16 @@ const styles = {
+     $$css: true
+   },
+   blurLayerCompact: {
+-    kZKoxP: "xwzfr38",
+     kX1K2I: "xkm2don",
+     kAExgp: "xiy8rlo",
+     $$css: true
+   },
+   blurLayerBalanced: {
+-    kZKoxP: "xpyat2d",
+     kX1K2I: "xw26lqc",
+     kAExgp: "x1bv1mxo",
+     $$css: true
+   },
+   blurLayerSpacious: {
+-    kZKoxP: "x1wkxgih",
+     kX1K2I: "xr5yg4x",
+     kAExgp: "xo9xo30",
+     $$css: true
+@@ -195,6 +193,7 @@ export function ChatLayout({
+   className,
+   style,
+   'data-testid': testId,
++  autoScroll = true,
+   ref,
+   ...rest
+ }) {
+@@ -205,7 +204,11 @@ export function ChatLayout({
+ 
+   // --- Default scroll behavior ---
+   const scroll = useChatStreamScroll({
+-    scrollRef: scrollContainerRef
++    scrollRef: scrollContainerRef,
++    // maka: forward the hook's own published switch. Off, it installs no
++    // listeners and moves nothing, which is what a host needs when the host is
++    // the one positioning the transcript.
++    enabled: autoScroll
+   });
+   const newMsgs = useChatNewMessages({
+     isLocked: scroll.isLocked,
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatTokenizedText.js b/node_modules/@astryxdesign/core/dist/Chat/ChatTokenizedText.js
+index 5edb8f6..d80a970 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatTokenizedText.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatTokenizedText.js
+@@ -109,8 +109,16 @@ function renderTokens(text, tokens) {
+     const token = tokenMap.get(matched);
+     if (token) {
+       parts.push(/*#__PURE__*/_jsx("span", {
+-        ...{
+-          className: "x3nfvp2 xxymvpz"
++        // One line box tall with the chip centered inside it, so the chip
++        // centers on the line rather than on the x-height midline (which leaves
++        // a 20px chip ~1px low against CJK and mixed-case text). Must stay
++        // equal to `insertToken`'s span in useChatComposerTokens, or a token
++        // moves when the message is sent.
++        style: {
++          display: 'inline-flex',
++          alignItems: 'center',
++          height: '1lh',
++          verticalAlign: 'top'
+         },
+         children: isCustomToken(token) ? token.render() : /*#__PURE__*/_jsx(Badge, {
+           label: token.label,
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
+index 3c457d1..7d5a11a 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/ChatToolCalls.js
+@@ -140,6 +140,7 @@ function CallRow({
+   const row = /*#__PURE__*/_jsxs("div", {
+     role: hasDetail ? 'button' : undefined,
+     tabIndex: hasDetail ? 0 : undefined,
++    "data-slot": "chat-tool-call-row",
+     "aria-expanded": hasDetail ? isDetailOpen : undefined,
+     "aria-controls": hasDetail && isDetailOpen ? detailId : undefined,
+     onClick: toggleDetail,
+@@ -279,6 +280,10 @@ export function ChatToolCalls(props) {
+   const contentId = useId();
+   const isControlled = controlledExpanded !== undefined;
+   const isExpanded = isControlled ? controlledExpanded : internalExpanded;
++  // Defer hidden rows until first use. Keep them after closing so the grid
++  // animation and each row's expanded detail state survive a group toggle.
++  const [hasExpanded, setHasExpanded] = useState(isExpanded);
++  if (isExpanded && !hasExpanded) setHasExpanded(true);
+   const toggle = useCallback(() => {
+     const next = !isExpanded;
+     if (!isControlled) {
+@@ -412,7 +417,7 @@ export function ChatToolCalls(props) {
+           ...{
+             className: "x78zum5 xdt5ytf x7a5moj xtedp8i"
+           },
+-          children: calls.map(call => /*#__PURE__*/_jsx(CallRow, {
++          children: (isExpanded || hasExpanded) && calls.map(call => /*#__PURE__*/_jsx(CallRow, {
+             call: call
+           }, getToolCallKey(call)))
+         })
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js b/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js
+index 97b1a3b..e50f680 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/chatComposerSelection.js
+@@ -66,6 +66,51 @@ export function restoreSelectionRange(range) {
+   selection.addRange(range);
+ }
+ 
++/**
++ * Move a collapsed range that sits on an element boundary into the text node it
++ * visually points at.
++ *
++ * `selectNodeContents` + `collapse(false)` leaves the caret on the *editable's*
++ * child offset. Chromium anchors an IME composition to the boundary it starts
++ * from, and from an element boundary the first preedit commits as its raw
++ * letters instead of the composed character — the first CJK word typed after a
++ * programmatic caret move arrived as pinyin. The two boundaries are the same
++ * visual caret; only the text-node one composes.
++ *
++ * Tokens are `contenteditable="false"`, so a trailing token is not entered;
++ * and when nothing landable remains (a trailing token, a `<br>`, an empty
++ * editable) an empty text node appended at the boundary gives the composition
++ * a text anchor at the same visual caret.
++ */
++export function landInsideTrailingTextNode(range) {
++  // A DOM shim can implement `selectNodeContents` without exposing the
++  // container (linkedom); there is no element boundary to move away from.
++  const container = range.startContainer;
++  if (!container || container.nodeType === Node.TEXT_NODE) {
++    return;
++  }
++  let node = container.childNodes[range.startOffset - 1] ?? null;
++  while (node) {
++    if (node.nodeType === Node.TEXT_NODE) {
++      range.setStart(node, node.data.length);
++      range.collapse(true);
++      return;
++    }
++    if (!(node instanceof HTMLElement) || !node.isContentEditable) {
++      break;
++    }
++    node = node.lastChild;
++  }
++  // An empty text node serializes to ''. Only at the end — a mid-content
++  // boundary keeps its element anchor rather than jump to the tail.
++  if (range.startOffset === container.childNodes.length) {
++    const text = document.createTextNode('');
++    container.appendChild(text);
++    range.setStart(text, 0);
++    range.collapse(true);
++  }
++}
++
+ /**
+  * Collapse the Selection to the very end of `editable`'s content,
+  * replacing whatever the Selection held before.
+@@ -86,6 +131,7 @@ export function placeCaretAtEnd(editable) {
+   const range = document.createRange();
+   range.selectNodeContents(editable);
+   range.collapse(false); // collapse to end
++  landInsideTrailingTextNode(range);
+   selection.removeAllRanges();
+   selection.addRange(range);
+   return true;
+@@ -118,6 +164,7 @@ export function ensureCaretInside(editable) {
+   const range = document.createRange();
+   range.selectNodeContents(editable);
+   range.collapse(false); // collapse to end
++  landInsideTrailingTextNode(range);
+   selection.removeAllRanges();
+   selection.addRange(range);
+   return selection;
+@@ -220,7 +267,11 @@ export function insertTextAtCursor(editable, text) {
+   range.deleteContents();
+   const textNode = document.createTextNode(text);
+   range.insertNode(textNode);
+-  range.setStartAfter(textNode);
++  // Inside the inserted text node, not on the editable's child offset that
++  // setStartAfter produces: Chromium anchors an IME composition to the boundary
++  // it starts from, and from an element boundary the first preedit commits as
++  // its raw letters (see landInsideTrailingTextNode).
++  range.setStart(textNode, text.length);
+   range.collapse(true);
+   selection.removeAllRanges();
+   selection.addRange(range);
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/index.d.ts b/node_modules/@astryxdesign/core/dist/Chat/index.d.ts
+index a650ae4..aafef4b 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/index.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Chat/index.d.ts
+@@ -31,6 +31,7 @@ export { useChatPasteAsToken } from './useChatPasteAsToken';
+ export type { UseChatPasteAsTokenOptions, UseChatPasteAsTokenReturn, } from './useChatPasteAsToken';
+ export { useChatComposerTokens } from './useChatComposerTokens';
+ export type { UseChatComposerTokensOptions, UseChatComposerTokensReturn, TokenPortal, } from './useChatComposerTokens';
++export { placeCaretAtEnd } from './chatComposerSelection';
+ export type { ChatMessageSender, ChatDensity } from './ChatContext';
+ export { useChatLayoutContext, useChatComposerContext } from './ChatContext';
+ export type { ChatComposerContextValue, ChatComposerInputControl, } from './ChatContext';
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/index.js b/node_modules/@astryxdesign/core/dist/Chat/index.js
+index 47cf976..8fb9241 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/index.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/index.js
+@@ -21,6 +21,7 @@ export { useChatStreamScroll } from "./useChatStreamScroll.js";
+ export { useChatNewMessages } from "./useChatNewMessages.js";
+ export { useChatPasteAsToken } from "./useChatPasteAsToken.js";
+ export { useChatComposerTokens } from "./useChatComposerTokens.js";
++export { placeCaretAtEnd } from "./chatComposerSelection.js";
+ export { useChatLayoutContext, useChatComposerContext } from "./ChatContext.js";
+ export { ChatToolCalls } from "./ChatToolCalls.js";
+ export { ChatLayout } from "./ChatLayout.js";
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js b/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
+index bee6075..378af1e 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/useChatComposerTokens.js
+@@ -79,8 +79,14 @@ export function useChatComposerTokens({
+     span.setAttribute('data-astryx-token-value', token.value);
+     span.setAttribute('data-astryx-token-id', id);
+     span.contentEditable = 'false';
++    // One line box tall with the chip centered inside it, so the chip centers on
++    // the line rather than on the x-height midline (which leaves a 20px chip
++    // ~1px low against CJK and mixed-case text). `vertical-align: middle` would
++    // ignore the height; `top` puts this box on the line box itself.
+     span.style.display = 'inline-flex';
+-    span.style.verticalAlign = 'middle';
++    span.style.alignItems = 'center';
++    span.style.height = '1lh';
++    span.style.verticalAlign = 'top';
+     range.deleteContents();
+     range.insertNode(span);
+ 
+@@ -88,7 +94,11 @@ export function useChatComposerTokens({
+     const space = document.createTextNode('\u00A0');
+     span.after(space);
+     const newRange = document.createRange();
+-    newRange.setStartAfter(space);
++    // Inside the NBSP rather than on the editable's child offset that
++    // setStartAfter produces: Chromium anchors an IME composition to the
++    // boundary it starts from, and from an element boundary the first preedit
++    // commits as its raw letters instead of the composed character.
++    newRange.setStart(space, space.data.length);
+     newRange.collapse(true);
+     selection.removeAllRanges();
+     selection.addRange(newRange);
+@@ -158,11 +168,12 @@ export function useChatComposerTokens({
+       e.preventDefault();
+       const text = e.clipboardData.getData('text/plain');
+ 
+-      // Move cursor after the token's trailing space
++      // Move cursor after the token's trailing space — inside the text node,
++      // not on the editable's child offset (see insertToken).
+       const space = tokenEl.nextSibling;
+       const newRange = document.createRange();
+       if (space && space.nodeType === Node.TEXT_NODE) {
+-        newRange.setStartAfter(space);
++        newRange.setStart(space, space.data.length);
+       } else {
+         newRange.setStartAfter(tokenEl);
+       }
+@@ -199,11 +210,12 @@ export function useChatComposerTokens({
+     }
+     span.replaceWith(textNode);
+ 
+-    // Place cursor at end of inserted text
++    // Place cursor at end of inserted text — inside the text node, not on the
++    // editable's child offset (see insertToken).
+     const selection = window.getSelection();
+     if (selection) {
+       const range = document.createRange();
+-      range.setStartAfter(textNode);
++      range.setStart(textNode, value.length);
+       range.collapse(true);
+       selection.removeAllRanges();
+       selection.addRange(range);
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
+index 47d4e52..d705783 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
+@@ -48,6 +48,45 @@ const styles = {
+ // Helpers
+ // =============================================================================
+ 
++const blockDisplays = new Set(['block', 'flex', 'flow-root', 'grid', 'list-item', 'table']);
++function createsLineBoundary(node) {
++  return node instanceof HTMLBRElement || node instanceof HTMLElement && blockDisplays.has(window.getComputedStyle(node).display);
++}
++function getTrailingContextCharacter(node) {
++  if (node.nodeType === Node.TEXT_NODE) {
++    return (node.textContent ?? '').slice(-1);
++  }
++  if (createsLineBoundary(node)) {
++    return '\n';
++  }
++  for (let child = node.lastChild; child; child = child.previousSibling) {
++    const character = getTrailingContextCharacter(child);
++    if (character) {
++      return character;
++    }
++  }
++  return '';
++}
++function getCharacterBeforeNode(editable, node) {
++  let current = node;
++  while (current && current !== editable) {
++    for (let sibling = current.previousSibling; sibling; sibling = sibling.previousSibling) {
++      const character = getTrailingContextCharacter(sibling);
++      if (character) {
++        return character;
++      }
++    }
++    const parent = current.parentNode;
++    if (!parent || parent === editable) {
++      return '';
++    }
++    if (createsLineBoundary(parent)) {
++      return '\n';
++    }
++    current = parent;
++  }
++  return '';
++}
+ function getTextBeforeCursor(editable) {
+   const selection = window.getSelection();
+   if (!selection || selection.rangeCount === 0) {
+@@ -62,21 +101,27 @@ function getTextBeforeCursor(editable) {
+   }
+   const node = range.startContainer;
+   if (node.nodeType === Node.TEXT_NODE) {
+-    return (node.textContent ?? '').slice(0, range.startOffset);
++    const nodeText = (node.textContent ?? '').slice(0, range.startOffset);
++    const prefix = getCharacterBeforeNode(editable, node);
++    return {
++      text: prefix + nodeText,
++      nodeStart: prefix.length
++    };
+   }
+   return null;
+ }
+ function findActiveTrigger(textBeforeCursor, triggers) {
+   for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
+     const char = textBeforeCursor[i];
+-    if (char === ' ' || char === '\n') {
+-      return null;
+-    }
+     for (const trigger of triggers) {
+       if (char === trigger.character) {
+         const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
+         if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
+           const query = textBeforeCursor.slice(i + 1);
++          // A bare @ plus one space may browse the list. Once a name
++          // starts, whitespace ends the query so ordinary prose keeps Enter.
++          // Newlines always end a trigger; slash keeps single-token grammar.
++          if (/[\r\n]/u.test(query) || (/\s/u.test(query) && !(trigger.character === '@' && query === ' '))) return null;
+           return {
+             trigger,
+             query,
+@@ -190,7 +235,12 @@ export function useTriggerMenu(options) {
+   // Anchor the popover to the cursor position (not the entire input).
+   // We append a zero-size span to document.body positioned at the cursor
+   // rect — outside the contentEditable to avoid splitting text nodes.
+-  const setAnchor = useCallback(() => {
++  const setAnchor = useCallback((trigger) => {
++    if (trigger.menuAnchorRef?.current) {
++      removeAnchorSpan();
++      popover.triggerRef(trigger.menuAnchorRef.current);
++      return;
++    }
+     const editable = editableRef.current;
+     if (!editable) {
+       return;
+@@ -307,15 +357,15 @@ export function useTriggerMenu(options) {
+     if (!editable) {
+       return;
+     }
+-    const textBefore = getTextBeforeCursor(editable);
+-    if (textBefore === null) {
++    const cursorContext = getTextBeforeCursor(editable);
++    if (cursorContext === null) {
+       if (state.isActive) {
+         reset();
+       }
+       return;
+     }
+-    const found = findActiveTrigger(textBefore, triggers);
+-    if (!found) {
++    const found = findActiveTrigger(cursorContext.text, triggers);
++    if (!found || found.triggerStart < cursorContext.nodeStart) {
+       if (state.isActive) {
+         reset();
+       }
+@@ -323,9 +373,9 @@ export function useTriggerMenu(options) {
+     }
+     const {
+       trigger,
+-      query,
+-      triggerStart
++      query
+     } = found;
++    const triggerStart = found.triggerStart - cursorContext.nodeStart;
+     if (!state.isActive || state.activeTrigger !== trigger) {
+       triggerStartRef.current = triggerStart;
+       setState(prev => ({
+@@ -335,7 +385,7 @@ export function useTriggerMenu(options) {
+         query,
+         highlightedIndex: 0
+       }));
+-      setAnchor();
++      setAnchor(trigger);
+       searchItems(trigger, query);
+       popover.show();
+     } else if (state.query !== query) {
+@@ -507,7 +557,8 @@ export function useTriggerMenu(options) {
+       placement: 'above',
+       alignment: 'start',
+       offset: spacingVars['--spacing-1'],
+-      xstyle: styles.popoverSurface
++      xstyle: styles.popoverSurface,
++      style: trigger?.menuAnchorRef ? {width: 'anchor-size(width)'} : undefined
+     });
+   }, [popover, listboxId, state, selectItem, getItemId, highlightOnHover, t]);
+   return {
+diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js b/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
+index fcc2513..0f2b8f8 100644
+--- a/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
++++ b/node_modules/@astryxdesign/core/dist/CodeBlock/CodeBlock.js
+@@ -218,15 +218,8 @@ function renderLines(lines, highlightSet, renderLineContent, lineNumbers, chunkS
+   for (let start = 0; start < lines.length; start += chunkSize) {
+     const end = Math.min(start + chunkSize, lines.length);
+     const chunkLines = lines.slice(start, end);
+-    const estimatedHeight = `${chunkLines.length}lh`;
+     chunks.push(/*#__PURE__*/_jsx("div", {
+-      ...mergeProps({
+-        className: "xb5mbof"
+-      }, {
+-        style: {
+-          containIntrinsicBlockSize: `auto ${estimatedHeight}`
+-        }
+-      }),
++      style: { contain: "layout style paint" },
+       children: /*#__PURE__*/_jsx(CodeChunk, {
+         lines: chunkLines,
+         startIndex: start,
+diff --git a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js b/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
+index eac4c4b..1ade6f9 100644
+--- a/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
++++ b/node_modules/@astryxdesign/core/dist/CodeBlock/tokenizer.js
+@@ -39,7 +39,9 @@ function buildLanguage(lang) {
+     return cached;
+   }
+   const def = buildLanguageUncached(lang);
+-  langCache.set(lang, def);
++  if (def !== null) {
++    langCache.set(lang, def);
++  }
+   return def;
+ }
+ function buildLanguageUncached(lang) {
+diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
+index 82ae62c..a97eff5 100644
+--- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
++++ b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
+@@ -42,6 +42,12 @@ export interface DropdownMenuItemProps extends Pick<BaseProps, 'xstyle' | 'class
+      * @default true
+      */
+     hasCloseOnSelect?: boolean;
++    /**
++     * Exposes WAI-ARIA busy semantics on the row (maka patch): a host that
++     * holds the row's look steady while its backing data refreshes needs to
++     * say so to assistive technology, since activation is deferred meanwhile.
++     */
++    'aria-busy'?: boolean;
+     /**
+      * Visual variant. `'destructive'` renders the label, description, and icon in
+      * the error color for dangerous actions (e.g. Delete). @default 'default'
+@@ -62,7 +68,7 @@ export interface DropdownMenuItemProps extends Pick<BaseProps, 'xstyle' | 'class
+  * </DropdownMenu>
+  * ```
+  */
+-export declare function DropdownMenuItem({ icon, label, description, onClick, isDisabled, endContent, hasCloseOnSelect, variant, xstyle, className, style, }: DropdownMenuItemProps): import("react").JSX.Element;
++export declare function DropdownMenuItem({ icon, 'aria-busy': ariaBusy, label, description, onClick, isDisabled, endContent, hasCloseOnSelect, variant, xstyle, className, style, }: DropdownMenuItemProps): import("react").JSX.Element;
+ export declare namespace DropdownMenuItem {
+     var displayName: string;
+ }
+diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js
+index 1975140..bf6cb77 100644
+--- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js
++++ b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js
+@@ -91,6 +91,7 @@ const itemSizeStyles = {
+  */
+ export function DropdownMenuItem({
+   icon,
++  'aria-busy': ariaBusy,
+   label,
+   description,
+   onClick,
+@@ -117,6 +118,7 @@ export function DropdownMenuItem({
+   const isDestructive = variant === 'destructive';
+   return /*#__PURE__*/_jsx(Item, {
+     role: "menuitem",
++    'aria-busy': ariaBusy,
+     tabIndex: isDisabled ? undefined : -1,
+     onPointerMove: handlePointerMove,
+     startContent: icon ? renderIconSlot(icon, {
+diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
+index 8753b5f..43a5abe 100644
+--- a/node_modules/@astryxdesign/core/dist/List/List.js
++++ b/node_modules/@astryxdesign/core/dist/List/List.js
+@@ -89,6 +89,7 @@ export function List({
+   className,
+   style,
+   'data-testid': testId,
++  'aria-label': ariaLabel,
+   ref,
+   ...props
+ }) {
+@@ -106,7 +107,8 @@ export function List({
+     // is part of its contract and wins on conflict.
+     ,
+     ...props,
+-    "data-testid": testId
++    "data-testid": testId,
++    "aria-label": ariaLabel
+     // Only when this component renders the header — writing `undefined`
+     // unconditionally would erase a label a consumer pointed at their own
+     // heading.
+diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
+index 6b3b7e1..c529123 100644
+--- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
++++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
+@@ -98,6 +98,10 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+      */
+     headingLevelStart?: 1 | 2 | 3 | 4 | 5 | 6;
+     isStreaming?: boolean;
++    /** Source text the host has authoritatively marked as already presented. */
++    settledText?: string;
++    /** Transform displayed source immediately before Markdown parsing. */
++    transformSource?: (source: string) => string;
+     onLinkClick?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => void | false;
+     /**
+      * Citation sources keyed by ID. When provided, `[id]` and `【id】` markers
+@@ -163,7 +167,7 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+  * </Markdown>
+  * ```
+  */
+-export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, ...props }: MarkdownProps): React.ReactElement;
++export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, settledText, transformSource, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, ...props }: MarkdownProps): React.ReactElement;
+ export declare namespace Markdown {
+     var displayName: string;
+ }
+diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
+index 3432f13..898e131 100644
+--- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
++++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
+@@ -8,7 +8,7 @@
+  * @output Exports Markdown component, MarkdownProps, and renderer contracts
+  * @position Core implementation; renders markdown as Astryx components
+  */
+-import { useMemo, useRef } from 'react';
++import { useMemo, useRef, useState } from 'react';
+ import { Fragment } from 'react';
+ import * as stylex from '@stylexjs/stylex';
+ import "../theme/tokens.stylex.js";
+@@ -1087,6 +1087,8 @@ export function Markdown({
+   density = 'default',
+   headingLevelStart = 1,
+   isStreaming = false,
++  settledText,
++  transformSource,
+   onLinkClick,
+   sources,
+   citationStyle = 'label',
+@@ -1118,7 +1120,10 @@ export function Markdown({
+ 
+   // Smooth bursty streamed chunks into a steady character-by-character reveal.
+   // When not streaming, the hook returns children unchanged (no-op).
+-  const smoothedText = useStreamingText(children, isStreaming);
++  const smoothedText = useStreamingText(children, isStreaming, {
++    settledText
++  });
++  const parsedText = transformSource ? transformSource(smoothedText) : smoothedText;
+   const incrementalStateRef = useRef(createIncrementalState());
+   // Reset incremental cache when parser-affecting component options toggle —
+   // cached settled blocks were parsed with the previous setting.
+@@ -1139,11 +1144,11 @@ export function Markdown({
+         return [];
+       }
+       const options = hasMathRenderer ? mathParseOptions : legacyParseOptions;
+-      const input = trimStreamingArtifacts(smoothedText, options);
++      const input = trimStreamingArtifacts(parsedText, options);
+       return hasMathRenderer ? parseMarkdownIncremental(input, incrementalStateRef.current, mathParseOptions) : parseMarkdownIncremental(input, incrementalStateRef.current, legacyParseOptions);
+     }
+-    return hasMathRenderer ? parseMarkdown(children, mathParseOptions) : parseMarkdown(children, legacyParseOptions);
+-  }, [display, smoothedText, children, isStreaming, hasMathRenderer, mathParseOptions, legacyParseOptions]);
++    return hasMathRenderer ? parseMarkdown(parsedText, mathParseOptions) : parseMarkdown(parsedText, legacyParseOptions);
++  }, [display, parsedText, isStreaming, hasMathRenderer, mathParseOptions, legacyParseOptions]);
+ 
+   // Assign each top-level heading the slug that parseOutlineFromMarkdown
+   // would derive for it, so Outline hash links built from the same source
+@@ -1170,9 +1175,9 @@ export function Markdown({
+       return [];
+     }
+     const options = hasMathRenderer ? mathParseOptions : legacyParseOptions;
+-    const input = isStreaming ? trimStreamingArtifacts(smoothedText, options) : children;
++    const input = isStreaming ? trimStreamingArtifacts(parsedText, options) : parsedText;
+     return hasMathRenderer ? parseInline(input, mathParseOptions) : parseInline(input, legacyParseOptions);
+-  }, [display, smoothedText, children, isStreaming, hasMathRenderer, mathParseOptions, legacyParseOptions]);
++  }, [display, parsedText, isStreaming, hasMathRenderer, mathParseOptions, legacyParseOptions]);
+ 
+   // Track recent boundaries for stacked fade-in animation.
+   // The number of spans needed = ceil(animationDuration / tickInterval).
+@@ -1189,17 +1194,25 @@ export function Markdown({
+     const tickMs = tick != null ? Math.max(4, Math.round(tick / 10)) : 50;
+     return Math.min(Math.ceil(duration / tickMs), 12);
+   }, [token]);
+-  const prevBlocksRef = useRef([]);
+-  const prevInlineNodesRef = useRef([]);
+-  const boundariesRef = useRef([]);
+-  const smoothedLen = smoothedText.length;
+-  const boundaries = useMemo(() => {
+-    void smoothedLen; // dep trigger
+-    const prevLen = display === 'inline' ? countInlineTextLength(prevInlineNodesRef.current) : countBlockTextLength(prevBlocksRef.current);
+-    const next = computeBoundaries(boundariesRef.current, prevLen, maxSpans);
+-    boundariesRef.current = next;
+-    return next;
+-  }, [display, smoothedLen, maxSpans]);
++  const visibleLength = display === 'inline' ? countInlineTextLength(inlineNodes) : countBlockTextLength(blocks);
++  const [fadeState, setFadeState] = useState(() => ({
++    display,
++    settledText,
++    smoothedText,
++    visibleLength,
++    boundaries: settledText === undefined ? [0] : [visibleLength]
++  }));
++  const resetBoundaries = fadeState.display !== display || fadeState.settledText !== settledText || !smoothedText.startsWith(fadeState.smoothedText);
++  const boundaries = resetBoundaries ? [visibleLength] : fadeState.smoothedText === smoothedText ? fadeState.boundaries : computeBoundaries(fadeState.boundaries, fadeState.visibleLength, maxSpans);
++  if (fadeState.display !== display || fadeState.settledText !== settledText || fadeState.smoothedText !== smoothedText || fadeState.visibleLength !== visibleLength || fadeState.boundaries !== boundaries) {
++    setFadeState({
++      display,
++      settledText,
++      smoothedText,
++      visibleLength,
++      boundaries
++    });
++  }
+   const cursor = {
+     offset: 0,
+     boundaries,
+@@ -1227,9 +1240,6 @@ export function Markdown({
+       children: inlineNodes.map((node, i) => renderInline(node, i, onLinkClick, cursor, citationCtx, LinkComponent, inlinePlugins, components))
+     });
+ 
+-    // Store current inline nodes for next render's boundary calculation.
+-    prevInlineNodesRef.current = inlineNodes;
+-    prevBlocksRef.current = [];
+     return renderedInline;
+   }
+   const rendered = /*#__PURE__*/_jsx("div", {
+@@ -1246,11 +1256,6 @@ export function Markdown({
+     children: blocks.map((block, i) => renderBlock(block, i, blocks.length, density, headingLevelStart, onLinkClick, cursor, citationCtx, contentWidth ? typeof contentWidth === 'number' ? `${contentWidth}px` : contentWidth : null, contentAlign, LinkComponent, inlinePlugins, components, t, headingIdMap))
+   });
+ 
+-  // Store current blocks for next render's boundary calculation.
+-  // This ref write is safe under StrictMode: both invocations produce the same
+-  // blocks (same smoothedText → same useMemo result), so both write the same value.
+-  prevBlocksRef.current = blocks;
+-  prevInlineNodesRef.current = [];
+   return rendered;
+ }
+ Markdown.displayName = 'Markdown';
+\ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/dist/Markdown/parser.js b/node_modules/@astryxdesign/core/dist/Markdown/parser.js
+index 55ac179..971f1fc 100644
+--- a/node_modules/@astryxdesign/core/dist/Markdown/parser.js
++++ b/node_modules/@astryxdesign/core/dist/Markdown/parser.js
+@@ -1741,6 +1741,7 @@ export function trimStreamingArtifacts(input, options) {
+   const lastNL = displayTrimmed.lastIndexOf('\n');
+   const prefix = lastNL === -1 ? '' : displayTrimmed.slice(0, lastNL + 1);
+   let tail = lastNL === -1 ? displayTrimmed : displayTrimmed.slice(lastNL + 1);
++  const mathRanges = [];
+   if (options?.math) {
+     // Hold an unmatched inline opener so raw TeX syntax does not flash while
+     // streaming. If another unescaped dollar is already present but fails the
+@@ -1755,6 +1756,7 @@ export function trimStreamingArtifacts(input, options) {
+       }
+       const close = findInlineMathEnd(tail, index);
+       if (close !== -1) {
++        mathRanges.push(index, close);
+         index = close;
+         continue;
+       }
+@@ -1772,10 +1774,23 @@ export function trimStreamingArtifacts(input, options) {
+       index = laterDollar;
+     }
+   }
++  // Unclosed-marker checks below must not see `[`, `*`, or `~~` that live
++  // inside a completed inline math span; TeX owns those characters.
++  const inMathSpan = (pos) => {
++    for (let i = 0; i < mathRanges.length; i += 2) {
++      if (pos >= mathRanges[i] && pos <= mathRanges[i + 1]) {
++        return true;
++      }
++    }
++    return false;
++  };
+ 
+   // Scan backwards for unclosed syntax markers — no regex to avoid ReDoS
+   // Find the last unclosed [ or ![ (link/image start)
+-  const lastBracket = tail.lastIndexOf('[');
++  let lastBracket = tail.lastIndexOf('[');
++  while (lastBracket !== -1 && inMathSpan(lastBracket)) {
++    lastBracket = tail.lastIndexOf('[', lastBracket - 1);
++  }
+   if (lastBracket !== -1) {
+     const afterBracket = tail.slice(lastBracket);
+     // A closed link/image has ](...)  somewhere after the [
+@@ -1834,8 +1849,9 @@ export function trimStreamingArtifacts(input, options) {
+       while (idx + markerLen < tail.length && tail[idx + markerLen] === '*') {
+         markerLen++;
+       }
+-      if (markerLen > 3) {
+-        // 4+ stars — not standard markdown emphasis, skip
++      if (markerLen > 3 || inMathSpan(idx)) {
++        // 4+ stars — not standard markdown emphasis, skip. A `*` inside a
++        // completed math span is TeX, not emphasis.
+         searchFrom = idx + markerLen;
+         continue;
+       }
+@@ -1903,8 +1919,10 @@ export function trimStreamingArtifacts(input, options) {
+       if (idx === -1) {
+         break;
+       }
+-      positions.push(idx);
+-      count++;
++      if (!inMathSpan(idx)) {
++        positions.push(idx);
++        count++;
++      }
+       searchFrom = idx + 2;
+     }
+     if (count % 2 === 1) {
+diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
+index c55f046..09efbbe 100644
+--- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
++++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
+@@ -70,6 +70,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+      * renders inside the primary link or button.
+      */
+     endContent?: ReactNode;
++    /**
++     * Interactive trailing control rendered after the navigation control and
++     * before any nested items. Unlike `endContent`, this is a sibling rather
++     * than content inside the navigation control.
++     */
++    trailingAction?: ReactNode;
+     /**
+      * Row-level secondary controls (icon buttons, menus) rendered as siblings
+      * of the primary element at the trailing edge of the row — after the
+@@ -139,7 +145,7 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+  * </SideNavItem>
+  * ```
+  */
+-export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, actions, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, ...rest }: SideNavItemProps): import("react").JSX.Element | null;
++export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, trailingAction, actions, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, ...rest }: SideNavItemProps): import("react").JSX.Element | null;
+ export declare namespace SideNavItem {
+     var displayName: string;
+ }
+diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
+index b56c9d5..463f665 100644
+--- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
++++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
+@@ -234,6 +234,7 @@ export function SideNavItem({
+   href,
+   onClick,
+   endContent,
++  trailingAction,
+   actions,
+   children,
+   collapsible: itemCollapsible,
+@@ -550,7 +551,7 @@ export function SideNavItem({
+   const item = /*#__PURE__*/_jsxs("div", {
+     ref: itemRef,
+     ...stylex.props(styles.root, xstyle),
+-    children: [itemElement, hasChildren && !isCollapsed && /*#__PURE__*/_jsx("div", {
++    children: [itemElement, trailingAction, hasChildren && !isCollapsed && /*#__PURE__*/_jsx("div", {
+       id: `${id}-children`,
+       role: "group",
+       "aria-labelledby": `${id}-label`,
+diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
+index 465aaab..62e542c 100644
+--- a/node_modules/@astryxdesign/core/dist/astryx.css
++++ b/node_modules/@astryxdesign/core/dist/astryx.css
+@@ -578,7 +578,7 @@
+   .xk2sxw7:focus-within:not(#\#):not(#\#){border-color:var(--color-error)}
+   .xyq33ac:focus-within:not(#\#):not(#\#){border-color:var(--color-success)}
+   .xa1yw2k:focus-within:not(#\#):not(#\#){border-color:var(--color-warning)}
+-  .xafswnp.xafswnp:where(.x1iwu4tg:has(:focus-visible) *):not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
++  :where(.x1iwu4tg:has(:focus-visible)) .xafswnp.xafswnp:not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
+   .x1dordxg:focus-within:not(#\#):not(#\#){overflow:visible}
+   .xb0m1lw:has(> div > .astryx-layout-content):not(#\#):not(#\#){margin-inline:0}
+   .x16s19ga:has(:focus-visible):not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
+@@ -1365,7 +1365,7 @@
+   .x7s97pk:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:2px}
+   .x13aywxo:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--button-focus-offset)}
+   .x1vwwbsn:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
+-  .xwz5zln.xwz5zln:where(.x1iwu4tg:has(:focus-visible) *):not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
++  :where(.x1iwu4tg:has(:focus-visible)) .xwz5zln.xwz5zln:not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
+   .x1jhp3zv:focus-visible:not(#\#):not(#\#):not(#\#){outline-style:var(--focus-outline-style)}
+   .x1vidyx5:focus-visible:not(#\#):not(#\#):not(#\#){outline-width:var(--focus-outline-width)}
+   .x1n6uwha:is([dir="rtl"] *):not(#\#):not(#\#):not(#\#){padding-inline-end:max(var(--spacing-4),env(safe-area-inset-left,0px))}
+@@ -1844,8 +1844,8 @@
+   .x5lhr3w:not(#\#):not(#\#):not(#\#):not(#\#){width:var(--x-width)}
+   .x1wp2rvj.x1wp2rvj:where(.x139im0d:last-child *):not(#\#):not(#\#):not(#\#):not(#\#){border-bottom-width:0}
+   .x132qfvm:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){height:auto}
+-  .xsg11nj.xsg11nj:where(.x-default-marker:has(> .astryx-layout-footer:not([data-divider])) *):not(#\#):not(#\#):not(#\#):not(#\#){padding-bottom:0}
+-  .x1ioh5az.x1ioh5az:where(.x-default-marker:has(> .astryx-layout-header:not([data-divider])) *):not(#\#):not(#\#):not(#\#):not(#\#){padding-top:0}
++  :where(.x-default-marker:has(> .astryx-layout-footer:not([data-divider]))) .xsg11nj.xsg11nj:not(#\#):not(#\#):not(#\#):not(#\#){padding-bottom:0}
++  :where(.x-default-marker:has(> .astryx-layout-header:not([data-divider]))) .x1ioh5az.x1ioh5az:not(#\#):not(#\#):not(#\#):not(#\#){padding-top:0}
+   .x1kw28su:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){padding-top:var(--spacing-1)}
+   .x10okhzq:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){width:auto}
+   .x5du68j:has(~ * [data-chat-name]):not(#\#):not(#\#):not(#\#):not(#\#){margin-top:var(--spacing-5)}
+diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
+index 7a35d1c..50ee70b 100644
+--- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
++++ b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
+@@ -11,6 +11,8 @@ export interface UseStreamingTextOptions {
+      * @default 'natural'
+      */
+     speed?: StreamingTextSpeed;
++    /** Source text the host has authoritatively marked as already presented. */
++    settledText?: string;
+ }
+ /**
+  * Snap a UTF-16 code-unit offset down to the start of the grapheme cluster
+diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
+index 693d728..7d5724e 100644
+--- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
++++ b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.js
+@@ -24,7 +24,7 @@
+  * - /packages/core/src/hooks/index.ts (exports)
+  * - /packages/core/src/hooks/useStreamingText.test.ts (tests)
+  */
+-import { useEffect, useMemo, useRef, useState } from 'react';
++import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+ import { useMediaQuery } from "./useMediaQuery.js";
+ import { useTheme } from "../theme/useTheme.js";
+ 
+@@ -70,6 +70,44 @@ function isLowSurrogate(codeUnit) {
+   return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+ }
+ 
++/** Longest shared prefix as a UTF-16 offset, without splitting a surrogate pair. */
++function commonPrefixLength(a, b) {
++  let offset = 0;
++  while (offset < a.length && offset < b.length) {
++    const aCodePoint = a.codePointAt(offset);
++    const bCodePoint = b.codePointAt(offset);
++    if (aCodePoint !== bCodePoint) break;
++    offset += aCodePoint !== undefined && aCodePoint > 0xffff ? 2 : 1;
++  }
++  return offset;
++}
++
++/**
++ * Advances a UTF-16 offset without stopping between a surrogate pair.
++ *
++ * The rendered slice is snapped *back* to a grapheme boundary
++ * (snapToGraphemeBoundary), so a tick landing inside a pair would otherwise
++ * hold the code point back a frame; advancing past it reveals the glyph on
++ * the tick that reached it.
++ */
++function advanceTextOffset(text, offset, amount) {
++  const next = Math.min(offset + amount, text.length);
++  if (next > 0 && next < text.length && text.charCodeAt(next - 1) >= 0xd800 && text.charCodeAt(next - 1) <= 0xdbff && text.charCodeAt(next) >= 0xdc00 && text.charCodeAt(next) <= 0xdfff) {
++    return next + 1;
++  }
++  return next;
++}
++function reconcilePresentation(previous, targetText, settledText, progressive) {
++  const displayedText = previous.targetText.slice(0, previous.displayedLen);
++  const retainedLen = commonPrefixLength(displayedText, targetText);
++  const settledLen = commonPrefixLength(settledText, targetText);
++  return {
++    targetText,
++    settledText,
++    displayedLen: progressive ? Math.max(retainedLen, settledLen) : targetText.length
++  };
++}
++
+ /**
+  * Snap a UTF-16 code-unit offset down to the start of the grapheme cluster
+  * it falls inside, so slicing `text` at the returned offset never splits a
+@@ -143,56 +181,47 @@ export function useStreamingText(targetText, isStreaming, options) {
+     const tick = speed === 'fast' ? base / 20 : base / 10;
+     return Math.max(4, Math.round(tick));
+   }, [token, speed]);
+-  const [displayedLen, setDisplayedLen] = useState(0);
+-  const targetRef = useRef(targetText);
+-  const displayedLenRef = useRef(0);
+-  const lastTickRef = useRef(0);
+-  const rafRef = useRef(null);
+-
+-  // Keep target ref in sync
+-  targetRef.current = targetText;
+-
+-  // Reset when target clears (new message)
+-  const prevTargetLenRef = useRef(targetText.length);
+-  if (targetText.length !== prevTargetLenRef.current) {
+-    prevTargetLenRef.current = targetText.length;
+-    if (targetText.length === 0 && displayedLen !== 0) {
+-      displayedLenRef.current = 0;
+-      setDisplayedLen(0);
+-    }
+-  }
+-
+-  // Snap to full text when streaming ends
+-  const prevIsStreamingRef = useRef(isStreaming);
+-  if (isStreaming !== prevIsStreamingRef.current) {
+-    prevIsStreamingRef.current = isStreaming;
+-    if (!isStreaming && targetText.length > 0) {
+-      displayedLenRef.current = targetText.length;
+-      setDisplayedLen(targetText.length);
+-    }
+-  }
+-
+   // Respect the user's reduced-motion preference — skip the progressive
+   // reveal and snap straight to the full text. Uses the package's SSR-safe
+   // useMediaQuery (useMediaQuery.ts) so the read stays in sync if the
+   // preference changes mid-stream.
+   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
++  const progressive = isStreaming && speed !== 'instant' && !prefersReducedMotion;
++  const settledText = options?.settledText ?? '';
++  const [presentation, setPresentation] = useState(() => ({
++    targetText,
++    settledText,
++    displayedLen: progressive ? commonPrefixLength(settledText, targetText) : targetText.length
++  }));
++  let renderedPresentation = presentation;
++  if (presentation.targetText !== targetText || presentation.settledText !== settledText || !progressive && presentation.displayedLen !== targetText.length) {
++    renderedPresentation = reconcilePresentation(presentation, targetText, settledText, progressive);
++    setPresentation(renderedPresentation);
++  }
++  const presentationRef = useRef(presentation);
++  const lastTickRef = useRef(0);
++  const rafRef = useRef(null);
++  useLayoutEffect(() => {
++    presentationRef.current = presentation;
++  }, [presentation]);
+ 
+   // Animation loop
+   useEffect(() => {
+-    if (!isStreaming || speed === 'instant' || prefersReducedMotion) {
++    if (!progressive) {
+       return;
+     }
+     function tick(now) {
+       const elapsed = now - lastTickRef.current;
+       if (elapsed >= tickMs) {
+         lastTickRef.current = now;
+-        const target = targetRef.current;
+-        const currentLen = displayedLenRef.current;
+-        if (currentLen < target.length) {
+-          const nextLen = Math.min(currentLen + charsPerTick, target.length);
+-          displayedLenRef.current = nextLen;
+-          setDisplayedLen(nextLen);
++        const current = presentationRef.current;
++        if (current.displayedLen < current.targetText.length) {
++          const next = {
++            ...current,
++            displayedLen: advanceTextOffset(current.targetText, current.displayedLen, charsPerTick)
++          };
++          presentationRef.current = next;
++          setPresentation(next);
+         }
+       }
+       rafRef.current = requestAnimationFrame(tick);
+@@ -204,9 +233,9 @@ export function useStreamingText(targetText, isStreaming, options) {
+         rafRef.current = null;
+       }
+     };
+-  }, [isStreaming, charsPerTick, tickMs, speed, prefersReducedMotion]);
+-  if (!isStreaming || speed === 'instant' || prefersReducedMotion) {
++  }, [progressive, charsPerTick, tickMs]);
++  if (!progressive) {
+     return targetText;
+   }
+-  return targetText.slice(0, snapToGraphemeBoundary(targetText, displayedLen));
++  return targetText.slice(0, snapToGraphemeBoundary(targetText, renderedPresentation.displayedLen));
+ }
+\ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
+index a45cc2f..f676118 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatComposerInput.tsx
+@@ -28,6 +28,7 @@ import {
+   useState,
+   useCallback,
+   useEffect,
++  useLayoutEffect,
+   useImperativeHandle,
+   type ReactNode,
+   type KeyboardEvent,
+@@ -51,6 +52,7 @@ import {
+   insertTextAtCursor,
+   isSelectionAtStart,
+   isSelectionAtEnd,
++  landInsideTrailingTextNode,
+   placeCaretAtEnd,
+   getSelectionRangeInside,
+   restoreSelectionRange,
+@@ -114,6 +116,8 @@ export type ChatComposerTriggerItem = SearchableItem;
+ export type ChatComposerTrigger = {
+   /** Character that activates this trigger menu (e.g. '@', '/') */
+   character: string;
++  /** Optional element to align the menu with instead of the caret. */
++  menuAnchorRef?: {readonly current: HTMLElement | null};
+   /**
+    * Search source providing items for this trigger.
+    * Reuses the same SearchSource interface as Typeahead \u2014
+@@ -465,7 +469,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+     };
+   }, [inputControlRef, focusEditableAtEnd]);
+ 
+-  useEffect(() => {
++  useLayoutEffect(() => {
+     if (controlledValue === undefined || !editableRef.current) {
+       return;
+     }
+@@ -497,6 +501,7 @@ export function ChatComposerInput(props: ChatComposerInputProps) {
+           const range = document.createRange();
+           range.selectNodeContents(editable);
+           range.collapse(false);
++          landInsideTrailingTextNode(range);
+           selection.removeAllRanges();
+           selection.addRange(range);
+         }
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
+index d45a912..7dba080 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
+@@ -96,6 +96,15 @@ export interface ChatLayoutProps extends BaseProps<HTMLDivElement> {
+    * @default 'balanced'
+    */
+   density?: Density;
++  /**
++   * Whether the layout's own auto-follow runs. Forwards `useChatStreamScroll`'s
++   * published `enabled` option, for hosts that position the transcript
++   * themselves; off, the layout installs no scroll listeners and never writes
++   * `scrollTop`, so the host is the only writer.
++   *
++   * @default true
++   */
++  autoScroll?: boolean;
+ }
+ 
+ // =============================================================================
+@@ -177,7 +186,15 @@ const styles = stylex.create({
+     pointerEvents: 'none',
+     backdropFilter: 'blur(12px)',
+     WebkitBackdropFilter: 'blur(12px)',
+-    height: 100,
++    // The fade has to cover exactly what the dock hides, and the dock's height
++    // is its content's. A per-density constant only matched by accident: at
++    // 'balanced' the 100px layer started 90px inside the opaque composer, so
++    // the ramp was invisible wherever the composer painted and the transcript
++    // stayed crisp right up to the dock's top edge.
++    height: '100%',
++    // Behind the dock's own chrome. The scroll button is in flow at the top of
++    // this container and belongs on top of the fade, not under it.
++    zIndex: -1,
+     maskImage: 'linear-gradient(to bottom, transparent, black 36px)',
+     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 36px)',
+   },
+@@ -210,18 +227,16 @@ const styles = stylex.create({
+     paddingInline: spacingVars['--spacing-4'],
+   },
+ 
++  // Density tunes the ramp only — the layer's height follows the dock.
+   blurLayerCompact: {
+-    height: 80,
+     maskImage: 'linear-gradient(to bottom, transparent, black 24px)',
+     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 24px)',
+   },
+   blurLayerBalanced: {
+-    height: 100,
+     maskImage: 'linear-gradient(to bottom, transparent, black 36px)',
+     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 36px)',
+   },
+   blurLayerSpacious: {
+-    height: 120,
+     maskImage: 'linear-gradient(to bottom, transparent, black 48px)',
+     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 48px)',
+   },
+@@ -279,6 +294,7 @@ export function ChatLayout({
+   className,
+   style,
+   'data-testid': testId,
++  autoScroll = true,
+   ref,
+   ...rest
+ }: ChatLayoutProps) {
+@@ -289,7 +305,13 @@ export function ChatLayout({
+   const isSelfScrolling = !externalScrollRef;
+ 
+   // --- Default scroll behavior ---
+-  const scroll = useChatStreamScroll({scrollRef: scrollContainerRef});
++  const scroll = useChatStreamScroll({
++    scrollRef: scrollContainerRef,
++    // maka: forward the hook's own published switch. Off, it installs no
++    // listeners and moves nothing, which is what a host needs when the host is
++    // the one positioning the transcript.
++    enabled: autoScroll,
++  });
+   const newMsgs = useChatNewMessages({
+     isLocked: scroll.isLocked,
+     onResize: scroll.scrollIfLocked,
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatTokenizedText.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatTokenizedText.tsx
+index 7b6bf87..c9943bf 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatTokenizedText.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatTokenizedText.tsx
+@@ -36,8 +36,16 @@ const styles = stylex.create({
+     display: 'inline',
+   },
+   token: {
++    // One line box tall with the chip centered inside it, so the chip centers
++    // on the line rather than on the x-height midline (which leaves a 20px chip
++    // ~1px low against CJK and mixed-case text). `vertical-align: middle` would
++    // ignore the height; `top` puts this box on the line box itself. Must stay
++    // equal to `insertToken`'s span in useChatComposerTokens, or a token moves
++    // when the message is sent.
+     display: 'inline-flex',
+-    verticalAlign: 'middle',
++    alignItems: 'center',
++    height: '1lh',
++    verticalAlign: 'top',
+   },
+ });
+ 
+diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
+index 68a424e..d4f0c5e 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
+@@ -413,6 +413,7 @@ function CallRow({call}: {call: ChatToolCallItem}) {
+     <div
+       role={hasDetail ? 'button' : undefined}
+       tabIndex={hasDetail ? 0 : undefined}
++      data-slot="chat-tool-call-row"
+       aria-expanded={hasDetail ? isDetailOpen : undefined}
+       aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
+       onClick={toggleDetail}
+@@ -547,6 +548,10 @@ export function ChatToolCalls(props: ChatToolCallsProps) {
+   const contentId = useId();
+   const isControlled = controlledExpanded !== undefined;
+   const isExpanded = isControlled ? controlledExpanded : internalExpanded;
++  // Defer hidden rows until first use. Keep them after closing so the grid
++  // animation and each row's expanded detail state survive a group toggle.
++  const [hasExpanded, setHasExpanded] = useState(isExpanded);
++  if (isExpanded && !hasExpanded) setHasExpanded(true);
+ 
+   const toggle = useCallback(() => {
+     const next = !isExpanded;
+@@ -674,9 +679,10 @@ export function ChatToolCalls(props: ChatToolCallsProps) {
+         )}>
+         <div {...stylex.props(styles.groupContentInner)}>
+           <div {...stylex.props(styles.list)}>
+-            {calls.map(call => (
+-              <CallRow key={getToolCallKey(call)} call={call} />
+-            ))}
++            {(isExpanded || hasExpanded) &&
++              calls.map(call => (
++                <CallRow key={getToolCallKey(call)} call={call} />
++              ))}
+           </div>
+         </div>
+       </div>
+diff --git a/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts b/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts
+index 0f31ca8..7fa3a89 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts
++++ b/node_modules/@astryxdesign/core/src/Chat/chatComposerSelection.ts
+@@ -69,6 +69,52 @@ export function restoreSelectionRange(range: Range): void {
+   selection.addRange(range);
+ }
+ 
++/**
++ * Move a collapsed range that sits on an element boundary into the text node it
++ * visually points at.
++ *
++ * `selectNodeContents` + `collapse(false)` leaves the caret on the *editable's*
++ * child offset. Chromium anchors an IME composition to the boundary it starts
++ * from, and from an element boundary the first preedit commits as its raw
++ * letters instead of the composed character — the first CJK word typed after a
++ * programmatic caret move arrived as pinyin. The two boundaries are the same
++ * visual caret; only the text-node one composes.
++ *
++ * Tokens are `contenteditable="false"`, so a trailing token is not entered;
++ * and when nothing landable remains (a trailing token, a `<br>`, an empty
++ * editable) an empty text node appended at the boundary gives the composition
++ * a text anchor at the same visual caret.
++ */
++export function landInsideTrailingTextNode(range: Range): void {
++  // A DOM shim can implement `selectNodeContents` without exposing the
++  // container (linkedom); there is no element boundary to move away from.
++  const container = range.startContainer;
++  if (!container || container.nodeType === Node.TEXT_NODE) {
++    return;
++  }
++  let node: Node | null = container.childNodes[range.startOffset - 1] ?? null;
++  while (node) {
++    if (node.nodeType === Node.TEXT_NODE) {
++      const text = node as Text;
++      range.setStart(text, text.data.length);
++      range.collapse(true);
++      return;
++    }
++    if (!(node instanceof HTMLElement) || !node.isContentEditable) {
++      break;
++    }
++    node = node.lastChild;
++  }
++  // An empty text node serializes to ''. Only at the end — a mid-content
++  // boundary keeps its element anchor rather than jump to the tail.
++  if (range.startOffset === container.childNodes.length) {
++    const text = document.createTextNode('');
++    container.appendChild(text);
++    range.setStart(text, 0);
++    range.collapse(true);
++  }
++}
++
+ /**
+  * Collapse the Selection to the very end of `editable`'s content,
+  * replacing whatever the Selection held before.
+@@ -89,6 +135,7 @@ export function placeCaretAtEnd(editable: HTMLElement): boolean {
+   const range = document.createRange();
+   range.selectNodeContents(editable);
+   range.collapse(false); // collapse to end
++  landInsideTrailingTextNode(range);
+   selection.removeAllRanges();
+   selection.addRange(range);
+   return true;
+@@ -123,6 +170,7 @@ export function ensureCaretInside(editable: HTMLElement): Selection | null {
+   const range = document.createRange();
+   range.selectNodeContents(editable);
+   range.collapse(false); // collapse to end
++  landInsideTrailingTextNode(range);
+   selection.removeAllRanges();
+   selection.addRange(range);
+   return selection;
+@@ -262,7 +310,11 @@ export function insertTextAtCursor(
+   const textNode = document.createTextNode(text);
+   range.insertNode(textNode);
+ 
+-  range.setStartAfter(textNode);
++  // Inside the inserted text node, not on the editable's child offset that
++  // setStartAfter produces: Chromium anchors an IME composition to the boundary
++  // it starts from, and from an element boundary the first preedit commits as
++  // its raw letters (see landInsideTrailingTextNode).
++  range.setStart(textNode, text.length);
+   range.collapse(true);
+   selection.removeAllRanges();
+   selection.addRange(range);
+diff --git a/node_modules/@astryxdesign/core/src/Chat/index.ts b/node_modules/@astryxdesign/core/src/Chat/index.ts
+index 7239e18..db3ca04 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/index.ts
++++ b/node_modules/@astryxdesign/core/src/Chat/index.ts
+@@ -80,6 +80,7 @@ export type {
+   UseChatComposerTokensReturn,
+   TokenPortal,
+ } from './useChatComposerTokens';
++export {placeCaretAtEnd} from './chatComposerSelection';
+ export type {ChatMessageSender, ChatDensity} from './ChatContext';
+ export {useChatLayoutContext, useChatComposerContext} from './ChatContext';
+ export type {
+diff --git a/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts b/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
+index 071303f..d28601a 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
++++ b/node_modules/@astryxdesign/core/src/Chat/useChatComposerTokens.ts
+@@ -119,8 +119,14 @@ export function useChatComposerTokens({
+       span.setAttribute('data-astryx-token-value', token.value);
+       span.setAttribute('data-astryx-token-id', id);
+       span.contentEditable = 'false';
++      // One line box tall with the chip centered inside it, so the chip centers
++      // on the line rather than on the x-height midline (which leaves a 20px
++      // chip ~1px low against CJK and mixed-case text). `vertical-align:
++      // middle` would ignore the height; `top` puts this box on the line box.
+       span.style.display = 'inline-flex';
+-      span.style.verticalAlign = 'middle';
++      span.style.alignItems = 'center';
++      span.style.height = '1lh';
++      span.style.verticalAlign = 'top';
+ 
+       range.deleteContents();
+       range.insertNode(span);
+@@ -130,7 +136,11 @@ export function useChatComposerTokens({
+       span.after(space);
+ 
+       const newRange = document.createRange();
+-      newRange.setStartAfter(space);
++      // Inside the NBSP rather than on the editable's child offset that
++      // setStartAfter produces: Chromium anchors an IME composition to the
++      // boundary it starts from, and from an element boundary the first preedit
++      // commits as its raw letters instead of the composed character.
++      newRange.setStart(space, space.data.length);
+       newRange.collapse(true);
+       selection.removeAllRanges();
+       selection.addRange(newRange);
+@@ -219,7 +229,9 @@ export function useChatComposerTokens({
+         const space = tokenEl.nextSibling;
+         const newRange = document.createRange();
+         if (space && space.nodeType === Node.TEXT_NODE) {
+-          newRange.setStartAfter(space);
++          // Inside the text node, not on the editable's child offset (see
++          // insertToken).
++          newRange.setStart(space as Text, (space as Text).data.length);
+         } else {
+           newRange.setStartAfter(tokenEl);
+         }
+@@ -266,7 +278,9 @@ export function useChatComposerTokens({
+       const selection = window.getSelection();
+       if (selection) {
+         const range = document.createRange();
+-        range.setStartAfter(textNode);
++        // Inside the text node, not on the editable's child offset (see
++        // insertToken).
++        range.setStart(textNode, value.length);
+         range.collapse(true);
+         selection.removeAllRanges();
+         selection.addRange(range);
+diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
+index 764be45..10a2de9 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
+@@ -168,7 +168,68 @@ const styles = stylex.create({
+ // Helpers
+ // =============================================================================
+ 
+-function getTextBeforeCursor(editable: HTMLDivElement): string | null {
++const blockDisplays = new Set([
++  'block',
++  'flex',
++  'flow-root',
++  'grid',
++  'list-item',
++  'table',
++]);
++
++function createsLineBoundary(node: Node): boolean {
++  return (
++    node instanceof HTMLBRElement ||
++    (node instanceof HTMLElement &&
++      blockDisplays.has(window.getComputedStyle(node).display))
++  );
++}
++
++function getTrailingContextCharacter(node: Node): string {
++  if (node.nodeType === Node.TEXT_NODE) {
++    return (node.textContent ?? '').slice(-1);
++  }
++  if (createsLineBoundary(node)) {
++    return '\n';
++  }
++  for (let child = node.lastChild; child; child = child.previousSibling) {
++    const character = getTrailingContextCharacter(child);
++    if (character) {
++      return character;
++    }
++  }
++  return '';
++}
++
++function getCharacterBeforeNode(editable: HTMLDivElement, node: Node): string {
++  let current: Node | null = node;
++  while (current && current !== editable) {
++    for (
++      let sibling = current.previousSibling;
++      sibling;
++      sibling = sibling.previousSibling
++    ) {
++      const character = getTrailingContextCharacter(sibling);
++      if (character) {
++        return character;
++      }
++    }
++
++    const parent = current.parentNode;
++    if (!parent || parent === editable) {
++      return '';
++    }
++    if (createsLineBoundary(parent)) {
++      return '\n';
++    }
++    current = parent;
++  }
++  return '';
++}
++
++function getTextBeforeCursor(
++  editable: HTMLDivElement,
++): {text: string; nodeStart: number} | null {
+   const selection = window.getSelection();
+   if (!selection || selection.rangeCount === 0) {
+     return null;
+@@ -184,7 +245,9 @@ function getTextBeforeCursor(editable: HTMLDivElement): string | null {
+ 
+   const node = range.startContainer;
+   if (node.nodeType === Node.TEXT_NODE) {
+-    return (node.textContent ?? '').slice(0, range.startOffset);
++    const nodeText = (node.textContent ?? '').slice(0, range.startOffset);
++    const prefix = getCharacterBeforeNode(editable, node);
++    return {text: prefix + nodeText, nodeStart: prefix.length};
+   }
+ 
+   return null;
+@@ -201,15 +264,16 @@ function findActiveTrigger(
+   for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
+     const char = textBeforeCursor[i];
+ 
+-    if (char === ' ' || char === '\n') {
+-      return null;
+-    }
+ 
+     for (const trigger of triggers) {
+       if (char === trigger.character) {
+         const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
+         if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
+           const query = textBeforeCursor.slice(i + 1);
++          // A bare @ plus one space may browse the list. Once a name
++          // starts, whitespace ends the query so ordinary prose keeps Enter.
++          // Newlines always end a trigger; slash keeps single-token grammar.
++          if (/[\r\n]/u.test(query) || (/\s/u.test(query) && !(trigger.character === '@' && query === ' '))) return null;
+           return {trigger, query, triggerStart: i};
+         }
+       }
+@@ -335,7 +399,12 @@ export function useTriggerMenu(
+   // Anchor the popover to the cursor position (not the entire input).
+   // We append a zero-size span to document.body positioned at the cursor
+   // rect — outside the contentEditable to avoid splitting text nodes.
+-  const setAnchor = useCallback(() => {
++  const setAnchor = useCallback((trigger: ChatComposerTrigger) => {
++    if (trigger.menuAnchorRef?.current) {
++      removeAnchorSpan();
++      popover.triggerRef(trigger.menuAnchorRef.current);
++      return;
++    }
+     const editable = editableRef.current;
+     if (!editable) {
+       return;
+@@ -487,23 +556,24 @@ export function useTriggerMenu(
+       return;
+     }
+ 
+-    const textBefore = getTextBeforeCursor(editable);
+-    if (textBefore === null) {
++    const cursorContext = getTextBeforeCursor(editable);
++    if (cursorContext === null) {
+       if (state.isActive) {
+         reset();
+       }
+       return;
+     }
+ 
+-    const found = findActiveTrigger(textBefore, triggers);
+-    if (!found) {
++    const found = findActiveTrigger(cursorContext.text, triggers);
++    if (!found || found.triggerStart < cursorContext.nodeStart) {
+       if (state.isActive) {
+         reset();
+       }
+       return;
+     }
+ 
+-    const {trigger, query, triggerStart} = found;
++    const {trigger, query} = found;
++    const triggerStart = found.triggerStart - cursorContext.nodeStart;
+ 
+     if (!state.isActive || state.activeTrigger !== trigger) {
+       triggerStartRef.current = triggerStart;
+@@ -514,7 +584,7 @@ export function useTriggerMenu(
+         query,
+         highlightedIndex: 0,
+       }));
+-      setAnchor();
++      setAnchor(trigger);
+       searchItems(trigger, query);
+       popover.show();
+     } else if (state.query !== query) {
+@@ -716,6 +786,7 @@ export function useTriggerMenu(
+         alignment: 'start',
+         offset: spacingVars['--spacing-1'],
+         xstyle: styles.popoverSurface,
++        style: trigger?.menuAnchorRef ? {width: 'anchor-size(width)'} : undefined,
+       },
+     );
+   }, [popover, listboxId, state, selectItem, getItemId, highlightOnHover, t]);
+diff --git a/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx b/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx
+index 6bb384b..683642d 100644
+--- a/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx
++++ b/node_modules/@astryxdesign/core/src/CodeBlock/CodeBlock.tsx
+@@ -386,14 +386,9 @@ function renderLines(
+   for (let start = 0; start < lines.length; start += chunkSize) {
+     const end = Math.min(start + chunkSize, lines.length);
+     const chunkLines = lines.slice(start, end);
+-    const estimatedHeight = `${chunkLines.length}lh`;
+ 
+     chunks.push(
+-      <div
+-        key={start}
+-        {...mergeProps(stylex.props(styles.lineChunk), {
+-          style: {containIntrinsicBlockSize: `auto ${estimatedHeight}`},
+-        })}>
++      <div key={start} style={{contain: 'layout style paint'}}>
+         <CodeChunk
+           lines={chunkLines}
+           startIndex={start}
+diff --git a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
+index 3fad1b4..e7d1e89 100644
+--- a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
++++ b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
+@@ -113,6 +113,12 @@ export interface DropdownMenuItemProps extends Pick<
+    * @default true
+    */
+   hasCloseOnSelect?: boolean;
++  /**
++   * Exposes WAI-ARIA busy semantics on the row (maka patch): a host that
++   * holds the row's look steady while its backing data refreshes needs to
++   * say so to assistive technology, since activation is deferred meanwhile.
++   */
++  'aria-busy'?: boolean;
+   /**
+    * Visual variant. `'destructive'` renders the label, description, and icon in
+    * the error color for dangerous actions (e.g. Delete). @default 'default'
+@@ -136,6 +142,7 @@ export interface DropdownMenuItemProps extends Pick<
+  */
+ export function DropdownMenuItem({
+   icon,
++  'aria-busy': ariaBusy,
+   label,
+   description,
+   onClick,
+@@ -170,6 +177,7 @@ export function DropdownMenuItem({
+   return (
+     <Item
+       role="menuitem"
++      aria-busy={ariaBusy}
+       tabIndex={isDisabled ? undefined : -1}
+       onPointerMove={handlePointerMove}
+       startContent={
+diff --git a/node_modules/@astryxdesign/core/src/List/List.tsx b/node_modules/@astryxdesign/core/src/List/List.tsx
+index 5b63cd6..76627fe 100644
+--- a/node_modules/@astryxdesign/core/src/List/List.tsx
++++ b/node_modules/@astryxdesign/core/src/List/List.tsx
+@@ -151,6 +151,7 @@ export function List({
+   className,
+   style,
+   'data-testid': testId,
++  'aria-label': ariaLabel,
+   ref,
+   ...props
+ }: ListProps) {
+@@ -170,6 +171,7 @@ export function List({
+       // is part of its contract and wins on conflict.
+       {...props}
+       data-testid={testId}
++      aria-label={ariaLabel}
+       // Only when this component renders the header — writing `undefined`
+       // unconditionally would erase a label a consumer pointed at their own
+       // heading.
+diff --git a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
+index 75e68af..ca671d4 100644
+--- a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
++++ b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
+@@ -9,7 +9,7 @@
+  * @position Core implementation; renders markdown as Astryx components
+  */
+ 
+-import {useMemo, useRef} from 'react';
++import {useMemo, useRef, useState} from 'react';
+ import type React from 'react';
+ import {Fragment} from 'react';
+ import * as stylex from '@stylexjs/stylex';
+@@ -159,6 +159,10 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+    */
+   headingLevelStart?: 1 | 2 | 3 | 4 | 5 | 6;
+   isStreaming?: boolean;
++  /** Source text the host has authoritatively marked as already presented. */
++  settledText?: string;
++  /** Transform displayed source immediately before Markdown parsing. */
++  transformSource?: (source: string) => string;
+   onLinkClick?: (
+     href: string,
+     event: React.MouseEvent<HTMLAnchorElement>,
+@@ -1656,6 +1660,8 @@ export function Markdown({
+   density = 'default',
+   headingLevelStart = 1,
+   isStreaming = false,
++  settledText,
++  transformSource,
+   onLinkClick,
+   sources,
+   citationStyle = 'label',
+@@ -1690,7 +1696,10 @@ export function Markdown({
+ 
+   // Smooth bursty streamed chunks into a steady character-by-character reveal.
+   // When not streaming, the hook returns children unchanged (no-op).
+-  const smoothedText = useStreamingText(children, isStreaming);
++  const smoothedText = useStreamingText(children, isStreaming, {
++    settledText,
++  });
++  const parsedText = transformSource ? transformSource(smoothedText) : smoothedText;
+ 
+   const incrementalStateRef = useRef<IncrementalState<boolean>>(
+     createIncrementalState<boolean>(),
+@@ -1718,7 +1727,7 @@ export function Markdown({
+         return [];
+       }
+       const options = hasMathRenderer ? mathParseOptions : legacyParseOptions;
+-      const input = trimStreamingArtifacts(smoothedText, options);
++      const input = trimStreamingArtifacts(parsedText, options);
+       return hasMathRenderer
+         ? parseMarkdownIncremental(
+             input,
+@@ -1732,12 +1741,11 @@ export function Markdown({
+           );
+     }
+     return hasMathRenderer
+-      ? parseMarkdown(children, mathParseOptions)
+-      : parseMarkdown(children, legacyParseOptions);
++      ? parseMarkdown(parsedText, mathParseOptions)
++      : parseMarkdown(parsedText, legacyParseOptions);
+   }, [
+     display,
+-    smoothedText,
+-    children,
++    parsedText,
+     isStreaming,
+     hasMathRenderer,
+     mathParseOptions,
+@@ -1771,15 +1779,14 @@ export function Markdown({
+     }
+     const options = hasMathRenderer ? mathParseOptions : legacyParseOptions;
+     const input = isStreaming
+-      ? trimStreamingArtifacts(smoothedText, options)
+-      : children;
++      ? trimStreamingArtifacts(parsedText, options)
++      : parsedText;
+     return hasMathRenderer
+       ? parseInline(input, mathParseOptions)
+       : parseInline(input, legacyParseOptions);
+   }, [
+     display,
+-    smoothedText,
+-    children,
++    parsedText,
+     isStreaming,
+     hasMathRenderer,
+     mathParseOptions,
+@@ -1800,20 +1807,43 @@ export function Markdown({
+     return Math.min(Math.ceil(duration / tickMs), 12);
+   }, [token]);
+ 
+-  const prevBlocksRef = useRef<BlockNodeWithMath[]>([]);
+-  const prevInlineNodesRef = useRef<InlineNodeWithMath[]>([]);
+-  const boundariesRef = useRef<number[]>([]);
+-  const smoothedLen = smoothedText.length;
+-  const boundaries = useMemo(() => {
+-    void smoothedLen; // dep trigger
+-    const prevLen =
+-      display === 'inline'
+-        ? countInlineTextLength(prevInlineNodesRef.current)
+-        : countBlockTextLength(prevBlocksRef.current);
+-    const next = computeBoundaries(boundariesRef.current, prevLen, maxSpans);
+-    boundariesRef.current = next;
+-    return next;
+-  }, [display, smoothedLen, maxSpans]);
++  const visibleLength = display === 'inline'
++    ? countInlineTextLength(inlineNodes)
++    : countBlockTextLength(blocks);
++  const [fadeState, setFadeState] = useState(() => ({
++    display,
++    settledText,
++    smoothedText,
++    visibleLength,
++    boundaries: settledText === undefined ? [0] : [visibleLength],
++  }));
++  const resetBoundaries = fadeState.display !== display
++    || fadeState.settledText !== settledText
++    || !smoothedText.startsWith(fadeState.smoothedText);
++  const boundaries = resetBoundaries
++    ? [visibleLength]
++    : fadeState.smoothedText === smoothedText
++      ? fadeState.boundaries
++      : computeBoundaries(
++        fadeState.boundaries,
++        fadeState.visibleLength,
++        maxSpans,
++      );
++  if (
++    fadeState.display !== display
++    || fadeState.settledText !== settledText
++    || fadeState.smoothedText !== smoothedText
++    || fadeState.visibleLength !== visibleLength
++    || fadeState.boundaries !== boundaries
++  ) {
++    setFadeState({
++      display,
++      settledText,
++      smoothedText,
++      visibleLength,
++      boundaries,
++    });
++  }
+ 
+   const cursor: StreamingCursor = {
+     offset: 0,
+@@ -1855,10 +1885,6 @@ export function Markdown({
+       </span>
+     );
+ 
+-    // Store current inline nodes for next render's boundary calculation.
+-    prevInlineNodesRef.current = inlineNodes;
+-    prevBlocksRef.current = [];
+-
+     return renderedInline;
+   }
+ 
+@@ -1902,12 +1928,6 @@ export function Markdown({
+     </div>
+   );
+ 
+-  // Store current blocks for next render's boundary calculation.
+-  // This ref write is safe under StrictMode: both invocations produce the same
+-  // blocks (same smoothedText → same useMemo result), so both write the same value.
+-  prevBlocksRef.current = blocks;
+-  prevInlineNodesRef.current = [];
+-
+   return rendered;
+ }
+ 
+diff --git a/node_modules/@astryxdesign/core/src/Markdown/parser.ts b/node_modules/@astryxdesign/core/src/Markdown/parser.ts
+index 6dee3b2..3717b78 100644
+--- a/node_modules/@astryxdesign/core/src/Markdown/parser.ts
++++ b/node_modules/@astryxdesign/core/src/Markdown/parser.ts
+@@ -2149,6 +2149,7 @@ export function trimStreamingArtifacts(
+   const prefix = lastNL === -1 ? '' : displayTrimmed.slice(0, lastNL + 1);
+   let tail = lastNL === -1 ? displayTrimmed : displayTrimmed.slice(lastNL + 1);
+ 
++  const mathRanges: number[] = [];
+   if (options?.math) {
+     // Hold an unmatched inline opener so raw TeX syntax does not flash while
+     // streaming. If another unescaped dollar is already present but fails the
+@@ -2169,6 +2170,7 @@ export function trimStreamingArtifacts(
+       }
+       const close = findInlineMathEnd(tail, index);
+       if (close !== -1) {
++        mathRanges.push(index, close);
+         index = close;
+         continue;
+       }
+@@ -2186,10 +2188,23 @@ export function trimStreamingArtifacts(
+       index = laterDollar;
+     }
+   }
++  // Unclosed-marker checks below must not see `[`, `*`, or `~~` that live
++  // inside a completed inline math span; TeX owns those characters.
++  const inMathSpan = (pos: number): boolean => {
++    for (let i = 0; i < mathRanges.length; i += 2) {
++      if (pos >= (mathRanges[i] ?? 0) && pos <= (mathRanges[i + 1] ?? 0)) {
++        return true;
++      }
++    }
++    return false;
++  };
+ 
+   // Scan backwards for unclosed syntax markers — no regex to avoid ReDoS
+   // Find the last unclosed [ or ![ (link/image start)
+-  const lastBracket = tail.lastIndexOf('[');
++  let lastBracket = tail.lastIndexOf('[');
++  while (lastBracket !== -1 && inMathSpan(lastBracket)) {
++    lastBracket = tail.lastIndexOf('[', lastBracket - 1);
++  }
+   if (lastBracket !== -1) {
+     const afterBracket = tail.slice(lastBracket);
+     // A closed link/image has ](...)  somewhere after the [
+@@ -2251,8 +2266,9 @@ export function trimStreamingArtifacts(
+       while (idx + markerLen < tail.length && tail[idx + markerLen] === '*') {
+         markerLen++;
+       }
+-      if (markerLen > 3) {
+-        // 4+ stars — not standard markdown emphasis, skip
++      if (markerLen > 3 || inMathSpan(idx)) {
++        // 4+ stars — not standard markdown emphasis, skip. A `*` inside a
++        // completed math span is TeX, not emphasis.
+         searchFrom = idx + markerLen;
+         continue;
+       }
+@@ -2317,8 +2333,10 @@ export function trimStreamingArtifacts(
+       if (idx === -1) {
+         break;
+       }
+-      positions.push(idx);
+-      count++;
++      if (!inMathSpan(idx)) {
++        positions.push(idx);
++        count++;
++      }
+       searchFrom = idx + 2;
+     }
+     if (count % 2 === 1) {
+diff --git a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
+index 6c581d4..d3a9857 100644
+--- a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
++++ b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
+@@ -348,6 +348,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+    * renders inside the primary link or button.
+    */
+   endContent?: ReactNode;
++  /**
++   * Interactive trailing control rendered after the navigation control and
++   * before any nested items. Unlike `endContent`, this is a sibling rather
++   * than content inside the navigation control.
++   */
++  trailingAction?: ReactNode;
+   /**
+    * Row-level secondary controls (icon buttons, menus) rendered as siblings
+    * of the primary element at the trailing edge of the row — after the
+@@ -434,6 +440,7 @@ export function SideNavItem({
+   href,
+   onClick,
+   endContent,
++  trailingAction,
+   actions,
+   children,
+   collapsible: itemCollapsible,
+@@ -799,6 +806,7 @@ export function SideNavItem({
+   const item = (
+     <div ref={itemRef} {...stylex.props(styles.root, xstyle)}>
+       {itemElement}
++      {trailingAction}
+       {hasChildren && !isCollapsed && (
+         <div
+           id={`${id}-children`}
+diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
+index 55b441e..7aa4174 100644
+--- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
++++ b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
+@@ -25,7 +25,7 @@
+  * - /packages/core/src/hooks/useStreamingText.test.ts (tests)
+  */
+ 
+-import {useEffect, useMemo, useRef, useState} from 'react';
++import {useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
+ import {useMediaQuery} from './useMediaQuery';
+ import {useTheme} from '../theme/useTheme';
+ 
+@@ -43,6 +43,67 @@ export interface UseStreamingTextOptions {
+    * @default 'natural'
+    */
+   speed?: StreamingTextSpeed;
++  /** Source text the host has authoritatively marked as already presented. */
++  settledText?: string;
++}
++
++/** Longest shared prefix as a UTF-16 offset, without splitting a surrogate pair. */
++function commonPrefixLength(a: string, b: string): number {
++  let offset = 0;
++  while (offset < a.length && offset < b.length) {
++    const aCodePoint = a.codePointAt(offset);
++    const bCodePoint = b.codePointAt(offset);
++    if (aCodePoint !== bCodePoint) break;
++    offset += aCodePoint !== undefined && aCodePoint > 0xffff ? 2 : 1;
++  }
++  return offset;
++}
++
++/**
++ * Advances a UTF-16 offset without stopping between a surrogate pair.
++ *
++ * The rendered slice is snapped *back* to a grapheme boundary
++ * (snapToGraphemeBoundary), so a tick landing inside a pair would otherwise
++ * hold the code point back a frame; advancing past it reveals the glyph on
++ * the tick that reached it.
++ */
++function advanceTextOffset(text: string, offset: number, amount: number): number {
++  const next = Math.min(offset + amount, text.length);
++  if (
++    next > 0
++    && next < text.length
++    && text.charCodeAt(next - 1) >= 0xd800
++    && text.charCodeAt(next - 1) <= 0xdbff
++    && text.charCodeAt(next) >= 0xdc00
++    && text.charCodeAt(next) <= 0xdfff
++  ) {
++    return next + 1;
++  }
++  return next;
++}
++
++interface StreamingPresentation {
++  targetText: string;
++  settledText: string;
++  displayedLen: number;
++}
++
++function reconcilePresentation(
++  previous: StreamingPresentation,
++  targetText: string,
++  settledText: string,
++  progressive: boolean,
++): StreamingPresentation {
++  const displayedText = previous.targetText.slice(0, previous.displayedLen);
++  const retainedLen = commonPrefixLength(displayedText, targetText);
++  const settledLen = commonPrefixLength(settledText, targetText);
++  return {
++    targetText,
++    settledText,
++    displayedLen: progressive
++      ? Math.max(retainedLen, settledLen)
++      : targetText.length,
++  };
+ }
+ 
+ // Fallback values when no Theme provider is present
+@@ -159,35 +220,6 @@ export function useStreamingText(
+     return Math.max(4, Math.round(tick));
+   }, [token, speed]);
+ 
+-  const [displayedLen, setDisplayedLen] = useState(0);
+-  const targetRef = useRef(targetText);
+-  const displayedLenRef = useRef(0);
+-  const lastTickRef = useRef(0);
+-  const rafRef = useRef<number | null>(null);
+-
+-  // Keep target ref in sync
+-  targetRef.current = targetText;
+-
+-  // Reset when target clears (new message)
+-  const prevTargetLenRef = useRef(targetText.length);
+-  if (targetText.length !== prevTargetLenRef.current) {
+-    prevTargetLenRef.current = targetText.length;
+-    if (targetText.length === 0 && displayedLen !== 0) {
+-      displayedLenRef.current = 0;
+-      setDisplayedLen(0);
+-    }
+-  }
+-
+-  // Snap to full text when streaming ends
+-  const prevIsStreamingRef = useRef(isStreaming);
+-  if (isStreaming !== prevIsStreamingRef.current) {
+-    prevIsStreamingRef.current = isStreaming;
+-    if (!isStreaming && targetText.length > 0) {
+-      displayedLenRef.current = targetText.length;
+-      setDisplayedLen(targetText.length);
+-    }
+-  }
+-
+   // Respect the user's reduced-motion preference — skip the progressive
+   // reveal and snap straight to the full text. Uses the package's SSR-safe
+   // useMediaQuery (useMediaQuery.ts) so the read stays in sync if the
+@@ -195,10 +227,40 @@ export function useStreamingText(
+   const prefersReducedMotion = useMediaQuery(
+     '(prefers-reduced-motion: reduce)',
+   );
++  const progressive = isStreaming && speed !== 'instant' && !prefersReducedMotion;
++  const settledText = options?.settledText ?? '';
++  const [presentation, setPresentation] = useState<StreamingPresentation>(() => ({
++    targetText,
++    settledText,
++    displayedLen: progressive
++      ? commonPrefixLength(settledText, targetText)
++      : targetText.length,
++  }));
++  let renderedPresentation = presentation;
++  if (
++    presentation.targetText !== targetText
++    || presentation.settledText !== settledText
++    || (!progressive && presentation.displayedLen !== targetText.length)
++  ) {
++    renderedPresentation = reconcilePresentation(
++      presentation,
++      targetText,
++      settledText,
++      progressive,
++    );
++    setPresentation(renderedPresentation);
++  }
++
++  const presentationRef = useRef(presentation);
++  const lastTickRef = useRef(0);
++  const rafRef = useRef<number | null>(null);
++  useLayoutEffect(() => {
++    presentationRef.current = presentation;
++  }, [presentation]);
+ 
+   // Animation loop
+   useEffect(() => {
+-    if (!isStreaming || speed === 'instant' || prefersReducedMotion) {
++    if (!progressive) {
+       return;
+     }
+ 
+@@ -206,14 +268,19 @@ export function useStreamingText(
+       const elapsed = now - lastTickRef.current;
+       if (elapsed >= tickMs) {
+         lastTickRef.current = now;
+-        const target = targetRef.current;
+-        const currentLen = displayedLenRef.current;
+-
+-        if (currentLen < target.length) {
+-          const nextLen = Math.min(currentLen + charsPerTick, target.length);
++        const current = presentationRef.current;
+ 
+-          displayedLenRef.current = nextLen;
+-          setDisplayedLen(nextLen);
++        if (current.displayedLen < current.targetText.length) {
++          const next = {
++            ...current,
++            displayedLen: advanceTextOffset(
++              current.targetText,
++              current.displayedLen,
++              charsPerTick,
++            ),
++          };
++          presentationRef.current = next;
++          setPresentation(next);
+         }
+       }
+ 
+@@ -227,11 +294,14 @@ export function useStreamingText(
+         rafRef.current = null;
+       }
+     };
+-  }, [isStreaming, charsPerTick, tickMs, speed, prefersReducedMotion]);
++  }, [progressive, charsPerTick, tickMs]);
+ 
+-  if (!isStreaming || speed === 'instant' || prefersReducedMotion) {
++  if (!progressive) {
+     return targetText;
+   }
+ 
+-  return targetText.slice(0, snapToGraphemeBoundary(targetText, displayedLen));
++  return targetText.slice(
++    0,
++    snapToGraphemeBoundary(targetText, renderedPresentation.displayedLen),
++  );
+ }
