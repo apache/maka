@@ -205,6 +205,8 @@ export interface WorkspaceGlobInput {
 
 export interface WorkspaceGlobResult {
   files: string[];
+  /** True when the walk stopped at `limit` with at least one further match unseen. */
+  truncated: boolean;
 }
 
 export interface WorkspaceGrepInput {

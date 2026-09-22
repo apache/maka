@@ -25,17 +25,23 @@ export async function globFiles(input: {
   cwd: string;
   pattern: string;
   limit?: number;
-}): Promise<{ files: string[] }> {
+}): Promise<{ files: string[]; truncated: boolean }> {
   let failure: NodeJS.ErrnoException | undefined;
   const directories = new Set([resolve(input.cwd)]);
+  const files: string[] = [];
+  const limit = input.limit ?? 200;
   function record(error: NodeJS.ErrnoException, path: string): void {
+    // Filling the cap ends the result set. Traversal past it only answers whether
+    // one more match existed, so those directories stay unvisited in this sense
+    // too: their errors must not fail a capped result.
+    if (files.length >= limit) return;
     // Speculative literal components may miss. A directory already admitted by
     // cwd, stat, or enumeration disappearing instead makes this walk incomplete.
     if (directories.has(resolve(path)) || (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')) {
       failure ??= error;
     }
   }
-  const files: string[] = [];
+  let truncated = false;
   for await (const file of globIterate(input.pattern, {
     cwd: input.cwd,
     ignore: { childrenIgnored: (entry) => entry.isSymbolicLink() },
@@ -64,10 +70,14 @@ export async function globFiles(input: {
       },
     },
   })) {
+    if (files.length >= limit) {
+      // One match past the cap is the only proof the pattern had more to give.
+      truncated = true;
+      break;
+    }
     if (failure) throw failure;
     files.push(file);
-    if (files.length >= (input.limit ?? 200)) break;
   }
   if (failure) throw failure;
-  return { files };
+  return { files, truncated };
 }

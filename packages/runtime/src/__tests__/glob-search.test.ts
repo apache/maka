@@ -176,3 +176,53 @@ test('Glob retains native pattern membership, including hidden entries and expli
     );
   }
 });
+
+test('Glob reports truncation when the pattern matched more files than the limit', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-glob-truncated-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const name of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) await writeFile(join(root, name), '');
+
+  const result = await globFiles({ cwd: root, pattern: '*.txt', limit: 3 });
+
+  assert.equal(result.files.length, 3);
+  assert.equal(result.truncated, true);
+});
+
+test('Glob reports a complete result when the limit is met exactly', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-glob-exact-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const name of ['a.txt', 'b.txt', 'c.txt']) await writeFile(join(root, name), '');
+
+  const result = await globFiles({ cwd: root, pattern: '*.txt', limit: 3 });
+
+  assert.equal(result.files.length, 3);
+  assert.equal(result.truncated, false);
+});
+
+test('Glob does not fail a capped result over an error the walk only reaches past the cap', {
+  skip: process.platform === 'win32' || process.getuid?.() === 0,
+}, async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-glob-capped-error-')));
+  const blocked = join(root, 'zblocked');
+  await mkdir(blocked);
+  t.after(async () => {
+    await chmod(blocked, 0o700);
+    await rm(root, { recursive: true, force: true });
+  });
+  await writeFile(join(root, 'a.txt'), 'a');
+  await writeFile(join(root, 'b.txt'), 'b');
+  await writeFile(join(blocked, 'hidden.txt'), 'hidden');
+  await chmod(blocked, 0);
+  await assert.rejects(
+    readdir(blocked),
+    (error: unknown) => ['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? ''),
+    'permission fixture must actually deny reads',
+  );
+
+  // The cap fills from the root entries before the walk descends into the
+  // unreadable directory, so this error is only observable past the cap.
+  const result = await globFiles({ cwd: root, pattern: '**/*.txt', limit: 2 });
+
+  assert.deepEqual(result.files, ['b.txt', 'a.txt']);
+  assert.equal(result.truncated, false);
+});

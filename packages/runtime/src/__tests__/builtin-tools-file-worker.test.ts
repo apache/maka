@@ -220,7 +220,7 @@ describe('builtin file tools use the sandboxed worker', () => {
                 changed: true,
               };
             case 'glob':
-              return { kind: 'glob', files: ['worker.ts'] };
+              return { kind: 'glob', files: ['worker.ts'], truncated: false };
             case 'grep':
               return {
                 kind: 'grep',

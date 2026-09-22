@@ -665,12 +665,12 @@ function createWorkspaceFilesystemExecutor(
             label: 'Glob cwd',
             scope,
           });
-          const { files } = await workspace.globFiles({
+          const { files, truncated } = await workspace.globFiles({
             cwd: base,
             pattern: operation.pattern,
             ...(operation.limit !== undefined ? { limit: operation.limit } : {}),
           });
-          return { kind: 'glob', files };
+          return { kind: 'glob', files, truncated };
         }
         case 'grep': {
           const { path } = await workspace.resolveExistingPath({
