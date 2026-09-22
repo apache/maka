@@ -89,7 +89,6 @@ import {
   PLAN_USER_ABANDON_REASON,
   PLAN_USER_CANCEL_REASON,
   PlanConflictError,
-  activePlanExecution,
   type ApprovePlanProposalInput,
   type PlanMutationResult,
   type PlanSessionState,
@@ -2164,41 +2163,26 @@ export class SessionManager {
     // natural "unavailable" error must not be raised into the root Turn's
     // terminal transition.
     if (!this.hasPlanAuthority()) return null;
-    if (rootStatus === 'failed' || rootStatus === 'cancelled') {
-      return this.interruptActivePlanExecution(
-        sessionId,
-        rootStatus === 'cancelled'
-          ? 'Plan execution was interrupted because the Runtime root Turn was cancelled.'
-          : 'Plan execution was interrupted because the Runtime root Turn failed.',
-        operationId,
-      );
-    }
-
-    const planStore = this.requirePlanStore();
-    const state = await planStore.readState(sessionId);
-    const execution = activePlanExecution(state);
-    if (!execution) return null;
-    const terminal = execution.steps.every(
-      (step) => step.status === 'completed' || step.status === 'skipped',
-    );
-    if (!terminal) {
+    // An active execution always has at least one non-terminal step: the write
+    // that makes every step terminal commits `plan_execution_completed` and
+    // clears `activeExecutionId` in the same event, and a terminal step cannot be
+    // reopened. Delegating every root status to the interrupt route therefore
+    // states the whole rule — it settles nothing once the execution closed on its
+    // own, and it keeps the receipt replay and backend disposal in one place.
+    if (rootStatus === 'completed') {
       return this.interruptActivePlanExecution(
         sessionId,
         'Plan execution was interrupted because the Runtime root Turn completed before all Plan steps reached a terminal state.',
         operationId,
       );
     }
-
-    // The root Turn is already terminal, so there is no live Run to stop and no
-    // backend to dispose. The write stays idempotent on both routes: replaying
-    // the operation is reconciled by the store's receipt, and reaching this line
-    // again after the commit finds no active execution left to update.
-    return planStore.updateExecution({
-      operationId,
+    return this.interruptActivePlanExecution(
       sessionId,
-      executionId: execution.executionId,
-      steps: execution.steps.map((step) => ({ id: step.id, status: step.status })),
-    });
+      rootStatus === 'cancelled'
+        ? 'Plan execution was interrupted because the Runtime root Turn was cancelled.'
+        : 'Plan execution was interrupted because the Runtime root Turn failed.',
+      operationId,
+    );
   }
 
   async remove(sessionId: string): Promise<void> {
