@@ -30,6 +30,7 @@
 
 import { Buffer } from 'node:buffer';
 import { readPage } from './read-page.js';
+import { formatJsonText } from './format-json.js';
 import { lstat, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
@@ -578,10 +579,7 @@ function createWorkspaceFilesystemExecutor(
               transform: (ctx) => {
                 original = ctx.content ?? '';
                 try {
-                  const value = operation.sortKeys
-                    ? sortKeysDeep(JSON.parse(original))
-                    : JSON.parse(original);
-                  return JSON.stringify(value, null, 2);
+                  return formatJsonText(original, operation.sortKeys ?? false);
                 } catch (error) {
                   parseError = error instanceof Error ? error.message : 'parse failed';
                   return null;
@@ -621,9 +619,9 @@ function createWorkspaceFilesystemExecutor(
           if ('bytes' in read) throw new Error('FormatJson does not support image files.');
           const original = read.content;
           const bytesBefore = Buffer.byteLength(original, 'utf8');
-          let parsed: unknown;
+          let formatted: string;
           try {
-            parsed = JSON.parse(original);
+            formatted = formatJsonText(original, operation.sortKeys ?? false);
           } catch (error) {
             return {
               kind: 'format_json',
@@ -636,8 +634,6 @@ function createWorkspaceFilesystemExecutor(
               changed: false,
             };
           }
-          const value = operation.sortKeys ? sortKeysDeep(parsed) : parsed;
-          const formatted = JSON.stringify(value, null, 2);
           const { bytes: bytesAfter } = await workspace.writeFile({
             cwd,
             path,
@@ -711,18 +707,4 @@ function assertGlobPatternInScope(pattern: string, scope: WorkspacePathScope): v
 /** The canonical spelling of an existing directory, or the input when it is not resolvable here. */
 async function canonicalExistingPath(path: string): Promise<string> {
   return await realpath(path).catch(() => path);
-}
-
-// Object.fromEntries creates own data properties, so special keys like
-// "__proto__" are preserved instead of triggering the inherited setter.
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, sortKeysDeep((value as Record<string, unknown>)[key])]),
-    );
-  }
-  return value;
 }
