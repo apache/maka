@@ -34,11 +34,6 @@ const declarations = {
     size: {},
     reveal: showWindowInactive,
   },
-  'startup-progress': {
-    size: { width: 520, height: 350, useContentSize: true },
-    reveal: showWindowInactive,
-    theme: { light: '#ffffff', dark: '#1c1d21' },
-  },
   workhub: {
     size: {},
     reveal: showWindowInactive,
@@ -58,24 +53,7 @@ export type AuxiliaryWindowId = keyof typeof declarations;
 export function createAuxiliaryWindowRegistry(
   electron: () => typeof import('electron') = loadElectron,
 ) {
-  const themedWindows = new Map<BrowserWindow, { light: string; dark: string }>();
   const rendererParents = new Map<WebContents, View>();
-  let observingTheme = false;
-
-  const followTheme = (window: BrowserWindow, theme: { light: string; dark: string }): void => {
-    const { nativeTheme } = electron();
-    themedWindows.set(window, theme);
-    window.once('closed', () => themedWindows.delete(window));
-    window.setBackgroundColor(nativeTheme.shouldUseDarkColors ? theme.dark : theme.light);
-    if (observingTheme) return;
-    observingTheme = true;
-    nativeTheme.on('updated', () => {
-      for (const [target, colors] of themedWindows) {
-        if (target.isDestroyed()) themedWindows.delete(target);
-        else target.setBackgroundColor(nativeTheme.shouldUseDarkColors ? colors.dark : colors.light);
-      }
-    });
-  };
 
   return {
     create(id: AuxiliaryWindowId, options: BrowserWindowConstructorOptions): BrowserWindow {
@@ -85,7 +63,6 @@ export function createAuxiliaryWindowRegistry(
         ...options,
         show: false,
       });
-      if ('theme' in declaration) followTheme(window, declaration.theme);
       return window;
     },
     show(id: AuxiliaryWindowId, window: BrowserWindow | undefined, mode: WindowRevealMode): void {
