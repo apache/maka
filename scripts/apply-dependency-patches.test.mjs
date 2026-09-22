@@ -74,9 +74,9 @@ function runScript(root, args = [], env = {}) {
   });
 }
 
-function writePatch(root, contents) {
+function writePatch(root, contents, name = 'fixture-dep+1.0.0.patch') {
   mkdirSync(join(root, 'patches'), { recursive: true });
-  writeFileSync(join(root, 'patches', 'fixture-dep+1.0.0.patch'), contents);
+  writeFileSync(join(root, 'patches', name), contents);
 }
 
 /** Stub that records how it was invoked so a case can assert it never ran. */
@@ -124,6 +124,27 @@ function writeFixtureDependency(root, source) {
   return join(packageDirectory, 'index.js');
 }
 
+function writeNestedFixtureDependency(root, source) {
+  const packageDirectory = join(root, 'node_modules', '@fixture', 'parent');
+  const dependencyDirectory = join(packageDirectory, 'node_modules', 'fixture-dep');
+  mkdirSync(dependencyDirectory, { recursive: true });
+  writeFileSync(
+    join(root, 'package.json'),
+    '{"name":"fixture","version":"1.0.0","dependencies":{"@fixture/parent":"1.0.0"}}\n',
+  );
+  writeFileSync(
+    join(packageDirectory, 'package.json'),
+    '{"name":"@fixture/parent","version":"1.0.0","dependencies":{"fixture-dep":"1.0.0"}}\n',
+  );
+  writeFileSync(
+    join(dependencyDirectory, 'package.json'),
+    '{"name":"fixture-dep","version":"1.0.0","main":"index.js"}\n',
+  );
+  const entry = join(dependencyDirectory, 'index.js');
+  writeFileSync(entry, source);
+  return entry;
+}
+
 // Context lines above and below the added line are what make this patch
 // idempotent: once applied, the forward hunk no longer matches and
 // patch-package recognizes the reverse.
@@ -141,6 +162,11 @@ const APPLICABLE_PATCH = [
 ].join('\n');
 
 const APPLICABLE_SOURCE = 'const a = 1;\nconst b = 2;\nconst c = 3;\n';
+
+const NESTED_APPLICABLE_PATCH = APPLICABLE_PATCH.replaceAll(
+  'node_modules/fixture-dep',
+  'node_modules/@fixture/parent/node_modules/fixture-dep',
+);
 
 test('postinstall mode skips when patch-package is missing', (t) => {
   const root = createFixture(t);
@@ -185,7 +211,7 @@ test('no patches exit before patch-package is consulted', (t) => {
   assert.equal(existsSync(log), false, 'patch-package must not be invoked');
 });
 
-test('a passing patch run forwards --error-on-fail and its exit code', (t) => {
+test('strict mode forwards --error-on-fail and --error-on-warn', (t) => {
   const root = createFixture(t);
   writePatch(root, APPLICABLE_PATCH);
   const log = join(root, 'patch-package.log');
@@ -194,7 +220,7 @@ test('a passing patch run forwards --error-on-fail and its exit code', (t) => {
   const result = runScript(root, ['--strict'], { FAKE_PATCH_LOG: log });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(readFileSync(log, 'utf8'), '--error-on-fail\n');
+  assert.equal(readFileSync(log, 'utf8'), '--error-on-fail --error-on-warn\n');
 });
 
 test('strict mode reports a failing patch with the recovery command', (t) => {
@@ -211,7 +237,7 @@ test('strict mode reports a failing patch with the recovery command', (t) => {
   assert.match(result.stderr, /npm ci/u);
 });
 
-test('postinstall mode still fails the install when a patch no longer applies', (t) => {
+test('default mode fails when a patch no longer applies', (t) => {
   const root = createFixture(t);
   writePatch(root, APPLICABLE_PATCH);
   const log = join(root, 'patch-package.log');
@@ -243,6 +269,60 @@ test('the real patch-package applies once and re-running is a no-op', {
 
   assert.equal(second.status, 0, second.stderr);
   assert.equal(hashFile(dependencyEntry), appliedHash, 'second run must not re-apply the patch');
+});
+
+test('the real patch-package applies a nested dependency patch', {
+  skip: realPatchPackageEntry === undefined ? 'patch-package is not installed' : false,
+}, (t) => {
+  const root = createFixture(t);
+  writePatch(root, NESTED_APPLICABLE_PATCH, '@fixture+parent++fixture-dep+1.0.0.patch');
+  const dependencyEntry = writeNestedFixtureDependency(root, APPLICABLE_SOURCE);
+  linkRealPatchPackage(root);
+
+  const result = runScript(root, ['--strict']);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    readFileSync(dependencyEntry, 'utf8'),
+    'const a = 1;\nconst patched = true;\nconst b = 2;\nconst c = 3;\n',
+  );
+});
+
+test('strict mode rejects a real patch-package version mismatch', {
+  skip: realPatchPackageEntry === undefined ? 'patch-package is not installed' : false,
+}, (t) => {
+  const root = createFixture(t);
+  writePatch(root, APPLICABLE_PATCH);
+  writeFixtureDependency(root, APPLICABLE_SOURCE);
+  writeFileSync(
+    join(root, 'node_modules', 'fixture-dep', 'package.json'),
+    '{"name":"fixture-dep","version":"1.0.1","main":"index.js"}\n',
+  );
+  linkRealPatchPackage(root);
+
+  const result = runScript(root, ['--strict']);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /patch file version mismatch/u);
+  assert.match(result.stderr, /did not apply cleanly/u);
+});
+
+test('default mode permits a real patch-package version mismatch', {
+  skip: realPatchPackageEntry === undefined ? 'patch-package is not installed' : false,
+}, (t) => {
+  const root = createFixture(t);
+  writePatch(root, APPLICABLE_PATCH);
+  writeFixtureDependency(root, APPLICABLE_SOURCE);
+  writeFileSync(
+    join(root, 'node_modules', 'fixture-dep', 'package.json'),
+    '{"name":"fixture-dep","version":"1.0.1","main":"index.js"}\n',
+  );
+  linkRealPatchPackage(root);
+
+  const result = runScript(root);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /patch file version mismatch/u);
 });
 
 test('the real patch-package failure reaches the strict guidance', {

@@ -80,9 +80,17 @@ try {
   process.exit(0);
 }
 
-const result = spawnSync(process.execPath, [patchPackageEntry, '--error-on-fail'], {
+const patchPackageArguments = [patchPackageEntry, '--error-on-fail'];
+if (strict) {
+  // A version-mismatched patch can apply (or be recognized as already applied)
+  // while leaving the build dependent on an unreviewed package version.
+  patchPackageArguments.push('--error-on-warn');
+}
+
+const result = spawnSync(process.execPath, patchPackageArguments, {
   cwd: repoRoot,
   stdio: 'inherit',
+  timeout: 30_000,
 });
 
 if (result.error) {
