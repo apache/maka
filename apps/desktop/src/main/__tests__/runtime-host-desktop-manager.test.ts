@@ -85,6 +85,10 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
 
   first.disconnect();
   const replacementReady = owner.waitUntilReady(owner.defaultProfileId(), 'host-before');
+  const scopedReady = owner.waitUntilReadyForScope({
+    hostId: 'test-host',
+    targetEpoch: owner.current()!.epoch,
+  });
   const botMessage = owner.handleBotIncomingMessage({ text: 'hello' } as BotIncomingMessage);
   const stop = owner.stopSession({
     hostId: 'test-host',
@@ -109,7 +113,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   assert.equal(second.botMessages, 0);
   assert.deepEqual(second.stoppedSessions, []);
   releaseSecond();
-  await Promise.all([botMessage, stop, replacementReady]);
+  await Promise.all([botMessage, stop, replacementReady, scopedReady]);
 
   assert.equal(first.botMessages, 0);
   assert.equal(second.botMessages, 1);

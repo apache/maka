@@ -69,6 +69,10 @@ export interface RuntimeHostDesktopManager {
   current(profileId?: string): RuntimeHostDesktopTargetSnapshot | undefined;
   entries(): readonly RuntimeHostDesktopTargetState[];
   ownsScope(scope: { readonly hostId: string; readonly targetEpoch: string }): boolean;
+  waitUntilReadyForScope(
+    scope: { readonly hostId: string; readonly targetEpoch: string },
+    signal?: AbortSignal,
+  ): Promise<void>;
   defaultProfileId(): string;
   handleBotIncomingMessage(message: BotIncomingMessage): Promise<void>;
   finalizePairing(profileId: string): Promise<void>;
@@ -566,9 +570,34 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   ownsScope(scope: { readonly hostId: string; readonly targetEpoch: string }): boolean {
     for (const target of this.#targets.values()) {
-      if (target.epoch === scope.targetEpoch && target.hostId === scope.hostId) return true;
+      if (target.valid && target.epoch === scope.targetEpoch && target.hostId === scope.hostId) return true;
     }
     return false;
+  }
+
+  async waitUntilReadyForScope(
+    scope: { readonly hostId: string; readonly targetEpoch: string },
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const target = [...this.#targets.values()].find(
+      (candidate) =>
+        candidate.valid &&
+        candidate.epoch === scope.targetEpoch &&
+        candidate.hostId === scope.hostId,
+    );
+    if (!target) throw new Error('Runtime Host target is unavailable');
+    const candidate = await this.#waitForReadyCandidate(
+      this.#requireLifecycle(target),
+      undefined,
+      signal,
+    );
+    if (
+      !target.valid ||
+      target.epoch !== scope.targetEpoch ||
+      candidate.client.hostId !== scope.hostId
+    ) {
+      throw new Error('Runtime Host target changed while it was becoming ready');
+    }
   }
 
   defaultProfileId(): string {

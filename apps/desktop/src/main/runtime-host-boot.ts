@@ -1280,6 +1280,8 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
   },
 );
 let workBoardIpc: ReturnType<typeof registerWorkBoardIpc> | undefined;
+const WORK_BOARD_HOST_READY_TIMEOUT_MS = 15_000;
+const RUNTIME_HOST_TARGET_READY_TIMEOUT_MS = 15_000;
 let runtimeHostDesktopShutdown: Promise<void> | undefined;
 // The quit coordinator owns cleanup for every later stage, including a Host
 // handoff cancelled while the main window is still loading.
@@ -1295,18 +1297,72 @@ windowsAppTray.start();
 // user decision must not hold their activation for the whole session. Remote
 // transports spawn SSH/relay children, so they still wait on the shell PATH.
 void shellEnvReady.then(() => runtimeHostProfileService.startEnabledProfiles());
+// Starting the Local Host is deliberately independent from the renderer IPC
+// gate.  Work Board handlers are installed synchronously below; their lazy
+// store resolver waits for this reconciliation before opening the shared DB.
+const runtimeHostStart = shellEnvReady.then(() => runtimeHostManager?.start());
+void runtimeHostStart.catch((error: unknown) =>
+  console.error('[runtime-host] startup failed:', error),
+);
+// Scoped renderer calls use this stable gate before invoking a target-owned
+// channel.  The target router only installs those channels once its candidate
+// is ready, so first paint can proceed without turning a slow Host start into
+// a splash screen while still avoiding Electron's missing-handler error.
+ipcMain.handle('runtime-host:awaitReady', async (_event, value?: unknown) => {
+  const manager = runtimeHostManager;
+  if (!manager) return { ready: false };
+  if (value === undefined) {
+    await runtimeHostStart;
+    return { ready: Boolean(manager.current()?.candidate) };
+  }
+  const scope = requireDesktopTargetScope(value);
+  await manager.waitUntilReadyForScope(scope, AbortSignal.timeout(RUNTIME_HOST_TARGET_READY_TIMEOUT_MS));
+  return { ready: true };
+});
 // Runtime Host is the only schema-migration authority for its State Root.
 // Work Board remains a Desktop-owned table, but it opens only while a ready
 // Host has verified the schema — including a Local Host that only becomes
 // ready after a retry.
-const registerDesktopWorkBoard = (): void => {
-  if (workBoardIpc) return;
+const resolveWorkBoardStore = async () => {
+  const deadline = Date.now() + WORK_BOARD_HOST_READY_TIMEOUT_MS;
+  const waitForStart = Math.max(1, deadline - Date.now());
+  let startTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      runtimeHostStart,
+      new Promise<never>((_, reject) => {
+        startTimer = setTimeout(
+          () => reject(new Error('Runtime Host did not become ready in time')),
+          waitForStart,
+        );
+      }),
+    ]);
+  } finally {
+    if (startTimer !== undefined) clearTimeout(startTimer);
+  }
+  const manager = runtimeHostManager;
+  if (!manager) throw new Error('Runtime Host manager is unavailable');
+  const remaining = Math.max(1, deadline - Date.now());
+  await manager.waitUntilReady('local', undefined, AbortSignal.timeout(remaining));
+  return createWorkBoardStore(workspaceRoot, { schemaMigration: 'require_current' });
+};
+const registerDesktopWorkBoard = (): boolean => {
+  if (workBoardIpc) {
+    // A first Work Board read can fail while the Local Host is unavailable.
+    // Re-emit the change when a later retry succeeds so mounted panels retry
+    // their read without requiring a manual refresh.
+    mainWindowController.send('workBoard:changed', {
+      type: 'work_board_changed',
+      ts: Date.now(),
+    } satisfies WorkBoardChangedEvent);
+    return true;
+  }
   try {
     workBoardIpc = registerWorkBoardIpc({
       ipcMain,
       workspaceRoot,
       mainWindowController,
-      store: createWorkBoardStore(workspaceRoot, { schemaMigration: 'require_current' }),
+      resolveStore: resolveWorkBoardStore,
       validateLinkedSession: async (value, expectedProjectId) => {
         const normalized = normalizeWorkBoardLinkedSession(value);
         if (!normalized.ok) return false;
@@ -1336,14 +1392,25 @@ const registerDesktopWorkBoard = (): void => {
       type: 'work_board_changed',
       ts: Date.now(),
     } satisfies WorkBoardChangedEvent);
+    return true;
   } catch (error) {
     console.error('[work-board] IPC registration failed:', error);
+    return false;
   }
 };
-void (async () => {
-  await shellEnvReady;
-  await runtimeHostManager?.start();
-  registerDesktopWorkBoard();
+// Renderer IPC is gated until this promise resolves.  Keep it limited to the
+// synchronous handler registration; Host reconciliation, guest-session
+// restore, and recovery prompts continue in the background after first paint.
+export const runtimeHostBootReady = (async () => {
+  if (!registerDesktopWorkBoard()) {
+    throw new Error('Work Board IPC registration failed');
+  }
+})();
+
+void runtimeHostBootReady.then(async () => {
+  await runtimeHostStart.catch((error: unknown) => {
+    console.error('[runtime-host] background startup failed:', error);
+  });
   await guestSessionMountService.start().catch((error: unknown) => {
     console.error('[runtime-host] shared Sessions could not be restored:', error);
   });
@@ -1369,7 +1436,7 @@ void (async () => {
         console.error("[runtime-host] failed to resolve unavailable default Host:", error),
       );
   }
-})().catch((error: unknown) =>
+}).catch((error: unknown) =>
   console.error("[runtime-host] background startup failed:", error),
 );
 const stopComputerUseSession = (sessionId: string): void => {

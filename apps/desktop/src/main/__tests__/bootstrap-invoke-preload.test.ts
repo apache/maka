@@ -28,10 +28,11 @@ import { build } from 'esbuild';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 
 // The renderer mounts before the Runtime Host module graph finishes
-// registering its IPC handlers. Two preload seams keep early calls safe:
-//   1. invokeWhenReady parks every invoke on `app:bootstrapReady` until the
-//      boot module's registration pass has run;
-//   2. activeRuntimeHostRef parks a scoped call while the default Host still
+// registering its IPC handlers. The preload seams keep early calls safe:
+//   1. invokeWhenReady parks persistent calls on `app:bootstrapReady` until
+//      the boot module's registration pass has run;
+//   2. scoped calls additionally wait for the target router's stable gate;
+//   3. activeRuntimeHostRef parks a default-scope call while the Host still
 //      reports connecting, releasing it on the next profiles:changed event.
 
 const owner = {
@@ -72,6 +73,88 @@ test('the gate falls open when the bootstrap channel itself is absent', async ()
     throw new Error('Unexpected channel: ' + channel);
   });
   assert.deepEqual(await bridge.app.checkForUpdates(), { status: 'idle' });
+});
+
+test('scoped Runtime Host calls wait for target IPC registration after first paint', async () => {
+  const targetGate = deferred<unknown>();
+  const seen: string[] = [];
+  const { bridge } = await preloadHarness(async (channel) => {
+    seen.push(channel);
+    if (channel === 'app:bootstrapReady') return;
+    if (channel === 'runtime-host:identities') return [{
+      ...owner,
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      profileAccess: 'owner',
+      readiness: 'ready',
+    }];
+    if (channel === 'runtime-host:awaitReady') return targetGate.promise;
+    if (channel === 'projects:getSnapshot') return { projects: [] };
+    throw new Error('Unexpected channel: ' + channel);
+  });
+
+  const call = bridge.projects.getSnapshot(undefined, { profileId: 'local', hostId: owner.hostId });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(seen, ['app:bootstrapReady', 'runtime-host:identities', 'runtime-host:awaitReady']);
+
+  targetGate.resolve({ ready: true });
+  assert.deepEqual(await call, { projects: [] });
+  assert.deepEqual(seen, [
+    'app:bootstrapReady',
+    'runtime-host:identities',
+    'runtime-host:awaitReady',
+    'projects:getSnapshot',
+  ]);
+});
+
+test('scoped calls fall through when the readiness handshake is unavailable', async () => {
+  const seen: string[] = [];
+  const { bridge } = await preloadHarness(async (channel) => {
+    seen.push(channel);
+    if (channel === 'app:bootstrapReady') return;
+    if (channel === 'runtime-host:identities') return [owner];
+    if (channel === 'runtime-host:awaitReady') {
+      throw new Error("No handler registered for 'runtime-host:awaitReady'");
+    }
+    if (channel === 'projects:getSnapshot') return { projects: [] };
+    throw new Error('Unexpected channel: ' + channel);
+  });
+
+  assert.deepEqual(
+    await bridge.projects.getSnapshot(undefined, { profileId: 'local', hostId: owner.hostId }),
+    { projects: [] },
+  );
+  assert.deepEqual(seen, [
+    'app:bootstrapReady',
+    'runtime-host:identities',
+    'runtime-host:awaitReady',
+    'projects:getSnapshot',
+  ]);
+});
+
+test('offline session-local transcript reads bypass Runtime Host readiness', async () => {
+  const seen: string[] = [];
+  const { bridge } = await preloadHarness(async (channel) => {
+    seen.push(channel);
+    if (channel === 'app:bootstrapReady') return;
+    if (channel === 'runtime-host:identities') return [owner];
+    if (channel === 'runtime-host:awaitReady') {
+      throw new Error('The cached transcript must not wait for Runtime Host readiness');
+    }
+    if (channel === 'session-local:transcript') return { batches: [] };
+    throw new Error('Unexpected channel: ' + channel);
+  });
+
+  assert.deepEqual(
+    await bridge.sessionLocal.readTranscript(JSON.stringify([owner.hostId, 'session-1'])),
+    { batches: [] },
+  );
+  assert.deepEqual(seen, [
+    'app:bootstrapReady',
+    'runtime-host:identities',
+    'session-local:transcript',
+  ]);
 });
 
 test('a still-starting default Host keeps scoped reads pending until it settles', async () => {
