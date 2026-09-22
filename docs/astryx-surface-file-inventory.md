@@ -272,6 +272,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/daily-review-panel.tsx` | module-hub | Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem, SegmentedControl, SegmentedControlItem, Skeleton, StackItem, Text, Toolbar, VStack | aligned — uses Astryx (Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem) | aligned |
 | `packages/ui/src/directory-reference-chip.tsx` | ui-composition | Token, Tooltip | aligned — uses Astryx (Token, Tooltip) | aligned |
 | `packages/ui/src/executor-model-picker.tsx` | ui-composition | Button, Popover | aligned — uses Astryx (Button, Popover) | aligned |
+| `packages/ui/src/form-interaction-history.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/form-interaction-prompt.tsx` | ui-composition | Button, CheckboxInput, RadioList, RadioListItem, Selector, Text, TextInput | aligned — uses Astryx (Button, CheckboxInput, RadioList, RadioListItem, Selector, Text, TextInput) | aligned |
 | `packages/ui/src/icons.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/inline-reference.tsx` | ui-composition | ChatTokenizedText | aligned — uses Astryx (ChatTokenizedText) | aligned |
