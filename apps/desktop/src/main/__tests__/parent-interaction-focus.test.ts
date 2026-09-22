@@ -34,7 +34,7 @@ function frame(id: string, hidden = false): string {
         <div class="maka-composer-interaction-slot">
           <button hidden id="${id}-hidden">隐藏</button>
           <button disabled id="${id}-disabled">拒绝</button>
-          <button id="${id}-allow">本任务允许</button>
+          <div class="maka-composer-interaction"><button id="${id}-allow">本任务允许</button></div>
         </div>
         <div class="maka-composer"><div contenteditable="true" id="${id}-composer"></div></div>
       </div>
@@ -102,7 +102,7 @@ function frameWithSlot(id: string, slot: string): string {
   return `
     <div data-maka-interaction-container id="frame-${id}">
       <div data-maka-parent-interaction>
-        <div class="maka-composer-interaction-slot">${slot}</div>
+        <div class="maka-composer-interaction-slot"><div class="maka-composer-interaction">${slot}</div></div>
         <div class="maka-composer"><div contenteditable="true" id="${id}-composer"></div></div>
       </div>
       <div class="maka-session-workbar">
@@ -126,7 +126,7 @@ describe('focusParentConversation', () => {
       <div data-maka-interaction-container id="frame-a">
         <div class="mainColumn" data-maka-parent-interaction>
           <div class="maka-composer-interaction-slot">
-            <button disabled id="a-disabled">拒绝</button>
+            <div class="maka-composer-interaction"><button disabled id="a-disabled">拒绝</button></div>
           </div>
           <div class="maka-composer"><div contenteditable="true" id="a-composer"></div></div>
         </div>
@@ -135,6 +135,23 @@ describe('focusParentConversation', () => {
             <button id="a-open">前往主对话</button>
             <div class="maka-composer"><div contenteditable="true" id="a-side-composer"></div></div>
           </div>
+        </div>
+      </div>`);
+    focusParentConversation(element('a-open'));
+    assert.deepEqual(focused, ['a-composer']);
+  });
+
+  it('does not focus a boundary retry that merely shares the interaction slot', () => {
+    const { element, focused } = setup(`
+      <div data-maka-interaction-container id="frame-a">
+        <div class="mainColumn" data-maka-parent-interaction>
+          <div class="maka-composer-interaction-slot">
+            <div class="maka-boundary-unreadable-notice"><button id="a-retry">重试</button></div>
+          </div>
+          <div class="maka-composer"><div contenteditable="true" id="a-composer"></div></div>
+        </div>
+        <div class="maka-session-workbar">
+          <div class="maka-quote-companion"><button id="a-open">前往主对话</button></div>
         </div>
       </div>`);
     focusParentConversation(element('a-open'));

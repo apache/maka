@@ -41,7 +41,7 @@ export const SESSION_PARENT_INTERACTION_SELECTOR =
 // Question and form controls first, the parent composer second: both sit in the
 // parent region, and only the first tier can answer a pending interaction.
 const PARENT_INTERACTION_FOCUSABLE =
-  '.maka-composer-interaction-slot button, .maka-composer-interaction-slot [href], .maka-composer-interaction-slot input, .maka-composer-interaction-slot textarea, .maka-composer-interaction-slot [contenteditable="true"]';
+  '.maka-composer-interaction button, .maka-composer-interaction [href], .maka-composer-interaction input, .maka-composer-interaction textarea, .maka-composer-interaction [contenteditable="true"]';
 const PARENT_COMPOSER_FOCUSABLE = '.maka-composer [contenteditable="true"]';
 
 const HIDDEN_ANCESTOR = '[hidden], [aria-hidden="true"], [inert]';

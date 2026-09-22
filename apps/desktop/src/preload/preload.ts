@@ -2483,7 +2483,9 @@ const makaBridge = {
               return;
             }
             if (event.type === 'host_observation_pending') {
-              if (lastExecution) lastExecution = { ...lastExecution, available: false };
+              if (lastExecution) {
+                lastExecution = { ...lastExecution, available: false, observationPending: true };
+              }
               onExecution?.(lastExecution);
               onObservationSeed?.('pending');
               return;

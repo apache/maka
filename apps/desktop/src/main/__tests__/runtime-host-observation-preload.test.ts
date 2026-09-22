@@ -83,6 +83,7 @@ test('execution and observation failures stay separate from Runtime events', asy
     assert.equal(projections.at(-1)?.rootTurn?.sessionId, sessionId);
     events.emit('sessions:event:session-1', {}, owner, { type: 'host_observation_pending' });
     assert.equal(projections.at(-1)?.available, false);
+    assert.equal(projections.at(-1)?.observationPending, true);
     assert.equal(projections.at(-1)?.rootTurn?.turnId, 'new-turn');
     events.emit('sessions:event:session-1', {}, owner, { type: 'host_observation_error', message: 'connection lost' });
     assert.equal(failures.length, 1);
@@ -91,6 +92,7 @@ test('execution and observation failures stay separate from Runtime events', asy
     });
     assert.equal(projections.at(-1)?.rootTurn, null);
     assert.equal(projections.at(-1)?.available, true);
+    assert.equal(projections.at(-1)?.observationPending, undefined);
   } finally { unsubscribe(); }
 });
 

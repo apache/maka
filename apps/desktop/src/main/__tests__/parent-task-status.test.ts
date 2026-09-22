@@ -215,6 +215,19 @@ describe('parentTaskStatusFromFacts', () => {
     assert.equal(visibleParentTaskStatus(null), null);
   });
 
+  it('stays silent while a known execution projection is being re-observed', () => {
+    assert.equal(
+      parentTaskStatusFromFacts({
+        execution: {
+          ...hostExecutionProjection(false, runningTurn),
+          observationPending: true,
+        },
+        latestTurnRead: { status: 'pending' },
+      }),
+      null,
+    );
+  });
+
   it('does not keep a previous success when observation is unavailable', () => {
     assert.equal(
       parentTaskStatusFromFacts({
