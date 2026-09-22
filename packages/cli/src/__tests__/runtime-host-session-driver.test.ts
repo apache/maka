@@ -1123,7 +1123,7 @@ describe('Runtime Host Maka Session driver', () => {
     const switched = await switching;
     assert.deepEqual(switched.messages, [assistantMessage('turn-1', 'Hello')]);
     assert.ok(switched.activeTurn);
-    const event = await nextEvent(switched.activeTurn.events);
+    const event = await nextTurnEvent(switched.activeTurn.events);
     assert.deepEqual(event, {
       type: 'text_delta',
       id: 'host-frame:host-1:subscription-1:1',
@@ -1155,9 +1155,9 @@ describe('Runtime Host Maka Session driver', () => {
 
     assert.deepEqual(
       [
-        await nextEvent(switched.activeTurn.events),
-        await nextEvent(switched.activeTurn.events),
-        await nextEvent(switched.activeTurn.events),
+        await nextTurnEvent(switched.activeTurn.events),
+        await nextTurnEvent(switched.activeTurn.events),
+        await nextTurnEvent(switched.activeTurn.events),
       ].map((event) => ({
         type: event.type,
         messageId: 'messageId' in event ? event.messageId : undefined,
@@ -1238,9 +1238,9 @@ describe('Runtime Host Maka Session driver', () => {
 
     const switched = await switching;
     assert.ok(switched.activeTurn);
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'text_delta');
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'text_complete');
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'text_delta');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'text_complete');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'complete');
     assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
   });
 
@@ -1286,7 +1286,7 @@ describe('Runtime Host Maka Session driver', () => {
         rootTurn: completedTurn('turn-1', 'run-1'),
       }),
     });
-    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => refresh.transcriptCalls > 0);
     first.push({
@@ -1308,7 +1308,7 @@ describe('Runtime Host Maka Session driver', () => {
       assistantMessage('turn-2', 'New'),
     ]);
     second.push(deltaFrame(1, 'turn-2', 3, ' text', 'subscription-2', 'run-2'));
-    assert.equal((await nextEvent(attached.events)).type, 'text_delta');
+    assert.equal((await nextTurnEvent(attached.events)).type, 'text_delta');
   });
 
   test('hides the copied parent transcript when a Host starts the side successor turn', async () => {
@@ -1373,7 +1373,7 @@ describe('Runtime Host Maka Session driver', () => {
         rootTurn: completedTurn('turn-1', 'run-1'),
       }),
     });
-    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => refresh.transcriptCalls > 0);
     first.push({
@@ -1439,7 +1439,7 @@ describe('Runtime Host Maka Session driver', () => {
         rootTurn: completedTurn('turn-1', 'run-1'),
       }),
     });
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'complete');
     assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => refresh.transcriptCalls > 0);
     first.push({
@@ -1458,11 +1458,11 @@ describe('Runtime Host Maka Session driver', () => {
       userMessage('turn-2', 'Fast follow up'),
       assistantMessage('turn-2', 'Done'),
     ]);
-    const text = await nextEvent(attached.events);
+    const text = await nextTurnEvent(attached.events);
     assert.equal(text.type, 'text_complete');
     if (text.type !== 'text_complete') assert.fail('Expected the durable assistant answer');
     assert.equal(text.text, 'Done');
-    assert.equal((await nextEvent(attached.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(attached.events)).type, 'complete');
   });
 
   test('serializes buffered successor reattach so transcript completion cannot reverse turn order', async () => {
@@ -1506,7 +1506,7 @@ describe('Runtime Host Maka Session driver', () => {
     first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
     first.push(projectionFrame(3, completedTurn('turn-2', 'run-2'), 4));
     first.push(projectionFrame(4, runningTurn('turn-3', 'run-3'), 5));
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'complete');
     assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
 
     await waitFor(() => connection.openedSubscriptions === 4);
@@ -1582,7 +1582,7 @@ describe('Runtime Host Maka Session driver', () => {
     first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
     first.push(projectionFrame(3, completedTurn('turn-2', 'run-2'), 4));
     first.push(projectionFrame(4, runningTurn('turn-3', 'run-3'), 5));
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'complete');
     assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => connection.openedSubscriptions === 4 && second.nextCalls > 0);
 
@@ -1642,7 +1642,7 @@ describe('Runtime Host Maka Session driver', () => {
 
     first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
     first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
-    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => connection.openedSubscriptions === 3);
 
@@ -1689,7 +1689,7 @@ describe('Runtime Host Maka Session driver', () => {
 
     first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
     first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
-    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(
       () =>
@@ -1755,7 +1755,7 @@ describe('Runtime Host Maka Session driver', () => {
 
     first.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
     first.push(projectionFrame(2, runningTurn('turn-2', 'run-2'), 3));
-    assert.equal((await nextEvent(initial.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(initial.activeTurn.events)).type, 'complete');
     assert.equal((await initial.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => connection.openedSubscriptions === 3);
 
@@ -1763,7 +1763,7 @@ describe('Runtime Host Maka Session driver', () => {
     assert.ok(switched.activeTurn);
     current.push(projectionFrame(1, completedTurn('turn-3', 'run-3'), 5, 'subscription-current'));
     current.push(projectionFrame(2, runningTurn('turn-4', 'run-4'), 6, 'subscription-current'));
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'complete');
     assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     await waitFor(() => connection.openedSubscriptions === 6 && started.includes('turn-4'));
     assert.deepEqual(started, ['turn-4']);
@@ -1999,11 +1999,11 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'user_question_request');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'user_question_request');
 
     await driver.respondToUserQuestion!({ requestId: 'question-1', answers: ['Yes'] });
 
-    assert.deepEqual(await nextEvent(switched.activeTurn.events), {
+    assert.deepEqual(await nextTurnEvent(switched.activeTurn.events), {
       type: 'user_question_answer_ack',
       id: 'host-interaction:question-1:2',
       turnId: 'turn-1',
@@ -2029,7 +2029,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'form_request');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'form_request');
 
     await driver.respondToUserForm!({
       requestId: 'form-1',
@@ -2045,7 +2045,7 @@ describe('Runtime Host Maka Session driver', () => {
         answer: { kind: 'form', action: 'accept', values: { version: 'v2' } },
       },
     });
-    assert.deepEqual(await nextEvent(switched.activeTurn.events), {
+    assert.deepEqual(await nextTurnEvent(switched.activeTurn.events), {
       type: 'form_answer_ack',
       id: 'host-interaction:form-1:2',
       turnId: 'turn-1',
@@ -2490,7 +2490,7 @@ describe('Runtime Host Maka Session driver', () => {
 
     const turn = await driver.preparePrompt('Continue');
     second.push(deltaFrame(1, 'turn-2', 0, 'Recovered', 'subscription-2', 'run-2'));
-    assert.equal((await nextEvent(turn.events)).text, 'Recovered');
+    assert.equal((await nextTurnEvent(turn.events)).text, 'Recovered');
   });
 
   test('starts explicit Skills through the Host command and preserves its typed feedback', async () => {
@@ -2742,7 +2742,7 @@ describe('Runtime Host Maka Session driver', () => {
     assert.deepEqual(await transcript.promise, [assistantMessage('turn-1', 'Hello world')]);
     assert.equal(connection.openedSubscriptions, 2);
     replacement.push(deltaFrame(1, 'turn-1', 11, '!', 'subscription-2'));
-    assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).text, '!');
   });
 
   test('recovers the complete terminal answer when a Turn finishes during reconnect', async () => {
@@ -2774,10 +2774,10 @@ describe('Runtime Host Maka Session driver', () => {
     assert.ok(switched.activeTurn);
 
     initial.fail(new RuntimeHostSubscriptionError('connection_closed', 'connection lost'));
-    const text = await nextEvent(switched.activeTurn.events);
+    const text = await nextTurnEvent(switched.activeTurn.events);
     assert.equal(text.type, 'text_complete');
     assert.equal(text.text, 'Hello world');
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'complete');
     assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
   });
 
@@ -2823,8 +2823,8 @@ describe('Runtime Host Maka Session driver', () => {
     driver.subscribeStartedTurns!((turn) => started.resolve(turn));
 
     initial.fail(new RuntimeHostSubscriptionError('connection_closed', 'connection lost'));
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'text_complete');
-    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'text_complete');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'complete');
     assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     assert.equal((await started.promise).turnId, 'turn-2');
   });
@@ -3452,14 +3452,17 @@ function pendingPermission() {
   };
 }
 
-async function nextEvent(events: AsyncIterable<unknown>): Promise<any> {
+async function nextTurnEvent(events: AsyncIterable<unknown>): Promise<any> {
   const iterator = events[Symbol.asyncIterator]();
-  const result = await Promise.race([
-    iterator.next(),
-    delay(WAIT_BUDGET_MS).then(() => assert.fail('Timed out waiting for Session event')),
-  ]);
-  assert.equal(result.done, false);
-  return result.value;
+  for (;;) {
+    const result = await Promise.race([
+      iterator.next(),
+      delay(WAIT_BUDGET_MS).then(() => assert.fail('Timed out waiting for Session event')),
+    ]);
+    assert.equal(result.done, false);
+    const value = result.value as { type?: string };
+    if (value?.type !== 'queue_update') return result.value;
+  }
 }
 
 function sequenceIds(...ids: string[]): () => string {
@@ -3578,7 +3581,7 @@ describe('turn consumer lag recovery (#3180)', () => {
 
     // The stream never rejected, and live events land right away.
     replacement.push(deltaFrame(1, 'turn-1', 5, ' world', 'subscription-2'));
-    assert.equal((await nextEvent(switched.activeTurn.events)).text, ' world');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).text, ' world');
   });
 
   test('lands terminal events while shedding deltas from a lagging consumer', async () => {
@@ -3658,7 +3661,8 @@ describe('turn consumer lag recovery (#3180)', () => {
     await delay(0);
 
     const iterator = switched.activeTurn.events[Symbol.asyncIterator]();
-    const first = await iterator.next();
+    let first = await iterator.next();
+    while (!first.done && first.value.type === 'queue_update') first = await iterator.next();
     assert.equal(first.done, false);
     assert.equal(first.value.type, 'tool_start');
     if (first.value.type === 'tool_start') assert.equal(first.value.toolUseId, 'tool-9000');
@@ -3761,7 +3765,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     assert.deepEqual(await transcript.promise, [assistantMessage('turn-1', 'Hello world')]);
     assert.equal(connection.openedSubscriptions, 2);
     replacement.push(deltaFrame(1, 'turn-1', 11, '!', 'subscription-2'));
-    assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).text, '!');
   });
 
   test('recovers from a slow-consumer closure the Host held until hydration declared readiness', async () => {
@@ -3797,7 +3801,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     assert.ok(switched.activeTurn);
     await waitForSubscriptions(connection, 2);
     replacement.push(deltaFrame(1, 'turn-1', 11, '!', 'subscription-2'));
-    assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).text, '!');
   });
 
   test('backs off several immediate clean-EOF replacements before recovering', async () => {
@@ -3841,7 +3845,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     // its transcript loads.
     await waitForSubscriptions(connection, 5);
     stable.push(deltaFrame(1, 'turn-1', 11, '!', 'subscription-5'));
-    assert.equal((await nextEvent(switched.activeTurn.events)).text, '!');
+    assert.equal((await nextTurnEvent(switched.activeTurn.events)).text, '!');
   });
 
   for (const [name, replacementRoot] of [
@@ -3853,16 +3857,34 @@ describe('turn consumer lag recovery (#3180)', () => {
         continuitySnapshot(),
         Promise.resolve([assistantMessage('turn-1', 'Hello')]),
       );
-      const replacement = new FakeSubscription(
-        continuitySnapshot({ projectionRevision: 3, rootTurn: replacementRoot }),
-        Promise.resolve([
-          assistantMessage('turn-1', 'Hello'),
-          turnStateMessage('turn-1', 'completed'),
-          ...(replacementRoot.turnId === 'turn-2' ? [userMessage('turn-2', 'Continue')] : []),
-        ]),
+      const transcript = [
+        assistantMessage('turn-1', 'Hello'),
+        turnStateMessage('turn-1', 'completed'),
+        ...(replacementRoot.turnId === 'turn-2' ? [userMessage('turn-2', 'Continue')] : []),
+      ];
+      const snapshot = () =>
+        continuitySnapshot({ projectionRevision: 3, rootTurn: replacementRoot });
+      // A terminal settlement refreshes the transcript through its own
+      // subscription read, so the recovery replacement is not the second open.
+      const transcriptReader = new FakeSubscription(
+        snapshot(),
+        Promise.resolve(transcript),
         'subscription-2',
       );
-      const connection = new FakeConnection([initial, replacement], true);
+      const replacement = new FakeSubscription(
+        snapshot(),
+        Promise.resolve(transcript),
+        'subscription-3',
+      );
+      const settlementReader = new FakeSubscription(
+        snapshot(),
+        Promise.resolve(transcript),
+        'subscription-4',
+      );
+      const connection = new FakeConnection(
+        [initial, transcriptReader, replacement, settlementReader],
+        true,
+      );
       const driver = createRuntimeHostMakaSessionDriver({
         connection: connection.value,
         cwd: '/tmp',
@@ -3877,9 +3899,9 @@ describe('turn consumer lag recovery (#3180)', () => {
       initial.push(projectionFrame(1, completedTurn('turn-1', 'run-1'), 2));
       await delay(0);
       initial.fail(new RuntimeHostSubscriptionError('connection_closed', 'connection lost'));
-      await waitForSubscriptions(connection, 2);
+      await waitFor(() => replacement.nextCalls > 0);
 
-      assert.equal((await nextEvent(switched.activeTurn.events)).type, 'complete');
+      assert.equal((await nextTurnEvent(switched.activeTurn.events)).type, 'complete');
       assert.equal((await switched.activeTurn.events[Symbol.asyncIterator]().next()).done, true);
     });
   }
