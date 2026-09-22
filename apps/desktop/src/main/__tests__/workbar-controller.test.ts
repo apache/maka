@@ -30,9 +30,9 @@ import { TerminalCloseIntents } from '../terminal-close-intents.js';
 import type { TerminalCloseChange } from '../../shared/runtime-host-identity.js';
 import {
   createFakeWorkbarServices,
-  focusParentConversation,
   projectWorkbarPanelsForSession,
   useWorkbarController,
+  visibleSideChatParentSessionId,
   WorkbarServicesProvider,
   type UseWorkbarControllerInput,
   type WorkbarController,
@@ -985,89 +985,34 @@ describe('useWorkbarController', () => {
     assert.deepEqual(activeSessions, ['a', 'b']);
   });
 
+  it('gates the parent status read on the projected Side Conversation the render shows', async () => {
+    const { root } = installReactRenderer();
+    const services = createFakeWorkbarServices();
+    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const host = controller().host;
+    const gate = (visibility: typeof host = host) =>
+      visibleSideChatParentSessionId(
+        projectWorkbarPanelsForSession(
+          host.panelsState,
+          host.activeId,
+          new Set(host.quotes?.map((quote) => `side-chat:${quote.id}`)),
+        ),
+        visibility,
+        host.sourceSession?.id,
+      );
+    assert.equal(gate(), 'a', 'an open, active Side Conversation is worth the read');
+    assert.equal(gate({ ...host, hidden: true }), undefined);
+    assert.equal(gate({ ...host, rightCollapsed: true }), undefined);
+  });
+
   it('exposes the parent conversation callback from the shell', async () => {
     const { root } = installReactRenderer();
     const services = createFakeWorkbarServices();
-    let focused = 0;
-    const editable = {
-      focus() {
-        focused += 1;
-      },
-    };
-    const main = {
-      querySelector(selector: string) {
-        return selector.includes('maka-composer [contenteditable') ? editable : null;
-      },
-    };
-    const previousQuery = document.querySelector;
-    document.querySelector = ((selector: string) => {
-      if (selector === '.mainColumn') return main;
-      return previousQuery.call(document, selector);
-    }) as typeof document.querySelector;
-    try {
-      await act(async () => renderController(root, services, input(session('a'))));
-      controller().host.onOpenParentConversation?.();
-      assert.equal(focused, 1);
-    } finally {
-      document.querySelector = previousQuery;
-    }
-  });
-
-  it('focuses a visible parent interaction and skips hidden or disabled controls', () => {
-    installReactRenderer();
-    let focused = '';
-    const hiddenAllow = {
-      disabled: false,
-      closest(selector: string) {
-        return selector.includes('[hidden]') ? this : null;
-      },
-      focus() {
-        focused = 'hidden';
-      },
-    };
-    const disabledAllow = {
-      disabled: true,
-      closest() {
-        return null;
-      },
-      focus() {
-        focused = 'disabled';
-      },
-    };
-    const visibleAllow = {
-      disabled: false,
-      closest() {
-        return null;
-      },
-      focus() {
-        focused = 'interaction';
-      },
-    };
-    const hiddenComposer = {
-      closest(selector: string) {
-        return selector.includes('[hidden]') ? this : null;
-      },
-      focus() {
-        focused = 'composer';
-      },
-    };
-    const previousQuery = document.querySelector;
-    document.querySelector = ((selector: string) => {
-      if (selector !== '.mainColumn') return previousQuery.call(document, selector);
-      return {
-        querySelectorAll(sel: string) {
-          if (sel.includes('interaction-slot')) return [hiddenAllow, disabledAllow, visibleAllow];
-          if (sel.includes('maka-composer [contenteditable')) return [hiddenComposer];
-          return [];
-        },
-      };
-    }) as typeof document.querySelector;
-    try {
-      focusParentConversation();
-      assert.equal(focused, 'interaction');
-    } finally {
-      document.querySelector = previousQuery;
-    }
+    await act(async () => renderController(root, services, input(session('a'))));
+    // The action itself is covered against a real DOM in
+    // parent-interaction-focus.test.ts; here the shell only has to expose it.
+    assert.equal(typeof controller().host.onOpenParentConversation, 'function');
   });
 
   it('opens Browser once when the active Session gains a live browser view', async () => {

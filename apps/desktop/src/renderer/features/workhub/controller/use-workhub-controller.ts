@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
+import {
+  activeHostTurn,
+  advanceExecutionHistory,
+  chatTurnActivity,
+  unavailableExecutionProjection,
+  type ExecutionHistoryState,
+} from '../../../application/contracts/session-execution.js';
 import { useEffect, useRef, useState } from 'react';
 import {
   applyLiveTurnBufferEvent,
@@ -74,7 +80,10 @@ export function useWorkHubController(onSubmit?: () => void) {
   const [viewportNavigation] = useState(createTranscriptViewportNavigation);
   const [transientMessages, setTransientMessages] = useState<TransientUserMessageProjection[]>([]);
   const [messageQueue, setMessageQueue] = useState<{ entries: import('@maka/core/events').MessageQueueEntryProjection[]; revision?: number }>({ entries: [] });
-  const [execution, setExecution] = useState<SessionExecutionProjection>();
+  const [executionState, setExecutionState] = useState<ExecutionHistoryState>({ sessionId: '', projection: undefined, historyEpoch: 0 });
+  /** A projection from another Session is stale by construction. */
+  const execution = executionState.sessionId === sessionId ? executionState.projection : undefined;
+  const executionHistoryEpoch = executionState.sessionId === sessionId ? executionState.historyEpoch : 0;
   const [liveTurns, setLiveTurns] = useState<LiveTurnBuffer>();
   const liveTurn = liveTurns?.find((turn) => turn.turnId === execution?.rootTurn?.turnId) ?? liveTurns?.at(-1);
   const refreshInteractions = useRef<() => void>(() => {});
@@ -258,7 +267,7 @@ export function useWorkHubController(onSubmit?: () => void) {
     setReadError(undefined);
     const attempt = pendingSend.current;
     const pending = attempt && attempt.sessionId === sessionId && attempt.admission !== 'terminal' && attempt.admission !== 'rejected' ? attempt : undefined;
-    setExecution(undefined);
+    setExecutionState({ sessionId: sessionId ?? '', projection: undefined, historyEpoch: 0 });
     setLiveTurns(pending ? [armLiveTurn(pending.input.turnId)] : undefined);
     setStopPending(Boolean(pending?.stop));
     setTransientMessages(pending ? [{
@@ -355,6 +364,14 @@ export function useWorkHubController(onSubmit?: () => void) {
       (reason) => {
         observationPhase = 'pending';
         handle?.observationChanged('pending');
+        // A failed observation is not "still loading": the status readers must
+        // be able to tell an unseeded projection from a real failure, and the
+        // last known root turn must survive for Stop and conservative controls.
+        if (!disposed) {
+          setExecutionState((current) =>
+            advanceExecutionHistory(current, sessionId, unavailableExecutionProjection(current.sessionId === sessionId ? current.projection : undefined)),
+          );
+        }
         readFailed(reason);
       },
       (phase) => {
@@ -363,7 +380,7 @@ export function useWorkHubController(onSubmit?: () => void) {
         handle?.observationChanged(phase);
         if (phase === 'ready') { refreshInteractions.current(); void recoverSend(); }
       },
-      (projection) => { if (!disposed) setExecution(projection); },
+      (projection) => { if (!disposed) setExecutionState((current) => advanceExecutionHistory(current, sessionId, projection)); },
     );
     const opening = services.openTranscript(sessionId, (snapshot) => {
       if (disposed) return;
@@ -597,6 +614,8 @@ export function useWorkHubController(onSubmit?: () => void) {
     liveTurn,
     liveTurns,
     activeTurn: chatTurnActivity(execution),
+    execution,
+    executionHistoryEpoch,
     busy,
     sending,
     stopPending,

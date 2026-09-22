@@ -22,6 +22,30 @@ import type {
   HostPendingInteractionKind,
   SessionExecutionProjection,
 } from '../../../application/contracts/session-execution.js';
+import type { SessionWorkbarPanelsState } from './workbar-tabs.js';
+
+/**
+ * The only Session whose parent status is worth a Host read: the Side
+ * Conversation the reader can actually see. It mirrors the Surface's own
+ * projection, active tab and collapsed state, so a hidden Workbar, a collapsed
+ * placement, an open launcher, an inactive tab, a Side Conversation of another
+ * Session, or a tab the projection dropped never triggers a read.
+ */
+export function visibleSideChatParentSessionId(
+  visiblePanels: SessionWorkbarPanelsState,
+  visibility: { hidden: boolean; rightCollapsed: boolean; bottomOpen: boolean },
+  sourceSessionId: string | undefined,
+): string | undefined {
+  if (visibility.hidden || !sourceSessionId) return undefined;
+  const showing = (['right', 'bottom'] as const).some((placement) => {
+    const panel = visiblePanels[placement];
+    const panelVisible =
+      placement === 'right' ? !visibility.rightCollapsed : visibility.bottomOpen;
+    if (!panelVisible || panel.launcherOpen) return false;
+    return panel.tabs.find((tab) => tab.id === panel.activeTabId)?.kind === 'side-chat';
+  });
+  return showing ? sourceSessionId : undefined;
+}
 
 export type {
   HostPendingInteractionKind,
@@ -75,12 +99,19 @@ export function hostExecutionProjection(
   };
 }
 
+/**
+ * `null` means there is nothing honest to say yet: no projection has arrived,
+ * or the projection needs a history read that has not answered. A projection
+ * that reports itself unavailable is the only "unavailable" case, so an
+ * initial load can never flash a warning.
+ */
 export function parentTaskStatusFromFacts(input: {
   readonly execution: SessionExecutionProjection | undefined;
   readonly latestTurnRead: ParentTaskLatestTurnRead;
-}): ParentTaskStatusKind {
+}): ParentTaskStatusKind | null {
   const execution = input.execution;
-  if (!execution?.available) return 'unavailable';
+  if (!execution) return null;
+  if (!execution.available) return 'unavailable';
 
   let hasInput = false;
   let hasApproval = false;
@@ -101,7 +132,8 @@ export function parentTaskStatusFromFacts(input: {
   }
 
   const latest = input.latestTurnRead;
-  if (latest.status === 'pending' || latest.status === 'failed') return 'unavailable';
+  if (latest.status === 'pending') return null;
+  if (latest.status === 'failed') return 'unavailable';
   if (!latest.turn) return 'idle';
   if (latest.turn.status === 'completed') return 'last_turn_completed';
   if (latest.turn.status === 'failed') return 'last_turn_failed';
@@ -114,7 +146,7 @@ export function parentTaskStatusFromFacts(input: {
 export type VisibleParentTaskStatus = Exclude<ParentTaskStatusKind, 'idle'>;
 
 export function visibleParentTaskStatus(
-  kind: ParentTaskStatusKind,
+  kind: ParentTaskStatusKind | null,
 ): VisibleParentTaskStatus | null {
   return kind === 'idle' ? null : kind;
 }

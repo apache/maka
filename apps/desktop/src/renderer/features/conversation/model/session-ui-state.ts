@@ -21,7 +21,11 @@ import type { MessageQueueEntryProjection, ShellRunUpdate } from '@maka/core/eve
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import { createTranscriptViewportNavigation, type InteractionQueues, type LiveTurnBuffer } from '@maka/ui';
 import { createObservableState } from './observable-state.js';
-import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
+import {
+  advanceExecutionHistory,
+  unavailableExecutionProjection,
+  type SessionExecutionProjection,
+} from '../../../application/contracts/session-execution.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 type ShellRunUpdatesBySession = Record<string, Record<string, ShellRunUpdate>>;
@@ -32,6 +36,13 @@ export interface AppShellSessionUiState {
   stopPendingBySession: Record<string, boolean>;
   liveTurnBySession: Record<string, LiveTurnBuffer>;
   executionBySession: Record<string, SessionExecutionProjection>;
+  /**
+   * Bumped by the projection producer whenever a write invalidates a settled
+   * history read. A consumer cannot recover that from the rendered projection
+   * alone: React can batch `available → unavailable → available` into one
+   * commit whose snapshot equals the one before it.
+   */
+  executionHistoryEpochBySession: Record<string, number>;
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;
   messageQueueBySession: Record<string, MessageQueueUiState>;
@@ -70,6 +81,7 @@ const SESSION_UI_MAP_KEYS = [
   'stopPendingBySession',
   'liveTurnBySession',
   'executionBySession',
+  'executionHistoryEpochBySession',
   'shellRunUpdatesBySession',
   'interactionBySession',
   'messageQueueBySession',
@@ -197,12 +209,46 @@ export function createAppShellSessionUiStateController(
     stopPending: createPendingClaim('stopPendingBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
     setExecution: (sessionId: string, projection: SessionExecutionProjection | undefined) => {
-      updateMap('executionBySession', (current) => {
-        const previous = current[sessionId];
-        if (!projection) return previous?.available
-          ? { ...current, [sessionId]: { ...previous, available: false } } : current;
-        if (previous === projection) return current;
-        return { ...current, [sessionId]: projection };
+      const latest = state.getState();
+      const previous = latest.executionBySession[sessionId];
+      const next = projection ?? (previous?.available ? { ...previous, available: false } : previous);
+      if (next === previous) return;
+      const advanced = advanceExecutionHistory(
+        { sessionId, projection: previous, historyEpoch: latest.executionHistoryEpochBySession[sessionId] ?? 0 },
+        sessionId,
+        next,
+      );
+      replaceState({
+        ...latest,
+        executionBySession: next === undefined
+          ? omitSessionKey(latest.executionBySession, sessionId)
+          : { ...latest.executionBySession, [sessionId]: next },
+        executionHistoryEpochBySession: advanced.historyEpoch === (latest.executionHistoryEpochBySession[sessionId] ?? 0)
+          ? latest.executionHistoryEpochBySession
+          : { ...latest.executionHistoryEpochBySession, [sessionId]: advanced.historyEpoch },
+      });
+    },
+    /**
+     * Observer failure: publish unavailability without dropping the root turn a
+     * previous successful seed already reported. Leaves the cleanup path
+     * (`setExecution(id, undefined)`) alone, which must not claim a failure.
+     */
+    setExecutionUnavailable: (sessionId: string) => {
+      const latest = state.getState();
+      const previous = latest.executionBySession[sessionId];
+      const next = unavailableExecutionProjection(previous);
+      if (next === previous) return;
+      const advanced = advanceExecutionHistory(
+        { sessionId, projection: previous, historyEpoch: latest.executionHistoryEpochBySession[sessionId] ?? 0 },
+        sessionId,
+        next,
+      );
+      replaceState({
+        ...latest,
+        executionBySession: { ...latest.executionBySession, [sessionId]: next },
+        executionHistoryEpochBySession: advanced.historyEpoch === (latest.executionHistoryEpochBySession[sessionId] ?? 0)
+          ? latest.executionHistoryEpochBySession
+          : { ...latest.executionHistoryEpochBySession, [sessionId]: advanced.historyEpoch },
       });
     },
     setShellRunUpdatesBySession: createMapSetter('shellRunUpdatesBySession'),

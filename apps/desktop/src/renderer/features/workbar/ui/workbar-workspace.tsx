@@ -22,6 +22,10 @@ import { useToast } from '@maka/ui';
 import { WorkbarHost } from './workbar-host.js';
 import { WorkbarToggle } from './workbar-toggle.js';
 import { useWorkbarController } from '../controller/use-workbar-controller.js';
+import {
+  SESSION_INTERACTION_CONTAINER_ATTRIBUTE,
+  SESSION_PARENT_INTERACTION_ATTRIBUTE,
+} from '../model/parent-interaction-focus.js';
 import type { SessionWorkspaceProps } from '../../../application/contracts/session-workspace.js';
 
 /** Compose the session Workbar beside a conversation in its owning renderer. */
@@ -40,10 +44,16 @@ export function WorkbarWorkspace(props: SessionWorkspaceProps) {
     toastApi,
     composerRef: props.composerRef,
     openSessionInChat: props.onOpenSession,
+    parentExecution: props.parentExecution,
+    parentExecutionHistoryEpoch: props.parentExecutionHistoryEpoch,
   });
   return (
-    <div className={`maka-detail-with-artifacts ${props.className ?? ''}`} style={{ '--maka-session-workbar-width': `${workbar.host.rightWidth}px` } as CSSProperties}>
-      <div className="mainColumn">
+    <div
+      className={`maka-detail-with-artifacts ${props.className ?? ''}`}
+      {...{ [SESSION_INTERACTION_CONTAINER_ATTRIBUTE]: '' }}
+      style={{ '--maka-session-workbar-width': `${workbar.host.rightWidth}px` } as CSSProperties}
+    >
+      <div className="mainColumn" {...{ [SESSION_PARENT_INTERACTION_ATTRIBUTE]: '' }}>
         {props.children({
           openUsage: () => { props.onShowConversation(); workbar.commands.openTool('inspector'); },
           toggle: props.session && workbar.selectors.rightCollapsed ? <WorkbarToggle collapsed={workbar.selectors.rightCollapsed} size="sm" onToggle={() => { props.onShowConversation(); workbar.commands.toggleRight(); }} /> : null,

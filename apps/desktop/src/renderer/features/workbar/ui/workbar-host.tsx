@@ -38,6 +38,7 @@ import type {
   QuoteCompanionPanelState,
 } from '../tools/side-chat/quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from '../tools/side-chat/quote-companion-visibility';
+import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
 import { SideChatCloseConfirmation } from './side-chat-close-confirmation.js';
 
 const WorkbarSurface = lazy(() =>
@@ -114,7 +115,11 @@ export interface WorkbarHostModel {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
-  onOpenParentConversation?: () => void;
+  /** The owning conversation's canonical execution projection, for the parent
+   * status of Side Conversations. */
+  parentExecution?: SessionExecutionProjection;
+  parentExecutionHistoryEpoch?: number;
+  onOpenParentConversation?: (origin?: Element | null) => void;
   onStartWorkBoardTask?: (item: WorkBoardItem) => void;
   resolveWorkBoardStartTask?: (item: WorkBoardItem) => { ok: boolean; message?: string };
   onOpenWorkBoardSession?: (link: WorkBoardLinkedSession) => void;
@@ -200,6 +205,8 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onOpenWorkBoardSession={props.onOpenWorkBoardSession}
               workBoardStartTaskEnabled={props.workBoardStartTaskEnabled}
               confirmBypass={() => confirmBypassPermission(toast, locale)}
+              parentExecution={props.parentExecution}
+              parentExecutionHistoryEpoch={props.parentExecutionHistoryEpoch}
               onOpenParentConversation={props.onOpenParentConversation}
             />
           </Suspense>

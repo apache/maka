@@ -31,6 +31,10 @@ import { SandboxBoundaryPrompt, ToastProvider } from '@maka/ui';
 import { WorkbarServicesProvider, WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
 import {
+  SESSION_INTERACTION_CONTAINER_ATTRIBUTE,
+  SESSION_PARENT_INTERACTION_ATTRIBUTE,
+} from '../src/renderer/features/workbar/model/parent-interaction-focus';
+import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
   activateSessionWorkbarTab,
@@ -1021,6 +1025,7 @@ function Workbar(props: {
     <ToastProvider>
       <div
         className="maka-detail-with-artifacts"
+        {...{ [SESSION_INTERACTION_CONTAINER_ATTRIBUTE]: '' }}
         style={{
           // Fill the preview viewport like AppShell fills the window; a fixed
           // height pushes the stacked workbar below the fold in short windows.
@@ -1033,7 +1038,7 @@ function Workbar(props: {
           ...(props.width ? { '--maka-session-workbar-width': `${props.width}px` } : {}),
         } as CSSProperties}
       >
-        <div className="mainColumn">
+        <div className="mainColumn" {...{ [SESSION_PARENT_INTERACTION_ATTRIBUTE]: '' }}>
           {props.parentFrame === 'waiting-approval' ? (
             // ChatComposerRegion owns `.maka-composer-interaction-slot` around
             // parent prompts; that wrapper is not exported on its own.
@@ -1501,22 +1506,23 @@ export const SideChat: Story = {
 // sandbox_boundary approval. The notice is the production companion panel;
 // the parent column mounts the production SandboxBoundaryPrompt, which is
 // what ChatComposerRegion places in its interaction slot.
-export const SideChatParentWaitingApproval: Story = {
-  decorators: [
-    bridge({
-      parentExecution: {
-        type: 'host_execution',
-        available: true,
-        rootTurn: {
-          sessionId: SESSION_ID,
-          turnId: 'parent-turn',
-          runId: 'parent-run',
-          status: 'waiting_for_user',
-        },
-        pendingInteractionKinds: ['sandbox_boundary'],
+const parentWaitingApproval = (): Decorator =>
+  bridge({
+    parentExecution: {
+      type: 'host_execution',
+      available: true,
+      rootTurn: {
+        sessionId: SESSION_ID,
+        turnId: 'parent-turn',
+        runId: 'parent-run',
+        status: 'waiting_for_user',
       },
-    }),
-  ],
+      pendingInteractionKinds: ['sandbox_boundary'],
+    } satisfies SessionExecutionProjection,
+  });
+
+export const SideChatParentWaitingApproval: Story = {
+  decorators: [parentWaitingApproval()],
   render: () => <Workbar tab="side-chat" parentFrame="waiting-approval" />,
   play: async ({ canvasElement }) => {
     const notice = await waitFor(() => {
@@ -1530,6 +1536,40 @@ export const SideChatParentWaitingApproval: Story = {
     expect(notice.textContent).toContain('主任务等待审批');
     const slot = canvasElement.querySelector<HTMLElement>(
       '.mainColumn .maka-composer-interaction-slot',
+    );
+    if (!slot) throw new Error('parent interaction slot is missing');
+    const reject = within(slot).getByRole('button', { name: '拒绝' });
+    const allow = within(slot).getByRole('button', { name: '本任务允许' });
+    const action = within(notice).getByRole('button', { name: '前往主对话' });
+    await userEvent.click(action);
+    expect(document.activeElement === reject || document.activeElement === allow).toBe(true);
+  },
+};
+
+// Real path: 侧边对话 at the column's 320px floor while the parent is waiting on
+// a sandbox_boundary approval. The notice has to survive the narrowest column
+// the resize handle allows, and its action still has to land on the parent's
+// own approval controls rather than on this panel's composer.
+export const SideChatParentWaitingApprovalAtColumnFloor: Story = {
+  decorators: [parentWaitingApproval()],
+  render: () => <Workbar tab="side-chat" parentFrame="waiting-approval" width={320} />,
+  play: async ({ canvasElement }) => {
+    const notice = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLElement>(
+        '[data-maka-contract="side-chat-parent-status"]',
+      );
+      if (!found) throw new Error('parent status notice is missing');
+      return found;
+    });
+    const column = notice.closest<HTMLElement>('.maka-session-workbar');
+    if (!column) throw new Error('workbar column is missing');
+    const columnBox = column.getBoundingClientRect();
+    const noticeBox = notice.getBoundingClientRect();
+    expect(noticeBox.width).toBeLessThanOrEqual(columnBox.width + 1);
+    expect(noticeBox.left).toBeGreaterThanOrEqual(columnBox.left - 1);
+
+    const slot = canvasElement.querySelector<HTMLElement>(
+      '[data-maka-parent-interaction] .maka-composer-interaction-slot',
     );
     if (!slot) throw new Error('parent interaction slot is missing');
     const reject = within(slot).getByRole('button', { name: '拒绝' });

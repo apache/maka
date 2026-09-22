@@ -289,6 +289,7 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
       </div>}
       <div className="workHubRevealMark" ref={revealMark} aria-hidden="true"><MakaWordmark width={192} /></div>
       <Workspace className="workHubWorkspace" layoutScope="workhub" session={session} sessionIds={sessionIds} modelChoices={controller.choices} visible={showConversation} composerRef={composer}
+        parentExecution={controller.execution} parentExecutionHistoryEpoch={controller.executionHistoryEpoch}
         onShowConversation={() => {
           setConversationExpanded(true);
           if (progress) call(services.presentation.expandProgress(presentation.progressRequest));

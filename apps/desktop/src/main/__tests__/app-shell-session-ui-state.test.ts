@@ -25,7 +25,7 @@ import type { SessionSummary } from '@maka/core/session';
 import { armLiveTurn, applyLiveTurnBufferEvent, reconcileLiveTurnBuffer } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import { act, createElement } from 'react';
-import { LiveTurnReconciler } from '../../renderer/features/conversation/index.js';
+import { activeHostTurn, LiveTurnReconciler } from '../../renderer/features/conversation/index.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
 import {
@@ -392,5 +392,67 @@ describe('app shell session UI state controller', () => {
     const projection = [armLiveTurn('turn-1')];
     controller.setLiveTurnBySession((current) => ({ ...current, session: projection }));
     assert.equal(controller.liveTurnBySessionRef.current.session, projection);
+  });
+});
+
+describe('producer-side execution history invalidation', () => {
+  const runningRoot = {
+    sessionId: 'session',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    status: 'running' as const,
+  };
+
+  it('reports a failure before the first seed as unavailable, not as unread', () => {
+    const controller = createAppShellSessionUiStateController();
+    controller.setExecutionUnavailable('session');
+    assert.deepEqual(controller.getState().executionBySession.session, {
+      type: 'host_execution',
+      available: false,
+      rootTurn: null,
+      pendingInteractionKinds: [],
+    });
+  });
+
+  it('marks a known projection unavailable while keeping the identity Stop needs', () => {
+    const controller = createAppShellSessionUiStateController();
+    controller.setExecution('session', {
+      type: 'host_execution',
+      available: true,
+      rootTurn: runningRoot,
+      pendingInteractionKinds: ['permission'],
+    });
+    controller.setExecutionUnavailable('session');
+    const projection = controller.getState().executionBySession.session;
+    assert.equal(projection?.available, false);
+    assert.equal(activeHostTurn(projection)?.turnId, 'turn-1');
+    assert.deepEqual(projection?.pendingInteractionKinds, ['permission']);
+  });
+
+  it('does not let the cleanup path claim a failure it did not observe', () => {
+    const controller = createAppShellSessionUiStateController();
+    controller.setExecution('session', undefined);
+    assert.equal(controller.getState().executionBySession.session, undefined);
+  });
+
+  it('rereads history once observation recovers', () => {
+    const controller = createAppShellSessionUiStateController();
+    const epoch = () => controller.getState().executionHistoryEpochBySession.session;
+    controller.setExecution('session', {
+      type: 'host_execution',
+      available: true,
+      rootTurn: runningRoot,
+      pendingInteractionKinds: [],
+    });
+    assert.equal(epoch(), undefined);
+    controller.setExecutionUnavailable('session');
+    assert.equal(epoch(), undefined, 'a failure is not a new history');
+    controller.setExecution('session', {
+      type: 'host_execution',
+      available: true,
+      rootTurn: null,
+      pendingInteractionKinds: [],
+    });
+    assert.equal(epoch(), 1, 'the settled projection invalidates the frozen history');
   });
 });

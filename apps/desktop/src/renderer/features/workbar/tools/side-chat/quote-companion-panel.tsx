@@ -87,7 +87,7 @@ export function QuoteCompanionPanel(props: {
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
   parentTaskStatus?: VisibleParentTaskStatus | null;
-  onOpenParentConversation?: () => void;
+  onOpenParentConversation?: (origin?: Element | null) => void;
 }) {
   const { attachments } = useWorkbarServices();
   const mentions = useComposerMentionsContext();

@@ -35,14 +35,16 @@ describe('ParentTaskStatusNotice', () => {
   it('shows the latest-turn failure and the parent conversation action', async () => {
     const { root, container } = installReactRenderer();
     let opened = 0;
+    let origin: Element | null | undefined;
     await act(async () => {
       root.render(
         createElement(LocaleProvider, {
           locale: 'zh-CN',
           children: createElement(ParentTaskStatusNotice, {
             status: 'last_turn_failed',
-            onOpenParentConversation: () => {
+            onOpenParentConversation: (element) => {
               opened += 1;
+              origin = element;
             },
           }),
         }),
@@ -55,10 +57,67 @@ describe('ParentTaskStatusNotice', () => {
     assert.equal(notice?.attributes.get('data-status'), 'last_turn_failed');
     const button = findButton(container);
     assert.ok(button, 'parent conversation action is missing');
-    click(button);
+    click(button, button);
     assert.equal(opened, 1);
+    assert.equal(origin, button, 'the action hands its own workspace frame to the focus owner');
+  });
+
+  it('renders one polite live region per notice', async () => {
+    const { root, container } = installReactRenderer();
+    const notice = () =>
+      createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(ParentTaskStatusNotice, { status: 'waiting_approval' }),
+      });
+    await act(async () => {
+      root.render(notice());
+    });
+    const live = findByRole(container, 'status');
+    assert.ok(live, 'a status live region is missing');
+    assert.equal(live.attributes.get('aria-live'), 'polite');
+    assert.equal(live.textContent, 'Parent task is waiting for approval; approve it in the parent conversation');
+    assert.equal(
+      countByRole(container, 'status'),
+      1,
+      'each notice owns exactly one live region; a second notice announces separately',
+    );
   });
 });
+
+function findByRole(
+  node: { childNodes: readonly unknown[]; attributes?: Map<string, string>; textContent?: string },
+  role: string,
+): { attributes: Map<string, string>; textContent: string } | undefined {
+  if (node.attributes?.get('role') === role) {
+    return node as { attributes: Map<string, string>; textContent: string };
+  }
+  for (const child of node.childNodes) {
+    if (child && typeof child === 'object' && 'childNodes' in child) {
+      const found = findByRole(
+        child as { childNodes: readonly unknown[]; attributes?: Map<string, string> },
+        role,
+      );
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function countByRole(
+  node: { childNodes: readonly unknown[]; attributes?: Map<string, string> },
+  role: string,
+): number {
+  let count = node.attributes?.get('role') === role ? 1 : 0;
+  for (const child of node.childNodes) {
+    if (child && typeof child === 'object' && 'childNodes' in child) {
+      count += countByRole(
+        child as { childNodes: readonly unknown[]; attributes?: Map<string, string> },
+        role,
+      );
+    }
+  }
+  return count;
+}
 
 function findByContract(node: { childNodes: readonly unknown[]; attributes?: Map<string, string> }, value: string): { attributes: Map<string, string>; childNodes: readonly unknown[] } | undefined {
   if (node.attributes?.get('data-maka-contract') === value) {
@@ -84,8 +143,8 @@ function findButton(node: { childNodes?: readonly unknown[]; tagName?: string; o
   return undefined;
 }
 
-function click(node: object) {
-  const event = { preventDefault() {}, stopPropagation() {} };
+function click(node: object, currentTarget?: unknown) {
+  const event = { preventDefault() {}, stopPropagation() {}, currentTarget };
   const reactProps = Object.entries(node).find(([key]) => key.startsWith('__reactProps$'))?.[1] as
     | { onClick?: (event: unknown) => void }
     | undefined;

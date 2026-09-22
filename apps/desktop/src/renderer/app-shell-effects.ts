@@ -313,6 +313,7 @@ export function useActiveSessionEvents(options: {
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
   setExecution: import('./features/conversation/index.js').AppShellSessionUiStateController['setExecution'];
+  setExecutionUnavailable: (sessionId: string) => void;
   beginObservationSeed: (sessionId: string) => void;
   completeObservationSeed: (sessionId: string) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
@@ -452,7 +453,11 @@ export function useActiveSessionEvents(options: {
         () => {
           if (attempt !== observationAttempt) return;
           controller.observationChanged('pending');
-          options.setExecution(activeId, undefined);
+          // Report a failed observation as unavailable rather than clearing the
+          // projection: "we could not read it" and "we have not read it yet"
+          // are different facts, and only the first one is worth showing. The
+          // last known root turn stays for Stop and conservative controls.
+          options.setExecutionUnavailable(activeId);
           unsubscribeCurrent();
           observationFailures += 1;
           const retryDelayMs = Math.min(100 * (2 ** (observationFailures - 1)), 2_000);

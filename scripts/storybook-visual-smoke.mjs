@@ -71,6 +71,7 @@ const DARK_THEME_SENTINEL_STORY_IDS = new Set([
   'product-settings-pages--appearance',
   'product-settings-pages--bot-chat-needs-attention',
   'product-shell-official-appshell--default-layout',
+  'product-session-workbar--side-chat-parent-waiting-approval',
   'product-workhub--standard-composer',
   'product-workhub--progress-model-picker',
 ]);

@@ -480,6 +480,7 @@ function AppShellContent({
     streamingSessionIds,
     activeLiveTurnSnapshot,
     activeExecution,
+    activeExecutionHistoryEpoch,
   } = useAppShellSessionUiReads(sessionUiController, activeId);
   // The chat surface follows the active Session's Host. Settings and global
   // commands remain owned by the default Host.
@@ -1334,6 +1335,8 @@ function AppShellContent({
     openSessionInChat,
     resolveWorkBoardTarget,
     prepareWorkBoardDraft,
+    parentExecution: activeExecution,
+    parentExecutionHistoryEpoch: activeExecutionHistoryEpoch,
   });
   const { commands, selectors, LiveContextUsageProbe } = workbar;
 
@@ -1977,6 +1980,7 @@ function AppShellContent({
     handleEvent,
     beginObservationSeed,
     setExecution: sessionUiController.setExecution,
+    setExecutionUnavailable: sessionUiController.setExecutionUnavailable,
     completeObservationSeed,
     setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     clearMessageLoadError: sessionUiController.clearMessageLoadError,
@@ -2416,8 +2420,8 @@ function AppShellContent({
               which is correct: those surfaces shouldn't be a
               navigation entry point. */}
           <MakaUriContext.Provider value={dispatchMakaUri}>
-          <div className="maka-detail-with-artifacts">
-            <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}
+          <div className="maka-detail-with-artifacts" data-maka-interaction-container="">
+            <div className="mainColumn" data-maka-parent-interaction="" data-home-surface={homeSurfaceActive ? 'true' : undefined}
               inert={switchingSession || undefined}
               aria-busy={switchingSession || undefined}>
               <ModuleHub.ModuleHubHost />

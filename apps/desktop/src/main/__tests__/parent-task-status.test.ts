@@ -20,11 +20,19 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
+  activateSessionWorkbarTab,
   classifyPendingInteractionKind,
+  createSessionWorkbarPanelsState,
+  createSessionWorkbarTabsState,
   hostExecutionProjection,
+  openSessionWorkbarLauncher,
   parentTaskStatusFromFacts,
+  projectWorkbarPanelsForSession,
   visibleParentTaskStatus,
+  visibleSideChatParentSessionId,
   type HostPendingInteractionKind,
+  type SessionWorkbarPanelsState,
+  type SessionWorkbarTab,
 } from '../../renderer/features/workbar/testing.js';
 
 const ALL_KINDS: readonly HostPendingInteractionKind[] = [
@@ -187,6 +195,26 @@ describe('parentTaskStatusFromFacts', () => {
   });
 
 
+  it('reports nothing until the projection or a needed history read answers', () => {
+    // No projection yet: an initial load, not a failure.
+    assert.equal(
+      parentTaskStatusFromFacts({
+        execution: undefined,
+        latestTurnRead: { status: 'ready', turn: { status: 'completed' } },
+      }),
+      null,
+    );
+    // A history read still in flight is equally not a failure.
+    assert.equal(
+      parentTaskStatusFromFacts({
+        execution: hostExecutionProjection(true, null),
+        latestTurnRead: { status: 'pending' },
+      }),
+      null,
+    );
+    assert.equal(visibleParentTaskStatus(null), null);
+  });
+
   it('does not keep a previous success when observation is unavailable', () => {
     assert.equal(
       parentTaskStatusFromFacts({
@@ -201,17 +229,115 @@ describe('parentTaskStatusFromFacts', () => {
     );
     assert.equal(
       parentTaskStatusFromFacts({
-        execution: undefined,
-        latestTurnRead: { status: 'ready', turn: { status: 'completed' } },
-      }),
-      'unavailable',
-    );
-    assert.equal(
-      parentTaskStatusFromFacts({
         execution: hostExecutionProjection(true, null),
         latestTurnRead: { status: 'failed' },
       }),
       'unavailable',
+    );
+  });
+});
+
+function sideChatPanels(
+  tabs: readonly SessionWorkbarTab[],
+  activeTabId?: string,
+): SessionWorkbarPanelsState {
+  return createSessionWorkbarPanelsState(
+    createSessionWorkbarTabsState(
+      [...tabs],
+      activeTabId ?? tabs[0]?.id ?? null,
+    ),
+  );
+}
+
+const sideChatTab: SessionWorkbarTab = { id: 'side-chat:mine', kind: 'side-chat' };
+const reviewTab: SessionWorkbarTab = { id: 'review', kind: 'review' };
+const visible = { hidden: false, rightCollapsed: false, bottomOpen: false };
+
+/** The projection the Surface and this gate share; nothing else may widen it. */
+function projectedFor(
+  panels: SessionWorkbarPanelsState,
+  quoteIds: readonly string[],
+): SessionWorkbarPanelsState {
+  return projectWorkbarPanelsForSession(
+    panels,
+    'parent-1',
+    new Set(quoteIds.map((id) => `side-chat:${id}`)),
+  );
+}
+
+describe('visibleSideChatParentSessionId', () => {
+  it('names the owning Session only for a Side Conversation the reader can see', () => {
+    const panels = projectedFor(sideChatPanels([sideChatTab]), ['mine']);
+    assert.equal(visibleSideChatParentSessionId(panels, visible, 'parent-1'), 'parent-1');
+  });
+
+  it('stays silent when the Workbar is hidden or has no owning Session', () => {
+    const panels = projectedFor(sideChatPanels([sideChatTab]), ['mine']);
+    assert.equal(
+      visibleSideChatParentSessionId(panels, { ...visible, hidden: true }, 'parent-1'),
+      undefined,
+    );
+    assert.equal(visibleSideChatParentSessionId(panels, visible, undefined), undefined);
+  });
+
+  it('stays silent for a collapsed placement', () => {
+    const panels = projectedFor(sideChatPanels([sideChatTab]), ['mine']);
+    assert.equal(
+      visibleSideChatParentSessionId(panels, { ...visible, rightCollapsed: true }, 'parent-1'),
+      undefined,
+    );
+  });
+
+  it('stays silent while the launcher is open or another tab is active', () => {
+    const panels = projectedFor(sideChatPanels([sideChatTab, reviewTab]), ['mine']);
+    assert.equal(
+      visibleSideChatParentSessionId(
+        { ...panels, right: openSessionWorkbarLauncher(panels.right) },
+        visible,
+        'parent-1',
+      ),
+      undefined,
+    );
+    assert.equal(
+      visibleSideChatParentSessionId(
+        { ...panels, right: activateSessionWorkbarTab(panels.right, 'review') },
+        visible,
+        'parent-1',
+      ),
+      undefined,
+    );
+    assert.equal(
+      visibleSideChatParentSessionId(
+        { ...panels, right: activateSessionWorkbarTab(panels.right, 'side-chat:mine') },
+        visible,
+        'parent-1',
+      ),
+      'parent-1',
+    );
+  });
+
+  it('stays silent for another Session’s quote or a tab the projection drops', () => {
+    const otherSession = projectedFor(sideChatPanels([sideChatTab]), ['other']);
+    assert.deepEqual(otherSession.right.tabs, [], 'another Session’s conversation is not open');
+    assert.equal(visibleSideChatParentSessionId(otherSession, visible, 'parent-1'), undefined);
+    const dropped = projectedFor(sideChatPanels([sideChatTab]), []);
+    assert.equal(visibleSideChatParentSessionId(dropped, visible, 'parent-1'), undefined);
+  });
+
+  it('reads the bottom placement when that is the visible one', () => {
+    const panels = createSessionWorkbarPanelsState(
+      createSessionWorkbarTabsState(),
+      createSessionWorkbarTabsState([{ id: 'side-chat:mine', kind: 'side-chat' }]),
+      'bottom',
+    );
+    const stored = projectedFor(panels, ['mine']);
+    assert.equal(
+      visibleSideChatParentSessionId(stored, { hidden: false, rightCollapsed: true, bottomOpen: true }, 'parent-1'),
+      'parent-1',
+    );
+    assert.equal(
+      visibleSideChatParentSessionId(stored, { hidden: false, rightCollapsed: true, bottomOpen: false }, 'parent-1'),
+      undefined,
     );
   });
 });

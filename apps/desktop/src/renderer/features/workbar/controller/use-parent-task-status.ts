@@ -23,191 +23,102 @@ import type { TurnRecord } from '@maka/core/session';
 import type { SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
 import { useWorkbarServices } from '../services-context.js';
 import {
-  hostExecutionProjection,
   parentTaskStatusFromFacts,
   visibleParentTaskStatus,
   type ParentTaskLatestTurnRead,
   type VisibleParentTaskStatus,
 } from '../model/parent-task-status.js';
 
-type ParentObservation = {
+/** First retry delay; doubles per attempt and never exceeds the cap. */
+const HISTORY_READ_BACKOFF_MS = 100;
+const HISTORY_READ_MAX_DELAY_MS = 2_000;
+/** Bounded auto recovery: the initial read plus two retries. */
+const HISTORY_READ_MAX_ATTEMPTS = 3;
+
+type HistoryRead = {
   readonly sessionId: string;
-  readonly execution: SessionExecutionProjection | undefined;
-  readonly latestTurnRead: ParentTaskLatestTurnRead;
-  readonly historyEpoch: number;
+  readonly epoch: number;
+  readonly read: ParentTaskLatestTurnRead;
 };
 
-function emptyObservation(sessionId: string): ParentObservation {
-  return {
-    sessionId,
-    execution: undefined,
-    latestTurnRead: { status: 'pending' },
-    historyEpoch: 0,
-  };
+export interface ParentTaskStatusInput {
+  /** The Session whose Side Conversations are reading their parent. */
+  readonly sessionId: string | undefined;
+  /** The owning conversation's canonical projection; `undefined` until it arrives. */
+  readonly execution: SessionExecutionProjection | undefined;
+  /** Producer-side counter that changes whenever the projection invalidates history. */
+  readonly historyEpoch: number | undefined;
 }
 
-/** History must be reread when availability returns or the live root disappears. */
-function shouldInvalidateHistoryRead(
-  previous: SessionExecutionProjection | undefined,
-  next: SessionExecutionProjection | undefined,
-): boolean {
-  const nextAvailable = next?.available === true;
-  const nextRoot = next?.rootTurn ?? null;
-  if (!nextAvailable || nextRoot) return false;
-  const previousAvailable = previous?.available === true;
-  const previousRoot = previous?.rootTurn ?? null;
-  if (!previousAvailable) return true;
-  if (previousRoot) return true;
-  return false;
-}
-
-function applyExecution(
-  current: ParentObservation,
-  projection: SessionExecutionProjection | undefined,
-): ParentObservation {
-  const refresh = shouldInvalidateHistoryRead(current.execution, projection);
-  let latestTurnRead = current.latestTurnRead;
-  if (!projection?.available) {
-    latestTurnRead = { status: 'failed' };
-  } else if (refresh) {
-    latestTurnRead = { status: 'pending' };
-  }
-  return {
-    sessionId: current.sessionId,
-    execution: projection,
-    latestTurnRead,
-    historyEpoch: current.historyEpoch + (refresh ? 1 : 0),
-  };
-}
+const pendingRead: ParentTaskLatestTurnRead = { status: 'pending' };
 
 /**
- * Shared parent-task facts for every Side Conversation on this Workbar.
- * One Host observation via the existing Session execution port; companion
- * interaction queues are never treated as the parent.
+ * Parent-task facts for the Side Conversations of one Session.
+ *
+ * The execution projection comes from the conversation that owns the Session;
+ * this hook only adds the one fact the projection cannot carry cheaply — the
+ * latest settled turn — and only while the projection is available without a
+ * live root. A failed read retries on a bounded backoff and then reports real
+ * unavailability, but an unseeded or still-loading read reports nothing.
  */
 export function useParentTaskStatus(
-  sessionId: string | undefined,
+  input: ParentTaskStatusInput,
 ): VisibleParentTaskStatus | null {
   const { sideChat } = useWorkbarServices();
   const mountedRef = useMountedRef();
-  const [observation, setObservation] = useState<ParentObservation | null>(null);
-  if ((observation?.sessionId ?? null) !== (sessionId ?? null)) {
-    setObservation(sessionId ? emptyObservation(sessionId) : null);
-  }
-  const bound = observation?.sessionId === sessionId ? observation : null;
-  const historyEpoch = bound?.historyEpoch ?? 0;
-  const shouldReadLatestTurn = Boolean(
-    sessionId &&
-      bound?.execution?.available &&
-      !bound.execution.rootTurn &&
-      historyEpoch > 0,
-  );
+  const sessionId = input.sessionId;
+  const epoch = input.historyEpoch ?? 0;
+  const execution = input.execution;
+  const needsHistoryRead = Boolean(sessionId && execution?.available && !execution.rootTurn);
+  const [historyRead, setHistoryRead] = useState<HistoryRead | null>(null);
 
   useEffect(() => {
-    if (!sessionId) return;
-    let disposed = false;
-    let observationAttempt = 0;
-    let retryDelayMs = 100;
+    if (!sessionId || !needsHistoryRead) return;
+    let cancelled = false;
+    let attempt = 0;
     let retryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-    let unsubscribeSessionEvents = () => {};
-    const subscribeSessionEvents = () => {
-      if (disposed || !mountedRef.current) return;
-      const attempt = ++observationAttempt;
-      const isCurrent = () =>
-        !disposed && mountedRef.current && attempt === observationAttempt;
-      // A port can report failure before returning its unsubscribe function.
-      let unsubscribeRequested = false;
-      let unsubscribe: (() => void) | undefined;
-      const unsubscribeCurrent = () => {
-        if (unsubscribeRequested) return;
-        unsubscribeRequested = true;
-        unsubscribe?.();
-      };
-      unsubscribeSessionEvents = unsubscribeCurrent;
-      unsubscribe = sideChat.subscribeEvents(
-        sessionId,
-        () => undefined,
-        () => {
-          if (isCurrent()) retryDelayMs = 100;
+    const publish = (read: ParentTaskLatestTurnRead) => {
+      setHistoryRead({ sessionId, epoch, read });
+    };
+    const readLatestTurn = () => {
+      attempt += 1;
+      void sideChat.listTurns(sessionId).then(
+        (turns: TurnRecord[]) => {
+          if (cancelled || !mountedRef.current) return;
+          publish({ status: 'ready', turn: turns.at(-1) ?? null });
         },
         () => {
-          if (!isCurrent()) return;
-          // Main has removed this observer. Invalidate it immediately, then
-          // create a new registration after the same bounded backoff as App Shell.
-          observationAttempt += 1;
-          setObservation((current) => {
-            if (current?.sessionId !== sessionId) return current;
-            return applyExecution(
-              current,
-              current.execution
-                ? { ...current.execution, available: false }
-                : hostExecutionProjection(false, null),
-            );
-          });
-          unsubscribeCurrent();
-          retryTimer = globalThis.setTimeout(() => {
-            retryTimer = undefined;
-            subscribeSessionEvents();
-          }, retryDelayMs);
-          retryDelayMs = Math.min(retryDelayMs * 2, 2_000);
-        },
-        (projection) => {
-          if (!isCurrent()) return;
-          setObservation((current) => {
-            if (current?.sessionId !== sessionId) return current;
-            return applyExecution(current, projection);
-          });
+          if (cancelled || !mountedRef.current) return;
+          if (attempt >= HISTORY_READ_MAX_ATTEMPTS) {
+            publish({ status: 'failed' });
+            return;
+          }
+          retryTimer = globalThis.setTimeout(
+            readLatestTurn,
+            Math.min(HISTORY_READ_BACKOFF_MS * (2 ** (attempt - 1)), HISTORY_READ_MAX_DELAY_MS),
+          );
         },
       );
-      if (unsubscribeRequested) unsubscribe();
     };
-    subscribeSessionEvents();
-    return () => {
-      disposed = true;
-      observationAttempt += 1;
-      if (retryTimer !== undefined) globalThis.clearTimeout(retryTimer);
-      unsubscribeSessionEvents();
-    };
-  }, [mountedRef, sessionId, sideChat]);
-
-  useEffect(() => {
-    if (!sessionId || !shouldReadLatestTurn) return;
-    const requestedEpoch = historyEpoch;
-    let cancelled = false;
-    void sideChat.listTurns(sessionId).then(
-      (turns: TurnRecord[]) => {
-        if (cancelled || !mountedRef.current) return;
-        const latest = turns.at(-1) ?? null;
-        setObservation((current) => {
-          if (current?.sessionId !== sessionId) return current;
-          if (current.historyEpoch !== requestedEpoch) return current;
-          return {
-            ...current,
-            latestTurnRead: { status: 'ready', turn: latest },
-          };
-        });
-      },
-      () => {
-        if (cancelled || !mountedRef.current) return;
-        setObservation((current) => {
-          if (current?.sessionId !== sessionId) return current;
-          if (current.historyEpoch !== requestedEpoch) return current;
-          return { ...current, latestTurnRead: { status: 'failed' } };
-        });
-      },
-    );
+    readLatestTurn();
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) globalThis.clearTimeout(retryTimer);
     };
-  }, [historyEpoch, mountedRef, sessionId, shouldReadLatestTurn, sideChat]);
+    // Navigating away, a new history epoch, or a live root turn all cancel the
+    // read: the fence below drops any answer that still arrives.
+  }, [epoch, mountedRef, needsHistoryRead, sessionId, sideChat]);
 
   if (!sessionId) return null;
+  const current = historyRead
+    && historyRead.sessionId === sessionId
+    && historyRead.epoch === epoch
+    ? historyRead.read
+    : pendingRead;
   return visibleParentTaskStatus(
     parentTaskStatusFromFacts({
-      execution: bound?.execution,
-      latestTurnRead: bound?.execution?.rootTurn
-        ? { status: 'ready', turn: null }
-        : (bound?.latestTurnRead ?? { status: 'pending' }),
+      execution,
+      latestTurnRead: execution?.rootTurn ? { status: 'ready', turn: null } : current,
     }),
   );
 }

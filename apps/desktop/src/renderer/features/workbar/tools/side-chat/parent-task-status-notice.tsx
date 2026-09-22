@@ -36,7 +36,7 @@ const BANNER_STATUS = {
 
 export function ParentTaskStatusNotice(props: {
   status: VisibleParentTaskStatus;
-  onOpenParentConversation?: () => void;
+  onOpenParentConversation?: (origin?: Element | null) => void;
 }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).quoteCompanion.parentStatus;
@@ -66,11 +66,19 @@ export function ParentTaskStatusNotice(props: {
               variant="secondary"
               size="sm"
               label={copy.openParent}
-              onClick={props.onOpenParentConversation}
+              onClick={(event) => props.onOpenParentConversation?.(event.currentTarget)}
             />
           ) : undefined
         }
       />
+      {/* One polite region per notice. Two notices can be mounted at once (two
+          Side Conversation placements, or two Sessions), and each one announces
+          its own status, so the same text is announced twice when both are
+          visible. The region stays one per notice rather than one per app: the
+          status is local to the conversation the user is reading. */}
+      <span className="maka-visually-hidden" role="status" aria-live="polite">
+        {title}
+      </span>
     </div>
   );
 }

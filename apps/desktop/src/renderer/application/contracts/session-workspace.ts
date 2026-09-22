@@ -20,6 +20,7 @@
 import type { ComponentType, ReactNode, RefObject } from 'react';
 import type { SessionSummary } from '@maka/core/session';
 import type { ChatModelChoice, ComposerHandle } from '@maka/ui';
+import type { SessionExecutionProjection } from '../../../shared/session-execution-projection.js';
 
 /** Composition supplies the same session workspace used by ordinary conversations. */
 export interface SessionWorkspaceProps {
@@ -28,6 +29,10 @@ export interface SessionWorkspaceProps {
   session?: SessionSummary;
   sessionIds: ReadonlySet<string> | undefined;
   modelChoices: readonly ChatModelChoice[];
+  /** The owning conversation's canonical Host execution projection. */
+  parentExecution?: SessionExecutionProjection;
+  /** Producer-side history invalidation counter for `parentExecution`. */
+  parentExecutionHistoryEpoch?: number;
   visible: boolean;
   composerRef: RefObject<ComposerHandle | null>;
   onShowConversation(): void;

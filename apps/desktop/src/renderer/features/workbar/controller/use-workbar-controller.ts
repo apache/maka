@@ -39,6 +39,10 @@ import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell
 import { sideChatTitleFromPrompt } from '../../../side-chat-command.js';
 import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
 import { useWorkbarServices } from '../services-context.js';
+import { focusParentConversation } from '../model/parent-interaction-focus.js';
+import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
+
+export { focusParentConversation };
 import type { WorkbarHostModel } from '../ui/workbar-host.js';
 import { SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY } from '../ui/side-chat-close-confirmation.js';
 import {
@@ -112,6 +116,10 @@ export interface UseWorkbarControllerInput {
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
   composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
+  /** The owning conversation's canonical Host execution projection. */
+  parentExecution?: SessionExecutionProjection;
+  /** Producer-side history invalidation counter for `parentExecution`. */
+  parentExecutionHistoryEpoch?: number;
   openNewTaskSurface?(): number;
   openSessionInChat?(sessionId: string): void;
   resolveWorkBoardTarget?(item: WorkBoardItem):
@@ -136,56 +144,6 @@ export interface WorkbarController {
 
 function assertNever(value: never): never {
   throw new Error(`Unexpected Workbar tool: ${JSON.stringify(value)}`);
-}
-
-const PARENT_INTERACTION_FOCUSABLE =
-  '.maka-composer-interaction-slot button, .maka-composer-interaction-slot [href], .maka-composer-interaction-slot input, .maka-composer-interaction-slot textarea, .maka-composer-interaction-slot [contenteditable="true"]';
-const PARENT_COMPOSER_FOCUSABLE = '.maka-composer [contenteditable="true"]';
-
-function isUsableFocusTarget(node: EventTarget | null): node is HTMLElement {
-  if (!node || typeof (node as HTMLElement).focus !== 'function') return false;
-  const el = node as HTMLElement;
-  if (typeof el.closest === 'function') {
-    if (el.closest('[hidden], [aria-hidden="true"]')) return false;
-  }
-  if ('disabled' in el && Boolean((el as HTMLButtonElement).disabled)) return false;
-  if (typeof el.hasAttribute === 'function' && el.hasAttribute('disabled')) return false;
-  if (typeof window.getComputedStyle === 'function' && el.nodeType === 1) {
-    try {
-      const style = window.getComputedStyle(el);
-      if (style.display === 'none' || style.visibility === 'hidden') return false;
-    } catch {
-      // Fake DOM in unit tests has no computed style.
-    }
-  }
-  if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) {
-    return false;
-  }
-  return true;
-}
-
-function firstUsableFocusTarget(root: ParentNode, selector: string): HTMLElement | null {
-  const nodes =
-    typeof root.querySelectorAll === 'function'
-      ? root.querySelectorAll(selector)
-      : [];
-  for (const node of nodes) {
-    if (isUsableFocusTarget(node)) return node;
-  }
-  if (nodes.length === 0 && typeof root.querySelector === 'function') {
-    const only = root.querySelector(selector);
-    return isUsableFocusTarget(only) ? only : null;
-  }
-  return null;
-}
-
-export function focusParentConversation(): void {
-  const main = document.querySelector('.mainColumn');
-  if (!main) return;
-  const target =
-    firstUsableFocusTarget(main, PARENT_INTERACTION_FOCUSABLE) ??
-    firstUsableFocusTarget(main, PARENT_COMPOSER_FOCUSABLE);
-  target?.focus();
 }
 
 function nextOrdinal(
@@ -961,6 +919,8 @@ export function useWorkbarController(
       sourceSession: input.activeSession,
       modelChoices: input.modelChoices,
       onOpenParentConversation: focusParentConversation,
+      parentExecution: input.parentExecution,
+      parentExecutionHistoryEpoch: input.parentExecutionHistoryEpoch,
       onStartWorkBoardTask: startWorkBoardTask,
       resolveWorkBoardStartTask: input.resolveWorkBoardTarget,
       onOpenWorkBoardSession: openWorkBoardSession,

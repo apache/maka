@@ -44,6 +44,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
   let publish!: (snapshot: WorkHubTranscriptSnapshot) => void;
   let onExecution: Parameters<WorkHubServices['observe']>[4];
   let observe!: Parameters<WorkHubServices['observe']>[1];
+  let failObserve!: () => void;
   let loadLatestCount = 0;
   const prefetched: Array<'older' | 'newer'> = [];
   const retained: Array<{ firstTurnId: string; lastTurnId: string }> = [];
@@ -97,7 +98,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     subscribeHosts: () => () => {},
     subscribeAvailability: () => () => {},
     subscribeSessions: () => () => {},
-    observe: (_id: string, handler: typeof observe, _onError: unknown, phase: typeof onPhase, execution: typeof onExecution) => { observe = handler; onPhase = phase; onExecution = execution; return () => {}; },
+    observe: (_id: string, handler: typeof observe, onError: (error: unknown) => void, phase: typeof onPhase, execution: typeof onExecution) => { observe = handler; failObserve = () => onError(new Error('observation failed')); onPhase = phase; onExecution = execution; return () => {}; },
     openTranscript: async (_id: string, handler: typeof publish) => {
       openCount++;
       if (failFirstRead && openCount === 1) throw new Error('transient initial read failure');
@@ -147,6 +148,8 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     resetAdmission() { admission = deferred<{ turnId: string }>(); },
     admit(turnId: string) { rootTurn = { turnId, runId: `run:${turnId}`, status: 'running' }; projectExecution(); },
     loseObservation() { projectExecution(false); },
+    /** The observer itself fails, as opposed to reporting an unavailable projection. */
+    failObservation() { failObserve(); },
     get loadLatestCount() { return loadLatestCount; },
     prefetched, retained,
     emit(event: Parameters<typeof observe>[0]) { observe(event); },
@@ -225,6 +228,30 @@ test('WorkHub model and thinking selection share versioned saves and reject stal
   await act(async () => { h.admit('busy-turn'); });
   await act(async () => { await h.controller.changeThinkingLevel('high'); });
   assert.equal(requests.length, count, 'running turns cannot change their thinking level');
+});
+
+test('WorkHub reports a first-seed observation failure as unavailable, not as unread', async () => {
+  const h = await mountController();
+  assert.equal(h.controller.execution, undefined, 'nothing is known before the first seed');
+  await act(async () => { h.failObservation(); });
+  assert.deepEqual(h.controller.execution, {
+    type: 'host_execution',
+    available: false,
+    rootTurn: null,
+    pendingInteractionKinds: [],
+  });
+});
+
+test('WorkHub keeps the running root identity when the observer fails', async () => {
+  const h = await mountController();
+  await act(async () => { h.admit('running-turn'); });
+  await act(async () => { h.failObservation(); });
+  assert.equal(h.controller.execution?.available, false);
+  assert.equal(h.controller.execution?.rootTurn?.turnId, 'running-turn');
+  assert.equal(h.controller.activeTurn, undefined);
+  assert.equal(h.controller.busy, true);
+  await act(async () => { await h.controller.stop(); });
+  assert.deepEqual(h.interrupts, [{ sessionId: h.sessionId, turnId: 'running-turn', runId: 'run:running-turn' }]);
 });
 
 test('WorkHub stops presenting execution on observation loss while retaining the Stop target', async () => {

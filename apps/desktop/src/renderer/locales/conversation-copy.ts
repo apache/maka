@@ -561,8 +561,8 @@ const COPY = {
       },
       parentStatus: {
         waitingInput: '主任务等待输入',
-        waitingApproval: '主任务等待审批',
-        waitingInputAndApproval: '主任务等待输入与审批',
+        waitingApproval: '主任务等待审批，需在主对话处理',
+        waitingInputAndApproval: '主任务等待输入；审批需在主对话处理',
         running: '主任务正在运行',
         lastTurnCompleted: '主任务最近一轮已完成',
         lastTurnFailed: '主任务最近一轮失败',
@@ -804,8 +804,8 @@ const COPY = {
       },
       parentStatus: {
         waitingInput: '主任務等待輸入',
-        waitingApproval: '主任務等待核准',
-        waitingInputAndApproval: '主任務等待輸入與核准',
+        waitingApproval: '主任務等待核准，需在主對話處理',
+        waitingInputAndApproval: '主任務等待輸入；核准需在主對話處理',
         running: '主任務正在執行',
         lastTurnCompleted: '主任務最近一輪已完成',
         lastTurnFailed: '主任務最近一輪失敗',
@@ -1063,8 +1063,8 @@ const COPY = {
       },
       parentStatus: {
         waitingInput: 'Parent task is waiting for input',
-        waitingApproval: 'Parent task is waiting for approval',
-        waitingInputAndApproval: 'Parent task is waiting for input and approval',
+        waitingApproval: 'Parent task is waiting for approval; approve it in the parent conversation',
+        waitingInputAndApproval: 'Parent task is waiting for input; approval is handled in the parent conversation',
         running: 'Parent task is running',
         lastTurnCompleted: 'Latest parent turn completed',
         lastTurnFailed: 'Latest parent turn failed',
