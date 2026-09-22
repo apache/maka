@@ -75,6 +75,7 @@ import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import {
   mergeTransientMessageProjection,
   reconcileTransientMessages,
+  retractQueueEntryToDraft,
   withQueuedSteeringTransients,
   type RestoredDraftContent,
 } from '../../../../application/contracts/transient-message-projection.js';
@@ -1740,24 +1741,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const transientMessages = withQueuedSteeringTransients(pendingUserMessages, messageQueue, {
     locale: localeRef.current,
     editable: input.restoreDraft !== undefined,
-    retract: async (entry, draftText) => {
+    retract: (entry, draftText) => {
       const forkId = companionIdRef.current;
-      if (!forkId) return false;
-      try {
-        await sideChat.retractQueueEntry(forkId, entry.entryId);
-      } catch {
-        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
-        return false;
-      }
-      if (draftText !== undefined) {
-        restoreDraftRef.current?.(forkId, {
-          text: draftText,
-          attachments: entry.content.attachments,
-          directoryReferences: entry.content.directoryReferences,
-          quotes: entry.content.quotes,
-        });
-      }
-      return true;
+      if (!forkId) return Promise.resolve(false);
+      return retractQueueEntryToDraft(entry, draftText, {
+        retractEntry: () => sideChat.retractQueueEntry(forkId, entry.entryId),
+        reportError: () => {
+          if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+        },
+        restoreDraft: (draft) => restoreDraftRef.current?.(forkId, draft),
+      });
     },
   });
   // Inherited model (read-only): the fork's once created, else the source's.

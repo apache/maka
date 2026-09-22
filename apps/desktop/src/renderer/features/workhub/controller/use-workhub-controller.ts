@@ -20,6 +20,7 @@
 import { activeHostTurn, chatTurnActivity, type SessionExecutionProjection } from '../../../application/contracts/session-execution.js';
 import { deriveMessageQueueProjection } from '../../../application/contracts/message-queue-projection.js';
 import {
+  retractQueueEntryToDraft,
   withQueuedSteeringTransients,
   type RestoredDraftContent,
 } from '../../../application/contracts/transient-message-projection.js';
@@ -749,19 +750,13 @@ export function useWorkHubController(
     transientMessages: withQueuedSteeringTransients(transientMessages, messageQueue, {
       locale,
       editable: restoreDraft !== undefined,
-      retract: async (entry, draftText) => {
-        if (!sessionId) return false;
-        try { await services.retractQueueEntry(sessionId, entry.entryId); }
-        catch (reason) { report(reason); return false; }
-        if (draftText !== undefined) {
-          restoreDraftRef.current?.(sessionId, {
-            text: draftText,
-            attachments: entry.content.attachments,
-            directoryReferences: entry.content.directoryReferences,
-            quotes: entry.content.quotes,
-          });
-        }
-        return true;
+      retract: (entry, draftText) => {
+        if (!sessionId) return Promise.resolve(false);
+        return retractQueueEntryToDraft(entry, draftText, {
+          retractEntry: () => services.retractQueueEntry(sessionId, entry.entryId),
+          reportError: report,
+          restoreDraft: (draft) => restoreDraftRef.current?.(sessionId, draft),
+        });
       },
     }),
     messageQueue,

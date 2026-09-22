@@ -25,6 +25,7 @@ import {
   type TransientUserMessageProjection,
 } from '@maka/ui';
 import {
+  retractQueueEntryToDraft,
   withQueuedSteeringTransients,
   type RestoredDraftContent,
 } from '../../../application/contracts/transient-message-projection.js';
@@ -109,23 +110,15 @@ export function useSessionMessageQueue(options: {
     () => withQueuedSteeringTransients(transientMessages, queue, {
       locale,
       editable: true,
-      retract: async (entry, draftText) => {
-        if (!sessionId) return false;
-        try {
-          await services.sessions.retractQueueEntry(sessionId, entry.entryId);
-        } catch (error) {
-          if (activeSessionId.current === sessionId) reportError(sessionId, error);
-          return false;
-        }
-        if (draftText !== undefined) {
-          restoreDraft(sessionId, {
-            text: draftText,
-            attachments: entry.content.attachments,
-            directoryReferences: entry.content.directoryReferences,
-            quotes: entry.content.quotes,
-          });
-        }
-        return true;
+      retract: (entry, draftText) => {
+        if (!sessionId) return Promise.resolve(false);
+        return retractQueueEntryToDraft(entry, draftText, {
+          retractEntry: () => services.sessions.retractQueueEntry(sessionId, entry.entryId),
+          reportError: (error) => {
+            if (activeSessionId.current === sessionId) reportError(sessionId, error);
+          },
+          restoreDraft: (draft) => restoreDraft(sessionId, draft),
+        });
       },
     }),
     [sessionId, transientMessages, queue, locale, activeSessionId, services, reportError, restoreDraft],
