@@ -22,6 +22,7 @@ export {
   prepareTranscriptForSend,
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
+export { stageQuoteInBucket } from './controller/use-composer-quotes.js';
 export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-state.js';
 export {
   type ActiveExecutionBoundarySnapshot,
