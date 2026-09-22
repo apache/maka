@@ -339,11 +339,18 @@ describe('TaskEntryRoot render scope', () => {
       latestRecoveryPicker?.groups[0]?.projects.map(({ id }) => id),
       ['project-a'],
     );
+    await act(async () => latestRecoveryPicker?.onOpenChange?.(false));
+    assert.equal(latestRecoveryPicker?.isMenuOpen, false);
+    assert.equal(latestRecoveryPicker?.showForActiveSession, true);
+    // The readiness action is repeatable after dismissing its menu.
+    await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
+    assert.equal(latestRecoveryPicker?.isMenuOpen, true);
     await act(async () => {
       latestRecoveryPicker?.groups[0]?.onSelectProject?.('project-a');
       await Promise.resolve();
     });
     assert.equal(recoverySelectedProject, 'project-a');
+    assert.equal(latestRecoveryPicker?.showForActiveSession, undefined);
 
     await act(async () => root.unmount());
   });
@@ -359,8 +366,8 @@ describe('TaskEntryRoot render scope', () => {
           reads += 1;
           return reads === 1 ? localCatalog() : localCatalog([project('project-new')]);
         },
-        addProject: async (host) => {
-          calls.push(`add:${host.profileId}:${host.hostId}`);
+        addProject: async (host, name) => {
+          calls.push(`add:${host.profileId}:${host.hostId}:${name}`);
           return { ok: true, project: project('project-new') };
         },
       },
@@ -376,12 +383,18 @@ describe('TaskEntryRoot render scope', () => {
     await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
     assert.equal(typeof latestRecoveryPicker?.groups[0]?.onAdd, 'function');
 
+    // DropdownMenu closes when New project is selected, before the naming
+    // dialog submits. Its owning picker and Session context must survive.
+    await act(async () => latestRecoveryPicker?.onOpenChange?.(false));
+    assert.equal(latestRecoveryPicker?.showForActiveSession, true);
+    assert.equal(latestRecoveryPicker?.isMenuOpen, false);
     await act(async () => {
       latestRecoveryPicker?.groups[0]?.onAdd?.('Imported');
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    assert.deepEqual(calls, ['add:local:host-local', 'relocate:session-1:project-new']);
+    assert.deepEqual(calls, ['add:local:host-local:Imported', 'relocate:session-1:project-new']);
+    assert.equal(latestRecoveryPicker?.showForActiveSession, undefined);
     await act(async () => root.unmount());
   });
 });

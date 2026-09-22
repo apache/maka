@@ -52,7 +52,7 @@ export interface TaskEntryShellProjection {
   readonly commands: TaskEntryControllerCommands;
   readonly selectors: Omit<
     TaskEntryControllerSelectors,
-    'workspacePicker' | 'sessionWorkspaceRecoverySessionId'
+    'workspacePicker' | 'sessionWorkspaceRecovery'
   >;
 }
 
@@ -231,11 +231,11 @@ const selectShellSelectors = (
   controller: TaskEntryController,
 ): Omit<
   TaskEntryControllerSelectors,
-  'workspacePicker' | 'sessionWorkspaceRecoverySessionId'
+  'workspacePicker' | 'sessionWorkspaceRecovery'
 > => {
   const {
     workspacePicker: _workspacePicker,
-    sessionWorkspaceRecoverySessionId: _sessionWorkspaceRecoverySessionId,
+    sessionWorkspaceRecovery: _sessionWorkspaceRecovery,
     ...selectors
   } = controller.selectors;
   return selectors;
@@ -244,11 +244,11 @@ const selectShellSelectors = (
 function sameShellSelectors(
   previous: Omit<
     TaskEntryControllerSelectors,
-    'workspacePicker' | 'sessionWorkspaceRecoverySessionId'
+    'workspacePicker' | 'sessionWorkspaceRecovery'
   >,
   next: Omit<
     TaskEntryControllerSelectors,
-    'workspacePicker' | 'sessionWorkspaceRecoverySessionId'
+    'workspacePicker' | 'sessionWorkspaceRecovery'
   >,
 ): boolean {
   return (
@@ -266,8 +266,10 @@ function sameShellSelectors(
 
 const selectWorkspacePicker = (controller: TaskEntryController): WorkspacePickerModel =>
   controller.selectors.workspacePicker;
-const selectSessionWorkspaceRecoverySessionId = (controller: TaskEntryController): string | undefined =>
-  controller.selectors.sessionWorkspaceRecoverySessionId;
+const selectSessionWorkspaceRecovery = (
+  controller: TaskEntryController,
+): TaskEntryControllerSelectors['sessionWorkspaceRecovery'] =>
+  controller.selectors.sessionWorkspaceRecovery;
 const selectHost = (controller: TaskEntryController): TaskEntryHostModel => controller.host;
 
 function sameHost(previous: TaskEntryHostModel, next: TaskEntryHostModel): boolean {
@@ -353,12 +355,12 @@ export function TaskEntryWorkspacePickerConsumer({
 }) {
   const owner = useTaskEntryOwner();
   const controllerPicker = useTaskEntrySelection(owner, selectWorkspacePicker);
-  const recoverySessionId = useTaskEntrySelection(owner, selectSessionWorkspaceRecoverySessionId);
-  const recoveryRequested = Boolean(activeSession && recoverySessionId === activeSession.id);
+  const recovery = useTaskEntrySelection(owner, selectSessionWorkspaceRecovery);
+  const recoveryRequested = Boolean(activeSession && recovery?.sessionId === activeSession.id);
   const [recoveryMenuOpen, setRecoveryMenuOpen] = useState(false);
   useEffect(() => {
     setRecoveryMenuOpen(recoveryRequested);
-  }, [recoveryRequested]);
+  }, [recovery, recoveryRequested]);
   const workspacePicker = useMemo<WorkspacePickerModel>(
     () => {
       const defaultPicker: WorkspacePickerModel = {
@@ -384,11 +386,9 @@ export function TaskEntryWorkspacePickerConsumer({
         branch: null,
         showForActiveSession: true,
         isMenuOpen: recoveryMenuOpen,
-        onOpenChange: (open) => {
-          setRecoveryMenuOpen(open);
-          if (open) owner.commands.openSessionWorkspaceRecovery(activeSession.id);
-          else owner.commands.closeSessionWorkspaceRecovery();
-        },
+        // Closing the menu may hand off to its New project dialog. Keep the
+        // Session recovery context (and picker) alive until relocation succeeds.
+        onOpenChange: setRecoveryMenuOpen,
         selectedGroupId: activeGroup?.id,
         groups: activeGroup
           ? [{
@@ -402,10 +402,11 @@ export function TaskEntryWorkspacePickerConsumer({
               }),
               onAdd:
                 activeSession.profileKind === 'local' && activeGroup.hostId
-                  ? () => void owner.commands.addSessionWorkspace({
+                  ? (name: string) => void owner.commands.addSessionWorkspace({
                       sessionId: activeSession.id,
                       profileId: activeSession.profileId,
                       host: { profileId: activeGroup.id, hostId: activeGroup.hostId! },
+                      name,
                     })
                   : undefined,
               onRelink: undefined,

@@ -77,7 +77,7 @@ export interface TaskEntryControllerSelectors {
   readonly defaultProfileId: string;
   readonly usesDefaultHost: boolean;
   readonly workspacePicker: WorkspacePickerModel;
-  readonly sessionWorkspaceRecoverySessionId?: string;
+  readonly sessionWorkspaceRecovery?: { readonly sessionId: string };
   readonly canAddProject: boolean;
   /** Every ready Host's Projects, with the owning Host retained as identity. */
   readonly projectScopes: readonly TaskEntryProjectScope[];
@@ -106,6 +106,7 @@ export interface TaskEntryControllerCommands {
     sessionId: string;
     profileId: string;
     host: TaskEntryHostRef;
+    name: string;
   }): Promise<boolean>;
   resolveWorkBoardTarget(item: WorkBoardItem): WorkBoardStartTargetResult;
   prepareWorkBoardDraft(target: TaskEntryTarget, draft: string): string | undefined;
@@ -176,7 +177,8 @@ export function useTaskEntryController(
   const [pending, setPending] = useState(false);
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string>();
-  const [sessionWorkspaceRecoverySessionId, setSessionWorkspaceRecoverySessionId] = useState<string>();
+  const [sessionWorkspaceRecovery, setSessionWorkspaceRecovery] =
+    useState<TaskEntryControllerSelectors['sessionWorkspaceRecovery']>();
   const [directoryHost, setDirectoryHost] = useState<DirectoryHandoff>();
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const directoryOpenerRef = useRef<HTMLElement | null>(null);
@@ -313,11 +315,12 @@ export function useTaskEntryController(
   }, [copy.projectUpdateFailedFallback, copy.projectUpdateFailedTitle, locale, refresh, reportError]);
 
   const openSessionWorkspaceRecovery = useCallback((sessionId: string): void => {
-    setSessionWorkspaceRecoverySessionId(sessionId);
+    // A fresh request reopens the menu even if this Session is already being repaired.
+    setSessionWorkspaceRecovery({ sessionId });
   }, []);
 
   const closeSessionWorkspaceRecovery = useCallback((): void => {
-    setSessionWorkspaceRecoverySessionId(undefined);
+    setSessionWorkspaceRecovery(undefined);
   }, []);
 
   const relocateSessionWorkspace = useCallback(async (input: {
@@ -363,9 +366,10 @@ export function useTaskEntryController(
     sessionId: string;
     profileId: string;
     host: TaskEntryHostRef;
+    name: string;
   }): Promise<boolean> => {
     try {
-      const result = await service.addProject(input.host);
+      const result = await service.addProject(input.host, input.name);
       if (!result.ok) return false;
       await refreshAfterProjectMutation(input.host.profileId);
       return relocateSessionWorkspace({
@@ -796,8 +800,8 @@ export function useTaskEntryController(
       usesDefaultHost:
         catalog.hosts.length === 0 || selectedProfileId === catalog.defaultProfileId,
       workspacePicker,
-      ...(sessionWorkspaceRecoverySessionId
-        ? { sessionWorkspaceRecoverySessionId }
+      ...(sessionWorkspaceRecovery
+        ? { sessionWorkspaceRecovery }
         : {}),
       canAddProject: Boolean(
         selectedHost &&
@@ -832,7 +836,7 @@ export function useTaskEntryController(
     selectedHost,
     selectedHostProjection,
     selectedProfileId,
-    sessionWorkspaceRecoverySessionId,
+    sessionWorkspaceRecovery,
     target,
     workspacePicker,
   ]);
