@@ -101,10 +101,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 172 as const;
-// 172: Client Capability results require a tri-state outcome; session tool
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 173 as const;
+// 173: Client Capability results require a tri-state outcome; session tool
 // continuity also carries interrupted results. Older peers cannot decode the
 // changed strict shapes.
+// 172: Usage screen requests and results accept fractional timestamps in the
+// persisted domain. Older peers reject these otherwise valid wire values.
 // 171: Removed the `connection.usage.read` operation along with the Command
 // Code GO provider it served. A peer older than this epoch may still advertise
 // or submit that operation, which this Host no longer answers.

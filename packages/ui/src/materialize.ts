@@ -189,54 +189,6 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
   return kind;
 }
 
-export function materializeChat(
-  messages: readonly StoredMessage[],
-  locale: UiLocale,
-): ChatItem[] {
-  const items: ChatItem[] = [];
-  for (const message of messages) {
-    if (message.type === "user") {
-      items.push({
-        id: message.id,
-        role: "user",
-        text: message.displayText ?? message.text,
-        ts: message.ts,
-        ...(message.attachments && message.attachments.length > 0
-          ? { attachments: message.attachments }
-          : {}),
-        ...(message.quotes && message.quotes.length > 0
-          ? { quotes: message.quotes }
-          : {}),
-        ...(message.directoryReferences ? { directoryReferences: message.directoryReferences } : {}),
-        ...(message.inlineReferences !== undefined
-          ? { inlineReferences: message.inlineReferences }
-          : {}),
-        ...(message.origin ? { hostOrigin: message.origin } : {}),
-      });
-    }
-    if (message.type === "assistant")
-      items.push({
-        id: message.id,
-        role: "assistant",
-        text: message.text,
-        ts: message.ts,
-      });
-    if (
-      message.type === "system_note" &&
-      isUserVisibleSessionSystemNote(message.kind)
-    ) {
-      items.push({
-        id: message.id,
-        role: "system",
-        text: systemNoteLabel(message.kind, message.data, locale),
-        compactionState: message.kind === "context_compacted" ? "compacted" : message.kind === "context_compaction_failed_open" ? "failed" : undefined,
-        ts: message.ts,
-      });
-    }
-  }
-  return items;
-}
-
 export function materializeTools(
   messages: readonly StoredMessage[],
 ): ToolActivityItem[] {
@@ -348,9 +300,7 @@ function mergeLiveOverPersisted(
 /**
  * One entry on a turn's render timeline — interleaved thinking, answer, tool,
  * and mid-turn user messages in conversational order. This is the
- * rendering source of truth (see `TurnViewModel.timeline`); the aggregate
- * `assistant` field is a legacy aggregate; it does not identify the reply
- * used by rendering, copy or prompt rail previews.
+ * rendering source of truth (see `TurnViewModel.timeline`).
  *
  * - `thinking`: one reasoning block (a step's thinking; adjacent blocks are
  *   pre-merged with `\n\n`). Rendered as a collapsed "深度思考" disclosure.
@@ -411,19 +361,13 @@ export interface TurnViewModel {
    * Absent on hand-built view models, which are treated as non-evidence.
    */
   statusSource?: TurnRecord["statusSource"];
-  parentTurnId?: string;
   retriedFromTurnId?: string;
   regeneratedFromTurnId?: string;
-  branchOfTurnId?: string;
-  parentSessionId?: string;
-  abortedAt?: number;
-  abortSource?: string;
   errorClass?: string;
   failureMessage?: string;
   retry?: import('@maka/core/model-failure').ModelRetryDecision;
   user?: ChatItem;
   tools: ToolActivityItem[];
-  assistant?: ChatItem;
   /**
    * Interleaved thinking / answer / tool / steering sequence in production order — the
    * rendering source of truth for the turn body. Built from the per-step
@@ -772,23 +716,12 @@ export function materializeTurns(
         turnId,
         status: record?.status ?? "completed",
         statusSource: record?.statusSource ?? "inferred",
-        ...(record?.parentTurnId ? { parentTurnId: record.parentTurnId } : {}),
         ...(record?.retriedFromTurnId
           ? { retriedFromTurnId: record.retriedFromTurnId }
           : {}),
         ...(record?.regeneratedFromTurnId
           ? { regeneratedFromTurnId: record.regeneratedFromTurnId }
           : {}),
-        ...(record?.branchOfTurnId
-          ? { branchOfTurnId: record.branchOfTurnId }
-          : {}),
-        ...(record?.parentSessionId
-          ? { parentSessionId: record.parentSessionId }
-          : {}),
-        ...(record?.abortedAt !== undefined
-          ? { abortedAt: record.abortedAt }
-          : {}),
-        ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
         ...(record?.failureMessage ? { failureMessage: record.failureMessage } : {}),
         ...(record?.errorClass ? { errorClass: record.errorClass } : {}),
         ...(record?.retry ? { retry: record.retry } : {}),
@@ -820,23 +753,6 @@ export function materializeTurns(
         turn.user = user;
       }
     } else if (message.type === "assistant") {
-      // A turn now holds one AssistantMessage per model step. Concatenate their
-      // text in step order for aggregate consumers; keep
-      // the first step's id as the stable anchor, and advance ts to the latest
-      // step so durationMs measures to the turn's final assistant message.
-      const priorText = turn.assistant?.text ?? "";
-      const mergedText =
-        message.text.length > 0
-          ? priorText.length > 0
-            ? `${priorText}\n\n${message.text}`
-            : message.text
-          : priorText;
-      turn.assistant = {
-        id: turn.assistant?.id ?? message.id,
-        role: "assistant",
-        text: mergedText,
-        ts: message.ts,
-      };
       turn.modelId = message.modelId;
       // Time-to-answer measured from the earliest message in this turn (usually
       // the user's send) to the turn's final assistant message ts. Tool runs are

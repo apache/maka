@@ -26,6 +26,8 @@ import {
   runHostHandoff,
   type HostHandoffAction,
   type HostHandoffBlocker,
+  type HostHandoffAttentionView,
+  type HostHandoffProgressView,
   type HostHandoffView,
   type OpenHostHandoffSurface,
 } from '../client/host-handoff.js';
@@ -81,9 +83,24 @@ function surfaceHarness() {
     choose(view: HostHandoffView, action: HostHandoffAction) {
       submit(view.revision, action);
     },
-    view(predicate: (view: HostHandoffView) => boolean = () => true): Promise<HostHandoffView> {
-      if (latest && predicate(latest)) return Promise.resolve(latest);
-      return new Promise((resolve) => waiters.add({ predicate, resolve }));
+    view<V extends HostHandoffView = HostHandoffView>(
+      predicate:
+        | ((view: HostHandoffView) => view is V)
+        | ((view: HostHandoffView) => boolean) = () => true,
+    ): Promise<V> {
+      if (latest && predicate(latest)) return Promise.resolve(latest as V);
+      return new Promise((resolve) =>
+        waiters.add({
+          predicate: predicate as (view: HostHandoffView) => boolean,
+          resolve: resolve as (view: HostHandoffView) => void,
+        }),
+      );
+    },
+    attention(): Promise<HostHandoffAttentionView> {
+      return this.view((view): view is HostHandoffAttentionView => view.state === 'attention');
+    },
+    progress(): Promise<HostHandoffProgressView> {
+      return this.view((view): view is HostHandoffProgressView => view.state === 'progress');
     },
   };
 }
@@ -274,7 +291,7 @@ test('progress Cancel aborts cooperative convergence but awaits safe transaction
   const rejection = assert.rejects(running, HostHandoffCancelledError).then(() => {
     finished = true;
   });
-  const view = await ui.view((candidate) => candidate.state === 'progress');
+  const view = await ui.progress();
   assert.equal(view.phase, 'pausing');
   assert.deepEqual(view.actions, ['cancel']);
   ui.choose(view, 'cancel');
@@ -309,7 +326,7 @@ test('unknown work requires explicit non-default consent', async () => {
             },
           }),
   });
-  const view = await ui.view();
+  const view = await ui.attention();
   assert.equal(view.reason, 'activity_unknown');
   assert.equal(view.defaultAction, 'cancel');
   ui.choose(view, 'interrupt');
@@ -414,7 +431,7 @@ test('a live blocking surface resolves automatically when work finishes', async 
             },
           }),
   });
-  assert.equal((await ui.view()).reason, 'busy');
+  assert.equal((await ui.attention()).reason, 'busy');
   active = false;
   assert.equal((await running).value, 'done');
   assert.equal(ui.closed, true);
@@ -586,7 +603,7 @@ test('managed handoff rechecks without mutation and requests interruption only a
       });
     },
   });
-  const initial = await ui.view();
+  const initial = await ui.attention();
   assert.equal(initial.reason, 'replacement_required');
   assert.match(formatHostHandoff(initial, 'zh-CN').detail, /0\.2\.0 → 0\.3\.0/u);
   assert.deepEqual(initial.actions, ['cancel', 'retry', 'replace']);
@@ -596,7 +613,10 @@ test('managed handoff rechecks without mutation and requests interruption only a
   const checked = await ui.view((view) => view.revision !== initial.revision);
   assert.deepEqual(policies, []);
   ui.choose(checked, 'replace');
-  const busy = await ui.view((view) => view.state === 'attention' && view.reason === 'busy');
+  const busy = await ui.view(
+    (view): view is HostHandoffAttentionView =>
+      view.state === 'attention' && view.reason === 'busy',
+  );
   assert.deepEqual(policies, ['refuse_active_work']);
   assert.ok(busy.actions.includes('interrupt'));
   ui.choose(busy, 'interrupt');

@@ -42,7 +42,6 @@ import {
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
-  type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -2555,9 +2554,8 @@ describe('managed Runtime Host service', () => {
     let observedState: 'running' | 'stopped' = 'running';
     let observedCliPath: string | undefined;
     let readyFailure = false;
-    let operatorSupportsProcessLifetimeLock = false;
-    let legacyLeaseCalls = 0;
     let operatorStatusFailure = false;
+    let operatorLacksCapability = false;
     let operatorFailure: Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> | undefined;
     let replacementPreconditionFailure = false;
     let replaceFailure = false;
@@ -2588,7 +2586,6 @@ describe('managed Runtime Host service', () => {
       activate: async () => {
         assert.equal(insideLifecycle, true);
         order.push('activate');
-        operatorSupportsProcessLifetimeLock = true;
       },
       cleanup: async () => {
         order.push('cleanup');
@@ -2624,13 +2621,6 @@ describe('managed Runtime Host service', () => {
         }
       },
       withDeploymentLock: async <T>(_root: string, operation: () => Promise<T>) => operation(),
-      withLegacyOperatorLeases: async <T>(
-        _root: string,
-        operation: (fds: readonly number[]) => Promise<T>,
-      ) => {
-        legacyLeaseCalls += 1;
-        return operation([]);
-      },
       openDeployment: async (
         input: Parameters<typeof openRuntimeHostManagedPackageDeployment>[0],
       ) => deployment(input.version, input.cliPath),
@@ -2648,10 +2638,7 @@ describe('managed Runtime Host service', () => {
       runOperator: async (
         operator: import('@maka/runtime-host/operator').RuntimeHostOperatorCommand,
         args: readonly string[],
-        invocation?: {
-          readonly inheritedFds?: readonly number[];
-          readonly capabilityRequest?: RuntimeHostOperatorCapability;
-        },
+        invocation?: { readonly capabilityRequest?: string },
       ) => {
         assert.deepEqual(operator, {
           kind: 'legacy_posix_executable',
@@ -2661,10 +2648,8 @@ describe('managed Runtime Host service', () => {
         assert.ok(action === 'status' || action === 'retire');
         if (action === 'status') {
           if (operatorStatusFailure) throw new Error('The active operator is unavailable');
-          assert.equal(
-            invocation?.capabilityRequest,
-            RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
-          );
+          const capabilityRequest = invocation?.capabilityRequest;
+          assert.equal(capabilityRequest, 'process-lifetime-lock-v1');
           return {
             schemaVersion: 1 as const,
             kind: 'result' as const,
@@ -2680,13 +2665,9 @@ describe('managed Runtime Host service', () => {
               stateRoot: expectedTarget.rootPath,
               projectDirectoryRoots: [],
             },
-            ...(operatorSupportsProcessLifetimeLock
-              ? {
-                  operatorCapabilities: [
-                    RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
-                  ] as RuntimeHostOperatorCapability[],
-                }
-              : {}),
+            ...(operatorLacksCapability || !capabilityRequest
+              ? {}
+              : { operatorCapabilities: [capabilityRequest] }),
           };
         }
         order.push(action);
@@ -2751,7 +2732,6 @@ describe('managed Runtime Host service', () => {
     const exitCode = await runManagedRuntimeHostUpdateCli(options, overrides);
     assert.equal(exitCode, 0);
     assert.deepEqual(order, ['retire', 'activate', 'replace', 'cleanup']);
-    assert.equal(legacyLeaseCalls, 1);
     const frames = output
       .trim()
       .split('\n')
@@ -2877,7 +2857,6 @@ describe('managed Runtime Host service', () => {
     readyFailure = true;
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
     assert.deepEqual(order, ['retire', 'activate', 'replace', 'cleanup']);
-    assert.equal(legacyLeaseCalls, 1);
     const activeRecovery = decodeRuntimeHostServiceManagementFrame(
       output.trim().split('\n').at(-1) ?? '',
     );
@@ -2925,7 +2904,6 @@ describe('managed Runtime Host service', () => {
     expectAllowInterruptActiveTasks = true;
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
     assert.deepEqual(order, ['retire', 'force-retire', 'activate', 'replace', 'cleanup']);
-    assert.equal(legacyLeaseCalls, 1);
 
     statusReads = 0;
     observedVersion = '1.0.0';
@@ -2999,6 +2977,46 @@ describe('managed Runtime Host service', () => {
       staleCandidate?.kind === 'error' ? staleCandidate.error.code : undefined,
       'target_mismatch',
     );
+
+    // An operator that cannot echo the requested capability predates the
+    // lifetime-lock protocol: the update must refuse rather than retire it
+    // without the advisory lease.
+    statusReads = 0;
+    observedVersion = '1.0.0';
+    operatorLacksCapability = true;
+    output = '';
+    order.length = 0;
+    assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 1);
+    assert.deepEqual(order, []);
+    const legacyOperator = decodeRuntimeHostServiceManagementFrame(
+      output.trim().split('\n').at(-1) ?? '',
+    );
+    assert.equal(
+      legacyOperator?.kind === 'error' ? legacyOperator.error.code : undefined,
+      'service_manager_operation_failed',
+    );
+
+    // Repair mode must not soften the refusal: with a damaged active target
+    // the probe catch degrades probe failures to "operator unavailable", but
+    // an answered-but-unsupported verdict still refuses — otherwise the
+    // forced retire under --allow-interrupt-active-tasks would retire an
+    // operator it cannot safely interrogate.
+    statusReads = 0;
+    observedVersion = '2.0.0';
+    readyFailure = true;
+    output = '';
+    order.length = 0;
+    assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 1);
+    assert.deepEqual(order, []);
+    const repairedLegacyOperator = decodeRuntimeHostServiceManagementFrame(
+      output.trim().split('\n').at(-1) ?? '',
+    );
+    assert.equal(
+      repairedLegacyOperator?.kind === 'error' ? repairedLegacyOperator.error.code : undefined,
+      'service_manager_operation_failed',
+    );
+    readyFailure = false;
+    operatorLacksCapability = false;
   });
 
   it('rejects invalid Project roots and temporary npx launch paths before deployment', async (t) => {

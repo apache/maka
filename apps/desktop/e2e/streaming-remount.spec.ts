@@ -45,10 +45,10 @@ function sessionRow(sidebar: Locator, sessionId: string): Locator {
 }
 
 async function steerActiveTurn(composer: Locator, text: string): Promise<void> {
-  // Mid-turn steering is Shift+Enter: the one Send stays Send, and the shifted
+  // Mid-turn steering is Cmd/Ctrl+Enter: Send stays Send, and the modified
   // submit hands the draft to the active Turn once.
   await composer.fill(text);
-  await composer.press('Shift+Enter');
+  await composer.press('ControlOrMeta+Enter');
 }
 
 test('ordinary Enter queues on an already-running Session before observation recovers', async ({ window: page }) => {

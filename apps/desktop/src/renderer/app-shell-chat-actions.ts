@@ -103,6 +103,7 @@ type MessageContextOptions = {
 };
 type SendOptions = MessageContextOptions & {
   waitForHostAdmission?: boolean;
+  targetSessionId?: string;
   turnOrchestration?: TurnOrchestration;
   displayText?: string;
   onSessionResolved?: (sessionId: string, newTaskDraftKey?: string) => void;
@@ -308,7 +309,7 @@ export function createAppShellChatActions(deps: {
     options: SendOptions = {},
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
-    const initialSessionId = activeIdRef.current;
+    const initialSessionId = options.targetSessionId ?? activeIdRef.current;
     const sendOwner = captureComposerImportOwner();
     const selectionIsCurrent = captureSelection();
     if (!initialSessionId && !newTaskTarget) return false;
@@ -344,19 +345,17 @@ export function createAppShellChatActions(deps: {
     };
     try {
       async function submitIntoSession(sessionId: string, messageId: string) {
-        const attachmentItems =
-          pending?.length
-            ? Conversation.toComposerIngestItems(pending)
-            : undefined;
-        const retainedAttachments =
-          pending?.length
-            ? Conversation.retainedAttachmentRefs(pending)
-            : undefined;
         const sendCommand = {
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...copiedArray('attachmentItems', attachmentItems),
-          ...copiedArray('retainedAttachments', retainedAttachments),
+          ...copiedArray(
+            'attachmentItems',
+            pending && Conversation.toComposerIngestItems(pending),
+          ),
+          ...copiedArray(
+            'retainedAttachments',
+            pending && Conversation.retainedAttachmentRefs(pending),
+          ),
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
@@ -436,7 +435,7 @@ export function createAppShellChatActions(deps: {
         void refreshSessions().catch(() => undefined);
         return true;
       }
-      if (!onFollowLatest(initialSessionId)) return false;
+      if (!options.targetSessionId && !onFollowLatest(initialSessionId)) return false;
       optimisticSessionId = initialSessionId;
       publishTransientUserMessage(initialSessionId, {
         id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',

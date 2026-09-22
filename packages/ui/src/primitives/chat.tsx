@@ -97,52 +97,10 @@ export function Marker({
 }
 
 /**
- * Tool-result preview surfaces (issue #332, PR4).
- *
- * Retires the bespoke `OverlayPreview` family shell CSS — the shared
- * height-bounded `.maka-overlay-preview` base + `.maka-overlay-close`, the
- * structured cards (`.maka-tool-diff*`, `.maka-tool-terminal*`,
- * `.maka-web-search-*`), and the separate `.maka-load-tool-*` result card —
- * represented by package-owned semantic classes in `styles.css`.
- *
- * Two structural notes:
- *   1. The chat structured cards carry BOTH the shared `overlay` base AND a kind
- *      part (the retired DOM had `class="maka-overlay-preview maka-tool-diff"`),
- *      applied as `cn(previewVariants({part:'overlay'}), previewVariants({part:'diff'}))`.
- *      The kind class follows the shared base and may refine it by normal CSS
- *      source order.
- *   2. Leaf rules authored as descendant selectors on bare tags (e.g.
- *      `.maka-web-search-preview > header strong`)
- *      remain descendants of the stable semantic container class.
- *
- * Unlike the other tables, `previewVariants` IS exported on the `@maka/ui` barrel
- * (`index.ts`): the file-diff `diff` / `diff-body` / `diff-line` parts have a
- * SECOND, cross-package consumer — `apps/desktop`'s `artifact-preview.tsx`, whose
- * non-chat diff pane shared the retired `.maka-tool-diff*` shell and co-migrates
- * here. That second consumer is exactly the condition the off-barrel convention
- * named for promotion, so the export is the rule, not an exception.
- *
- * Preview card shells use the shared shadow-ring recipe instead of hard visual
- * borders. Dividers inside the cards remain real borders because they separate
- * rows and headers.
+ * Tool-result preview surfaces (issue #332, PR4) — the semantic classes
+ * `DiffCodePreview` and the load-tool result card style through.
  */
 const PREVIEW_PART_CLASSES = {
-      // ── shared base ──────────────────────────────────────────────────────
-      // `.maka-overlay-preview` — the height-bounded mono container every
-      // overlay preview shares.
-      overlay:
-        "maka-overlay-preview",
-      // Overlay placement only; Button owns the dismiss action's proportions.
-      close: "maka-overlay-close",
-
-      // ── file diff (shared with apps/desktop artifact-preview) ─────────────
-      // `.maka-tool-diff` — the card shell. `[white-space:normal]` overrides the
-      // overlay base's pre-wrap on the chat consumer.
-      diff:
-        "maka-tool-diff",
-      // `.maka-tool-diff-paths` (+ its bare `code` children).
-      "diff-paths":
-        "maka-tool-diff-paths",
       // `.maka-tool-diff-body` — the scrolling mono `<pre>`.
       "diff-body":
         "maka-tool-diff-body",
@@ -150,50 +108,6 @@ const PREVIEW_PART_CLASSES = {
       "diff-line":
         "maka-tool-diff-line",
 
-      // ── terminal ──────────────────────────────────────────────────────────
-      // `.maka-tool-terminal` — same card shell as diff.
-      terminal:
-        "maka-tool-terminal",
-      // `.maka-tool-terminal-head`
-      "terminal-head":
-        "maka-tool-terminal-head",
-      // `.maka-tool-terminal-cwd`
-      "terminal-cwd": "maka-tool-terminal-cwd",
-      // `.maka-tool-terminal-cmd` — the ellipsized command line.
-      "terminal-cmd":
-        "maka-tool-terminal-cmd",
-      // `.maka-tool-terminal-exit` (+ the `[data-ok]` success/failure badge).
-      "terminal-exit":
-        "maka-tool-terminal-exit",
-      // `.maka-tool-terminal-empty`
-      "terminal-empty":
-        "maka-tool-terminal-empty",
-      // `.maka-tool-terminal-stream` (+ the `[data-stream]` stdout/stderr tone).
-      "terminal-stream":
-        "maka-tool-terminal-stream",
-      // `.maka-tool-terminal-truncated-note` (+ its `> span` min-width reset).
-      "terminal-truncated-note":
-        "maka-tool-terminal-truncated-note",
-      // `.maka-tool-terminal-copy` (UiButton) + the shared copy-state tints.
-      "terminal-copy":
-        "maka-tool-terminal-copy",
-
-      // ── web search ────────────────────────────────────────────────────────
-      // `.maka-web-search-preview` (+ its bare `> header` / list leaves; the
-      // container inherits the overlay base's mono font, never resetting it).
-      "web-search":
-        "maka-web-search-preview",
-      // `.maka-web-search-error` — the destructive container tint.
-      "web-search-error":
-        "maka-web-search-error",
-      // `.maka-web-search-error-message`
-      "web-search-error-message":
-        "maka-web-search-error-message",
-      // `.maka-web-search-error-repair`
-      "web-search-error-repair":
-        "maka-web-search-error-repair",
-
-      // ── load-tool result card (separate base; not an overlay) ─────────────
       // `.maka-load-tool-preview` (+ its `p` margin reset).
       "load-tool":
         "maka-load-tool-preview",

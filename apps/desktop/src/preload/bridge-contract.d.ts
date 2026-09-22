@@ -264,10 +264,16 @@ import type { OpenSkillLocationOptions, OpenSkillLocationResult, SkillLocationsS
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
 import type {
+  HostHandoffPresentation,
+  HostHandoffView,
   RemoteRuntimeHostProfile,
   RuntimeHostProfile,
   RuntimeHostProfileAccess,
 } from '@maka/runtime-host/client';
+export interface DesktopHostHandoffPayload {
+  readonly view: HostHandoffView;
+  readonly presentation: HostHandoffPresentation;
+}
 /**
  * A recall query as the Search modal issues it, and the envelope it accepts.
  *
@@ -904,6 +910,14 @@ export interface MakaBridge {
     resolvePairingRecovery(profileId?: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     subscribeChanges(
       handler: (event: DesktopRuntimeHostProfileChangedEvent) => void,
+    ): () => void;
+  };
+
+  runtimeHostHandoff: {
+    current(): Promise<DesktopHostHandoffPayload | null>;
+    decide(revision: string, action: string): Promise<void>;
+    subscribe(
+      handler: (payload: DesktopHostHandoffPayload | null) => void,
     ): () => void;
   };
 
