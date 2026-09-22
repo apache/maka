@@ -525,6 +525,7 @@ dialog:modal {
 
 .sessionTurnRequestQueue {
   margin-block-start: var(--space-2);
+  padding: var(--space-1);
 }
 
 .sessionTurnRequestQueueToggle {

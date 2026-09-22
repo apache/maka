@@ -62,22 +62,23 @@
 }
 
 .maka-composer-queue {
-  position: relative;
-  width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
-  max-width: var(--maka-reading-measure);
-  margin: 0 auto var(--space-1);
-  padding: var(--space-1);
-  box-sizing: border-box;
-  border-radius: var(--radius-chat);
-  background: var(--background-elevated);
-  box-shadow: inset 0 0 0 var(--border-width-hairline) var(--border);
-  /* Concentric with the plate, mirroring what ChatComposer derives for its
-     own footer buttons: max(--radius-element, radius - padding). The plate
-     sits outside the card, so the row ghost buttons must read it here. */
-  --_button-radius: max(var(--radius-element), calc(var(--radius-chat) - var(--spacing-3)));
+  width: 100%;
+  min-width: 0;
+  padding-bottom: var(--space-1);
+}
+
+.maka-composer-queue-list li {
+  padding-right: 0;
+}
+
+.maka-composer-drawer-divider {
+  width: calc(100% - (2 * var(--space-3)));
+  border-top: var(--border-width-hairline) solid var(--border);
+  margin: var(--space-0-5) var(--space-3);
 }
 
 .maka-composer-queue-list {
+  width: 100%;
   min-width: 0;
   max-height: 132px;
   overflow-y: auto;
@@ -131,10 +132,6 @@
 }
 
 @media (max-width: 640px) {
-  .maka-composer-queue {
-    width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-3))));
-  }
-
   .maka-composer-queue-actions {
     gap: 0;
   }

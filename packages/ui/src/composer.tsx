@@ -1840,17 +1840,6 @@ export const Composer = forwardRef<
           />
         </div>
       )}
-      {!props.hidden && queueCount > 0 ? (
-          <ComposerMessageQueue
-            queuedMessages={queuedMessages}
-            queueRevision={props.queuedMessageRevision}
-          copy={copy}
-          onPromoteEntry={props.onPromoteQueuedEntry}
-          onUpdateEntry={props.onUpdateQueuedEntry}
-          onDeleteEntry={props.onDeleteQueuedEntry}
-          onReorderEntries={props.onReorderQueuedEntries}
-        />
-      ) : null}
       <form
         ref={formRef}
         className="maka-composer composer"
@@ -1874,11 +1863,11 @@ export const Composer = forwardRef<
           // render our own into the `sendButton` slot.
           onSubmit={() => {}}
           isDisabled={props.disabled}
-          drawer={drawerTokenCount > 0 ? (
+          drawer={queueCount > 0 || drawerTokenCount > 0 ? (
             <ChatComposerDrawer
               className="maka-composer-drawer"
-              count={drawerTokenCount}
-              label={copy.stagedContext}
+              count={queueCount + drawerTokenCount}
+              label={drawerTokenCount > 0 ? copy.stagedContext : copy.queuedMessages}
               defaultIsCollapsed={props.contextDrawerDefaultCollapsed}
               // The collapse band's tooltip (composer.css ::after) follows the
               // pointer instead of sitting at a fixed offset — on a full-width
@@ -1915,6 +1904,21 @@ export const Composer = forwardRef<
                   ?.style.removeProperty('--maka-drawer-tooltip-x');
               }}
             >
+              {!props.hidden && queueCount > 0 ? (
+                <ComposerMessageQueue
+                  queuedMessages={queuedMessages}
+                  queueRevision={props.queuedMessageRevision}
+                  copy={copy}
+                  onPromoteEntry={props.onPromoteQueuedEntry}
+                  onUpdateEntry={props.onUpdateQueuedEntry}
+                  onDeleteEntry={props.onDeleteQueuedEntry}
+                  onReorderEntries={props.onReorderQueuedEntries}
+                />
+              ) : null}
+              {queueCount > 0 && drawerTokenCount > 0 ? (
+                <div className="maka-composer-drawer-divider" aria-hidden="true" />
+              ) : null}
+              {drawerTokenCount > 0 ? (
               <div className="maka-composer-context-drawer" role="group" aria-label={copy.stagedContext}>
                 {props.pendingDirectories?.map((reference, index) => (
                   <DirectoryReferenceChip
@@ -1985,6 +1989,7 @@ export const Composer = forwardRef<
                   );
                 })}
               </div>
+              ) : null}
             </ChatComposerDrawer>
           ) : undefined}
           input={(

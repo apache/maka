@@ -32,11 +32,11 @@ type ComposerQueueEntry = Omit<MessageQueueEntryProjection, 'state'> & {
 };
 
 /**
- * The pending plate above the composer card. It lists follow-up entries —
- * Host-queued and still in flight — so a queued message stays editable,
- * reorderable and deletable until a Turn consumes it. Steering targets the
- * active Turn and lives in the transcript instead, where its delivery state
- * is message metadata rather than a queue row.
+ * The queued follow-up section of the composer staging drawer. It lists
+ * follow-up entries — Host-queued and still in flight — so a queued message
+ * stays editable, reorderable and deletable until a Turn consumes it.
+ * Steering targets the active Turn and lives in the transcript instead, where
+ * its delivery state is message metadata rather than a queue row.
  */
 export interface ComposerMessageQueueProps {
   queuedMessages: readonly ComposerQueueEntry[];

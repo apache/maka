@@ -95,6 +95,9 @@ export interface ConversationCopy {
     importing: string;
     sendLabel: string;
     queuedMessagesAriaLabel(count: number): string;
+    /** Noun label for the staging drawer when it holds only queued follow-ups —
+     * the collapsed badge reads "N 待发送". Mixed drawers use `stagedContext`. */
+    queuedMessages: string;
     promoteQueuedEntry: string;
     editQueuedEntry: string;
     saveQueuedEntry: string;
@@ -444,6 +447,7 @@ const CONVERSATION_COPY = {
       placeholder: '描述任务，@ 引用文件或会话，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
+      queuedMessages: '待发送',
       promoteQueuedEntry: '直接发送', editQueuedEntry: '编辑', saveQueuedEntry: '保存', cancelQueuedEntryEdit: '取消编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
       addContext: '添加上下文', stagedContext: '附加内容',
@@ -566,6 +570,7 @@ const CONVERSATION_COPY = {
       placeholder: '描述任務，@ 引用檔案，/ 選擇技能…', textareaAriaLabel: '訊息輸入框', pastedQuoteLabel: '貼上的文本', selectedSkillsAriaLabel: '已選擇的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你確認權限…',
       sending: '正在傳送…', importing: '正在匯入…', sendLabel: '傳送',
       queuedMessagesAriaLabel: (count) => `${count} 條待發送訊息`,
+      queuedMessages: '待發送',
       promoteQueuedEntry: '直接傳送', editQueuedEntry: '編輯', saveQueuedEntry: '儲存', cancelQueuedEntryEdit: '取消編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',
       stopLabel: '停止', stopping: '停止中…',
       addContext: '新增上下文', stagedContext: '附加內容',
@@ -688,6 +693,7 @@ const CONVERSATION_COPY = {
       placeholder: 'Describe a task, @ to reference files or sessions, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
+      queuedMessages: 'queued',
       promoteQueuedEntry: 'Send now', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
       addContext: 'Add context', stagedContext: 'staged items',

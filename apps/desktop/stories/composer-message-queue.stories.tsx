@@ -19,7 +19,8 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { ComponentProps } from 'react';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
+import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer } from '@maka/ui';
@@ -176,23 +177,33 @@ function followUpEntry(entryId: string, text: string): MessageQueueEntryProjecti
  * (projection in, mutations
  * out) is the real one; only the authority is simulated.
  */
-function QueuedComposer({ deliveryState }: { deliveryState: DeliveryState }) {
+// A production queue snapshot also carries queued steering; the drawer filters
+// it out — steering renders in the transcript instead (see the
+// QueuedSteeringInTranscript story in app-shell).
+const DEFAULT_QUEUE: MessageQueueEntryProjection[] = [
+  {
+    entryId: 'entry-steer',
+    messageId: 'message-steer',
+    content: { text: '先把刚才的判断改成只检查当前工作树。' },
+    placement: 'current_turn',
+    state: 'queued',
+  },
+  followUpEntry('entry-1', '先不要改协议。'),
+  followUpEntry('entry-2', '查一下 PR #3526 相关的 session 及其 compaction 诊断记录。'),
+  followUpEntry('entry-3', '把 runtime.sqlite 里的 compaction 日志也带上。'),
+];
+
+function QueuedComposer({
+  deliveryState,
+  stagedContext = true,
+  entries = DEFAULT_QUEUE,
+}: {
+  deliveryState: DeliveryState;
+  stagedContext?: boolean;
+  entries?: MessageQueueEntryProjection[];
+}) {
   const composerRef = useRef<ComposerHandle>(null);
-  // A production queue snapshot also carries queued steering; the plate filters
-  // it out — steering renders in the transcript instead (see the
-  // QueuedSteeringInTranscript story in app-shell).
-  const [followup, setFollowup] = useState<MessageQueueEntryProjection[]>([
-    {
-      entryId: 'entry-steer',
-      messageId: 'message-steer',
-      content: { text: '先把刚才的判断改成只检查当前工作树。' },
-      placement: 'current_turn',
-      state: 'queued',
-    },
-    followUpEntry('entry-1', '先不要改协议。'),
-    followUpEntry('entry-2', '查一下 PR #3526 相关的 session 及其 compaction 诊断记录。'),
-    followUpEntry('entry-3', '把 runtime.sqlite 里的 compaction 日志也带上。'),
-  ]);
+  const [followup, setFollowup] = useState<MessageQueueEntryProjection[]>(entries);
 
   const base: ComposerProps = {
     draftKey: 'storybook-composer-queue',
@@ -207,6 +218,14 @@ function QueuedComposer({ deliveryState }: { deliveryState: DeliveryState }) {
     onPermissionModeChange: noop,
     onPickAttachments: noop,
     streaming: true,
+    // Real mid-turn state can stage context while follow-ups wait: the two
+    // sections stack inside the one staging drawer.
+    pendingQuotes: stagedContext
+      ? [{ text: 'queue.entries 表在 Host 端是唯一权威', label: '设计笔记' }]
+      : undefined,
+    pendingAttachments: stagedContext
+      ? [{ kind: 'other', displayName: 'compaction-audit.md', mimeType: 'text/markdown', size: 12_400 }]
+      : undefined,
   };
 
   const [published, setPublished] = useState(new Map<string, TransientUserMessageProjection>());
@@ -267,8 +286,13 @@ function QueuedComposer({ deliveryState }: { deliveryState: DeliveryState }) {
   );
 }
 
-// Real path: mid-turn sends stay visible above the composer until consumed.
-// Drag follow-ups to reorder; 调整方向 promotes one, 编辑 updates it in place.
+function storyFrame(children: ReactNode): ReactElement {
+  return <div style={{ padding: '24px 24px 48px', maxWidth: 840 }}>{children}</div>;
+}
+
+// Real path: mid-turn sends while a quote and a file are staged — the staging
+// drawer holds the queue section above a hairline and the context chips below.
+// Drag follow-ups to reorder; 直接发送 promotes one, 编辑 updates it in place.
 export const PendingPlate: Story = {
   args: { deliveryState: 'queued' },
   argTypes: {
@@ -277,9 +301,83 @@ export const PendingPlate: Story = {
       control: { type: 'radio' },
     },
   },
-  render: (args) => (
-    <div style={{ padding: '24px 24px 48px', maxWidth: 840 }}>
-      <QueuedComposer key={args.deliveryState} deliveryState={args.deliveryState} />
-    </div>
-  ),
+  render: (args) =>
+    storyFrame(
+      <QueuedComposer key={args.deliveryState} deliveryState={args.deliveryState} />,
+    ),
+};
+
+// Real path: follow-ups sent mid-turn with nothing staged — the drawer holds
+// the queue section alone and collapses to a "N 条待发送消息" strip.
+export const QueueOnly: Story = {
+  args: { deliveryState: 'queued' },
+  render: () => storyFrame(<QueuedComposer deliveryState="queued" stagedContext={false} />),
+};
+
+// Real path: the user folds the staging slab; every staged item collapses into
+// the count strip until it is reopened.
+export const StagingCollapsed: Story = {
+  args: { deliveryState: 'queued' },
+  render: () => storyFrame(<QueuedComposer deliveryState="queued" />),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: /收起|collapse/i }));
+    await waitFor(() => {
+      expect(canvas.queryByText('先不要改协议。')).toBeNull();
+      expect(canvas.getByRole('button', { name: /附加内容|staged/i })).toBeVisible();
+    });
+  },
+};
+
+// Real path: a long Turn while the user keeps queueing — the list scrolls
+// inside the drawer instead of growing the composer.
+export const OverflowingQueue: Story = {
+  args: { deliveryState: 'queued' },
+  render: () =>
+    storyFrame(
+      <QueuedComposer
+        deliveryState="queued"
+        stagedContext={false}
+        entries={Array.from({ length: 9 }, (_, index) =>
+          followUpEntry(`entry-${index + 1}`, `排队跟进 ${index + 1}：检查 compaction 诊断记录的第 ${index + 1} 段。`),
+        )}
+      />,
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = canvasElement.querySelector<HTMLElement>('.maka-composer-queue-list');
+    await waitFor(() => {
+      expect(list).not.toBeNull();
+      expect(list!.scrollHeight).toBeGreaterThan(list!.clientHeight);
+    });
+    await expect(canvas.getAllByText(/^排队跟进/).length).toBe(9);
+  },
+};
+
+// Real path: the pencil on a queued row opens an inline editor inside the
+// drawer; Enter commits, Escape cancels.
+export const EditingQueuedEntry: Story = {
+  args: { deliveryState: 'queued' },
+  render: () => storyFrame(<QueuedComposer deliveryState="queued" stagedContext={false} />),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getAllByRole('button', { name: '编辑' })[1]!);
+    const editor = await canvas.findByRole('textbox', { name: '编辑' });
+    await expect(editor).toHaveValue('查一下 PR #3526 相关的 session 及其 compaction 诊断记录。');
+    await userEvent.clear(editor);
+    await userEvent.type(editor, '改查 PR #3526 的 session 列表。');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => {
+      expect(canvas.getByText('改查 PR #3526 的 session 列表。')).toBeVisible();
+      expect(canvas.queryByRole('textbox', { name: '编辑' })).toBeNull();
+    });
+  },
+};
+
+// Real path: a 720px Desktop window — the smoke runner gives ids containing
+// "narrow" the narrow viewport; rows stay one line and actions keep the
+// trailing edge.
+export const NarrowPendingPlate: Story = {
+  args: { deliveryState: 'queued' },
+  render: () => storyFrame(<QueuedComposer deliveryState="queued" />),
 };
