@@ -44,7 +44,6 @@ import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
   ChatSurfaceLayout,
-  type ChatViewHandle,
   type ComposerHandle,
   type ComposerSendMetadata,
   type ComposerSlashCommandOption,
@@ -180,7 +179,6 @@ import { useTurnActionRegistry } from './use-turn-action-registry';
 import {
   desktopSlashCommandPresentation,
   useComposerAttachments,
-  useComposerQuotes,
 } from './features/conversation/index.js';
 import {
   type ComposerMentionsSurfaceInput,
@@ -388,6 +386,13 @@ function AppShellContent({
     removeAttachment,
     clearSubmittedContext,
     imageNoticeLifecycle,
+    pendingQuotes,
+    hasStagedQuotes,
+    quotesForSend,
+    addQuote,
+    clearQuotes,
+    composerQuoteProps,
+    chatViewQuoteProps,
   } = useComposerAttachments({
     draftKey: attachmentDraftKey,
     directoryHostId,
@@ -398,13 +403,6 @@ function AppShellContent({
       notify: toastApi.info,
     },
   });
-  const {
-    pendingQuotes,
-    addQuote,
-    updateQuoteComment,
-    removeQuote,
-    clearQuotes,
-  } = useComposerQuotes({ draftKey: attachmentDraftKey });
 
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
@@ -601,7 +599,6 @@ function AppShellContent({
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
   const composerRef = useRef<ComposerHandle>(null);
-  const chatViewRef = useRef<ChatViewHandle>(null);
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
@@ -1549,7 +1546,7 @@ function AppShellContent({
       }
       if (
         hasPendingContext ||
-        pendingQuotes.length ||
+        hasStagedQuotes ||
         metadata?.workspaceFileReferences?.length
       ) {
         toastApi.info(
@@ -1588,7 +1585,7 @@ function AppShellContent({
         return changed;
       }
       const pending = submittableAttachments;
-      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
+      const quotes = quotesForSend();
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...directoryOptions,
@@ -1637,7 +1634,7 @@ function AppShellContent({
         return changed;
       }
       const pending = submittableAttachments;
-      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
+      const quotes = quotesForSend();
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...directoryOptions,
@@ -1663,7 +1660,7 @@ function AppShellContent({
     const expectedRevisionDraft = revisionSend
       ? revisionDraftRef.current
       : undefined;
-    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
+    const quotes = quotesForSend();
     const ok = await send(text, pending, {
       waitForHostAdmission: revisionSend,
       targetSessionId: expectedRevisionDraft?.draftSessionId,
@@ -2420,28 +2417,7 @@ function AppShellContent({
                   pendingAttachments={pendingAttachments}
                   allowAttachmentOnlySend={canStageComposerContext}
                   onRemoveAttachment={removeAttachment}
-                  pendingQuotes={pendingQuotes}
-                  onRemoveQuote={removeQuote}
-                  onEditQuoteComment={
-                    canStageComposerContext ? updateQuoteComment : undefined
-                  }
-                  onAnnotateQuote={
-                    canStageComposerContext
-                      ? (index) => {
-                          const quote = pendingQuotes[index];
-                          return (
-                            quote !== undefined &&
-                            (chatViewRef.current?.openQuoteAnnotation({
-                              index,
-                              text: quote.text,
-                              turnId: quote.sourceTurnId,
-                              comment: quote.comment,
-                            }) ?? false)
-                          );
-                        }
-                      : undefined
-                  }
-                  onPasteAsQuote={canStageComposerContext ? addQuote : undefined}
+                  {...composerQuoteProps(canStageComposerContext)}
                   onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
                   onAttachFilePaths={contextPickEnabled ? attachFilePaths : undefined}
                   modelLabel={activeModelLabel ?? newChatModelLabel}
@@ -2532,9 +2508,7 @@ function AppShellContent({
                   >
                     {(turnActions) => (
                   <ChatMessageSurface
-                handleRef={chatViewRef}
-                onQuoteAnnotationSubmit={updateQuoteComment}
-                pendingQuotes={pendingQuotes}
+                {...chatViewQuoteProps}
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}

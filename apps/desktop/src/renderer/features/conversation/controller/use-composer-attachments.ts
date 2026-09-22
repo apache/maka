@@ -21,14 +21,20 @@ import { useUiLocale } from '@maka/ui';
 import { useComposerAttachments as useSharedComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
+import { useComposerQuotes } from './use-composer-quotes.js';
 export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 
-/** Desktop localization for the shared staging and preview lifecycle. */
+/** Desktop staging surface for everything the composer carries into a send:
+ * attachments, directory picks, and staged transcript quotes. One hook keeps
+ * the quote bucket out of AppShell's hook-call ledger; all three share the
+ * same draft key. */
 export function useComposerAttachments(options: Omit<Parameters<typeof useSharedComposerAttachments>[0], 'copy' | 'formatError'>) {
   const locale = useUiLocale();
-  return useSharedComposerAttachments({
+  const attachments = useSharedComposerAttachments({
     ...options,
     copy: getDesktopConversationCopy(locale).actions,
     formatError: (error, fallback) => localizedShellErrorMessage(error, fallback, locale),
   });
+  const quotes = useComposerQuotes({ draftKey: options.draftKey });
+  return { ...attachments, ...quotes };
 }

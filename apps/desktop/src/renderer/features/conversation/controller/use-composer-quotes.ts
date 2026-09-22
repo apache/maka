@@ -19,6 +19,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { QUOTE_COMMENT_MAX_LENGTH, type QuoteRef } from '@maka/core/events';
+import type { ChatViewHandle } from '@maka/ui';
 
 const MAX_QUOTE_CHARS = 32_000;
 
@@ -111,11 +112,46 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     publish();
   }, [bucket, publish]);
 
+  // Bridge for the composer's annotate action: opening the editor over the
+  // transcript excerpt only works when the turn is still mounted, so the
+  // imperative handle answers synchronously and the token falls back to its
+  // own popover on a miss. The ref is filled by ChatView's handleRef below.
+  const chatViewRef = useRef<ChatViewHandle>(null);
+  const tryAnnotateQuote = (index: number): boolean => {
+    const quote = bucket[index];
+    return (
+      quote !== undefined &&
+      (chatViewRef.current?.openQuoteAnnotation({
+        index,
+        text: quote.text,
+        turnId: quote.sourceTurnId,
+        comment: quote.comment,
+      }) ?? false)
+    );
+  };
+
+  const quotesForSend = (): QuoteRef[] | undefined =>
+    bucket.length ? bucket : undefined;
+
   return {
     pendingQuotes,
+    hasStagedQuotes: bucket.length > 0,
     addQuote,
     updateQuoteComment,
     removeQuote,
     clearQuotes,
+    quotesForSend,
+    composerQuoteProps: (canStage: boolean) => ({
+      pendingQuotes,
+      onRemoveQuote: removeQuote,
+      onEditQuoteComment: canStage ? updateQuoteComment : undefined,
+      onAnnotateQuote: canStage ? tryAnnotateQuote : undefined,
+      onPasteAsQuote: canStage ? addQuote : undefined,
+    }),
+    chatViewQuoteProps: {
+      handleRef: chatViewRef,
+      pendingQuotes,
+      onQuoteAnnotationSubmit: updateQuoteComment,
+    },
   };
 }

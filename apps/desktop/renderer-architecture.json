@@ -718,13 +718,12 @@
           "useAppShellSessionWorkspace": 1,
           "useAppShellTurnPresentation": 1,
           "useComposerAttachments": 1,
-          "useComposerQuotes": 1,
           "useEffect": 6,
           "useLayoutEffect": 1,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
-          "useRef": 15,
+          "useRef": 14,
           "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
@@ -829,7 +828,7 @@
           "react": 1
         },
         "importSpecifiers": 97,
-        "nonTriviaTokens": 12825
+        "nonTriviaTokens": 12691
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 5,
