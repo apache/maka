@@ -33,6 +33,14 @@ function fixture(
     invalid?: boolean;
     proxyFailure?: boolean;
     missingKey?: boolean;
+    empty?: boolean;
+    candidateFailure?: boolean;
+    hang?: 'policy' | 'outbound' | 'credential' | 'candidates' | 'fetch';
+    afterIntent?: (policy: {
+      jev: { enabled: boolean };
+      privacy: { incognitoActive: boolean };
+    }) => void;
+    probabilityTotal?: number;
   } = {},
 ) {
   const policy = {
@@ -41,17 +49,29 @@ function fixture(
     privacy: { incognitoActive: options.privacy ?? false },
   };
   const requests: Array<{ state: Record<string, unknown> }> = [];
+  const failures: string[] = [];
+  const hang = () => new Promise<never>(() => {});
   let closed = 0;
   let candidateReads = 0;
   const model = createJevRoutingModel({
+    reportFailure: (failure) => failures.push(failure),
     stores: {
-      runtimePolicy: { getSnapshot: async () => ({ revision: 1, policy }) },
+      runtimePolicy: {
+        getSnapshot: async () => (options.hang === 'policy' ? hang() : { revision: 1, policy }),
+      },
       operations: {
         resolveHostOutboundExecution: async () =>
-          options.proxyFailure
-            ? { kind: 'credential_not_configured' }
-            : { kind: 'ready', networkProxy: policy.networkProxy, secretMaterial: {} },
-        exportCredentialMaterial: async () => (options.missingKey ? null : { secret: 'test-key' }),
+          options.hang === 'outbound'
+            ? hang()
+            : options.proxyFailure
+              ? { kind: 'credential_not_configured' }
+              : { kind: 'ready', networkProxy: policy.networkProxy, secretMaterial: {} },
+        exportCredentialMaterial: async () =>
+          options.hang === 'credential'
+            ? hang()
+            : options.missingKey
+              ? null
+              : { secret: 'test-key' },
       },
     } as never,
     createTransport: () => ({
@@ -67,13 +87,17 @@ function fixture(
         assert.ok(init?.signal);
         assert.equal(body.reasoning_effort, undefined);
         if (options.fail) return new Response('provider secret', { status: 503 });
+        if (options.hang === 'fetch') return hang();
+        if (requests.length === 1) options.afterIntent?.(policy);
         const keys = Object.keys(body.questions.decision.criteria);
         const choice = options.invalid
           ? 'invented'
           : requests.length === 1
             ? (options.intent ?? 'continue')
             : 'whc_known';
-        const probabilities = Object.fromEntries(keys.map((key) => [key, key === choice ? 1 : 0]));
+        const probabilities = Object.fromEntries(
+          keys.map((key) => [key, key === choice ? (options.probabilityTotal ?? 1) : 0]),
+        );
         return new Response(
           JSON.stringify({
             answers: {
@@ -98,21 +122,32 @@ function fixture(
       abortSignal: signal,
       resolveCandidates: async () => {
         candidateReads++;
+        if (options.hang === 'candidates') return hang();
+        if (options.candidateFailure) throw new Error('private store details');
         return {
           candidateSetId: 'fresh-set',
-          candidates: [
-            {
-              candidateRef: 'whc_known',
-              sessionName: 'Payments',
-              workspaceName: 'Maka',
-              state: 'idle',
-              recency: 'today',
-            },
-          ],
+          candidates: options.empty
+            ? []
+            : [
+                {
+                  candidateRef: 'whc_known',
+                  sessionName: 'Payments',
+                  workspaceName: 'Maka',
+                  state: 'idle',
+                  recency: 'today',
+                },
+              ],
         };
       },
     });
-  return { run, policy, requests, closed: () => closed, candidateReads: () => candidateReads };
+  return {
+    run,
+    policy,
+    requests,
+    failures,
+    closed: () => closed,
+    candidateReads: () => candidateReads,
+  };
 }
 
 test('Jev splits bounded intent and recall, preserves candidateSetId and closes transport', async () => {
@@ -125,7 +160,7 @@ test('Jev splits bounded intent and recall, preserves candidateSetId and closes 
   });
   assert.equal(f.requests.length, 2);
   assert.equal(f.candidateReads(), 1);
-  assert.equal(f.closed(), 1);
+  assert.equal(f.closed(), 2);
   assert.equal('candidates' in f.requests[0]!.state, false);
   assert.equal(JSON.stringify(f.requests).includes('private-session-id'), false);
   f.policy.jev.enabled = false;
@@ -176,5 +211,71 @@ test('discussion and linked operations do not invoke recall', async () => {
           : { kind: 'linked', operation: intent };
     assert.deepEqual(await f.run(), expected);
     assert.equal(f.candidateReads(), 0);
+  }
+});
+
+test('privacy or disablement during intent prevents recall egress', async () => {
+  for (const afterIntent of [
+    (policy: { privacy: { incognitoActive: boolean } }) => {
+      policy.privacy.incognitoActive = true;
+    },
+    (policy: { jev: { enabled: boolean } }) => {
+      policy.jev.enabled = false;
+    },
+  ]) {
+    const f = fixture({ afterIntent });
+    assert.equal(await f.run(), undefined);
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.closed(), 1);
+  }
+});
+
+test('abort interrupts pending stores, candidate resolution and fetch without leaking errors', async () => {
+  for (const hang of ['policy', 'outbound', 'credential', 'candidates', 'fetch'] as const) {
+    const f = fixture({ hang });
+    const controller = new AbortController();
+    const result = f.run(controller.signal);
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    assert.equal(
+      await Promise.race([
+        result,
+        new Promise((resolve) => setTimeout(() => resolve('hung'), 100)),
+      ]),
+      undefined,
+    );
+    assert.deepEqual(f.failures, []);
+  }
+});
+
+test('empty candidates clarify, unavailable candidates fall back, failures are diagnosable', async () => {
+  const empty = fixture({ empty: true });
+  assert.deepEqual(await empty.run(), { kind: 'routing', disposition: 'clarify' });
+  assert.equal(empty.requests.length, 1);
+  const failed = fixture({ candidateFailure: true });
+  assert.equal(await failed.run(), undefined);
+  assert.deepEqual(failed.failures, ['unavailable']);
+  const provider = fixture({ fail: true });
+  assert.equal(await provider.run(), undefined);
+  assert.deepEqual(provider.failures, ['request_failed']);
+  const invalid = fixture({ invalid: true });
+  assert.equal(await invalid.run(), undefined);
+  assert.deepEqual(invalid.failures, ['invalid_response']);
+});
+
+test('probability totals within the existing tolerance remain valid', async () => {
+  const f = fixture({ intent: 'discuss', probabilityTotal: 0.999 });
+  assert.deepEqual(await f.run(), { kind: 'routing', disposition: 'answer_here' });
+});
+
+test('the deadline also bounds a stalled preflight read', { timeout: 10_000 }, async () => {
+  const keepAlive = setTimeout(() => {}, 9_000);
+  try {
+    const f = fixture({ hang: 'policy' });
+    assert.equal(await f.run(), undefined);
+    assert.deepEqual(f.failures, ['timeout']);
+    assert.equal(f.requests.length, 0);
+  } finally {
+    clearTimeout(keepAlive);
   }
 });

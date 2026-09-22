@@ -160,6 +160,7 @@ import {
 } from './interactive-run-composer.js';
 
 import {
+  readDuringBackendCreation,
   createHostGoalEvaluator,
   createHostDailyReviewModel,
   createHostMemoryExtractionModel,
@@ -1704,15 +1705,28 @@ export async function createExecutionRuntimeHostComposition(
       (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
       context.owner.capability.rootId,
       async (input) => {
-        if (!dependencies.workHubRoutingModel) {
-          try {
-            const { policy } = await runtimePolicyStores.runtimePolicy.getSnapshot();
-            if (!policy.jev?.enabled || policy.privacy.incognitoActive) return undefined;
-          } catch {
-            return undefined;
-          }
+        if (dependencies.workHubRoutingModel)
+          return workHubCoordination.prepareRoutingDecision(input);
+        const signal = AbortSignal.any([
+          ...(input.inputClosedSignal ? [input.inputClosedSignal] : []),
+          AbortSignal.timeout(8_000),
+        ]);
+        try {
+          const { policy } = await readDuringBackendCreation(
+            () => runtimePolicyStores.runtimePolicy.getSnapshot(),
+            signal,
+          );
+          if (!policy.jev?.enabled || policy.privacy.incognitoActive) return undefined;
+          return await readDuringBackendCreation(
+            () =>
+              workHubCoordination.prepareRoutingDecision({ ...input, inputClosedSignal: signal }),
+            signal,
+          );
+        } catch {
+          if (!input.inputClosedSignal?.aborted)
+            console.warn('[runtime-host] Jev routing fallback: preparation_unavailable');
+          return undefined;
         }
-        return workHubCoordination.prepareRoutingDecision(input);
       },
     );
     const coordinator = rootCoordinator;

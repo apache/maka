@@ -27,9 +27,11 @@ The before image renders `GeneralSettingsPage` from base `acab16537` in the same
 
 | Before | After: enabled with a synthetic key |
 | --- | --- |
-| ![Before](../../.maka-shots/pr-5562/settings-before.png) | ![After](../../.maka-shots/pr-5562/settings-after-enabled.png) |
+| ![Before](../../../.maka-shots/pr-5562/settings-before.png) | ![After](../../../.maka-shots/pr-5562/settings-after-enabled.png) |
 
-[After: advanced settings collapsed](../../.maka-shots/pr-5562/settings-after-collapsed.png). Jev remains disabled by default; the enabled image shows an explicit user opt-in.
+[After: advanced settings collapsed](../../../.maka-shots/pr-5562/settings-after-collapsed.png). Jev remains disabled by default; the enabled image shows an explicit user opt-in.
+
+Historical measurement of `1c814c261`; not current implementation guidance. Later fixes add per-request policy checks and bounded preflight reads.
 
 ## Scope and method
 
@@ -83,8 +85,8 @@ DPSK below means the 2048-token diagnostic, not the failing original budget. `fa
 Build the workspace first. Provide `JEV_API_KEY` and `DEEPSEEK_API_KEY` through your local process environment; never put values in source or committed command files.
 
 ```sh
-node docs/pr-5562/compare-routing.mjs
-DPSK_OUTPUT_BUDGET=2048 COMPARE_OUTPUT=/tmp/jev-budget-2048.json node docs/pr-5562/compare-routing.mjs
+node scripts/compare-jev-routing.mjs
+DPSK_OUTPUT_BUDGET=2048 COMPARE_OUTPUT=/tmp/jev-budget-2048.json node scripts/compare-jev-routing.mjs
 ```
 
 The replay uses a synthetic connection with the same model and the provider's default endpoint. Optional `DPSK_MODEL`, `DPSK_BASE_URL`, and `COMPARE_OUTPUT` configure reproduction. Raw evidence records model usage and typed decisions, not credential headers.
@@ -92,4 +94,4 @@ The replay uses a synthetic connection with the same model and the provider's de
 - [Initial exact-adapter measurements and all inputs](results/default.json)
 - [Explicit thinking-off probe](results/thinking-off-probe.json)
 - [2048-token diagnostic measurements](results/budget-2048.json)
-- [Replay harness](compare-routing.mjs)
+- [Replay harness](../../../scripts/compare-jev-routing.mjs)

@@ -1509,9 +1509,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       };
       if (!(await this.bindRecoveryCapabilities(input.sessionId, execution)))
         return { deferred: true };
-      execution = await this.prepareFreshWorkHubExecution(header, turnId, input.content, execution);
       const unavailableReason = runtimeHostExecutionUnavailableReason(header, execution);
       if (unavailableReason) return { error: unavailableReason };
+      execution = await this.prepareFreshWorkHubExecution(header, turnId, input.content, execution);
       const reservation = this.reserveRootTurn(input.sessionId);
       if (!reservation) return { error: 'Another root Turn is being admitted' };
       try {
@@ -1569,6 +1569,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (
       execution.kind !== 'workhub_coordination' ||
       execution.feedback ||
+      execution.operation === 'action' ||
       !this.prepareWorkHubRoutingDecision
     ) {
       return execution;

@@ -18,10 +18,10 @@
  */
 
 import { writeFile } from 'node:fs/promises';
-import { createJevRoutingModel } from '../../packages/runtime-host/dist/server/jev-routing-model.js';
-import { createHostWorkHubRoutingModel } from '../../packages/runtime-host/dist/server/execution-model-authority.js';
-import { createDefaultRuntimePolicy } from '../../packages/core/dist/runtime-policy.js';
-import { createProxiedFetchTransport } from '../../packages/runtime/dist/network/scoped-fetch-transport.js';
+import { createJevRoutingModel } from '../packages/runtime-host/dist/server/jev-routing-model.js';
+import { createHostWorkHubRoutingModel } from '../packages/runtime-host/dist/server/execution-model-authority.js';
+import { createDefaultRuntimePolicy } from '../packages/core/dist/runtime-policy.js';
+import { createProxiedFetchTransport } from '../packages/runtime/dist/network/scoped-fetch-transport.js';
 const modelId = process.env.DPSK_MODEL ?? 'deepseek-v4-pro';
 const catalog = { defaultTarget: { modelId } };
 const connection = {
