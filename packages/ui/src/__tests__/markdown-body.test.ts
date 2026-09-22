@@ -346,6 +346,24 @@ it('keeps link targets identical between one-shot and incremental scans', () => 
   assert.match(markup, /href="https:\/\/example\.com\/\$\$value\$\$"/);
 });
 
+it('preserves escape parity when an incremental scan resumes inside a backslash run', () => {
+  const cases = [
+    '\\\\[\\] x]',
+    '\\\\\\\\[\\] x]',
+    '\\\\[```\\[(\\]',
+  ];
+
+  for (const full of cases) {
+    const cache = createMarkdownMathCache();
+    let incremental = '';
+    for (let end = 1; end <= full.length; end++) {
+      incremental = prepareMarkdownMath(full.slice(0, end), cache);
+    }
+
+    assert.equal(incremental, prepareMarkdownMath(full, createMarkdownMathCache()), full);
+  }
+});
+
 it('matches escaped image reference identifiers between use and definition', () => {
   const markup = renderToStaticMarkup(createElement(LocaleProvider, {
     locale: 'en',

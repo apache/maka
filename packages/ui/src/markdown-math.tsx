@@ -69,13 +69,10 @@ export function prepareMarkdownMath(
   }
   const sourceStart = extendsPrevious ? cache.safeSourceEnd : 0;
   const textStart = extendsPrevious ? cache.safeTextEnd : 0;
-  const protectedTail = protectMarkdownMath(
-    source.slice(sourceStart),
-    sourceStart === 0 || source[sourceStart - 1] === '\n',
-    true,
-    false,
-    false,
-    (state) => {
+  const protectedTail = protectMarkdownMath(source.slice(sourceStart), {
+    startsAtLineStart: sourceStart === 0 || source[sourceStart - 1] === '\n',
+    leadingBackslashes: countPrecedingBackslashes(source, sourceStart),
+    onLabelPending: (state) => {
       // The scan ran on the sliced tail, so its positions are relative to
       // sourceStart; the continuation resumes on the full source and needs
       // absolute positions.
@@ -84,7 +81,7 @@ export function prepareMarkdownMath(
       state.codeSearchFrom += sourceStart;
       pendingLabelScans.set(cache, state);
     },
-  );
+  });
   const text = `${extendsPrevious ? cache.text.slice(0, textStart) : ''}${protectedTail.text}`;
 
   cache.source = source;
@@ -119,13 +116,25 @@ export const MARKDOWN_MATH_PLUGINS = [{
   },
 }] satisfies MarkdownInlinePlugin[];
 
+type ProtectMarkdownMathOptions = {
+  startsAtLineStart?: boolean;
+  allowDisplayMath?: boolean;
+  protectEscapedBrackets?: boolean;
+  isFinalSegment?: boolean;
+  leadingBackslashes?: number;
+  onLabelPending?: (state: LabelScanState) => void;
+};
+
 function protectMarkdownMath(
   source: string,
-  startsAtLineStart = true,
-  allowDisplayMath = true,
-  protectEscapedBrackets = false,
-  isFinalSegment = false,
-  onLabelPending?: (state: LabelScanState) => void,
+  {
+    startsAtLineStart = true,
+    allowDisplayMath = true,
+    protectEscapedBrackets = false,
+    isFinalSegment = false,
+    leadingBackslashes = 0,
+    onLabelPending,
+  }: ProtectMarkdownMathOptions = {},
 ): {
   text: string;
   safeSourceEnd: number;
@@ -215,7 +224,7 @@ function protectMarkdownMath(
       continue;
     }
 
-    const link = readMarkdownLink(source, index);
+    const link = readMarkdownLink(source, index, leadingBackslashes);
     if (link?.kind === 'pending') {
       // Remember the scan only when everything before its opener already
       // settled: an earlier unresolved backtick or math opener must be
@@ -223,7 +232,8 @@ function protectMarkdownMath(
       // would skip it forever.
       if (link.labelState !== undefined && safeSourceEnd === index) {
         onLabelPending?.(link.labelState);
-      }      text += source.slice(index, link.end);
+      }
+      text += source.slice(index, link.end);
       index = link.end;
       atLineStart = false;
       if (isFinalSegment) {
@@ -248,13 +258,12 @@ function protectMarkdownMath(
       // must share this transport representation. Image alt text included:
       // Astryx keeps alt as a raw string, and the image component below
       // restores literal tokens, so no private-use characters reach the DOM.
-      const protectedLabel = protectMarkdownMath(
-        source.slice(link.labelStart, link.labelEnd),
-        false,
-        false,
-        true,
-        true,
-      );
+      const protectedLabel = protectMarkdownMath(source.slice(link.labelStart, link.labelEnd), {
+        startsAtLineStart: false,
+        allowDisplayMath: false,
+        protectEscapedBrackets: true,
+        isFinalSegment: true,
+      });
       // The explicit identifier of a full reference must go through the same
       // transform, or use-site and definition IDs diverge and the link breaks.
       let protectedRefText = '';
@@ -262,10 +271,12 @@ function protectMarkdownMath(
       if (link.refLabelStart !== undefined && link.refLabelEnd !== undefined) {
         const protectedRef = protectMarkdownMath(
           source.slice(link.refLabelStart, link.refLabelEnd),
-          false,
-          false,
-          true,
-          true,
+          {
+            startsAtLineStart: false,
+            allowDisplayMath: false,
+            protectEscapedBrackets: true,
+            isFinalSegment: true,
+          },
         );
         protectedRefText = protectedRef.text;
         refSafe = protectedRef.safeSourceEnd >= link.refLabelEnd - link.refLabelStart;
@@ -475,17 +486,21 @@ const pendingLabelScans = new WeakMap<MarkdownMathCache, LabelScanState>();
  * is an inline link, reference use, shortcut, or definition after this pass;
  * treating all of them alike keeps reference identities stable.
  */
-function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
+function readMarkdownLink(
+  source: string,
+  index: number,
+  leadingBackslashes: number,
+): MarkdownLinkScan {
   let openerEnd: number;
   if (source[index] === '!') {
     // A trailing `!` may yet become an image opener once `[` arrives; caching
     // it as safe would lose the `!` context and mistype the label as a link.
     if (index + 1 >= source.length) return { kind: 'pending', end: index + 1 };
     if (source[index + 1] !== '[') return undefined;
-    if (isEscaped(source, index)) return undefined;
+    if (isEscaped(source, index, leadingBackslashes)) return undefined;
     openerEnd = index + 2;
   } else if (source[index] === '[') {
-    if (isEscaped(source, index)) return undefined;
+    if (isEscaped(source, index, leadingBackslashes)) return undefined;
     openerEnd = index + 1;
   } else {
     return undefined;
@@ -531,14 +546,20 @@ function readMarkdownLink(source: string, index: number): MarkdownLinkScan {
   return match(labelEnd + 1);
 }
 
-/** Whether the character at `pos` is backslash-escaped (odd run before it). */
-function isEscaped(source: string, pos: number): boolean {
+function countPrecedingBackslashes(source: string, pos: number): number {
   let count = 0;
   let i = pos - 1;
   while (i >= 0 && source[i] === '\\') {
     count++;
     i--;
   }
+  return count;
+}
+
+/** Whether the character at `pos` is backslash-escaped (odd run before it). */
+function isEscaped(source: string, pos: number, leadingBackslashes: number): boolean {
+  let count = countPrecedingBackslashes(source, pos);
+  if (pos - count === 0) count += leadingBackslashes;
   return count % 2 === 1;
 }
 
