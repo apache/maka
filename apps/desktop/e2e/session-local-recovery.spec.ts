@@ -264,7 +264,8 @@ test('a failed message restores its durable attachment without replacing a newer
   await expect(page.locator('[data-queue-placement="next_turn"]')
     .getByText('queued recovery follow-up', { exact: true })).toBeVisible();
   await page.locator(COMPOSER_INPUT).press('Escape');
-  await expect(page.getByText('已中断', { exact: true })).toBeVisible();
+  await expect(page.locator('.maka-turn').filter({ hasText: '__e2e_hold_open__' })
+    .locator('[data-turn-status="aborted"]')).toBeVisible();
   await page.locator(COMPOSER_INPUT).fill('continue after recovery stop');
   await awaitSendReady(page);
   await page.locator(COMPOSER_INPUT).press('Enter');
@@ -305,7 +306,8 @@ test('a failed message restores its durable attachment without replacing a newer
     (await window.maka.sessionLocal.listMessages(id)).some((message) => message.text === 'queued recovery follow-up'), sessionId,
   )).toBe(false);
   await expect(restarted.getByText('queued recovery follow-up', { exact: true })).toHaveCount(0);
-  await expect(restarted.getByText('continue after recovery stop', { exact: true })).toBeVisible();
+  await expect(restarted.locator('.maka-turn')
+    .getByText('continue after recovery stop', { exact: true })).toBeVisible();
   const proofUnavailable = await restarted.evaluate(async (id) => {
     try { await window.maka.sessions.queryCancelledMessages(id, ['unavailable-probe']); return false; }
     catch { return true; }
@@ -391,7 +393,6 @@ test('durable cancellation proof survives a real Host restart after local cleanu
     const require = process.getBuiltinModule('module').createRequire(`${process.cwd()}/`);
     const { DesktopSessionLocalService } = require(require('node:path').resolve('dist/main/session-local-service.js'));
     // Model a disconnected/crashed client that misses local cleanup after Host commit.
-    DesktopSessionLocalService.prototype.retireRetractedMessages = () => {};
     DesktopSessionLocalService.prototype.retireCancelledMessages = () => {};
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(require('node:path').join(require('electron').app.getPath('userData'), 'session-experience.sqlite'), { readOnly: true });
@@ -402,7 +403,8 @@ test('durable cancellation proof survives a real Host restart after local cleanu
   });
   expect(before.intent.originHostEpoch).toBeTruthy();
   await page.locator(COMPOSER_INPUT).press('Escape');
-  await expect(page.getByText('已中断', { exact: true })).toBeVisible();
+  await expect(page.locator('.maka-turn').filter({ hasText: '__e2e_hold_open__' })
+    .locator('[data-turn-status="aborted"]')).toBeVisible();
   expect(await page.evaluate(({ sessionId, messageId }) =>
     window.maka.sessions.queryCancelledMessages(sessionId, [messageId]),
     { sessionId, messageId: before.messageId },
@@ -425,6 +427,12 @@ test('durable cancellation proof survives a real Host restart after local cleanu
   });
   await ensureSidebarExpanded(restarted);
   await restarted.locator(`[data-session-id=${JSON.stringify(sessionId)}]`).click();
+  // Cached history can render before the fixture's default Host has registered
+  // its live IPC handlers. Wait for that Host, not merely the local composer.
+  await expect.poll(() => restarted.evaluate(async () =>
+    (await window.maka.runtimeHostProfiles.getSnapshot()).entries
+      .find((entry) => entry.isDefault)?.readiness,
+  )).toBe('ready');
   expect(await restarted.evaluate(({ sessionId, messageId }) =>
     window.maka.sessions.queryCancelledMessages(sessionId, [messageId]),
     { sessionId, messageId: before.messageId },
