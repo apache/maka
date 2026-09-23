@@ -27,7 +27,6 @@ import {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  presentMcpNegotiatedProtocol,
   mcpWriteFailureMessage,
 } from '../../renderer/features/module-hub/testing.js';
 
@@ -200,25 +199,4 @@ test('a stdio config round-trips through the command-line field', () => {
   };
   const saved = mcpConfigFromDraft(mcpDraftFromConfig('local', stored), copy);
   assert.deepEqual(saved, { ...stored, protocol: 'legacy' });
-});
-
-test('status copy presents only a live connected negotiated protocol', () => {
-  const status: McpServerStatus = {
-    serverId: 'remote',
-    state: 'connected',
-    transport: 'streamable-http',
-    negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },
-    toolCount: 0,
-    tools: [],
-    updatedAt: 1,
-  };
-
-  assert.equal(
-    presentMcpNegotiatedProtocol(status, copy),
-    'Modern · 2026-07-28',
-  );
-  assert.equal(
-    presentMcpNegotiatedProtocol({ ...status, state: 'disconnected' }, copy),
-    undefined,
-  );
 });

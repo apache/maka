@@ -41,7 +41,6 @@ export {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  presentMcpNegotiatedProtocol,
   mcpWriteFailureMessage,
 } from "./model/mcp-page-model.js";
 export {

@@ -1077,7 +1077,7 @@ export const ExtensionsSkillsBundled: Story = {
 };
 
 // Real path: sidebar → 扩展 → 技能, after a managed source reports an update.
-// The review flow lives in the inspector now: select the row, then 查看更新.
+// The review flow lives in the detail dialog: select the row, then 查看更新.
 export const ExtensionsSkillsUpdateAvailable: Story = {
   render: () => (
     <ExtensionsSkillsSurface
@@ -1092,20 +1092,20 @@ export const ExtensionsSkillsUpdateAvailable: Story = {
     );
     row.click();
 
+    const body = canvasElement.ownerDocument.body;
     const viewUpdate = await waitForStoryButton(
-      canvasElement,
+      body,
       (candidate) => candidate.textContent?.trim() === '查看更新',
     );
     viewUpdate.click();
 
-    await waitForStorySelector<HTMLElement>(canvasElement, '[aria-label="Skill 更新审查"]');
+    await waitForStorySelector<HTMLElement>(body, '[aria-label="Skill 更新审查"]');
   },
 };
 
 // Real path: sidebar → 扩展 → 技能 → click an installed row, which opens the
-// inspector where every per-skill control now lives. Wide only: below 1024px
-// the page trades the panel for a dialog.
-export const ExtensionsSkillsInspector: Story = {
+// detail dialog where every per-skill control lives.
+export const ExtensionsSkillsDetail: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
   play: async ({ canvasElement }) => {
     const row = await waitForStoryButton(
@@ -1113,7 +1113,7 @@ export const ExtensionsSkillsInspector: Story = {
       (candidate) => candidate.textContent?.includes('git-flow') === true,
     );
     row.click();
-    await waitForStoryText(canvasElement, '固定到技能上下文');
+    await waitForStoryText(canvasElement.ownerDocument.body, '固定到技能上下文');
     expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
@@ -1298,8 +1298,8 @@ export const ExtensionsMcpConfigured: Story = {
 };
 
 // Real path: sidebar → 扩展 → MCP → click a signed-in remote server, which
-// opens the inspector where the switch, 测试连接, 编辑, 退出授权 and 删除 live.
-export const ExtensionsMcpInspector: Story = {
+// opens the detail dialog where the switch, 测试连接, 编辑, 退出授权 and 删除 live.
+export const ExtensionsMcpDetail: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
@@ -1311,18 +1311,18 @@ export const ExtensionsMcpInspector: Story = {
     const body = canvasElement.ownerDocument.body;
     await waitForStoryText(body, '退出授权');
     await waitForStoryText(body, 'notion-search');
-    await waitForStoryText(body, '现代 · 2026-07-28');
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → a server's inspector → 删除.
+// Real path: sidebar → 扩展 → MCP → a server's detail → 删除.
 export const ExtensionsMcpRemoveConfirm: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
+    const body = canvasElement.ownerDocument.body;
     (await waitForStoryButton(canvasElement, (button) => button.textContent?.startsWith('filesystem') === true)).click();
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '删除')).click();
-    await waitForStoryText(canvasElement.ownerDocument.body, '删除 MCP「filesystem」？');
+    (await waitForStoryButton(body, (button) => button.textContent?.trim() === '删除')).click();
+    await waitForStoryText(body, '删除 MCP「filesystem」？');
   },
 };
 
@@ -1346,8 +1346,11 @@ export const ExtensionsMcpEditor: Story = {
   play: async ({ canvasElement }) => {
     const row = await waitForStoryButton(canvasElement, (button) => button.textContent?.includes('slack') === true);
     row.click();
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '编辑')).click();
+    (await waitForStoryButton(canvasElement.ownerDocument.body, (button) => button.textContent?.trim() === '编辑')).click();
     await waitForStoryText(canvasElement.ownerDocument.body, '编辑 slack');
+    if (canvasElement.ownerDocument.querySelectorAll('dialog[open]').length !== 1) {
+      throw new Error('The editor must replace the detail dialog, not stack on it');
+    }
     const inputs = canvasElement.ownerDocument.querySelectorAll<HTMLInputElement>('.maka-mcp-primary-fields input');
     if (inputs.length !== 2) throw new Error('MCP editor primary inputs are missing');
     const [id, endpoint] = [...inputs].map((input) => input.getBoundingClientRect());
@@ -1370,7 +1373,7 @@ export const ExtensionsMcpLoginRequired: Story = {
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     (await waitForStoryButton(canvasElement, (button) => button.textContent?.startsWith('team-tools') === true)).click();
-    await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '登录');
+    await waitForStoryButton(canvasElement.ownerDocument.body, (button) => button.textContent?.trim() === '登录');
   },
 };
 
@@ -1383,12 +1386,12 @@ export const ExtensionsMcpLoginPending: Story = {
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, '等待授权');
     (await waitForStoryButton(canvasElement, (button) => button.textContent?.startsWith('team-tools') === true)).click();
-    await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '取消登录');
+    await waitForStoryButton(canvasElement.ownerDocument.body, (button) => button.textContent?.trim() === '取消登录');
   },
 };
 
 // Real path: sidebar → 扩展 → MCP, after an enabled remote server fails to
-// connect: the row says so, the inspector carries the error and its output.
+// connect: the row says so, the detail carries the error and its output.
 export const ExtensionsMcpConnectionFailed: Story = {
   decorators: [withFailedMcpBridge],
   render: () => <ExtensionsMcpSurface />,
@@ -1399,8 +1402,9 @@ export const ExtensionsMcpConnectionFailed: Story = {
       (candidate) => candidate.textContent?.startsWith('team-tools') === true,
     );
     row.click();
-    await waitForStoryText(canvasElement, '连接超时，请检查服务器地址或网络代理。');
-    await waitForStoryText(canvasElement, 'request timed out after 30s');
+    const body = canvasElement.ownerDocument.body;
+    await waitForStoryText(body, '连接超时，请检查服务器地址或网络代理。');
+    await waitForStoryText(body, 'request timed out after 30s');
   },
 };
 
@@ -1410,10 +1414,9 @@ export const ExtensionsMcpNarrow: Story = {
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
-// Real path: sidebar → 扩展 → MCP in a narrow window → click a row. Below the
-// two-column breakpoint the inspector opens as a dialog over the list.
-export const ExtensionsMcpInspectorNarrow: Story = {
-  ...ExtensionsMcpInspector,
+// Real path: sidebar → 扩展 → MCP in a narrow window → click a row.
+export const ExtensionsMcpDetailNarrow: Story = {
+  ...ExtensionsMcpDetail,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
@@ -1490,9 +1493,8 @@ export const ScheduledTasksKeepAwakeExternalWins: Story = {
 };
 
 // Real path: sidebar → 定时任务 → 定时任务 → click a task row, which opens the
-// inspector where every per-task control now lives. Wide only: below 1024px the
-// page drops the inspector rather than squeeze two columns into one.
-export const ScheduledTasksInspector: Story = {
+// detail dialog where every per-task control lives.
+export const ScheduledTasksDetail: Story = {
   render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
   play: async ({ canvasElement }) => {
     const row = await waitForStoryButton(
@@ -1500,13 +1502,12 @@ export const ScheduledTasksInspector: Story = {
       (candidate) => candidate.textContent?.includes('每周发布风险复盘') === true,
     );
     row.click();
-    await waitForStoryText(canvasElement, '立即触发');
+    await waitForStoryText(canvasElement.ownerDocument.body, '立即触发');
     expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
 
 // Real path: narrow desktop → sidebar → 定时任务.
-// The inspector is intentionally hidden below the two-column breakpoint.
 export const ScheduledTasksNarrow: Story = {
   render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
   parameters: { viewport: { defaultViewport: 'mobile2' } },

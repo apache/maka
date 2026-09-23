@@ -63,6 +63,7 @@ import {
   useToast,
   useUiLocale,
   type ModuleHubHeader,
+  type ModulePageDetail,
   type StatusSemantic,
   dotForStatus,
 } from '@maka/ui';
@@ -80,7 +81,6 @@ import {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  presentMcpNegotiatedProtocol,
   mcpWriteFailureMessage,
   type McpEditorDraft,
 } from '../model/mcp-page-model.js';
@@ -135,8 +135,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const rowsContainerRef = useRef<HTMLDivElement | null>(null);
   const focusRowAfterRemovalRef = useRef<number | null>(null);
   // One tab stop for the whole connection list, same keyboard contract as the
-  // skills and 定时任务 pages: without it, reaching the inspector from row
-  // k of N costs N−k presses.
+  // skills and 定时任务 pages.
   const rovingRows = useRovingRowFocus(rowsContainerRef);
 
   const statusById = useMemo(
@@ -154,7 +153,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const configuredHosts = new Set(entries.map(([, server]) => hostOf(server)).filter(Boolean));
   const suggestions = busy === 'load' ? [] : MCP_SUGGESTIONS.filter((suggestion) => !configuredHosts.has(hostOf(suggestion)));
 
-  // Derived, not stored: deleting or filtering out a row closes its inspector.
+  // Derived, not stored: deleting or filtering out a row closes its detail.
   const selectedServer = connectionEntries.find(([serverId]) => serverId === selectedServerId) ?? null;
 
   // Synchronising focus with the DOM once the list it points into has been
@@ -197,7 +196,6 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   function openEdit(serverId: string, server: McpServerConfig) {
-    setSelectedServerId(null);
     openEditor({
       mode: 'manual',
       draft: mcpDraftFromConfig(serverId, server),
@@ -275,11 +273,6 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
 
   const connectionsPanel = busy === 'load' || entries.length > 0 ? (
     <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
-      {/* Selecting a row moves no focus, so nothing else would tell a screen
-          reader that the details opened. This says so, politely. */}
-      <p className="maka-visually-hidden" role="status" aria-live="polite">
-        {selectedServer ? copy.detail.inspectorOpened(selectedServer[0]) : ''}
-      </p>
       {normalizedQuery ? (
         <div className="maka-module-search-summary" role="status" aria-live="polite">
           <span>{copy.page.searchMatches(connectionEntries.length)}</span>
@@ -310,7 +303,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         />
       ) : (
         /* Selectable, otherwise inert rows: every per-connection control lives
-           in the inspector — no interactive elements inside an interactive
+           in the detail dialog — no interactive elements inside an interactive
            list item. */
         <List
           density="balanced"
@@ -327,15 +320,13 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 label={serverId}
                 description={(
                   <span className="maka-module-row-description" data-maka-contract="mcp-server-description">
-                    {transportLabelFor(server, copy)} · <code title={endpoint}>{endpoint}</code>
+                    <code title={endpoint}>{endpoint}</code>
                   </span>
                 )}
                 startContent={<McpMark server={server} />}
                 endContent={<McpStatusLabel state={state} />}
                 isSelected={selectedServerId === serverId}
-                onClick={() => setSelectedServerId(
-                  selectedServerId === serverId ? null : serverId,
-                )}
+                onClick={() => setSelectedServerId(serverId)}
               />
             );
           })}
@@ -352,25 +343,23 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           copy.page.metaConnections(entries.length),
           attentionCount > 0 ? copy.page.metaAttention(attentionCount) : null,
         ].filter(Boolean).join(' · ')}
-        inspectorLabel={copy.detail.label}
-        inspectorAutoSaveId="maka-mcp-inspector"
-        onInspectorDismiss={() => setSelectedServerId(null)}
-        inspector={selectedServer ? (
-          <McpServerInspector
-            serverId={selectedServer[0]}
-            server={selectedServer[1]}
-            status={statusById.get(selectedServer[0])}
-            busy={busy}
-            copy={copy}
-            onToggle={(enabled) => void controller.setEnabled(selectedServer[0], selectedServer[1], enabled)}
-            onEdit={() => openEdit(selectedServer[0], selectedServer[1])}
-            onTest={() => void testServer(selectedServer[0])}
-            onRemove={() => void remove(selectedServer[0])}
-            onLogin={() => void controller.login(selectedServer[0])}
-            onCancelLogin={() => void controller.cancelLogin(selectedServer[0])}
-            onLogout={() => void controller.logout(selectedServer[0])}
-          />
-        ) : undefined}
+        onDetailDismiss={() => setSelectedServerId(null)}
+        // The editor takes the detail's place instead of stacking on it;
+        // closing the editor brings the detail back.
+        detail={selectedServer && !editor ? mcpServerDetail({
+          serverId: selectedServer[0],
+          server: selectedServer[1],
+          status: statusById.get(selectedServer[0]),
+          busy,
+          copy,
+          onToggle: (enabled) => void controller.setEnabled(selectedServer[0], selectedServer[1], enabled),
+          onEdit: () => openEdit(selectedServer[0], selectedServer[1]),
+          onTest: () => void testServer(selectedServer[0]),
+          onRemove: () => void remove(selectedServer[0]),
+          onLogin: () => void controller.login(selectedServer[0]),
+          onCancelLogin: () => void controller.cancelLogin(selectedServer[0]),
+          onLogout: () => void controller.logout(selectedServer[0]),
+        }) : undefined}
         actions={
           <div
             className="maka-module-main-actions"
@@ -522,7 +511,7 @@ function McpStatusLabel(props: { state: McpStatusPresentation }) {
   );
 }
 
-function McpServerInspector(props: {
+function mcpServerDetail(props: {
   serverId: string;
   server: McpServerConfig;
   status?: McpServerStatus;
@@ -535,72 +524,59 @@ function McpServerInspector(props: {
   onLogin(): void;
   onCancelLogin(): void;
   onLogout(): void;
-}) {
+}): ModulePageDetail {
   const { serverId, server, status, copy } = props;
   const state = presentStatus(status, server.enabled !== false, copy);
-  const endpoint = endpointFor(server);
-  const negotiatedProtocol = presentMcpNegotiatedProtocol(status, copy);
   const loginActive = status?.authorizationPending || props.busy === `login:${serverId}`;
   const disabled = props.busy !== null || loginActive;
-  return (
-    <VStack className="maka-mcp-inspector" gap={4}>
-      <VStack gap={2}>
-        <McpStatusLabel state={state} />
-        <Heading level={2}>{serverId}</Heading>
-        {loginActive || status?.error ? (
-          <Text type="supporting" color="secondary">{loginActive ? copy.row.loginPending : status?.error}</Text>
-        ) : null}
-      </VStack>
-
-      <Switch
-        value={server.enabled !== false}
-        onChange={props.onToggle}
-        isDisabled={disabled}
-        label={copy.detail.enabled}
-      />
-
-      <HStack gap={2} wrap="wrap">
-        {loginActive ? (
-          <Button size="sm" variant="secondary" onClick={props.onCancelLogin} label={copy.row.cancelLogin} />
-        ) : (
-          <>
-            {status?.state === 'needs-auth' ? (
-              <Button size="sm" variant="primary" isDisabled={disabled} onClick={props.onLogin} label={copy.row.login} />
-            ) : null}
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={props.onTest}
+  const note = loginActive ? copy.row.loginPending : status?.error;
+  return {
+    title: serverId,
+    subtitle: state.label,
+    startContent: <McpMark server={server} />,
+    content: (
+      <VStack gap={4}>
+        {note ? <Text type="body" color="secondary">{note}</Text> : null}
+        <HStack gap={2} vAlign="center" wrap="wrap">
+          <StackItem size="fill">
+            <Switch
+              value={server.enabled !== false}
+              onChange={props.onToggle}
               isDisabled={disabled}
-              isLoading={props.busy === `test:${serverId}`}
-              label={copy.row.test}
+              label={copy.detail.enabled}
             />
-            {status?.authenticated ? (
-              <Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogout} label={copy.row.logout} />
-            ) : null}
-          </>
-        )}
-      </HStack>
+          </StackItem>
+          {loginActive ? (
+            <Button size="sm" variant="secondary" onClick={props.onCancelLogin} label={copy.row.cancelLogin} />
+          ) : (
+            <>
+              {status?.authenticated ? (
+                <Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogout} label={copy.row.logout} />
+              ) : null}
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={props.onTest}
+                isDisabled={disabled}
+                isLoading={props.busy === `test:${serverId}`}
+                label={copy.row.test}
+              />
+              {status?.state === 'needs-auth' ? (
+                <Button size="sm" variant="primary" isDisabled={disabled} onClick={props.onLogin} label={copy.row.login} />
+              ) : null}
+            </>
+          )}
+        </HStack>
 
-      <Divider />
+        <Divider />
 
-      <MetadataList columns="single" label={{ position: 'start', width: 72 }}>
-        <MetadataListItem label={isMcpStdioConfig(server) ? copy.editor.command : copy.editor.url}>
-          <code className="maka-mcp-inspector-endpoint">{endpoint}</code>
-        </MetadataListItem>
-        <MetadataListItem label={copy.detail.transport}>
-          <Text type="body">{transportLabelFor(server, copy)}</Text>
-        </MetadataListItem>
-        {negotiatedProtocol ? (
-          <MetadataListItem label={copy.detail.protocolLabel}>
-            <Text type="body">{negotiatedProtocol}</Text>
+        <MetadataList columns="single" label={{ position: 'start', width: 72 }}>
+          <MetadataListItem label={isMcpStdioConfig(server) ? copy.editor.command : copy.detail.address}>
+            <code className="maka-mcp-detail-endpoint">{endpointFor(server)}</code>
           </MetadataListItem>
-        ) : null}
-      </MetadataList>
+        </MetadataList>
 
-      {status?.tools.length ? (
-        <>
-          <Divider />
+        {status?.tools.length ? (
           <VStack gap={2}>
             <Text type="label" color="secondary">{copy.detail.tools}</Text>
             <List density="compact" hasDividers>
@@ -609,28 +585,24 @@ function McpServerInspector(props: {
               ))}
             </List>
           </VStack>
-        </>
-      ) : null}
+        ) : null}
 
-      {status?.stderrTail?.length ? (
-        <>
-          <Divider />
+        {status?.stderrTail?.length ? (
           <VStack gap={2}>
             <Text type="label" color="secondary">{copy.detail.stderr}</Text>
             <pre className="maka-mcp-stderr">{status.stderrTail.join('\n')}</pre>
           </VStack>
-        </>
-      ) : null}
-
-      <Divider />
-
-      <HStack gap={2} wrap="wrap">
-        <Button size="sm" variant="secondary" onClick={props.onEdit} isDisabled={disabled} label={copy.row.edit} />
+        ) : null}
+      </VStack>
+    ),
+    footer: (
+      <HStack gap={2} vAlign="center">
+        <Button variant="destructive" onClick={props.onRemove} isDisabled={disabled} label={copy.row.delete} />
         <StackItem size="fill" />
-        <Button size="sm" variant="destructive" onClick={props.onRemove} isDisabled={disabled} label={copy.row.delete} />
+        <Button variant="secondary" onClick={props.onEdit} isDisabled={disabled} label={copy.row.edit} />
       </HStack>
-    </VStack>
-  );
+    ),
+  };
 }
 
 function McpEditorDialog(props: {
@@ -810,13 +782,6 @@ function endpointFor(server: McpServerConfig): string {
 function hostOf(server: McpServerConfig | McpSuggestion): string | null {
   if ('command' in server) return null;
   try { return new URL(server.url).host; } catch { return null; }
-}
-
-function transportLabelFor(server: McpServerConfig, copy: McpCopy): string {
-  if (isMcpStdioConfig(server)) return copy.page.localStdio;
-  if (server.transport === 'sse') return copy.editor.transportLegacySse;
-  if (server.transport === 'streamable-http') return copy.editor.transportStreamableHttp;
-  return copy.editor.transportAuto;
 }
 
 type McpStatusPresentation = { label: string; status: StatusSemantic };

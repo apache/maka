@@ -21,7 +21,6 @@ import type {
   McpOAuthConfig,
   McpProtocolPreference,
   McpServerConfig,
-  McpServerStatus,
 } from '@maka/core/mcp';
 import { isMcpStdioConfig, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import type { McpCopy } from '../../../locales/mcp-copy.js';
@@ -125,17 +124,6 @@ export function mcpConfigFromDraft(draft: McpEditorDraft, copy: McpCopy): McpSer
     headers: parseMap(draft.headers, copy),
     ...(draft.oauth ? { oauth: draft.oauth } : {}),
   };
-}
-
-export function presentMcpNegotiatedProtocol(
-  status: McpServerStatus | undefined,
-  copy: McpCopy,
-): string | undefined {
-  if (status?.state !== 'connected' || !status.negotiatedProtocol) return undefined;
-  return copy.detail.negotiatedProtocol(
-    status.negotiatedProtocol.era,
-    status.negotiatedProtocol.revision,
-  );
 }
 
 function parseMap(value: string, copy: McpCopy): Record<string, string> {

@@ -20,7 +20,7 @@
 // packages/ui/src/skill-status.ts
 //
 // One severity reading for one Skill, shared by the list rows and the
-// inspector so a skill never reads as two different states depending on
+// detail dialog so a skill never reads as two different states depending on
 // where it is shown — the same contract scheduled-task-status.ts keeps for
 // 定时任务.
 //

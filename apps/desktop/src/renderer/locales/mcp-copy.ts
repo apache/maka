@@ -36,22 +36,17 @@ export type McpCopy = {
     actionsAria: string; refreshing: string; refresh: string; add: string;
     metaConnections(count: number): string; metaAttention(count: number): string;
     searchMatches(count: number): string;
-    toolbarAria: string; connections: string; localStdio: string; searchPlaceholder: string; searchAria: string;
+    toolbarAria: string; connections: string; searchPlaceholder: string; searchAria: string;
     clearSearch: string; loading: string;
     noConnectionsMatch: string; noConnectionsMatchDetail(query: string): string;
     recommended: string; addSuggestion(name: string): string;
     suggestions: Record<'notion' | 'linear' | 'feishu' | 'mcp-docs', { name: string; description: string }>;
   };
-  detail: {
-    label: string; enabled: string; transport: string;
-    protocolLabel: string; stderr: string; tools: string;
-    negotiatedProtocol(era: 'legacy' | 'modern', revision: string): string;
-    inspectorOpened(id: string): string;
-  };
+  detail: { enabled: string; address: string; stderr: string; tools: string };
   row: {
     needsAuth: string; login: string; loginPending: string; authorizing: string; cancelLogin: string; logout: string;
     test: string; edit: string;
-    delete: string; tools(count: number): string;
+    delete: string;
     disabled: string; disconnected: string; connecting: string; connected(count: number): string; failed: string;
   };
   editor: {
@@ -90,7 +85,7 @@ const MCP_COPY = {
       actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加 MCP',
       metaConnections: (count) => `${count} 个连接`, metaAttention: (count) => `${count} 个需要处理`,
       searchMatches: (count) => `${count} 个匹配`,
-      toolbarAria: 'MCP 连接操作', connections: '已添加', localStdio: '本地命令',
+      toolbarAria: 'MCP 连接操作', connections: '已添加',
       searchPlaceholder: '搜索连接…', searchAria: '搜索 MCP 连接',
       clearSearch: '清空搜索', loading: '正在读取 MCP 连接…',
       noConnectionsMatch: '没有匹配的 MCP 连接', noConnectionsMatchDetail: (query) => `换一个关键词，或清空「${query}」查看全部连接。`,
@@ -102,16 +97,11 @@ const MCP_COPY = {
         'mcp-docs': { name: 'MCP 官方文档', description: '搜索协议文档' },
       },
     },
-    detail: {
-      label: '连接详情', enabled: '启用', transport: '传输方式',
-      protocolLabel: 'MCP 协议', stderr: '错误输出', tools: '工具',
-      negotiatedProtocol: (era, revision) => `${era === 'modern' ? '现代' : '传统'} · ${revision}`,
-      inspectorOpened: (id) => `已打开 ${id} 的详情`,
-    },
+    detail: { enabled: '启用', address: '地址', stderr: '错误输出', tools: '工具' },
     row: {
       needsAuth: '需要登录', login: '登录', loginPending: '请在浏览器中完成授权', authorizing: '等待授权', cancelLogin: '取消登录', logout: '退出授权',
       test: '测试连接', edit: '编辑',
-      delete: '删除', tools: (count) => `${count} 个工具`,
+      delete: '删除',
       disabled: '已停用', disconnected: '未连接', connecting: '连接中', connected: (count) => `${count} 个工具`, failed: '连接失败',
     },
     editor: {
@@ -153,7 +143,7 @@ const MCP_COPY = {
       actionsAria: 'MCP 操作', refreshing: '重新整理中…', refresh: '重新整理', add: '新增 MCP',
       metaConnections: (count) => `${count} 個連線`, metaAttention: (count) => `${count} 個需要處理`,
       searchMatches: (count) => `${count} 個符合`,
-      toolbarAria: 'MCP 連線操作', connections: '已新增', localStdio: '本地命令',
+      toolbarAria: 'MCP 連線操作', connections: '已新增',
       searchPlaceholder: '搜尋連線…', searchAria: '搜尋 MCP 連線',
       clearSearch: '清空搜尋', loading: '正在讀取 MCP 連線…',
       noConnectionsMatch: '沒有符合的 MCP 連線', noConnectionsMatchDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部連線。`,
@@ -165,16 +155,11 @@ const MCP_COPY = {
         'mcp-docs': { name: 'MCP 官方文件', description: '搜尋協議文件' },
       },
     },
-    detail: {
-      label: '連線詳情', enabled: '啟用', transport: '傳輸方式',
-      protocolLabel: 'MCP 協議', stderr: '錯誤輸出', tools: '工具',
-      negotiatedProtocol: (era, revision) => `${era === 'modern' ? '現代' : '傳統'} · ${revision}`,
-      inspectorOpened: (id) => `已開啟 ${id} 的詳情`,
-    },
+    detail: { enabled: '啟用', address: '位址', stderr: '錯誤輸出', tools: '工具' },
     row: {
       needsAuth: '需要登入', login: '登入', loginPending: '請在瀏覽器中完成授權', authorizing: '等待授權', cancelLogin: '取消登入', logout: '登出授權',
       test: '測試連線', edit: '編輯',
-      delete: '刪除', tools: (count) => `${count} 個工具`,
+      delete: '刪除',
       disabled: '已停用', disconnected: '未連線', connecting: '連線中', connected: (count) => `${count} 個工具`, failed: '連線失敗',
     },
     editor: {
@@ -216,7 +201,7 @@ const MCP_COPY = {
       actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
       metaConnections: (count) => `${count} connections`, metaAttention: (count) => `${count} need attention`,
       searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
-      toolbarAria: 'MCP connection controls', connections: 'Added', localStdio: 'Local command',
+      toolbarAria: 'MCP connection controls', connections: 'Added',
       searchPlaceholder: 'Search connections…', searchAria: 'Search MCP connections',
       clearSearch: 'Clear search', loading: 'Loading MCP connections…',
       noConnectionsMatch: 'No matching MCP connections', noConnectionsMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every connection.`,
@@ -228,16 +213,11 @@ const MCP_COPY = {
         'mcp-docs': { name: 'Official MCP docs', description: 'Search protocol docs' },
       },
     },
-    detail: {
-      label: 'Connection details', enabled: 'Enabled', transport: 'Transport',
-      protocolLabel: 'MCP protocol', stderr: 'Error output', tools: 'Tools',
-      negotiatedProtocol: (era, revision) => `${era === 'modern' ? 'Modern' : 'Legacy'} · ${revision}`,
-      inspectorOpened: (id) => `${id} details opened`,
-    },
+    detail: { enabled: 'Enabled', address: 'Address', stderr: 'Error output', tools: 'Tools' },
     row: {
       needsAuth: 'Login required', login: 'Log in', loginPending: 'Complete authorization in your browser', authorizing: 'Authorizing', cancelLogin: 'Cancel login', logout: 'Log out',
       test: 'Test connection', edit: 'Edit',
-      delete: 'Delete', tools: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`,
+      delete: 'Delete',
       disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, failed: 'Connection failed',
     },
     editor: {

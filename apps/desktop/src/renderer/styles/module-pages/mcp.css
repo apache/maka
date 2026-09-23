@@ -21,11 +21,7 @@
   font: var(--maka-text-supporting);
 }
 
-.maka-mcp-inspector {
-  min-width: 0;
-}
-
-.maka-mcp-inspector-endpoint {
+.maka-mcp-detail-endpoint {
   min-width: 0;
   overflow-wrap: anywhere;
 }

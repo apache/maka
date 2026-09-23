@@ -46,25 +46,6 @@
   min-height: 0;
 }
 
-/* The inspector's own surface — the tonal step module-page.tsx says this app
-   separates columns with. It was the one column claiming that treatment
-   without carrying it: the panel painted nothing and inherited the content
-   column's white, so it read as loose content on the page rather than as a
-   region beside it (owner msg `1158e599`).
-
-   `--muted`, not `--color-background-surface`: measured, that token resolves
-   to the same pure white as `--background` here, so it would have been a
-   no-op against a white content column. `--muted` is the app's inset step and
-   is the one that actually produces a difference on this plate.
-
-   Scoped to the module page so it cannot reach the session panel on the left,
-   which is a different Astryx Layout panel with its own canvas tone. Styling
-   the vendor's semantic class follows the same precedent as the sidenav
-   override in shell-layout.css. */
-.maka-module-page .astryx-layout-panel {
-  background: var(--muted);
-}
-
 /* The page's one control bar: module switch on the left, this page's view +
    filters on the right. It is the last row of the Layout header.
 
