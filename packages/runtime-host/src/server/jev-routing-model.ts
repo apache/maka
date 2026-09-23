@@ -60,6 +60,8 @@ export function createJevRoutingModel(input: {
 }): HostWorkHubRoutingModel {
   return {
     async decide(request) {
+      // Bound direct adapter callers too. Production supplies an earlier shared
+      // preparation deadline; neither budget restarts between Intent and Recall.
       const signal = AbortSignal.any([request.abortSignal, AbortSignal.timeout(8_000)]);
       const read = <T>(operation: () => Promise<T>) => readDuringBackendCreation(operation, signal);
       // Refresh admission and credentials before each external request, including Recall.
@@ -132,6 +134,8 @@ export function createJevRoutingModel(input: {
           candidateSetId,
         );
       } catch (error) {
+        // The production composition owns diagnostics for its earlier deadline;
+        // caller cancellation is silent, and this avoids duplicate timeout logs.
         if (request.abortSignal.aborted) return undefined;
         const failure = signal.aborted
           ? 'timeout'
@@ -178,6 +182,8 @@ async function choose(
   const answer = record(record(record(payload)?.answers)?.decision);
   const probabilities = record(answer?.probabilities);
   const choice = answer?.choice;
+  // TypeSafe documents every criteria option and a distribution summing to 1:
+  // https://docs.typesafe.ai/api#choice-answer (allow 0.01 rounding tolerance).
   if (
     answer?.type !== 'choice' ||
     typeof choice !== 'string' ||

@@ -1006,6 +1006,10 @@ export class HostWorkHubCoordinationCoordinator {
     } catch {
       // Invalid output, unavailable candidates, or provider failure cannot
       // silently become creation or bind an arbitrary existing Session.
+      // Preparation failures (for example transcript reads) and injected-model
+      // throws bind this admission to clarify, preventing actions for this turn.
+      // This differs intentionally from Jev's internal provider/candidate errors:
+      // that opt-in adapter returns undefined to preserve the legacy unbound path.
       return { kind: 'routing', disposition: 'clarify' };
     }
   }

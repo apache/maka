@@ -1705,8 +1705,13 @@ export async function createExecutionRuntimeHostComposition(
       (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
       context.owner.capability.rootId,
       async (input) => {
+        // Explicit injection remains an experiment seam. Injected models own
+        // policy/egress checks and cancellation; this bypasses the production
+        // Jev preparation deadline (including its transcript-read protection).
         if (dependencies.workHubRoutingModel)
           return workHubCoordination.prepareRoutingDecision(input);
+        // One admission budget covers policy/transcript reads, both Jev asks,
+        // candidate resolution and transport cleanup; it is not per request.
         const signal = AbortSignal.any([
           ...(input.inputClosedSignal ? [input.inputClosedSignal] : []),
           AbortSignal.timeout(8_000),
@@ -1723,8 +1728,10 @@ export async function createExecutionRuntimeHostComposition(
             signal,
           );
         } catch {
-          if (!input.inputClosedSignal?.aborted)
-            console.warn('[runtime-host] Jev routing fallback: preparation_unavailable');
+          if (!input.inputClosedSignal?.aborted) {
+            const failure = signal.aborted ? 'timeout' : 'preparation_unavailable';
+            console.warn(`[runtime-host] Jev routing fallback: ${failure}`);
+          }
           return undefined;
         }
       },
