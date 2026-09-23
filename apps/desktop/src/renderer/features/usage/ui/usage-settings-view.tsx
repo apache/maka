@@ -64,6 +64,7 @@ const EMPTY_USAGE_LOGS: UsageStats['logs'] = [];
 const normalizeUsageSearch = (search: string) => search.trim().toLowerCase();
 
 function UsageTokenValue(props: { value: string; exactValue: string }) {
+  if (props.value === props.exactValue) return props.value;
   return (
     <Tooltip content={props.exactValue} hasHoverIndication={false}>
       {props.value}

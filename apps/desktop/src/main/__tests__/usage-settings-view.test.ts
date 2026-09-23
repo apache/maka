@@ -259,6 +259,9 @@ for (const expected of [
   it(`shows compact tokens with exact keyboard tooltips throughout Usage in ${expected.locale}`, async () => {
     const { container, root } = setupDom();
     const stats = statsWithLargeTokenCounts();
+    stats.logs.push({ ...stats.logs[0]!, id: 'small-request', inputTokens: 999, outputTokens: 0 });
+    stats.byProvider.push({ provider: 'small-provider', requests: 1, tokens: 999, costUsd: 0 });
+    stats.byModel.push({ model: 'small-model', requests: 1, tokens: 999, costUsd: 0 });
     const base = mergeSettings(createDefaultSettings(), {
       usage: { range: 'all', activeTab: 'providers', showDetails: true },
     });
@@ -297,6 +300,10 @@ for (const expected of [
           assert.equal(cells[1]?.textContent, '1284', 'request counts are not token counts');
         }
         await assertCompactTooltip(cells[tokenIndex]!, '1M', '1,048,576');
+        const smallTokenCell = container.querySelectorAll('tbody tr')[1]!.querySelectorAll('td')[tokenIndex]!;
+        assert.equal(smallTokenCell.textContent, '999');
+        assert.equal(smallTokenCell.querySelectorAll('[tabindex], [aria-describedby]').length, 0,
+          'already exact token counts must not add tooltip tab stops');
       }
     } finally {
       await act(async () => root.unmount());
@@ -334,10 +341,12 @@ it('keeps unavailable token placeholders distinct from loaded zero counts and em
     assert.match(container.textContent ?? '', /No provider usage/);
     assert.equal(container.querySelector('tbody tr'), null);
     const cards = container.querySelectorAll('[data-slot="stat-tile"]');
-    await assertCompactTooltip(cards[2]!, '0', '0');
-    await assertCompactTooltip(cards[2]!, 'Input 0 / output 0', 'Input 0 / output 0');
-    await assertCompactTooltip(cards[3]!, '0', '0');
-    await assertCompactTooltip(cards[3]!, 'New 0 / hit 0 / created 0', 'New 0 / hit 0 / created 0');
+    assert.equal(cards[2]!.querySelector('[data-slot="stat-tile-detail"]')?.textContent, 'Input 0 / output 0');
+    assert.equal(cards[3]!.querySelector('[data-slot="stat-tile-detail"]')?.textContent, 'New 0 / hit 0 / created 0');
+    for (const card of [cards[2]!, cards[3]!]) {
+      assert.equal(card.querySelectorAll('[tabindex], [aria-describedby]').length, 0,
+        'already exact summaries and details must not add tooltip tab stops');
+    }
   } finally {
     await act(async () => root.unmount());
   }
