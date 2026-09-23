@@ -173,6 +173,7 @@ export class McpManagementOverlay implements Component {
   private editor: OverlayTextInput | undefined;
   private closed = false;
   private actionAttempt = 0;
+  private pendingConfigErrorPath: string | undefined;
 
   constructor(
     private readonly input: {
@@ -203,10 +204,8 @@ export class McpManagementOverlay implements Component {
     }
     if (this.phase.kind === 'busy') {
       if (matchesKey(data, Key.escape)) {
-        this.actionAttempt += 1;
         this.backToList();
       } else if (matchesKey(data, 'q')) {
-        this.actionAttempt += 1;
         this.close();
       }
       return;
@@ -494,14 +493,24 @@ export class McpManagementOverlay implements Component {
     }
     if (this.closed || attempt !== this.actionAttempt) return;
     if (result.status === 'failed' && result.reason === 'invalid-config-file') {
-      this.phase = { kind: 'config_error', path: result.path };
-      this.notice = undefined;
-      this.top = 0;
+      // Esc dismisses the busy view, not the operation or its file diagnostic.
+      // Defer presentation while the user is editing another form.
+      this.pendingConfigErrorPath = result.path;
+      this.showPendingConfigError();
       this.input.onChange();
       return;
     }
+    if (
+      result.status === 'applied' &&
+      ['add', 'edit', 'commit_import', 'set_enabled', 'remove'].includes(action.kind)
+    ) {
+      this.pendingConfigErrorPath = undefined;
+    }
+    // Do not restore a dismissed busy view for ordinary completion results.
+    if (this.phase.kind !== 'busy') return;
     this.phase = { kind: 'list' };
     this.notice = actionNotice(result, this.input.locale);
+    this.showPendingConfigError();
     this.input.onChange();
   }
 
@@ -619,7 +628,20 @@ export class McpManagementOverlay implements Component {
     this.clearEditor();
     this.phase = { kind: 'list' };
     if (clearNotice) this.notice = undefined;
+    this.showPendingConfigError();
     this.input.onChange();
+  }
+
+  private showPendingConfigError(): void {
+    if (
+      this.pendingConfigErrorPath === undefined ||
+      (this.phase.kind !== 'list' && this.phase.kind !== 'busy')
+    )
+      return;
+    this.phase = { kind: 'config_error', path: this.pendingConfigErrorPath };
+    this.pendingConfigErrorPath = undefined;
+    this.notice = undefined;
+    this.top = 0;
   }
 
   private clearEditor(): void {
