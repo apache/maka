@@ -679,11 +679,17 @@ const failedMcpStatuses: McpServerStatus[] = [
 
 type McpServicesOverrides = Partial<ReturnType<typeof createFakeModuleHubServices>['mcp']>;
 
-function withMcpServices(config: McpConfigFile, statuses: McpServerStatus[], overrides: McpServicesOverrides = {}): Decorator {
+function withMcpServices(
+  config: McpConfigFile,
+  statuses: McpServerStatus[],
+  overrides: McpServicesOverrides = {},
+  editedElsewhere?: McpConfigFile['mcpServers'],
+): Decorator {
   return function McpServicesDecorator(StoryComponent) {
     const [services] = useState(() => {
       let saved = structuredClone(config);
       let current = structuredClone(statuses);
+      let elsewhere = editedElsewhere;
       const listeners = new Set<() => void>();
       const changed = () => { for (const listener of listeners) listener(); };
       const defaults = createFakeModuleHubServices();
@@ -715,10 +721,24 @@ function withMcpServices(config: McpConfigFile, statuses: McpServerStatus[], ove
           changed();
           return { status: 'imported', config: saved, importedCount: Object.keys(servers).length };
         },
-        upsert: async (id, server) => {
+        update: async (id, server, basis) => {
+          // Another writer (the TUI) lands first, between opening and saving.
+          if (elsewhere) {
+            saved = { ...saved, mcpServers: { ...saved.mcpServers, ...elsewhere } };
+            elsewhere = undefined;
+            changed();
+          }
+          if (JSON.stringify(saved.mcpServers[id]) !== JSON.stringify(basis)) return { status: 'stale' };
           saved = { ...saved, mcpServers: { ...saved.mcpServers, [id]: server } };
           changed();
-          return saved;
+          return { status: 'updated', config: saved };
+        },
+        setEnabled: async (id, enabled) => {
+          const server = saved.mcpServers[id];
+          if (!server) return { status: 'stale' };
+          saved = { ...saved, mcpServers: { ...saved.mcpServers, [id]: { ...server, enabled } } };
+          changed();
+          return { status: 'updated', config: saved };
         },
         remove: async (id) => {
           const { [id]: _removed, ...mcpServers } = saved.mcpServers;
@@ -1380,6 +1400,26 @@ export const ExtensionsMcpEditor: Story = {
 
 // Real path: sidebar → 扩展 → MCP → slack → 编辑, in a narrow window.
 export const ExtensionsMcpEditorNarrow: Story = { ...ExtensionsMcpEditor };
+
+// Real path: sidebar → 扩展 → MCP → slack → 编辑 → 保存连接, while the TUI
+// changed slack after the editor opened.
+export const ExtensionsMcpEditedElsewhere: Story = {
+  decorators: [withMcpServices(editorMcpConfig, [editorMcpStatus], {}, {
+    slack: { ...editorMcpConfig.mcpServers.slack!, env: { SLACK_BOT_TOKEN: 'from-tui', SLACK_TEAM_ID: '', SLACK_CHANNEL_IDS: '' } },
+  })],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const doc = canvasElement.ownerDocument;
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.includes('slack') === true)).click();
+    (await waitForStoryButton(doc.body, (button) => button.textContent?.trim() === '编辑')).click();
+    await waitForStoryText(doc.body, '编辑 slack');
+    (await waitForStoryButton(doc.body, (button) => button.textContent?.trim() === '保存连接')).click();
+    await waitForStoryText(doc.body, '这个连接刚在别处被修改过');
+    if (!doc.querySelector('dialog[open] form.maka-mcp-manual-form')) {
+      throw new Error('A save refused as stale must keep the editor open with what was typed');
+    }
+  },
+};
 
 // Real path: sidebar → 扩展 → MCP → select a remote connection requiring OAuth.
 export const ExtensionsMcpLoginRequired: Story = {

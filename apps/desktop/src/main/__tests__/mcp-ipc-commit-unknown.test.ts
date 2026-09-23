@@ -57,7 +57,7 @@ test('MCP remove reconciles a live manager after the real store publishes then f
   const fault = failDirectorySync(t, root);
   const tracked = trackTransform(t, store);
   const publicationError = new Error('capability publication unavailable');
-  const ipc = mutationHarness(store, {
+  const ipc = mutationHarness(t, store, {
     manager,
     publishCapabilities: async () => { throw publicationError; },
   });
@@ -80,7 +80,7 @@ test('MCP remove reconciles a live manager after the real store publishes then f
   assert.deepEqual(ipc.publicationErrors, [publicationError]);
 });
 
-test('MCP upsert reconciles the reread authority including an intervening writer without replaying its mutation', {
+test('MCP update reconciles the reread authority including an intervening writer without replaying its mutation', {
   skip: process.platform === 'win32',
 }, async (t) => {
   const { root, store } = await fixtureStore(t);
@@ -90,9 +90,10 @@ test('MCP upsert reconciles the reread authority including an intervening writer
   const tracked = trackTransform(t, store, async () => {
     await otherStore.upsert('remote', { url: 'https://latest.example.com/mcp', enabled: false });
   });
-  const ipc = mutationHarness(store);
+  const ipc = mutationHarness(t, store);
+  const basis = (await ipc.invoke('mcp:getConfig')).mcpServers.remote;
   await assert.rejects(
-    ipc.invoke('mcp:upsert', 'remote', { url: 'https://proposed.example.com/mcp', enabled: false }),
+    ipc.invoke('mcp:update', 'remote', { url: 'https://proposed.example.com/mcp', enabled: false }, basis),
     (error) => error === tracked.error(),
   );
   const authoritative = await diskConfig(root);
@@ -112,7 +113,7 @@ for (const phase of ['read', 'sync', 'emit'] as const) {
     failDirectorySync(t, root);
     const tracked = trackTransform(t, store);
     const reconciliationError = new Error(`injected ${phase} failure`);
-    const ipc = mutationHarness(store);
+    const ipc = mutationHarness(t, store);
     if (phase === 'read') {
       t.mock.method(store, 'get', async () => { throw reconciliationError; });
     } else if (phase === 'sync') {
@@ -120,7 +121,7 @@ for (const phase of ['read', 'sync', 'emit'] as const) {
     } else {
       t.mock.method(ipc.deps, 'emitChanged', () => { throw reconciliationError; });
     }
-    await assert.rejects(ipc.invoke('mcp:upsert', 'fixture', { command: 'node', enabled: false }), (error) => {
+    await assert.rejects(ipc.invoke('mcp:add', 'fixture', { command: 'node', enabled: false }), (error) => {
       assert.ok(error instanceof AggregateError);
       assert.match(error.message, /out of sync/u);
       assert.equal(error.cause, tracked.error());
@@ -139,8 +140,8 @@ test('MCP pre-publication failure does not reconcile or retry the failed mutatio
   const error = new Error('injected transform failure');
   const transform = t.mock.method(store, 'transform', async () => { throw error; });
   const get = t.mock.method(store, 'get');
-  const ipc = mutationHarness(store);
-  await assert.rejects(ipc.invoke('mcp:upsert', 'fixture', { command: 'node' }), (caught) => caught === error);
+  const ipc = mutationHarness(t, store);
+  await assert.rejects(ipc.invoke('mcp:add', 'fixture', { command: 'node' }), (caught) => caught === error);
   assert.equal(transform.mock.callCount(), 1);
   assert.equal(get.mock.callCount(), 0);
   assert.deepEqual(await diskConfig(root), { version: MCP_CONFIG_VERSION, mcpServers: {} });
@@ -202,7 +203,7 @@ async function diskConfig(root: string): Promise<McpConfigFile> {
   return JSON.parse(await readFile(join(root, 'mcp.json'), 'utf8'));
 }
 
-function mutationHarness(store: McpConfigStore, overrides: Partial<McpIpcMainDeps> = {}) {
+function mutationHarness(t: TestContext, store: McpConfigStore, overrides: Partial<McpIpcMainDeps> = {}) {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
   const synced: McpConfigFile[] = [];
   const emitted: McpServerStatus[][] = [];
@@ -230,7 +231,7 @@ function mutationHarness(store: McpConfigStore, overrides: Partial<McpIpcMainDep
     emitChanged: (statuses) => { emitted.push(statuses); },
     ...overrides,
   };
-  registerMcpIpcMain(deps);
+  t.after(registerMcpIpcMain(deps));
   return {
     deps, synced, emitted, retired, publicationErrors,
     invoke(channel: string, ...args: unknown[]) {

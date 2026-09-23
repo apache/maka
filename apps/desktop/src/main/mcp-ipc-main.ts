@@ -23,6 +23,7 @@ import {
   type McpConfigAddResult,
   type McpConfigFile,
   type McpConfigImportResult,
+  type McpConfigUpdateResult,
   type McpServerConfig,
   type McpServerStatus,
 } from '@maka/core/mcp';
@@ -78,7 +79,7 @@ export function createMcpExclusiveLane(): McpExclusiveLane {
   };
 }
 
-export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
+export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
   // Main is the authority on operation exclusivity, not the renderer's
   // advisory locks: while a login round owns a server, a config mutation
   // would race the browser callback against a changed or absent server.
@@ -219,21 +220,51 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       }
     },
   );
-  deps.ipcMain.handle('mcp:upsert', async (_event, serverId: string, config: McpServerConfig) => {
+  const updateServer = async (
+    serverId: string,
+    change: (current: McpConfigFile, previous: McpServerConfig) => McpServerConfig,
+  ): Promise<McpConfigUpdateResult> => {
     assertNoActiveLogin(serverId);
-    const next = await inMutationLane(() =>
-      commitConfig((current) => ({
-        ...current,
-        mcpServers: {
-          ...current.mcpServers,
-          [serverId]: restoreMcpServerSecret(serverId, config, current),
-        },
-      })),
-    );
+    let next: McpConfigFile;
+    try {
+      next = await inMutationLane(() =>
+        commitConfig((current) => {
+          const previous = current.mcpServers[serverId];
+          if (!previous) throw new McpServerChangedError();
+          return {
+            ...current,
+            mcpServers: { ...current.mcpServers, [serverId]: change(current, previous) },
+          };
+        }),
+      );
+    } catch (error) {
+      if (error instanceof McpServerChangedError) return { status: 'stale' };
+      throw error;
+    }
     await deps.manager.sync(next);
     changed(deps);
-    return redactMcpConfigSecrets(next);
-  });
+    return { status: 'updated', config: redactMcpConfigSecrets(next) };
+  };
+  // `basis` is the server as the renderer last showed it, secrets redacted. A
+  // server that no longer matches it was changed elsewhere (the TUI edits the
+  // same file), and saving over it would silently drop that change.
+  deps.ipcMain.handle(
+    'mcp:update',
+    (_event, serverId: string, config: McpServerConfig, basis: McpServerConfig) =>
+      updateServer(serverId, (current, previous) => {
+        const seen = redactMcpConfigSecrets({
+          version: MCP_CONFIG_VERSION,
+          mcpServers: { [serverId]: previous },
+        }).mcpServers[serverId];
+        if (JSON.stringify(seen) !== JSON.stringify(basis)) throw new McpServerChangedError();
+        return restoreMcpServerSecret(serverId, config, current);
+      }),
+  );
+  // Flips the switch on what is on disk, so a toggle never writes back the
+  // rest of an older copy.
+  deps.ipcMain.handle('mcp:setEnabled', (_event, serverId: string, enabled: boolean) =>
+    updateServer(serverId, (_current, previous) => ({ ...previous, enabled })),
+  );
   const removeServer = async (serverId: string): Promise<McpConfigFile> =>
     inMutationLane(() =>
       commitConfig((current) => {
@@ -286,7 +317,24 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       changed(deps);
     }
   });
+  // Another process (the TUI, another window) replacing mcp.json is followed
+  // the way a change made here is. A login in flight needs nothing: the
+  // manager binds each round to the URL it started against.
+  return deps.store.subscribeChanges((error) => {
+    if (error) {
+      console.error('[mcp] stopped following mcp.json changes:', error);
+      return;
+    }
+    void deps.ensureReady()
+      .then(() => inMutationLane(async () => deps.manager.sync(await deps.store.get())))
+      .then(
+        () => changed(deps),
+        (failure: unknown) => console.error('[mcp] could not apply an mcp.json change:', failure),
+      );
+  });
 }
+
+class McpServerChangedError extends Error {}
 
 function changed(deps: McpIpcMainDeps): void {
   deps.emitChanged(deps.manager.statuses());

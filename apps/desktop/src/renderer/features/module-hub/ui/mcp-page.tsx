@@ -51,6 +51,7 @@ import {
   Dialog,
   DialogHeader,
 } from '@astryxdesign/core/Dialog';
+import { Banner } from '@astryxdesign/core/Banner';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import {
@@ -100,8 +101,12 @@ type EditorState = {
   mode: 'manual' | 'json';
   draft: McpEditorDraft;
   source: string;
-  editingId: string | null;
+  // `basis` is the server as the editor opened it, to notice a change made
+  // elsewhere (the TUI edits the same file) while this one is open.
+  editing: { id: string; basis: McpServerConfig } | null;
 } | null;
+
+type McpEditConflict = 'changed' | 'removed' | null;
 
 type McpMarkSource = { image: string } | { mask: string } | 'feishu';
 type McpSuggestion = { id: 'notion' | 'linear' | 'feishu' | 'mcp-docs'; url: string; mark: McpMarkSource };
@@ -158,6 +163,14 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
 
   // Derived, not stored: deleting or filtering out a row closes its detail.
   const selectedServer = connectionEntries.find(([serverId]) => serverId === selectedServerId) ?? null;
+  const editedServer = editor?.editing && Object.hasOwn(config.mcpServers, editor.editing.id)
+    ? config.mcpServers[editor.editing.id]
+    : undefined;
+  // A save of our own refreshes the config too, before the editor closes.
+  const editConflict: McpEditConflict = !editor?.editing || !editorOpen || busy === 'save' ? null
+    : !editedServer ? 'removed'
+    : JSON.stringify(editedServer) !== JSON.stringify(editor.editing.basis) ? 'changed'
+    : null;
 
   // Synchronising focus with the DOM once the list it points into has been
   // re-rendered — an external system, which is what an Effect is for.
@@ -203,16 +216,16 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       mode: 'manual',
       draft: mcpDraftFromConfig(serverId, server),
       source: '',
-      editingId: serverId,
+      editing: { id: serverId, basis: server },
     });
   }
 
   async function addSuggestion(suggestion: McpSuggestion) {
     const server: McpServerConfig = { enabled: true, url: suggestion.url, transport: 'auto', protocol: 'auto' };
-    const result = await controller.save(suggestion.id, server, true);
+    const result = await controller.add(suggestion.id, server);
     if (!result || !mounted.current) return;
     if (result.status === 'exists') {
-      openEditor({ mode: 'manual', draft: mcpDraftFromConfig(suggestion.id, server), source: '', editingId: null });
+      openEditor({ mode: 'manual', draft: mcpDraftFromConfig(suggestion.id, server), source: '', editing: null });
       setEditorErrors({ id: 'exists' });
       return;
     }
@@ -230,9 +243,15 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     try { server = mcpConfigFromDraft(editor.draft, copy); }
     catch (failure) { toast.error(copy.errors.save, classifiedErrorFallback(failure, getSettingsSharedCopy(locale).unknownError, locale, 'mcp')); return; }
     const id = editor.draft.id.trim();
-    const result = await controller.save(id, server, editor.editingId === null);
+    // Checked against the server as shown now, not as opened: a change made
+    // elsewhere already shows as the notice, so saving replaces it. One not
+    // shown yet comes back stale, and the refresh brings up the notice.
+    const result = editor.editing
+      ? editedServer && await controller.update(id, server, editedServer)
+      : await controller.add(id, server);
     if (!result || !mounted.current) return;
     if (result.status === 'exists') { setEditorErrors({ id: 'exists' }); return; }
+    if (result.status === 'stale') return;
     closeEditor();
     setSelectedServerId(id);
     toast.success(copy.toast.saved, copy.toast.savedDetail);
@@ -356,7 +375,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           status: statusById.get(selectedServer[0]),
           busy,
           copy,
-          onToggle: (enabled) => void controller.setEnabled(selectedServer[0], selectedServer[1], enabled),
+          onToggle: (enabled) => void controller.setEnabled(selectedServer[0], enabled),
           onEdit: () => openEdit(selectedServer[0], selectedServer[1]),
           onTest: () => void testServer(selectedServer[0]),
           onRemove: () => void remove(selectedServer[0]),
@@ -371,7 +390,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             role="group"
             aria-label={copy.page.actionsAria}
           >
-            <Button variant="primary" onClick={() => openEditor({ mode: 'manual', draft: { ...createEmptyMcpDraft(), kind: 'remote' }, source: '', editingId: null })} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
+            <Button variant="primary" onClick={() => openEditor({ mode: 'manual', draft: { ...createEmptyMcpDraft(), kind: 'remote' }, source: '', editing: null })} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
             <IconButton
               variant="ghost"
               label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
@@ -445,6 +464,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           state={editor}
           isOpen={editorOpen}
           errors={editorErrors}
+          conflict={editConflict}
           copy={copy}
           saving={busy === 'save' || busy === 'import'}
           onChange={(next) => {
@@ -613,6 +633,7 @@ function McpEditorDialog(props: {
   state: Exclude<EditorState, null>;
   isOpen: boolean;
   errors: McpEditorErrors;
+  conflict: McpEditConflict;
   copy: McpCopy;
   saving: boolean;
   onChange(
@@ -623,7 +644,7 @@ function McpEditorDialog(props: {
   onSave(event: React.FormEvent): void;
   onImport(event: React.FormEvent): void;
 }) {
-  const editing = Boolean(props.state.editingId);
+  const editing = Boolean(props.state.editing);
   const draft = props.state.mode === 'manual' ? props.state.draft : null;
   const hasAdvancedSettings = Boolean(draft && (
     draft.kind === 'stdio'
@@ -685,6 +706,11 @@ function McpEditorDialog(props: {
         ) : (
           <form className="maka-mcp-manual-form" onSubmit={props.onSave}>
             <div className="maka-mcp-form-fields">
+              {props.conflict === 'removed' ? (
+                <Banner status="error" role="alert" title={props.copy.editor.removedElsewhere} />
+              ) : props.conflict === 'changed' ? (
+                <Banner status="warning" role="alert" title={props.copy.editor.changedElsewhere} description={props.copy.editor.changedElsewhereDetail} />
+              ) : null}
               <HStack>
                 <SegmentedControl
                   value={props.state.draft.kind}
@@ -765,7 +791,7 @@ function McpEditorDialog(props: {
             </div>
             {/* Same as the JSON form: submit semantics are the reason Enter in
                 a field saves, so isLoading carries the busy state here. */}
-            <div className="maka-mcp-editor-footer">{modeSwitch}{cancel}<Button type="submit" variant="primary" isLoading={props.saving} label={props.copy.editor.saveConnect} /></div>
+            <div className="maka-mcp-editor-footer">{modeSwitch}{cancel}<Button type="submit" variant="primary" isLoading={props.saving} isDisabled={props.conflict === 'removed'} label={props.copy.editor.saveConnect} /></div>
           </form>
         )}
           </LayoutContent>

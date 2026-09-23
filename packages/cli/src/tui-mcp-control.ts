@@ -213,7 +213,7 @@ export interface TuiMcpPublicationTarget
 }
 
 interface TuiMcpControllerDeps {
-  readonly configStore: Pick<McpConfigStore, 'get' | 'transform'>;
+  readonly configStore: Pick<McpConfigStore, 'get' | 'transform' | 'subscribeChanges'>;
   readonly manager: TuiMcpManager;
   readonly createProvider: (manager: TuiMcpManager) => ClientCapabilityProvider | undefined;
 }
@@ -245,6 +245,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
   readonly #listeners = new Set<() => void>();
   readonly #disposeManagerChange: () => void;
   readonly #disposeConnectionAvailability: () => void;
+  readonly #disposeConfigChanges: () => void;
   readonly #initialization: Promise<void>;
   #availability: TuiMcpPublicationAvailability = { kind: 'unavailable' };
   #closed = false;
@@ -324,6 +325,12 @@ class TuiMcpControllerImpl implements TuiMcpController {
         }
       },
     );
+    // Desktop edits the same file. Failing to follow its edits leaves the
+    // TUI's own working, so it stays quiet rather than print over the screen.
+    this.#disposeConfigChanges = deps.configStore.subscribeChanges((error) => {
+      if (!error)
+        void this.#serializeAction(() => this.#followConfigChange()).catch(() => undefined);
+    });
     this.#initialization = this.#initialize();
   }
 
@@ -390,6 +397,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#closed = true;
     this.#disposeManagerChange();
     this.#disposeConnectionAvailability();
+    this.#disposeConfigChanges();
     this.#listeners.clear();
     this.#preparedImport = undefined;
     const publicationClosing = this.#publication.close().catch(() => undefined);
@@ -417,7 +425,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     }
   }
 
-  #serializeAction(work: () => Promise<TuiMcpActionResult>): Promise<TuiMcpActionResult> {
+  #serializeAction<T>(work: () => Promise<T>): Promise<T> {
     const run = this.#actionLane.then(work, work);
     this.#actionLane = run.then(
       () => undefined,
@@ -540,7 +548,17 @@ class TuiMcpControllerImpl implements TuiMcpController {
       }
       return { status: 'failed', reason: 'persist-failed' };
     }
+    this.#preparedImport = undefined;
     return (await this.#synchronizeCommittedConfig(committed)).result;
+  }
+
+  async #followConfigChange(): Promise<void> {
+    if (this.#closed || this.#snapshot.initialization !== 'ready') return;
+    const latest = await this.#deps.configStore.get();
+    // An import preview survives: its commit re-checks each server it replaces.
+    if (JSON.stringify(latest) !== JSON.stringify(this.#config)) {
+      await this.#synchronizeCommittedConfig(latest);
+    }
   }
 
   async #synchronizeCommittedConfig(committed: McpConfigFile): Promise<{
@@ -548,7 +566,6 @@ class TuiMcpControllerImpl implements TuiMcpController {
     readonly reconciliationError?: unknown;
   }> {
     if (this.#closed) return { result: { status: 'failed', reason: 'closed' } };
-    this.#preparedImport = undefined;
     this.#config = cloneConfig(committed);
     this.#updateSnapshot({ configuration: 'synchronizing' });
     this.#refreshManagerSnapshot();

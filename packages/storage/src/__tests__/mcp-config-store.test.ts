@@ -35,6 +35,24 @@ afterEach(async () =>
   Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))),
 );
 
+test('another writer replacing mcp.json notifies a subscriber once until it unsubscribes', async () => {
+  const root = await tempRoot();
+  const reader = createMcpConfigStore(root);
+  const writer = createMcpConfigStore(root);
+  await reader.get();
+  const notifications: Array<Error | undefined> = [];
+  const unsubscribe = reader.subscribeChanges((error) => notifications.push(error));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await writer.upsert('filesystem', { command: 'npx' });
+  await waitUntil(() => notifications.length > 0);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual(notifications, [undefined]);
+  unsubscribe();
+  await writer.remove('filesystem');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(notifications.length, 1);
+});
+
 test('creates and atomically updates a Claude-compatible mcp.json', async () => {
   const root = await tempRoot();
   const store = createMcpConfigStore(root);
@@ -606,4 +624,12 @@ async function tempRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'maka-mcp-store-'));
   roots.push(root);
   return root;
+}
+
+async function waitUntil(condition: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for condition');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }

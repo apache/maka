@@ -17,8 +17,9 @@
  * under the License.
  */
 
+import { watch } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   MCP_CONFIG_VERSION,
   createDefaultMcpConfig,
@@ -45,9 +46,16 @@ const MAX_ID_LENGTH = 128;
 const MAX_STRING_LENGTH = 8_192;
 const MAX_CONFIG_BYTES = 1_048_576;
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+// An atomic replace is a temp write plus a rename; one settle window turns
+// that burst into one notification.
+const CHANGE_SETTLE_MS = 150;
 
 export interface McpConfigStore {
   get(): Promise<McpConfigFile>;
+  /** Called after any process replaces mcp.json, this one included. The
+   * listener re-reads with get(); it receives an error once if watching
+   * stops. */
+  subscribeChanges(listener: (error?: Error) => void): () => void;
   /** One cross-process read-transform-write transaction. `apply` sees the
    * current on-disk config and may finish asynchronous effects that must
    * precede the commit, such as retiring credentials. The shared file lock
@@ -85,6 +93,36 @@ export class McpServerExistsError extends Error {
 
 export function createMcpConfigStore(workspaceRoot: string): McpConfigStore {
   return new FileMcpConfigStore(join(workspaceRoot, 'mcp.json'));
+}
+
+/** Watches the directory, not the file: an atomic replace renames a new
+ * inode over the old one, which ends a watch on the file itself. */
+export function subscribeMcpConfigFileChanges(
+  path: string,
+  listener: (error?: Error) => void,
+): () => void {
+  const name = basename(path);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let watcher: ReturnType<typeof watch>;
+  try {
+    watcher = watch(dirname(path), { persistent: false }, (_event, filename) => {
+      if (filename !== null && filename.toString() !== name) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => listener(), CHANGE_SETTLE_MS);
+    });
+  } catch (error) {
+    queueMicrotask(() => listener(error as Error));
+    return () => {};
+  }
+  const stop = () => {
+    clearTimeout(timer);
+    watcher.close();
+  };
+  watcher.on('error', (error) => {
+    stop();
+    listener(error);
+  });
+  return stop;
 }
 
 export class McpConfigurationValidationError extends Error {
@@ -179,6 +217,23 @@ class FileMcpConfigStore implements McpConfigStore {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       return this.withUpdateLock(() => this.readOrCreate());
     }
+  }
+
+  subscribeChanges(listener: (error?: Error) => void): () => void {
+    let stop: (() => void) | undefined;
+    let stopped = false;
+    void this.ensureDirectory().then(
+      () => {
+        if (!stopped) stop = subscribeMcpConfigFileChanges(this.path, listener);
+      },
+      (error: Error) => {
+        if (!stopped) listener(error);
+      },
+    );
+    return () => {
+      stopped = true;
+      stop?.();
+    };
   }
 
   async transform(

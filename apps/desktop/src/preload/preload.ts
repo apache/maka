@@ -236,6 +236,7 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigUpdateResult,
   McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
@@ -3169,8 +3170,11 @@ const makaBridge = {
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult> {
       return invokeSelectedRuntimeHost(host, 'mcp:add', serverId, config);
     },
-    upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
-      return invokeSelectedRuntimeHost(host, 'mcp:upsert', serverId, config);
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult> {
+      return invokeSelectedRuntimeHost(host, 'mcp:update', serverId, config, basis);
+    },
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult> {
+      return invokeSelectedRuntimeHost(host, 'mcp:setEnabled', serverId, enabled);
     },
     remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
       return invokeSelectedRuntimeHost(host, 'mcp:remove', serverId);

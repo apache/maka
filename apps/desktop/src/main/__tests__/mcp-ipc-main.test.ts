@@ -18,12 +18,12 @@
  */
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { MCP_CONFIG_VERSION, type McpConfigFile, type McpServerStatus } from '@maka/core/mcp';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMcpConfigStore, McpServerExistsError } from '@maka/storage/mcp-config-store';
+import { createMcpConfigStore, McpServerExistsError, type McpConfigStore } from '@maka/storage/mcp-config-store';
 import { createMcpExclusiveLane, registerMcpIpcMain } from '../mcp-ipc-main.js';
 
 test('MCP IPC commits config before publishing capabilities and emitting status', async () => {
@@ -54,6 +54,7 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
         config = { version: MCP_CONFIG_VERSION, mcpServers };
         return config;
       },
+      subscribeChanges: () => () => {},
     },
     manager: {
       forgetServerCredentials: async () => { calls.push('forget'); },
@@ -74,10 +75,10 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
     emitChanged: () => { calls.push('emit'); },
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
-  const result = await upsert({}, 'fixture', { command: 'node' });
-  assert.deepEqual(result.mcpServers.fixture, { command: 'node', enabled: true });
+  const add = handlers.get('mcp:add');
+  assert.ok(add);
+  const result = await add({}, 'fixture', { command: 'node' });
+  assert.deepEqual(result.config.mcpServers.fixture, { command: 'node', enabled: true });
   assert.deepEqual(calls, ['store', 'sync', 'emit', 'publish']);
 
   calls.length = 0;
@@ -105,8 +106,6 @@ test('MCP IPC commits config before publishing capabilities and emitting status'
   assert.deepEqual(calls, []);
 
   calls.length = 0;
-  const add = handlers.get('mcp:add');
-  assert.ok(add);
   const added = await add({}, 'brave', { command: 'npx' });
   assert.equal(added.status, 'added');
   assert.deepEqual(added.config.mcpServers.brave, { command: 'npx', enabled: true });
@@ -155,6 +154,7 @@ test('MCP remove aborts before touching the config when credential deletion fail
         config = { version: MCP_CONFIG_VERSION, mcpServers };
         return config;
       },
+      subscribeChanges: () => () => {},
     },
     manager: {
       forgetServerCredentials: async () => { throw new Error('credential store unavailable'); },
@@ -220,6 +220,7 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
         config = { version: MCP_CONFIG_VERSION, mcpServers };
         return config;
       },
+      subscribeChanges: () => () => {},
     },
     manager: {
       forgetServerCredentials: async () => {},
@@ -253,18 +254,17 @@ test('MCP IPC redacts clientSecret toward the renderer and restores the sentinel
 
   // The renderer round-trips the masked arg unchanged; the store gets the
   // real token back from disk.
-  const upsertScratch = handlers.get('mcp:upsert');
-  assert.ok(upsertScratch);
-  await upsertScratch({}, 'scratch', { ...seenScratch, enabled: false });
+  const update = handlers.get('mcp:update');
+  assert.ok(update);
+  assert.equal((await update({}, 'scratch', { ...seenScratch, enabled: false }, seenScratch)).status, 'updated');
   const storedScratch = config.mcpServers.scratch;
   assert.ok(storedScratch && 'command' in storedScratch);
   assert.deepEqual(storedScratch.args, ['server', '--custom=sk-ant-api03-abcdef123456']);
 
   // The renderer edits the redacted config and sends the sentinel back:
   // the store must get the real secret, the renderer only the sentinel.
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
-  const returned = await upsert({}, 'notion', { ...notion, transport: 'sse' });
+  const editing = (await getConfig({})).mcpServers.notion;
+  const { config: returned } = await update({}, 'notion', { ...editing, transport: 'sse' }, editing);
   const stored = config.mcpServers.notion;
   assert.ok(stored && 'url' in stored);
   assert.equal(stored.oauth?.clientSecret, 'real-secret');
@@ -307,6 +307,7 @@ test('an active login on a secret-bearing server does not veto edits to another 
       transform: async (apply) => { config = await apply(config); return config; },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
       forgetServerCredentials: async () => {},
@@ -370,6 +371,7 @@ test('a URL change retires the old endpoint credentials before the write, and an
       },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
       forgetServerCredentials: async () => {
@@ -393,12 +395,13 @@ test('a URL change retires the old endpoint credentials before the write, and an
     emitChanged: () => {},
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
+  const update = handlers.get('mcp:update');
+  assert.ok(update);
+  const basis = (await handlers.get('mcp:getConfig')!({})).mcpServers.remote;
   // Erase fails → nothing persists: the old endpoint's credentials cannot
   // outlive a committed repoint across a restart.
   await assert.rejects(
-    upsert({}, 'remote', { url: 'https://new.example.com/mcp' }),
+    update({}, 'remote', { url: 'https://new.example.com/mcp' }, basis),
     /credential store unavailable/u,
   );
   assert.deepEqual(calls, ['transaction:start', 'forget']);
@@ -410,19 +413,19 @@ test('a URL change retires the old endpoint credentials before the write, and an
   // invalid replacement must not log the user out when it cannot be saved.
   calls.length = 0;
   await assert.rejects(
-    upsert({}, 'remote', { url: 'http://public.example.com/mcp' }),
+    update({}, 'remote', { url: 'http://public.example.com/mcp' }, basis),
     /must use https/u,
   );
   assert.deepEqual(calls, ['transaction:start']);
 
   // Same repoint with a healthy credential store: erase strictly precedes
-  // the write. An unchanged-URL upsert afterwards does not erase at all.
+  // the write. An unchanged-URL update afterwards does not erase at all.
   eraseFails = false;
   calls.length = 0;
-  await upsert({}, 'remote', { url: 'https://new.example.com/mcp' });
+  const repointed = await update({}, 'remote', { url: 'https://new.example.com/mcp' }, basis);
   assert.deepEqual(calls, ['transaction:start', 'forget', 'write', 'sync']);
   calls.length = 0;
-  await upsert({}, 'remote', { url: 'https://new.example.com/mcp', enabled: false });
+  await update({}, 'remote', { url: 'https://new.example.com/mcp', enabled: false }, repointed.config.mcpServers.remote);
   assert.deepEqual(calls, ['transaction:start', 'write', 'sync']);
 });
 
@@ -450,6 +453,7 @@ test('a login claim travels the shared lane and cannot land inside an open trans
       },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
       forgetServerCredentials: async () => {},
@@ -471,10 +475,11 @@ test('a login claim travels the shared lane and cannot land inside an open trans
     emitChanged: () => {},
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
+  const update = handlers.get('mcp:update');
+  assert.ok(update);
+  const basis = config.mcpServers.x;
   // A config transaction is mid-flight (its write is parked)…
-  const updating = upsert({}, 'x', { url: 'https://new.example.com/mcp' });
+  const updating = update({}, 'x', { url: 'https://new.example.com/mcp' }, basis);
   await writeStarted;
   // …when a login claim arrives through the SAME lane, the way the OAuth
   // controller claims. It must queue behind the transaction, not interleave
@@ -494,7 +499,7 @@ test('a login claim travels the shared lane and cannot land inside an open trans
 
   // With the claim landed, the next transaction's in-lane gate refuses.
   await assert.rejects(
-    upsert({}, 'x', { url: 'https://third.example.com/mcp' }),
+    update({}, 'x', { url: 'https://third.example.com/mcp' }, basis),
     /login in progress/u,
   );
 });
@@ -520,6 +525,7 @@ test('the config commit applies its mutation to the transaction snapshot', async
       },
       upsert: async (_serverId, _server) => config,
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
       forgetServerCredentials: async () => {},
@@ -540,9 +546,9 @@ test('the config commit applies its mutation to the transaction snapshot', async
     emitChanged: () => {},
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
-  const next = await upsert({}, 'fixture', { command: 'node' });
+  const add = handlers.get('mcp:add');
+  assert.ok(add);
+  const { config: next } = await add({}, 'fixture', { command: 'node' });
   assert.equal(wrote, true);
   assert.ok(next.mcpServers.intruder);
   assert.ok(next.mcpServers.fixture);
@@ -569,6 +575,7 @@ test('MCP config commit is not rolled back by a capability publication failure',
         return config;
       },
       remove: async () => config,
+      subscribeChanges: () => () => {},
     },
     manager: {
       forgetServerCredentials: async () => {},
@@ -591,12 +598,95 @@ test('MCP config commit is not rolled back by a capability publication failure',
     emitChanged() {},
   });
 
-  const upsert = handlers.get('mcp:upsert');
-  assert.ok(upsert);
-  const committed = await upsert({}, 'fixture', { command: 'node' });
+  const add = handlers.get('mcp:add');
+  assert.ok(add);
+  const { config: committed } = await add({}, 'fixture', { command: 'node' });
   assert.deepEqual(committed.mcpServers.fixture, { command: 'node', enabled: true });
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(publicationErrors.map((error) => (error as Error).message), [
     'Host disconnected',
   ]);
 });
+
+test('an edit from an older copy writes nothing, and a toggle keeps a change made elsewhere', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-stale-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  const tui = createMcpConfigStore(root);
+  await store.upsert('remote', { url: 'https://a.example.com/mcp' });
+  const { handlers } = registerWithStore(t, store);
+  const basis = (await handlers.get('mcp:getConfig')!({})).mcpServers.remote;
+
+  await tui.upsert('remote', { url: 'https://b.example.com/mcp' });
+  assert.deepEqual(
+    await handlers.get('mcp:update')!({}, 'remote', { url: 'https://c.example.com/mcp' }, basis),
+    { status: 'stale' },
+  );
+  assert.equal(((await store.get()).mcpServers.remote as { url: string }).url, 'https://b.example.com/mcp');
+
+  const toggled = await handlers.get('mcp:setEnabled')!({}, 'remote', false);
+  assert.equal(toggled.status, 'updated');
+  assert.deepEqual((await store.get()).mcpServers.remote, { url: 'https://b.example.com/mcp', enabled: false, transport: 'auto' });
+
+  await tui.remove('remote');
+  assert.deepEqual(await handlers.get('mcp:setEnabled')!({}, 'remote', true), { status: 'stale' });
+  assert.deepEqual(await handlers.get('mcp:update')!({}, 'remote', { url: 'https://c.example.com/mcp' }, basis), { status: 'stale' });
+  assert.deepEqual((await store.get()).mcpServers, {});
+});
+
+test('a change another process makes to mcp.json reaches the manager until unregistered', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-follow-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  await store.get();
+  const desktop = registerWithStore(t, store);
+  // Let the watcher start before the other process writes.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  await createMcpConfigStore(root).upsert('tui-added', { command: 'node' });
+  await waitUntil(() => desktop.synced.some((config) => 'tui-added' in config.mcpServers));
+  await waitUntil(() => desktop.emitted > 0);
+
+  desktop.stop();
+  const seen = desktop.synced.length;
+  await createMcpConfigStore(root).remove('tui-added');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(desktop.synced.length, seen);
+});
+
+function registerWithStore(t: TestContext, store: McpConfigStore) {
+  const handlers = new Map<string, (...args: any[]) => Promise<any>>();
+  const synced: McpConfigFile[] = [];
+  let emitted = 0;
+  const stop = registerMcpIpcMain({
+    ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
+    store,
+    manager: {
+      forgetServerCredentials: async () => {},
+      sync: async (next) => { synced.push(structuredClone(next)); },
+      statuses: () => [],
+      test: async () => { throw new Error('not used'); },
+    },
+    oauth: {
+      isActive: () => false,
+      cancelLogin: () => false,
+      login: async () => { throw new Error('not used'); },
+      logout: async () => { throw new Error('not used'); },
+      resumeLogin: async () => undefined,
+    },
+    ensureReady: async () => {},
+    publishCapabilities: async () => {},
+    onPublicationError: () => {},
+    emitChanged: () => { emitted += 1; },
+  });
+  t.after(stop);
+  return { handlers, synced, get emitted() { return emitted; }, stop };
+}
+
+async function waitUntil(condition: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for condition');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}

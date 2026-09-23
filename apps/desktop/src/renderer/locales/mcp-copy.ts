@@ -56,7 +56,7 @@ export type McpCopy = {
     serverId: string; command: string; commandPlaceholder: string; commandHelp: string;
     workingDirectory: string; workingDirectoryPlaceholder: string; environment: string; environmentHelp: string;
     url: string; headers: string; headersHelp: string; saveConnect: string;
-    idExists: string; oauth: string; oauthHelp: string; issuer: string; clientId: string; clientSecret: string; scopes: string; callbackPort: string;
+    idExists: string; changedElsewhere: string; changedElsewhereDetail: string; removedElsewhere: string; oauth: string; oauthHelp: string; issuer: string; clientId: string; clientSecret: string; scopes: string; callbackPort: string;
     required: string; invalidUrl: string; unbalancedQuote: string;
     transportLabel: string; transportAuto: string; transportStreamableHttp: string; transportLegacySse: string;
     protocolLabel: string; protocolLegacy: string; protocolAuto: string; protocolModern: string;
@@ -105,7 +105,7 @@ const MCP_COPY = {
       disabled: '已停用', disconnected: '未连接', connecting: '连接中', connected: (count) => `${count} 个工具`, failed: '连接失败',
     },
     editor: {
-      idExists: '已有同名连接，请换个名称。', oauth: 'OAuth 设置', oauthHelp: '通常无需填写。只有服务提供固定客户端凭据时才配置；填写客户端 ID 时还需要授权服务器地址。', issuer: '授权服务器地址（issuer）', clientId: '客户端 ID', clientSecret: '客户端密钥', scopes: '权限范围（空格分隔）', callbackPort: '回调端口（可选）',
+      idExists: '已有同名连接，请换个名称。', changedElsewhere: '这个连接刚在别处被修改过', changedElsewhereDetail: '保存会用这里的内容覆盖那次修改；想保留那次修改，就取消后重新打开。', removedElsewhere: '这个连接已在别处删除，无法再保存。', oauth: 'OAuth 设置', oauthHelp: '通常无需填写。只有服务提供固定客户端凭据时才配置；填写客户端 ID 时还需要授权服务器地址。', issuer: '授权服务器地址（issuer）', clientId: '客户端 ID', clientSecret: '客户端密钥', scopes: '权限范围（空格分隔）', callbackPort: '回调端口（可选）',
       importTitle: '通过 JSON 导入', editTitle: (id) => `编辑 ${id}`, addTitle: '添加 MCP',
       manual: '手动填写', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
       jsonHelp: '粘贴完整配置或各连接的 JSON 对象；同名连接会被更新，其余连接保留。', cancel: '取消', importConnect: '导入配置',
@@ -163,7 +163,7 @@ const MCP_COPY = {
       disabled: '已停用', disconnected: '未連線', connecting: '連線中', connected: (count) => `${count} 個工具`, failed: '連線失敗',
     },
     editor: {
-      idExists: '已有同名連線，請換個名稱。', oauth: 'OAuth 設定', oauthHelp: '通常無需填寫。只有服務提供固定用戶端憑據時才設定；填寫用戶端 ID 時還需要授權伺服器地址。', issuer: '授權伺服器地址（issuer）', clientId: '用戶端 ID', clientSecret: '用戶端密鑰', scopes: '權限範圍（空格分隔）', callbackPort: '回呼連接埠（選填）',
+      idExists: '已有同名連線，請換個名稱。', changedElsewhere: '這個連線剛在別處被修改過', changedElsewhereDetail: '儲存會用這裡的內容覆蓋那次修改；想保留那次修改，就取消後重新開啟。', removedElsewhere: '這個連線已在別處刪除，無法再儲存。', oauth: 'OAuth 設定', oauthHelp: '通常無需填寫。只有服務提供固定用戶端憑據時才設定；填寫用戶端 ID 時還需要授權伺服器地址。', issuer: '授權伺服器地址（issuer）', clientId: '用戶端 ID', clientSecret: '用戶端密鑰', scopes: '權限範圍（空格分隔）', callbackPort: '回呼連接埠（選填）',
       importTitle: '透過 JSON 匯入', editTitle: (id) => `編輯 ${id}`, addTitle: '新增 MCP',
       manual: '手動填寫', pasteJson: '貼上 JSON', jsonConfig: 'JSON 設定',
       jsonHelp: '貼上完整設定或各連線的 JSON 物件；同名連線會被更新，其餘連線保留。', cancel: '取消', importConnect: '匯入設定',
@@ -221,7 +221,7 @@ const MCP_COPY = {
       disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, failed: 'Connection failed',
     },
     editor: {
-      idExists: 'A connection with this name already exists. Choose another name.', oauth: 'OAuth settings', oauthHelp: 'Usually leave this blank. Configure it only when the service provides fixed client credentials; a client ID also requires the authorization server issuer.', issuer: 'Authorization server issuer', clientId: 'Client ID', clientSecret: 'Client secret', scopes: 'Scopes (space separated)', callbackPort: 'Callback port (optional)',
+      idExists: 'A connection with this name already exists. Choose another name.', changedElsewhere: 'This connection was just changed elsewhere', changedElsewhereDetail: 'Saving replaces that change with what is here. To keep that change, cancel and open it again.', removedElsewhere: 'This connection was deleted elsewhere and can no longer be saved.', oauth: 'OAuth settings', oauthHelp: 'Usually leave this blank. Configure it only when the service provides fixed client credentials; a client ID also requires the authorization server issuer.', issuer: 'Authorization server issuer', clientId: 'Client ID', clientSecret: 'Client secret', scopes: 'Scopes (space separated)', callbackPort: 'Callback port (optional)',
       importTitle: 'Import from JSON', editTitle: (id) => `Edit ${id}`, addTitle: 'Add MCP',
       manual: 'Fill in manually', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
       jsonHelp: 'Paste a complete configuration or a JSON object of named connections. Matching names are updated; other connections are kept.', cancel: 'Cancel', importConnect: 'Import configuration',

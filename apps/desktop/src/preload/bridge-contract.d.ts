@@ -246,6 +246,7 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigUpdateResult,
   McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
@@ -1582,7 +1583,10 @@ export interface MakaBridge {
     /** Adds a new server; a taken id comes back as `{ status: 'exists' }`
      * instead of an error, so the dialog can put it on the id field. */
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;
-    upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    /** Saves an edit made against `basis`, the server as last shown; one
+     * changed or removed elsewhere since comes back `stale`. */
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
     remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult>;
     login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;

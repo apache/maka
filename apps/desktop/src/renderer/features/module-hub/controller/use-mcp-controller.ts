@@ -22,6 +22,7 @@ import {
   createDefaultMcpConfig,
   type McpConfigAddResult,
   type McpConfigFile,
+  type McpConfigUpdateResult,
   type McpServerConfig,
   type McpServerStatus,
 } from '@maka/core/mcp';
@@ -103,14 +104,13 @@ export function useMcpController() {
     busy,
     error,
     reload,
-    save: (id: string, config: McpServerConfig, creating: boolean) =>
-      run<McpConfigAddResult>('save', async (host) => creating
-        ? mcp.add(id, config, host)
-        : { status: 'added', config: await mcp.upsert(id, config, host) },
-      ),
+    add: (id: string, config: McpServerConfig) =>
+      run<McpConfigAddResult>('save', (host) => mcp.add(id, config, host)),
+    update: (id: string, config: McpServerConfig, basis: McpServerConfig) =>
+      run<McpConfigUpdateResult>('save', (host) => mcp.update(id, config, basis, host)),
     importConfig: (source: string) => run('import', (host) => mcp.importConfig(source, host)),
-    setEnabled: (id: string, config: McpServerConfig, enabled: boolean) =>
-      run(`toggle:${id}`, (host) => mcp.upsert(id, { ...config, enabled }, host)),
+    setEnabled: (id: string, enabled: boolean) =>
+      run<McpConfigUpdateResult>(`toggle:${id}`, (host) => mcp.setEnabled(id, enabled, host)),
     remove: (id: string) => run(`remove:${id}`, (host) => mcp.remove(id, host)),
     test: (id: string) => run(`test:${id}`, (host) => mcp.test(id, host)),
     login: (id: string) => run(`login:${id}`, (host) => mcp.login(id, host)),

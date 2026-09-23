@@ -27,7 +27,7 @@ Total Windows-excluded declarations: **101**
 |---|---|---|
 | platform-contract | `apps/desktop/scripts/check-renderer-architecture.test.mjs` handles read-only POSIX permissions on the checker directory according to --strict-base | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP remove reconciles a live manager after the real store publishes then fails directory sync | `process.platform === 'win32'` |
-| portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP upsert reconciles the reread authority including an intervening writer without replaying its mutation | `process.platform === 'win32'` |
+| portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP update reconciles the reread authority including an intervening writer without replaying its mutation | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP published write explicitly reports out-of-sync when reconciliation ${phase} fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
 | platform-contract | `apps/desktop/src/main/__tests__/runtime-host-skills-ipc-main.test.ts` reports create_failed without opening when a Skill directory parent is not writable | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory parent read-only' : process.getuid?.() === 0` |

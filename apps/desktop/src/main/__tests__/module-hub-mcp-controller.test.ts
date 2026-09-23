@@ -40,15 +40,15 @@ test('MCP create rejects an occupied ID and refreshes committed config after a f
       saved = { ...saved, mcpServers: { ...saved.mcpServers, [id]: server } };
       throw new Error('connection failed after save');
     },
-    upsert: async () => { updates++; return saved; },
+    update: async () => { updates++; return { status: 'updated', config: saved }; },
   } });
   let controller!: ReturnType<typeof useMcpController>;
   function Probe() { controller = useMcpController(); return null; }
   await act(async () => root.render(createElement(ModuleHubServicesProvider, { services }, createElement(Probe))));
-  await act(async () => assert.deepEqual(await controller.save('existing', { command: 'replacement' }, true), { status: 'exists' }));
+  await act(async () => assert.deepEqual(await controller.add('existing', { command: 'replacement' }), { status: 'exists' }));
   assert.deepEqual(saved.mcpServers.existing, { command: 'original' });
   assert.equal(updates, 0);
-  await act(async () => { await controller.save('new', { command: 'server' }, true); });
+  await act(async () => { await controller.add('new', { command: 'server' }); });
   assert.deepEqual(controller.config.mcpServers.new, { command: 'server' });
   assert.match(String(controller.error), /connection failed/);
   assert.equal(controller.busy, null);
@@ -74,9 +74,9 @@ test('MCP holds an action until its refreshed config lands', async () => {
   function Probe() { controller = useMcpController(); return null; }
   await act(async () => root.render(createElement(ModuleHubServicesProvider, { services }, createElement(Probe))));
   let first!: Promise<unknown>;
-  await act(async () => { first = controller.save('notion', { url: 'https://mcp.notion.com/mcp' }, true); await added.promise; });
+  await act(async () => { first = controller.add('notion', { url: 'https://mcp.notion.com/mcp' }); await added.promise; });
   assert.equal(controller.busy, 'save');
-  await act(async () => assert.equal(await controller.save('notion', { url: 'https://mcp.notion.com/mcp' }, true), undefined));
+  await act(async () => assert.equal(await controller.add('notion', { url: 'https://mcp.notion.com/mcp' }), undefined));
   assert.equal(adds, 1);
   await act(async () => {
     refresh?.resolve({ ...createDefaultMcpConfig(), mcpServers: { notion: { url: 'https://mcp.notion.com/mcp' } } });
