@@ -39,11 +39,12 @@ import {
   RuntimeMessageAuthorityInvariantError,
 } from '@maka/runtime/message-authority';
 import { type SessionManager } from '@maka/runtime/session-manager';
-import type { ExecutionStoresWriter, RootTurnAdmission } from '@maka/storage/execution-stores';
 import {
   ROOT_TURN_ADMISSION_MAX_RECORD_BYTES,
   ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES,
-} from '@maka/storage/agent-run-store';
+  type ExecutionStoresWriter,
+  type RootTurnAdmission,
+} from '@maka/storage/execution-stores';
 import type { RootAdmissionOwner } from './root-admission-owner.js';
 import type { HostedExecutionProjectionReader } from './hosted-execution-projection.js';
 
