@@ -83,3 +83,11 @@
 在 WorkHub 界面发送一条订单汇总委派请求。目标任务实际读取 `orders.csv` 并写出 `report.json`；独立读取文件确认 `paid_count=3`、`paid_total=40`。WorkHub 先说明任务仍在运行，随后自动出现“任务结果更新”并通过 `WorkHubResult` 读取结果；没有发送第二条用户消息。自动回包 Turn `whf_a98e0f983187a735a31c7ab71ca96c7fdfcf8ae65b01a477` 为 completed。
 
 本次还增加了执行前取消、已送达结果避免重复读取完整记录，以及原任务问题被直接回答后关闭 WorkHub 复制问题的回归测试。录屏展示正常完成路径；这三个边界条件由代码及自动化测试验收，没有声称在这段视频里触发。
+
+## 2026-09-23 普通委派录屏
+
+[观看不提示汇报的 WorkHub 委派与回包录屏](images/pr/workhub-result-return/normal-delegation-demo.mp4)。视频由 Playwright 直接录制实际 Electron WorkHub 窗口，时长约 16 秒；使用独立 profile、现有 DeepSeek V4.1 Flash 连接及真实模型响应。只发送一条普通委派消息：
+
+> 在已有任务「普通委派验收-订单汇总」里，统计工作目录 orders.csv 中 status 为 paid 的订单数和金额总计，把结果写入 report.json，字段为 paid_count 和 paid_total。
+
+消息没有要求完成后汇报，也没有提到 `WorkHubResult`。目标任务写出 `report.json`，独立读取确认 `paid_count=3`、`paid_total=40`。WorkHub 随后自动出现“任务结果更新”，由完成的结果 Turn `whf_5a17b5906f2d4999c72ea730e5453a5865501aedbf884adf` 汇报这两个数值及报告内容；期间没有第二条用户消息。从发送到确认回包约 12 秒。
