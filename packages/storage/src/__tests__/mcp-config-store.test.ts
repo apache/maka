@@ -638,7 +638,15 @@ async function waitUntil(condition: () => boolean, timeoutMs = 3_000): Promise<v
 test('corrupt persisted MCP JSON has a safe actionable error and mutations cannot overwrite it', async () => {
   const root = await tempRoot();
   const path = join(root, 'mcp.json');
-  const bytes = Buffer.from('{"secret":"never-include-this"');
+  const secret = 'sk-live-SECRET';
+  const bytes = Buffer.from(secret);
+  assert.throws(
+    () => JSON.parse(bytes.toString('utf8')),
+    (error) => {
+      assert.ok(error instanceof SyntaxError && error.message.includes(secret));
+      return true;
+    },
+  );
   await writeFile(path, bytes);
   const store = createMcpConfigStore(root);
   let transformed = false;
@@ -658,7 +666,7 @@ test('corrupt persisted MCP JSON has a safe actionable error and mutations canno
       assert.equal(error.path, path);
       assert.ok(error.message.includes(path));
       assert.match(error.message, /not modified.*back up and repair/u);
-      assert.equal(error.message.includes('never-include-this'), false);
+      assert.equal(error.message.includes(secret), false);
       assert.equal(error.cause, undefined);
       return true;
     });

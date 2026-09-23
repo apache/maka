@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { McpIpcResult } from '../shared/mcp-ipc.js';
 import type {
   WorkHubAnswerInput,
   WorkHubAnswerResult,
@@ -1586,22 +1587,22 @@ export interface MakaBridge {
     subscribeEvents(handler: (event: ConnectionEvent) => void, host?: DesktopRuntimeHostRef): () => void;
   };
   mcp: {
-    getConfig(host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]>;
-    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpConfigImportResult>;
+    getConfig(host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>>;
+    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus[]>>;
+    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigImportResult>>;
     /** Adds a new server; a taken id comes back as `{ status: 'exists' }`
      * instead of an error, so the dialog can put it on the id field. */
-    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;
+    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigAddResult>>;
     /** Saves an edit made against `basis`, the server as last shown; one
      * changed or removed elsewhere since comes back `stale`. */
-    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
-    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
-    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult>;
-    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>>;
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>>;
+    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>>;
+    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpTestResult>>;
+    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>>;
     /** Ends an in-flight login round; resolves false when none is active. */
-    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
-    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
+    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<boolean>>;
+    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>>;
     chromeStatus(host?: DesktopRuntimeHostRef): Promise<OpencliChromeStatus>;
     connectChrome(host?: DesktopRuntimeHostRef): Promise<void>;
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;

@@ -28,6 +28,7 @@ import {
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
   mcpConfigFailureMessage,
+  unwrapMcpIpcResult,
 } from '../../renderer/features/module-hub/testing.js';
 
 const copy = getMcpCopy('en');
@@ -211,4 +212,28 @@ test('an untouched environment reads back unchanged, whatever its values hold', 
   const saved = mcpConfigFromDraft(mcpDraftFromConfig('local', { command: 'node', env }), copy);
   assert.ok(isMcpStdioConfig(saved));
   assert.deepEqual(saved.env, env);
+});
+
+
+test('corrupt MCP localization uses typed data, not English error text or custom IPC Error fields', () => {
+  const path = '/profile/mcp.json';
+  const result = structuredClone({ kind: 'invalid-mcp-config-file', path: '/profile/\u0001mcp.json' });
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    const localized = getMcpCopy(locale);
+    assert.throws(() => unwrapMcpIpcResult(result), (error) => {
+      assert.equal(mcpConfigFailureMessage(error, localized), localized.errors.invalidConfigFile(path));
+      assert.equal(
+        mcpConfigFailureMessage(new Error('unrelated wrapper text', { cause: error }), localized),
+        localized.errors.invalidConfigFile(path),
+      );
+      return true;
+    });
+    const oldMessage = `MCP config at ${path} contains invalid JSON. The file was not modified. Close the app, back up and repair this file before retrying.`;
+    assert.equal(mcpConfigFailureMessage(new Error(oldMessage), localized), undefined);
+  }
+  const invalidImport = { status: 'invalid', reason: 'invalid-json' } as const;
+  assert.equal(unwrapMcpIpcResult(invalidImport), invalidImport);
+  const cyclic = new Error('cyclic cause');
+  cyclic.cause = cyclic;
+  assert.equal(mcpConfigFailureMessage(cyclic, copy), undefined);
 });

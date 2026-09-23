@@ -1421,7 +1421,14 @@ test('TUI MCP retains only the invalid persisted config path for repair guidance
   const manager = managerHarness(0, []);
   const connection = connectionHarness();
   const path = join(root, 'mcp.json');
-  const bytes = '{"secret":"do-not-display-this"';
+  const bytes = 'sk-live-SECRET';
+  assert.throws(
+    () => JSON.parse(bytes),
+    (error) => {
+      assert.ok(error instanceof SyntaxError && error.message.includes(bytes));
+      return true;
+    },
+  );
   await writeFile(path, bytes);
   const controller = createTuiMcpController(
     { workspaceRoot: root, connection: connection.connection },
@@ -1437,7 +1444,7 @@ test('TUI MCP retains only the invalid persisted config path for repair guidance
       'invalid MCP file to fail initialization',
     );
     assert.equal(controller.snapshot().invalidConfigPath, path);
-    assert.equal(JSON.stringify(controller.snapshot()).includes('do-not-display-this'), false);
+    assert.equal(JSON.stringify(controller.snapshot()).includes(bytes), false);
     assert.equal(connection.replacements.length, 0);
     assert.equal(await readFile(path, 'utf8'), bytes);
   } finally {
@@ -1494,7 +1501,14 @@ for (const kind of ['add', 'edit', 'set_enabled', 'remove', 'commit_import'] as 
     };
     const before = controller.snapshot();
     order.length = 0;
-    const bytes = '{"secret":"never-display-this"';
+    const bytes = 'sk-live-SECRET';
+    assert.throws(
+      () => JSON.parse(bytes),
+      (error) => {
+        assert.ok(error instanceof SyntaxError && error.message.includes(bytes));
+        return true;
+      },
+    );
     await writeFile(path, bytes);
     const result = await controller.execute(actions[kind]);
     assert.deepEqual(result, { status: 'failed', reason: 'invalid-config-file', path });
@@ -1503,7 +1517,7 @@ for (const kind of ['add', 'edit', 'set_enabled', 'remove', 'commit_import'] as 
     assert.deepEqual(order, []);
     assert.equal(connection.unregisters, 0);
     assert.equal(await readFile(path, 'utf8'), bytes);
-    assert.equal(JSON.stringify(result).includes('never-display-this'), false);
+    assert.equal(JSON.stringify(result).includes(bytes), false);
 
     // An external repair makes the next explicit operation usable without a
     // controller restart or a stale initialization-error flag.

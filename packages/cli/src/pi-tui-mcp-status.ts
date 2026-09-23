@@ -277,12 +277,13 @@ export class McpManagementOverlay implements Component {
   private handleListInput(data: string): void {
     const snapshot = this.input.surface?.snapshot();
     const servers = snapshot?.servers ?? [];
-    if (
-      (servers.length === 0 || snapshot?.initialization === 'error') &&
-      this.handleTextScroll(data)
-    ) {
+    if (snapshot?.initialization === 'error') {
+      this.handleTextScroll(data);
       return;
     }
+    // A ready empty list still has explanatory text below the publication
+    // status, which must remain reachable in a short terminal.
+    if (servers.length === 0 && this.handleTextScroll(data)) return;
     if (matchesKey(data, Key.up)) {
       this.selected = clamp(this.selected - 1, 0, servers.length - 1);
     } else if (matchesKey(data, Key.down)) {

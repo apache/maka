@@ -573,6 +573,7 @@ test('invalid persisted MCP JSON renders its location and repair guidance in eve
     const text = overlay.render(160).map(stripAnsi).join('\n');
     assert.match(text, /\/profile\/mcp\.json/u);
     assert.match(text, /back up and repair|备份并修复|備份並修復/u);
+    assert.match(text, /Quit maka|退出 maka/u);
     assert.match(text, /unchanged|未被修改/u);
   }
 });
@@ -603,6 +604,7 @@ for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
     const text = render();
     assert.ok(text.includes('/profile/mcp.json'));
     assert.match(text, /back up and repair|备份并修复|備份並修復/u);
+    assert.match(text, /Quit maka|退出 maka/u);
     assert.ok(text.includes(TUI_COPY_RESOURCES['mcp-status'][locale].footer.diagnostic));
     assert.doesNotMatch(text, /\u0000/u);
     assert.equal(mcp.snapshot().initialization, 'ready');
@@ -673,3 +675,71 @@ for (const phase of ['initialization', 'mutation'] as const) {
     assert.ok(expanded.includes('retrying.'));
   });
 }
+
+test('an initialization error permits scrolling and closing but rejects all management keys', async () => {
+  for (const exitKey of ['q', '\u001b']) {
+    const snapshot = {
+      ...listSnapshot(),
+      initialization: 'error' as const,
+      invalidConfigPath: '/profile/mcp.json',
+      canManagePublicationCredential: true,
+    };
+    const mcp = surface(snapshot);
+    const actions: TuiMcpAction[] = [];
+    let edits = 0;
+    mcp.execute = async (action) => {
+      actions.push(action);
+      return { status: 'applied', effect: 'published' };
+    };
+    mcp.configForEdit = () => {
+      edits += 1;
+      return undefined;
+    };
+    let closed = 0;
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      tui: fakeTui(),
+      surface: mcp,
+      viewportRows: () => 8,
+      onClose: () => {
+        closed += 1;
+      },
+      onChange: () => {},
+    });
+    const render = () => overlay.render(100).map(stripAnsi).join('\n');
+    const before = render();
+    for (const key of ['a', 'p', 'x', '\r', ' ', 't', 'r', 'd']) {
+      overlay.handleInput(key);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        render(),
+        before,
+        `management key ${JSON.stringify(key)} must leave the error view intact`,
+      );
+    }
+    assert.deepEqual(actions, []);
+    assert.equal(edits, 0);
+    assert.equal(closed, 0);
+    overlay.handleInput(exitKey);
+    assert.equal(closed, 1);
+  }
+});
+
+test('a ready empty list scrolls to its add guidance in a short terminal and remains manageable', () => {
+  const mcp = surface({ ...listSnapshot(), publication: 'not_published', servers: [] });
+  const overlay = new McpManagementOverlay({
+    locale: 'en',
+    surface: mcp,
+    viewportRows: () => 3,
+    onClose: () => {},
+    onChange: () => {},
+  });
+  const render = () => overlay.render(120).map(stripAnsi).join('\n');
+  assert.equal(render().includes('No MCP servers are configured.'), false);
+  overlay.handleInput('\u001b[F');
+  assert.match(render(), /No MCP servers are configured\. Press a to add one\./u);
+  overlay.handleInput('\u001b[H');
+  assert.match(render(), /not published/u);
+  overlay.handleInput('a');
+  assert.doesNotMatch(render(), /not published/u);
+});

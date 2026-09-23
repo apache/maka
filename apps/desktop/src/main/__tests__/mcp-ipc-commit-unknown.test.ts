@@ -29,12 +29,11 @@ import { McpClientManager } from '@maka/mcp';
 import {
   AtomicFileWriteCommitUnknownError,
   createMcpConfigStore,
-  McpConfigSourceError,
   type McpConfigStore,
 } from '@maka/storage/mcp-config-store';
 import { registerMcpIpcMain, type McpIpcMainDeps } from '../mcp-ipc-main.js';
 import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
-import { mcpConfigFailureMessage } from '../../renderer/features/module-hub/testing.js';
+import { mcpConfigFailureMessage, unwrapMcpIpcResult } from '../../renderer/features/module-hub/testing.js';
 
 test('MCP remove reconciles a live manager after the real store publishes then fails directory sync', {
   skip: process.platform === 'win32',
@@ -245,27 +244,43 @@ function mutationHarness(t: TestContext, store: McpConfigStore, overrides: Parti
   };
 }
 
-test('MCP IPC preserves repair guidance for a corrupt persisted file and does not import over it', async (t) => {
+test('MCP IPC transports corrupt-file details for reads and every mutation without exposing parser secrets', async (t) => {
   const { root, store } = await fixtureStore(t);
   const path = join(root, 'mcp.json');
-  const source = '{"secret":"must-not-appear"';
+  const source = 'sk-live-SECRET';
+  assert.throws(() => JSON.parse(source), (error) => {
+    assert.ok(error instanceof SyntaxError && error.message.includes(source));
+    return true;
+  });
   await writeFile(path, source);
   const ipc = mutationHarness(store);
-  for (const call of [() => ipc.invoke('mcp:getConfig'), () => ipc.invoke('mcp:importConfig', '{"new":{"command":"unused"}}')]) {
-    await assert.rejects(call(), (error) => {
-      assert.ok(error instanceof McpConfigSourceError);
-      assert.equal(error.path, path);
-      assert.ok(error.message.includes(path));
-      assert.match(error.message, /back up and repair/u);
-      for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
-        const copy = getMcpCopy(locale);
-        const ipcError: Error = new Error(`Error invoking remote method 'mcp:getConfig': ${error.name}: ${error.message}`);
-        assert.equal(mcpConfigFailureMessage(ipcError, copy), copy.errors.invalidConfigFile(path));
-      }
-      assert.equal(error.message.includes('must-not-appear'), false);
-      return true;
-    });
+  const calls: [string, ...unknown[]][] = [
+    ['mcp:getConfig'],
+    ['mcp:importConfig', '{"new":{"command":"unused"}}'],
+    ['mcp:add', 'new', { command: 'unused' }],
+    ['mcp:update', 'old', { command: 'unused' }, { command: 'old' }],
+    ['mcp:setEnabled', 'old', true],
+    ['mcp:remove', 'old'],
+  ];
+  for (const [channel, ...args] of calls) {
+    // Electron serializes the fulfilled value, not custom Error fields.
+    const result: unknown = structuredClone(await ipc.invoke(channel, ...args));
+    assert.deepEqual(result, { kind: 'invalid-mcp-config-file', path });
+    assert.equal(JSON.stringify(result).includes(source), false);
+    for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+      const copy = getMcpCopy(locale);
+      assert.throws(() => unwrapMcpIpcResult(result), (error) => {
+        const wrapped = new Error('Runtime Host action failed', { cause: error });
+        assert.equal(mcpConfigFailureMessage(wrapped, copy), copy.errors.invalidConfigFile(path));
+        return true;
+      });
+    }
+    assert.equal(await readFile(path, 'utf8'), source);
   }
+  assert.deepEqual(await ipc.invoke('mcp:importConfig', source), {
+    status: 'invalid', reason: 'invalid-json',
+  }, 'pasted invalid JSON remains an import validation result');
   assert.deepEqual(ipc.synced, []);
-  assert.equal(await readFile(path, 'utf8'), source);
+  assert.deepEqual(ipc.retired, []);
+  assert.deepEqual(ipc.emitted, []);
 });

@@ -36,6 +36,7 @@ import {
   normalizeMcpImport,
   type McpConfigStore,
 } from '@maka/storage/mcp-config-store';
+import type { McpConfigFileFailure } from '../shared/mcp-ipc.js';
 import type { McpOAuthController } from './mcp-oauth-controller.js';
 import {
   redactMcpConfigSecrets,
@@ -80,6 +81,22 @@ export function createMcpExclusiveLane(): McpExclusiveLane {
 }
 
 export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
+  const handle = (channel: string, listener: Parameters<IpcMain['handle']>[1]): void => {
+    deps.ipcMain.handle(channel, async (event, ...args) => {
+      try {
+        return await listener(event, ...args);
+      } catch (error) {
+        if (error instanceof McpConfigSourceError && error.reason === 'invalid-json' && error.path !== undefined) {
+          const failure: McpConfigFileFailure = {
+            kind: 'invalid-mcp-config-file',
+            path: error.path.replace(/[\u0000-\u001f\u007f-\u009f]/gu, ''),
+          };
+          return failure;
+        }
+        throw error;
+      }
+    });
+  };
   // Main is the authority on operation exclusivity, not the renderer's
   // advisory locks: while a login round owns a server, a config mutation
   // would race the browser callback against a changed or absent server.
@@ -146,18 +163,18 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
   // toward it leaves with clientSecret replaced by the sentinel, and every
   // config it sends back has sentinels restored from disk before the store
   // and the manager (which needs the real secret) see it.
-  deps.ipcMain.handle('mcp:getConfig', async () => {
+  handle('mcp:getConfig', async () => {
     await deps.ensureReady();
     return redactMcpConfigSecrets(await deps.store.get());
   });
-  deps.ipcMain.handle('mcp:listStatuses', async () => {
+  handle('mcp:listStatuses', async () => {
     await deps.ensureReady();
     return deps.manager.statuses().map((status) => ({
       ...status,
       ...(deps.oauth.isActive(status.serverId) ? { authorizationPending: true } : {}),
     }));
   });
-  deps.ipcMain.handle(
+  handle(
     'mcp:importConfig',
     async (_event, source: string): Promise<McpConfigImportResult> => {
       let imported: McpConfigFile;
@@ -190,7 +207,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
       });
     },
   );
-  deps.ipcMain.handle(
+  handle(
     'mcp:add',
     async (_event, serverId: string, config: McpServerConfig): Promise<McpConfigAddResult> => {
       assertNoActiveLogin(serverId);
@@ -262,7 +279,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
   );
   // Flips the switch on what is on disk, so a toggle never writes back the
   // rest of an older copy.
-  deps.ipcMain.handle('mcp:setEnabled', (_event, serverId: string, enabled: boolean) =>
+  handle('mcp:setEnabled', (_event, serverId: string, enabled: boolean) =>
     updateServer(serverId, (_current, previous) => ({ ...previous, enabled })),
   );
   const removeServer = async (serverId: string): Promise<McpConfigFile> =>
@@ -272,7 +289,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
         return { ...current, mcpServers };
       }),
     );
-  deps.ipcMain.handle('mcp:remove', async (_event, serverId: string) => {
+  handle('mcp:remove', async (_event, serverId: string) => {
     assertNoActiveLogin(serverId);
     const next = await removeServer(serverId);
     await deps.manager.sync(next);
@@ -281,13 +298,13 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
     // servers' secrets must leave as sentinels here too.
     return redactMcpConfigSecrets(next);
   });
-  deps.ipcMain.handle('mcp:test', async (_event, serverId: string) => {
+  handle('mcp:test', async (_event, serverId: string) => {
     await deps.ensureReady();
     const result = await deps.manager.test(serverId);
     deps.emitChanged(deps.manager.statuses());
     return result;
   });
-  deps.ipcMain.handle('mcp:login', async (_event, serverId: string) => {
+  handle('mcp:login', async (_event, serverId: string) => {
     // No preflight here: readiness and the callback-port lookup run INSIDE
     // the controller under its round deadline, so a stalled store cannot
     // park this promise (and the renderer's login lock) forever.
@@ -300,14 +317,14 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
       changed(deps);
     }
   });
-  deps.ipcMain.handle('mcp:cancelLogin', async (_event, serverId: string) => {
+  handle('mcp:cancelLogin', async (_event, serverId: string) => {
     const cancelled = deps.oauth.cancelLogin(serverId);
     // The round's own rejection path abandons the persisted pending state;
     // the renderer just needs the resulting statuses.
     if (cancelled) changed(deps);
     return cancelled;
   });
-  deps.ipcMain.handle('mcp:logout', async (_event, serverId: string) => {
+  handle('mcp:logout', async (_event, serverId: string) => {
     // Like mcp:login, no preflight here: readiness runs INSIDE the
     // controller under its round deadline, so a stalled store cannot park
     // the renderer's logout lock forever.
