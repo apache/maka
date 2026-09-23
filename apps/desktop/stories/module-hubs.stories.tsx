@@ -1078,6 +1078,23 @@ export const ExtensionsMcpAdd: Story = {
   },
 };
 
+// Real path: sidebar → 扩展 → MCP → 添加 MCP → 粘贴 JSON, before pasting a configuration.
+export const ExtensionsMcpJsonImport: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, 'filesystem');
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    const body = canvasElement.ownerDocument.body;
+    await waitForStorySelector(body, '.maka-mcp-primary-fields');
+    (await waitForStoryButton(body, (button) => button.textContent?.trim() === '粘贴 JSON')).click();
+    const input = await waitForStorySelector<HTMLTextAreaElement>(body, '.maka-mcp-json-field textarea');
+    if (input.value !== '') throw new Error('The JSON example must not be submitted as user input');
+    const submit = await waitForStoryButton(body, (button) => button.textContent?.trim() === '导入配置');
+    if (!submit.disabled) throw new Error('Import must wait for user configuration');
+  },
+};
+
 // Real path: sidebar → 扩展 → MCP, with connected and disabled servers.
 export const ExtensionsMcpConfigured: Story = {
   decorators: [withConfiguredMcpBridge],

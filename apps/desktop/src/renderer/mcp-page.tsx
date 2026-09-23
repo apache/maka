@@ -25,7 +25,7 @@ import type {
   McpServerConfig,
   McpServerStatus,
 } from '@maka/core/mcp';
-import { MCP_CONFIG_VERSION, isMcpStdioConfig } from '@maka/core/mcp';
+import { isMcpStdioConfig } from '@maka/core/mcp';
 import {
   Banner,
   Button,
@@ -361,9 +361,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             const status = statusById.get(serverId);
             const state = presentStatus(status, server.enabled !== false, copy);
             const endpoint = endpointFor(server);
-            const transportLabel = isMcpStdioConfig(server)
-              ? copy.page.localStdio
-              : server.transport ?? 'auto';
+            const transportLabel = transportLabelFor(server, copy);
             return (
               <ListItem
                 key={serverId}
@@ -544,9 +542,7 @@ function McpServerInspector(props: {
   const { serverId, server, status, copy } = props;
   const state = presentStatus(status, server.enabled !== false, copy);
   const endpoint = endpointFor(server);
-  const transportLabel = isMcpStdioConfig(server)
-    ? copy.page.localStdio
-    : server.transport ?? 'auto';
+  const transportLabel = transportLabelFor(server, copy);
   const negotiatedProtocol = presentMcpNegotiatedProtocol(status, copy);
   const loginActive = status?.authorizationPending || props.busy === `login:${serverId}`;
   const disabled = props.busy !== null || loginActive;
@@ -714,7 +710,7 @@ function McpEditorDialog(props: {
                 onClick={() => props.onChange(
                   props.state.mode === 'json'
                     ? { mode: 'manual', draft: createEmptyMcpDraft(), editingId: null }
-                    : { mode: 'json', source: exampleJson() },
+                    : { mode: 'json', source: '' },
                 )}
               />
             ) : undefined}
@@ -726,15 +722,15 @@ function McpEditorDialog(props: {
         {props.state.mode === 'json' ? (
           <form className="maka-mcp-json-form" onSubmit={props.onImport}>
             <div className="maka-mcp-json-field">
-              <TextArea hasAutoFocus label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} rows={14} />
+              <TextArea hasAutoFocus label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} rows={14} placeholder={'{\n  "mcpServers": {\n    "my-tools": { "url": "https://example.com/mcp" }\n  }\n}'} />
             </div>
-            <p>{props.copy.editor.jsonHelp} <code>{'{ "mcpServers": { ... } }'}</code></p>
+            <p>{props.copy.editor.jsonHelp}</p>
             {/* Stays a submit button so Enter in the textarea still imports —
                 clickAction would have to replace the form's onSubmit and take
                 that with it. `isLoading` is the half of the contract that does
                 apply: spinner, aria-busy, and the "Loading" announcement,
                 instead of the label reading 导入中… . */}
-            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={() => props.onOpenChange(false)} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isLoading={props.saving} label={props.copy.editor.importConnect} /></div>
+            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={() => props.onOpenChange(false)} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isLoading={props.saving} isDisabled={!props.state.source.trim()} label={props.copy.editor.importConnect} /></div>
           </form>
         ) : (
           <form className="maka-mcp-manual-form" onSubmit={props.onSave}>
@@ -752,7 +748,7 @@ function McpEditorDialog(props: {
                 </SegmentedControl>
               </VStack>
               <div className="maka-mcp-primary-fields">
-                <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.errors.id === 'exists' ? props.copy.editor.idExists : props.copy.editor.required } : undefined} />
+                <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="my-tools" status={props.errors.id ? { type: 'error', message: props.errors.id === 'exists' ? props.copy.editor.idExists : props.copy.editor.required } : undefined} />
                 {props.state.draft.kind === 'stdio' ? (
                   <TextInput hasAutoFocus={editing} label={props.copy.editor.command} description={props.copy.editor.commandHelp} value={props.state.draft.commandLine} onChange={(value) => updateDraft('commandLine', value)} isRequired placeholder={props.copy.editor.commandPlaceholder} status={props.errors.commandLine ? { type: 'error', message: props.errors.commandLine === 'unbalanced-quote' ? props.copy.editor.unbalancedQuote : props.copy.editor.required } : undefined} />
                 ) : (
@@ -767,7 +763,7 @@ function McpEditorDialog(props: {
                 <VStack gap={3} className="maka-mcp-advanced-fields">
                   {props.state.draft.kind === 'stdio' ? (
                     <>
-                      <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
+                      <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} />
                       <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
                     </>
                   ) : (
@@ -802,7 +798,7 @@ function McpEditorDialog(props: {
                   />
                   {props.state.draft.kind === 'remote' && (
                     <>
-                      <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
+                      <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} />
                       <Collapsible trigger={props.copy.editor.oauth} defaultIsOpen={Boolean(props.state.draft.oauth)}>
                         <VStack gap={3} className="maka-mcp-advanced-fields">
                           <Text type="supporting" color="secondary">{props.copy.editor.oauthHelp}</Text>
@@ -834,6 +830,13 @@ function endpointFor(server: McpServerConfig): string {
   return isMcpStdioConfig(server) ? formatCommandLine(server.command, server.args ?? []) : server.url;
 }
 
+function transportLabelFor(server: McpServerConfig, copy: McpCopy): string {
+  if (isMcpStdioConfig(server)) return copy.page.localStdio;
+  if (server.transport === 'sse') return copy.editor.transportLegacySse;
+  if (server.transport === 'streamable-http') return copy.editor.transportStreamableHttp;
+  return copy.editor.transportAuto;
+}
+
 function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): { label: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'error'; exception: boolean } {
   if (status?.authorizationPending) return { label: copy.row.loginPending, tone: 'info', exception: true };
   if (!enabled || status?.state === 'disabled') return { label: copy.row.disabled, tone: 'neutral', exception: false };
@@ -842,16 +845,4 @@ function presentStatus(status: McpServerStatus | undefined, enabled: boolean, co
   if (status.state === 'needs-auth') return { label: copy.row.needsAuth, tone: 'warning', exception: true };
   if (status.state === 'connected') return { label: copy.row.connected(status.toolCount), tone: 'success', exception: false };
   return { label: copy.row.failed, tone: 'error', exception: true };
-}
-
-function exampleJson(): string {
-  return JSON.stringify({
-    version: MCP_CONFIG_VERSION,
-    mcpServers: {
-      filesystem: {
-        command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/folder'],
-      },
-    },
-  }, null, 2);
 }
