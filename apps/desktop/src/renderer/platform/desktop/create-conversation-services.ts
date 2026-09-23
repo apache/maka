@@ -23,12 +23,15 @@ import type { ConversationServices } from '../../features/conversation/index.js'
 export function createDesktopConversationServices(
   bridge: Pick<
     MakaBridge,
-    'sessionLocal' | 'sessions' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
+    'sessionLocal' | 'sessions' | 'runtimeHostProfiles' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
   > = window.maka,
 ): ConversationServices {
   return {
     ...bridge.sessionLocal,
     sessions: bridge.sessions,
+    runtimeHosts: {
+      subscribeChanges: (handler) => bridge.runtimeHostProfiles.subscribeChanges(handler),
+    },
     skills: bridge.skills,
     workspace: bridge.workspace,
     newTasks: bridge.newTasks,

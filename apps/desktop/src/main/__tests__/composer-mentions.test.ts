@@ -94,7 +94,11 @@ function installCatalogRenderer(t: TestContext) {
       readSnapshot: async () => {
         throw new Error('Session snapshot is not used in catalog tests');
       },
+      readExecutionBoundary: async () => {
+        throw new Error('Execution boundary is not used in catalog tests');
+      },
     },
+    runtimeHosts: { subscribeChanges: () => () => undefined },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
     newTasks: {
       subscribeChanges: () => () => undefined,

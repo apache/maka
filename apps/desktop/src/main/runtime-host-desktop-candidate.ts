@@ -220,6 +220,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   extends Omit<DesktopRuntimeHostCandidateDeps, "ipcMain"> {
   readonly ipcMain: CandidateIpcMain;
   readonly rootPath: string;
+  readonly rootId: string;
   readonly clientInstanceId?: string;
   readonly electionDeadlineMs?: number;
   readonly connectTimeoutMs?: number;

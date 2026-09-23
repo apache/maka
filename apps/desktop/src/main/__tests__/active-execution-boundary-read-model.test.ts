@@ -25,15 +25,23 @@ import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 
 import type { SessionEvent } from '@maka/core/events';
 
+import { parseHTML } from 'linkedom';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
 import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
 import {
-  EXECUTION_BOUNDARY_READ_RETRY_DELAYS_MS,
+  ConversationServicesProvider,
+  type ConversationHostChange,
+  type ConversationServices,
+  useActiveExecutionBoundary,
+} from '../../renderer/features/conversation/index.js';
+import {
   type ActiveExecutionBoundarySnapshot,
   activeExecutionBoundaryOf,
   activeExecutionBoundaryUnreadable,
-  readExecutionBoundaryWithRetry,
   startActiveExecutionBoundaryRead,
-} from '../../renderer/use-active-execution-boundary.js';
+} from '../../renderer/features/conversation/testing.js';
+import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { deriveDesktopExecutionBoundarySurface } from '../../renderer/desktop-execution-boundary-surface.js';
 
 const readOnly = {
@@ -74,86 +82,19 @@ describe('Active execution boundary read model', () => {
 });
 
 describe('A boundary read that fails (#1629)', () => {
-  function retryHarness(read: () => Promise<typeof readOnly>) {
-    const waits: number[] = [];
-    let cancelled = false;
-    return {
-      waits,
-      cancel: () => {
-        cancelled = true;
+  it('settles as unreadable instead of leaving the read pending forever', async () => {
+    const commit = recordingCommit();
+    startActiveExecutionBoundaryRead({
+      sessionId: 'session-a',
+      read: async () => {
+        throw new Error('unreachable');
       },
-      run: () =>
-        readExecutionBoundaryWithRetry({
-          read,
-          wait: async (delayMs) => {
-            waits.push(delayMs);
-          },
-          cancelled: () => cancelled,
-        }),
-    };
-  }
-
-  it('recovers from a transient failure instead of leaving the boundary unknown', async () => {
-    // The reload race this was found through: main has not settled the restored
-    // session yet, so the first read rejects. One rejection used to be final.
-    let attempts = 0;
-    const harness = retryHarness(async () => {
-      attempts += 1;
-      if (attempts === 1) throw new Error('session not ready');
-      return readOnly;
+      commit,
     });
+    await settle();
 
-    assert.deepEqual(await harness.run(), { outcome: 'read', boundary: readOnly });
-    assert.equal(attempts, 2);
-    assert.deepEqual(harness.waits, [EXECUTION_BOUNDARY_READ_RETRY_DELAYS_MS[0]]);
-  });
-
-  it('gives up after a bounded number of attempts rather than polling', async () => {
-    let attempts = 0;
-    const harness = retryHarness(async () => {
-      attempts += 1;
-      throw new Error('unreachable');
-    });
-
-    assert.deepEqual(await harness.run(), { outcome: 'unreadable' });
-    // One attempt per retry delay, plus the first: a real outage converges on a
-    // state the surface can explain, and never becomes an unbounded loop.
-    assert.equal(attempts, EXECUTION_BOUNDARY_READ_RETRY_DELAYS_MS.length + 1);
-    assert.deepEqual(harness.waits, [...EXECUTION_BOUNDARY_READ_RETRY_DELAYS_MS]);
-    assert.ok(harness.waits.every((delay) => delay > 0));
-  });
-
-  it('stops retrying a session the user has already left', async () => {
-    let attempts = 0;
-    const harness = retryHarness(async () => {
-      attempts += 1;
-      throw new Error('unreachable');
-    });
-    harness.cancel();
-
-    // Cancellation is not an outcome the surface reports: the session it was
-    // asking about is gone, so there is nothing to tell the user about it.
-    assert.deepEqual(await harness.run(), { outcome: 'cancelled' });
-    assert.equal(attempts, 0);
-    assert.deepEqual(harness.waits, []);
-  });
-
-  it('does not report a read that main answered after it was cancelled', async () => {
-    // Cancelling before the first call is the easy half. The half that matters
-    // is cancelling while main is mid-answer: the reply still arrives, and
-    // without a re-check it comes back indistinguishable from a live one.
-    const answer = deferred<ExecutionBoundary>();
-    let cancelled = false;
-    const result = readExecutionBoundaryWithRetry({
-      read: () => answer.promise,
-      wait: async () => {},
-      cancelled: () => cancelled,
-    });
-
-    cancelled = true;
-    answer.resolve(readOnly);
-
-    assert.deepEqual(await result, { outcome: 'cancelled' });
+    assert.deepEqual(commit.snapshots, [{ sessionId: 'session-a', boundary: undefined }]);
+    assert.deepEqual(commit.readings, [false]);
   });
 
   it('separates "asked and failed" from "not asked yet", and both fail closed', () => {
@@ -179,7 +120,96 @@ describe('A boundary read that fails (#1629)', () => {
     );
   });
 
+  it('recovers an unreadable boundary when the session Host reports ready', async () => {
+    const harness = await renderActiveBoundary([Promise.reject(new Error('generation replaced'))]);
+    try {
+      assert.equal(harness.latest()?.unreadable, true);
+
+      await harness.emit({ hostId: 'host-a', readiness: 'connecting' });
+      await harness.emit({ hostId: 'host-b', readiness: 'ready' });
+      assert.equal(harness.readCount(), 1);
+
+      await harness.emit({ hostId: 'host-a', readiness: 'ready' });
+      assert.equal(harness.readCount(), 2);
+      assert.equal(harness.latest()?.unreadable, false);
+      assert.equal(harness.latest()?.boundary, readOnly);
+    } finally {
+      await harness.unmount();
+    }
+  });
+
+  it('recovers when the ready push arrives before the failing read settles', async () => {
+    const replaced = deferred<ExecutionBoundary>();
+    const harness = await renderActiveBoundary([replaced.promise]);
+    try {
+      await harness.emit({ hostId: 'host-a', readiness: 'ready' });
+      await act(async () => replaced.reject(new Error('generation replaced')));
+
+      assert.equal(harness.readCount(), 2);
+      assert.equal(harness.latest()?.unreadable, false);
+      assert.equal(harness.latest()?.boundary, readOnly);
+    } finally {
+      await harness.unmount();
+    }
+  });
 });
+/**
+ * Render `useActiveExecutionBoundary` for a session on `host-a`. Reads answer
+ * from `reads` in order, then with `readOnly`.
+ */
+async function renderActiveBoundary(reads: Array<Promise<ExecutionBoundary>>) {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  const originalGlobals = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT,
+  };
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const handlers = new Set<(event: ConversationHostChange) => void>();
+  let readCount = 0;
+  const services = {
+    sessions: {
+      readExecutionBoundary: () => reads[readCount++] ?? Promise.resolve(readOnly),
+    },
+    runtimeHosts: {
+      subscribeChanges: (handler: (event: ConversationHostChange) => void) => {
+        handlers.add(handler);
+        return () => handlers.delete(handler);
+      },
+    },
+  } as unknown as ConversationServices;
+  let latest: ReturnType<typeof useActiveExecutionBoundary> | undefined;
+  function Probe() {
+    latest = useActiveExecutionBoundary(
+      desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' }),
+      'ask',
+    );
+    return null;
+  }
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(createElement(ConversationServicesProvider, {
+      services,
+      children: createElement(Probe),
+    }));
+  });
+  return {
+    latest: () => latest,
+    readCount: () => readCount,
+    emit: (event: ConversationHostChange) =>
+      act(async () => {
+        for (const handler of handlers) handler(event);
+      }),
+    unmount: async () => {
+      await act(() => root.unmount());
+      Object.assign(globalThis, originalGlobals);
+    },
+  };
+}
+
 /** Let every pending microtask chain run to completion. */
 async function settle(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
@@ -210,7 +240,6 @@ describe('Only the newest boundary read may commit', () => {
       sessionId: 'session-a',
       read: () => answerA.promise,
       commit,
-      retryDelaysMs: [],
     });
     // Switching sessions: React runs the previous cleanup before the next
     // effect body, so B's generation always starts after A's has been retired.
@@ -219,7 +248,6 @@ describe('Only the newest boundary read may commit', () => {
       sessionId: 'session-b',
       read: () => answerB.promise,
       commit,
-      retryDelaysMs: [],
     });
 
     answerB.resolve(widened);
@@ -247,7 +275,6 @@ describe('Only the newest boundary read may commit', () => {
       sessionId: 'session-a',
       read: () => staleAnswer.promise,
       commit,
-      retryDelaysMs: [],
     });
     // `reload()` after a decision settles, or the stored permission mode moving
     // under the hook: same session, new generation. The session id matches on
@@ -257,7 +284,6 @@ describe('Only the newest boundary read may commit', () => {
       sessionId: 'session-a',
       read: () => freshAnswer.promise,
       commit,
-      retryDelaysMs: [],
     });
 
     freshAnswer.resolve(widened);

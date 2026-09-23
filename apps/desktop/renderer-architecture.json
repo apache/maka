@@ -202,7 +202,6 @@
     "src/renderer/titlebar-dim-color.ts",
     "src/renderer/titlebar-modal-sync.ts",
     "src/renderer/turn-footer-actions.ts",
-    "src/renderer/use-active-execution-boundary.ts",
     "src/renderer/use-app-shell-composer-quotes.ts",
     "src/renderer/use-app-shell-session-list.ts",
     "src/renderer/use-app-shell-session-ui-reads.ts",
@@ -680,7 +679,7 @@
         "nonTriviaTokens": 1243
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 62,
+        "importDeclarations": 61,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -802,7 +801,6 @@
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
           "./shell/frame-style": 1,
-          "./use-active-execution-boundary": 1,
           "./use-app-shell-composer-quotes": 1,
           "./use-app-shell-session-ui-reads": 1,
           "./use-app-shell-session-workspace": 1,
@@ -829,8 +827,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 98,
-        "nonTriviaTokens": 12703
+        "importSpecifiers": 97,
+        "nonTriviaTokens": 12698
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -3844,26 +3842,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./locales/conversation-copy.js": 1
-        }
-      },
-      "src/renderer/use-active-execution-boundary.ts": {
-        "bridgePaths": {
-          "window.maka.sessions.readExecutionBoundary": 1
-        },
-        "environmentCapabilities": {
-          "clearTimeout": 1,
-          "setTimeout": 1
-        },
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 1,
-          "useState": 3
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "react": 1
         }
       },
       "src/renderer/use-new-task-choice.ts": {

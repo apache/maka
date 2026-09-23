@@ -40,7 +40,7 @@ export {
   type TaskReadinessNotice,
 } from './model/task-readiness-notice.js';
 export * from './model/session-ui-state.js';
-export type { ConversationServices } from './ports.js';
+export type { ConversationHostChange, ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
 export { createConversationDisplayFrameScheduler } from './controller/display-frame-scheduler.js';
@@ -61,6 +61,7 @@ export {
 } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
 export { useComposerQuotes } from './controller/use-composer-quotes.js';
+export { useActiveExecutionBoundary } from './controller/use-active-execution-boundary.js';
 export { useSessionReferenceComposer } from './controller/use-session-reference-composer.js';
 export {
   ComposerMentionsProvider,
