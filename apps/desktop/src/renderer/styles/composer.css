@@ -306,6 +306,16 @@
   min-width: 0;
 }
 
+/* Astryx owns the footer-left wrapper around footerActions. Its default
+   min-content floor otherwise lets the leading controls push the fixed send
+   slot outside the Composer card. The Maka-owned slot marker is the stable
+   boundary here; keep the wrapper shrinkable on every Composer surface. */
+.maka-composer-astryx
+  div:has(> .maka-composer-footer-leading) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .maka-composer-footer-trailing {
   display: inline-flex;
   align-items: center;

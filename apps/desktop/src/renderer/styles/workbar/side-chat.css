@@ -78,16 +78,6 @@
   flex-wrap: nowrap;
 }
 
-/* Let the leading slot shrink so the fixed send slot remains inside a
-   minimum-width Workbar. */
-.maka-session-workbar-panel[data-placement="right"]
-  .maka-quote-companion
-  .maka-composer-astryx
-  .maka-composer-footer-leading {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
 .maka-session-workbar-panel[data-placement="right"]
   .maka-quote-companion
   .maka-model-selection-controls {

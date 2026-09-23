@@ -102,8 +102,6 @@ export function WorkHubDock({ enabled, visible = true, workbar }: {
     };
   }, [enabled, presentation, visible, snapshot?.placement]);
   useEffect(() => surface.current?.refresh(), [workbar.bottomOpen, workbar.rightCollapsed]);
-  // The host also reports Workbar state, which can change without moving this node.
-  useEffect(() => surface.current?.refresh(), [workbarCollapsed, workbarTogglePosition]);
   return (
     <section ref={element} className="workHubDock" data-native-edge={snapshot?.placement === 'docked' && !needsRecovery || undefined} hidden={!visible} aria-label={t.title}>
       {backdrop && snapshot?.placement === 'docked' && <img className="workHubDockBackdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
