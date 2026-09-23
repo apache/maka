@@ -51,7 +51,7 @@ export interface AboutUpdateRow {
    * the updater is working on its own) or the restart once an update is
    * downloaded (`install`).
    */
-  readonly action: 'check' | 'checking' | 'busy' | 'install';
+  readonly action: 'check' | 'retry' | 'checking' | 'busy' | 'install';
 }
 
 /**
@@ -59,9 +59,7 @@ export interface AboutUpdateRow {
  *
  * The service refuses a check while a download is in flight or an update sits
  * downloaded (app-update-service.ts), so 检查更新 is disabled rather than
- * offered there. A failed download is re-fetched by the same check (the updater
- * downloads on its own once it sees a release), so the page needs no second
- * retry control next to the sidebar's.
+ * offered there. A failed download uses the known update provider directly.
  */
 export function aboutUpdateRow(
   status: AppUpdateStatus | null,
@@ -110,7 +108,7 @@ export function aboutUpdateRow(
       return {
         label: copy.updateFailed[status.operation],
         description: options.errorDetail ? options.errorDetail(status.message) : status.message,
-        action: 'check',
+        action: status.operation === 'download' ? 'retry' : 'check',
       };
   }
 }

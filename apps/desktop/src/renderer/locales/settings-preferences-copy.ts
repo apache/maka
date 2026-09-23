@@ -236,6 +236,7 @@ export type SettingsPreferencesCopy = {
     keyboardShortcutsOpen: string;
     reportIssueLabel: string;
     checkForUpdates: string;
+    retryUpdateDownload: string;
     checkingForUpdates: string;
     updateIdle: string;
     updateNotAvailable: string;
@@ -356,6 +357,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       reportIssueLabel: '报告问题', reportIssueHelp: '带上诊断信息去 GitHub Issues，回复更快。', reportIssueOpen: '打开',
       keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看',
       checkForUpdates: '检查更新',
+      retryUpdateDownload: '重试下载',
       checkingForUpdates: '正在检查更新…',
       updateIdle: '尚未检查更新',
       updateNotAvailable: '已是最新版本',
@@ -454,6 +456,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       loadFailed: '載入關於資訊失敗', loading: '正在載入關於頁', unavailable: '無法載入關於資訊', copied: '已複製診斷資訊', pasteHint: '檢查內容後，可直接貼上到問題報告', copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', supportTitle: '支援', copyAction: '複製', reportIssueHelp: '帶上診斷資訊去 GitHub Issues，回覆更快。', reportIssueOpen: '開啟', channelSummaries: { dev: '本地開發建構，不檢查更新。', nightly: '每日建構的預發佈版，自動更新到最新 nightly，會覆蓋正式版安裝。', release: '正式發佈版，自動接收穩定更新。' }, copyDiagnostics: '複製診斷資訊', copyHelp: '複製版本、平臺、隱藏主目錄後的工作區路徑，以及近期脫敏的 Desktop 與 Runtime Host 記錄；僅寫入剪貼簿，不會自動上傳。', keyboardShortcuts: '鍵盤快捷鍵', keyboardShortcutsHelp: 'Maka 支援的全部快捷鍵一覽。', keyboardShortcutsOpen: '檢視', reportIssueLabel: '報告問題',
 
       checkForUpdates: '檢查更新',
+      retryUpdateDownload: '重試下載',
       checkingForUpdates: '正在檢查更新…',
       updateIdle: '尚未檢查更新',
       updateNotAvailable: '已是最新版本',
@@ -523,6 +526,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       reportIssueLabel: 'Report an issue', reportIssueHelp: 'Open a GitHub issue with your diagnostics attached — replies come faster.', reportIssueOpen: 'Open',
       keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View',
       checkForUpdates: 'Check for updates',
+      retryUpdateDownload: 'Retry download',
       checkingForUpdates: 'Checking for updates…',
       updateIdle: 'No update check has run yet',
       updateNotAvailable: 'You are on the latest version',

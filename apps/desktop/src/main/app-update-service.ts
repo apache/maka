@@ -97,6 +97,7 @@ const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
  */
 const UPDATE_CHECK_RETRY_DELAY_MS = 2_000;
 const UPDATE_CHECK_MAX_ATTEMPTS = 2;
+const UPDATE_DOWNLOAD_RETRY_DELAY_MS = 5_000;
 
 /**
  * Harness-only override for the update feed (`MAKA_UPDATE_TEST_FEED`).
@@ -189,12 +190,15 @@ function mockStatus(currentVersion: string, latestVersion: string, state: AppUpd
 export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateService {
   let status: AppUpdateStatus = { state: 'idle', currentVersion: deps.currentVersion };
   let latestInfo: UpdateInfo | undefined;
+  let hasAvailableUpdate = false;
   let checkInFlight: Promise<AppUpdateStatus> | null = null;
   let activeDownload: {
     promise: Promise<string[]>;
     cancellationToken?: UpdateCheckResult['cancellationToken'];
     cancelledForRetry: boolean;
   } | undefined;
+  let downloadRetryTimer: unknown;
+  let downloadRetryPending = false;
   let activeVerification: Promise<void> | undefined;
   let checkTimer: unknown;
   let checkRetryTimer: unknown;
@@ -235,13 +239,17 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   const publishError = (
     operation: Extract<AppUpdateStatus, { state: 'error' }>['operation'],
     error: unknown,
-  ): AppUpdateStatus => publish({
-    state: 'error',
-    currentVersion: deps.currentVersion,
-    latestVersion: latestVersion(),
-    operation,
-    message: error instanceof Error ? error.message : String(error),
-  });
+  ): AppUpdateStatus => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[app-update] ${operation} failed: ${message.slice(0, 500)}`);
+    return publish({
+      state: 'error',
+      currentVersion: deps.currentVersion,
+      latestVersion: latestVersion(),
+      operation,
+      message,
+    });
+  };
 
   const rollbackInstallHandoff = (): void => {
     const handoff = installHandoff;
@@ -249,27 +257,57 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     handoff?.rollback();
   };
 
-  const trackAutoDownload = (result: UpdateCheckResult | null): void => {
-    if (!result?.downloadPromise) return;
+  const trackDownload = (
+    promise: Promise<string[]>,
+    cancellationToken: UpdateCheckResult['cancellationToken'] | undefined,
+    retryOnFailure: boolean,
+  ): void => {
     const tracked = {
-      promise: result.downloadPromise,
-      cancellationToken: result.cancellationToken,
+      promise,
+      cancellationToken,
       cancelledForRetry: false,
     };
     activeDownload = tracked;
     void tracked.promise
       .catch((error) => {
-        if (
-          activeDownload === tracked &&
-          !tracked.cancelledForRetry &&
-          status.state !== 'error'
-        ) {
+        if (activeDownload !== tracked || tracked.cancelledForRetry || disposed) return;
+        if (retryOnFailure) {
+          downloadRetryPending = true;
+          console.warn('[app-update] download failed; retrying once:', error instanceof Error ? error.message : String(error));
+          publish({
+            state: 'available',
+            currentVersion: deps.currentVersion,
+            latestVersion: latestVersion() ?? deps.currentVersion,
+          });
+          downloadRetryTimer = clock.setTimeout(() => {
+            downloadRetryTimer = undefined;
+            downloadRetryPending = false;
+            if (disposed || status.state === 'downloaded' || status.state === 'installing') return;
+            startDownload(false);
+          }, UPDATE_DOWNLOAD_RETRY_DELAY_MS);
+        } else if (status.state !== 'error') {
           publishError('download', error);
         }
       })
       .finally(() => {
         if (activeDownload === tracked) activeDownload = undefined;
       });
+  };
+
+  const startDownload = (retryOnFailure: boolean): void => {
+    try {
+      trackDownload(updater.downloadUpdate(), undefined, retryOnFailure);
+    } catch (error) {
+      publishError('download', error);
+    }
+  };
+
+  const clearDownloadRetry = (): void => {
+    if (downloadRetryTimer !== undefined) {
+      clock.clearTimeout(downloadRetryTimer);
+      downloadRetryTimer = undefined;
+    }
+    downloadRetryPending = false;
   };
 
   updater.autoDownload = true;
@@ -286,6 +324,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   });
   updater.on('update-available', (info) => {
     latestInfo = info;
+    hasAvailableUpdate = true;
     const version = updateInfoVersion(info) ?? deps.currentVersion;
     publish({
       state: 'available',
@@ -295,6 +334,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   });
   updater.on('update-not-available', (info) => {
     latestInfo = info;
+    hasAvailableUpdate = false;
     publish({
       state: 'not-available',
       currentVersion: deps.currentVersion,
@@ -345,10 +385,13 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
         ? 'download'
         : 'check';
     if (operation === 'install') rollbackInstallHandoff();
-    // A check failure with retry attempts still owed is transient: hold it
-    // back and let the scheduled retry produce the final word. Download and
-    // install errors always surface immediately.
+    // A check failure with retry attempts still owed is transient. Download
+    // errors are handled by the tracked promise, which can retry once before
+    // publishing the final failure. Install errors surface immediately.
     if (operation === 'check' && checkAttemptsRemaining > 0) return;
+    // electron-updater emits this event before rejecting downloadUpdate().
+    // Let the tracked promise decide whether to retry or publish the failure.
+    if (operation === 'download' && (activeDownload || downloadRetryPending)) return;
     publishError(operation, error);
   });
 
@@ -361,7 +404,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
     }
     if (status.state === 'verifying' || status.state === 'downloaded' || status.state === 'installing') return status;
     if (status.state === 'downloading' && !allowDuringDownload) return status;
-    if (activeDownload && !allowDuringDownload) return status;
+    if ((activeDownload || downloadRetryPending) && !allowDuringDownload) return status;
     if (checkInFlight) return checkInFlight;
     lastCheckStartedAt = now();
     // Each attempt propagates its rejection; the publish-or-retry decision
@@ -370,7 +413,9 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       updater
         .checkForUpdates()
         .then(async (result) => {
-          trackAutoDownload(result);
+          if (result?.downloadPromise) {
+            trackDownload(result.downloadPromise, result.cancellationToken, true);
+          }
           const verification = activeVerification;
           if (verification) await verification.catch(() => undefined);
           return status;
@@ -436,6 +481,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       clock.clearTimeout(checkTimer);
       checkTimer = undefined;
     }
+    clearDownloadRetry();
     // Deliberately leaves the retry timer running: its callback checks
     // `disposed` and settles the in-flight check, so `checkInFlight` is not
     // left dangling and its .finally cleanup still runs.
@@ -449,15 +495,34 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       return status;
     }
     if (checkInFlight) await checkInFlight;
+    const afterCheck = currentStatus();
+    if (afterCheck.state === 'verifying' || afterCheck.state === 'downloaded' || afterCheck.state === 'installing') return afterCheck;
+    clearDownloadRetry();
     const download = activeDownload;
     if (download) {
       download.cancelledForRetry = true;
       download.cancellationToken?.cancel();
       await download.promise.catch(() => undefined);
       const settled = currentStatus();
-      if (settled.state === 'downloaded' || settled.state === 'installing') return settled;
+      if (settled.state === 'verifying' || settled.state === 'downloaded' || settled.state === 'installing') return settled;
     }
-    return checkForUpdates(true);
+    // A failed download leaves electron-updater's updateInfoAndProvider in
+    // place. Reusing it avoids another GitHub Atom request, which can fail
+    // independently of the asset download. Re-check only if no update was found.
+    if (!hasAvailableUpdate || !latestInfo) {
+      return checkForUpdates(true);
+    }
+    publish({
+      state: 'available',
+      currentVersion: deps.currentVersion,
+      latestVersion: updateInfoVersion(latestInfo) ?? deps.currentVersion,
+    });
+    startDownload(false);
+    const pending = activeDownload?.promise;
+    if (pending) await pending.catch(() => undefined);
+    const verification = activeVerification;
+    if (verification) await verification.catch(() => undefined);
+    return status;
   }
 
   async function installUpdate(input: AppUpdateInstallRequest): Promise<AppUpdateInstallResult> {

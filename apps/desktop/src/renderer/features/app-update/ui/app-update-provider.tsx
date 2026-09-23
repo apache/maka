@@ -140,6 +140,7 @@ export function AppUpdateProvider(props: { readonly children?: ReactNode }) {
       status: controller.status,
       checking: controller.checking,
       checkForUpdates: controller.commands.checkForUpdates,
+      retryUpdateDownload: controller.commands.retryUpdateDownload,
       installDownloadedUpdate,
       installPending,
     }),
