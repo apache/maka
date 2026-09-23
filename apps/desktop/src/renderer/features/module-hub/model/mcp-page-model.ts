@@ -24,7 +24,7 @@ import type {
   McpServerStatus,
 } from '@maka/core/mcp';
 import { isMcpStdioConfig, resolveMcpProtocolPreference } from '@maka/core/mcp';
-import type { McpCopy } from './locales/mcp-copy.js';
+import type { McpCopy } from '../../../locales/mcp-copy.js';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
 
 /** Electron preserves error messages, but not custom error fields. Map only

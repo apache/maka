@@ -29,7 +29,7 @@ import {
   mcpDraftFromConfig,
   presentMcpNegotiatedProtocol,
   mcpWriteFailureMessage,
-} from '../../renderer/mcp-page-model.js';
+} from '../../renderer/features/module-hub/testing.js';
 
 const copy = getMcpCopy('en');
 

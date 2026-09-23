@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { validateMcpEditorDraft } from '../../renderer/mcp-editor-validation.js';
+import { validateMcpEditorDraft } from '../../renderer/features/module-hub/testing.js';
 
 describe('MCP editor validation', () => {
   it('requires an issuer for a pre-registered OAuth client', () => {

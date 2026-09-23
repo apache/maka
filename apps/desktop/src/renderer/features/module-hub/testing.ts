@@ -33,6 +33,17 @@ export {
 export { startModuleHubLifecycle } from "./controller/module-hub-lifecycle.js";
 export { resolveModuleHubHostRoute } from "./controller/module-hub-route.js";
 export { useMcpController } from "./controller/use-mcp-controller.js";
+export { McpPage } from "./ui/mcp-page.js";
+export { formatCommandLine, parseCommandLine } from "./model/mcp-command-line.js";
+export { validateMcpEditorDraft } from "./model/mcp-editor-validation.js";
+export {
+  createEmptyMcpDraft,
+  mcpConfigFromDraft,
+  mcpDraftProtocolPreference,
+  mcpDraftFromConfig,
+  presentMcpNegotiatedProtocol,
+  mcpWriteFailureMessage,
+} from "./model/mcp-page-model.js";
 export {
   useModuleHubController,
   type ModuleHubHostModel,

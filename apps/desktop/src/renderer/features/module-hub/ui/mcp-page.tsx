@@ -82,15 +82,17 @@ import {
   presentMcpNegotiatedProtocol,
   mcpWriteFailureMessage,
   type McpEditorDraft,
-} from './mcp-page-model';
-import { settingsActionErrorMessage } from './settings/settings-error-copy';
-import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
-import { formatCommandLine } from './mcp-command-line';
-import { defaultRuntimeHostDiagnosticTarget, useMcpController } from './features/module-hub/index.js';
+} from '../model/mcp-page-model.js';
+import { classifiedErrorFallback } from '../../../application/contracts/operation-diagnostics.js';
+import { getMcpCopy, type McpCopy } from '../../../locales/mcp-copy.js';
+import { getSettingsSharedCopy } from '../../../locales/settings-shared-copy.js';
+import { formatCommandLine } from '../model/mcp-command-line.js';
+import { defaultRuntimeHostDiagnosticTarget } from '../controller/default-runtime-host.js';
+import { useMcpController } from '../controller/use-mcp-controller.js';
 import {
   validateMcpEditorDraft,
   type McpEditorErrors,
-} from './mcp-editor-validation';
+} from '../model/mcp-editor-validation.js';
 
 type EditorState =
   | { mode: 'manual'; draft: McpEditorDraft; editingId: string | null }
@@ -111,7 +113,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const mounted = useMountedRef();
   const toast = useToast();
   useEffect(() => {
-    if (error) toast.error(copy.errors.update, mcpWriteFailureMessage(error, copy) ?? settingsActionErrorMessage(error, locale), undefined, defaultRuntimeHostDiagnosticTarget(error));
+    if (error) toast.error(copy.errors.update, mcpWriteFailureMessage(error, copy) ?? classifiedErrorFallback(error, getSettingsSharedCopy(locale).unknownError, locale, 'mcp'), undefined, defaultRuntimeHostDiagnosticTarget(error));
   }, [error, locale, copy, toast]);
   // Set when a remove starts, consumed once the row has actually left the
   // list — which only happens when the config write lands.
@@ -198,7 +200,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     if (Object.keys(validation).length) return;
     let server: McpServerConfig;
     try { server = mcpConfigFromDraft(editor.draft, copy); }
-    catch (failure) { toast.error(copy.errors.save, settingsActionErrorMessage(failure, locale)); return; }
+    catch (failure) { toast.error(copy.errors.save, classifiedErrorFallback(failure, getSettingsSharedCopy(locale).unknownError, locale, 'mcp')); return; }
     const id = editor.draft.id.trim();
     const result = await controller.save(id, server, editor.editingId === null);
     if (!result || !mounted.current) return;

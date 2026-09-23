@@ -33,7 +33,7 @@ import {
 } from '@maka/storage/mcp-config-store';
 import { registerMcpIpcMain, type McpIpcMainDeps } from '../mcp-ipc-main.js';
 import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
-import { mcpWriteFailureMessage } from '../../renderer/mcp-page-model.js';
+import { mcpWriteFailureMessage } from '../../renderer/features/module-hub/testing.js';
 
 test('MCP remove reconciles a live manager after the real store publishes then fails directory sync', {
   skip: process.platform === 'win32',

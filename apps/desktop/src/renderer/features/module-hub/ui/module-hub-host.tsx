@@ -26,7 +26,7 @@ import {
   useUiLocale,
   type ModuleHubHeader,
 } from '@maka/ui';
-import { McpPage } from '../../../mcp-page.js';
+import { McpPage } from './mcp-page.js';
 import type { ModuleHubHostModel } from '../controller/use-module-hub-controller.js';
 import { resolveModuleHubHostRoute } from '../controller/module-hub-route.js';
 import { useModuleHubHostModel } from './module-hub-provider.js';

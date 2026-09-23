@@ -23,8 +23,6 @@ export type {
   ModuleHubServices,
 } from './ports.js';
 export { ModuleHubHost, ModuleHubHostView } from './ui/module-hub-host.js';
-export { defaultRuntimeHostDiagnosticTarget } from './controller/default-runtime-host.js';
-export { useMcpController } from './controller/use-mcp-controller.js';
 export {
   createModuleHubCommandPort,
   ModuleHubProvider,
