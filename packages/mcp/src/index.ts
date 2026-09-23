@@ -96,6 +96,7 @@ import {
   McpAuthRequiredError,
   McpOAuthProvider,
   authorizationCallbackError,
+  mcpOAuthRecordBoundTo,
   type McpAuthorizationCallback,
   type McpOAuthRecord,
   type McpOAuthStorage,
@@ -509,7 +510,7 @@ export class McpClientManager {
             : undefined;
         if (owed) {
           try {
-            await this.forgetAuthorization(serverId, owed);
+            await this.forgetAuthorization(serverId, owed, { successor: serverConfig });
           } catch (error) {
             await this.blockForCredentialCleanup(serverId, current, owed, error);
             // Same contract as the removal loop: the config is already
@@ -1898,11 +1899,20 @@ export class McpClientManager {
   private async forgetAuthorization(
     serverId: string,
     config?: McpServerConfig,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; successor?: McpServerConfig } = {},
   ): Promise<void> {
     if (!this.coordinator) return;
     if (config && isMcpStdioConfig(config) && !(await this.coordinator.read(serverId))) return;
-    await this.coordinator.erase(serverId, options);
+    const { successor, ...eraseOptions } = options;
+    await this.coordinator.erase(serverId, {
+      ...eraseOptions,
+      // Another process may have applied the same change and signed in first.
+      ...(successor &&
+        !isMcpStdioConfig(successor) && {
+          spare: (record: McpOAuthRecord) =>
+            mcpOAuthRecordBoundTo(record, successor.url, successor.oauth),
+        }),
+    });
   }
 
   /** Drops stored tokens and registration, returning the server to needs-auth. */

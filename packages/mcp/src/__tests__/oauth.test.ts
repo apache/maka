@@ -913,6 +913,27 @@ describe('McpClientManager OAuth E2E', () => {
     assert.equal(afterRemoval?.generation, 2);
   });
 
+  test('following a URL change late keeps the login already made for the new URL', async () => {
+    const fixture = await createOAuthFixture();
+    const storage = createMemoryMcpOAuthStorage();
+    const late = new McpClientManager({ oauthStorage: storage });
+    managers.push(late);
+    const old = config('https://old.example/mcp');
+    for (const server of Object.values(old.mcpServers)) server.enabled = false;
+    await late.sync(old);
+
+    // Another process already moved the server to the new URL and signed in.
+    await storage.set('remote', {
+      serverUrl: fixture.mcpUrl,
+      generation: 1,
+      tokens: { access_token: fixture.accessToken, token_type: 'Bearer' },
+    });
+    await late.sync(config(fixture.mcpUrl));
+
+    assert.equal(late.status('remote')?.state, 'connected');
+    assert.equal((await storage.get('remote'))?.generation, 1);
+  });
+
   test('a failed credential erase blocks the server instead of releasing it', async () => {
     const fixture = await createOAuthFixture();
     const memory = createMemoryMcpOAuthStorage();

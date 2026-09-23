@@ -145,6 +145,23 @@ export function createMemoryMcpOAuthStorage(): McpOAuthStorage {
   };
 }
 
+function mcpOAuthClientConfigHash(config?: McpOAuthConfig): string | undefined {
+  if (!config?.clientId) return undefined;
+  return createHash('sha256')
+    .update(JSON.stringify([config.issuer, config.clientId, config.clientSecret]))
+    .digest('hex');
+}
+
+export function mcpOAuthRecordBoundTo(
+  record: McpOAuthRecord,
+  serverUrl: string,
+  config?: McpOAuthConfig,
+): boolean {
+  return (
+    record.serverUrl === serverUrl && record.clientConfigHash === mcpOAuthClientConfigHash(config)
+  );
+}
+
 /** Thrown (via the SDK's UnauthorizedError path) when a background connect
  * would need the user in a browser. The manager maps it to `needs-auth`. */
 export class McpAuthRequiredError extends Error {
@@ -204,11 +221,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   private get clientConfigHash(): string | undefined {
-    const config = this.options.config;
-    if (!config?.clientId) return undefined;
-    return createHash('sha256')
-      .update(JSON.stringify([config.issuer, config.clientId, config.clientSecret]))
-      .digest('hex');
+    return mcpOAuthClientConfigHash(this.options.config);
   }
 
   get redirectUrl(): string {
@@ -393,8 +406,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
       record.pendingState;
     return (
       Boolean(boundable) &&
-      (record.serverUrl !== this.options.serverUrl ||
-        record.clientConfigHash !== this.clientConfigHash)
+      !mcpOAuthRecordBoundTo(record, this.options.serverUrl, this.options.config)
     );
   }
 
