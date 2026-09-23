@@ -91,6 +91,7 @@ import type {
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
+import type { OpencliChromeStatus } from '../shared/opencli-chrome.js';
 import {
   projectDesktopExternalSessionCatalogItem,
   type DesktopExternalSessionCatalogItem,
@@ -3194,6 +3195,12 @@ const makaBridge = {
     },
     logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus> {
       return invokeSelectedRuntimeHost(host, 'mcp:logout', serverId);
+    },
+    chromeStatus(host?: DesktopRuntimeHostRef): Promise<OpencliChromeStatus> {
+      return invokeSelectedRuntimeHost(host, 'mcp:chromeStatus');
+    },
+    connectChrome(host?: DesktopRuntimeHostRef): Promise<void> {
+      return invokeSelectedRuntimeHost(host, 'mcp:connectChrome');
     },
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void {
       return subscribeActiveRuntimeHostEvent('mcp:changed', handler);

@@ -240,6 +240,7 @@ export type { DesktopSessionSummary } from '../shared/desktop-session-projection
 export type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
 import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
+import type { OpencliChromeStatus } from '../shared/opencli-chrome.js';
 import type { DesktopExternalSessionCatalogItem } from './external-session-catalog.js';
 import type { DesktopDiagnosticInput } from './diagnostics-contract.js';
 import type { Result } from '@maka/core/result';
@@ -1593,6 +1594,8 @@ export interface MakaBridge {
     /** Ends an in-flight login round; resolves false when none is active. */
     cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
     logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
+    chromeStatus(host?: DesktopRuntimeHostRef): Promise<OpencliChromeStatus>;
+    connectChrome(host?: DesktopRuntimeHostRef): Promise<void>;
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;
   };
   externalAgents: {

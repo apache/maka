@@ -18,6 +18,7 @@
  */
 
 import type { McpConfigFile, McpServerStatus, McpServerConfig, McpConfigAddResult, McpConfigImportResult, McpConfigUpdateResult, McpTestResult } from '@maka/core/mcp';
+import type { OpencliChromeStatus } from '../../../shared/opencli-chrome.js';
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
@@ -261,6 +262,8 @@ export interface ModuleHubMcpService {
   login(id: string, host: ModuleHubRuntimeHostRef): Promise<McpServerStatus>;
   cancelLogin(id: string, host: ModuleHubRuntimeHostRef): Promise<boolean>;
   logout(id: string, host: ModuleHubRuntimeHostRef): Promise<McpServerStatus>;
+  chromeStatus(host: ModuleHubRuntimeHostRef): Promise<OpencliChromeStatus>;
+  connectChrome(host: ModuleHubRuntimeHostRef): Promise<void>;
   subscribeChanges(handler: () => void): ModuleHubUnsubscribe;
 }
 
