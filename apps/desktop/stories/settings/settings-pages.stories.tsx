@@ -3473,6 +3473,15 @@ export const AboutRelease: Story = {
     }),
   ],
   render: () => <SettingsStory section="about" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole('heading', { name: '第三方组件' })).resolves.toBeTruthy();
+    await expect(canvas.findByText(/Cua Driver（MIT）/u)).resolves.toBeTruthy();
+    await expect(canvas.getByRole('link', { name: 'Cua Driver' })).toHaveAttribute(
+      'href',
+      'https://github.com/trycua/cua',
+    );
+  },
 };
 
 // Real path: the same page mid-download. The row keeps the shape of every

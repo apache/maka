@@ -48,6 +48,7 @@ type AppInfo = Awaited<ReturnType<typeof window.maka.app.info>>;
 const REPOSITORY_URL = 'https://github.com/apache/maka';
 const ISSUE_TRACKER_URL = `${REPOSITORY_URL}/issues`;
 const RELEASES_URL = `${REPOSITORY_URL}/releases`;
+const CUA_DRIVER_URL = 'https://github.com/trycua/cua';
 
 /**
  * The page is an identity lead over rows of one shape — label, one quiet line,
@@ -224,6 +225,25 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           </Text>
         </VStack>
       </SettingsSection>
+      {info?.platform === 'darwin' && info.buildMode === 'packaged' ? (
+        <SettingsSection title={copy.thirdPartyTitle}>
+          <SettingsRow
+            label="Cua Driver"
+            description={copy.cuaDriverHelp}
+            end={(
+              <Link
+                href={CUA_DRIVER_URL}
+                target="_blank"
+                rel="noreferrer noopener"
+                label="Cua Driver"
+                style={linkInRowEnd}
+              >
+                {copy.sourceCode}
+              </Link>
+            )}
+          />
+        </SettingsSection>
+      ) : null}
       {/* A dev checkout follows no feed, so it gets no update group at all: its
           channel line already says it does not update. */}
       {info && info.buildMode !== 'dev' ? (

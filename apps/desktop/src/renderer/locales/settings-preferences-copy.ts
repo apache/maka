@@ -225,6 +225,8 @@ export type SettingsPreferencesCopy = {
     clipboardUnavailable: string;
     /** One sentence saying what following this channel means for the user. */
     channelSummaries: Record<'dev' | 'nightly' | 'release', string>;
+    thirdPartyTitle: string;
+    cuaDriverHelp: string;
     supportTitle: string;
     reportIssueHelp: string;
     reportIssueOpen: string;
@@ -346,6 +348,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     about: {
       loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。',
+      thirdPartyTitle: '第三方组件', cuaDriverHelp: 'macOS 电脑操作内嵌 Cua Driver（MIT），其中包含 UniFFI（MPL-2.0）与 Inter 字体（OFL-1.1）；许可和版权说明随安装包提供。',
       channelSummaries: {
         dev: '本地开发构建，不检查更新。',
         nightly: '每日构建的预发布版，自动更新到最新 nightly，会覆盖正式版安装。',
@@ -451,6 +454,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       passwordSavedPlaceholder: '密碼已儲存；輸入新密碼以替換',
     },
     about: {
+      thirdPartyTitle: '第三方元件', cuaDriverHelp: 'macOS 電腦操作內嵌 Cua Driver（MIT），其中包含 UniFFI（MPL-2.0）與 Inter 字型（OFL-1.1）；授權與版權說明隨安裝包提供。',
       loadFailed: '載入關於資訊失敗', loading: '正在載入關於頁', unavailable: '無法載入關於資訊', copied: '已複製診斷資訊', pasteHint: '檢查內容後，可直接貼上到問題報告', copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', supportTitle: '支援', copyAction: '複製', reportIssueHelp: '帶上診斷資訊去 GitHub Issues，回覆更快。', reportIssueOpen: '開啟', channelSummaries: { dev: '本地開發建構，不檢查更新。', nightly: '每日建構的預發佈版，自動更新到最新 nightly，會覆蓋正式版安裝。', release: '正式發佈版，自動接收穩定更新。' }, copyDiagnostics: '複製診斷資訊', copyHelp: '複製版本、平臺、隱藏主目錄後的工作區路徑，以及近期脫敏的 Desktop 與 Runtime Host 記錄；僅寫入剪貼簿，不會自動上傳。', keyboardShortcuts: '鍵盤快捷鍵', keyboardShortcutsHelp: 'Maka 支援的全部快捷鍵一覽。', keyboardShortcutsOpen: '檢視', reportIssueLabel: '報告問題',
 
       checkForUpdates: '檢查更新',
@@ -513,6 +517,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     about: {
       loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.',
+      thirdPartyTitle: 'Third-party components', cuaDriverHelp: 'macOS Computer Use bundles Cua Driver (MIT), including UniFFI (MPL-2.0) and the Inter font (OFL-1.1). Licenses and copyright notices are included in the app package.',
       channelSummaries: {
         dev: 'A local development build. It does not check for updates.',
         nightly: 'A daily prerelease build. It updates itself to the latest nightly and replaces a release install.',
