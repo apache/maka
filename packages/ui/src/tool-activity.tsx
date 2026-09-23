@@ -96,6 +96,7 @@ import {
 } from './tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from './tool-activity/copy.js';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
+import { RunningIndicator } from './running-indicator.js';
 import { MakaClientSlotOutlet } from './client-plugin-slots.js';
 
 /** Friendly card for tool-search and historical loader results. */
@@ -556,13 +557,16 @@ function LinkedAgentList(props: {
         return (
           <ListItem
             key={row.key}
-            startContent={(
-              <StatusDot
-                variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
-                label={status}
-                isPulsing={props.activityObserved && row.status === 'running'}
-              />
-            )}
+            startContent={
+              props.activityObserved && row.status === 'running' ? (
+                <RunningIndicator label={status} />
+              ) : (
+                <StatusDot
+                  variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
+                  label={status}
+                />
+              )
+            }
             label={(
               <span className="maka-subagent-session-label">
                 <Text type="label" maxLines={1}>

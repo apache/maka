@@ -18,6 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, waitFor } from 'storybook/test';
 import { Spinner } from '@astryxdesign/core/Spinner';
 
 // The two functional animations the product keeps: a spinner and the streaming
@@ -61,4 +62,14 @@ export const RetainedFunctionalMotion: Story = {
       </div>
     </div>
   ),
+  play: async ({ canvasElement }) => {
+    const spinner = canvasElement.querySelector<HTMLElement>('.astryx-spinner')!;
+    // Chromium runs an <svg> element's transform on the main thread every
+    // frame, so the rotation must sit on the HTML box and step, not glide.
+    expect(spinner.querySelector('svg')!.getAnimations()).toHaveLength(0);
+    expect(getComputedStyle(spinner).animationTimingFunction).toBe('steps(16)');
+    // Pinned to the timeline origin, spinners mounted apart step on the same
+    // frames instead of each adding its own.
+    await waitFor(() => expect(spinner.getAnimations()[0]?.startTime).toBe(0));
+  },
 };
