@@ -856,13 +856,15 @@ test('states the outcome without a duration when none is recorded, and localizes
 });
 
 
-test('WorkHub feedback is labelled as a task result rather than a user request', async () => {
+test('WorkHub feedback is a system notice without a user message bubble', async () => {
   const { container, root } = domRoot();
   await renderTurn(root,{
-    ...turnWith([]),
-    user:{id:'feedback',role:'user',text:'Release report',ts:1,hostOrigin:{kind:'workhub_result',eventId:'feedback',actionId:'action',delegationId:'delegation',targetSessionId:'target',targetTurnId:'target-turn'}},
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed',
+    user:{id:'feedback',role:'user',text:'Order summary',ts:1,hostOrigin:{kind:'workhub_result',eventId:'feedback',actionId:'action',delegationId:'delegation',targetSessionId:'target',targetTurnId:'target-turn'}},
   });
-  assert.ok(container.textContent.includes('Task result update'));
-  assert.ok(container.textContent.includes('Release report'));
-  assert.ok(container.querySelector('article[aria-label="Task result update"]'));
+  assert.ok(container.textContent.includes('Task result update · Order summary'));
+  assert.equal(container.querySelectorAll('.maka-user-message').length, 0);
+  assert.ok(container.querySelector('[role="status"][aria-label="Task result update · Order summary"]'));
+  assert.ok(container.textContent.includes('the answer'));
 });

@@ -558,10 +558,13 @@ export const TurnView = memo(function TurnView(props: {
         </Marker>
       )}
       {turn.user?.hostOrigin?.kind === 'workhub_result' && (
-        <Marker variant="host-origin" role="note" title={turn.user.hostOrigin.targetSessionId}>
-          <GitBranch size={ICON_SIZE.meta} aria-hidden="true" />
-          <span>{copy.workHubResultReceived}</span>
-        </Marker>
+        <ChatSystemMessage
+          className="maka-chat-system-message"
+          icon={<GitBranch size={ICON_SIZE.meta} aria-hidden="true" />}
+          aria-label={`${copy.workHubResultReceived} · ${turn.user.text}`}
+        >
+          {copy.workHubResultReceived} · {turn.user.text}
+        </ChatSystemMessage>
       )}
       {turn.user?.hostOrigin?.kind === 'agent_graph' && (
         <Marker
@@ -576,12 +579,10 @@ export const TurnView = memo(function TurnView(props: {
       {props.transientMessages?.map((message) => (
         <TransientUserMessage key={message.id} message={message} />
       ))}
-      {turn.user && (
+      {turn.user && turn.user.hostOrigin?.kind !== 'workhub_result' && (
         <LocalizedChatMessage
           accessibleLabel={
-            turn.user.hostOrigin?.kind === 'workhub_result'
-              ? copy.workHubResultReceived
-              : turn.user.hostOrigin?.kind === 'legacy_automation'
+            turn.user.hostOrigin?.kind === 'legacy_automation'
               ? copy.legacyAutomationTriggered
               : copy.userAriaLabel
           }

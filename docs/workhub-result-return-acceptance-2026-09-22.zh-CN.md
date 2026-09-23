@@ -86,8 +86,10 @@
 
 ## 2026-09-23 普通委派录屏
 
-[观看不提示汇报的 WorkHub 委派与回包录屏](images/pr/workhub-result-return/normal-delegation-demo.mp4)。视频由 Playwright 直接录制实际 Electron WorkHub 窗口，时长约 16 秒；使用独立 profile、现有 DeepSeek V4.1 Flash 连接及真实模型响应。只发送一条普通委派消息：
+[观看不提示汇报的 WorkHub 委派与回包录屏](images/pr/workhub-result-return/normal-delegation-demo.mp4)。视频由 Playwright 直接录制实际 Electron WorkHub 窗口，时长约 19 秒；使用独立 profile、现有 DeepSeek V4.1 Flash 连接及真实模型响应。只发送一条普通委派消息：
 
 > 在已有任务「普通委派验收-订单汇总」里，统计工作目录 orders.csv 中 status 为 paid 的订单数和金额总计，把结果写入 report.json，字段为 paid_count 和 paid_total。
 
 消息没有要求完成后汇报，也没有提到 `WorkHubResult`。目标任务写出 `report.json`，独立读取确认 `paid_count=3`、`paid_total=40`。WorkHub 随后自动出现“任务结果更新”，由完成的结果 Turn `whf_5a17b5906f2d4999c72ea730e5453a5865501aedbf884adf` 汇报这两个数值及报告内容；期间没有第二条用户消息。从发送到确认回包约 12 秒。
+
+后续 UI 修复使 Host 的结果触发不再渲染为右侧用户消息气泡。更新后的录屏展示居中的“任务结果更新 · 任务名”系统状态和下方正常的回包；[查看结果更新时的真实窗口截图](images/pr/workhub-result-return/result-update-system-notice.png)。这次重新跑出的结果 Turn `whf_6d36239582ed6d806724eccd66c9a45b5720d81034d64a82` 已完成，独立读取的报告仍为 `paid_count=3`、`paid_total=40`。
