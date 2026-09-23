@@ -72,7 +72,6 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@ant-design/icons-svg": "4.6.0",
     "@astryxdesign/core": "0.6.2",
     "@astryxdesign/theme-neutral": "0.6.2",
     "@babel/parser": "7.29.7",
@@ -100,7 +99,6 @@
   },
   "maka": {
     "rendererBundledDependencies": [
-      "@ant-design/icons-svg",
       "@astryxdesign/core",
       "@astryxdesign/theme-neutral",
       "@fontsource-variable/geist",

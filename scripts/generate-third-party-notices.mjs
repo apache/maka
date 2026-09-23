@@ -64,10 +64,7 @@ const REQUIRED_ASSET_NOTICE_MARKERS = [
   '## TDesign Icons WeCom mark',
   '## MingCute DingTalk mark',
   '## Allogo Feishu mark',
-  '## Ant Design Icons DingTalk mark',
-  '## Semi Design Feishu mark',
   'packages/ui/src/bot-brand-logo.tsx',
-  'apps/desktop/src/renderer/mcp-brand-marks.tsx',
   'apps/desktop/src/renderer/settings/provider-brand-marks.tsx',
 ];
 const REQUIRED_ASSET_LICENSE_FILES = [
@@ -75,10 +72,8 @@ const REQUIRED_ASSET_LICENSE_FILES = [
   // hoists to different node_modules depths across majors, so the notice
   // generator and the packager read the static copy instead.
   'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
-  'apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
   'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
   'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
-  'apps/desktop/resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
 ];
 
 const ALLOWED_LICENSES = new Set([
@@ -156,9 +151,6 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
       'Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)',
     ].join('\n'),
   ],
-  // The published tarball ships no license file; the repository LICENSE is
-  // vendored at apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt.
-  ['@ant-design/icons-svg@4.6.0', 'Copyright (c) 2018-present Ant UED, https://xtech.antfin.com/'],
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   // Published from TooTallNate/proxy-agents, which keeps its LICENSE at the

@@ -85,9 +85,6 @@
     "src/renderer/locales/task-readiness-copy.ts",
     "src/renderer/locales/work-board-error-copy.ts",
     "src/renderer/main.tsx",
-    "src/renderer/mcp-brand-contrast.ts",
-    "src/renderer/mcp-brand-marks.tsx",
-    "src/renderer/mcp-catalog.ts",
     "src/renderer/mcp-command-line.ts",
     "src/renderer/mcp-editor-validation.ts",
     "src/renderer/mcp-page-model.ts",
@@ -1624,37 +1621,6 @@
           "@maka/core/ui-locale": 1
         }
       },
-      "src/renderer/mcp-brand-contrast.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/mcp-brand-marks.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./mcp-brand-contrast.js": 1,
-          "@ant-design/icons-svg/es/asn/DingtalkOutlined.js": 1,
-          "simple-icons": 1
-        }
-      },
-      "src/renderer/mcp-catalog.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
       "src/renderer/mcp-command-line.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -1688,29 +1654,19 @@
         }
       },
       "src/renderer/mcp-page.tsx": {
-        "bridgePaths": {
-          "window.maka.mcp.cancelInstall": 1,
-          "window.maka.mcp.getConfig": 1,
-          "window.maka.mcp.importConfig": 1,
-          "window.maka.mcp.install": 1,
-          "window.maka.mcp.listStatuses": 1,
-          "window.maka.mcp.remove": 1,
-          "window.maka.mcp.subscribeChanges": 1,
-          "window.maka.mcp.test": 1,
-          "window.maka.mcp.upsert": 2
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {
           "cancelAnimationFrame": 1,
           "requestAnimationFrame": 1,
-          "window.requestAnimationFrame": 2,
-          "window.setTimeout": 1
+          "window.requestAnimationFrame": 2
         },
         "hookCalls": {
           "useEffect": 3,
+          "useMcpController": 1,
           "useMountedRef": 1,
-          "useRef": 4,
+          "useRef": 3,
           "useRovingRowFocus": 1,
-          "useState": 11,
+          "useState": 6,
           "useToast": 1,
           "useUiLocale": 1
         },
@@ -1718,10 +1674,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./default-runtime-host-operation.js": 1,
+          "./features/module-hub/index.js": 1,
           "./locales/mcp-copy": 1,
-          "./mcp-brand-marks": 1,
-          "./mcp-catalog": 1,
           "./mcp-command-line": 1,
           "./mcp-editor-validation": 1,
           "./mcp-page-model": 1,

@@ -17,27 +17,6 @@
  * under the License.
  */
 
-/* Library brand marks (simple-icons) render as inline <svg>. Light theme fills
-   each with its official brand hex, carried on the --mcp-brand-fill custom
-   property set per-mark in mcp-brand-marks.tsx. Marks sit at the same 64% ratio
-   as the provider plates. */
-.maka-module-market-icon .maka-mcp-brand-mark {
-  width: 64%;
-  height: 64%;
-  display: block;
-  fill: var(--mcp-brand-fill);
-}
-
-/* Dark theme: near-black brand marks (Vercel ▲, Notion, Slack aubergine) are
-   flagged data-contrast="low" by the luminance gate and inherit the plate's
-   light foreground instead of vanishing on the dark neutral plate. */
-.dark .maka-module-market-icon .maka-mcp-brand-mark[data-contrast="low"] {
-  fill: currentColor;
-}
-
-/* The endpoint <code> inside a browse row's supporting line. Follows the
-   description to the shared class; the rule is still live, it just lost its
-   old parent selector when the class moved. */
 .maka-module-row-description code {
   font: var(--maka-text-supporting);
 }

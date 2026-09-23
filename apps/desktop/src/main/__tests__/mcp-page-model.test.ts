@@ -20,7 +20,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isMcpStdioConfig, type McpServerStatus } from '@maka/core/mcp';
-import { MCP_CATALOG } from '../../renderer/mcp-catalog.js';
 import { AtomicFileWriteCommitUnknownError } from '@maka/storage/mcp-config-store';
 import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
 import {
@@ -160,18 +159,6 @@ test('kind changes preserve an explicit protocol choice and derive only unselect
   const pinned = { ...empty, kind: 'remote' as const, protocol: '2026-07-28' as const };
   assert.equal(mcpDraftProtocolPreference({ ...pinned, kind: 'stdio' }), '2026-07-28');
   assert.equal(mcpDraftProtocolPreference(pinned), '2026-07-28');
-});
-
-test('the MCP catalog opts every bundled remote entry into auto negotiation', () => {
-  const remoteEntries = MCP_CATALOG.filter((entry) => !isMcpStdioConfig(entry.config));
-
-  assert.deepEqual(
-    remoteEntries.map((entry) => entry.id),
-    ['notion', 'vercel', 'supabase'],
-  );
-  for (const entry of remoteEntries) {
-    assert.equal(!isMcpStdioConfig(entry.config) && entry.config.protocol, 'auto');
-  }
 });
 
 test('an edit that does not touch OAuth preserves the block through save', () => {

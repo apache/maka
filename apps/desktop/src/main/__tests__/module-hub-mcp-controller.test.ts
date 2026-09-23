@@ -22,8 +22,7 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { createDefaultMcpConfig, type McpConfigFile, type McpServerStatus } from '@maka/core/mcp';
-import { createFakeModuleHubServices, ModuleHubServicesProvider } from '../../renderer/features/module-hub/testing.js';
-import { useMcpController } from '../../renderer/features/module-hub/controller/use-mcp-controller.js';
+import { createFakeModuleHubServices, ModuleHubServicesProvider, useMcpController } from '../../renderer/features/module-hub/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);

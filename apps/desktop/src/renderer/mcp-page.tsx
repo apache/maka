@@ -74,8 +74,6 @@ import {
   RefreshCcw,
   Search,
 } from '@maka/ui/icons';
-import { getMcpCatalog, catalogEntryMatches } from './mcp-catalog';
-import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
 import {
   createEmptyMcpDraft,
   mcpConfigFromDraft,
@@ -88,8 +86,7 @@ import {
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
 import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
 import { formatCommandLine } from './mcp-command-line';
-import { defaultRuntimeHostDiagnosticTarget } from './features/module-hub/controller/default-runtime-host.js';
-import { useMcpController } from './features/module-hub/controller/use-mcp-controller.js';
+import { defaultRuntimeHostDiagnosticTarget, useMcpController } from './features/module-hub/index.js';
 import {
   validateMcpEditorDraft,
   type McpEditorErrors,
@@ -100,18 +97,14 @@ type EditorState =
   | { mode: 'json'; source: string }
   | null;
 
-type McpTab = 'templates' | 'connections';
-
 export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const locale = useUiLocale();
   const copy = getMcpCopy(locale);
-  const catalog = getMcpCatalog(locale);
   const controller = useMcpController();
   const { config, statuses, busy, reload, error } = controller;
   const [editor, setEditor] = useState<EditorState>(null);
   const [editorErrors, setEditorErrors] = useState<McpEditorErrors>({});
   const [editorOpen, setEditorOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<McpTab>('connections');
   const [query, setQuery] = useState('');
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const editorSessionRef = useRef(0);
@@ -129,20 +122,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   // k of N costs N−k presses.
   const rovingRows = useRovingRowFocus(rowsContainerRef);
 
-  function switchTab(next: McpTab) {
-    // The selection belongs to the view it was made in; carrying it across
-    // the switch would reopen the inspector without a user action on return.
-    setSelectedServerId(null);
-    setActiveTab(next);
-  }
-
   const statusById = useMemo(
     () => new Map(statuses.map((status) => [status.serverId, status])),
     [statuses],
   );
   const entries = Object.entries(config.mcpServers);
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const templateEntries = catalog.filter((entry) => catalogEntryMatches(entry, normalizedQuery));
   const connectionEntries = entries.filter(([serverId, server]) => {
     if (!normalizedQuery) return true;
     const status = statusById.get(serverId);
@@ -150,11 +135,8 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
 
-  // Derived, not stored: whatever hides the row — deletion, a filter, a
-  // view switch — closes the inspector without a reconciliation step.
-  const selectedServer = activeTab === 'connections'
-    ? connectionEntries.find(([serverId]) => serverId === selectedServerId) ?? null
-    : null;
+  // Derived, not stored: deleting or filtering out a row closes its inspector.
+  const selectedServer = connectionEntries.find(([serverId]) => serverId === selectedServerId) ?? null;
 
   // Synchronising focus with the DOM once the list it points into has been
   // re-rendered — an external system, which is what an Effect is for.
@@ -222,7 +204,6 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     if (!result || !mounted.current) return;
     if (result.status === 'exists') { setEditorErrors({ id: 'exists' }); return; }
     closeEditor();
-    setActiveTab('connections');
     setSelectedServerId(id);
     toast.success(copy.toast.saved, copy.toast.savedDetail);
   }
@@ -234,7 +215,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     if (!result || !mounted.current) return;
     if (result.status === 'invalid') { toast.error(copy.errors.import, mcpImportFailureMessage(result, copy)); return; }
     closeEditor();
-    switchTab('connections');
+    setSelectedServerId(null);
     toast.success(copy.toast.imported, copy.toast.importedDetail(result.importedCount));
   }
 
@@ -261,56 +242,10 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const connectionErrorCount = statuses.filter((status) => status.error).length;
   const searchSummary = normalizedQuery ? (
     <div className="maka-module-search-summary" role="status" aria-live="polite">
-      <span>{copy.page.searchMatches(activeTab === 'templates' ? templateEntries.length : connectionEntries.length)}</span>
+      <span>{copy.page.searchMatches(connectionEntries.length)}</span>
       <Button variant="ghost" size="sm" onClick={() => setQuery('')} label={copy.page.clearSearch} />
     </div>
   ) : null;
-
-  const templatesPanel = (
-    <div className="maka-module-page-panel">
-      {searchSummary}
-      {templateEntries.length === 0 ? (
-        <EmptyState
-          icon={<Search size={ICON_SIZE.empty} />}
-          title={copy.page.noTemplates}
-          description={copy.page.noTemplatesDetail(query)}
-          actions={<Button variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
-        />
-      ) : (
-        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.templates}>
-          {templateEntries.map((entry) => {
-            return (
-              <ListItem
-                key={entry.id}
-                data-maka-contract="mcp-market-row"
-                label={entry.name}
-                description={[
-                  entry.description,
-                  [entry.category, entry.platform === 'darwin' ? copy.card.macOnly : null, entry.setupLabel]
-                    .filter(Boolean)
-                    .join(' · '),
-                ].filter(Boolean).join(' · ')}
-                startContent={(
-                  <span
-                    className="maka-module-market-icon"
-                    data-brand={entry.id}
-                    data-logo={hasMcpBrandMark(entry.id) ? 'true' : undefined}
-                    aria-hidden="true"
-                  >
-                    <McpBrandMark entry={entry} />
-                  </span>
-                )}
-                endContent={(
-                  <Button size="sm" variant="secondary" label={copy.card.useTemplate}
-                    onClick={() => openManual(mcpDraftFromConfig(entry.id, structuredClone(entry.config)))} />
-                )}
-              />
-            );
-          })}
-        </List>
-      )}
-    </div>
-  );
 
   const connectionsPanel = (
     <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
@@ -342,7 +277,6 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           icon={<Plug size={ICON_SIZE.empty} />}
           title={copy.page.noConnections}
           description={copy.page.noConnectionsDetail}
-          actions={<Button variant="primary" label={copy.page.browseTemplates} onClick={() => switchTab('templates')} />}
         />
       ) : connectionEntries.length === 0 ? (
         <EmptyState
@@ -444,21 +378,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             <Toolbar
               size="sm"
               label={copy.page.toolbarAria}
-              startContent={(
-                <SegmentedControl
-                  value={activeTab}
-                  onChange={(value) => {
-                    if (value !== 'templates' && value !== 'connections') return;
-                    switchTab(value);
-                  }}
-                  label={copy.page.categoriesAria}
-                  size="sm"
-                >
-                  <SegmentedControlItem value="connections" label={copy.page.connections} />
-                  <SegmentedControlItem value="templates" label={copy.page.templates} />
-                </SegmentedControl>
-              )}
-              endContent={(
+              endContent={entries.length > 0 ? (
                 <TextInput
                   value={query}
                   onChange={setQuery}
@@ -467,22 +387,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                   isLabelHidden
                   width={220}
                 />
-              )}
+              ) : undefined}
             />
           </div>
         )}
       >
-        {busy !== 'load' && entries.length === 0 ? (
-          <div className="maka-module-page-panel">
-            <Banner
-              status="info"
-              icon={<Plug size={ICON_SIZE.chrome} aria-hidden="true" />}
-              title={copy.page.setupTitle}
-              description={copy.page.setupDescription}
-            />
-          </div>
-        ) : null}
-        {activeTab === 'templates' ? templatesPanel : connectionsPanel}
+        {connectionsPanel}
       </ModulePage>
 
       {editor && (

@@ -174,11 +174,9 @@ SOFTWARE.
     (upstream later removed some of these marks, so the pins stay at the
     version they were copied from):
     - `packages/ui/src/bot-brand-logo.tsx`: Telegram, Discord, WeChat, QQ and Slack paths
-    - `apps/desktop/src/renderer/mcp-brand-marks.tsx`: Slack paths
   - Imported at build time from the installed `simple-icons` package, so the
     bundled version is the one package-lock.json pins; that copy is licensed
     through the generated `licenses/npm/THIRD_PARTY_NOTICES.txt`:
-    - `apps/desktop/src/renderer/mcp-brand-marks.tsx`: LINE, Google Calendar, Figma, Vercel, Supabase, Notion and Apple paths
     - `apps/desktop/src/renderer/settings/provider-brand-marks.tsx`: MiniMax path
 - Full license text: packaged as `licenses/renderer/SIMPLE_ICONS_LICENSE.md`.
 - Trademark boundary: CC0 does not grant trademark rights. The marks are used only to identify the corresponding services.
@@ -209,24 +207,4 @@ SOFTWARE.
 - License: MIT
 - Covered source asset: `packages/ui/src/bot-brand-logo.tsx` `FeishuLogo`
 - Full license text and upstream trademark disclaimer: packaged as `licenses/renderer/ALLOGO_LICENSE.txt`.
-- Trademark boundary: Feishu/Lark and its logo remain trademarks of ByteDance.
-
-## Ant Design Icons DingTalk mark
-
-- Repository: https://github.com/ant-design/ant-design-icons
-- Package: `@ant-design/icons-svg` version `4.5.0`
-- Source: `DingtalkOutlined`
-- License: MIT
-- Covered source asset: `apps/desktop/src/renderer/mcp-brand-marks.tsx` `DINGTALK_MARK`
-- Full license text: packaged as `licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt`.
-- Trademark boundary: DingTalk and its logo remain trademarks of their owner.
-
-## Semi Design Feishu mark
-
-- Repository: https://github.com/DouyinFE/semi-design
-- Package/source: `@douyinfe/semi-icons@2.101.0`, `packages/semi-icons/src/svgs/feishu_logo.svg`
-- License: MIT
-- Covered source asset: `apps/desktop/src/renderer/mcp-brand-marks.tsx` `FEISHU_MARK`
-- Source SHA-256: `5f9a5066c702ada4acdb752521a7d70293fbe5166ac4a7fa256cff8778670e2d`
-- Full license text: packaged as `licenses/renderer/SEMI_ICONS_LICENSE.txt`.
 - Trademark boundary: Feishu/Lark and its logo remain trademarks of ByteDance.

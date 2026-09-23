@@ -36,10 +36,9 @@ export type McpCopy = {
     actionsAria: string; refreshing: string; refresh: string; add: string;
     metaConnections(count: number): string; metaErrors(count: number): string;
     searchMatches(count: number): string;
-    workspaceAria: string; toolbarAria: string; setupTitle: string; setupDescription: string; localStdio: string;
-    categoriesAria: string; templates: string; connections: string; searchPlaceholder: string; searchAria: string;
-    noTemplates: string; noTemplatesDetail(query: string): string; clearSearch: string; loading: string;
-    noConnections: string; noConnectionsDetail: string; browseTemplates: string; noConnectionsMatch: string; noConnectionsMatchDetail(query: string): string;
+    toolbarAria: string; connections: string; localStdio: string; searchPlaceholder: string; searchAria: string;
+    clearSearch: string; loading: string; noConnections: string; noConnectionsDetail: string;
+    noConnectionsMatch: string; noConnectionsMatchDetail(query: string): string;
   };
   detail: {
     label: string; enabled: string; transport: string;
@@ -47,7 +46,6 @@ export type McpCopy = {
     negotiatedProtocol(era: 'legacy' | 'modern', revision: string): string;
     inspectorOpened(id: string): string;
   };
-  card: { macOnly: string; useTemplate: string };
   row: {
     needsAuth: string; login: string; loginPending: string; cancelLogin: string; logout: string;
     testing: string; test: string; edit: string;
@@ -90,11 +88,10 @@ const MCP_COPY = {
       actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加 MCP',
       metaConnections: (count) => `${count} 个连接`, metaErrors: (count) => `${count} 个连接异常`,
       searchMatches: (count) => `${count} 个匹配`,
-      workspaceAria: 'MCP 市场与连接', toolbarAria: 'MCP 浏览操作', setupTitle: '把 Maka 连接到你的工作环境', setupDescription: '从模板开始，或添加本地命令与远程 MCP 服务。',
-      localStdio: '本地命令', categoriesAria: 'MCP 分类', templates: '模板', connections: '连接',
-      searchPlaceholder: '搜索 MCP…', searchAria: '搜索 MCP', noTemplates: '没有找到匹配的 MCP', noTemplatesDetail: (query) => `换一个关键词，或清空「${query}」查看全部模板。`,
-      clearSearch: '清空搜索', loading: '正在读取 MCP 连接…', noConnections: '还没有 MCP 连接', noConnectionsDetail: '选择模板，或手动添加连接。',
-      browseTemplates: '浏览模板', noConnectionsMatch: '没有匹配的 MCP 连接', noConnectionsMatchDetail: (query) => `换一个关键词，或清空「${query}」查看全部连接。`,
+      toolbarAria: 'MCP 连接操作', connections: '连接', localStdio: '本地命令',
+      searchPlaceholder: '搜索连接…', searchAria: '搜索 MCP 连接',
+      clearSearch: '清空搜索', loading: '正在读取 MCP 连接…', noConnections: '还没有 MCP 连接', noConnectionsDetail: '添加本地命令或远程 MCP 服务。',
+      noConnectionsMatch: '没有匹配的 MCP 连接', noConnectionsMatchDetail: (query) => `换一个关键词，或清空「${query}」查看全部连接。`,
     },
     detail: {
       label: '连接详情', enabled: '启用', transport: '传输方式',
@@ -102,7 +99,6 @@ const MCP_COPY = {
       negotiatedProtocol: (era, revision) => `${era === 'modern' ? '现代' : '传统'} · ${revision}`,
       inspectorOpened: (id) => `已打开 ${id} 的详情`,
     },
-    card: { macOnly: '仅 macOS', useTemplate: '使用模板' },
     row: {
       needsAuth: '需要登录', login: '登录', loginPending: '请在浏览器中完成授权', cancelLogin: '取消登录', logout: '退出授权',
       testing: '测试中…', test: '测试', edit: '编辑',
@@ -148,11 +144,10 @@ const MCP_COPY = {
       actionsAria: 'MCP 操作', refreshing: '重新整理中…', refresh: '重新整理', add: '新增 MCP',
       metaConnections: (count) => `${count} 個連線`, metaErrors: (count) => `${count} 個連線異常`,
       searchMatches: (count) => `${count} 個符合`,
-      workspaceAria: 'MCP 市場與連線', toolbarAria: 'MCP 瀏覽操作', setupTitle: '把 Maka 連線到你的工作環境', setupDescription: '從模板開始，或新增本地命令與遠端 MCP 服務。',
-      localStdio: '本地命令', categoriesAria: 'MCP 分類', templates: '模板', connections: '連線',
-      searchPlaceholder: '搜尋 MCP…', searchAria: '搜尋 MCP', noTemplates: '沒有找到符合的 MCP', noTemplatesDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部模板。`,
-      clearSearch: '清空搜尋', loading: '正在讀取 MCP 連線…', noConnections: '還沒有 MCP 連線', noConnectionsDetail: '選擇模板，或手動新增連線。',
-      browseTemplates: '瀏覽模板', noConnectionsMatch: '沒有符合的 MCP 連線', noConnectionsMatchDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部連線。`,
+      toolbarAria: 'MCP 連線操作', connections: '連線', localStdio: '本地命令',
+      searchPlaceholder: '搜尋連線…', searchAria: '搜尋 MCP 連線',
+      clearSearch: '清空搜尋', loading: '正在讀取 MCP 連線…', noConnections: '還沒有 MCP 連線', noConnectionsDetail: '新增本地命令或遠端 MCP 服務。',
+      noConnectionsMatch: '沒有符合的 MCP 連線', noConnectionsMatchDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部連線。`,
     },
     detail: {
       label: '連線詳情', enabled: '啟用', transport: '傳輸方式',
@@ -160,7 +155,6 @@ const MCP_COPY = {
       negotiatedProtocol: (era, revision) => `${era === 'modern' ? '現代' : '傳統'} · ${revision}`,
       inspectorOpened: (id) => `已開啟 ${id} 的詳情`,
     },
-    card: { macOnly: '僅 macOS', useTemplate: '使用模板' },
     row: {
       needsAuth: '需要登入', login: '登入', loginPending: '請在瀏覽器中完成授權', cancelLogin: '取消登入', logout: '登出授權',
       testing: '測試中…', test: '測試', edit: '編輯',
@@ -206,11 +200,10 @@ const MCP_COPY = {
       actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
       metaConnections: (count) => `${count} connections`, metaErrors: (count) => `${count} ${count === 1 ? 'connection error' : 'connection errors'}`,
       searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
-      workspaceAria: 'MCP marketplace and connections', toolbarAria: 'MCP browser controls', setupTitle: 'Connect Maka to your work environment', setupDescription: 'Start with a template, or add a local command or remote MCP service.',
-      localStdio: 'Local command', categoriesAria: 'MCP categories', templates: 'Templates', connections: 'Connections',
-      searchPlaceholder: 'Search MCP…', searchAria: 'Search MCP', noTemplates: 'No matching MCP servers', noTemplatesDetail: (query) => `Try another keyword, or clear “${query}” to view every template.`,
-      clearSearch: 'Clear search', loading: 'Loading MCP connections…', noConnections: 'No MCP connections', noConnectionsDetail: 'Choose a template or add a connection manually.',
-      browseTemplates: 'Browse templates', noConnectionsMatch: 'No matching MCP connections', noConnectionsMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every connection.`,
+      toolbarAria: 'MCP connection controls', connections: 'Connections', localStdio: 'Local command',
+      searchPlaceholder: 'Search connections…', searchAria: 'Search MCP connections',
+      clearSearch: 'Clear search', loading: 'Loading MCP connections…', noConnections: 'No MCP connections', noConnectionsDetail: 'Add a local command or remote MCP service.',
+      noConnectionsMatch: 'No matching MCP connections', noConnectionsMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every connection.`,
     },
     detail: {
       label: 'Connection details', enabled: 'Enabled', transport: 'Transport',
@@ -218,7 +211,6 @@ const MCP_COPY = {
       negotiatedProtocol: (era, revision) => `${era === 'modern' ? 'Modern' : 'Legacy'} · ${revision}`,
       inspectorOpened: (id) => `${id} details opened`,
     },
-    card: { macOnly: 'macOS only', useTemplate: 'Use template' },
     row: {
       needsAuth: 'Login required', login: 'Log in', loginPending: 'Complete authorization in your browser', cancelLogin: 'Cancel login', logout: 'Log out',
       testing: 'Testing…', test: 'Test', edit: 'Edit',

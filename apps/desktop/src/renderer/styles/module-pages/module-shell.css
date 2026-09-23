@@ -171,16 +171,7 @@
   }
 }
 
-/* Browse-row icon plate, shared by the MCP and Skills module pages.
-   Lifted out of mcp.css so the two pages cannot drift into two icon
-   languages: a skill row and an MCP row are the same kind of thing (a
-   browsable entity) and must read the same.
-
-   The tinting BOUNDARY moves with it, because it is the part that took
-   thinking: a tile carrying a colourful official logo drops the tint and
-   rides the quiet neutral plate, since the logo already supplies identity
-   and tinting the plate too would fight the mark. Skills ship no logos, so
-   they always take the neutral plate. */
+/* Skill browse-row icon plate. */
 .maka-module-market-icon {
   width: 28px;
   height: 28px;
@@ -195,16 +186,6 @@
 .maka-module-market-icon span {
   font: var(--maka-text-heading-5);
   letter-spacing: var(--tracking-normal);
-}
-
-/* Tiles that carry an official brand logo (mcp-brand-marks.tsx) drop the
-   per-brand tint and ride a quiet neutral plate — a colourful logo already
-   supplies the brand identity, so tinting the plate too would double up and
-   fight the mark. Mirrors provider-brand-marks' neutral `.providerLogo`. */
-.maka-module-market-icon[data-logo="true"] {
-  background: var(--foreground-5);
-  color: var(--foreground);
-  box-shadow: inset 0 0 0 1px oklch(from var(--foreground) l c h / 0.06);
 }
 
 /* A browse row's supporting line is ONE truncating line, on both module

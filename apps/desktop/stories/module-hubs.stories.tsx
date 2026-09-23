@@ -1038,26 +1038,14 @@ export const ExtensionsMcpSetupRequired: Story = {
   decorators: [withEmptyMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '连接',
-    );
-    installed.click();
     await waitForStoryText(canvasElement, '还没有 MCP 连接');
-  },
-};
-
-// Real path: sidebar → 扩展 → MCP, browsing catalog entries with existing configuration.
-export const ExtensionsMcpMarketplace: Story = {
-  decorators: [withConfiguredMcpBridge],
-  render: () => <ExtensionsMcpSurface />,
-  play: async ({ canvasElement }) => {
-    const market = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '模板',
-    );
-    market.click();
-    await waitForStoryText(canvasElement, 'Slack');
+    await waitForStoryButton(canvasElement, (candidate) => candidate.textContent?.trim() === '添加 MCP');
+    if ([...canvasElement.querySelectorAll('button')].filter((button) => button.textContent?.trim() === '添加 MCP').length !== 1) {
+      throw new Error('Empty MCP page needs one add action');
+    }
+    if (canvasElement.querySelector('input[placeholder="搜索连接…"]')) {
+      throw new Error('An empty connection list has nothing to search');
+    }
   },
 };
 
@@ -1100,11 +1088,6 @@ export const ExtensionsMcpConfigured: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '连接',
-    );
-    installed.click();
     await waitForStoryText(canvasElement, 'filesystem');
     expectModuleBodyAlignedWithHeader(canvasElement);
   },
@@ -1116,11 +1099,6 @@ export const ExtensionsMcpInspector: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '连接',
-    );
-    installed.click();
     await waitForStoryText(canvasElement, 'filesystem');
     const row = await waitForStoryButton(
       canvasElement,
@@ -1173,11 +1151,6 @@ export const ExtensionsMcpConnectionFailed: Story = {
   decorators: [withFailedMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    const installed = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '连接',
-    );
-    installed.click();
     await waitForStoryText(canvasElement, '连接失败');
     const row = await waitForStoryButton(
       canvasElement,

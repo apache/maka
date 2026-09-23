@@ -32,6 +32,7 @@ export {
 } from "./ui/module-hub-provider.js";
 export { startModuleHubLifecycle } from "./controller/module-hub-lifecycle.js";
 export { resolveModuleHubHostRoute } from "./controller/module-hub-route.js";
+export { useMcpController } from "./controller/use-mcp-controller.js";
 export {
   useModuleHubController,
   type ModuleHubHostModel,
