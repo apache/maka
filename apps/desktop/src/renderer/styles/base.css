@@ -69,6 +69,9 @@
     white-space: nowrap !important;
     border: 0 !important;
   }
+.maka-running-indicator {
+    display: inline-flex;
+  }
 button {
     transition:
       background var(--duration-base) var(--ease-out-strong),

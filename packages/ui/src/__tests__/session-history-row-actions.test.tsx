@@ -200,6 +200,29 @@ test('wires the session navigation control to its hover card description', () =>
   assertDescriptionReferencesResolve(markup);
 });
 
+test('a responding row spins where an unread row shows a dot', () => {
+  const unread = { ...session, id: 'session-unread', hasUnread: true };
+  const responding = { ...session, hasUnread: true };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[responding, unread]}
+        streamingSessionIds={new Set([responding.id])}
+        onSelectSession={() => undefined}
+        rowActions={rowActions}
+      />
+    </LocaleProvider>,
+  );
+  const { document } = parseHTML(markup);
+  const signal = (id: string) =>
+    document.querySelector(`[data-session-id="${id}"] .maka-session-row-signal`)!;
+
+  assert.ok(signal(responding.id).querySelector('.astryx-spinner[aria-hidden="true"]'));
+  assert.equal(signal(responding.id).querySelector('.astryx-status-dot'), null);
+  assert.ok(signal(unread.id).querySelector('.astryx-status-dot'));
+  assert.equal(signal(unread.id).querySelector('.astryx-spinner'), null);
+});
+
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {
   const hostRunning = { ...session, runningTurnIds: ['turn-live'] };
   const markup = renderToStaticMarkup(
@@ -212,7 +235,7 @@ test('renders Runtime Host live runs without requiring renderer-local streaming'
     </LocaleProvider>,
   );
 
-  assert.match(markup, /aria-label="Responding"/);
+  assert.match(markup, /maka-visually-hidden">Responding</);
 });
 
 for (const [status, attentionLabel] of [
@@ -232,7 +255,7 @@ for (const [status, attentionLabel] of [
       </LocaleProvider>,
     );
 
-    assert.doesNotMatch(markup, /aria-label="Responding"/);
+    assert.doesNotMatch(markup, /maka-visually-hidden">Responding</);
     assert.match(markup, new RegExp(`aria-label="${attentionLabel}"`));
   });
 }
@@ -259,9 +282,9 @@ test('keeps known-empty idle unless renderer-local streaming is newer', () => {
     </LocaleProvider>,
   );
 
-  assert.doesNotMatch(idleMarkup, /aria-label="Responding"/);
-  assert.doesNotMatch(idleMarkup, /aria-label="Running"/);
-  assert.match(locallyStreamingMarkup, /aria-label="Responding"/);
+  assert.doesNotMatch(idleMarkup, /maka-visually-hidden">Responding</);
+  assert.doesNotMatch(idleMarkup, /maka-visually-hidden">Running</);
+  assert.match(locallyStreamingMarkup, /maka-visually-hidden">Responding</);
 });
 
 test('renders collapsible project navigation and row actions as sibling controls', () => {
@@ -514,7 +537,7 @@ test('keeps project running totals aligned with renderer-local task streaming', 
   const descriptionId = projectNavigation?.getAttribute('aria-describedby');
   const description = descriptionId ? document.getElementById(descriptionId) : null;
 
-  assert.match(markup, /aria-label="Responding"/);
+  assert.match(markup, /maka-visually-hidden">Responding</);
   assert.ok(description);
   assert.match(description.getAttribute('aria-label') ?? '', /1 running/);
 });

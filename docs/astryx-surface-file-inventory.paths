@@ -267,6 +267,7 @@ packages/ui/src/primitives/stat-tile.tsx
 packages/ui/src/prompt-anchor-rail.tsx
 packages/ui/src/quote-ref-chip.tsx
 packages/ui/src/relative-time.tsx
+packages/ui/src/running-indicator.tsx
 packages/ui/src/sandbox-boundary-prompt.tsx
 packages/ui/src/scheduled-task-form-dialog.tsx
 packages/ui/src/scheduled-task-inspector.tsx
