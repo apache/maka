@@ -1029,15 +1029,14 @@
       },
       "src/renderer/browser-storage.ts": {
         "bridgePaths": {},
-        "environmentCapabilities": {
-          "localStorage.getItem": 1,
-          "localStorage.setItem": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "./platform/desktop/browser-storage.js": 1
+        }
       },
       "src/renderer/chat-composer-region.tsx": {
         "bridgePaths": {},

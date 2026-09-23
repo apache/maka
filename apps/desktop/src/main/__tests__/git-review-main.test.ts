@@ -67,7 +67,7 @@ describe('Git Review snapshot authority', () => {
       root,
       'branch',
       undefined,
-      'feature/review',
+      'refs/heads/feature/review',
     );
     assert.equal(currentBranchOnly.ok, true);
     if (currentBranchOnly.ok) {
@@ -120,7 +120,7 @@ describe('Git Review snapshot authority', () => {
     ]);
   });
 
-  it('compares the branch rather than a same-named tag, including legacy selections', async () => {
+  it('compares the branch rather than a same-named tag, using a qualified ref', async () => {
     const root = await repository();
     await git(root, 'tag', 'release');
     await git(root, 'checkout', '-b', 'release');
@@ -132,15 +132,13 @@ describe('Git Review snapshot authority', () => {
     await git(root, 'add', '.');
     await git(root, 'commit', '-m', 'feature');
 
-    for (const selection of ['refs/heads/release', 'release']) {
-      const result = await readGitReview(root, 'branch', undefined, selection);
-      assert.equal(result.ok, true);
-      if (!result.ok) return;
-      assert.equal(result.snapshot.baseBranch, 'refs/heads/release');
-      assert.deepEqual(result.snapshot.files.map((file) => file.path), ['feature.txt']);
-      assert.ok(result.snapshot.baseBranchOptions.every((option) =>
-        option.value.startsWith('refs/heads/') || option.value.startsWith('refs/remotes/')));
-    }
+    const result = await readGitReview(root, 'branch', undefined, 'refs/heads/release');
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.snapshot.baseBranch, 'refs/heads/release');
+    assert.deepEqual(result.snapshot.files.map((file) => file.path), ['feature.txt']);
+    assert.ok(result.snapshot.baseBranchOptions.every((option) =>
+      option.value.startsWith('refs/heads/') || option.value.startsWith('refs/remotes/')));
     assert.deepEqual(await readGitReview(root, 'branch', undefined, 'refs/tags/release'),
       { ok: false, reason: 'invalid_base_branch', branches: { currentBranch: 'feature', baseBranchOptions: [
         { label: 'main', value: 'refs/heads/main' },
@@ -156,7 +154,7 @@ describe('Git Review snapshot authority', () => {
       ] } });
   });
 
-  it('keeps local and remote refs with the same label distinct and rejects ambiguous legacy names', async () => {
+  it('keeps local and remote refs with the same label distinct and rejects unqualified names', async () => {
     const root = await repository();
     await git(root, 'update-ref', 'refs/remotes/origin/release', 'HEAD');
     await git(root, 'checkout', '-b', 'origin/release');

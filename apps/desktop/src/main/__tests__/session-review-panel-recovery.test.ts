@@ -28,8 +28,6 @@ import {
   createFakeWorkbarServices,
   WorkbarServicesProvider,
   SessionReviewPanel,
-  persistSessionReviewBaseBranch,
-  readSessionReviewBaseBranch,
 } from '../../renderer/features/workbar/testing.js';
 
 test('a saved failing comparison keeps the picker available and can recover', async () => {
@@ -64,7 +62,7 @@ test('a saved failing comparison keeps the picker available and can recover', as
   };
   const services = createFakeWorkbarServices({ review });
   try {
-    persistSessionReviewBaseBranch('saved-session', 'refs/heads/gh-pages');
+    services.reviewBaseBranchPreference.write('saved-session', 'refs/heads/gh-pages');
     await act(async () => {
       root.render(createElement(LocaleProvider, {
         locale: 'en',
@@ -89,6 +87,43 @@ test('a saved failing comparison keeps the picker available and can recover', as
   }
 });
 
+for (const reason of ['not_git_repository', 'workspace_unavailable', 'git_failed'] as const) {
+  test(`a refresh clears stale branch options after ${reason}`, async () => {
+    const { document, restore } = installDom();
+    const container = document.querySelector('#root');
+    assert.ok(container);
+    const root = createRoot(container);
+    let unavailable = false;
+    const services = createFakeWorkbarServices({ review: {
+      read: async () => unavailable
+        ? { ok: false, reason }
+        : { ok: true, snapshot: {
+          source: 'branch', repositoryRoot: '/repo', currentBranch: 'feature',
+          baseBranch: 'refs/heads/main',
+          baseBranchOptions: [{ label: 'main', value: 'refs/heads/main' }],
+          revision: 'initial', files: [], additions: 0, deletions: 0, truncated: false,
+        } },
+      subscribeSessionEvents: () => () => undefined,
+    } });
+    const render = (active: boolean) => root.render(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(WorkbarServicesProvider, { services },
+        createElement(SessionReviewPanel, { sessionId: 'vanished-repo', active })),
+    }));
+    try {
+      await act(async () => { render(true); });
+      assert.ok(container.querySelector('.maka-session-review-base-branch'));
+      await act(async () => { render(false); });
+      unavailable = true;
+      await act(async () => { render(true); });
+      assert.equal(container.querySelector('.maka-session-review-base-branch'), null);
+    } finally {
+      await act(async () => { root.unmount(); });
+      restore();
+    }
+  });
+}
+
 test('a disappeared saved branch clears the pin and retries with the dynamic default', async () => {
   const { document, restore } = installDom();
   const container = document.querySelector('#root');
@@ -105,7 +140,7 @@ test('a disappeared saved branch clears the pin and retries with the dynamic def
           baseBranchOptions: [{ label: 'main', value: 'refs/heads/main' }],
         } };
       }
-      assert.equal(readSessionReviewBaseBranch(sessionId), null, 'clear storage before retrying');
+      assert.equal(services.reviewBaseBranchPreference.read(sessionId), null, 'clear storage before retrying');
       return {
         ok: true,
         snapshot: {
@@ -121,7 +156,7 @@ test('a disappeared saved branch clears the pin and retries with the dynamic def
   };
   const services = createFakeWorkbarServices({ review });
   try {
-    persistSessionReviewBaseBranch(sessionId, 'refs/heads/gh-pages');
+    services.reviewBaseBranchPreference.write(sessionId, 'refs/heads/gh-pages');
     await act(async () => {
       root.render(createElement(LocaleProvider, {
         locale: 'en',
@@ -130,7 +165,7 @@ test('a disappeared saved branch clears the pin and retries with the dynamic def
       }));
     });
     assert.deepEqual(requests, ['refs/heads/gh-pages', undefined]);
-    assert.equal(readSessionReviewBaseBranch(sessionId), null, 'the resolved default must remain unpinned');
+    assert.equal(services.reviewBaseBranchPreference.read(sessionId), null, 'the resolved default must remain unpinned');
     const trigger = container.querySelector<HTMLButtonElement>('.maka-session-review-base-branch button');
     assert.ok(trigger, 'automatic recovery restores the comparison picker');
     assert.match(trigger.textContent ?? '', /main/);
@@ -205,7 +240,6 @@ test('a comparison switch spins the picker and dims the stale diff until it land
 
 function installDom() {
   const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
-  const storage = new Map<string, string>();
   const globals = {
     document, window,
     matchMedia: (media: string) => ({
@@ -223,10 +257,6 @@ function installDom() {
     requestAnimationFrame: () => 1,
     cancelAnimationFrame: () => undefined,
     IS_REACT_ACT_ENVIRONMENT: true,
-    localStorage: {
-      getItem: (key: string) => storage.get(key) ?? null,
-      setItem: (key: string, value: string) => storage.set(key, value),
-    },
   };
   const previous = new Map(Object.keys(globals).map((key) =>
     [key, Object.getOwnPropertyDescriptor(globalThis, key)]));

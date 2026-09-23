@@ -18,41 +18,12 @@
  */
 
 import assert from 'node:assert/strict';
-import { afterEach, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  persistSessionReviewBaseBranch,
-  readSessionReviewBaseBranch,
-  resolveAdoptedBaseBranch,
-  REVIEW_BASE_BRANCH_STORAGE_KEY,
-  reviewBaseBranchRequestValue,
   SessionReviewBaseBranchPicker,
 } from '../../renderer/features/workbar/testing.js';
-
-function installMemoryLocalStorage(initial: Record<string, string> = {}) {
-  const store = new Map<string, string>(Object.entries(initial));
-  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  const memory: Storage = {
-    get length() {
-      return store.size;
-    },
-    clear: () => store.clear(),
-    getItem: (key) => store.get(key) ?? null,
-    key: (index) => [...store.keys()][index] ?? null,
-    removeItem: (key) => store.delete(key),
-    setItem: (key, value) => store.set(key, String(value)),
-  };
-  Object.defineProperty(globalThis, 'localStorage', {
-    configurable: true,
-    writable: true,
-    value: memory,
-  });
-  return () => {
-    if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
-    else Reflect.deleteProperty(globalThis, 'localStorage');
-  };
-}
 
 const AUTO_SENTINEL = 'AUTO_SENTINEL';
 
@@ -79,79 +50,6 @@ function renderTrigger(baseBranch: string | null) {
 }
 
 describe('session review base branch', () => {
-  const cleanups: Array<() => void> = [];
-  afterEach(() => {
-    while (cleanups.length > 0) cleanups.pop()?.();
-  });
-
-  it('omits the request value until a branch is selected', () => {
-    assert.equal(reviewBaseBranchRequestValue(null), undefined);
-    assert.equal(reviewBaseBranchRequestValue('origin/develop'), 'origin/develop');
-  });
-
-  it('adopts the resolved base branch only when the backend offers it', () => {
-    const options = [
-      { label: 'main', value: 'refs/heads/main' },
-      { label: 'origin/develop', value: 'refs/remotes/origin/develop' },
-    ];
-    assert.equal(
-      resolveAdoptedBaseBranch('refs/remotes/origin/develop', {
-        baseBranch: 'refs/heads/main',
-        baseBranchOptions: options,
-      }),
-      'refs/remotes/origin/develop',
-    );
-    assert.equal(
-      resolveAdoptedBaseBranch(null, { baseBranch: 'refs/heads/main', baseBranchOptions: options }),
-      null,
-    );
-    // A resolved branch the backend would reject on the next read stays unpinned.
-    assert.equal(
-      resolveAdoptedBaseBranch('origin/gone', {
-        baseBranch: 'origin/gone',
-        baseBranchOptions: options,
-      }),
-      null,
-    );
-    assert.equal(
-      resolveAdoptedBaseBranch(null, { baseBranch: null, baseBranchOptions: options }),
-      null,
-    );
-  });
-
-  it('persists the canonical selection when the backend migrates a legacy name', () => {
-    cleanups.push(installMemoryLocalStorage());
-    persistSessionReviewBaseBranch('legacy', 'main');
-    const adopted = resolveAdoptedBaseBranch(readSessionReviewBaseBranch('legacy'), {
-      baseBranch: 'refs/heads/main',
-      baseBranchOptions: [{ label: 'main', value: 'refs/heads/main' }],
-    });
-    assert.equal(adopted, 'refs/heads/main');
-    persistSessionReviewBaseBranch('legacy', adopted);
-    assert.equal(readSessionReviewBaseBranch('legacy'), 'refs/heads/main');
-  });
-
-  it('pins the branch per Session and survives corrupt storage', () => {
-    cleanups.push(installMemoryLocalStorage());
-    persistSessionReviewBaseBranch('session-a', 'origin/develop');
-    persistSessionReviewBaseBranch('session-b', 'main');
-    assert.equal(readSessionReviewBaseBranch('session-a'), 'origin/develop');
-    assert.equal(readSessionReviewBaseBranch('session-b'), 'main');
-
-    persistSessionReviewBaseBranch('session-a', null);
-    assert.equal(readSessionReviewBaseBranch('session-a'), null);
-    assert.equal(readSessionReviewBaseBranch('session-b'), 'main');
-
-    localStorage.setItem(REVIEW_BASE_BRANCH_STORAGE_KEY, '{ not json');
-    assert.equal(readSessionReviewBaseBranch('session-b'), null);
-    localStorage.setItem(
-      REVIEW_BASE_BRANCH_STORAGE_KEY,
-      JSON.stringify({ 'session-c': 7, 'session-d': 'main' }),
-    );
-    assert.equal(readSessionReviewBaseBranch('session-c'), null);
-    assert.equal(readSessionReviewBaseBranch('session-d'), 'main');
-  });
-
   it('shows the compared branch instead of an auto pseudo-entry', () => {
     const trigger = renderTrigger('refs/remotes/origin/develop');
     assert.match(trigger, />origin\/develop</);

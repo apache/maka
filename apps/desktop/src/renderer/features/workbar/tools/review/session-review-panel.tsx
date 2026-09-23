@@ -33,12 +33,6 @@ import { DiffCodePreview, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, ArrowRight, GitBranch } from '@maka/ui/icons';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
-import {
-  persistSessionReviewBaseBranch,
-  readSessionReviewBaseBranch,
-  resolveAdoptedBaseBranch,
-  reviewBaseBranchRequestValue,
-} from './session-review-base-branch-model.js';
 import { SessionReviewBaseBranchPicker } from './session-review-base-branch-picker.js';
 
 const REVIEW_FILE_PAGE_SIZE = 20;
@@ -79,7 +73,7 @@ export function SessionReviewPanel(props: {
   sessionId: string;
   active: boolean;
 }) {
-  const { review } = useWorkbarServices();
+  const { review, reviewBaseBranchPreference } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).reviewPanel;
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
@@ -91,24 +85,13 @@ export function SessionReviewPanel(props: {
   const [visibleFileCount, setVisibleFileCount] = useState(REVIEW_FILE_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
   const [baseBranch, setBaseBranch] = useState(() =>
-    readSessionReviewBaseBranch(props.sessionId),
+    reviewBaseBranchPreference.read(props.sessionId),
   );
   const revisionRef = useRef(0);
   const displayedBaseBranchRef = useRef<string | null | undefined>(undefined);
-  // Requests read the ref, not the state: adopting a resolved branch must not
-  // re-run the load effect, and a Session switch must not race a stale value.
+  // Read the latest selection without restarting the subscription effect.
+  // WorkbarSurface keys this panel by sessionId, so each Session initializes afresh.
   const baseBranchRef = useRef(baseBranch);
-
-  useEffect(() => {
-    displayedBaseBranchRef.current = undefined;
-    setVisibleFileCount(REVIEW_FILE_PAGE_SIZE);
-    setBranches(null);
-    setGitResult(null);
-    setSwitching(false);
-    const stored = readSessionReviewBaseBranch(props.sessionId);
-    baseBranchRef.current = stored;
-    setBaseBranch(stored);
-  }, [props.sessionId]);
 
   const load = useCallback(async () => {
     const revision = ++revisionRef.current;
@@ -118,7 +101,7 @@ export function SessionReviewPanel(props: {
       review.read({
         sessionId: props.sessionId,
         source: 'branch',
-        baseBranch: reviewBaseBranchRequestValue(selection),
+        baseBranch: selection ?? undefined,
       });
     try {
       let nextGit = await readReview(baseBranchRef.current);
@@ -133,31 +116,17 @@ export function SessionReviewPanel(props: {
         if (nextGit.branches) setBranches(nextGit.branches);
         baseBranchRef.current = null;
         setBaseBranch(null);
-        persistSessionReviewBaseBranch(props.sessionId, null);
+        reviewBaseBranchPreference.write(props.sessionId, null);
         nextGit = await readReview(null);
         if (revision !== revisionRef.current) return;
       }
       const nextBranches = nextGit.ok ? nextGit.snapshot : nextGit.branches;
-      if (nextBranches) {
-        setBranches({
-          currentBranch: nextBranches.currentBranch,
-          baseBranchOptions: nextBranches.baseBranchOptions,
-        });
-      }
+      setBranches(nextBranches ?? null);
       if (nextGit.ok) {
         // Preserve expansion on refresh, but start each comparison at page one.
         if (displayedBaseBranchRef.current !== nextGit.snapshot.baseBranch) {
           setVisibleFileCount(REVIEW_FILE_PAGE_SIZE);
           displayedBaseBranchRef.current = nextGit.snapshot.baseBranch;
-        }
-        const adopted = resolveAdoptedBaseBranch(
-          baseBranchRef.current,
-          nextGit.snapshot,
-        );
-        if (adopted !== baseBranchRef.current) {
-          baseBranchRef.current = adopted;
-          setBaseBranch(adopted);
-          persistSessionReviewBaseBranch(props.sessionId, adopted);
         }
       }
       setGitResult(nextGit);
@@ -173,18 +142,18 @@ export function SessionReviewPanel(props: {
         setSwitching(false);
       }
     }
-  }, [copy.loadFailed, locale, props.sessionId, review]);
+  }, [copy.loadFailed, locale, props.sessionId, review, reviewBaseBranchPreference]);
 
   const selectBaseBranch = useCallback(
     (branch: string) => {
       if (branch === baseBranchRef.current) return;
       baseBranchRef.current = branch;
       setBaseBranch(branch);
-      persistSessionReviewBaseBranch(props.sessionId, branch);
+      reviewBaseBranchPreference.write(props.sessionId, branch);
       setSwitching(true);
       void load();
     },
-    [load, props.sessionId],
+    [load, props.sessionId, reviewBaseBranchPreference],
   );
 
   useEffect(() => {

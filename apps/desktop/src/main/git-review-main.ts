@@ -67,7 +67,7 @@ export async function readGitReview(
     if (source === 'branch') branches = { currentBranch, baseBranchOptions };
     const requestedOption = requestedBaseBranch == null
       ? undefined
-      : resolveRequestedBaseBranch(requestedBaseBranch, baseBranchOptions);
+      : baseBranchOptions.find((option) => option.value === requestedBaseBranch);
     if (source === 'branch' && requestedBaseBranch != null && !requestedOption) {
       return { ok: false, reason: 'invalid_base_branch', branches };
     }
@@ -431,18 +431,6 @@ async function resolveBaseBranch(
         await gitRefExists(repositoryRoot, candidate, runGit)) return candidate;
   }
   return null;
-}
-
-// Old preferences contain display names. Match only enumerated branches and
-// reject collisions between local and remote names rather than guessing.
-function resolveRequestedBaseBranch(
-  requested: string,
-  options: readonly GitReviewBaseBranchOption[],
-): GitReviewBaseBranchOption | undefined {
-  const exact = options.find((option) => option.value === requested);
-  if (exact) return exact;
-  const matches = options.filter((option) => option.label === requested);
-  return matches.length === 1 ? matches[0] : undefined;
 }
 
 async function listBaseBranches(
