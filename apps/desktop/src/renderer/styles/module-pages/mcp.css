@@ -56,6 +56,11 @@
   white-space: pre-wrap;
 }
 
+.maka-mcp-choose {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
 
 .maka-mcp-manual-form,
 .maka-mcp-json-form {

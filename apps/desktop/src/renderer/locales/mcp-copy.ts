@@ -54,6 +54,8 @@ export type McpCopy = {
   };
   editor: {
     importTitle: string; editTitle(id: string): string; addTitle: string; importSubtitle: string; manualSubtitle: string;
+    chooseSubtitle: string; suggested: string; backToSuggestions: string;
+    suggestions: Record<'notion' | 'linear' | 'mcp-docs', { name: string; description: string }>;
     manual: string; pasteJson: string; jsonConfig: string; jsonHelp: string; cancel: string;
     importConnect: string; transportAria: string; localStdio: string; remoteUrl: string;
     serverId: string; command: string; commandPlaceholder: string; commandHelp: string;
@@ -108,7 +110,9 @@ const MCP_COPY = {
     editor: {
       idExists: '已有同名连接，请换个名称。', oauth: 'OAuth 设置', oauthHelp: '通常无需填写。只有服务提供固定客户端凭据时才配置；填写客户端 ID 时还需要授权服务器地址。', issuer: '授权服务器地址（issuer）', clientId: '客户端 ID', clientSecret: '客户端密钥', scopes: '权限范围（空格分隔）', callbackPort: '回调端口（可选）',
       importTitle: '通过 JSON 导入', editTitle: (id) => `编辑 ${id}`, addTitle: '添加 MCP', importSubtitle: '粘贴 MCP 配置；同名连接会被更新。',
-      manualSubtitle: '此连接保存在当前工作区。', manual: '手动配置', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
+      manualSubtitle: '此连接保存在当前工作区。', chooseSubtitle: '选择一个服务，或添加自己的 MCP 连接。', suggested: '常用服务', backToSuggestions: '返回服务列表',
+      suggestions: { notion: { name: 'Notion', description: '连接工作区页面 · 需要登录' }, linear: { name: 'Linear', description: '连接问题与项目 · 需要登录' }, 'mcp-docs': { name: 'MCP 官方文档', description: '查询 MCP 文档 · 无需登录' } },
+      manual: '手动配置', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
       jsonHelp: '可粘贴完整配置，或仅包含各连接的 JSON 对象；未列出的现有连接会保留。', cancel: '取消', importConnect: '导入配置',
       transportAria: '连接方式', localStdio: '本地命令', remoteUrl: '远程 URL',
       serverId: '连接名称', command: '启动命令',
@@ -164,7 +168,9 @@ const MCP_COPY = {
     editor: {
       idExists: '已有同名連線，請換個名稱。', oauth: 'OAuth 設定', oauthHelp: '通常無需填寫。只有服務提供固定用戶端憑據時才設定；填寫用戶端 ID 時還需要授權伺服器地址。', issuer: '授權伺服器地址（issuer）', clientId: '用戶端 ID', clientSecret: '用戶端密鑰', scopes: '權限範圍（空格分隔）', callbackPort: '回呼連接埠（選填）',
       importTitle: '透過 JSON 匯入', editTitle: (id) => `編輯 ${id}`, addTitle: '新增 MCP', importSubtitle: '貼上 MCP 設定；同名連線會被更新。',
-      manualSubtitle: '此連線儲存在目前工作區。', manual: '手動設定', pasteJson: '貼上 JSON', jsonConfig: 'JSON 設定',
+      manualSubtitle: '此連線儲存在目前工作區。', chooseSubtitle: '選擇服務，或新增自己的 MCP 連線。', suggested: '常用服務', backToSuggestions: '返回服務列表',
+      suggestions: { notion: { name: 'Notion', description: '連接工作區頁面 · 需要登入' }, linear: { name: 'Linear', description: '連接問題與專案 · 需要登入' }, 'mcp-docs': { name: 'MCP 官方文件', description: '查詢 MCP 文件 · 無需登入' } },
+      manual: '手動設定', pasteJson: '貼上 JSON', jsonConfig: 'JSON 設定',
       jsonHelp: '可貼上完整設定，或僅包含各連線的 JSON 物件；未列出的現有連線會保留。', cancel: '取消', importConnect: '匯入設定',
       transportAria: '連線方式', localStdio: '本地命令', remoteUrl: '遠端 URL',
       serverId: '連線名稱', command: '啟動命令',
@@ -220,7 +226,9 @@ const MCP_COPY = {
     editor: {
       idExists: 'A connection with this name already exists. Choose another name.', oauth: 'OAuth settings', oauthHelp: 'Usually leave this blank. Configure it only when the service provides fixed client credentials; a client ID also requires the authorization server issuer.', issuer: 'Authorization server issuer', clientId: 'Client ID', clientSecret: 'Client secret', scopes: 'Scopes (space separated)', callbackPort: 'Callback port (optional)',
       importTitle: 'Import from JSON', editTitle: (id) => `Edit ${id}`, addTitle: 'Add MCP', importSubtitle: 'Paste MCP configuration; connections with matching names will be updated.',
-      manualSubtitle: 'This connection is saved in the current workspace.', manual: 'Manual configuration', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
+      manualSubtitle: 'This connection is saved in the current workspace.', chooseSubtitle: 'Choose a service or add your own MCP connection.', suggested: 'Popular services', backToSuggestions: 'Back to services',
+      suggestions: { notion: { name: 'Notion', description: 'Connect workspace pages · Sign in required' }, linear: { name: 'Linear', description: 'Connect issues and projects · Sign in required' }, 'mcp-docs': { name: 'Official MCP docs', description: 'Search MCP documentation · No sign-in' } },
+      manual: 'Manual configuration', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
       jsonHelp: 'Paste a complete configuration or a JSON object of named connections. Existing connections not listed here are preserved.', cancel: 'Cancel', importConnect: 'Import configuration',
       transportAria: 'Connection method', localStdio: 'Local command', remoteUrl: 'Remote URL',
       serverId: 'Connection name', command: 'Launch command',
