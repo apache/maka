@@ -56,31 +56,24 @@
   white-space: pre-wrap;
 }
 
-.maka-mcp-sections {
-  padding-block: var(--space-4) var(--space-6);
+.maka-mcp-section-heading {
+  font: var(--maka-text-heading-4);
 }
 
-.maka-mcp-connections-panel {
-  padding: 0;
-}
-
-.maka-mcp-recommendation-logo {
-  display: grid;
+.maka-mcp-mark {
   flex: none;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  overflow: hidden;
-  background: #fff;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
 }
 
-.maka-mcp-recommendation-logo > img,
-.maka-mcp-recommendation-logo > svg {
-  width: 24px;
-  height: 24px;
+.maka-mcp-mark > img,
+.maka-mcp-mark > svg,
+.maka-mcp-mark > .providerAssetMask {
+  width: 20px;
+  height: 20px;
   object-fit: contain;
+}
+
+.maka-mcp-status-dot {
+  display: inline-flex;
 }
 
 .maka-mcp-manual-form,
@@ -90,10 +83,6 @@
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0;
   overflow: hidden;
-}
-
-.maka-mcp-json-form {
-  grid-template-rows: minmax(0, 1fr) auto auto;
 }
 
 .maka-mcp-form-fields {
@@ -120,15 +109,11 @@
 
 .maka-mcp-json-field {
   overflow: auto;
-  padding-inline: var(--space-4);
+  padding: var(--space-4);
 }
 
-.maka-mcp-json-form > p {
-  font: var(--maka-text-supporting);
-  margin: 0;
-  padding-inline: var(--space-4);
-  padding-block: var(--space-2) var(--space-3);
-  color: var(--muted-foreground);
+.maka-mcp-editor-mode {
+  margin-inline-end: auto;
 }
 
 .maka-mcp-editor-footer {

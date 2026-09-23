@@ -21,7 +21,7 @@ import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
 import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
-import { MCP_CONFIG_VERSION } from '@maka/core/mcp';
+import { isMcpStdioConfig, MCP_CONFIG_VERSION } from '@maka/core/mcp';
 import {
   ScheduledTasksPage,
   DailyReviewPage,
@@ -520,13 +520,32 @@ const LONG_DAILY_REVIEW_ARCHIVE: DailyReviewArchive = {
   },
 };
 
+// One row per status the list can show, so the status column is read against
+// its neighbours: healthy remote and local, in flight, waiting on login, and
+// switched off. Notion and Linear being here also takes them out of 推荐.
 const configuredMcpConfig: McpConfigFile = {
   version: MCP_CONFIG_VERSION,
   mcpServers: {
+    notion: {
+      enabled: true,
+      url: 'https://mcp.notion.com/mcp',
+      transport: 'auto',
+      protocol: 'auto',
+    },
     filesystem: {
       enabled: true,
       command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-filesystem', '/Users/yuhan/workspace'],
+      args: ['-y', '@modelcontextprotocol/server-filesystem', '/Users/maka/workspace'],
+    },
+    browser: {
+      enabled: true,
+      command: 'npx',
+      args: ['-y', '@playwright/mcp@latest'],
+    },
+    'team-tools': {
+      enabled: true,
+      url: 'https://mcp.example.com/team/tools',
+      transport: 'streamable-http',
     },
     'linear-remote': {
       enabled: false,
@@ -557,16 +576,44 @@ const editorMcpStatus: McpServerStatus = {
   updatedAt: NOW,
 };
 
+function mcpTools(serverId: string, names: string[]): McpServerStatus['tools'] {
+  return names.map((name) => ({ serverId, name, inputSchema: {} }));
+}
+
 const configuredMcpStatuses: McpServerStatus[] = [
+  {
+    serverId: 'notion',
+    state: 'connected',
+    transport: 'streamable-http',
+    negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },
+    authenticated: true,
+    toolCount: 5,
+    tools: mcpTools('notion', ['notion-search', 'notion-fetch', 'notion-create-pages', 'notion-update-page', 'notion-get-comments']),
+    updatedAt: NOW,
+  },
   {
     serverId: 'filesystem',
     state: 'connected',
     transport: 'stdio',
+    negotiatedProtocol: { era: 'legacy', revision: '2025-06-18' },
     toolCount: 2,
-    tools: [
-      { serverId: 'filesystem', name: 'read_file', inputSchema: {} },
-      { serverId: 'filesystem', name: 'list_directory', inputSchema: {} },
-    ],
+    tools: mcpTools('filesystem', ['read_file', 'list_directory']),
+    updatedAt: NOW,
+  },
+  {
+    serverId: 'browser',
+    state: 'connecting',
+    transport: 'stdio',
+    toolCount: 0,
+    tools: [],
+    updatedAt: NOW,
+  },
+  {
+    serverId: 'team-tools',
+    state: 'needs-auth',
+    transport: 'streamable-http',
+    toolCount: 0,
+    tools: [],
     updatedAt: NOW,
   },
   {
@@ -578,6 +625,24 @@ const configuredMcpStatuses: McpServerStatus[] = [
     updatedAt: NOW,
   },
 ];
+
+// Past the search threshold, so the list's search field is on screen.
+const manyMcpConfig: McpConfigFile = {
+  version: MCP_CONFIG_VERSION,
+  mcpServers: Object.fromEntries(
+    ['github', 'postgres', 'sentry', 'slack', 'figma', 'stripe', 'jira', 'confluence', 'grafana', 'datadog']
+      .map((id) => [id, { enabled: true, url: `https://mcp.example.com/${id}`, transport: 'auto' as const }]),
+  ),
+};
+
+const manyMcpStatuses: McpServerStatus[] = Object.keys(manyMcpConfig.mcpServers).map((serverId) => ({
+  serverId,
+  state: 'connected',
+  transport: 'streamable-http',
+  toolCount: 3,
+  tools: mcpTools(serverId, ['search', 'read', 'write'].map((verb) => `${serverId}_${verb}`)),
+  updatedAt: NOW,
+}));
 
 const failedMcpConfig: McpConfigFile = {
   version: MCP_CONFIG_VERSION,
@@ -603,7 +668,9 @@ const failedMcpStatuses: McpServerStatus[] = [
   },
 ];
 
-function withMcpServices(config: McpConfigFile, statuses: McpServerStatus[]): Decorator {
+type McpServicesOverrides = Partial<ReturnType<typeof createFakeModuleHubServices>['mcp']>;
+
+function withMcpServices(config: McpConfigFile, statuses: McpServerStatus[], overrides: McpServicesOverrides = {}): Decorator {
   return function McpServicesDecorator(StoryComponent) {
     const [services] = useState(() => {
       let saved = structuredClone(config);
@@ -615,11 +682,29 @@ function withMcpServices(config: McpConfigFile, statuses: McpServerStatus[]): De
         ...defaults.mcp,
         getConfig: async () => saved,
         listStatuses: async () => current,
+        // A new remote server answers 401 until someone logs in; a new local
+        // one is still starting.
         add: async (id, server) => {
           if (Object.hasOwn(saved.mcpServers, id)) return { status: 'exists' };
           saved = { ...saved, mcpServers: { ...saved.mcpServers, [id]: server } };
+          current = [...current, {
+            serverId: id,
+            state: isMcpStdioConfig(server) ? 'connecting' : 'needs-auth',
+            toolCount: 0,
+            tools: [],
+            updatedAt: NOW,
+          }];
           changed();
           return { status: 'added', config: saved };
+        },
+        importConfig: async (source) => {
+          let parsed: unknown;
+          try { parsed = JSON.parse(source); } catch { return { status: 'invalid', reason: 'invalid-json' }; }
+          if (!parsed || typeof parsed !== 'object') return { status: 'invalid', reason: 'not-object' };
+          const servers = ('mcpServers' in parsed ? parsed.mcpServers : parsed) as McpConfigFile['mcpServers'];
+          saved = { ...saved, mcpServers: { ...saved.mcpServers, ...servers } };
+          changed();
+          return { status: 'imported', config: saved, importedCount: Object.keys(servers).length };
         },
         upsert: async (id, server) => {
           saved = { ...saved, mcpServers: { ...saved.mcpServers, [id]: server } };
@@ -641,6 +726,7 @@ function withMcpServices(config: McpConfigFile, statuses: McpServerStatus[]): De
           return status;
         },
         subscribeChanges: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+        ...overrides,
       } });
     });
     return <ModuleHubServicesProvider services={services}><StoryComponent /></ModuleHubServicesProvider>;
@@ -651,6 +737,7 @@ const withConfiguredMcpBridge = withMcpServices(configuredMcpConfig, configuredM
 const withEditorMcpBridge = withMcpServices(editorMcpConfig, [editorMcpStatus]);
 const withEmptyMcpBridge = withMcpServices({ version: MCP_CONFIG_VERSION, mcpServers: {} }, []);
 const withFailedMcpBridge = withMcpServices(failedMcpConfig, failedMcpStatuses);
+const withManyMcpBridge = withMcpServices(manyMcpConfig, manyMcpStatuses);
 
 function ModuleSurface(props: {
   children: ReactNode;
@@ -879,6 +966,13 @@ async function waitForStorySelector<T extends Element>(
   throw new Error(`Story selector did not render: ${selector}`);
 }
 
+// Through the native setter, so React's controlled input sees a user edit.
+function setStoryFieldValue(field: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const prototype = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(field, value);
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 async function waitForStoryText(canvasElement: HTMLElement, text: string): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (canvasElement.textContent?.includes(text)) return;
@@ -1041,8 +1135,8 @@ export const ExtensionsMcpSetupRequired: Story = {
     await waitForStoryText(canvasElement, '0 个连接');
     await waitForStoryText(canvasElement, '推荐');
     await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled);
-    if (canvasElement.querySelector('.maka-module-page-panel')) {
-      throw new Error('Empty MCP connections must not push recommendations below an empty panel');
+    if (canvasElement.textContent?.includes('已添加')) {
+      throw new Error('Empty MCP connections must not push recommendations below an empty section');
     }
     if ([...canvasElement.querySelectorAll('button')].filter((button) => button.textContent?.trim() === '添加 MCP').length !== 1) {
       throw new Error('Empty MCP page needs one add action');
@@ -1053,19 +1147,34 @@ export const ExtensionsMcpSetupRequired: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 推荐 → Notion, before saving.
+// Real path: sidebar → 扩展 → MCP, while the Runtime Host has not answered the
+// first config read yet.
+export const ExtensionsMcpLoading: Story = {
+  decorators: [withMcpServices(configuredMcpConfig, configuredMcpStatuses, { getConfig: () => new Promise(() => {}) })],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    await waitForStorySelector(canvasElement, '.maka-module-list-skeleton[aria-busy="true"]');
+    if (canvasElement.textContent?.includes('推荐')) {
+      throw new Error('Recommendations must wait for the config that decides which are already added');
+    }
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP → 推荐 → 飞书 +. One click writes the
+// official endpoint; the new row opens straight into its login step.
 export const ExtensionsMcpRecommended: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    await waitForStoryText(canvasElement, '推荐');
-    (await waitForStoryButton(canvasElement, (button) => button.getAttribute('aria-label') === 'Notion')).click();
-    const body = canvasElement.ownerDocument.body;
-    const fields = await waitForStorySelector<HTMLElement>(body, '.maka-mcp-primary-fields');
-    const inputs = [...fields.querySelectorAll<HTMLInputElement>('input')];
-    if (inputs[0]?.value !== 'notion' || inputs[1]?.value !== 'https://mcp.notion.com/mcp') {
-      throw new Error('Suggested MCP must prefill the existing editor with its official endpoint');
+    if (canvasElement.querySelector('[aria-label="添加 Notion"], [aria-label="添加 Linear"]')) {
+      throw new Error('A service whose host is already configured must leave 推荐');
+    }
+    (await waitForStoryButton(canvasElement, (button) => button.getAttribute('aria-label') === '添加 飞书')).click();
+    await waitForStoryText(canvasElement, 'https://mcp.feishu.cn/mcp');
+    await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '登录');
+    if (canvasElement.querySelector('[aria-label="添加 飞书"]')) {
+      throw new Error('An added recommendation must leave 推荐');
     }
   },
 };
@@ -1079,11 +1188,53 @@ export const ExtensionsMcpAdd: Story = {
     (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
     const fields = await waitForStorySelector<HTMLElement>(canvasElement.ownerDocument.body, '.maka-mcp-primary-fields');
     const inputs = fields.querySelectorAll<HTMLInputElement>('input');
-    if (inputs.length !== 2) throw new Error('New MCP needs only its name and connection endpoint');
+    if (inputs.length !== 2 || inputs[1]?.placeholder !== 'https://example.com/mcp') {
+      throw new Error('New MCP starts as a remote URL with only its name and endpoint');
+    }
     const optionalFields = canvasElement.ownerDocument.querySelector('.maka-mcp-advanced-fields');
     if (!optionalFields || optionalFields.getClientRects().length !== 0) {
       throw new Error('Optional MCP settings must start collapsed');
     }
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP → 添加 MCP → 本地命令.
+export const ExtensionsMcpAddLocal: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, 'filesystem');
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    const body = canvasElement.ownerDocument.body;
+    (await waitForStoryButton(body, (button) => button.textContent?.trim() === '本地命令')).click();
+    await waitForStoryText(body, '填写启动命令及参数');
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP → 添加 MCP → 保存连接 with nothing filled in.
+export const ExtensionsMcpAddValidation: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, 'filesystem');
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    const body = canvasElement.ownerDocument.body;
+    (await waitForStoryButton(body, (button) => button.textContent?.trim() === '保存连接')).click();
+    await waitForStoryText(body, '此字段为必填项。');
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP → 添加 MCP → 高级设置 → OAuth 设置.
+export const ExtensionsMcpAddAdvanced: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, 'filesystem');
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    const body = canvasElement.ownerDocument.body;
+    (await waitForStoryButton(body, (button) => button.textContent?.trim() === '高级设置')).click();
+    (await waitForStoryButton(body, (button) => button.textContent?.trim() === 'OAuth 设置')).click();
+    await waitForStoryText(body, '授权服务器地址（issuer）');
   },
 };
 
@@ -1104,30 +1255,78 @@ export const ExtensionsMcpJsonImport: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP, with connected and disabled servers.
+// Real path: sidebar → 扩展 → MCP → 添加 MCP → 粘贴 JSON → 导入配置 with text
+// that is not JSON.
+export const ExtensionsMcpJsonImportInvalid: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, 'filesystem');
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    const body = canvasElement.ownerDocument.body;
+    (await waitForStoryButton(body, (button) => button.textContent?.trim() === '粘贴 JSON')).click();
+    setStoryFieldValue(await waitForStorySelector<HTMLTextAreaElement>(body, '.maka-mcp-json-field textarea'), '{ "mcpServers": ');
+    (await waitForStoryButton(body, (button) => button.textContent?.trim() === '导入配置' && !button.disabled)).click();
+    await waitForStoryText(body, 'MCP 配置必须是有效的 JSON');
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP, with healthy, starting, login-required and
+// disabled servers.
 export const ExtensionsMcpConfigured: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
+    await waitForStoryText(canvasElement, '1 个需要处理');
     expectModuleBodyAlignedWithHeader(canvasElement);
+    if (canvasElement.querySelector('input[placeholder="搜索连接…"]')) {
+      throw new Error('A list that fits on screen has no search field');
+    }
+    const images = [...canvasElement.querySelectorAll<HTMLImageElement>('.maka-mcp-mark img')];
+    await Promise.all(images.map((image) => image.decode()));
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → click a server row, which opens the
-// inspector where the enable switch, 测试, 编辑 and 删除 now live.
+// Real path: sidebar → 扩展 → MCP → click a signed-in remote server, which
+// opens the inspector where the switch, 测试连接, 编辑, 退出授权 and 删除 live.
 export const ExtensionsMcpInspector: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    await waitForStoryText(canvasElement, 'filesystem');
     const row = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.includes('filesystem') === true,
+      (candidate) => candidate.textContent?.startsWith('notion') === true,
     );
     row.click();
-    await waitForStoryText(canvasElement, '测试');
-    await waitForStoryText(canvasElement, 'read_file');
+    const body = canvasElement.ownerDocument.body;
+    await waitForStoryText(body, '退出授权');
+    await waitForStoryText(body, 'notion-search');
+    await waitForStoryText(body, '现代 · 2026-07-28');
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP → a server's inspector → 删除.
+export const ExtensionsMcpRemoveConfirm: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.startsWith('filesystem') === true)).click();
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '删除')).click();
+    await waitForStoryText(canvasElement.ownerDocument.body, '删除 MCP「filesystem」？');
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP with more connections than fit on screen,
+// searching for a name none of them has.
+export const ExtensionsMcpSearchNoMatch: Story = {
+  decorators: [withManyMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const search = await waitForStorySelector<HTMLInputElement>(canvasElement, 'input[placeholder="搜索连接…"]');
+    setStoryFieldValue(search, 'notion');
+    await waitForStoryText(canvasElement, '没有匹配的 MCP 连接');
+    await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '清空搜索');
   },
 };
 
@@ -1158,16 +1357,29 @@ export const ExtensionsMcpEditorNarrow: Story = { ...ExtensionsMcpEditor };
 
 // Real path: sidebar → 扩展 → MCP → select a remote connection requiring OAuth.
 export const ExtensionsMcpLoginRequired: Story = {
-  decorators: [withMcpServices(failedMcpConfig, [{ ...failedMcpStatuses[0]!, state: 'needs-auth', error: undefined, stderrTail: undefined }])],
+  decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.includes('team-tools') === true)).click();
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.startsWith('team-tools') === true)).click();
     await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '登录');
   },
 };
 
+// Real path: sidebar → 扩展 → MCP → team-tools → 登录, while the browser
+// authorization is still open. The client owns the pending login, so the
+// same state comes back when the page is reopened.
+export const ExtensionsMcpLoginPending: Story = {
+  decorators: [withMcpServices(failedMcpConfig, [{ ...failedMcpStatuses[0]!, state: 'needs-auth', authorizationPending: true, error: undefined, stderrTail: undefined }])],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, '等待授权');
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.startsWith('team-tools') === true)).click();
+    await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '取消登录');
+  },
+};
+
 // Real path: sidebar → 扩展 → MCP, after an enabled remote server fails to
-// connect: the failure leads the row, the detail lives in the inspector.
+// connect: the row says so, the inspector carries the error and its output.
 export const ExtensionsMcpConnectionFailed: Story = {
   decorators: [withFailedMcpBridge],
   render: () => <ExtensionsMcpSurface />,
@@ -1175,16 +1387,25 @@ export const ExtensionsMcpConnectionFailed: Story = {
     await waitForStoryText(canvasElement, '连接失败');
     const row = await waitForStoryButton(
       canvasElement,
-      (candidate) => candidate.textContent?.includes('team-tools') === true,
+      (candidate) => candidate.textContent?.startsWith('team-tools') === true,
     );
     row.click();
     await waitForStoryText(canvasElement, '连接超时，请检查服务器地址或网络代理。');
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '错误输出')).click();
+    await waitForStoryText(canvasElement, 'request timed out after 30s');
   },
 };
 
 // Real path: sidebar → 扩展 → MCP at the narrow desktop viewport floor.
 export const ExtensionsMcpNarrow: Story = {
   ...ExtensionsMcpConfigured,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+
+// Real path: sidebar → 扩展 → MCP in a narrow window → click a row. Below the
+// two-column breakpoint the inspector opens as a dialog over the list.
+export const ExtensionsMcpInspectorNarrow: Story = {
+  ...ExtensionsMcpInspector,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 

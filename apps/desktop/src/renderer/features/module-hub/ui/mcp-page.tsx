@@ -29,11 +29,9 @@ import { isMcpStdioConfig } from '@maka/core/mcp';
 import {
   Banner,
   Button,
-  ClickableCard,
   Collapsible,
   Divider,
   EmptyState,
-  Grid,
   Heading,
   HStack,
   IconButton,
@@ -66,15 +64,17 @@ import {
   useToast,
   useUiLocale,
   type ModuleHubHeader,
+  type StatusSemantic,
   dotForStatus,
 } from '@maka/ui';
 
 import {
+  Globe,
   ICON_SIZE,
-  Plug,
   Plus,
   RefreshCcw,
   Search,
+  Terminal,
 } from '@maka/ui/icons';
 import {
   createEmptyMcpDraft,
@@ -101,12 +101,21 @@ type EditorState =
   | { mode: 'json'; source: string }
   | null;
 
-const MCP_SUGGESTIONS = [
-  { id: 'notion', url: 'https://mcp.notion.com/mcp', logo: new URL('../../../assets/provider-brands/notion.svg', import.meta.url).href },
-  { id: 'linear', url: 'https://mcp.linear.app/mcp', logo: new URL('../../../assets/provider-brands/linear.svg', import.meta.url).href },
-  { id: 'feishu', url: 'https://mcp.feishu.cn/mcp', logo: null },
-  { id: 'mcp-docs', url: 'https://modelcontextprotocol.io/mcp', logo: new URL('../../../assets/provider-brands/mcp.svg', import.meta.url).href },
-] as const;
+type McpMarkSource = { image: string } | { mask: string } | 'feishu';
+type McpSuggestion = { id: 'notion' | 'linear' | 'feishu' | 'mcp-docs'; url: string; mark: McpMarkSource };
+
+// Notion's mark paints its own white page, so it stays an image; the
+// single-colour Linear and MCP marks are masks that take the plate's ink.
+const MCP_SUGGESTIONS: readonly McpSuggestion[] = [
+  { id: 'notion', url: 'https://mcp.notion.com/mcp', mark: { image: new URL('../../../assets/provider-brands/notion.svg', import.meta.url).href } },
+  { id: 'linear', url: 'https://mcp.linear.app/mcp', mark: { mask: new URL('../../../assets/provider-brands/linear.svg', import.meta.url).href } },
+  { id: 'feishu', url: 'https://mcp.feishu.cn/mcp', mark: 'feishu' },
+  { id: 'mcp-docs', url: 'https://modelcontextprotocol.io/mcp', mark: { mask: new URL('../../../assets/provider-brands/mcp.svg', import.meta.url).href } },
+];
+
+// Below this many connections the whole list fits on screen, and a search
+// field would only be one more control to read past.
+const SEARCH_MIN_CONNECTIONS = 8;
 
 export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const locale = useUiLocale();
@@ -145,6 +154,8 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     return [serverId, endpointFor(server), ...status?.tools.map((tool) => tool.name) ?? []]
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
+  const configuredHosts = new Set(entries.map(([, server]) => hostOf(server)).filter(Boolean));
+  const suggestions = busy === 'load' ? [] : MCP_SUGGESTIONS.filter((suggestion) => !configuredHosts.has(hostOf(suggestion)));
 
   // Derived, not stored: deleting or filtering out a row closes its inspector.
   const selectedServer = connectionEntries.find(([serverId]) => serverId === selectedServerId) ?? null;
@@ -197,17 +208,17 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     });
   }
 
-  function openSuggestedServer(id: string, url: string) {
-    openEditor({
-      mode: 'manual',
-      draft: mcpDraftFromConfig(id, {
-        enabled: true,
-        url,
-        transport: 'auto',
-        protocol: 'auto',
-      }),
-      editingId: null,
-    });
+  async function addSuggestion(suggestion: McpSuggestion) {
+    const server: McpServerConfig = { enabled: true, url: suggestion.url, transport: 'auto', protocol: 'auto' };
+    const result = await controller.save(suggestion.id, server, true);
+    if (!result || !mounted.current) return;
+    if (result.status === 'exists') {
+      openEditor({ mode: 'manual', draft: mcpDraftFromConfig(suggestion.id, server), editingId: null });
+      setEditorErrors({ id: 'exists' });
+      return;
+    }
+    setSelectedServerId(suggestion.id);
+    toast.success(copy.toast.saved, copy.toast.savedDetail);
   }
 
   async function saveDraft(event: React.FormEvent) {
@@ -259,28 +270,29 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     toast.success(copy.toast.removed);
   }
 
-  const connectionErrorCount = statuses.filter((status) => status.error).length;
-  const searchSummary = normalizedQuery ? (
-    <div className="maka-module-search-summary" role="status" aria-live="polite">
-      <span>{copy.page.searchMatches(connectionEntries.length)}</span>
-      <Button variant="ghost" size="sm" onClick={() => setQuery('')} label={copy.page.clearSearch} />
-    </div>
-  ) : null;
+  const attentionCount = entries.filter(([serverId, server]) => {
+    const { status } = presentStatus(statusById.get(serverId), server.enabled !== false, copy);
+    return status === 'attention' || status === 'error';
+  }).length;
+  const searchVisible = entries.length >= SEARCH_MIN_CONNECTIONS || normalizedQuery !== '';
 
   const connectionsPanel = busy === 'load' || entries.length > 0 ? (
-    <div className="maka-module-page-panel maka-mcp-connections-panel" ref={rowsContainerRef} {...rovingRows}>
+    <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
       {/* Selecting a row moves no focus, so nothing else would tell a screen
           reader that the details opened. This says so, politely. */}
       <p className="maka-visually-hidden" role="status" aria-live="polite">
         {selectedServer ? copy.detail.inspectorOpened(selectedServer[0]) : ''}
       </p>
-      {searchSummary}
+      {normalizedQuery ? (
+        <div className="maka-module-search-summary" role="status" aria-live="polite">
+          <span>{copy.page.searchMatches(connectionEntries.length)}</span>
+          <Button variant="ghost" size="sm" onClick={() => setQuery('')} label={copy.page.clearSearch} />
+        </div>
+      ) : null}
       {busy === 'load' ? (
-        /* Loading (DESIGN.md §10): the connection list's structure is predictable,
-           so it loads as row-shaped skeletons in the rows' own geometry — three
-           rows, this surface's typical ready count. Skeleton's radius scale has
-           no 6px step, so the tile takes the nearest one (8px) to the real
-           tile's control radius. */
+        /* Loading (DESIGN.md §10): rows are predictable, so the list loads as
+           row-shaped skeletons in the rows' own geometry — three rows, this
+           surface's typical ready count. */
         <div className="maka-module-list-skeleton" role="status" aria-busy="true" aria-label={copy.page.loading}>
           {[0, 1, 2].map((index) => (
             <div key={index} className="maka-module-list-skeleton-row" aria-hidden="true">
@@ -300,35 +312,29 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           actions={<Button variant="ghost" size="sm" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
         />
       ) : (
-        /* Selectable, otherwise inert rows: the switch, test, edit and
-           delete controls that used to ride the row now live in the
-           inspector — no interactive elements inside an interactive list
-           item. */
-        <List density="balanced" hasDividers aria-label={copy.page.connections} className="maka-module-page-rows">
+        /* Selectable, otherwise inert rows: every per-connection control lives
+           in the inspector — no interactive elements inside an interactive
+           list item. */
+        <List
+          density="balanced"
+          hasDividers
+          className="maka-module-page-rows"
+          header={<Heading level={2} className="maka-mcp-section-heading">{copy.page.connections}</Heading>}
+        >
           {connectionEntries.map(([serverId, server]) => {
-            const status = statusById.get(serverId);
-            const state = presentStatus(status, server.enabled !== false, copy);
+            const state = presentStatus(statusById.get(serverId), server.enabled !== false, copy);
             const endpoint = endpointFor(server);
-            const transportLabel = transportLabelFor(server, copy);
             return (
               <ListItem
                 key={serverId}
                 label={serverId}
                 description={(
                   <span className="maka-module-row-description" data-maka-contract="mcp-server-description">
-                    {/* Exceptional state leads as TEXT; the healthy label
-                        rides the dot's accessible name only. */}
-                    {state.exception ? <span>{state.label} · </span> : null}
-                    <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
-                    {state.tone === 'success' ? <span> · {state.label}</span> : null}
+                    {transportLabelFor(server, copy)} · <code title={endpoint}>{endpoint}</code>
                   </span>
                 )}
-                startContent={(
-                  <StatusDot
-                    variant={mcpStatusDotVariant(state)}
-                    label={state.label}
-                  />
-                )}
+                startContent={<McpMark server={server} />}
+                endContent={<McpStatusLabel state={state} />}
                 isSelected={selectedServerId === serverId}
                 onClick={() => setSelectedServerId(
                   selectedServerId === serverId ? null : serverId,
@@ -347,7 +353,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         title={props.hubHeader?.title ?? 'MCP'}
         meta={[
           copy.page.metaConnections(entries.length),
-          connectionErrorCount > 0 ? copy.page.metaErrors(connectionErrorCount) : null,
+          attentionCount > 0 ? copy.page.metaAttention(attentionCount) : null,
         ].filter(Boolean).join(' · ')}
         inspectorLabel={copy.detail.label}
         inspectorAutoSaveId="maka-mcp-inspector"
@@ -375,7 +381,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             role="group"
             aria-label={copy.page.actionsAria}
           >
-            <Button variant="primary" onClick={() => openEditor({ mode: 'manual', draft: createEmptyMcpDraft(), editingId: null })} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
+            <Button variant="primary" onClick={() => openEditor({ mode: 'manual', draft: { ...createEmptyMcpDraft(), kind: 'remote' }, editingId: null })} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
             <IconButton
               variant="ghost"
               label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
@@ -392,7 +398,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             <Toolbar
               size="sm"
               label={copy.page.toolbarAria}
-              endContent={entries.length > 0 ? (
+              endContent={searchVisible ? (
                 <TextInput
                   value={query}
                   onChange={setQuery}
@@ -406,39 +412,41 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           </div>
         )}
       >
-        <VStack gap={8} className="maka-mcp-sections">
-          {connectionsPanel && (
-            <VStack gap={3}>
-              <Heading level={3}>{copy.page.connections}</Heading>
-              {connectionsPanel}
-            </VStack>
-          )}
-          <VStack gap={3}>
-            <Heading level={3}>{copy.page.recommended}</Heading>
-            <Divider />
-            <Grid columns={{ minWidth: 320 }} gap={2}>
-              {MCP_SUGGESTIONS.map(({ id, url, logo }) => (
-                <ClickableCard
-                  key={id}
-                  label={copy.page.suggestions[id].name}
-                  variant="transparent"
-                  padding={2}
-                  isDisabled={busy !== null}
-                  onClick={() => openSuggestedServer(id, url)}
-                >
-                  <HStack gap={3} vAlign="center">
-                    <span className="maka-mcp-recommendation-logo" aria-hidden="true">
-                      {logo ? <img src={logo} alt="" /> : <BotBrandLogo provider="feishu" width={24} height={24} aria-hidden="true" />}
-                    </span>
-                    <VStack gap={0}>
-                      <Text type="body" weight="semibold">{copy.page.suggestions[id].name}</Text>
-                      <Text type="supporting" color="secondary">{copy.page.suggestions[id].description}</Text>
-                    </VStack>
-                  </HStack>
-                </ClickableCard>
-              ))}
-            </Grid>
-          </VStack>
+        <VStack gap={0}>
+          {connectionsPanel}
+          {suggestions.length > 0 ? (
+            <div className="maka-module-page-panel">
+              <List
+                density="balanced"
+                hasDividers
+                className="maka-module-page-rows"
+                header={<Heading level={2} className="maka-mcp-section-heading">{copy.page.recommended}</Heading>}
+              >
+                {suggestions.map((suggestion) => {
+                  const { name, description } = copy.page.suggestions[suggestion.id];
+                  return (
+                    <ListItem
+                      key={suggestion.id}
+                      label={name}
+                      description={description}
+                      startContent={<McpMark suggestion={suggestion} />}
+                      endContent={(
+                        <IconButton
+                          variant="secondary"
+                          size="sm"
+                          label={copy.page.addSuggestion(name)}
+                          tooltip={copy.page.addSuggestion(name)}
+                          isDisabled={busy !== null}
+                          onClick={() => void addSuggestion(suggestion)}
+                          icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />}
+                        />
+                      )}
+                    />
+                  );
+                })}
+              </List>
+            </div>
+          ) : null}
         </VStack>
       </ModulePage>
 
@@ -482,6 +490,35 @@ function mcpImportFailureMessage(
   }
 }
 
+function McpMark(props: { server: McpServerConfig } | { suggestion: McpSuggestion }) {
+  const suggestion = 'suggestion' in props
+    ? props.suggestion
+    : MCP_SUGGESTIONS.find((candidate) => hostOf(candidate) === hostOf(props.server));
+  const mark = suggestion?.mark;
+  // Feishu's mark is already an app-icon tile, so it takes the plate's place.
+  if (mark === 'feishu') return <BotBrandLogo provider="feishu" width={ICON_SIZE.plate} height={ICON_SIZE.plate} className="maka-mcp-mark" aria-hidden="true" />;
+  return (
+    <span className="maka-module-market-icon maka-mcp-mark" aria-hidden="true">
+      {mark && 'image' in mark ? <img src={mark.image} alt="" />
+        : mark ? <span className="providerAssetMask" style={{ maskImage: `url("${mark.mask}")`, WebkitMaskImage: `url("${mark.mask}")` }} />
+        : 'server' in props && isMcpStdioConfig(props.server) ? <Terminal size={ICON_SIZE.empty} />
+        : <Globe size={ICON_SIZE.empty} />}
+    </span>
+  );
+}
+
+// The dot is decoration beside the same words, so only the words are read.
+function McpStatusLabel(props: { state: McpStatusPresentation }) {
+  return (
+    <HStack gap={2} vAlign="center" wrap="nowrap">
+      <span aria-hidden="true" className="maka-mcp-status-dot">
+        <StatusDot variant={dotForStatus(props.state.status)} label={props.state.label} isPulsing={props.state.status === 'active'} />
+      </span>
+      <Text type="supporting" color="secondary">{props.state.label}</Text>
+    </HStack>
+  );
+}
+
 function McpServerInspector(props: {
   serverId: string;
   server: McpServerConfig;
@@ -499,31 +536,18 @@ function McpServerInspector(props: {
   const { serverId, server, status, copy } = props;
   const state = presentStatus(status, server.enabled !== false, copy);
   const endpoint = endpointFor(server);
-  const transportLabel = transportLabelFor(server, copy);
   const negotiatedProtocol = presentMcpNegotiatedProtocol(status, copy);
   const loginActive = status?.authorizationPending || props.busy === `login:${serverId}`;
   const disabled = props.busy !== null || loginActive;
   return (
-    <VStack className="maka-mcp-inspector" gap={4}>
-      <VStack gap={2}>
-        <HStack gap={2} vAlign="center" wrap="wrap">
-          <StatusDot variant={mcpStatusDotVariant(state)} label={state.label} />
-          <Text type="supporting" color="secondary">{state.label}</Text>
-        </HStack>
-        <Heading level={2}>{serverId}</Heading>
-        <Text type="body" color="secondary" className="maka-mcp-inspector-endpoint">
-          <code>{endpoint}</code>
-        </Text>
-      </VStack>
-
+    <VStack className="maka-mcp-inspector" gap={5}>
       <HStack gap={3} vAlign="center">
+        <McpMark server={server} />
         <StackItem size="fill">
-          <Switch
-            value={server.enabled !== false}
-            onChange={props.onToggle}
-            isDisabled={disabled}
-            label={copy.detail.enabled}
-          />
+          <VStack gap={0}>
+            <Heading level={2}>{serverId}</Heading>
+            <McpStatusLabel state={state} />
+          </VStack>
         </StackItem>
       </HStack>
 
@@ -531,51 +555,27 @@ function McpServerInspector(props: {
         <Banner status="info" title={copy.row.loginPending}
           endContent={<Button size="sm" variant="secondary" onClick={props.onCancelLogin} label={copy.row.cancelLogin} />} />
       ) : status?.state === 'needs-auth' ? (
-        <Banner status="warning" title={copy.row.needsAuth}
+        <Banner status="warning" title={copy.row.needsAuth} description={copy.detail.needsAuthDetail}
           endContent={<Button size="sm" variant="primary" isDisabled={disabled} onClick={props.onLogin} label={copy.row.login} />} />
-      ) : null}
-      {status?.authenticated ? (
-        <Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogout} label={copy.row.logout} />
+      ) : status?.error ? (
+        <Banner status="error" title={state.label} description={status.error} />
       ) : null}
 
-      <HStack gap={2} wrap="wrap">
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={props.onTest}
-          isDisabled={disabled}
-          icon={<RefreshCcw size={ICON_SIZE.chrome} aria-hidden="true" />}
-          label={props.busy === `test:${serverId}` ? copy.row.testing : copy.row.test}
-        />
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={props.onEdit}
-          isDisabled={disabled}
-          label={copy.row.edit}
-        />
-        <Button
-          size="sm"
-          variant="destructive"
-          onClick={props.onRemove}
-          isDisabled={disabled}
-          label={copy.row.delete}
-        />
-      </HStack>
-
-      {status?.error ? (
-        <Banner
-          status="error"
-          title={state.label}
-          description={status.error}
-        />
-      ) : null}
+      <Switch
+        value={server.enabled !== false}
+        onChange={props.onToggle}
+        isDisabled={disabled}
+        label={copy.detail.enabled}
+      />
 
       <Divider />
 
-      <MetadataList columns="single" label={{ position: 'start', width: 88 }}>
+      <MetadataList columns="single" label={{ position: 'start', width: 72 }}>
+        <MetadataListItem label={isMcpStdioConfig(server) ? copy.editor.command : copy.editor.url}>
+          <code className="maka-mcp-inspector-endpoint">{endpoint}</code>
+        </MetadataListItem>
         <MetadataListItem label={copy.detail.transport}>
-          <Text type="body">{transportLabel}</Text>
+          <Text type="body">{transportLabelFor(server, copy)}</Text>
         </MetadataListItem>
         {negotiatedProtocol ? (
           <MetadataListItem label={copy.detail.protocolLabel}>
@@ -585,26 +585,39 @@ function McpServerInspector(props: {
       </MetadataList>
 
       {status?.tools.length ? (
-        <>
-          <Divider />
-          <VStack gap={2}>
-            <Text type="supporting" color="secondary">
-              {copy.detail.toolsLabel} · {copy.row.tools(status.tools.length)}
-            </Text>
-            <div className="maka-mcp-tool-list">{status.tools.map((tool) => <code key={tool.name}>{tool.name}</code>)}</div>
-          </VStack>
-        </>
+        <VStack gap={2}>
+          <Text type="label" size="sm">{copy.row.tools(status.tools.length)}</Text>
+          <div className="maka-mcp-tool-list">{status.tools.map((tool) => <code key={tool.name}>{tool.name}</code>)}</div>
+        </VStack>
       ) : null}
       {status?.stderrTail?.length ? (
-        <pre className="maka-mcp-stderr">{status.stderrTail.join('\n')}</pre>
+        <Collapsible trigger={copy.detail.stderr}>
+          <pre className="maka-mcp-stderr">{status.stderrTail.join('\n')}</pre>
+        </Collapsible>
       ) : null}
+
+      <Divider />
+
+      <HStack gap={2} wrap="wrap">
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={props.onTest}
+          isDisabled={disabled}
+          isLoading={props.busy === `test:${serverId}`}
+          label={copy.row.test}
+        />
+        <Button size="sm" variant="secondary" onClick={props.onEdit} isDisabled={disabled} label={copy.row.edit} />
+        {status?.authenticated ? (
+          <Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogout} label={copy.row.logout} />
+        ) : null}
+        <StackItem size="fill" />
+        <Button size="sm" variant="destructive" onClick={props.onRemove} isDisabled={disabled} label={copy.row.delete} />
+      </HStack>
     </VStack>
   );
 }
 
-function mcpStatusDotVariant(state: { tone: 'neutral' | 'info' | 'success' | 'warning' | 'error' }) {
-  return dotForStatus(state.tone === 'warning' ? 'attention' : state.tone === 'info' ? 'neutral' : state.tone);
-}
 function McpEditorDialog(props: {
   state: Exclude<EditorState, null>;
   isOpen: boolean;
@@ -643,31 +656,30 @@ function McpEditorDialog(props: {
     const oauth = { ...props.state.draft.oauth, [key]: value };
     updateDraft('oauth', Object.values(oauth).some((value) => value !== undefined) ? oauth : undefined);
   };
+  const modeSwitch = editing ? null : (
+    <Button
+      variant="ghost"
+      className="maka-mcp-editor-mode"
+      label={props.state.mode === 'json' ? props.copy.editor.manual : props.copy.editor.pasteJson}
+      onClick={() => props.onChange(props.state.mode === 'json'
+        ? { mode: 'manual', draft: { ...createEmptyMcpDraft(), kind: 'remote' }, editingId: null }
+        : { mode: 'json', source: '' })}
+    />
+  );
+  const cancel = <Button variant="ghost" onClick={() => props.onOpenChange(false)} label={props.copy.editor.cancel} />;
   return (
     <Dialog
       isOpen={props.isOpen}
       onOpenChange={props.onOpenChange}
       className="maka-mcp-editor-dialog"
-      width="min(92vw, 680px)"
+      width="min(92vw, 560px)"
       maxHeight="min(760px, calc(100dvh - 32px))"
       purpose="form"
     >
       <Layout
         header={
           <DialogHeader
-            startContent={<Plug size={ICON_SIZE.chrome} />}
             title={props.state.mode === 'json' ? props.copy.editor.importTitle : editing ? props.copy.editor.editTitle(props.state.draft.id) : props.copy.editor.addTitle}
-            subtitle={props.state.mode === 'json' ? props.copy.editor.importSubtitle : props.copy.editor.manualSubtitle}
-            endContent={!editing ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                label={props.state.mode === 'json' ? props.copy.editor.manual : props.copy.editor.pasteJson}
-                onClick={() => props.onChange(props.state.mode === 'json'
-                  ? { mode: 'manual', draft: createEmptyMcpDraft(), editingId: null }
-                  : { mode: 'json', source: '' })}
-              />
-            ) : undefined}
             onOpenChange={props.onOpenChange}
           />
         }
@@ -676,31 +688,27 @@ function McpEditorDialog(props: {
         {props.state.mode === 'json' ? (
           <form className="maka-mcp-json-form" onSubmit={props.onImport}>
             <div className="maka-mcp-json-field">
-              <TextArea hasAutoFocus label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} rows={14} placeholder={'{\n  "mcpServers": {\n    "my-tools": { "url": "https://example.com/mcp" }\n  }\n}'} />
+              <TextArea hasAutoFocus label={props.copy.editor.jsonConfig} description={props.copy.editor.jsonHelp} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} rows={14} placeholder={'{\n  "mcpServers": {\n    "my-tools": { "url": "https://example.com/mcp" }\n  }\n}'} />
             </div>
-            <p>{props.copy.editor.jsonHelp}</p>
             {/* Stays a submit button so Enter in the textarea still imports —
                 clickAction would have to replace the form's onSubmit and take
-                that with it. `isLoading` is the half of the contract that does
-                apply: spinner, aria-busy, and the "Loading" announcement,
-                instead of the label reading 导入中… . */}
-            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={() => props.onOpenChange(false)} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isLoading={props.saving} isDisabled={!props.state.source.trim()} label={props.copy.editor.importConnect} /></div>
+                that with it. */}
+            <div className="maka-mcp-editor-footer">{modeSwitch}{cancel}<Button type="submit" variant="primary" isLoading={props.saving} isDisabled={!props.state.source.trim()} label={props.copy.editor.importConnect} /></div>
           </form>
         ) : (
           <form className="maka-mcp-manual-form" onSubmit={props.onSave}>
             <div className="maka-mcp-form-fields">
-              <VStack gap={1} align="start">
-                <Text type="label" size="sm">{props.copy.editor.transportAria}</Text>
+              <HStack>
                 <SegmentedControl
                   value={props.state.draft.kind}
                   onChange={(kind) => updateDraft('kind', kind as McpEditorDraft['kind'])}
                   label={props.copy.editor.transportAria}
                   size="sm"
                 >
-                  <SegmentedControlItem value="stdio" label={props.copy.editor.localStdio} />
                   <SegmentedControlItem value="remote" label={props.copy.editor.remoteUrl} />
+                  <SegmentedControlItem value="stdio" label={props.copy.editor.localStdio} />
                 </SegmentedControl>
-              </VStack>
+              </HStack>
               <div className="maka-mcp-primary-fields">
                 <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="my-tools" status={props.errors.id ? { type: 'error', message: props.errors.id === 'exists' ? props.copy.editor.idExists : props.copy.editor.required } : undefined} />
                 {props.state.draft.kind === 'stdio' ? (
@@ -710,7 +718,7 @@ function McpEditorDialog(props: {
                 )}
               </div>
               <Collapsible
-                trigger={advancedOpen ? props.copy.editor.collapseAdvanced : props.copy.editor.expandAdvanced}
+                trigger={props.copy.editor.advanced}
                 isOpen={advancedOpen}
                 onOpenChange={setAdvancedOpen}
               >
@@ -721,17 +729,20 @@ function McpEditorDialog(props: {
                       <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
                     </>
                   ) : (
-                    <Selector
-                      value={props.state.draft.transport}
-                      options={[
-                        { value: 'auto', label: props.copy.editor.transportAuto },
-                        { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
-                        { value: 'sse', label: props.copy.editor.transportLegacySse },
-                      ]}
-                      onChange={(value) => updateDraft('transport', value as McpEditorDraft['transport'])}
-                      label={props.copy.editor.transportLabel}
-                      width="100%"
-                    />
+                    <>
+                      <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} />
+                      <Selector
+                        value={props.state.draft.transport}
+                        options={[
+                          { value: 'auto', label: props.copy.editor.transportAuto },
+                          { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
+                          { value: 'sse', label: props.copy.editor.transportLegacySse },
+                        ]}
+                        onChange={(value) => updateDraft('transport', value as McpEditorDraft['transport'])}
+                        label={props.copy.editor.transportLabel}
+                        width="100%"
+                      />
+                    </>
                   )}
                   <Selector
                     value={mcpDraftProtocolPreference(props.state.draft)}
@@ -751,26 +762,23 @@ function McpEditorDialog(props: {
                     width="100%"
                   />
                   {props.state.draft.kind === 'remote' && (
-                    <>
-                      <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} />
-                      <Collapsible trigger={props.copy.editor.oauth} defaultIsOpen={Boolean(props.state.draft.oauth)}>
-                        <VStack gap={3} className="maka-mcp-advanced-fields">
-                          <Text type="supporting" color="secondary">{props.copy.editor.oauthHelp}</Text>
-                          <TextInput label={props.copy.editor.clientId} value={props.state.draft.oauth?.clientId ?? ''} onChange={(value) => updateOAuth('clientId', value || undefined)} />
-                          <TextInput label={props.copy.editor.issuer} value={props.state.draft.oauth?.issuer ?? ''} onChange={(value) => updateOAuth('issuer', value || undefined)} placeholder="https://auth.example.com" status={props.errors.oauthIssuer ? { type: 'error', message: props.errors.oauthIssuer === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
-                          <TextInput type="password" label={props.copy.editor.clientSecret} value={props.state.draft.oauth?.clientSecret ?? ''} onChange={(value) => updateOAuth('clientSecret', value || undefined)} />
-                          <TextInput label={props.copy.editor.scopes} value={props.state.draft.oauth?.scopes?.join(' ') ?? ''} onChange={(value) => updateOAuth('scopes', value.trim() ? value.split(/\s+/u) : undefined)} />
-                          <TextInput label={props.copy.editor.callbackPort} value={props.state.draft.oauth?.callbackPort?.toString() ?? ''} onChange={(value) => updateOAuth('callbackPort', value ? Number(value) : undefined)} />
-                        </VStack>
-                      </Collapsible>
-                    </>
+                    <Collapsible trigger={props.copy.editor.oauth} defaultIsOpen={Boolean(props.state.draft.oauth)}>
+                      <VStack gap={3} className="maka-mcp-advanced-fields">
+                        <Text type="supporting" color="secondary">{props.copy.editor.oauthHelp}</Text>
+                        <TextInput label={props.copy.editor.clientId} value={props.state.draft.oauth?.clientId ?? ''} onChange={(value) => updateOAuth('clientId', value || undefined)} />
+                        <TextInput label={props.copy.editor.issuer} value={props.state.draft.oauth?.issuer ?? ''} onChange={(value) => updateOAuth('issuer', value || undefined)} placeholder="https://auth.example.com" status={props.errors.oauthIssuer ? { type: 'error', message: props.errors.oauthIssuer === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
+                        <TextInput type="password" label={props.copy.editor.clientSecret} value={props.state.draft.oauth?.clientSecret ?? ''} onChange={(value) => updateOAuth('clientSecret', value || undefined)} />
+                        <TextInput label={props.copy.editor.scopes} value={props.state.draft.oauth?.scopes?.join(' ') ?? ''} onChange={(value) => updateOAuth('scopes', value.trim() ? value.split(/\s+/u) : undefined)} />
+                        <TextInput label={props.copy.editor.callbackPort} value={props.state.draft.oauth?.callbackPort?.toString() ?? ''} onChange={(value) => updateOAuth('callbackPort', value ? Number(value) : undefined)} />
+                      </VStack>
+                    </Collapsible>
                   )}
                 </VStack>
               </Collapsible>
             </div>
             {/* Same as the JSON form: submit semantics are the reason Enter in
                 a field saves, so isLoading carries the busy state here. */}
-            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={() => props.onOpenChange(false)} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isLoading={props.saving} label={props.copy.editor.saveConnect} /></div>
+            <div className="maka-mcp-editor-footer">{modeSwitch}{cancel}<Button type="submit" variant="primary" isLoading={props.saving} label={props.copy.editor.saveConnect} /></div>
           </form>
         )}
           </LayoutContent>
@@ -784,6 +792,11 @@ function endpointFor(server: McpServerConfig): string {
   return isMcpStdioConfig(server) ? formatCommandLine(server.command, server.args ?? []) : server.url;
 }
 
+function hostOf(server: McpServerConfig | McpSuggestion): string | null {
+  if ('command' in server) return null;
+  try { return new URL(server.url).host; } catch { return null; }
+}
+
 function transportLabelFor(server: McpServerConfig, copy: McpCopy): string {
   if (isMcpStdioConfig(server)) return copy.page.localStdio;
   if (server.transport === 'sse') return copy.editor.transportLegacySse;
@@ -791,12 +804,14 @@ function transportLabelFor(server: McpServerConfig, copy: McpCopy): string {
   return copy.editor.transportAuto;
 }
 
-function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): { label: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'error'; exception: boolean } {
-  if (status?.authorizationPending) return { label: copy.row.loginPending, tone: 'info', exception: true };
-  if (!enabled || status?.state === 'disabled') return { label: copy.row.disabled, tone: 'neutral', exception: false };
-  if (!status || status.state === 'disconnected') return { label: copy.row.disconnected, tone: 'neutral', exception: false };
-  if (status.state === 'connecting') return { label: copy.row.connecting, tone: 'info', exception: false };
-  if (status.state === 'needs-auth') return { label: copy.row.needsAuth, tone: 'warning', exception: true };
-  if (status.state === 'connected') return { label: copy.row.connected(status.toolCount), tone: 'success', exception: false };
-  return { label: copy.row.failed, tone: 'error', exception: true };
+type McpStatusPresentation = { label: string; status: StatusSemantic };
+
+function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): McpStatusPresentation {
+  if (status?.authorizationPending) return { label: copy.row.authorizing, status: 'active' };
+  if (!enabled || status?.state === 'disabled') return { label: copy.row.disabled, status: 'neutral' };
+  if (!status || status.state === 'disconnected') return { label: copy.row.disconnected, status: 'neutral' };
+  if (status.state === 'connecting') return { label: copy.row.connecting, status: 'active' };
+  if (status.state === 'needs-auth') return { label: copy.row.needsAuth, status: 'attention' };
+  if (status.state === 'connected') return { label: copy.row.connected(status.toolCount), status: 'success' };
+  return { label: copy.row.failed, status: 'error' };
 }
