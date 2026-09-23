@@ -199,7 +199,7 @@ test('Glob reports a complete result when the limit is met exactly', async (t) =
   assert.equal(result.truncated, false);
 });
 
-test('Glob does not fail a capped result over an error the walk only reaches past the cap', async (t) => {
+test('Glob marks a capped result incomplete when overflow probing hits a filesystem error', async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-glob-capped-error-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, 'a.txt'), 'a');
@@ -210,25 +210,31 @@ test('Glob does not fail a capped result over an error the walk only reaches pas
   // Make the directory vanish exactly when the walk descends into it. The cap
   // fills from the root entries first, so this is only observable past the cap.
   const originalReaddir = nodeFs.readdir;
-  let reachedAfterCap = false;
+  let errorInjected = false;
   t.mock.method(nodeFs, 'readdir', ((
     path: string,
     options: { withFileTypes: true },
     callback: (error: NodeJS.ErrnoException | null, entries: nodeFs.Dirent[]) => void,
   ) => {
-    if (String(path) === late && !reachedAfterCap) {
-      reachedAfterCap = true;
-      nodeFs.rmSync(late, { recursive: true });
-    }
-    originalReaddir(path, options, callback);
+    originalReaddir(path, options, (error, entries) => {
+      if (String(path) === late && !errorInjected) {
+        errorInjected = true;
+        const denied: NodeJS.ErrnoException = Object.assign(new Error('permission denied'), {
+          code: 'EACCES',
+        });
+        callback(denied, entries);
+        return;
+      }
+      callback(error, entries);
+    });
   }) as typeof nodeFs.readdir);
   syncBuiltinESMExports();
   try {
     const result = await globFiles({ cwd: root, pattern: '**/*.txt', limit: 2 });
 
-    assert.equal(reachedAfterCap, true, 'the vanishing directory must be reached after the cap');
+    assert.equal(errorInjected, true, 'the overflow probe must encounter the error');
     assert.deepEqual([...result.files].sort(), ['a.txt', 'b.txt']);
-    assert.equal(result.truncated, false);
+    assert.equal(result.truncated, true);
   } finally {
     t.mock.restoreAll();
     syncBuiltinESMExports();

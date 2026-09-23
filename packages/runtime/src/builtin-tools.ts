@@ -534,7 +534,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       name: 'Glob',
       activityKind: 'search',
       description:
-        'Find file and directory paths matching a glob pattern. Case sensitivity follows platform defaults. Hidden entries require an explicit dot-prefixed pattern component. Returns at most 200 matches in traversal order, without sorting, and reports `truncated` when more files matched.',
+        'Find file and directory paths matching a glob pattern. Case sensitivity follows platform defaults. Hidden entries require an explicit dot-prefixed pattern component. Returns at most 200 matches in traversal order, without sorting. `truncated` is true when more matches exist or an error prevents confirming whether more matches exist after the limit.',
       parameters: z.object({
         pattern: z
           .string()
