@@ -22,7 +22,6 @@ import {
   WORKHUB_COORDINATION_SESSION_ID,
   type WorkHubDelegationAssignedMessage,
 } from '@maka/core/session';
-import type { SessionManager } from '@maka/runtime/session-manager';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { isSessionNotFoundError, type ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import type { RootTurnCoordinator } from './root-turn-coordinator.js';
@@ -41,11 +40,11 @@ export function createWorkHubResultRuntime(options: {
   messages: HostMessageCoordinator;
   interactions: HostInteractionCoordinator;
   admission: SessionAdmissionGate;
-  manager: Pick<SessionManager, 'getMessages'>;
+  readTurnResult(sessionId: string, turnId: string): Promise<string>;
   acquireResidency(): { release(): void };
   onError(error: unknown): void;
 }) {
-  const { stores, executions, messages, admission, manager } = options;
+  const { stores, executions, messages, admission, readTurnResult } = options;
   async function listAssignments() {
     const targets = (await stores.sessionStore.listHeaders())
       .filter((h) => h.id !== WORKHUB_COORDINATION_SESSION_ID && !h.isArchived)
@@ -148,16 +147,15 @@ export function createWorkHubResultRuntime(options: {
         snapshot.status !== 'cancelled'
       )
         return undefined;
-      const transcript = includeResult ? await manager.getMessages(assignment.targetSessionId) : [];
-      const answer = [...transcript]
-        .reverse()
-        .find((m) => m.type === 'assistant' && m.turnId === identity.turnId && m.text.trim());
+      const answer = includeResult
+        ? await readTurnResult(assignment.targetSessionId, identity.turnId)
+        : '';
       return {
         turnId: identity.turnId,
         runId: identity.runId,
         eventKey: snapshot.terminalEventId,
         status: snapshot.status,
-        result: answer?.type === 'assistant' ? answer.text : '',
+        result: answer,
         details:
           snapshot.status === 'failed'
             ? {

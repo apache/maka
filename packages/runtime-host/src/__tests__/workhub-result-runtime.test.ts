@@ -110,20 +110,11 @@ function fixture() {
           return { ok: true, result: { status: 'answered' } };
         }),
     } as Options['interactions'],
-    manager: {
-      getMessages: async () => {
-        resultReads++;
-        return [
-          {
-            type: 'assistant',
-            modelId: 'fake-model',
-            id: 'answer',
-            turnId: 'target-turn',
-            text: '😀'.repeat(16001),
-            ts: 1,
-          },
-        ];
-      },
+    readTurnResult: async (sessionId, turnId) => {
+      assert.equal(sessionId, 'target');
+      assert.equal(turnId, 'target-turn');
+      resultReads++;
+      return '😀'.repeat(16001);
     },
     admission,
     acquireResidency: () => ({ release() {} }),

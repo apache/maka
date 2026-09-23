@@ -78,8 +78,8 @@
 
 ## 2026-09-23 修复后桌面录屏
 
-[观看 WorkHub 真实桌面回包录屏](images/pr/workhub-result-return/return-demo.mp4)。视频时长 25.44 秒，由 Playwright 直接录制实际 Electron WorkHub 窗口；未用静态组件渲染代替运行界面。测试使用独立 profile、现有 DeepSeek V4.1 Flash 连接和真实模型响应，`MAKA_E2E` 未启用。
+[观看 WorkHub 真实桌面回包录屏](images/pr/workhub-result-return/return-demo.mp4)。视频时长 19.88 秒，由 Playwright 直接录制实际 Electron WorkHub 窗口；未用静态组件渲染代替运行界面。测试使用独立 profile、现有 DeepSeek V4.1 Flash 连接和真实模型响应，`MAKA_E2E` 未启用。此轮已使用按目标 Turn 读取结果的修复代码。
 
-在 WorkHub 界面发送一条订单汇总委派请求。目标任务实际读取 `orders.csv` 并写出 `report.json`；独立读取文件确认 `paid_count=3`、`paid_total=40`。WorkHub 先说明任务仍在运行，随后自动出现“任务结果更新”并通过 `WorkHubResult` 读取结果；没有发送第二条用户消息。自动回包 Turn `whf_e2f97ba9fc98a917222f92a0e01a6b415335d8379ab7236c` 为 completed。
+在 WorkHub 界面发送一条订单汇总委派请求。目标任务实际读取 `orders.csv` 并写出 `report.json`；独立读取文件确认 `paid_count=3`、`paid_total=40`。WorkHub 先说明任务仍在运行，随后自动出现“任务结果更新”并通过 `WorkHubResult` 读取结果；没有发送第二条用户消息。自动回包 Turn `whf_a98e0f983187a735a31c7ab71ca96c7fdfcf8ae65b01a477` 为 completed。
 
 本次还增加了执行前取消、已送达结果避免重复读取完整记录，以及原任务问题被直接回答后关闭 WorkHub 复制问题的回归测试。录屏展示正常完成路径；这三个边界条件由代码及自动化测试验收，没有声称在这段视频里触发。

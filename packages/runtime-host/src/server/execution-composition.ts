@@ -235,6 +235,7 @@ import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import {
   createSessionTranscriptReader,
+  createTurnResultReader,
   type SessionTranscriptReader,
 } from './session-transcript-reader.js';
 import {
@@ -2468,7 +2469,12 @@ export async function createExecutionRuntimeHostComposition(
       messages,
       interactions,
       admission: sessionAdmission,
-      manager,
+      readTurnResult: createTurnResultReader({
+        stores,
+        canonicalPermissionOutcomes,
+        ensureTranscriptLedger: (sessionId) =>
+          requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId),
+      }),
       acquireResidency: () => context.acquireResidency('hosted-execution'),
       onError: (error) =>
         console.error(
