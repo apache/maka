@@ -52,10 +52,19 @@ function harness(initial: SessionSummary[] = []) {
   let failGet = false;
   let credentialPresent = true;
   let nextGet: Promise<SessionSummary | null> | null = null;
+  let nextList: Promise<SessionSummary[]> | null = null;
   const service = createOnboardingService({
     listConnections: async () => [connection],
     getDefaultSlug: async () => 'primary',
-    listSessions: async () => { listReads += 1; return [...sessions.values()]; },
+    listSessions: async () => {
+      listReads += 1;
+      if (nextList) {
+        const held = nextList;
+        nextList = null;
+        return held;
+      }
+      return [...sessions.values()];
+    },
     getSession: async (id) => {
       getReads += 1;
       if (failGet) throw new Error('Host read failed');
@@ -80,6 +89,7 @@ function harness(initial: SessionSummary[] = []) {
     failNextGet: () => { failGet = true; },
     setCredentialPresent: (present: boolean) => { credentialPresent = present; },
     holdNextGet: (held: Promise<SessionSummary | null>) => { nextGet = held; },
+    holdNextList: (held: Promise<SessionSummary[]>) => { nextList = held; },
   };
 }
 
@@ -151,16 +161,58 @@ test('an update before initial coverage requests a resync', async () => {
   assert.equal(fixture.getReads(), 0);
 });
 
-test('a late targeted answer cannot replace a newer full observation', async () => {
-  const fixture = harness([session('one')]);
+test('a complete read waits for an in-flight targeted read before replacing its basis', async () => {
+  const fixture = harness([session('one', 'ai-sdk')]);
   await fixture.service.getSnapshot();
   let release!: (row: SessionSummary | null) => void;
   fixture.holdNextGet(new Promise((resolve) => { release = resolve; }));
   const pending = fixture.service.getSessionUpdate('one');
   await Promise.resolve();
   fixture.setCredentialPresent(false);
-  await fixture.service.getSnapshot();
-  release(session('one'));
-  assert.deepEqual(await pending, { kind: 'resync' });
+  const full = fixture.service.getSnapshot();
+  await Promise.resolve();
+  assert.equal(fixture.listReads(), 1, 'the complete read must wait for the targeted read');
+  release(session('one', 'ai-sdk'));
+  assert.equal((await pending).kind, 'delta');
+  assert.deepEqual((await full).sessionSendOutcomes.one, {
+    kind: 'blocked', reason: 'missing_api_key', connectionLocked: false,
+  });
   assert.equal(fixture.listReads(), 2);
+});
+
+test('a targeted read arriving during a complete read uses the newly accepted basis', async () => {
+  const fixture = harness([session('one', 'ai-sdk')]);
+  await fixture.service.getSnapshot();
+  let release!: (rows: SessionSummary[]) => void;
+  fixture.holdNextList(new Promise((resolve) => { release = resolve; }));
+  fixture.setCredentialPresent(false);
+  const full = fixture.service.getSnapshot();
+  await Promise.resolve();
+  const pending = fixture.service.getSessionUpdate('one');
+  await Promise.resolve();
+  assert.equal(fixture.getReads(), 0, 'the targeted read must wait for the complete read');
+  release([session('one', 'ai-sdk')]);
+  await full;
+  const update = await pending;
+  assert.equal(update.kind, 'delta');
+  if (update.kind !== 'delta') return;
+  assert.deepEqual(update.outcome, {
+    kind: 'blocked', reason: 'missing_api_key', connectionLocked: false,
+  });
+});
+
+test('a milestone write waits for an in-flight targeted read', async () => {
+  const fixture = harness();
+  await fixture.service.getSnapshot();
+  let release!: (row: SessionSummary | null) => void;
+  fixture.holdNextGet(new Promise((resolve) => { release = resolve; }));
+  const pending = fixture.service.getSessionUpdate('one');
+  await Promise.resolve();
+  const written = fixture.service.setMilestone('initial_onboarding', 'skipped');
+  release(null);
+  const update = await pending;
+  assert.equal(update.kind, 'delta');
+  if (update.kind !== 'delta') return;
+  assert.deepEqual(update.milestones, [], 'the earlier read must not borrow the later milestone');
+  assert.equal((await written).milestones[0]?.id, 'initial_onboarding');
 });

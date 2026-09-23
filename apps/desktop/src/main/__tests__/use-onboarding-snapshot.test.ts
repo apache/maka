@@ -173,11 +173,12 @@ describe('createOnboardingSnapshotPoller', () => {
     assert.equal(emitted.length, 2);
   });
 
-  it('keeps the accepted snapshot when a targeted Host read fails', async () => {
+  it('keeps the accepted snapshot on a targeted failure until a complete resync succeeds', async () => {
     const snapshots: OnboardingSnapshot[] = [];
     const errors: string[] = [];
+    let fullReads = 0;
     const poller = createOnboardingSnapshotPoller({
-      getSnapshot: async () => READY_SNAPSHOT,
+      getSnapshot: async () => ++fullReads === 1 ? READY_SNAPSHOT : NEEDS_CONNECTION_SNAPSHOT,
       getSessionUpdate: async () => { throw new Error('Host disconnected'); },
     }, {
       onSnapshot: (snapshot) => snapshots.push(snapshot),
@@ -185,7 +186,8 @@ describe('createOnboardingSnapshotPoller', () => {
     }, () => 'zh-CN');
     await poller.pull();
     await poller.pullSession('one');
-    assert.deepEqual(snapshots, [READY_SNAPSHOT]);
+    assert.deepEqual(snapshots, [READY_SNAPSHOT, NEEDS_CONNECTION_SNAPSHOT]);
+    assert.equal(fullReads, 2, 'the failed delta needs an authoritative resync');
     assert.equal(errors.length, 1);
   });
 

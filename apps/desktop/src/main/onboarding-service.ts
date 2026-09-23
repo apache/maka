@@ -128,11 +128,15 @@ interface OnboardingBaseline {
  */
 export function createOnboardingService(deps: OnboardingServiceDeps): OnboardingService {
   let baseline: OnboardingBaseline | null = null;
-  let revision = 0;
   let updateTail: Promise<void> = Promise.resolve();
 
+  function enqueue<T>(read: () => Promise<T>): Promise<T> {
+    const pending = updateTail.then(read);
+    updateTail = pending.then(() => undefined, () => undefined);
+    return pending;
+  }
+
   async function loadSnapshot(credentialFailureFallback = false): Promise<OnboardingSnapshot> {
-    const startedAt = revision;
     const [connections, defaultSlug, sessions, milestones] = await Promise.all([
       deps.listConnections(),
       deps.getDefaultSlug(),
@@ -165,16 +169,13 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
     const settledMilestones = hasHistory && !hasSettledInitialOnboarding(milestones)
       ? await deps.upsertMilestone('initial_onboarding', 'completed')
       : milestones;
-    if (startedAt === revision) {
-      baseline = {
-        sessionIds: new Set(sessions.map(({ id }) => id)),
-        connections,
-        defaultSlug,
-        secrets,
-        milestones: settledMilestones,
-      };
-      revision += 1;
-    }
+    baseline = {
+      sessionIds: new Set(sessions.map(({ id }) => id)),
+      connections,
+      defaultSlug,
+      secrets,
+      milestones: settledMilestones,
+    };
     return buildSnapshot(state, settledMilestones, sessions, connections, defaultSlug, secrets);
   }
 
@@ -182,21 +183,16 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
     const observed = baseline;
     if (!observed) return { kind: 'resync' };
     const session = await deps.getSession(sessionId);
-    // A concurrent global read or milestone write changed the basis used to
-    // project this answer. Let the caller resync instead of publishing it.
-    if (baseline !== observed) return { kind: 'resync' };
     const hasHistory = session !== null ||
       observed.sessionIds.size > (observed.sessionIds.has(sessionId) ? 1 : 0);
     const milestones = hasHistory && !hasSettledInitialOnboarding(observed.milestones)
       ? await deps.upsertMilestone('initial_onboarding', 'completed')
       : observed.milestones;
-    if (baseline !== observed) return { kind: 'resync' };
     if (session === null) observed.sessionIds.delete(sessionId);
     else observed.sessionIds.add(sessionId);
     if (milestones !== observed.milestones) {
       observed.milestones = milestones;
     }
-    revision += 1;
     return {
       kind: 'delta',
       outcome: session === null ? null : projectSessionSendOutcome({
@@ -215,11 +211,9 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
   }
 
   return {
-    getSnapshot: () => loadSnapshot(),
+    getSnapshot: () => enqueue(() => loadSnapshot()),
     getSessionUpdate(sessionId: string): Promise<OnboardingSessionUpdate> {
-      const pending = updateTail.then(() => readSessionUpdate(sessionId));
-      updateTail = pending.then(() => undefined, () => undefined);
-      return pending;
+      return enqueue(() => readSessionUpdate(sessionId));
     },
 
     async setMilestone(id: unknown, status: unknown): Promise<OnboardingSnapshot> {
@@ -232,12 +226,13 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
       }
       // Timestamp is stamped inside the store (Date.now()); renderer
       // never controls it.
-      await deps.upsertMilestone(id, status);
-      revision += 1;
-      baseline = null;
-      // The global milestone write may alter which guide is shown; rebuild
-      // from the same authoritative sources as an explicit full refresh.
-      return loadSnapshot(true);
+      return enqueue(async () => {
+        await deps.upsertMilestone(id, status);
+        baseline = null;
+        // The global milestone write may alter which guide is shown; rebuild
+        // from the same authoritative sources as an explicit full refresh.
+        return loadSnapshot(true);
+      });
     },
   };
 }

@@ -237,6 +237,7 @@ export function createOnboardingSnapshotPoller(
       }
     } catch (error) {
       if (!active || ticket !== inflightTicket || fullPending) return;
+      fullPending = true;
       emitError(onboardingSnapshotErrorMessage(error, getLocale()));
     }
   }

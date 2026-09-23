@@ -32,8 +32,9 @@ An initial or global onboarding read remains a complete, authenticated Owner
 snapshot. A subsequent identified Session event updates only that Session's
 send projection. First and last history transitions use the same Core onboarding
 rule as full reads. A failed targeted read leaves the last accepted projection
-in place. Unknown authority, a changed Host epoch, or missing initial coverage
-requests a complete resync.
+in place until a complete recovery read succeeds. Unknown authority, a changed
+Host epoch, missing initial coverage, or a failed targeted read requests a
+complete resync.
 
 | Rule or state | Authority module | Interface / seam | Callers | Evidence |
 | --- | --- | --- | --- | --- |
@@ -61,11 +62,14 @@ outcome and, for the default Host, its state and milestones. Guest changes do
 not change Owner onboarding.
 
 Connection, profile, unknown-Session, and manual invalidations request a full
-snapshot. Main invalidates a targeted answer when its full-read inputs change
-during the read. Renderer serializes reads, coalesces repeated invalidations,
+snapshot. Main serializes complete reads, targeted reads, and milestone writes
+per Host so each targeted projection uses the latest accepted full-read inputs.
+Renderer serializes reads, coalesces repeated invalidations,
 and bounds the pending set at 64 distinct Session IDs before falling back to
-one complete resync. It never publishes a response after disposal. A failed read preserves its
-previous snapshot and exposes the existing generalized error.
+one complete resync. It never publishes a response after disposal. A failed
+targeted read preserves the previous snapshot, exposes the existing generalized
+error, and schedules a complete resync. A failed complete read still preserves
+the previous snapshot and exposes the error.
 
 ## Performance and limits
 
@@ -89,7 +93,8 @@ React rendering and the existing stale-badge selector.
 ## Verification
 
 Owner-service tests cover first/last history, milestone backfill, targeted
-projection parity, failed reads, and invalidated coverage. Preload seam tests
+projection parity, failed reads, and ordering of full reads, targeted reads,
+and milestone writes. Preload seam tests
 cover Owner/Guest routing and epoch replacement. The Renderer poller tests
 cover coalescing, late responses, and targeted versus global invalidation.
 The performance fixture records Host list/get counts, IPC bytes, and latency
