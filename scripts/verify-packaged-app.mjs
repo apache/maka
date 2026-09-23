@@ -1043,6 +1043,7 @@ export async function assertPackagedResources(
           join('licenses', 'cua-driver', 'Inter-OFL.txt'),
           join('licenses', 'cua-driver', 'CDLA-Permissive-2.0.txt'),
           join('licenses', 'cua-driver', 'NOTICE.txt'),
+          join('licenses', 'cua-driver', 'THIRD_PARTY_NOTICES.txt'),
         ]
       : []),
     ...(requireCanonicalIcon ? [join('assets', 'icon.png')] : []),
