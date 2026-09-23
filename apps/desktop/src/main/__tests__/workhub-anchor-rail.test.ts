@@ -33,6 +33,7 @@ import {
 import { ChatSurfaceLayout, LocaleProvider } from '@maka/ui';
 import { WorkHubConversation, WorkHubDelegationStatus } from '../../renderer/features/workhub/testing.js';
 import { getWorkHubRailCopy } from "../../renderer/locales/workhub-copy.js";
+import { renderTranscriptMarkup } from './transcript-test-dom.js';
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 
 test('durable task results restore Host-scoped work links without treating failed or unrelated tools as delegations', () => {
@@ -187,8 +188,8 @@ test("focus display is derived from the selected Session ID, not delegation prio
 });
 
 
-test('a shared coordination turn keeps every Work label without assigning one Work color to the whole turn', () => {
-  const markup = renderToStaticMarkup(createElement(LocaleProvider, { locale: 'en', children: null },
+test('a shared coordination turn keeps every Work label without assigning one Work color to the whole turn', async () => {
+  const markup = await renderTranscriptMarkup(createElement(LocaleProvider, { locale: 'en', children: null },
     createElement(ChatSurfaceLayout, { composer: null, children: null }, createElement(WorkHubConversation, {
       activeSession: { id: 'coordination', name: 'WorkHub', status: 'active', labels: [], isFlagged: false, isArchived: false, hasUnread: false, backend: 'ai-sdk', llmConnectionSlug: 'test', connectionLocked: false, model: 'test', permissionMode: 'ask' },
       messages: [{ type: 'user', id: 'user', turnId: 'shared', text: 'Do both tasks', ts: 1 }],

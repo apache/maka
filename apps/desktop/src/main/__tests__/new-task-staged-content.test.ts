@@ -34,7 +34,7 @@ import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer
 import {
   composerModelSupportsVision,
   type NewChatModel,
-} from '../../renderer/shell-chat-model-selection.js';
+} from '../../renderer/features/conversation/index.js';
 
 /**
  * #3408 for what the composer STAGES. The draft text is covered by
@@ -205,6 +205,23 @@ test('a Session keeps its own staged quotes, and the new-task bucket keeps its o
     probe.latest().pendingQuotes.map((quote) => quote.text),
     ['quoted for the Session'],
   );
+
+  await act(() => probe.latest().addQuote({
+    text: 'bounded session context',
+    label: 'Session: Research',
+    sourceSessionId: 'source-session',
+    sourceSessionName: 'Research',
+    sourceCapturedAt: 123,
+    sourceTruncated: true,
+  }));
+  assert.deepEqual(probe.latest().pendingQuotes.at(-1), {
+    text: 'bounded session context',
+    label: 'Session: Research',
+    sourceSessionId: 'source-session',
+    sourceSessionName: 'Research',
+    sourceCapturedAt: 123,
+    sourceTruncated: true,
+  });
 
   await probe.render(NEW_TASK_PENDING_KEY);
   assert.deepEqual(

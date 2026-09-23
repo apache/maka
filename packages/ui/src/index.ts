@@ -19,6 +19,8 @@
 
 export * from './artifact-preview-registry.js';
 export * from './assistant-stream.js';
+export * from './client-plugin-slots.js';
+export * from './client-plugin-runtime.js';
 export * from './chat-empty-hero.js';
 export * from './chat-model-helpers.js';
 export * from './use-mounted-ref.js';
@@ -32,6 +34,7 @@ export type {
   SessionHistoryGroup,
   SessionRowActions,
 } from './session-history-list.js';
+export type { SessionMoveTarget } from './session-rail-context.js';
 export * from './session-status-presentation.js';
 export * from './composer-helpers.js';
 export * from './conversation-copy.js';
@@ -57,6 +60,7 @@ export * from './transcript-projection.js';
 export * from './use-transcript-projection.js';
 export * from './model-picker.js';
 export * from './model-wheel-picker.js';
+export * from './new-project-dialog.js';
 export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
 export * from './user-question-prompt-state.js';

@@ -121,6 +121,7 @@ import {
   type ContextDiagnosticsCompaction,
 } from './context-diagnostics.js';
 import { AiSdkCompaction, hasBlockingReplayDiagnostics } from './ai-sdk-compaction.js';
+import { portableApplyPatchTool } from './apply-patch-profile.js';
 import { RunTrace } from './run-trace.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
@@ -453,6 +454,12 @@ function nestableToolSnapshot(
   const active = new Set(activeToolNames);
   return new Map(
     providerTools
+      .map((tool) =>
+        tool.providerTool?.kind === 'openai-apply-patch' ||
+        tool.providerTool?.kind === 'codex-apply-patch'
+          ? portableApplyPatchTool(tool)
+          : tool,
+      )
       .filter(
         (tool) =>
           active.has(tool.name) &&
@@ -572,6 +579,7 @@ function joinPromptFragments(fragments: readonly (string | undefined)[]): string
 const MAX_WAITING_CODE_MODE_CELLS = 1;
 
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
+const CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS = 8_000;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -1544,6 +1552,7 @@ export class AiSdkTurn {
               : undefined;
           providerRequestTracker?.setStep(runtimeSteps, requestCompositionId);
           let attemptMessages = projectedMessages;
+          let overflowRecoveryMaxOutputTokens: number | undefined;
           let providerAttempt = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           const providerToolInputs = new Map<string, unknown>();
@@ -1582,6 +1591,11 @@ export class AiSdkTurn {
                 ? nestedTools
                 : undefined;
             const requestWatchdog = watchdogState.current;
+            const requestMaxOutputTokens =
+              overflowRecoveryMaxOutputTokens ??
+              this.deps.modelAdapter.maxOutputTokensForInput(
+                midTurnState?.baselineTokens ?? midTurnState?.lastAcceptedTotalTokens,
+              );
             // Read here, beside the messages it describes: `attemptMessages` is
             // rebuilt in place by overflow recovery, and the boundary it folded
             // under must travel with that rebuild, not with the step.
@@ -1617,6 +1631,9 @@ export class AiSdkTurn {
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
               ...(historyCompactBoundary ? { historyCompactBoundary } : {}),
               continuationKey: this.turnId,
+              ...(requestMaxOutputTokens !== undefined
+                ? { maxOutputTokens: requestMaxOutputTokens }
+                : {}),
             });
 
             for await (const event of result.events) {
@@ -1718,16 +1735,10 @@ export class AiSdkTurn {
                   part = { text: '' };
                   stepThinkingParts.push(part);
                 }
-                const nextPartText = part.text + event.text;
-                if (
-                  event.reasoningSummaryText !== undefined &&
-                  event.reasoningSummaryText !== nextPartText
-                ) {
-                  throw new Error(
-                    'Streamed plaintext Responses reasoning does not match final provider summary',
-                  );
-                }
-                part.text = nextPartText;
+                // The provider's final summary is the authoritative text the
+                // durable part boundaries describe; adopt it when the
+                // streamed deltas diverge so replay stays self-consistent.
+                part.text = event.reasoningSummaryText ?? part.text + event.text;
                 if (event.providerOptions !== undefined) {
                   part.providerOptions = event.providerOptions;
                 }
@@ -1811,6 +1822,11 @@ export class AiSdkTurn {
             consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
             if (providerOutcome.kind === 'completed') {
+              // A compacted overflow retry only needs the conservative cap for
+              // that one request. Once the provider accepts the request, the
+              // next step can use the fresh provider count to derive a larger
+              // safe cap again.
+              overflowRecoveryMaxOutputTokens = undefined;
               runtimeSteps += 1;
               const stepUsage = providerOutcome.usage;
               providerStepUsage = stepUsage;
@@ -2030,6 +2046,10 @@ export class AiSdkTurn {
                   : undefined;
               if (recovered) {
                 attemptMessages = recovered.messages;
+                overflowRecoveryMaxOutputTokens = Math.min(
+                  this.deps.modelAdapter.maxOutputTokens() ?? CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
+                  CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
+                );
                 continue;
               }
               // Window suggestion (#4559): the provider rejected a request and
@@ -2797,7 +2817,14 @@ export class AiSdkTurn {
       // `runtimeContext` may be a budget/history-search slice; the tool-turn
       // thinking skip is a whole-history invariant, so seed it from the full
       // prior ledger so a sliced-in tool-turn thinking still gets skipped.
-      { toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext) },
+      {
+        toolActivityTurnIds: collectToolActivityTurnIds(priorRuntimeContext),
+        // Transcript repair can preserve an assistant-only opening from either
+        // an imported or a native legacy Session. Ordinary provider requests
+        // admit both at the first valid user head; explicit continuations use
+        // their separately admitted boundary.
+        allowRepairedAssistantPrefix: input.continuation !== undefined,
+      },
     );
     const hasProviderHistoryCompactCheckpoint =
       projectedHistoryCompactCheckpoint !== undefined &&

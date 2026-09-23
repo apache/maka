@@ -125,3 +125,22 @@ test('a main-side attachment rejection refuses the send instead of leaving it un
   }
   assert.equal(errorLog.mock.callCount(), 0, 'an expected attachment rejection logs no diagnostic');
 });
+
+
+test('unsupported executor attachments preserve the pending draft before any Session is created', async () => {
+  const restore = installWindow({ newTasks: { create: async () => assert.fail('must reject before creation') } });
+  const pending = [fileAttachment(10, 0)];
+  const errors: string[] = [];
+  try {
+    const actions = createAppShellChatActions({
+      ...createActionsDeps(),
+      executorSelection: { executorId: 'external', configuration: { model: 'chosen' } },
+      executorEntry: { readiness: 'ready', supportsAttachments: false },
+      toastApi: { error: (message) => { errors.push(message); }, info() {} },
+    });
+    assert.equal(await actions.send('keep my instructions', pending), false);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].stagingKey, 'staged-file-0');
+    assert.match(errors[0], /Remove unsupported attachments/);
+  } finally { restore(); }
+});

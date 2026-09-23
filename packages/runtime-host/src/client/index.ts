@@ -18,7 +18,7 @@
  */
 
 export * from './host-handoff.js';
-export { formatHostHandoff } from './host-handoff-copy.js';
+export { formatHostHandoff, type HostHandoffPresentation } from './host-handoff-copy.js';
 export {
   RuntimeHostManagedActivationError,
   activateRuntimeHostManagedDeployment,
@@ -111,6 +111,7 @@ export {
 } from './ssh-tunnel.js';
 export {
   RuntimeHostPermanentReconnectError,
+  createRuntimeHostReconnectLifecycle,
   startRuntimeHostReconnectLifecycle,
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,
@@ -122,6 +123,8 @@ export {
 } from './remote-compatibility-error.js';
 export {
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
+  subscriptionClosedError,
   type DecodedSessionTranscriptPage,
   type RuntimeHostSessionSubscription,
 } from './session-subscription.js';
@@ -154,6 +157,7 @@ export {
   type RuntimeHostConnectionCatalogSnapshot,
 } from './catalog-reader.js';
 export {
+  IDLE_GRACE_MS_ENV_VAR,
   connectOrSpawnRuntimeHost,
   type CandidateExitDetails,
   type ConnectOrSpawnRuntimeHostInput,
@@ -167,7 +171,10 @@ export {
   type RuntimeHostCandidateLaunchBarrier,
 } from './candidate-launch-barrier.js';
 export { runHostedExecution, type RunHostedExecutionInput } from './hosted-execution.js';
-export { type ClientCapabilityProvider } from './client-capability.js';
+export {
+  type ClientCapabilityProvider,
+  type ClientCapabilityRegistrationOptions,
+} from './client-capability.js';
 export {
   readRuntimeHostAgentGraphEpochs,
   type AgentGraphEpochDirectory,

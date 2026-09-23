@@ -66,6 +66,7 @@ describe('SQLite SessionStore', () => {
         makeInput({
           cwd: root,
           executorId: 'codex',
+          executorConfig: { model: 'account-model-v2' },
           llmConnectionSlug: 'executor:codex',
           model: 'codex',
         }),
@@ -80,6 +81,8 @@ describe('SQLite SessionStore', () => {
       assert.equal(reloaded.backend, 'plugin-executor');
       assert.equal(reloaded.executorId, 'codex');
       assert.equal((await store.list())[0]?.executorId, 'codex');
+      assert.deepEqual(reloaded.executorConfig, { model: 'account-model-v2' });
+      assert.deepEqual((await store.list())[0]?.executorConfig, { model: 'account-model-v2' });
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
@@ -543,6 +546,28 @@ describe('SQLite SessionStore', () => {
       await assert.rejects(store.readCatalogRecord(staging[0]!.id), (error) =>
         isSessionNotFoundError(error),
       );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('announces import commit only after validating the complete payload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-import-commit-boundary-'));
+    const store = createSessionStore(root);
+    let commitStarted = false;
+    try {
+      await assert.rejects(
+        store.createImportedSession(
+          makeInput(),
+          [{ type: 'user' } as unknown as StoredMessage],
+          { adapterId: 'fake', sourceSessionId: 'source-1' },
+          { onCommitStarted: () => (commitStarted = true) },
+        ),
+        /Invalid stored message schema/,
+      );
+      assert.equal(commitStarted, false);
+      assert.deepEqual(await store.listHeaders(), []);
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

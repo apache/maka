@@ -47,10 +47,6 @@ import {
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
-import {
-  isDeepResearchArtifactRole,
-  type DeepResearchArtifactRole,
-} from '@maka/core/deep-research-run';
 import { sniffAttachmentMimeType } from '@maka/core/attachments';
 import {
   isSafeRelativeArtifactPath,
@@ -106,7 +102,6 @@ export interface CreateArtifactInput {
   mimeType?: string;
   source: ArtifactSource;
   summary?: string;
-  deepResearchRole?: DeepResearchArtifactRole;
   now?: number;
   id?: string;
 }
@@ -286,12 +281,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       throw new Error('Invalid Artifact source');
     }
     if (
-      acceptedInput.deepResearchRole !== undefined &&
-      !isDeepResearchArtifactRole(acceptedInput.deepResearchRole)
-    ) {
-      throw new Error('Invalid Artifact deep-research role');
-    }
-    if (
       acceptedInput.now !== undefined &&
       (!Number.isSafeInteger(acceptedInput.now) || acceptedInput.now < 0)
     ) {
@@ -325,9 +314,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           ...(acceptedInput.mimeType ? { mimeType: acceptedInput.mimeType } : {}),
           source: acceptedInput.source,
           ...(acceptedInput.summary ? { summary: acceptedInput.summary } : {}),
-          ...(acceptedInput.deepResearchRole
-            ? { deepResearchRole: acceptedInput.deepResearchRole }
-            : {}),
         },
         (targetPath) => writeFile(targetPath, acceptedInput.content, { flag: 'wx' }),
       );
@@ -620,7 +606,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       existing.mimeType !== optionalCanonicalText(input.mimeType) ||
       existing.source !== input.source ||
       existing.summary !== optionalCanonicalText(input.summary) ||
-      existing.deepResearchRole !== input.deepResearchRole ||
       (input.now !== undefined && existing.createdAt !== input.now)
     ) {
       throw artifactReplayConflict(canonical.id);
@@ -1172,8 +1157,7 @@ function sameArtifactRecord(a: ArtifactRecord, b: ArtifactRecord): boolean {
     a.sizeBytes === b.sizeBytes &&
     a.mimeType === b.mimeType &&
     a.source === b.source &&
-    a.summary === b.summary &&
-    a.deepResearchRole === b.deepResearchRole
+    a.summary === b.summary
   );
 }
 

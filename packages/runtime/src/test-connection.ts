@@ -34,6 +34,7 @@ import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
   CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES,
+  CONNECTION_EFFECT_JSON_BODY_MAX_BYTES,
   ConnectionEffectFetchError,
   fetchForConnectionEffect,
   type ConnectionEffectFetch,
@@ -160,10 +161,8 @@ async function testConnectionStrict(
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }
-  const sessionId =
-    connection.providerType === 'opencode-go' || connection.providerType === 'opencode-free'
-      ? randomUUID()
-      : undefined;
+  if (defaults.retired) return retiredProviderTestResult(connection.providerType);
+  const sessionId = connection.providerType === 'opencode-go' ? randomUUID() : undefined;
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
   const testModel = resolveConnectionTestModel(
@@ -174,44 +173,6 @@ async function testConnectionStrict(
 
   if (!testModel) {
     return { ok: false, errorMessage: 'No model to test' };
-  }
-  if (connection.providerType === 'opencode-free' && !model?.trim()) {
-    const brokenModelIds = new Set(defaults.brokenModelIds ?? []);
-    const candidates = [
-      ...new Set([
-        ...connectionEnabledModelIds(connection).filter((id) => !brokenModelIds.has(id)),
-        ...providerFallbackModelIds(defaults),
-      ]),
-    ];
-    if (candidates.length === 0) {
-      return { ok: false, errorMessage: 'No model to test' };
-    }
-    let lastFailure: ConnectionTestResult | undefined;
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index]!;
-      const remainingMs = timeoutMs - (Date.now() - t0);
-      if (remainingMs <= 0) {
-        return connectionTestFailure(new ConnectionEffectFetchError('timeout'), t0);
-      }
-      const remainingCandidates = candidates.length - index;
-      const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / remainingCandidates));
-      try {
-        const result = await testConnectionModel(
-          connection,
-          secret,
-          candidate,
-          fetchFn,
-          t0,
-          attemptTimeoutMs,
-          sessionId,
-        );
-        if (result.ok) return result;
-        lastFailure = result;
-      } catch (error) {
-        lastFailure = connectionTestFailure(error, t0, true);
-      }
-    }
-    return lastFailure ?? connectionTestFailure(new ConnectionEffectFetchError('timeout'), t0);
   }
 
   return await testConnectionModel(
@@ -368,7 +329,7 @@ function retiredProviderTestResult(providerType: string): ConnectionTestResult {
 
 async function probeAnthropic(
   adapter: Extract<
-    import('./provider-runtime-policy.js').RuntimeProviderAdapter,
+    import('@maka/core/llm-connections').ProviderRuntimeAdapter,
     { kind: 'anthropic' }
   >,
   baseUrl: string,
@@ -438,46 +399,8 @@ async function probeOpenAI(
     timeoutMs,
   });
   if (!r.ok) return httpFailure(r, t0);
-  if (connection.providerType === 'opencode-free') {
-    const body = await r.readJson<unknown>();
-    if (!isOpenAIChatCompletion(body)) {
-      return {
-        ok: false,
-        errorMessage: 'OpenCode Free returned no valid chat completion',
-        errorClass: 'provider_unavailable',
-        latencyMs: Date.now() - t0,
-        modelTested: model,
-      };
-    }
-    return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
-  }
   await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
-}
-
-function isOpenAIChatCompletion(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const choices = (value as { choices?: unknown }).choices;
-  return (
-    Array.isArray(choices) &&
-    choices.some((choice) => {
-      if (!choice || typeof choice !== 'object') return false;
-      const message = (choice as { message?: unknown }).message;
-      if (!message || typeof message !== 'object') return false;
-      const completion = message as {
-        content?: unknown;
-        reasoning?: unknown;
-        reasoning_content?: unknown;
-        tool_calls?: unknown;
-      };
-      return (
-        typeof completion.content === 'string' ||
-        typeof completion.reasoning === 'string' ||
-        typeof completion.reasoning_content === 'string' ||
-        (Array.isArray(completion.tool_calls) && completion.tool_calls.length > 0)
-      );
-    })
-  );
 }
 
 async function probeGoogle(

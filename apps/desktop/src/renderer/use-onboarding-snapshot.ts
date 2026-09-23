@@ -34,11 +34,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
-import { type LlmConnection } from '@maka/core/llm-connections';
-import { type SessionSummary } from '@maka/core/session';
 import { type UiLocale } from '@maka/core/ui-locale';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
-import { useUiLocale } from '@maka/ui';
+import { useUiLocale, valuesEqual } from '@maka/ui';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { getOnboardingCopy } from './locales/onboarding-copy.js';
 
@@ -54,11 +52,6 @@ export interface UseOnboardingSnapshotResult {
   snapshot: OnboardingSnapshot | null;
   error: string | null;
   refresh: () => void;
-  /** Sessions from the snapshot — populated on first load, before the separate sessions:list IPC. */
-  getSessions(): SessionSummary[] | null;
-  /** Connections from the snapshot — populated on first load before the live projection refresh. */
-  getConnections(): LlmConnection[] | null;
-  getDefaultSlug(): string | null;
 }
 
 export interface UseOnboardingSnapshotDeps {
@@ -96,37 +89,58 @@ export function getOnboardingActivationCandidate(
 }
 
 /**
+ * `sessions` is excluded: it is boot-time seed data (the session catalog is
+ * the live authority) whose rows churn on every background message event,
+ * so including it would publish a new snapshot per event. The `satisfies`
+ * witness makes the key list exhaustive — a new `OnboardingSnapshot` field
+ * not added here fails to compile instead of silently dropping out of the
+ * dedup key.
+ */
+const COMPARED_KEYS = {
+  defaultSlug: true,
+  state: true,
+  milestones: true,
+  connections: true,
+  chatModelChoices: true,
+  sessionSendOutcomes: true,
+} satisfies Record<Exclude<keyof OnboardingSnapshot, 'sessions'>, true>;
+
+export function onboardingSnapshotProjectionEqual(
+  a: OnboardingSnapshot,
+  b: OnboardingSnapshot,
+): boolean {
+  return (Object.keys(COMPARED_KEYS) as readonly (keyof typeof COMPARED_KEYS)[]).every(
+    (key) => valuesEqual(a[key], b[key]),
+  );
+}
+
+/**
  * Pure-deps form. Renderer code uses `useOnboardingSnapshot()` (no
  * args); tests pass injected `deps` to drive the hook with fakes
  * (no IPC required).
  *
  * The hook is a thin React shell over `createOnboardingSnapshotPoller`
- * — the React-less helper that owns the ticket-based stale-response
- * defense. Tests target the pure poller directly so they don't need
- * a DOM / React runtime.
+ * — the React-less helper that owns pull serialization and the
+ * stale-response defense. Tests target the pure poller directly so they
+ * don't need a DOM / React runtime.
  */
 export function useOnboardingSnapshotImpl(
   deps: UseOnboardingSnapshotDeps,
-  initialSnapshot: OnboardingSnapshot | null = null,
 ): UseOnboardingSnapshotResult {
   const locale = useUiLocale();
   const localeRef = useRef(locale);
   localeRef.current = locale;
-  const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(initialSnapshot);
+  const [snapshot, setSnapshot] = useState<OnboardingSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const sessionsRef = useRef<SessionSummary[] | null>(initialSnapshot?.sessions ?? null);
-  const connectionsRef = useRef<LlmConnection[] | null>(initialSnapshot?.connections ?? null);
-  const defaultSlugRef = useRef<string | null>(initialSnapshot?.defaultSlug ?? null);
   const pollerRef = useRef<OnboardingSnapshotPoller | null>(null);
 
   if (pollerRef.current === null) {
     pollerRef.current = createOnboardingSnapshotPoller(deps, {
       onSnapshot: (next) => {
-        setSnapshot(next);
+        setSnapshot((prev) =>
+          prev !== null && onboardingSnapshotProjectionEqual(prev, next) ? prev : next,
+        );
         setError(null);
-        if (next.sessions) sessionsRef.current = next.sessions;
-        if (next.connections) connectionsRef.current = next.connections;
-        defaultSlugRef.current = next.defaultSlug;
       },
       onError: (message) => {
         setError(message);
@@ -151,26 +165,20 @@ export function useOnboardingSnapshotImpl(
     void pollerRef.current?.pull();
   }, []);
 
-  const getSessions = useCallback((): SessionSummary[] | null => sessionsRef.current, []);
-  const getConnections = useCallback((): LlmConnection[] | null => connectionsRef.current, []);
-  const getDefaultSlug = useCallback((): string | null => defaultSlugRef.current, []);
-
   return {
     snapshot,
     error,
     refresh,
-    getSessions,
-    getConnections,
-    getDefaultSlug,
   };
 }
 
 /**
- * React-less poller. Tracks an inflight ticket so older getSnapshot
- * responses can't overwrite newer state, and owns a lifecycle gate so
- * pending IPC responses cannot write after the first-run surface
- * unmounts. Extracted from `useOnboardingSnapshotImpl` so the stale
- * response defense is testable without a DOM / React.
+ * React-less poller. Serializes getSnapshot IPCs — an invalidation while a
+ * pull is in flight schedules a single follow-up — and gates callbacks on
+ * the active flag plus a dispose-bumped ticket so pending responses cannot
+ * write after the first-run surface unmounts. Extracted from
+ * `useOnboardingSnapshotImpl` so the pull discipline is testable without a
+ * DOM / React.
  */
 export interface OnboardingSnapshotPollerCallbacks {
   onSnapshot(snapshot: OnboardingSnapshot): void;
@@ -193,6 +201,8 @@ export function createOnboardingSnapshotPoller(
 ): OnboardingSnapshotPoller {
   let inflightTicket = 0;
   let active = true;
+  let inflight: Promise<void> | null = null;
+  let pullAgain = false;
 
   function emitSnapshot(snapshot: OnboardingSnapshot): void {
     if (!active) return;
@@ -204,21 +214,39 @@ export function createOnboardingSnapshotPoller(
     callbacks.onError(message);
   }
 
+  async function runPull(): Promise<void> {
+    const ticket = ++inflightTicket;
+    try {
+      const next = await deps.getSnapshot();
+      if (!active || ticket !== inflightTicket) return; // unmounted or re-disposed
+      emitSnapshot(next);
+    } catch (err) {
+      if (!active || ticket !== inflightTicket) return;
+      emitError(onboardingSnapshotErrorMessage(err, getLocale()));
+    }
+  }
+
   return {
     activate(): void {
       active = true;
     },
-    async pull(): Promise<void> {
-      if (!active) return;
-      const ticket = ++inflightTicket;
-      try {
-        const next = await deps.getSnapshot();
-        if (!active || ticket !== inflightTicket) return; // newer pull won or unmounted
-        emitSnapshot(next);
-      } catch (err) {
-        if (!active || ticket !== inflightTicket) return;
-        emitError(onboardingSnapshotErrorMessage(err, getLocale()));
+    pull(): Promise<void> {
+      if (!active) return Promise.resolve();
+      // Invalidations arriving while a pull is in flight collapse into one
+      // follow-up, so the IPC rate tracks pull latency, not event rate.
+      if (inflight !== null) {
+        pullAgain = true;
+        return inflight;
       }
+      const loop = (async () => {
+        do {
+          pullAgain = false;
+          await runPull();
+        } while (pullAgain && active);
+        inflight = null;
+      })();
+      inflight = loop;
+      return loop;
     },
     dispose(): void {
       active = false;
@@ -233,10 +261,10 @@ export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale)
 }
 
 /**
- * Default renderer binding: subscribes to BOTH `sessions:changed`
- * and `connections:event` so any session lifecycle (create / delete /
- * archive / rebound / message-appended) or any connection change
- * (verified / disabled / removed) invalidates the snapshot.
+ * Default renderer binding: subscribes to `sessions:changed` and
+ * `connections:event` so any session lifecycle (create / delete / archive /
+ * rebound / message-appended) or connection change (verified / disabled /
+ * removed) invalidates the snapshot.
  *
  * Settings changes are NOT subscribed: there is no existing
  * settings-wide event channel and PR110c is not inventing one. If a
@@ -247,14 +275,10 @@ export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale)
  * Callers that need a re-pull on a specific UI action (e.g. modal
  * close) should call `refresh()` from the returned object.
  */
-export function useOnboardingSnapshot(initialSnapshot: OnboardingSnapshot | null = null): UseOnboardingSnapshotResult {
+export function useOnboardingSnapshot(): UseOnboardingSnapshotResult {
   // Bind to the live IPC bridge. `deps` is memoized as a module-level
   // object so the effect deps stay stable across re-renders.
-  // `initialSnapshot` comes from main.tsx's pre-mount prefetch: with it,
-  // the very first commit already has sessions + connections, so the
-  // startup path never shows the intermediate loading card ("配置页
-  // 闪了一下"). The mount effect still pulls a fresh snapshot.
-  return useOnboardingSnapshotImpl(LIVE_DEPS, initialSnapshot);
+  return useOnboardingSnapshotImpl(LIVE_DEPS);
 }
 
 const LIVE_DEPS: UseOnboardingSnapshotDeps = {

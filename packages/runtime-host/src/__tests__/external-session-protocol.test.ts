@@ -108,7 +108,7 @@ describe('external Session protocol', () => {
           adapterId: 'codex',
           includeArchived: true,
           workspace: { kind: 'project', projectId: 'project-1' },
-          cursor: '16',
+          cursor: 'f:abcdefghijklmnop:16',
         },
       }),
       {
@@ -118,7 +118,7 @@ describe('external Session protocol', () => {
           adapterId: 'codex',
           includeArchived: true,
           workspace: { kind: 'project', projectId: 'project-1' },
-          cursor: '16',
+          cursor: 'f:abcdefghijklmnop:16',
         },
       },
     );
@@ -126,12 +126,20 @@ describe('external Session protocol', () => {
       decodeClientFrame({
         requestId: 'request-import',
         operation: 'external-session.import',
-        input: { adapterId: 'codex', sourceSessionId: 'source-session-1' },
+        input: {
+          adapterId: 'codex',
+          sourceSessionId: 'source-session-1',
+          workspace: { kind: 'project', projectId: 'project-1' },
+        },
       }),
       {
         requestId: 'request-import',
         operation: 'external-session.import',
-        input: { adapterId: 'codex', sourceSessionId: 'source-session-1' },
+        input: {
+          adapterId: 'codex',
+          sourceSessionId: 'source-session-1',
+          workspace: { kind: 'project', projectId: 'project-1' },
+        },
       },
     );
   });

@@ -715,6 +715,60 @@ test('keeps provider-native tools out of the cell snapshot', async () => {
   assert.match(JSON.stringify(execResult?.content), /execution_error/);
 });
 
+test('projects provider-native ApplyPatch as a portable Code Mode tool', async (t) => {
+  const cases = [
+    {
+      name: 'OpenAI structured',
+      connection: { ...connection(), providerType: 'openai' as const },
+      modelId: 'gpt-5.4',
+    },
+    {
+      name: 'Codex freeform',
+      connection: { ...connection(), providerType: 'openai-codex' as const },
+      modelId: 'gpt-6-astra',
+    },
+  ];
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const inputs: unknown[] = [];
+      const tools: MakaTool[] = [
+        {
+          name: 'apply_patch',
+          description: 'Provider-native patch tool',
+          parameters: z.string(),
+          providerTool: { kind: 'openai-apply-patch' },
+          impl: (input) => {
+            inputs.push(input);
+            return { ok: true };
+          },
+        },
+      ];
+      const events = await collect(
+        backend(
+          execThenStopModel('return await tools.apply_patch({ patch: "portable patch" })'),
+          [],
+          undefined,
+          {
+            tools,
+            connection: testCase.connection,
+            modelId: testCase.modelId,
+          },
+        ).send({
+          turnId: `turn-code-${testCase.modelId}`,
+          text: 'edit through ApplyPatch',
+          context: [],
+          toolMode: 'code_mode',
+        }),
+      );
+
+      assert.deepEqual(inputs, [{ patch: 'portable patch' }], JSON.stringify(events));
+      assert.ok(
+        events.some((event) => event.type === 'tool_start' && event.toolName === 'apply_patch'),
+      );
+    });
+  }
+});
+
 test('validates nested arguments before ToolRuntime implementation dispatch', async () => {
   let implementationCalls = 0;
   const tools: MakaTool[] = [
@@ -1194,6 +1248,8 @@ function backend(
     Pick<
       AiSdkBackendInput,
       | 'tools'
+      | 'connection'
+      | 'modelId'
       | 'header'
       | 'maxSteps'
       | 'toolAvailability'

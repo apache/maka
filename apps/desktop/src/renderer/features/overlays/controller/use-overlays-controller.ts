@@ -26,13 +26,13 @@ import type {
 } from '../model/overlays-projection.js';
 import type { SearchScrollTarget } from '../model/search-scroll-target.js';
 import {
-  CLOSED_SETTINGS_SURFACE,
-  closeSettingsSurface,
-  openSettingsSurface,
+  CLOSED_SETTINGS_MODAL,
+  closeSettingsModal,
+  openSettingsModal,
   settingsIntentSection,
   withSettingsProfileId,
-  type SettingsSurfaceIntent,
-} from '../model/settings-surface.js';
+  type SettingsModalIntent,
+} from '../model/settings-modal-state.js';
 import { useOverlaysServices } from '../services-context.js';
 
 export type OverlaysController = OverlaysShellProjection;
@@ -53,7 +53,7 @@ export function useOverlaysController(): OverlaysController {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchScrollTarget, setSearchScrollTarget] = useState<SearchScrollTarget | null>(null);
-  const [settings, setSettings] = useState(CLOSED_SETTINGS_SURFACE);
+  const [settings, setSettings] = useState(CLOSED_SETTINGS_MODAL);
 
   useHotkeys([
     { keys: 'mod+/', allowInInputs: true, onPress: () => setHelpOpen((previous) => !previous) },
@@ -70,11 +70,11 @@ export function useOverlaysController(): OverlaysController {
     settingsOpenRef.current = settings.open;
   });
   const openSettingsWith = useCallback(
-    (intent: SettingsSurfaceIntent) => {
+    (intent: SettingsModalIntent) => {
       const section = settingsIntentSection(intent);
       if (section) services.settingsSection.persist(section);
       if (!settingsOpenRef.current) services.focus.blurActiveElement();
-      setSettings((current) => openSettingsSurface(current, intent));
+      setSettings((current) => openSettingsModal(current, intent));
     },
     [services],
   );
@@ -87,11 +87,12 @@ export function useOverlaysController(): OverlaysController {
       closePalette: () => setPaletteOpen(false),
       openSearch: () => setSearchOpen(true),
       closeSearch: () => setSearchOpen(false),
-      searchThread: (request, requestId) => services.search.thread(request, requestId),
-      cancelSearchThread: (requestId) => services.search.cancelThread(requestId),
+      searchRecall: (request, requestId) => services.search.recall(request, requestId),
+      cancelSearchRecall: (requestId) => services.search.cancelRecall(requestId),
       setSearchScrollTarget,
       openSettings: () => openSettingsWith({ kind: 'settings' }),
-      openSettingsSection: (section) => openSettingsWith({ kind: 'section', section }),
+      openSettingsSection: (section) =>
+        openSettingsWith(section ? { kind: 'section', section } : { kind: 'settings' }),
       openProjectSettings: (profileId) => openSettingsWith({ kind: 'project', profileId }),
       openProviderCatalog: () => openSettingsWith({ kind: 'provider-catalog' }),
       openConnectionDetail: (slug) => openSettingsWith({ kind: 'connection-detail', slug }),
@@ -99,7 +100,7 @@ export function useOverlaysController(): OverlaysController {
         openSettingsWith({ kind: 'provider-create', providerType }),
       setSettingsProfileId: (profileId) =>
         setSettings((current) => withSettingsProfileId(current, profileId)),
-      closeSettings: () => setSettings(closeSettingsSurface),
+      closeSettings: () => setSettings(closeSettingsModal),
     }),
     [openSettingsWith, services],
   );

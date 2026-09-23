@@ -41,7 +41,7 @@ export const en: Copy = {
     community: 'Community',
     security: 'Security',
     asf: 'ASF',
-    getMaka: 'Get Maka',
+    getMaka: 'Release status',
     menu: 'Menu',
   },
   hero: {
@@ -51,9 +51,9 @@ export const en: Copy = {
       ' of everything it did.',
     ],
     lede: 'An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.',
-    nightly: 'Try Desktop Nightly',
-    source: 'Build from source',
-    fine: 'Nightly is a developer build, not an ASF release',
+    releases: 'Release status',
+    contribute: 'Contribute',
+    fine: 'The first Apache release is in preparation',
     architecture: 'Read the architecture',
   },
   scene: {
@@ -116,17 +116,12 @@ export const en: Copy = {
     more: 'Log Is the Runtime',
   },
   get: {
-    h3: 'Get Maka',
-    p: 'Three paths, kept separate on purpose.',
-    nightly: {
-      title: 'Try Desktop Nightly',
-      body: 'Daily builds from main for developers and testers, published on GitHub Releases. macOS on Apple Silicon and Intel; Windows and Linux are unsigned previews.',
-      note: 'NOT AN ASF RELEASE · MAY BE UNSTABLE',
-    },
-    source: {
-      title: 'Build from source',
-      body: 'Clone apache/maka, then npm ci and npm run build. Desktop, TUI and CLI share one Runtime Host.',
-      note: 'APACHE-2.0',
+    h3: 'Releases and development',
+    p: 'Follow release progress or take part in development.',
+    contribute: {
+      title: 'Contribute to Maka',
+      body: 'The contributor guide covers development setup, testing and submitting changes.',
+      note: 'FOR CONTRIBUTORS',
     },
     releases: {
       title: 'Apache Releases',
@@ -178,7 +173,7 @@ export const en: Copy = {
   },
   downloads: {
     title: 'Downloads',
-    lede: 'The signed source archive is the release. Everything else on this page is a convenience build, and says so.',
+    lede: 'Apache Maka has not made its first Apache release yet. Approved releases and verification instructions will be listed here.',
     onThisPage: 'On this page',
     copy: 'Copy',
     copied: 'Copied',
@@ -189,49 +184,25 @@ export const en: Copy = {
         value: 'None yet. The first one appears here after its vote.',
         note: 'NOT YET',
       },
-      nightly: {
-        label: 'Desktop Nightly',
-        value:
-          'Daily from main. macOS arm64 and x64; Windows x64 and Linux x64 and arm64 as unsigned previews.',
-        note: 'NOT AN ASF RELEASE',
-      },
-      source: {
-        label: 'Source',
-        value: 'apache/maka on GitHub, Apache License 2.0.',
-        note: 'APACHE-2.0',
-      },
     },
     releases: {
       h2: 'Apache releases',
       note: 'NO APACHE RELEASE YET',
       p: 'Apache Maka (Incubating) has not made an Apache release. When the first one passes its vote, this section will list it: the source archive, its SHA-512 checksum and detached GPG signature from the ASF distribution directory, and the KEYS file the signature verifies against.',
-      distNote: 'Until then the distribution directory does not exist:',
+      distNote: 'Approved releases will be available from:',
     },
     verify: {
       h2: 'Verify a release',
-      p: 'Every Apache release is verified the same way, and every reviewer on the vote does this before voting.',
+      p: 'After a release is available, replace <version> with its version in the commands below.',
       keys: 'Step 1: Import the release managers’ keys',
       signature: 'Step 2: Check the signature',
       checksum: 'Step 3: Check the checksum',
     },
-    nightly: {
-      h2: 'Desktop Nightly',
-      note: 'NOT AN ASF RELEASE',
-      p: 'Desktop Nightly is built daily from main for developers and testers and published as a GitHub prerelease. Choose the newest Maka Desktop Nightly; after installation the app updates itself on the Nightly channel. It is not an ASF release and is not intended for production use. It ships for macOS on Apple Silicon and Intel, Windows x64, and Linux x64 and arm64.',
-      windows: 'The Windows and Linux builds are unsigned previews, not a supported release tier.',
-    },
-    source: {
-      h2: 'Build from source',
-      prerequisites: [
-        'Node.js 22.19 or newer',
-        'npm 11',
-        'Git',
-        'ripgrep, which the Grep tool shells out to',
-      ],
-      clone: 'Step 1: Clone the repository',
-      build: 'Step 2: Install and build every workspace',
-      after:
-        'CONTRIBUTING covers the workspace layout and how to start Desktop, the TUI and the CLI from that build.',
+    development: {
+      h2: 'Participate in development',
+      p: 'To contribute code or help with testing, read the contributor guide and follow the development mailing list. Development builds are not approved Apache releases.',
+      contribute: 'Contributor guide',
+      discuss: 'Development mailing list',
     },
   },
 };

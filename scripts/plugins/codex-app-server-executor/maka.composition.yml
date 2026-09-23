@@ -1,0 +1,10 @@
+- type: insert
+  rootId: profile
+  entry:
+    id: codex-app-server-executor-entry
+    packageId: codex-app-server-executor
+- type: insert
+  rootId: desktop-ui
+  entry:
+    id: codex-app-server-executor-ui
+    packageId: codex-app-server-executor

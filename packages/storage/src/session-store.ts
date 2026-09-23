@@ -83,8 +83,6 @@ export {
   type SessionTranscriptRecordScanPage,
   type SessionTurnContribution,
   type SessionTurnContributionPage,
-  type SessionTurnLandmark,
-  type SessionTurnLandmarkSnapshot,
   type SessionStore,
   type CoordinationTranscriptReference,
   type CoordinationTranscriptIndexRecord,
@@ -198,6 +196,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
+    options: { readonly onCommitStarted?: () => void } = {},
   ): Promise<SessionHeader> {
     await this.ensureReady();
     assertNoConversationCopyMetadata(input);
@@ -212,11 +211,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
       externalOrigin,
       transcriptLedgerVersion: 0,
     };
-    const outcome = await this.metadata.importSession(
-      header,
-      canonicalMessages,
-      projectSessionCatalogMessages(canonicalMessages),
-    );
+    const catalogProjection = projectSessionCatalogMessages(canonicalMessages);
+    options.onCommitStarted?.();
+    const outcome = await this.metadata.importSession(header, canonicalMessages, catalogProjection);
     if (outcome !== 'imported') {
       throw new Error(`Generated Session id already exists: ${header.id}`);
     }
@@ -571,6 +568,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
     await this.ensureReady();
     return (await this.metadata.list(filter, 'ordinary'))
+      .filter((record) => record.header.transcriptLedgerVersion !== 0)
       .filter((record) => record.header.conversationCopy?.state !== 'preparing')
       .map((record) => toCatalogSummary(record.header, record.lastMessagePreview));
   }
@@ -692,6 +690,19 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.readMessagesSnapshot(sessionId);
   }
 
+  async listLegacyTranscriptCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    await this.ensureReady();
+    return this.metadata.listLegacyTranscriptCandidateSessions(sessionIds, terms);
+  }
+
+  async countLegacyTranscriptMessages(sessionIds: readonly string[]): Promise<number> {
+    await this.ensureReady();
+    return this.metadata.countLegacyTranscriptMessages(sessionIds);
+  }
+
   async readMessagesAfter(
     sessionId: string,
     request: SessionMessageScanRequest,
@@ -711,10 +722,13 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void> {
     if (messages.length === 0) return;
     await this.ensureReady();
+    const canonicalMessages = messages.map((message) =>
+      decodeCanonicalMessage(JSON.parse(JSON.stringify(message)) as unknown),
+    );
     await this.metadata.appendMessages(
       sessionId,
-      messages,
-      projectSessionCatalogMessages(messages),
+      canonicalMessages,
+      projectSessionCatalogMessages(canonicalMessages),
     );
     for (const listener of this.transcriptChangeListeners) listener(sessionId);
   }

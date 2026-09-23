@@ -180,6 +180,11 @@ import {
 } from './sqlite-session-metadata-schema.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import {
+  assertFoldedSearchTerm,
+  recallFoldedMatchClause,
+  registerRecallFoldFunction,
+} from './recall-fold.js';
+import {
   buildSqliteSessionCatalogPageQuery,
   type SqliteSessionCatalogCursor,
 } from './sqlite-session-catalog-query.js';
@@ -198,6 +203,14 @@ const WORKHUB_TARGET_LINKAGE_MAX_SESSIONS = 256;
 function decodeStoredMessage(value: unknown): StoredMessage {
   return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 }
+
+/**
+ * Message types that carry user-visible content. Coordination records are
+ * excluded here so a candidate scan never reads them, matching the projection
+ * the recall predicate applies afterwards.
+ */
+const SEARCHABLE_MESSAGE_TYPES = ['user', 'assistant', 'tool_call', 'tool_result'] as const;
+const SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS = SEARCHABLE_MESSAGE_TYPES.map(() => '?').join(', ');
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = SQLITE_AGENT_GRAPH_CONTROL_TABLES.filter(
@@ -454,6 +467,7 @@ export class SqliteSessionMetadataStore {
     if (options.databaseLease) {
       this.databaseLease = options.databaseLease;
       this.db = options.databaseLease.database;
+      registerRecallFoldFunction(this.db);
       this.now = options.now ?? Date.now;
       return;
     }
@@ -462,6 +476,7 @@ export class SqliteSessionMetadataStore {
     try {
       configureSqliteSessionMetadataDatabase(database);
       migrateSqliteSessionMetadataDatabase(database);
+      registerRecallFoldFunction(database);
     } catch (error) {
       database.close();
       throw error;
@@ -2656,6 +2671,149 @@ export class SqliteSessionMetadataStore {
     return this.readMessagesWith(sessionId, decodeStoredMessage);
   }
 
+  /**
+   * Narrows recall to the pre-ledger Sessions whose transcript rows contain
+   * one of the folded terms. The answer is a superset of the true matches,
+   * never an answer: the caller projects each candidate Session and re-runs the
+   * real predicate on the projected, redacted text.
+   *
+   * Only Sessions the ledger does not yet own are scanned here. A Session with
+   * `transcriptLedgerVersion` 1 is projected from `runtime_events`, and its
+   * rows in these tables are a frozen copy of what the conversion read, so the
+   * ledger scan already covers it. Sessions still awaiting conversion, and
+   * imports still being prepared, keep their transcript here.
+   *
+   * Folding is ASCII `lower()` in SQL plus an unconditional match on every
+   * record that fold cannot reproduce — see `recall-fold.ts`. Terms must arrive
+   * folded; a raw term is rejected rather than quietly mismatched.
+   *
+   * Two scans rather than one condition, because the two storage forms need
+   * different reads. An inline record is matched directly; a record above the
+   * chunk threshold keeps only a marker in `record_json` and has to be
+   * reassembled from its chunks first. SQLite concatenates chunk blobs
+   * byte-wise, which restores characters a chunk boundary split in half.
+   *
+   * Returns `undefined` when a chunked record cannot be reassembled, which
+   * declines the fast path rather than answering with fewer candidates.
+   */
+  async listLegacyTranscriptCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    this.assertOpen();
+    if (sessionIds.length === 0 || terms.length === 0) return [];
+    for (const sessionId of sessionIds) assertSafeSessionId(sessionId);
+    for (const term of terms) assertFoldedSearchTerm(term);
+
+    const sessions = sessionIds.map(() => '?').join(', ');
+    const inlineMatch = recallFoldedMatchClause('message.record_json', terms.length);
+    const chunkedMatch = recallFoldedMatchClause('chunked.body', terms.length);
+
+    return this.readTransaction(() => {
+      // A payload row whose chunks do not reassemble to the bytes it recorded
+      // would be matched on a body shorter than the record, which is the one
+      // way this scan could return less than a superset: the term could sit in
+      // the part that is missing. A short body is as unusable as no body at
+      // all, so both decline the fast path rather than quietly answering with
+      // fewer candidates.
+      const unreadable = this.db
+        .prepare(
+          `
+          SELECT count(*) AS total
+          FROM session_message_payloads AS payload
+          WHERE payload.session_id IN (${sessions})
+            AND COALESCE(
+                  octet_length((SELECT group_concat(CAST(chunk.data AS TEXT), '' ORDER BY chunk.chunk_index)
+                                  FROM session_message_chunks AS chunk
+                                 WHERE chunk.session_id = payload.session_id
+                                   AND chunk.sequence = payload.sequence)),
+                  -1
+                ) <> payload.record_bytes
+        `,
+        )
+        .get(...sessionIds) as { total?: unknown } | undefined;
+      if (typeof unreadable?.total === 'number' && unreadable.total > 0) return undefined;
+
+      const rows = this.db
+        .prepare(
+          `
+          WITH legacy AS (
+            SELECT metadata.session_id
+            FROM session_metadata AS metadata
+            WHERE metadata.session_id IN (${sessions})
+              AND COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), -1) <> 1
+          ),
+          chunked AS (
+            SELECT payload.session_id, payload.sequence,
+                   (SELECT group_concat(CAST(chunk.data AS TEXT), '' ORDER BY chunk.chunk_index)
+                      FROM session_message_chunks AS chunk
+                     WHERE chunk.session_id = payload.session_id
+                       AND chunk.sequence = payload.sequence) AS body
+              FROM session_message_payloads AS payload
+             WHERE payload.session_id IN (SELECT session_id FROM legacy)
+          )
+          SELECT DISTINCT message.session_id
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id IN (SELECT session_id FROM legacy)
+            AND message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+            AND payload.sequence IS NULL
+            AND (${inlineMatch})
+          UNION
+          SELECT DISTINCT message.session_id
+          FROM session_messages AS message
+          JOIN chunked
+            ON chunked.session_id = message.session_id AND chunked.sequence = message.sequence
+          WHERE message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+            AND chunked.body IS NOT NULL
+            AND (${chunkedMatch})
+        `,
+        )
+        .all(
+          ...sessionIds,
+          ...SEARCHABLE_MESSAGE_TYPES,
+          ...terms,
+          ...SEARCHABLE_MESSAGE_TYPES,
+          ...terms,
+        ) as Array<{ session_id?: unknown }>;
+      return rows.map((row) => {
+        if (typeof row.session_id !== 'string') {
+          throw new Error('Session search candidate is missing its Session');
+        }
+        return row.session_id;
+      });
+    });
+  }
+
+  /**
+   * How many pre-ledger transcript rows could project to a searchable message,
+   * for recall's idf term. Counted by message type rather than by projecting,
+   * so it is cheap and identical whichever path recall takes to find its hits;
+   * Sessions the ledger owns are counted from `runtime_events` instead.
+   */
+  async countLegacyTranscriptMessages(sessionIds: readonly string[]): Promise<number> {
+    this.assertOpen();
+    if (sessionIds.length === 0) return 0;
+    for (const sessionId of sessionIds) assertSafeSessionId(sessionId);
+    const sessions = sessionIds.map(() => '?').join(', ');
+    return this.readTransaction(() => {
+      const row = this.db
+        .prepare(
+          `
+          SELECT count(*) AS total
+          FROM session_messages AS message
+          JOIN session_metadata AS metadata ON metadata.session_id = message.session_id
+          WHERE message.session_id IN (${sessions})
+            AND COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), -1) <> 1
+            AND message.message_type IN (${SEARCHABLE_MESSAGE_TYPE_PLACEHOLDERS})
+        `,
+        )
+        .get(...sessionIds, ...SEARCHABLE_MESSAGE_TYPES) as { total?: unknown } | undefined;
+      return typeof row?.total === 'number' ? row.total : 0;
+    });
+  }
+
   async readMessagesAfter(
     sessionId: string,
     request: SessionMessageScanRequest,
@@ -3139,6 +3297,23 @@ export class SqliteSessionMetadataStore {
       )
       .all(graphId) as unknown as AgentGraphScheduleUpdateRow[];
     return rows.map(decodeAgentGraphScheduleUpdateRow);
+  }
+
+  async listAgentGraphScheduleRecoveryGraphIds(): Promise<string[]> {
+    this.assertOpen();
+    const rows = this.db
+      .prepare(`
+        SELECT DISTINCT graph_id
+        FROM agent_graph_schedule_updates
+        ORDER BY graph_id
+      `)
+      .all() as Array<{ graph_id?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.graph_id !== 'string') {
+        throw new Error('Invalid Agent Graph schedule identity');
+      }
+      return row.graph_id;
+    });
   }
 
   async claimAgentGraphSupervisorWake(

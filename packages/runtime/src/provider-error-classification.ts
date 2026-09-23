@@ -73,6 +73,7 @@ const PROVIDER_BILLING_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'insufficient_balance', // DeepSeek: error.code
   'quota_exceeded', // OpenAI-compatible variants: error.code
   'freeusagelimiterror', // OpenCode Zen free tier exhausted (HTTP 429): error.type
+  'upgrade_required', // Command Code: the plan has no Provider API access (HTTP 403): error.code
 ]);
 
 /**

@@ -30,6 +30,11 @@
  */
 
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
+import {
+  countRecallSearchableMessages,
+  listRecallCandidateSessions,
+  type RecallCandidateStores,
+} from './recall-candidates.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -45,7 +50,7 @@ import type {
   ShellRunUpdate,
   MessageContent,
 } from '@maka/core/events';
-import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
+import { messageContentsEqual } from '@maka/core/events';
 import type {
   SessionHeader,
   SessionHeaderPatch,
@@ -63,7 +68,6 @@ import type {
 } from '@maka/core/session';
 import type {
   CreateSessionInput,
-  RegenerateTurnInput,
   UserMessageInput,
   SessionListFilter,
 } from '@maka/core/runtime-inputs';
@@ -85,13 +89,13 @@ import {
   PLAN_USER_ABANDON_REASON,
   PLAN_USER_CANCEL_REASON,
   PlanConflictError,
+  activePlanExecution,
   type ApprovePlanProposalInput,
   type PlanMutationResult,
   type PlanSessionState,
   type PlanStore,
 } from '@maka/core/plan';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
-import { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from '@maka/core/deep-research';
 import {
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
@@ -128,6 +132,9 @@ import { invocationMatchesClaimTarget } from '@maka/core/runtime-boundary';
 import type { ContinuationClaimV1 } from '@maka/core/runtime-boundary';
 import {
   readRunInvocation,
+  runtimeInvocationRecoveryInventoryFromInvocations,
+  type ContinuationClaimStateV1,
+  type RuntimeInvocationRecoveryInventoryEntry,
   type RuntimeEventStore,
   type RuntimeContinuationAuthorityStore,
 } from '@maka/core/runtime-event-store';
@@ -528,6 +535,7 @@ export interface SessionConfigurationStoreUpdate {
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
     readonly executorId?: string;
+    readonly executorConfig?: import('@maka/core/executor-catalog').ExecutorConfiguration;
     readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
@@ -579,24 +587,19 @@ export class SessionConfigurationRevisionConflictError extends Error {
   }
 }
 
-export class RuntimeRegenerateTurnError extends Error {
-  readonly name = 'RuntimeRegenerateTurnError';
-
-  constructor(
-    readonly code: 'not_found' | 'operation_conflict',
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export interface RegenerateTurnSource {
-  readonly sourceTurnId: string;
-  readonly content: MessageContent;
-}
-
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
+  /**
+   * Recall's narrowing over pre-ledger transcripts: the Sessions among the
+   * given ones whose transcript rows contain a folded term. A superset, never
+   * an answer; `undefined` declines the fast path. See `recall-candidates.ts`.
+   */
+  listLegacyTranscriptCandidateSessions?(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined>;
+  /** Pre-ledger transcript rows of searchable types, for recall's idf term. */
+  countLegacyTranscriptMessages?(sessionIds: readonly string[]): Promise<number>;
   createSubagent(
     input: CreateSessionInput,
     initialBoundary?: ExecutionBoundary,
@@ -1204,12 +1207,7 @@ export class SessionManager {
         current.header,
         input.configuration.collaborationMode,
       );
-      const leavingDeepResearch =
-        isDeepResearchSession(current.header.labels) &&
-        input.configuration.permissionMode !== 'explore';
-      const labels = leavingDeepResearch
-        ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-        : current.header.labels;
+      const labels = current.header.labels;
       return () =>
         store.updateSessionConfiguration(sessionId, {
           expectedVersion: input.expectedRevision,
@@ -1274,6 +1272,11 @@ export class SessionManager {
           current.revision,
         );
       }
+      if (current.header.executorId)
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'External executor workspace is fixed. Start a new task.',
+        );
       if (current.header.isArchived) {
         throw new SessionConfigurationTransitionError(
           'operation_conflict',
@@ -1330,6 +1333,31 @@ export class SessionManager {
 
   async getMessages(sessionId: string): Promise<StoredMessage[]> {
     return (await this.getSessionView(sessionId)).messages;
+  }
+
+  /**
+   * Recall's narrowing: which of the given Sessions could hold a message
+   * containing a folded term, from the ledger and the pre-ledger transcript
+   * tables together. A superset of the Sessions that match, never an answer;
+   * `undefined` means the fast path declined and recall reads every transcript.
+   */
+  async listRecallCandidateSessions(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined> {
+    return listRecallCandidateSessions(this.recallCandidateStores(), sessionIds, terms);
+  }
+
+  /** Corpus size for recall's idf term, across both transcript stores. */
+  async countRecallSearchableMessages(sessionIds: readonly string[]): Promise<number | undefined> {
+    return countRecallSearchableMessages(this.recallCandidateStores(), sessionIds);
+  }
+
+  private recallCandidateStores(): RecallCandidateStores {
+    return {
+      transcripts: this.deps.store,
+      ...(this.deps.runtimeEventStore ? { ledger: this.deps.runtimeEventStore } : {}),
+    };
   }
 
   async getContextDiagnostics(sessionId: string): Promise<ContextDiagnostics> {
@@ -1463,6 +1491,20 @@ export class SessionManager {
     return this.recoverInterruptedSessionsWithPolicy({ kind: 'best_effort' });
   }
 
+  /**
+   * Recover only the Sessions named by an already-held quiescent operation.
+   *
+   * Bundle export uses this after fencing a Session subtree. A persisted open
+   * invocation can survive a Host restart even though no live execution claim
+   * remains; settling that invocation is safe under the fence and lets export
+   * distinguish an interrupted run from a live one without scanning or
+   * mutating unrelated Sessions.
+   */
+  async recoverInterruptedSessionsForSessions(sessionIds: readonly string[]): Promise<string[]> {
+    const scope = new Set(sessionIds);
+    return this.recoverInterruptedSessionsWithPolicy({ kind: 'best_effort' }, scope);
+  }
+
   async recoverInterruptedSessionsStrict(stores: StrictRecoveryStores): Promise<string[]> {
     if (stores.sessionStore !== this.deps.store || stores.agentRunStore !== this.deps.runStore) {
       throw new Error('Strict recovery stores must match the SessionManager composition');
@@ -1470,11 +1512,71 @@ export class SessionManager {
     return this.recoverInterruptedSessionsWithPolicy({ kind: 'strict', stores });
   }
 
-  private async recoverInterruptedSessionsWithPolicy(policy: RecoveryPolicy): Promise<string[]> {
-    const interrupted = (await listSessionsForRecovery(this.deps.store, policy)).filter(
-      (session) => !session.isArchived,
-    );
+  private async recoverInterruptedSessionsWithPolicy(
+    policy: RecoveryPolicy,
+    scope?: ReadonlySet<string>,
+  ): Promise<string[]> {
+    const profileEnabled = process.env.MAKA_STARTUP_PROFILE === '1';
+    const profileTotals = new Map<string, number>();
+    const profileCalls = new Map<string, number>();
+    const measure = async <T>(label: string, operation: () => Promise<T>): Promise<T> => {
+      if (!profileEnabled) return operation();
+      const started = performance.now();
+      try {
+        return await operation();
+      } finally {
+        profileTotals.set(label, (profileTotals.get(label) ?? 0) + performance.now() - started);
+        profileCalls.set(label, (profileCalls.get(label) ?? 0) + 1);
+      }
+    };
+    const interrupted = (
+      await measure('list-sessions', () => listSessionsForRecovery(this.deps.store, policy))
+    ).filter((session) => !session.isArchived && (scope === undefined || scope.has(session.id)));
+    const recoveryCandidateSet = async (
+      label: string,
+      operation: (() => Promise<string[] | undefined>) | undefined,
+    ): Promise<ReadonlySet<string> | undefined> => {
+      if (!operation) return undefined;
+      const sessionIds = await measure(label, () =>
+        recoverOr<string[] | undefined>(policy, operation, undefined),
+      );
+      return sessionIds ? new Set(sessionIds) : undefined;
+    };
+    const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
+    const [shellRecoverySessions, unsettledContinuationClaims, planRecoverySessions] =
+      await Promise.all([
+        recoveryCandidateSet(
+          'shell-inventory',
+          this.deps.shellRuns ? () => this.deps.shellRuns!.listRecoverySessionIds() : undefined,
+        ),
+        continuationAuthority?.listUnsettledContinuationClaimsForRecovery
+          ? measure('continuation-inventory', () =>
+              recoverOr<ContinuationClaimStateV1[] | undefined>(
+                policy,
+                () =>
+                  continuationAuthority.listUnsettledContinuationClaimsForRecovery!(
+                    interrupted.map((session) => session.id),
+                  ),
+                undefined,
+              ),
+            )
+          : Promise.resolve(undefined),
+        recoveryCandidateSet(
+          'plan-inventory',
+          this.deps.planStore?.listPlanRecoverySessionIds
+            ? () => this.deps.planStore!.listPlanRecoverySessionIds!()
+            : undefined,
+        ),
+      ]);
+    const continuationClaimsBySession = unsettledContinuationClaims
+      ? groupContinuationClaimsBySession(unsettledContinuationClaims)
+      : undefined;
     const recovered = new Set<string>();
+    const runRecoveryQueue: Array<{
+      session: (typeof interrupted)[number];
+      continuationClaimRecovered: boolean;
+      claimOwnedUnsettledRunIds?: ReadonlySet<string>;
+    }> = [];
     for (const session of interrupted) {
       if (this.runtimeKernel.hasActiveRuns(session.id)) continue;
       // Fail-closed: a request whose live owner died can never be answered, so
@@ -1505,11 +1607,12 @@ export class SessionManager {
           );
         }
       }
-      if (this.deps.shellRuns) {
-        const recoveredShellRuns = await recoverOr(
-          policy,
-          () => this.deps.shellRuns!.recoverOrphanedSession(session.id),
-          0,
+      if (
+        this.deps.shellRuns &&
+        (!shellRecoverySessions || shellRecoverySessions.has(session.id))
+      ) {
+        const recoveredShellRuns = await measure('shell', () =>
+          recoverOr(policy, () => this.deps.shellRuns!.recoverOrphanedSession(session.id), 0),
         );
         if (recoveredShellRuns > 0) recovered.add(session.id);
       }
@@ -1519,13 +1622,23 @@ export class SessionManager {
       // ending in `remove()` — could only ever contradict it.
 
       let continuationClaimRecovered = false;
-      const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
-      if (this.deps.runStore && continuationAuthority) {
+      const unsettledClaims = continuationClaimsBySession?.get(session.id);
+      if (
+        this.deps.runStore &&
+        continuationAuthority &&
+        (!continuationClaimsBySession ||
+          unsettledClaims?.some(
+            (state) => state.startEventId === undefined || state.startKind === 'claim_repair',
+          ))
+      ) {
         try {
-          continuationClaimRecovered = await this.recoverContinuationClaimsBeforeProvider(
-            session.id,
-            continuationAuthority,
-            policy,
+          continuationClaimRecovered = await measure('continuation', () =>
+            this.recoverContinuationClaimsBeforeProvider(
+              session.id,
+              continuationAuthority,
+              policy,
+              unsettledClaims,
+            ),
           );
         } catch (error) {
           if (policy.kind === 'strict') throw error;
@@ -1538,41 +1651,105 @@ export class SessionManager {
         if (continuationClaimRecovered) recovered.add(session.id);
       }
 
-      if (this.deps.planStore) {
-        const preservesHandoff = await recoverOr(
-          policy,
-          async () => {
-            if (!continuationAuthority) return false;
-            const latest = latestInvocation(
-              (await this.listInvocations(session.id)).filter((run) =>
-                isSessionInlineInvocation(run.opening),
+      if (this.deps.planStore && (!planRecoverySessions || planRecoverySessions.has(session.id))) {
+        // Plan events are the domain authority for whether there is a Plan
+        // obligation at all. Runtime evidence is needed only to decide whether
+        // an existing active Plan belongs to a pending handoff and must survive.
+        const planState = await measure('plan-state', () =>
+          recoverOr(policy, () => this.deps.planStore!.readState(session.id), undefined),
+        );
+        if (planState?.activeExecutionId) {
+          const preservesHandoff = await measure('plan-handoff', () =>
+            recoverOr(
+              policy,
+              async () => {
+                if (!continuationAuthority) return false;
+                const latest = latestInvocation(
+                  (await this.listInvocations(session.id)).filter((run) =>
+                    isSessionInlineInvocation(run.opening),
+                  ),
+                );
+                if (!latest) return false;
+                // Only the current logical execution may preserve a session-owned Plan.
+                // Read after claim repair: an abandoned successor now has a real failure.
+                return Boolean(
+                  (await readLogicalRuntimeExecutionForRun(continuationAuthority, latest))
+                    ?.pendingHandoff,
+                );
+              },
+              false,
+            ),
+          );
+          if (!preservesHandoff) {
+            const planRecovery = await measure('plan-interrupt', () =>
+              recoverOr(
+                policy,
+                () => this.deps.planStore!.interruptActiveExecution(session.id, 'runtime_recovery'),
+                null,
               ),
             );
-            if (!latest) return false;
-            // Only the current logical execution may preserve a session-owned Plan.
-            // Read after claim repair: an abandoned successor now has a real failure.
-            return Boolean(
-              (await readLogicalRuntimeExecutionForRun(continuationAuthority, latest))
-                ?.pendingHandoff,
-            );
-          },
-          false,
-        );
-        if (!preservesHandoff) {
-          const planRecovery = await recoverOr(
-            policy,
-            () => this.deps.planStore!.interruptActiveExecution(session.id, 'runtime_recovery'),
-            null,
-          );
-          if (planRecovery) recovered.add(session.id);
+            if (planRecovery) recovered.add(session.id);
+          }
         }
       }
 
+      runRecoveryQueue.push({
+        session,
+        continuationClaimRecovered,
+        ...(continuationClaimsBySession
+          ? {
+              claimOwnedUnsettledRunIds: new Set(
+                (unsettledClaims ?? []).map((state) => state.claim.target.runId),
+              ),
+            }
+          : {}),
+      });
+    }
+
+    let inventoryBySession:
+      | ReadonlyMap<string, readonly RuntimeInvocationRecoveryInventoryEntry[]>
+      | undefined;
+    if (
+      this.deps.runStore &&
+      this.deps.runtimeEventStore?.listInvocationRecoveryInventory &&
+      runRecoveryQueue.length > 0
+    ) {
+      try {
+        const inventory = await measure('run-inventory', () =>
+          this.deps.runtimeEventStore!.listInvocationRecoveryInventory!(
+            runRecoveryQueue.map(({ session }) => session.id),
+          ),
+        );
+        const mutable = new Map<string, RuntimeInvocationRecoveryInventoryEntry[]>();
+        for (const entry of inventory) {
+          const entries = mutable.get(entry.sessionId) ?? [];
+          entries.push(entry);
+          mutable.set(entry.sessionId, entries);
+        }
+        inventoryBySession = mutable;
+      } catch (error) {
+        if (policy.kind === 'strict') throw error;
+      }
+    }
+
+    for (const {
+      session,
+      continuationClaimRecovered,
+      claimOwnedUnsettledRunIds,
+    } of runRecoveryQueue) {
       if (this.deps.runStore) {
-        const runRecovery = await recoverOr(
-          policy,
-          () => this.recoverAgentRunsFromLedger(session.id, policy),
-          undefined,
+        const runRecovery = await measure('runs', () =>
+          recoverOr(
+            policy,
+            () =>
+              this.recoverAgentRunsFromLedger(
+                session.id,
+                policy,
+                inventoryBySession ? (inventoryBySession.get(session.id) ?? []) : undefined,
+                claimOwnedUnsettledRunIds,
+              ),
+            undefined,
+          ),
         );
         if (runRecovery?.hasLedger) {
           if (runRecovery.recovered || continuationClaimRecovered) {
@@ -1596,6 +1773,19 @@ export class SessionManager {
         await recoverOr(policy, () => this.updateStatus(session.id, 'active'), undefined);
         recovered.add(session.id);
       }
+    }
+    if (profileEnabled) {
+      console.error(
+        `[startup-profile] session-recovery ${JSON.stringify({
+          sessions: interrupted.length,
+          totals: Object.fromEntries(
+            [...profileTotals].map(([label, ms]) => [
+              label,
+              { calls: profileCalls.get(label) ?? 0, ms },
+            ]),
+          ),
+        })}`,
+      );
     }
     return [...recovered];
   }
@@ -1668,18 +1858,14 @@ export class SessionManager {
   ): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);
-    const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
     if (
       previous.permissionMode === mode &&
-      executionBoundaryMatchesPermissionMode(boundary, mode) &&
-      !leavingDeepResearch
+      executionBoundaryMatchesPermissionMode(boundary, mode)
     ) {
       return headerToSummary(previous);
     }
 
-    const labels = leavingDeepResearch
-      ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-      : previous.labels;
+    const labels = previous.labels;
     const kind = mode === 'bypass' ? 'bypass' : 'managed';
     await this.commitExecutionBoundaryTransition(sessionId, boundary, mode, async () => {
       const current = await this.deps.store.readHeader(sessionId);
@@ -2140,6 +2326,52 @@ export class SessionManager {
     return planStore.interruptActiveExecution(sessionId, reason, operationId);
   }
 
+  async settleActivePlanExecutionAfterRootTurn(
+    sessionId: string,
+    rootStatus: 'completed' | 'failed' | 'cancelled',
+    operationId: string,
+  ): Promise<PlanMutationResult | null> {
+    // A surface without Plan authority has no Plan state to settle, and the
+    // natural "unavailable" error must not be raised into the root Turn's
+    // terminal transition.
+    if (!this.hasPlanAuthority()) return null;
+    if (rootStatus === 'failed' || rootStatus === 'cancelled') {
+      return this.interruptActivePlanExecution(
+        sessionId,
+        rootStatus === 'cancelled'
+          ? 'Plan execution was interrupted because the Runtime root Turn was cancelled.'
+          : 'Plan execution was interrupted because the Runtime root Turn failed.',
+        operationId,
+      );
+    }
+
+    const planStore = this.requirePlanStore();
+    const state = await planStore.readState(sessionId);
+    const execution = activePlanExecution(state);
+    if (!execution) return null;
+    const terminal = execution.steps.every(
+      (step) => step.status === 'completed' || step.status === 'skipped',
+    );
+    if (!terminal) {
+      return this.interruptActivePlanExecution(
+        sessionId,
+        'Plan execution was interrupted because the Runtime root Turn completed before all Plan steps reached a terminal state.',
+        operationId,
+      );
+    }
+
+    // The root Turn is already terminal, so there is no live Run to stop and no
+    // backend to dispose. The write stays idempotent on both routes: replaying
+    // the operation is reconciled by the store's receipt, and reaching this line
+    // again after the commit finds no active execution left to update.
+    return planStore.updateExecution({
+      operationId,
+      sessionId,
+      executionId: execution.executionId,
+      steps: execution.steps.map((step) => ({ id: step.id, status: step.status })),
+    });
+  }
+
   async remove(sessionId: string): Promise<void> {
     const shellRunClose = await this.deps.shellRuns?.terminateSession(sessionId);
     try {
@@ -2572,7 +2804,9 @@ export class SessionManager {
     }
     const resolvedPreset = await this.deps.subagentCatalog.resolve(input.subagentId);
     if (resolvedPreset.profile !== input.agentProfile) {
-      throw new Error(`Subagent preset "${input.subagentId}" profile changed during spawn`);
+      throw new Error(
+        `Subagent preset "${input.subagentId}" profile changed during spawn. Retry the same agent_spawn call.`,
+      );
     }
     return { ...input, resolvedPreset };
   }
@@ -4144,66 +4378,6 @@ export class SessionManager {
       : this.runtimeKernel.stopSession(identity.sessionId, input);
   }
 
-  async *regenerateTurn(
-    sessionId: string,
-    input: RegenerateTurnInput,
-  ): AsyncIterable<SessionEvent> {
-    const execution = this.runtimeKernel.claimExecution(sessionId);
-    try {
-      const source = await this.prepareRegenerateTurn(sessionId, input.sourceTurnId);
-      yield* this.sendMessage(
-        sessionId,
-        {
-          turnId: input.turnId ?? this.deps.newId(),
-          ...source.content,
-          parentTurnId: source.sourceTurnId,
-          regeneratedFromTurnId: source.sourceTurnId,
-        },
-        { execution },
-      );
-    } finally {
-      execution.release();
-    }
-  }
-
-  async prepareRegenerateTurn(
-    sessionId: string,
-    sourceTurnId: string,
-  ): Promise<RegenerateTurnSource> {
-    const view = await this.getSessionView(sessionId);
-    const source = view.turns.find((candidate) => candidate.turnId === sourceTurnId);
-    if (!source) {
-      throw new RuntimeRegenerateTurnError(
-        'not_found',
-        `Cannot regenerate unknown Turn ${sourceTurnId}`,
-      );
-    }
-    if (
-      source.status !== 'failed' &&
-      source.status !== 'aborted' &&
-      source.status !== 'completed'
-    ) {
-      throw new RuntimeRegenerateTurnError(
-        'operation_conflict',
-        `Cannot regenerate Turn ${sourceTurnId} while it is ${source.status}`,
-      );
-    }
-    const user = view.messages.find(
-      (message): message is UserMessage =>
-        message.type === 'user' && message.turnId === sourceTurnId,
-    );
-    if (!user) {
-      throw new RuntimeRegenerateTurnError(
-        'operation_conflict',
-        `Turn ${sourceTurnId} has no UserMessage`,
-      );
-    }
-    return {
-      sourceTurnId,
-      content: normalizeMessageContent(user),
-    };
-  }
-
   /** Canonical, repaired source view for a Host-owned cross-Session copy. */
   async readConversationCopySnapshot(sessionId: string): Promise<RuntimeReadModelSessionView> {
     return this.getSessionView(sessionId);
@@ -4575,9 +4749,10 @@ export class SessionManager {
     sessionId: string,
     authority: RuntimeContinuationAuthorityStore,
     _policy: RecoveryPolicy,
+    recoveryStates?: readonly ContinuationClaimStateV1[],
   ): Promise<boolean> {
     if (!this.deps.runStore) return false;
-    const states = await authority.listContinuationClaimsForRecovery(sessionId);
+    const states = recoveryStates ?? (await authority.listContinuationClaimsForRecovery(sessionId));
     let recovered = false;
     for (const initialState of states) {
       const { claim } = initialState;
@@ -4664,18 +4839,27 @@ export class SessionManager {
   private async recoverAgentRunsFromLedger(
     sessionId: string,
     policy: RecoveryPolicy = { kind: 'best_effort' },
+    recoveryInventory?: readonly RuntimeInvocationRecoveryInventoryEntry[],
+    recoveryClaimRunIds?: ReadonlySet<string>,
   ): Promise<{ hasLedger: boolean; recovered: boolean }> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore)
       return { hasLedger: false, recovered: false };
     // The importer may have committed only a prefix before a restart. Sealing
     // that prefix here would make the next read skip the unconverted history.
-    const runs = (await this.listInvocations(sessionId)).filter(
-      (run) => !isTranscriptLedgerInvocation(run),
-    );
-    if (runs.length === 0) return { hasLedger: false, recovered: false };
+    const inventory = recoveryInventory
+      ? recoveryInventory
+      : this.deps.runtimeEventStore.listInvocationRecoveryInventory
+        ? await this.deps.runtimeEventStore.listInvocationRecoveryInventory([sessionId])
+        : runtimeInvocationRecoveryInventoryFromInvocations(await this.listInvocations(sessionId));
+    const ownedInventory = inventory.filter((entry) => {
+      const identity = entry.candidate ?? entry.identity;
+      return !identity || !isTranscriptLedgerInvocation(identity);
+    });
+    if (ownedInventory.length === 0) return { hasLedger: false, recovered: false };
+    let claimOwnedUnsettledRunIds = recoveryClaimRunIds;
     const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
-    const claimOwnedUnsettledRunIds = new Set<string>();
-    if (continuationAuthority) {
+    if (!claimOwnedUnsettledRunIds && continuationAuthority) {
+      const discovered = new Set<string>();
       for (const state of await continuationAuthority.listContinuationClaimsForRecovery(
         sessionId,
       )) {
@@ -4683,11 +4867,22 @@ export class SessionManager {
           state.claim.target.sessionId,
           state.claim.target.runId,
         );
-        if (!events.some(isTerminalRuntimeEvent)) {
-          claimOwnedUnsettledRunIds.add(state.claim.target.runId);
-        }
+        if (!events.some(isTerminalRuntimeEvent)) discovered.add(state.claim.target.runId);
       }
+      claimOwnedUnsettledRunIds = discovered;
     }
+    const runsNeedingRecovery = ownedInventory.flatMap((entry) =>
+      entry.candidate ? [entry.candidate] : [],
+    );
+    if (runsNeedingRecovery.length === 0) return { hasLedger: true, recovered: false };
+
+    const recoveryRunStore =
+      policy.kind === 'strict'
+        ? {
+            readEvents: (candidateSessionId: string, runId: string) =>
+              policy.stores.agentRunStore.readEventsForRecovery(candidateSessionId, runId),
+          }
+        : this.deps.runStore;
 
     // Read once per recovered session, and only when a failure actually needs
     // attributing, so healthy sessions pay nothing for the query.
@@ -4706,14 +4901,17 @@ export class SessionManager {
     };
 
     let recovered = false;
-    for (const run of runs) {
-      if (policy.kind === 'strict') {
-        await policy.stores.agentRunStore.readEventsForRecovery(sessionId, run.runId);
-      }
+    for (const run of runsNeedingRecovery) {
       let inspected = await inspectAgentRunReadModel(
-        this.deps.runStore,
+        recoveryRunStore,
         this.deps.runtimeEventStore,
-        { sessionId, runId: run.runId, invocation: run },
+        {
+          sessionId,
+          runId: run.runId,
+          invocation: run,
+          includeModelReplay: false,
+          includeProjection: false,
+        },
       );
       if (inspected.sourceHealth.runtimeLedger === 'read_failed') {
         if (policy.kind === 'strict') {
@@ -4740,7 +4938,7 @@ export class SessionManager {
         continue;
       }
       if (
-        claimOwnedUnsettledRunIds.has(run.runId) &&
+        claimOwnedUnsettledRunIds?.has(run.runId) &&
         !inspected.runtimeEvents.some(isTerminalRuntimeEvent)
       ) {
         // Every unresolved claim target belongs to the claim saga. This
@@ -4772,9 +4970,15 @@ export class SessionManager {
         }
         if (interruptedOutcomes.length > 0) {
           inspected = await inspectAgentRunReadModel(
-            this.deps.runStore,
+            recoveryRunStore,
             this.deps.runtimeEventStore,
-            { sessionId, runId: run.runId, invocation: run },
+            {
+              sessionId,
+              runId: run.runId,
+              invocation: run,
+              includeModelReplay: false,
+              includeProjection: false,
+            },
           );
         }
       }
@@ -4891,6 +5095,19 @@ function continuationExecutionErrorClass(error: unknown): string {
 }
 
 type RecoveryPolicy = { kind: 'best_effort' } | { kind: 'strict'; stores: StrictRecoveryStores };
+
+function groupContinuationClaimsBySession(
+  states: readonly ContinuationClaimStateV1[],
+): ReadonlyMap<string, readonly ContinuationClaimStateV1[]> {
+  const grouped = new Map<string, ContinuationClaimStateV1[]>();
+  for (const state of states) {
+    const sessionId = state.claim.target.sessionId;
+    const sessionStates = grouped.get(sessionId) ?? [];
+    sessionStates.push(state);
+    grouped.set(sessionId, sessionStates);
+  }
+  return grouped;
+}
 
 const MAX_BEST_EFFORT_OUTCOME_COMMIT_ATTEMPTS = 2;
 
@@ -5064,7 +5281,12 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
     ...(h.revisionIndex !== undefined ? { revisionIndex: h.revisionIndex } : {}),
     ...(h.revisionState ? { revisionState: h.revisionState } : {}),
     backend: h.backend,
-    ...(h.executorId ? { executorId: h.executorId } : {}),
+    ...(h.executorId
+      ? {
+          executorId: h.executorId,
+          ...(h.executorConfig ? { executorConfig: h.executorConfig } : {}),
+        }
+      : {}),
     ...(h.llmConnectionId === undefined ? {} : { llmConnectionId: h.llmConnectionId }),
     llmConnectionSlug: h.llmConnectionSlug,
     connectionLocked: h.connectionLocked,
@@ -5252,6 +5474,7 @@ function sessionConfigurationWithPermissionMode(
   return {
     backend: header.backend,
     executorId: header.executorId,
+    executorConfig: header.executorConfig,
     llmConnectionId: header.llmConnectionId,
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
@@ -5270,6 +5493,7 @@ function sessionConfigurationMatchesExceptPermissionMode(
   return (
     header.backend === configuration.backend &&
     header.executorId === configuration.executorId &&
+    header.executorConfig?.model === configuration.executorConfig?.model &&
     header.llmConnectionId === configuration.llmConnectionId &&
     header.llmConnectionSlug === configuration.llmConnectionSlug &&
     header.connectionLocked === configuration.connectionLocked &&

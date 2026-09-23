@@ -55,6 +55,7 @@ const VIEWPORT_RESTORE_POLL_MS = 16;
  * persistent WorkHub View that contains its browser child.
  */
 export class BrowserViewController {
+  private ownerParent: View;
   private backgroundActions = 0;
   private backgroundViewport = false;
   private readonly view: WebContentsView;
@@ -67,10 +68,11 @@ export class BrowserViewController {
   );
 
   constructor(
-    private readonly parent: View,
+    private parent: View,
     private readonly sessionId: string,
     private readonly onState: (sessionId: string, state: BrowserState) => void,
   ) {
+    this.ownerParent = parent;
     this.view = new WebContentsView({ webPreferences: browserViewWebPreferences() });
     this.parent.addChildView(this.view);
     this.view.setVisible(false);
@@ -80,6 +82,29 @@ export class BrowserViewController {
 
   hasParent(parent: View): boolean {
     return this.parent === parent;
+  }
+
+  /** Move the same page between its persistent owner and a visible presenter. */
+  setParent(parent: View): void {
+    if (this.destroyed || parent === this.parent) return;
+    this.parent.removeChildView(this.view);
+    parent.addChildView(this.view);
+    this.parent = parent;
+    this.refreshRendering();
+  }
+
+  hasOwner(parent: View): boolean { return this.ownerParent === parent; }
+
+  setOwner(parent: View): void { this.ownerParent = parent; }
+
+  park(): void {
+    this.setViewport(null);
+    this.setParent(this.ownerParent);
+  }
+
+  async capturePage(): Promise<string | undefined> {
+    if (this.destroyed || !this.shownWithBounds) return undefined;
+    return (await this.wc.capturePage()).toDataURL();
   }
 
   private get wc() {

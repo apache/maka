@@ -344,7 +344,6 @@ test('repairs an existing managed Host with the current setup package and restar
     directPeerAvailable: true,
     manager: () => undefined,
     resolveSetupPackage: async () => setupPackage,
-    onUpdateProgress: (phase) => phases.push(phase),
     operator: {
       async runUpdate(input: {
         readonly setupPackage: unknown;
@@ -382,11 +381,58 @@ test('repairs an existing managed Host with the current setup package and restar
   });
   t.after(() => service.close());
 
-  assert.deepEqual(await service.repairManagedStartup({ allowManualUpdate: true }), {
+  assert.deepEqual(await service.repairManagedStartup({
+    allowManualUpdate: true,
+    onProgress: (phase) => phases.push(phase),
+  }), {
     kind: 'repaired',
   });
   assert.deepEqual(actions, ['update', 'restart']);
   assert.deepEqual(phases, ['checking', 'staging', 'restart']);
+});
+
+test('preserves service readiness evidence in the managed repair blocker', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-repair-diagnostic-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
+  const diagnostic = [
+    'Runtime Host service did not become ready: Host state is failed',
+    'service state: failed; active: false; pid: none; last exit code: 78',
+    'service logs (tail):\nstartup failed: [redacted]',
+  ].join('\n');
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () => undefined,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    resolveManagedDeploymentAuthority: async () => ({
+      kind: 'active',
+      lifecycleMode: 'supervised',
+      deploymentRoot: join(base, 'deployment'),
+      target: {
+        schemaVersion: 2,
+        serviceId: 'b'.repeat(64),
+        rootPath,
+        rootId,
+        operator: testOperator(join(base, 'operator.mjs')),
+        deploymentId: RECOVERY_DEPLOYMENT_ID,
+      },
+    }),
+    inspectHost: async () => ({ kind: 'unavailable' as const, reason: 'connect_failed' as const }),
+    operator: { async close() {} } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  const blocker = await service.resolveStartupRepair(new Error(diagnostic), new AbortController().signal);
+  assert.equal(blocker?.reason, 'repair');
+  assert.equal(blocker?.diagnostic, diagnostic);
 });
 
 test('replaces a conflicting supervised Host with the requested active-work policy', async (t) => {

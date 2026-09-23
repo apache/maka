@@ -33,13 +33,19 @@
 
 /* Astryx owns sender-aware row alignment; Maka only declares the product
    reading geometry and the deliberately dense conversation type scale. */
-.maka-chat-message {
-  width: 100%;
-  opacity: 1;
-}
 
-.maka-chat-message-list {
-  width: 100%;
+/* Like the startup reveal (#5494), the previous transcript stays put until the
+   live answer mounts the new one, which fades in once — no cached tail, no
+   intermediate partial state. */
+.maka-chat-session-swap {
+  animation-name: maka-stream-fade-in;
+  animation-duration: var(--duration-emphasized);
+  animation-timing-function: var(--ease-out-strong);
+}
+@media (prefers-reduced-motion: reduce) {
+  .maka-chat-session-swap {
+    animation: none;
+  }
 }
 
 /* Native anchoring handles ordinary content growth. The scroll authority
@@ -60,7 +66,6 @@
 
 .maka-transcript-turn {
   display: flex;
-  width: 100%;
   flex-direction: column;
   gap: var(--spacing-4);
   /* Resident Turns contribute their real size before the first scroll. */

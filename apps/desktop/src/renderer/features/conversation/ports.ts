@@ -17,9 +17,81 @@
  * under the License.
  */
 
+import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
+import type { SessionSnapshot } from '@maka/core/session-reference';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
 import type { DesktopSessionLocalBridge } from '../../../shared/session-local-contract.js';
 
-export type ConversationServices = Pick<
+export type ConversationSession = Pick<
+  DesktopSessionSummary,
+  | 'id'
+  | 'name'
+  | 'status'
+  | 'lastMessageAt'
+  | 'lastMessagePreview'
+  | 'isArchived'
+  | 'runtimeHostId'
+  | 'shared'
+>;
+
+export interface ConversationHostChange {
+  readonly hostId?: string;
+  readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+}
+
+export interface ConversationNewTaskTarget {
+  readonly profileId: string;
+  readonly hostId: string;
+  readonly projectId: string | null;
+}
+
+export type ConversationFileSearchResult =
+  | { readonly ok: true; readonly files: Array<{ readonly relativePath: string }> }
+  | { readonly ok: false; readonly reason: 'no_project' | 'search_failed' };
+
+export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
   'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
->;
+> {
+  readonly sessions: {
+    getExecutorState?(sessionId: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    setExecutorModelConfiguration?(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<import('../../../shared/desktop-session-projection.js').DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    readSnapshot(sessionId: string, options?: { readonly maxChars?: number }): Promise<SessionSnapshot>;
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
+  };
+  readonly runtimeHosts: {
+    subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;
+  };
+  readonly skills: {
+    listInvocable(sessionId?: string): Promise<InvocableSkillEntry[]>;
+  };
+  readonly workspace: {
+    searchFiles(
+      query: string,
+      options?: { readonly sessionId?: string; readonly limit?: number },
+    ): Promise<ConversationFileSearchResult>;
+  };
+  readonly newTasks: {
+    getExecutors?(target: ConversationNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    subscribeChanges(handler: () => void): () => void;
+    listInvocableSkills(
+      target: ConversationNewTaskTarget,
+      context?: {
+        readonly llmConnectionSlug?: string;
+        readonly model?: string;
+        readonly collaborationMode?: 'agent' | 'plan';
+        readonly permissionMode?: ChatDefaultPermissionMode;
+      },
+    ): Promise<InvocableSkillEntry[]>;
+    searchFiles(
+      target: ConversationNewTaskTarget,
+      query: string,
+      options?: { readonly limit?: number },
+    ): Promise<ConversationFileSearchResult>;
+  };
+  readonly mcp: {
+    subscribeChanges(handler: () => void): () => void;
+  };
+}

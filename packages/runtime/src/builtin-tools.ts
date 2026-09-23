@@ -278,10 +278,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     providerTool: { kind: 'openai-apply-patch' },
     executionFacts,
     impl: async (input, ctx) => {
-      if (typeof input !== 'string') {
+      const patch = typeof input === 'string' ? input : input.patch;
+      if (typeof patch !== 'string') {
         return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
       }
-      const operations = parseCodexV4aPatch(input);
+      const operations = parseCodexV4aPatch(patch);
       return await executeApplyPatchOperations(
         operations,
         async (operation) => {
@@ -422,11 +423,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       name: 'Write',
       activityKind: 'edit',
       description:
-        'Write content to a file. Relative paths resolve from the session cwd; ' +
+        'Create a text file or overwrite its entire contents; does not append. The parent directory must exist. Use Edit for partial changes. Relative paths resolve from the session cwd; ' +
         'how far outside it a path may reach is decided by the session permissions.',
       parameters: z.object({
         path: z.string().describe('A file path; relative paths are resolved from the session cwd'),
-        content: z.string(),
+        content: z.string().describe('The complete text to write to the file.'),
       }),
       executionFacts,
       impl: async ({ path, content }, ctx) => {
@@ -533,7 +534,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       name: 'Glob',
       activityKind: 'search',
       description:
-        'Find files matching a glob pattern (case-insensitive, capped at 200, sorted by walk order).',
+        'Find file and directory paths matching a glob pattern. Case sensitivity follows platform defaults. Hidden entries require an explicit dot-prefixed pattern component. Returns at most 200 matches in traversal order, without sorting.',
       parameters: z.object({
         pattern: z
           .string()

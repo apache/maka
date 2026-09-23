@@ -20,10 +20,9 @@
 // Claude Code transcripts as Maka Sessions.
 //
 // Transcripts live at `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`, one
-// JSON object per line, discriminated by `type`. The parsing primitives are
-// shared with the CLI's foreign-session handoff (`@maka/core/foreign-session`)
-// rather than reimplemented: a scanner and an importer that disagreed about
-// "what did the user actually say" would be a real defect, not a cosmetic one.
+// JSON object per line, discriminated by `type`. This adapter owns the format
+// parsing used by both catalog titles and imported messages, so the two paths
+// agree about what the user actually said without exporting Claude internals.
 //
 // The directory name cannot answer which session belongs to which project —
 // it encodes the cwd by replacing separators, so `-Users-a-b` is ambiguous
@@ -34,22 +33,17 @@ import { createHash } from 'node:crypto';
 import { open, readdir, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import {
-  claudeAssistantText,
-  claudeUserAuthoredText,
-  collectClaudeTitle,
-  isSyntheticClaudeUserText,
-  pickClaudeTitle,
-  sanitizeForeignTitle,
-  type ClaudeTitleCandidates,
-} from '@maka/core/foreign-session';
+import { sanitizeExternalSessionTitle } from '@maka/core/external-session';
 import {
   ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
   externalSessionMatchesQuery,
 } from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
+  ExternalSessionCatalogPage,
+  ExternalSessionCatalogPageQuery,
   ExternalSessionQuery,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
@@ -58,6 +52,7 @@ import {
   TranscriptLineageIndexer,
   type TranscriptRecord,
 } from './claude-code-transcript-lineage.js';
+import { listOffsetExternalSessionCatalogPage } from './offset-external-session-catalog.js';
 
 export const CLAUDE_CODE_SESSION_ADAPTER_ID = 'claude-code';
 
@@ -69,6 +64,29 @@ const CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const CLAUDE_TRANSCRIPT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 const CLAUDE_TRANSCRIPT_MAX_MESSAGES = 250_000;
 const CLAUDE_TRANSCRIPT_MAX_RECORDS = 1_000_000;
+
+/**
+ * How much of one transcript a catalog summary may scan.
+ *
+ * A summary needs the head — cwd, the first prompt, when the session started —
+ * and the tail, where the source writes the titles it later gave the session.
+ * Everything between the two is conversation no catalog row shows. Reading to
+ * EOF instead made one page cost the whole corpus: a query that matches late,
+ * or nothing at all, paid for every transcript before it could answer.
+ *
+ * The two windows are disjoint and together bound one candidate at 512 KiB.
+ * Partial records at either edge are ignored rather than completed with the
+ * import reader's much larger per-record allowance. A page therefore costs at
+ * most its own candidates and never a transcript's length. A title or prompt
+ * hidden by a partial edge is the price: another visible title, or the Session
+ * id, stands in for it.
+ *
+ * The byte window is the whole budget. A record-count limit inside that window
+ * could only reject a transcript already fully covered by the byte limit,
+ * leaving a live session's `updatedAt` stale and changing its picker name.
+ */
+const CLAUDE_CATALOG_SUMMARY_HEAD_BYTES = 256 * 1024;
+const CLAUDE_CATALOG_SUMMARY_TAIL_BYTES = 256 * 1024;
 
 /** Session ids are the transcript's filename stem, and reach the filesystem.
  *  A uuid is what Claude Code writes; anything else is refused rather than
@@ -146,23 +164,34 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
   async listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {
     const summaries: ExternalSessionSummary[] = [];
     const live = new Set<string>();
-    for (const file of await this.#transcriptFiles()) {
-      live.add(file.path);
+    const offset = query?.offset ?? 0;
+    const limit = query?.limit ?? Number.MAX_SAFE_INTEGER;
+    let matched = 0;
+    const files = await this.#transcriptFiles();
+    for (const file of files) live.add(file.path);
+    for (const file of files) {
       const summary = await this.#summaryOf(file.path, file.sessionId);
       if (!summary) continue;
       // The shared matcher, not a local cwd comparison: filtering happens here
       // rather than after paging, and every source has to answer a query the
       // same way or the catalog lies about which one dropped the term.
       if (!externalSessionMatchesQuery(summary, query)) continue;
+      if (matched++ < offset) continue;
       summaries.push(summary);
+      if (summaries.length === limit) break;
     }
     // A transcript the source no longer lists must not keep its entry alive,
     // or a long-lived Host grows one per deleted session.
     for (const path of this.#summaries.keys()) {
       if (!live.has(path)) this.#summaries.delete(path);
     }
-    summaries.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
     return summaries;
+  }
+
+  async listSessionPage(
+    query: ExternalSessionCatalogPageQuery,
+  ): Promise<ExternalSessionCatalogPage> {
+    return listOffsetExternalSessionCatalogPage(query, (pageQuery) => this.listSessions(pageQuery));
   }
 
   /**
@@ -208,7 +237,7 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     const file = (await this.#transcriptFiles()).find(
       (candidate) => candidate.sessionId === sessionId,
     );
-    if (!file) throw new Error(`Claude Code transcript not found: ${sessionId}`);
+    if (!file) throw new ExternalSessionNotFoundError();
     return convertClaudeTranscript(file.path, sessionId, this.#limits);
   }
 
@@ -216,7 +245,9 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     return join(this.#home, 'projects');
   }
 
-  async #transcriptFiles(): Promise<ReadonlyArray<{ path: string; sessionId: string }>> {
+  async #transcriptFiles(): Promise<
+    ReadonlyArray<{ path: string; sessionId: string; mtimeMs: number }>
+  > {
     const root = this.#projectsRoot();
     let projects: string[];
     try {
@@ -267,7 +298,9 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
         }
       }
     }
-    return [...bySessionId.values()].map(({ path, sessionId }) => ({ path, sessionId }));
+    return [...bySessionId.values()].sort(
+      (left, right) => right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path),
+    );
   }
 }
 
@@ -277,6 +310,14 @@ interface ClaudeTranscriptLimits {
   readonly maxConvertedBytes: number;
   readonly maxMessages: number;
   readonly maxRecords: number;
+}
+
+interface ClaudeTitleCandidates {
+  customTitle?: string;
+  aiTitle?: string;
+  summary?: string;
+  lastPrompt?: string;
+  firstUserMessage?: string;
 }
 
 type ClaudeTranscriptReadLimits = Pick<ClaudeTranscriptLimits, 'maxRecordBytes' | 'maxRecords'>;
@@ -500,77 +541,290 @@ function parseClaudeTranscriptLine(bytes: Buffer): TranscriptRecord | undefined 
       : undefined;
   } catch {
     // Interrupted writes leave a torn tail, while old transcripts can contain
-    // corrupt interior lines. Both were historically skipped so one bad line
+    // corrupt interior lines. Both are skipped so one bad line
     // does not erase an otherwise readable conversation.
     return undefined;
   }
 }
 
+/**
+ * The catalog's view of one transcript, read within the summary budget above.
+ *
+ * Only the head and the tail are read, and `records === 0` still means "no
+ * transcript here". Everything the summary reports is derived the way a full
+ * read derived it — last title wins, first timestamp is `createdAt` — so a
+ * transcript inside the budget reads exactly as it did before.
+ */
 async function readTranscriptSummary(path: string): Promise<TranscriptSummary | undefined> {
   const handle = await open(path, 'r').catch(() => undefined);
   if (!handle) return undefined;
-  const titles: ClaudeTitleCandidates = {};
-  let cwd = '';
-  let isSidechain = false;
-  let createdAt: number | undefined;
-  let updatedAt: number | undefined;
-  let records = 0;
-  let mtimeMs: number | undefined;
+  const scan: TranscriptSummaryScan = { titles: {}, cwd: '', isSidechain: false };
   try {
     const info = await handle.stat();
     if (!info.isFile()) return undefined;
-    mtimeMs = info.mtimeMs;
-    for await (const record of readClaudeTranscriptRecords(handle, info.size, path, {
-      maxRecordBytes: CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES,
-      maxRecords: CLAUDE_TRANSCRIPT_MAX_RECORDS,
-    })) {
-      records += 1;
-      collectClaudeTitle(record, titles);
-      collectLegacyClaudeTitle(record, titles);
-      if (record.isSidechain === true) isSidechain = true;
-      if (!cwd && typeof record.cwd === 'string' && record.cwd) cwd = record.cwd;
-      const ts = timestampMs(record);
-      if (ts !== undefined) {
-        createdAt ??= ts;
-        if (updatedAt === undefined || ts > updatedAt) updatedAt = ts;
-      }
+    const head = await readSummaryHead(handle, info.size, scan);
+    let records = head.records;
+    if (head.end < info.size) {
+      records += await readSummaryTail(handle, info.size, head.end, head.endsOnBoundary, scan);
     }
-    if (records === 0) return undefined;
+    if (records === 0) {
+      // A large opening record can occupy the complete head window. Listing
+      // must not complete it with the import path's 64 MiB allowance, but it
+      // must not hide a real source Session either. File metadata is enough
+      // for a stable selectable row; import reports any record limit later.
+      if (info.size < CLAUDE_CATALOG_SUMMARY_HEAD_BYTES) return undefined;
+      return { cwd: scan.cwd, title: '', updatedAt: info.mtimeMs, isSidechain: false };
+    }
     return {
-      cwd,
-      title: pickClaudeTitle(titles),
-      ...(createdAt !== undefined ? { createdAt } : {}),
-      ...(updatedAt !== undefined ? { updatedAt } : {}),
-      isSidechain,
+      cwd: scan.cwd,
+      title: pickClaudeTitle(scan.titles),
+      ...(scan.createdAt !== undefined ? { createdAt: scan.createdAt } : {}),
+      ...(scan.updatedAt !== undefined ? { updatedAt: scan.updatedAt } : {}),
+      isSidechain: scan.isSidechain,
     };
-  } catch (error) {
-    if (error instanceof ClaudeTranscriptReadLimitError && mtimeMs !== undefined) {
-      // Import keeps strict per-record and record-count bounds, but reaching
-      // one of them must not erase a real transcript from the catalog. Retain
-      // any metadata already observed and use the file mtime for a stable,
-      // sortable fallback row; selecting it then surfaces the precise limit.
-      return {
-        cwd,
-        title: pickClaudeTitle(titles),
-        ...(createdAt !== undefined ? { createdAt } : {}),
-        updatedAt: mtimeMs,
-        isSidechain,
-      };
-    }
+  } catch {
     return undefined;
   } finally {
     await handle.close();
   }
 }
 
+interface TranscriptSummaryScan {
+  readonly titles: ClaudeTitleCandidates;
+  cwd: string;
+  isSidechain: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+function observeSummaryRecord(record: TranscriptRecord, scan: TranscriptSummaryScan): void {
+  collectClaudeTitle(record, scan.titles);
+  collectLegacyClaudeTitle(record, scan.titles);
+  if (record.isSidechain === true) scan.isSidechain = true;
+  if (!scan.cwd && typeof record.cwd === 'string' && record.cwd) scan.cwd = record.cwd;
+  const ts = timestampMs(record);
+  if (ts !== undefined) {
+    scan.createdAt ??= ts;
+    if (scan.updatedAt === undefined || ts > scan.updatedAt) scan.updatedAt = ts;
+  }
+}
+
+/**
+ * The transcript's fixed opening window. A trailing partial record is ignored;
+ * listing never borrows the import path's per-record allowance to complete it.
+ */
+async function readSummaryHead(
+  handle: FileHandle,
+  size: number,
+  scan: TranscriptSummaryScan,
+): Promise<{ records: number; end: number; endsOnBoundary: boolean }> {
+  const window = Math.min(size, CLAUDE_CATALOG_SUMMARY_HEAD_BYTES);
+  const buffer = Buffer.allocUnsafe(window);
+  const { bytesRead } = await handle.read(buffer, 0, window, 0);
+  const endsOnBoundary = bytesRead === 0 || buffer[bytesRead - 1] === 0x0a;
+  const completeEnd =
+    bytesRead === size || endsOnBoundary ? bytesRead : buffer.lastIndexOf(0x0a, bytesRead - 1) + 1;
+  const records = observeSummaryLines(transcriptLines(buffer.subarray(0, completeEnd)), scan);
+  if (!scan.cwd) scan.cwd = topLevelJsonStringField(buffer.subarray(0, bytesRead), 'cwd') ?? '';
+  return { records, end: bytesRead, endsOnBoundary };
+}
+
+function topLevelJsonStringField(buffer: Buffer, field: string): string | undefined {
+  const text = buffer.toString('utf8');
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '{' || char === '[') {
+      depth += 1;
+      continue;
+    }
+    if (char === '}' || char === ']') {
+      depth -= 1;
+      continue;
+    }
+    if (char !== '"') continue;
+    const end = jsonStringEnd(text, index);
+    if (end === undefined) return undefined;
+    if (depth === 1) {
+      let colon = end + 1;
+      while (/\s/u.test(text[colon] ?? '')) colon += 1;
+      if (text[colon] === ':') {
+        const key = parseJsonString(text, index, end);
+        if (key === field) {
+          let valueStart = colon + 1;
+          while (/\s/u.test(text[valueStart] ?? '')) valueStart += 1;
+          if (text[valueStart] !== '"') return undefined;
+          const valueEnd = jsonStringEnd(text, valueStart);
+          if (valueEnd === undefined) return undefined;
+          const value = parseJsonString(text, valueStart, valueEnd);
+          return value || undefined;
+        }
+      }
+    }
+    index = end;
+  }
+  return undefined;
+}
+
+function parseJsonString(text: string, start: number, end: number): string | undefined {
+  try {
+    const value = JSON.parse(text.slice(start, end + 1)) as unknown;
+    return typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function jsonStringEnd(text: string, start: number): number | undefined {
+  let escaped = false;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) escaped = false;
+    else if (char === '\\') escaped = true;
+    else if (char === '"') return index;
+  }
+  return undefined;
+}
+
+/**
+ * The transcript's closing window, which is where the source writes the titles
+ * it gave the session after the fact.
+ *
+ * The window opens wherever the byte budget put it, which is as likely to be
+ * inside a record as on its boundary. The byte before it says which: the head
+ * always ends on a boundary, so a window that starts where the head stopped
+ * opens on one, and anything else is a fragment the head already read past.
+ */
+async function readSummaryTail(
+  handle: FileHandle,
+  size: number,
+  after: number,
+  headEndsOnBoundary: boolean,
+  scan: TranscriptSummaryScan,
+): Promise<number> {
+  const start = Math.min(size, Math.max(after, size - CLAUDE_CATALOG_SUMMARY_TAIL_BYTES));
+  if (start >= size) return 0;
+  const buffer = Buffer.allocUnsafe(size - start);
+  const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+  const tail = buffer.subarray(0, bytesRead);
+  const startsOnBoundary = start === after && headEndsOnBoundary;
+  const firstCompleteRecord = startsOnBoundary ? 0 : tail.indexOf(0x0a) + 1;
+  if (startsOnBoundary || firstCompleteRecord > 0) {
+    return observeSummaryLines(transcriptLines(tail.subarray(firstCompleteRecord)), scan);
+  }
+  return 0;
+}
+
+/**
+ * Splits a byte range into records.
+ *
+ * The split is on `0x0a`, which never appears inside a multi-byte UTF-8
+ * sequence, so a record boundary is a record boundary whatever it holds.
+ */
+function transcriptLines(buffer: Buffer): Buffer[] {
+  const lines: Buffer[] = [];
+  let start = 0;
+  for (;;) {
+    const newline = buffer.indexOf(0x0a, start);
+    if (newline === -1) break;
+    lines.push(buffer.subarray(start, newline));
+    start = newline + 1;
+  }
+  if (start < buffer.length) lines.push(buffer.subarray(start));
+  return lines;
+}
+
+function observeSummaryLines(lines: readonly Buffer[], scan: TranscriptSummaryScan): number {
+  let records = 0;
+  for (const line of lines) {
+    const record = parseClaudeTranscriptLine(line);
+    if (!record) continue;
+    records += 1;
+    observeSummaryRecord(record, scan);
+  }
+  return records;
+}
+
 function collectLegacyClaudeTitle(record: TranscriptRecord, titles: ClaudeTitleCandidates): void {
   const take = (value: unknown): string | undefined =>
-    typeof value === 'string' && value.trim() ? sanitizeForeignTitle(value) : undefined;
+    typeof value === 'string' && value.trim() ? sanitizeExternalSessionTitle(value) : undefined;
   if (record.type === 'ai-title') {
     titles.aiTitle = take(record.aiTitle ?? record.title) ?? titles.aiTitle;
   } else if (record.type === 'last-prompt') {
     titles.lastPrompt = take(record.lastPrompt ?? record.prompt) ?? titles.lastPrompt;
   }
+}
+
+function collectClaudeTitle(record: TranscriptRecord, titles: ClaudeTitleCandidates): void {
+  if (typeof record.customTitle === 'string' && record.customTitle.length > 0) {
+    titles.customTitle = record.customTitle;
+  }
+  if (typeof record.aiTitle === 'string' && record.aiTitle.length > 0)
+    titles.aiTitle = record.aiTitle;
+  if (typeof record.summary === 'string' && record.summary.length > 0)
+    titles.summary = record.summary;
+  if (typeof record.lastPrompt === 'string' && record.lastPrompt.length > 0) {
+    titles.lastPrompt = record.lastPrompt;
+  }
+  if (titles.firstUserMessage === undefined) {
+    const candidate = claudeFirstPromptCandidate(record);
+    if (candidate !== undefined) titles.firstUserMessage = candidate;
+  }
+}
+
+function claudeFirstPromptCandidate(record: TranscriptRecord): string | undefined {
+  if (record.type !== 'user' || record.isMeta === true || record.isCompactSummary === true) {
+    return undefined;
+  }
+  const raw = claudeMessageText(record);
+  if (raw === undefined) return undefined;
+  const commandName = raw.match(/<command-name>([^<]+)<\/command-name>/);
+  if (commandName) return commandName[1]!.trim();
+  const bashInput = raw.match(/<bash-input>([^<]+)<\/bash-input>/);
+  if (bashInput) return `! ${bashInput[1]!.trim()}`;
+  const text = raw.trim();
+  if (isSyntheticClaudeUserText(text)) return undefined;
+  return text.length > 0 ? text : undefined;
+}
+
+function isSyntheticClaudeUserText(text: string): boolean {
+  const value = text.trimStart();
+  return (
+    value.startsWith('[Request interrupted by user') ||
+    /^<\/?(command-(name|message|args|contents)|local-command-(stdout|stderr)|bash-(input|stdout|stderr))[\s>]/.test(
+      value,
+    )
+  );
+}
+
+function pickClaudeTitle(titles: ClaudeTitleCandidates): string {
+  return sanitizeExternalSessionTitle(
+    titles.customTitle ??
+      titles.aiTitle ??
+      titles.lastPrompt ??
+      titles.summary ??
+      titles.firstUserMessage,
+  );
+}
+
+function claudeUserAuthoredText(record: TranscriptRecord): string | undefined {
+  if (record.isMeta === true || record.isCompactSummary === true) return undefined;
+  const text = claudeMessageText(record);
+  return text === undefined || isSyntheticClaudeUserText(text) ? undefined : text;
+}
+
+function claudeMessageText(record: TranscriptRecord): string | undefined {
+  const message = asMessageRecord(record);
+  if (!message) return undefined;
+  const content = message.content;
+  if (typeof content === 'string') return content.length > 0 ? content : undefined;
+  if (!Array.isArray(content)) return undefined;
+  const text = contentBlocks(message)
+    .filter((block) => block.type === 'text')
+    .map((block) => (typeof block.text === 'string' ? block.text : ''))
+    .join('\n')
+    .trim();
+  return text.length > 0 ? text : undefined;
 }
 
 function assertSafeSessionId(sessionId: string): void {
@@ -814,7 +1068,7 @@ class ClaudeTranscriptConverter {
         });
       }
       const text = fragments
-        .map((fragment) => claudeAssistantText(fragment))
+        .map((fragment) => claudeMessageText(fragment))
         .filter((part): part is string => part !== undefined && part.length > 0)
         .join('\n\n');
       if (text) {
@@ -849,19 +1103,8 @@ class ClaudeTranscriptConverter {
       return;
     }
 
-    // The compaction boundary, keyed on the record that states it.
-    //
-    // It used to be keyed on `isCompactSummary`, which belongs to the summary
-    // *user* record — and that record is consumed by the `user` branch above
-    // and never reaches here, so the note was never emitted. The import then
-    // carried the pre-boundary history flat with nothing saying a compaction
-    // had happened, while `claudeUserAuthoredText` dropped the summary itself
-    // for being `isCompactSummary`: both halves of the event lost at once.
-    //
-    // Pre-boundary records stay. They are the conversation that actually
-    // happened — 24,695 of them across the 5 compacted transcripts here — and
-    // the boundary marks where the model's context restarted, which is the
-    // part a reader cannot reconstruct from the messages themselves.
+    // Preserve pre-boundary records and emit the boundary from the record that
+    // states it, so readers can see where the model context restarted.
     if (record.subtype === 'compact_boundary') {
       if (!this.#turn) {
         this.#pendingCompactBoundaryTs = ts;

@@ -181,6 +181,31 @@ test('renders a scan-friendly compact timestamp in the session rail', () => {
   }
 });
 
+test('identifies an external executor in the session rail', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[{ ...session, executorId: 'antigravity' }]}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  const { document } = parseHTML(markup);
+
+  assert.equal(
+    document.querySelector('.maka-session-row-executor-badge')?.textContent,
+    'antigravity',
+  );
+  const describedBy = document
+    .querySelector('.maka-session-row .astryx-side-nav-item')
+    ?.getAttribute('aria-describedby');
+  assert.ok(describedBy);
+  assert.match(
+    document.getElementById(describedBy)?.getAttribute('aria-label') ?? '',
+    /antigravity/,
+  );
+});
+
 test('wires the session navigation control to its hover card description', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
@@ -200,6 +225,29 @@ test('wires the session navigation control to its hover card description', () =>
   assertDescriptionReferencesResolve(markup);
 });
 
+test('a responding row spins where an unread row shows a dot', () => {
+  const unread = { ...session, id: 'session-unread', hasUnread: true };
+  const responding = { ...session, hasUnread: true };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[responding, unread]}
+        streamingSessionIds={new Set([responding.id])}
+        onSelectSession={() => undefined}
+        rowActions={rowActions}
+      />
+    </LocaleProvider>,
+  );
+  const { document } = parseHTML(markup);
+  const signal = (id: string) =>
+    document.querySelector(`[data-session-id="${id}"] .maka-session-row-signal`)!;
+
+  assert.ok(signal(responding.id).querySelector('.astryx-spinner[aria-hidden="true"]'));
+  assert.equal(signal(responding.id).querySelector('.astryx-status-dot'), null);
+  assert.ok(signal(unread.id).querySelector('.astryx-status-dot'));
+  assert.equal(signal(unread.id).querySelector('.astryx-spinner'), null);
+});
+
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {
   const hostRunning = { ...session, runningTurnIds: ['turn-live'] };
   const markup = renderToStaticMarkup(
@@ -212,7 +260,7 @@ test('renders Runtime Host live runs without requiring renderer-local streaming'
     </LocaleProvider>,
   );
 
-  assert.match(markup, /aria-label="Responding"/);
+  assert.match(markup, /maka-visually-hidden">Responding</);
 });
 
 for (const [status, attentionLabel] of [
@@ -232,7 +280,7 @@ for (const [status, attentionLabel] of [
       </LocaleProvider>,
     );
 
-    assert.doesNotMatch(markup, /aria-label="Responding"/);
+    assert.doesNotMatch(markup, /maka-visually-hidden">Responding</);
     assert.match(markup, new RegExp(`aria-label="${attentionLabel}"`));
   });
 }
@@ -259,9 +307,9 @@ test('keeps known-empty idle unless renderer-local streaming is newer', () => {
     </LocaleProvider>,
   );
 
-  assert.doesNotMatch(idleMarkup, /aria-label="Responding"/);
-  assert.doesNotMatch(idleMarkup, /aria-label="Running"/);
-  assert.match(locallyStreamingMarkup, /aria-label="Responding"/);
+  assert.doesNotMatch(idleMarkup, /maka-visually-hidden">Responding</);
+  assert.doesNotMatch(idleMarkup, /maka-visually-hidden">Running</);
+  assert.match(locallyStreamingMarkup, /maka-visually-hidden">Responding</);
 });
 
 test('renders collapsible project navigation and row actions as sibling controls', () => {
@@ -360,42 +408,129 @@ test('renders pinned tasks once above project groups', () => {
   assert.match(projectRow.textContent, /Project task/);
 });
 
-test('a project whose only task is pinned describes itself as empty', () => {
-  const pinnedSession: SessionSummary = {
-    ...session,
-    id: 'session-pinned',
-    name: 'Pinned task',
-    isFlagged: true,
+test('keeps archived-project pins visible once in both grouping modes', () => {
+  const archivedProject: ProjectRecord = {
+    ...project,
+    id: 'project-archived',
+    name: 'Archived project',
+    archivedAt: Date.UTC(2026, 8, 16),
   };
-  const markup = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Rail
-        sessions={[pinnedSession]}
-        groups={[{ id: project.id, label: project.name, project, sessions: [pinnedSession] }]}
-        groupVariant="project"
-        projectActions={projectActions}
-      />
-    </LocaleProvider>,
-  );
+  const activePin: SessionSummary = {
+    ...session,
+    id: 'active-pin',
+    projectId: project.id,
+    isFlagged: true,
+    lastMessageAt: Date.UTC(2026, 8, 14),
+  };
+  const archivedProjectPin: SessionSummary = {
+    ...session,
+    id: 'archived-project-pin',
+    projectId: archivedProject.id,
+    isFlagged: true,
+    lastMessageAt: Date.UTC(2026, 8, 15),
+  };
+  const archivedProjectTask: SessionSummary = {
+    ...session,
+    id: 'archived-project-task',
+    projectId: archivedProject.id,
+  };
+  const sessions = [activePin, archivedProjectPin, archivedProjectTask];
+  const groups = [
+    { id: project.id, label: project.name, project, sessions: [activePin] },
+    {
+      id: archivedProject.id,
+      label: archivedProject.name,
+      project: archivedProject,
+      sessions: [archivedProjectPin, archivedProjectTask],
+    },
+  ];
 
-  const { document } = parseHTML(markup);
-  const projectRow = document.querySelector('.maka-project-row');
-  assert.ok(projectRow);
-  const navigation = projectRow.querySelector<HTMLButtonElement>(':scope > div > button');
-  assert.ok(navigation);
-  assert.equal(navigation.getAttribute('aria-controls'), null, 'no disclosure without a subtree');
-  const describedBy = navigation.getAttribute('aria-describedby');
-  assert.ok(describedBy);
-  const description = document.getElementById(describedBy);
-  assert.ok(description);
-  assert.match(
-    description.getAttribute('aria-label') ?? '',
-    /\b0 tasks\b/,
-    'the hover description counts what the row actually shows',
-  );
-  const action = document.querySelector('button[aria-label="Maka project actions"]');
-  assert.ok(action);
+  for (const mode of ['conversation', 'project'] as const) {
+    const { document } = parseHTML(renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <Rail
+          sessions={sessions}
+          groups={mode === 'project' ? groups : undefined}
+          groupVariant={mode}
+        />
+      </LocaleProvider>,
+    ));
+    const pinned = readSections(document).find((section) => section.title === 'Pinned');
+    assert.ok(pinned, `${mode} must keep a top-level Pinned section`);
+    assert.deepEqual(
+      [...pinned.element.querySelectorAll('.maka-session-row')].map((row) =>
+        row.getAttribute('data-session-id'),
+      ),
+      [archivedProjectPin.id, activePin.id],
+      `${mode} must show all pins in the same recency order`,
+    );
+    for (const pin of [activePin, archivedProjectPin]) {
+      const rows = document.querySelectorAll(`[data-session-id="${pin.id}"]`);
+      assert.equal(rows.length, 1, `${pin.id} must appear exactly once in ${mode}`);
+      assert.equal(rows[0]!.closest('[aria-hidden="true"], [inert]'), null);
+    }
+    if (mode === 'project') {
+      const task = document.querySelector(`[data-session-id="${archivedProjectTask.id}"]`);
+      assert.ok(task);
+      assert.ok(task.closest('[aria-hidden="true"]'), 'unpinned tasks stay folded away');
+      assert.ok(task.closest('[inert]'), 'folded unpinned tasks are not interactive');
+      assert.equal(
+        task.closest('.maka-project-row')?.querySelectorAll('.maka-session-row').length,
+        1,
+        'expanding the archived project must not repeat its pinned task',
+      );
+    }
+  }
 });
+
+for (const state of ['active', 'archived'] as const) {
+  test(`an ${state} project whose only task is pinned describes itself as empty`, () => {
+    const pinnedProject: ProjectRecord = {
+      ...project,
+      archivedAt: state === 'archived' ? Date.UTC(2026, 8, 16) : undefined,
+    };
+    const pinnedSession: SessionSummary = {
+      ...session,
+      id: 'session-pinned',
+      name: 'Pinned task',
+      projectId: pinnedProject.id,
+      isFlagged: true,
+    };
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <Rail
+          sessions={[pinnedSession]}
+          groups={[{
+            id: pinnedProject.id,
+            label: pinnedProject.name,
+            project: pinnedProject,
+            sessions: [pinnedSession],
+          }]}
+          groupVariant="project"
+          projectActions={projectActions}
+        />
+      </LocaleProvider>,
+    );
+
+    const { document } = parseHTML(markup);
+    const projectRow = document.querySelector('.maka-project-row');
+    assert.ok(projectRow);
+    const navigation = projectRow.querySelector<HTMLButtonElement>(':scope > div > button');
+    assert.ok(navigation);
+    assert.equal(navigation.getAttribute('aria-controls'), null, 'no disclosure without a subtree');
+    const describedBy = navigation.getAttribute('aria-describedby');
+    assert.ok(describedBy);
+    const description = document.getElementById(describedBy);
+    assert.ok(description);
+    assert.match(
+      description.getAttribute('aria-label') ?? '',
+      /\b0 tasks\b/,
+      'the hover description counts what the row actually shows',
+    );
+    const action = document.querySelector('button[aria-label="Maka project actions"]');
+    assert.ok(action);
+  });
+}
 
 test('keeps project running totals aligned with renderer-local task streaming', () => {
   const locallyStreaming = {
@@ -427,7 +562,7 @@ test('keeps project running totals aligned with renderer-local task streaming', 
   const descriptionId = projectNavigation?.getAttribute('aria-describedby');
   const description = descriptionId ? document.getElementById(descriptionId) : null;
 
-  assert.match(markup, /aria-label="Responding"/);
+  assert.match(markup, /maka-visually-hidden">Responding</);
   assert.ok(description);
   assert.match(description.getAttribute('aria-label') ?? '', /1 running/);
 });

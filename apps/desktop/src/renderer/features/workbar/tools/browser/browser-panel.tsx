@@ -32,6 +32,7 @@
  * It mounts only for sessions with a live view (see browser:live), so an
  * ordinary chat reserves no space.
  */
+import { isNativeSurfaceOccluded, watchNativeSurface } from '../../../../application/contracts/native-surface-occlusion.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ICON_SIZE, ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core/browser';
@@ -73,6 +74,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   const toast = useToast();
   const copy = getBrowserCopy(useUiLocale());
   const stripRef = useRef<HTMLDivElement>(null);
+  const [backdrop, setBackdrop] = useState<string>();
   const [state, setState] = useState<BrowserState>(EMPTY_STATE);
   // The address input is editable; it only snaps to the live URL when the user
   // is not mid-edit (tracked by focus) so typing is never clobbered by a
@@ -81,6 +83,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   const editingRef = useRef(false);
   const browserPanelMountedRef = useMountedRef();
   const browserPanelSessionIdRef = useRef(sessionId);
+  // Which session the held `state`/`address` describe — a hidden stretch must
+  // not wipe them, and a session switch while hidden must still reset on show.
+  const stateSessionRef = useRef<string | undefined>(undefined);
 
   browserPanelSessionIdRef.current = sessionId;
 
@@ -88,12 +93,18 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     return browserPanelMountedRef.current && browserPanelSessionIdRef.current === ownerSessionId;
   }, []);
 
-  // Subscribe to this session's state pushes + seed the initial state.
+  // Subscribe to this session's state pushes + seed the current state only
+  // while the panel is shown: hidden pushes are missed on purpose, and the
+  // getState reseed on the way back catches up.
   useEffect(() => {
+    if (hidden) return;
     let alive = true;
-    editingRef.current = false;
-    setState(EMPTY_STATE);
-    setAddress('');
+    if (stateSessionRef.current !== sessionId) {
+      stateSessionRef.current = sessionId;
+      editingRef.current = false;
+      setState(EMPTY_STATE);
+      setAddress('');
+    }
     const apply = (next: BrowserState) => {
       if (!alive) return;
       setState(next);
@@ -110,25 +121,26 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
       alive = false;
       off();
     };
-  }, [browser, sessionId]);
+  }, [browser, sessionId, hidden]);
 
-  // Mirror the strip's on-screen rect to main every animation frame while it is
-  // showable. Position shifts on window resize and sidebar drags even when the
-  // size is unchanged, which a ResizeObserver would miss; a getBoundingClientRect
-  // per frame is negligible and the IPC only fires when the rect changes.
+  // Mirror the strip's on-screen rect to main while it is showable. The IPC
+  // only fires when the rect changes.
   const showView = !hidden && state.hasPage;
   useEffect(() => {
     // Capture the injected capability because this passive cleanup may run
     // after its provider has started tearing down the host composition.
+    setBackdrop(undefined);
     if (!showView) {
       browser.setViewport({ sessionId, rect: null });
       return;
     }
     const el = stripRef.current;
     if (!el) return;
-    let raf = 0;
     let last = '';
-    const tick = () => {
+    let active = true;
+    let covered = false;
+    let revision = 0;
+    const sync = () => {
       const r = el.getBoundingClientRect();
       const rect = {
         x: Math.round(r.left),
@@ -136,16 +148,33 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         width: Math.round(r.width),
         height: Math.round(r.height),
       };
+      const occluded = isNativeSurfaceOccluded(r, el.ownerDocument);
+      if (occluded !== covered) {
+        covered = occluded;
+        const current = ++revision;
+        if (occluded) {
+          // Keep a still image behind the menu while the native layer yields
+          // input and painting. A late capture must not hide a restored page.
+          void browser.capturePage(sessionId).catch(() => undefined).then((image) => {
+            if (!active || current !== revision) return;
+            setBackdrop(image);
+          });
+          // Input must yield now, even while the optional capture is pending.
+          browser.setViewport({ sessionId, rect: null });
+        } else setBackdrop(undefined);
+        last = '';
+      }
+      if (occluded) return;
       const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
       if (key !== last) {
         last = key;
         browser.setViewport({ sessionId, rect });
       }
-      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
+    const surface = watchNativeSurface(el, sync);
     return () => {
-      cancelAnimationFrame(raf);
+      active = false;
+      surface.dispose();
       browser.setViewport({ sessionId, rect: null });
     };
   }, [browser, sessionId, showView]);
@@ -257,6 +286,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         )}
       />
       <div className="maka-browser-strip" ref={stripRef}>
+        {backdrop && <img className="maka-browser-backdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
         {!state.hasPage && (
           <EmptyState
             icon={<Globe size={ICON_SIZE.empty} aria-hidden="true" />}

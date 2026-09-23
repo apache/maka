@@ -23,7 +23,6 @@ import { describe, it } from 'node:test';
 import {
   normalizeBranchFromTurnInput,
   normalizeClientCapabilityResponse,
-  normalizeRegenerateTurnInput,
   normalizeReviseBeforeTurnInput,
   normalizeRuntimeHostBranchFromTurnInput,
   normalizeRuntimeHostReviseBeforeTurnInput,
@@ -88,10 +87,6 @@ describe('permission response IPC boundary', () => {
   });
 
   it('normalizes turn actions and rejects malformed identifiers', () => {
-    assert.deepEqual(normalizeRegenerateTurnInput({ sourceTurnId: 'turn-2', turnId: 'turn-3' }), {
-      sourceTurnId: 'turn-2',
-      turnId: 'turn-3',
-    });
     // A through-turn branch keeps its sourceTurnId; a spurious copyId is dropped.
     assert.deepEqual(
       normalizeBranchFromTurnInput({ sourceTurnId: 'turn-legacy', copyId: 'ignored-here' }),
@@ -143,7 +138,6 @@ describe('permission response IPC boundary', () => {
     );
 
     const invalidActions: Array<() => unknown> = [
-      () => normalizeRegenerateTurnInput({ sourceTurnId: 'turn-1', turnId: 1 }),
       () =>
         normalizeBranchFromTurnInput({
           sourceTurnId: 'turn-1',
@@ -190,7 +184,16 @@ describe('permission response IPC boundary', () => {
         ],
         turnOrchestration: { mode: 'swarm', source: 'slash_command', ignored: true },
         quotes: [
-          { text: 'the excerpt', label: '  Assistant  ', sourceTurnId: 'turn-9', extra: true },
+          {
+            text: 'the excerpt',
+            label: '  Assistant  ',
+            sourceTurnId: 'turn-9',
+            sourceSessionId: 'source-session',
+            sourceSessionName: 'Research',
+            sourceCapturedAt: 123,
+            sourceTruncated: false,
+            extra: true,
+          },
         ],
         workspaceFileReferences: [
           {
@@ -223,7 +226,15 @@ describe('permission response IPC boundary', () => {
           },
         ],
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
-        quotes: [{ text: 'the excerpt', label: 'Assistant', sourceTurnId: 'turn-9' }],
+        quotes: [{
+          text: 'the excerpt',
+          label: 'Assistant',
+          sourceTurnId: 'turn-9',
+          sourceSessionId: 'source-session',
+          sourceSessionName: 'Research',
+          sourceCapturedAt: 123,
+          sourceTruncated: false,
+        }],
         workspaceFileReferences: [
           {
             value: '@packages/ui/src/chat turn.tsx',
@@ -233,6 +244,16 @@ describe('permission response IPC boundary', () => {
       },
     );
     assert.equal(normalizeSessionSendCommand({ type: 'stop' }), undefined);
+    for (const sourceCapturedAt of [Number.MAX_VALUE, 8.64e15 + 1]) {
+      assert.throws(() => normalizeSessionSendCommand({ type: 'send', text: 'review', quotes: [{
+        text: 'excerpt', sourceSessionId: 'source', sourceSessionName: 'Research',
+        sourceCapturedAt, sourceTruncated: false,
+      }] }));
+    }
+    assert.doesNotThrow(() => normalizeSessionSendCommand({ type: 'send', text: 'review', quotes: [{
+      text: 'excerpt', sourceSessionId: 'source', sourceSessionName: 'Research',
+      sourceCapturedAt: 8.64e15, sourceTruncated: false,
+    }] }));
     assert.deepEqual(normalizeSessionSendCommand({ type: 'send', text: '', skillIds: ['writer'] }), {
       type: 'send',
       text: '',
@@ -262,6 +283,7 @@ describe('permission response IPC boundary', () => {
       { type: 'send', text: 'hello', quotes: Array(17).fill({ text: 'x' }) },
       { type: 'send', text: 'hello', quotes: [{ text: '' }] },
       { type: 'send', text: 'hello', quotes: [{ text: 'x', sourceTurnId: 1 }] },
+      { type: 'send', text: 'hello', quotes: [{ text: 'x', sourceSessionId: 'source-session' }] },
       { type: 'send', text: 'hello', workspaceFileReferences: {} },
       {
         type: 'send',

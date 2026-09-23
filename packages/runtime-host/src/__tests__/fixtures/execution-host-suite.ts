@@ -1558,6 +1558,7 @@ export async function waitForTerminalTurn(
     { sessionId, transcript: { kind: 'none' } },
     PROCESS_TIMEOUT_MS,
   );
+  await subscription.ready();
   try {
     return await withTimeout(
       (async () => {

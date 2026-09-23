@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { ExecutorConfiguration } from '@maka/core/executor-catalog';
+
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
@@ -29,6 +31,7 @@ import type {
   SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
+
 import type {
   SessionHeader,
   SessionHeaderPatch,
@@ -68,6 +71,7 @@ export interface SessionConfigurationMetadataUpdate {
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
     readonly executorId?: string;
+    executorConfig?: ExecutorConfiguration;
     readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
@@ -290,6 +294,12 @@ export interface SessionTranscriptStoragePage {
     readonly position: number;
     readonly byteOffset: number | null;
   } | null;
+  /**
+   * Whether no Turn has rows on both sides of where this page stops. A change
+   * of owner between rows does not say that: a nested Turn's rows sit between
+   * the rows of the Turn around it.
+   */
+  readonly endsAtTurnBoundary: boolean;
 }
 
 export interface SessionTranscriptRecordScanRequest {
@@ -322,17 +332,6 @@ export interface SessionTurnContributionPage {
   readonly nextPosition: number | null;
 }
 
-export interface SessionTurnLandmark {
-  readonly turnId: string;
-  readonly sequence: number;
-  readonly label: string;
-}
-
-export interface SessionTurnLandmarkSnapshot {
-  readonly throughSequence: number | null;
-  readonly landmarks: readonly SessionTurnLandmark[];
-}
-
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
@@ -346,6 +345,20 @@ export interface SessionStore {
   listTurnsSnapshot(sessionId: string): Promise<TurnRecord[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
+  /**
+   * Narrow recall to the pre-ledger Sessions whose transcript rows contain a
+   * folded term. Sessions the RuntimeEvent ledger owns are not scanned here;
+   * the ledger store answers for them. The result is a superset of the true
+   * matches, never an answer: callers project each candidate Session and
+   * re-run the real predicate. Resolves to `undefined` when the store declines
+   * the fast path, which sends the caller back to reading every transcript.
+   */
+  listLegacyTranscriptCandidateSessions?(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[] | undefined>;
+  /** Pre-ledger transcript rows of searchable types, for recall's idf term. */
+  countLegacyTranscriptMessages?(sessionIds: readonly string[]): Promise<number>;
   readMessagesAfter(
     sessionId: string,
     request: SessionMessageScanRequest,
@@ -403,11 +416,17 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void;
   /** Wait until the durable authority is ready for cross-domain transactions. */
   ready(): Promise<void>;
-  /** Atomically create a Session from already-converted Maka raw messages. */
+  /**
+   * Atomically create a Session from already-converted Maka raw messages.
+   * Implementations must finish canonical validation and deterministic catalog
+   * projection before invoking `onCommitStarted`; failures before that callback
+   * have not started durable commit and must not leave a staged Session.
+   */
   createImportedSession(
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
     externalOrigin: SessionExternalOrigin,
+    options?: { readonly onCommitStarted?: () => void },
   ): Promise<SessionHeader>;
   /** Look up live published imports for a bounded page of source Sessions. */
   lookupExternalSessionImports(

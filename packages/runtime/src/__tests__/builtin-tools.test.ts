@@ -209,6 +209,12 @@ describe('builtin apply_patch', () => {
 
     assert.equal(await readFile(join(cwd, 'added.txt'), 'utf8'), 'hello\n');
     assert.equal(await readFile(join(cwd, 'changed.txt'), 'utf8'), 'after\n');
+    await runTool(
+      applyPatch,
+      { patch: '*** Begin Patch\n*** Delete File: added.txt\n*** End Patch' },
+      cwd,
+    );
+    await assert.rejects(access(join(cwd, 'added.txt')));
   });
 });
 

@@ -27,12 +27,14 @@ import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connection
 import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
-import { fetchProviderModels, runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
+import { runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
+import { discoverModels } from './model-discovery-fixture.js';
 import { resetStreamUsageFallbackMemory } from '../stream-usage-fallback-fetch.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveOAuthSubscriptionAccessToken } from '../subscription-credentials.js';
 import { testConnection } from '../test-connection.js';
 import { ModelAdapter } from '../model-adapter.js';
+import type { ModelMessage as RuntimeModelMessage } from '../model-protocol.js';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveStorageRoot,
@@ -51,6 +53,124 @@ import {
 after(closeAllJsonServers);
 
 describe('models.dev provider conformance', () => {
+  for (const providerType of ['openai-compatible', 'openai'] as const) {
+    test(`${providerType}: Chat delivers tool images after all parallel results, including replay`, async () => {
+      const bodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
+      const server = await startJsonServer(async (request, response) => {
+        bodies.push(JSON.parse(await readBody(request)));
+        respondJson(response, 400, { error: { message: 'Request captured' } });
+      });
+      const adapter = new ModelAdapter({
+        connection: {
+          slug: 'images',
+          providerType,
+          defaultModel: 'image-model',
+          models: [{ id: 'image-model', apiProtocol: 'openai-chat' }],
+          baseUrl: `${server.url}/v1`,
+        },
+        modelId: 'image-model',
+        apiKey: 'test-key',
+        modelFactory: getAIModel,
+        newId: () => 'image-request',
+        now: Date.now,
+      });
+      const image = (id: string) => Buffer.from(`tool-image-${id}`).toString('base64');
+      const messages: RuntimeModelMessage[] = [
+        { role: 'user', content: 'Compare the screenshots.' },
+        {
+          role: 'assistant',
+          content: ['before', 'after'].map((id) => ({
+            type: 'tool-call',
+            toolCallId: id,
+            toolName: 'Read',
+            input: { path: `${id}.png` },
+          })),
+        },
+        ...['before', 'after'].map(
+          (id): RuntimeModelMessage => ({
+            role: 'tool',
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: id,
+                toolName: 'Read',
+                output: {
+                  type: 'content',
+                  value: [
+                    { type: 'text', text: `${id} screenshot` },
+                    {
+                      type: 'file',
+                      mediaType: 'image/png',
+                      data: { type: 'data', data: image(id) },
+                    },
+                    { type: 'text', text: `${id} caption` },
+                  ],
+                },
+              },
+            ],
+          }),
+        ),
+      ];
+      try {
+        for (const replay of [false, true]) {
+          if (replay)
+            messages.push(
+              { role: 'assistant', content: 'Compared.' },
+              { role: 'user', content: 'Continue.' },
+            );
+          const original = structuredClone(messages);
+          const result = await adapter.startStream({
+            model: adapter.resolveModel(),
+            messages,
+            tools: {},
+            activeTools: [],
+            onStreamActivity: () => {},
+            abortSignal: new AbortController().signal,
+            repairToolCall: () => null,
+          });
+          for await (const _event of result.events) {
+            /* capture the request */
+          }
+          await result.outcome;
+          assert.deepEqual(messages, original);
+          const wire = bodies.at(-1)!.messages;
+          assert.deepEqual(
+            wire.map((m) => m.role),
+            replay
+              ? ['user', 'assistant', 'tool', 'tool', 'user', 'assistant', 'user']
+              : ['user', 'assistant', 'tool', 'tool', 'user'],
+          );
+          assert.deepEqual(
+            wire.slice(2, 4).map((m) => m.tool_call_id),
+            ['before', 'after'],
+          );
+          for (const [index, id] of ['before', 'after'].entries()) {
+            const text = String(wire[index + 2]!.content);
+            assert.ok(!text.includes(image(id)));
+            assert.ok(text.includes(`${id} screenshot`) && text.includes(`${id} caption`));
+          }
+          const parts = wire[4]!.content as Array<{
+            type: string;
+            text?: string;
+            image_url?: { url: string };
+          }>;
+          assert.deepEqual(
+            parts.filter((p) => p.type === 'image_url').map((p) => p.image_url?.url),
+            ['before', 'after'].map((id) => `data:image/png;base64,${image(id)}`),
+          );
+          const labels = parts
+            .filter((p) => p.type === 'text')
+            .map((p) => p.text)
+            .join('\n');
+          assert.ok(labels.includes('before') && labels.includes('after'));
+        }
+        assert.equal(bodies.length, 2);
+      } finally {
+        adapter.dispose();
+      }
+    });
+  }
+
   for (const [providerType, modelId, apiProtocol, usesCapacityDefault] of [
     ['openai', 'gpt-4.1', 'openai-chat', false],
     ['openai', 'gpt-5', 'openai-responses', false],
@@ -990,7 +1110,7 @@ describe('models.dev provider conformance', () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    connection.models = await fetchProviderModels(connection, 'github-account-token');
+    connection.models = await discoverModels(connection, 'github-account-token');
     assert.deepEqual(connection.models.map((model) => model.id).sort(), [
       'claude-sonnet-4.6',
       'gpt-5.4',
@@ -1346,7 +1466,7 @@ describe('models.dev provider conformance', () => {
       updatedAt: 1,
     };
 
-    assert.deepEqual(await fetchProviderModels(connection, 'opencode-test-key'), [{ id: modelId }]);
+    assert.deepEqual(await discoverModels(connection, 'opencode-test-key'), [{ id: modelId }]);
     const result = await generateText({
       model: getAIModel({ connection, apiKey: 'opencode-test-key', modelId }),
       prompt: 'Call echo with hello.',
@@ -1416,36 +1536,6 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requests[1]?.body.messages, [{ role: 'user', content: 'Hi' }]);
     assert.equal(requests[2]?.headers['x-goog-api-key'], 'opencode-test-key');
     assert.deepEqual(requests[2]?.body.contents, [{ role: 'user', parts: [{ text: 'Hi' }] }]);
-  });
-
-  test('OpenCode Free probes reuse identity across candidates and renew it per operation', async () => {
-    const sessions: Array<string | undefined> = [];
-    const server = await startJsonServer(async (request, response) => {
-      sessions.push(request.headers['x-opencode-session'] as string | undefined);
-      respondJson(response, sessions.length % 2 === 1 ? 429 : 200, {
-        choices: [{ message: { role: 'assistant', content: 'ok' } }],
-      });
-    });
-    const connection: LlmConnection = {
-      slug: 'opencode-free',
-      name: 'OpenCode Free',
-      providerType: 'opencode-free',
-      baseUrl: `${server.url}/zen/v1`,
-      defaultModel: 'nemotron-3-ultra-free',
-      enabledModelIds: ['nemotron-3-ultra-free', 'mimo-v2.5-free'],
-      enabled: true,
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    assert.equal((await testConnection(connection, '')).ok, true);
-    assert.equal((await testConnection(connection, '')).ok, true);
-    assert.equal(sessions.length, 4);
-    for (const session of sessions) {
-      assert.match(session ?? '', /^[0-9a-f-]{36}$/);
-    }
-    assert.equal(sessions[0], sessions[1]);
-    assert.equal(sessions[2], sessions[3]);
-    assert.notEqual(sessions[0], sessions[2]);
   });
 
   test('OpenCode Go connection probes identify every supported wire request', async () => {
@@ -1842,7 +1932,7 @@ describe('models.dev provider conformance', () => {
       updatedAt: 1,
     };
 
-    const models = await fetchProviderModels(connection, 'hf-test-token');
+    const models = await discoverModels(connection, 'hf-test-token');
     assert.deepEqual(models, [{ id: discoveredModelId, capabilities: { functionCalling: true } }]);
 
     const result = await generateText({

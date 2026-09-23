@@ -427,6 +427,7 @@ test('real Host uses the independent Memory provider for messages, history and W
       { sessionId: 'memory-task', transcript: { kind: 'tail', maxBytes: 16384 } },
       TIMEOUT,
     );
+    await subscription.ready();
     try {
       const history = subscription.transcriptBootstrap;
       assert.ok(history);
@@ -543,11 +544,26 @@ async function actWorkHub(
             candidateRef: action.proposal.candidateRef,
           };
   await host.setRoutingDecision(turnId, decision);
-  await client.request('workhub.coordination.answer', {
-    turnId,
-    text: userText,
-    ...(attachments ? { attachments } : {}),
-  });
+  // This fixture holds the fake model open. A completed delegated target can
+  // immediately wake a result Turn, which would otherwise occupy WorkHub while
+  // this test submits its next independent coordination request.
+  for (;;) {
+    try {
+      await client.request('workhub.coordination.answer', {
+        turnId,
+        text: userText,
+        ...(attachments ? { attachments } : {}),
+      });
+      break;
+    } catch (error) {
+      if (
+        !(error instanceof RuntimeHostOperationError) ||
+        error.code !== 'session_busy' ||
+        !(await stopHeldResultTurn(client))
+      )
+        throw error;
+    }
+  }
   try {
     return await client.request('workhub.coordination.actFromTurn', { ...action, turnId });
   } finally {
@@ -561,6 +577,31 @@ async function actWorkHub(
       runId: run.runId,
     });
   }
+}
+
+async function stopHeldResultTurn(client: RuntimeHostConnection): Promise<boolean> {
+  const turns = await client.request('session.turns.query', {
+    sessionId: WORKHUB_COORDINATION_SESSION_ID,
+    throughSequence: null,
+    position: 0,
+    maxContributions: 128,
+  });
+  let stopped = false;
+  for (const contribution of turns.contributions) {
+    if (!contribution.turnId.startsWith('whf_')) continue;
+    const turn = await client.request('turn.query', {
+      sessionId: WORKHUB_COORDINATION_SESSION_ID,
+      turnId: contribution.turnId,
+    });
+    if (turn.status !== 'running' && turn.status !== 'waiting_for_user') continue;
+    await client.request('turn.stop', {
+      sessionId: WORKHUB_COORDINATION_SESSION_ID,
+      turnId: turn.turnId,
+      runId: turn.runId,
+    });
+    stopped = true;
+  }
+  return stopped;
 }
 
 async function uploadAttachment(client: RuntimeHostConnection): Promise<AttachmentRef> {

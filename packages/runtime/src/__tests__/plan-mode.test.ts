@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { renderPlanModePrompt, selectCollaborationTools } from '../plan-mode.js';
-import { buildCancelPlanTool, buildSubmitPlanTool, buildUpdatePlanTool } from '../plan-tools.js';
+import { buildSubmitPlanTool } from '../plan-tools.js';
 import type { MakaTool } from '../tool-runtime.js';
 
 describe('Plan Mode tool surface', () => {
@@ -98,7 +98,7 @@ describe('Plan Mode tool surface', () => {
     assert.match(renderPlanModePrompt(), /plain text without Markdown formatting/);
   });
 
-  test('keeps read tools and plan controls while removing writes and subagents', () => {
+  test('keeps read tools and plan controls while removing writes and execution tools', () => {
     const selected = selectCollaborationTools({
       mode: 'plan',
       hasActiveExecution: false,
@@ -110,6 +110,7 @@ describe('Plan Mode tool surface', () => {
         tool('AskUserQuestion'),
         tool('SubmitPlan'),
         tool('update_plan'),
+        tool('cancel_plan'),
       ],
     });
     assert.deepEqual(

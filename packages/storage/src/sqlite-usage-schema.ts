@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_USAGE_SCHEMA_VERSION = 7;
+export const SQLITE_USAGE_SCHEMA_VERSION = 9;
 
 /**
  * The canonical ledger's columns, in the order every statement binds them.
@@ -215,6 +215,7 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS usage_llm_calls_session_ts
       ON usage_llm_calls(session_id, ts DESC, id);
+    DROP INDEX IF EXISTS usage_llm_calls_session_id;
   `);
   // A ledger old enough to predate Session attribution has no column to carry
   // through, and the conversion below reads one.
@@ -227,6 +228,82 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS usage_model_call_attempts_session_completed_at
       ON usage_model_call_attempts(session_id, completed_at DESC, attempt_id);
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_screen_revision (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      incarnation TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision >= 0)
+    );
+    INSERT OR IGNORE INTO usage_screen_revision VALUES (1, lower(hex(randomblob(16))), 0);
+    CREATE INDEX IF NOT EXISTS usage_llm_calls_screen ON usage_llm_calls(ts DESC, storage_key DESC);
+    CREATE INDEX IF NOT EXISTS usage_tool_invocations_screen ON usage_tool_invocations(ts DESC, storage_key DESC);
+    CREATE INDEX IF NOT EXISTS usage_tool_invocations_session_id
+      ON usage_tool_invocations(json_extract(record_json, '$.sessionId'));
+    CREATE INDEX IF NOT EXISTS usage_model_call_attempts_screen ON usage_model_call_attempts(completed_at DESC, attempt_id DESC);
+  `);
+  // These are invalidation metadata, never an accounting or repair authority.
+  // Triggers run in the mutating transaction, including cascades and rollbacks.
+  for (const table of [
+    'usage_llm_calls',
+    'usage_tool_invocations',
+    'usage_model_call_attempts',
+    'usage_model_call_projection_checkpoints',
+    'usage_pricing_overrides',
+    'usage_pricing_authority',
+    'session_metadata',
+    'core_agent_runs',
+    'core_agent_run_events',
+  ]) {
+    // The standalone Usage migration is also used by legacy conversion tests;
+    // source tables are installed by the operational owner before this migration.
+    if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(table))
+      continue;
+    for (const event of ['INSERT', 'UPDATE', 'DELETE']) {
+      let when = '';
+      if (table === 'session_metadata') {
+        // Metadata only participates in Usage through activity titles. Avoid
+        // fencing an open screen for Sessions that have no retained activity.
+        const hasUsage = (row: 'OLD' | 'NEW') => `(
+          EXISTS (SELECT 1 FROM usage_llm_calls WHERE session_id = ${row}.session_id LIMIT 1)
+          OR EXISTS (
+            SELECT 1 FROM usage_tool_invocations
+            WHERE json_extract(record_json, '$.sessionId') = ${row}.session_id LIMIT 1
+          )
+          OR EXISTS (
+            SELECT 1 FROM usage_model_call_attempts
+            WHERE session_id = ${row}.session_id LIMIT 1
+          )
+        )`;
+        when =
+          event === 'INSERT'
+            ? `WHEN ${hasUsage('NEW')}`
+            : event === 'DELETE'
+              ? `WHEN ${hasUsage('OLD')}`
+              : `WHEN (OLD.name IS NOT NEW.name OR OLD.session_id IS NOT NEW.session_id)
+                  AND (${hasUsage('OLD')} OR ${hasUsage('NEW')})`;
+      } else if (table === 'core_agent_run_events') {
+        const old = "OLD.event_type = 'model_call_attempt_recorded'";
+        const next = "NEW.event_type = 'model_call_attempt_recorded'";
+        when = `WHEN ${event === 'INSERT' ? next : event === 'DELETE' ? old : `${old} OR ${next}`}`;
+      } else if (table === 'core_agent_runs') {
+        when =
+          event === 'INSERT'
+            ? 'WHEN NEW.latest_model_call_sequence IS NOT NULL'
+            : event === 'DELETE'
+              ? 'WHEN OLD.latest_model_call_sequence IS NOT NULL'
+              : 'WHEN OLD.latest_model_call_sequence IS NOT NEW.latest_model_call_sequence OR OLD.session_id IS NOT NEW.session_id OR OLD.run_id IS NOT NEW.run_id';
+      }
+      const trigger = `${table}_screen_${event.toLowerCase()}`;
+      // Schema v8 originally installed unconditional metadata INSERT/DELETE
+      // triggers. Recreate those named triggers so existing databases receive
+      // the narrowed predicate as well as fresh databases.
+      if (table === 'session_metadata') db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+      db.exec(`CREATE TRIGGER IF NOT EXISTS ${trigger}
+        AFTER ${event} ON ${table} ${when} BEGIN
+          UPDATE usage_screen_revision SET revision = revision + 1 WHERE singleton = 1;
+        END`);
+    }
+  }
 }
 
 /**
