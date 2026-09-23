@@ -149,7 +149,7 @@ import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import { HostChangeFeed } from './host-change-feed.js';
 import { HostConfigurationCoordinator } from './configuration-coordinator.js';
-import { HostPromptSuggestionCoordinator } from './prompt-suggestion.js';
+import { HostPromptSuggestionCoordinator, supportsPromptSuggestion } from './prompt-suggestion.js';
 import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
@@ -1438,8 +1438,7 @@ export async function createExecutionRuntimeHostComposition(
           || canonical.goal?.status === 'active'
           || requireSessionManager(manager).runningTurnIds(sessionId).length) return undefined;
         const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
-        if (header.role || header.subagentParent || header.collaborationMode === 'plan'
-          || header.labels.includes('mode:side_conversation') || header.backend !== 'ai-sdk') return undefined;
+        if (!supportsPromptSuggestion(sessionId, header)) return undefined;
         const view = await recapReadModel.getSessionView(sessionId);
         return { sessionId, turnId: turn.turnId, terminalEventId: turn.terminalEventId, header, messages: view.messages };
       }),

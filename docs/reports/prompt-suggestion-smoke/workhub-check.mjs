@@ -92,6 +92,8 @@ try {
     const turns = await workhub.evaluate((id) => window.maka.sessions.listTurns(id), sessionId);
     return turns.some((turn) => turn.status === 'completed');
   }, { timeout: 20000 }).toBe(true);
+  const offer = workhub.locator('.maka-composer-next-prompt');
+  await offer.waitFor({ timeout: 10000 });
   const result = await workhub.evaluate((id) => window.maka.sessions.generatePromptSuggestion(id), sessionId);
   const session = await workhub.evaluate((id) => window.maka.workHub.getSession(id), sessionId);
   const evidence = { sessionId, role: session.role, result, predictionRequests: requests.filter((r) => r.suggestion).length,
@@ -100,6 +102,39 @@ try {
   await writeFile(join(output, 'workhub-check.json'), JSON.stringify(evidence, null, 2));
   await workhub.screenshot({ path: join(output, 'workhub-check.png') });
   console.log(JSON.stringify(evidence, null, 2));
-  assert.deepEqual(result, { kind: 'none' });
-  assert.equal(evidence.predictionRequests, 0);
+  assert.equal(result.kind, 'generated');
+  assert.equal(evidence.predictionRequests, 1);
+  assert.equal(evidence.offerCount, 1);
+  await input.press('Tab');
+  assert.equal(await input.innerText(), suggestionText);
+  assert.equal(await offer.count(), 0);
+  const turnsBeforeSend = await workhub.evaluate((id) => window.maka.sessions.listTurns(id), sessionId);
+  assert.equal(turnsBeforeSend.length, 1, 'Tab must not send');
+  await input.press('Meta+z');
+  assert.equal(await input.innerText(), '');
+  assert.equal(await offer.count(), 0);
+  await input.fill('继续设计缓存'); await input.press('Enter');
+  await offer.waitFor({ timeout: 10000 });
+  await input.press('Tab'); await input.press('Enter');
+  await offer.waitFor({ timeout: 10000 });
+  const transcript = await workhub.evaluate(async (id) => {
+    const turns = await window.maka.sessions.listTurns(id);
+    return window.maka.transcripts.readTurn(id, turns.at(-1).turnId);
+  }, sessionId);
+  assert.ok(transcript.some((message) => message.type === 'user' && message.text === suggestionText));
+  await input.press('Escape'); assert.equal(await offer.count(), 0);
+  suggestionDelayMs = 800;
+  const requestCount = requests.filter((r) => r.suggestion).length;
+  await input.fill('检查边界条件'); await input.press('Enter');
+  await expect.poll(() => requests.filter((r) => r.suggestion).length).toBe(requestCount + 1);
+  await input.fill('我正在写下一句');
+  await workhub.evaluate((id) => window.maka.sessions.generatePromptSuggestion(id), sessionId);
+  assert.equal(await input.innerText(), '我正在写下一句');
+  assert.equal(await offer.count(), 0);
+  await input.fill(''); assert.equal(await offer.count(), 0);
+  evidence.checks = ['generated through WorkHub IPC and Host', 'Tab accepts without send', 'native undo',
+    'Enter reaches durable coordination transcript', 'Esc dismiss', 'late result preserves draft', 'no resurrection'];
+  evidence.ok = true;
+  await writeFile(join(output, 'workhub-check.json'), JSON.stringify(evidence, null, 2));
+  console.log('PASS WorkHub acceptance');
 } finally { await app.close(); server.close(); }

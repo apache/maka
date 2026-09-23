@@ -399,7 +399,7 @@ export function createHostPromptSuggestionModel(input: HostSessionEffectModelInp
       header: { ...source.header, thinkingLevel: 'off' },
       callKind: 'prompt_suggestion', callId: `prompt_suggestion_${source.terminalEventId}`,
       abortSignal,
-      buildRequest: () => ({ prompt: buildPromptSuggestionPrompt(source.messages), maxOutputTokens: 128 }),
+      buildRequest: () => ({ prompt: buildPromptSuggestionPrompt(source.messages, source.header.role === 'workhub_coordination'), maxOutputTokens: 128 }),
     });
     return result.finishReason === 'length' ? undefined : result.text;
   };

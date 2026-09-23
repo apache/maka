@@ -19,8 +19,9 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { HostPromptSuggestionCoordinator, buildPromptSuggestionPrompt, cleanPromptSuggestion, type PromptSuggestionSource } from '../server/prompt-suggestion.js';
+import { HostPromptSuggestionCoordinator, supportsPromptSuggestion, buildPromptSuggestionPrompt, cleanPromptSuggestion, type PromptSuggestionSource } from '../server/prompt-suggestion.js';
 import { PROMPT_SUGGESTION_OPERATION_SPECS } from '../protocol/prompt-suggestions.js';
+import type { StoredMessage } from '@maka/core/session';
 import type { OperationResidency } from '../server/operation-dispatcher.js';
 
 const source = { sessionId: 'session-1', turnId: 'turn-1', terminalEventId: 'terminal-1',
@@ -126,4 +127,25 @@ test('a new canonical Turn cancels an in-flight prediction', async () => {
   assert.equal(signal.aborted, true);
   assert.deepEqual(await pending, { kind: 'none' });
   await coordinator.close();
+});
+
+test('the permanent WorkHub coordinator is eligible; other agent and restricted sessions are not', () => {
+  const header = { ...source.header, backend: 'ai-sdk', labels: [], collaborationMode: 'agent' } as PromptSuggestionSource['header'];
+  assert.equal(supportsPromptSuggestion('ordinary', header), true);
+  assert.equal(supportsPromptSuggestion('maka_workhub_coordination', { ...header, role: 'workhub_coordination' }), true);
+  assert.equal(supportsPromptSuggestion('other', { ...header, role: 'workhub_coordination' }), false);
+  for (const patch of [{ collaborationMode: 'plan' }, { backend: 'claude' }, { labels: ['mode:side_conversation'] }, { subagentParent: {} }]) {
+    assert.equal(supportsPromptSuggestion('maka_workhub_coordination', { ...header, role: 'workhub_coordination', ...patch } as typeof header), false);
+  }
+});
+
+test('WorkHub prediction follows recent visible conversation without reviving an unrelated first task', () => {
+  const messages = [
+    { type: 'user', text: 'unrelated old task' },
+    ...Array.from({ length: 6 }, () => ({ type: 'assistant', text: 'current task' })),
+  ] as StoredMessage[];
+  const prompt = buildPromptSuggestionPrompt(messages, true);
+  assert.doesNotMatch(prompt, /unrelated old task/);
+  assert.match(prompt, /current task/);
+  assert.match(prompt, /persistent WorkHub/);
 });

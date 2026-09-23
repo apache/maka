@@ -339,6 +339,7 @@ export function WorkHubRoot() {
               onReorderQueuedEntries={controller.reorderQueuedEntries}
               placeholder={progress ? t.progressInput : t.welcome}
               ref={composer}
+              hidden={Boolean(controller.activeQuestion || controller.activeForm)}
               sessionId={controller.sessionId}
               streaming={busy}
               sendBlocked={!controller.sessionId || controller.sending || !session?.model}

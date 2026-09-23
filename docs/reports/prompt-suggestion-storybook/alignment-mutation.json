@@ -1,0 +1,9 @@
+{
+  "injected": "old 12px overlay padding",
+  "result": {
+    "finished": false,
+    "failures": [
+      "playFunctionThrewException: expected { …(5) } to deeply equal { …(5) }"
+    ]
+  }
+}
