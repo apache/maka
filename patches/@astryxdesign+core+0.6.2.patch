@@ -869,7 +869,7 @@ index b56c9d5..463f665 100644
        role: "group",
        "aria-labelledby": `${id}-label`,
 diff --git a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
-index ea27c3a..46b9661 100644
+index ea27c3a..b99db05 100644
 --- a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
 +++ b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
 @@ -173,7 +173,8 @@ function pinRingsToTimelineOrigin() {
@@ -882,7 +882,27 @@ index ea27c3a..46b9661 100644
    }
    pendingRings.clear();
    for (const animation of animations) {
-@@ -231,6 +232,16 @@ const styles = {
+@@ -200,8 +201,19 @@ function syncRotationPhase(svg) {
+     flushScheduled = true;
+     requestAnimationFrame(pinRingsToTimelineOrigin);
+   }
++  // Moving a mounted spinner (a list re-sorting its rows) restarts its CSS
++  // animation without running this ref again; pin the restarted one too.
++  const host = svg.parentElement ?? svg;
++  const repin = event => {
++    if (event.target !== host) return;
++    for (const animation of host.getAnimations()) {
++      animation.startTime = 0;
++    }
++  };
++  host.addEventListener('animationstart', repin);
+   return () => {
+     pendingRings.delete(svg);
++    host.removeEventListener('animationstart', repin);
+   };
+ }
+ 
+@@ -231,6 +243,16 @@ const styles = {
      "--_spinner-ring-stroke": "x10qssua",
      "--_spinner-box-size": "x69vvuq",
      kmuXW: "x2lah0s",
@@ -899,7 +919,7 @@ index ea27c3a..46b9661 100644
      $$css: true
    },
    circle: {
-@@ -429,7 +440,7 @@ export function Spinner({
+@@ -429,7 +451,7 @@ export function Spinner({
        height: frameSize,
        "aria-hidden": "true",
        ...{
@@ -1970,7 +1990,7 @@ index 6c581d4..d3a9857 100644
          <div
            id={`${id}-children`}
 diff --git a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
-index e6a5837..31ceffe 100644
+index e6a5837..430de71 100644
 --- a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
 +++ b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
 @@ -167,7 +167,8 @@ function pinRingsToTimelineOrigin(): void {
@@ -1983,7 +2003,27 @@ index e6a5837..31ceffe 100644
    }
    pendingRings.clear();
    for (const animation of animations) {
-@@ -259,9 +260,24 @@ const styles = stylex.create({
+@@ -196,8 +197,19 @@ function syncRotationPhase(
+     flushScheduled = true;
+     requestAnimationFrame(pinRingsToTimelineOrigin);
+   }
++  // Moving a mounted spinner (a list re-sorting its rows) restarts its CSS
++  // animation without running this ref again; pin the restarted one too.
++  const host = svg.parentElement ?? svg;
++  const repin = (event: AnimationEvent) => {
++    if (event.target !== host) return;
++    for (const animation of host.getAnimations()) {
++      animation.startTime = 0;
++    }
++  };
++  host.addEventListener('animationstart', repin);
+   return () => {
+     pendingRings.delete(svg);
++    host.removeEventListener('animationstart', repin);
+   };
+ }
+ 
+@@ -259,9 +271,24 @@ const styles = stylex.create({
      // moment it sets `min-width: 0` on its items. A spinner that does not fit
      // overflows its host visibly instead of being silently sliced.
      flexShrink: 0,
@@ -2009,7 +2049,7 @@ index e6a5837..31ceffe 100644
      display: 'block',
      // The frame is the box, read from the same composed var the span is sized
      // from — not from the size constant, which a theme cannot reach, and not
-@@ -271,7 +287,6 @@ const styles = stylex.create({
+@@ -271,7 +298,6 @@ const styles = stylex.create({
      // One expression, one source of truth, resolves in any layout.
      width: `var(${BOX_SIZE})`,
      height: `var(${BOX_SIZE})`,
@@ -2017,7 +2057,7 @@ index e6a5837..31ceffe 100644
      // The svg is sized in CSS (100% of the span) rather than from the size
      // constant, so one user unit is one CSS pixel AND the frame follows a
      // themed diameter: the span's box is `diameter + 2 x stroke`, both public
-@@ -280,16 +295,6 @@ const styles = stylex.create({
+@@ -280,16 +306,6 @@ const styles = stylex.create({
      // diameter — an overflowing grid item aligns to start rather than centre,
      // which put the ring 1.5-3.3px off across the four sizes.
      overflow: 'visible',

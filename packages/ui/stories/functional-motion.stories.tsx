@@ -71,5 +71,14 @@ export const RetainedFunctionalMotion: Story = {
     // Pinned to the timeline origin, spinners mounted apart step on the same
     // frames instead of each adding its own.
     await waitFor(() => expect(spinner.getAnimations()[0]?.startTime).toBe(0));
+    // A list re-sorting its rows moves a mounted spinner, which restarts its
+    // animation without remounting it.
+    const [mounted] = spinner.getAnimations();
+    spinner.parentElement!.prepend(spinner);
+    await waitFor(() => {
+      const [restarted] = spinner.getAnimations();
+      expect(restarted).not.toBe(mounted);
+      expect(restarted?.startTime).toBe(0);
+    });
   },
 };
