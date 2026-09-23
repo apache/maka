@@ -107,18 +107,7 @@ export function selectStreamingSessionIds(
   return streaming;
 }
 
-export function sessionIdSetsEqual(
-  a: ReadonlySet<string> | undefined,
-  b: ReadonlySet<string> | undefined,
-): boolean {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  if (a.size !== b.size) return false;
-  for (const id of a) {
-    if (!b.has(id)) return false;
-  }
-  return true;
-}
+export { sessionIdSetsEqual } from '../../../application/contracts/session-catalog/session-id-set.js';
 
 function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | undefined {
   for (let index = items.length - 1; index >= 0; index -= 1) {

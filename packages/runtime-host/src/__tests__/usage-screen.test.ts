@@ -89,10 +89,15 @@ const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 
 test('strict screen codecs reject malformed requests, unknown fields, wrong-query results and non-progressing pages', () => {
   assert.deepEqual(decodeUsageScreenRequest({ kind: 'screen', query }), { kind: 'screen', query });
+  const utf8Boundary = { ...query, search: '界'.repeat(341) + 'x' };
+  assert.deepEqual(decodeUsageScreenRequest({ kind: 'screen', query: utf8Boundary }), {
+    kind: 'screen',
+    query: utf8Boundary,
+  });
   for (const input of [
     { kind: 'screen', query: { ...query, extra: true } },
     { kind: 'screen', query: { ...query, range: { from: 2, to: 1 } } },
-    { kind: 'screen', query: { ...query, search: '界'.repeat(400) } },
+    { kind: 'screen', query: { ...query, search: '界'.repeat(342) } },
     { kind: 'activity', query, revision: 'r', queryIdentity: 'q', cursor: '' },
   ])
     assert.throws(() => decodeUsageScreenRequest(input));
@@ -119,6 +124,43 @@ test('strict screen codecs reject malformed requests, unknown fields, wrong-quer
         page: { revision: 'r', queryIdentity: 'q', logs: [row()], nextCursor: 'next' },
       },
     ),
+  );
+});
+
+test('screen and activity codecs accept the persisted fractional timestamp domain', () => {
+  const fractionalQuery: UsageScreenQuery = {
+    ...query,
+    range: { from: 1735689600000.25, to: 1735689600000.75 },
+  };
+  const fractionalRow = { ...row(), ts: 1735689600000.5 };
+  assert.deepEqual(decodeUsageScreenRequest({ kind: 'screen', query: fractionalQuery }), {
+    kind: 'screen',
+    query: fractionalQuery,
+  });
+  assert.deepEqual(
+    decodeUsageScreenResult({
+      kind: 'screen',
+      screen: { ...screen(), query: fractionalQuery, logs: [fractionalRow] },
+    }),
+    { kind: 'screen', screen: { ...screen(), query: fractionalQuery, logs: [fractionalRow] } },
+  );
+  assert.doesNotThrow(() =>
+    decodeUsageScreenResult({
+      kind: 'activity',
+      page: { revision: 'r', queryIdentity: 'q', logs: [fractionalRow], nextCursor: null },
+    }),
+  );
+  assert.throws(() =>
+    decodeUsageScreenRequest({
+      kind: 'screen',
+      query: { ...query, range: { from: 0, to: Number.MAX_SAFE_INTEGER + 1 } },
+    }),
+  );
+  assert.throws(() =>
+    decodeUsageScreenResult({
+      kind: 'screen',
+      screen: { ...screen(), logs: [{ ...row(), ts: -1 }] },
+    }),
   );
 });
 

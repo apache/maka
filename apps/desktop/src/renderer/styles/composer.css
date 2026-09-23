@@ -40,15 +40,6 @@
   max-width: var(--maka-reading-measure);
 }
 
-.maka-return-workhub {
-  --_button-radius: var(--radius-chat);
-  display: flex;
-  width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-6)));
-  min-height: var(--space-10);
-  margin: 0 auto;
-  text-align: center;
-}
-
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
    composer below it stays still. Both otherwise share the dock's filtered
    compositing surface, so Chromium may re-raster the thin context-gauge paths
@@ -56,6 +47,15 @@
    visibly hops by a device pixel. Keep the fading control in its own small
    paint/compositing boundary. `astryx-chat-layout-scroll-button` is Astryx's
    published theme class; the child is its fixed 32px transition container. */
+/* Astryx's dock is [scroll button, blur layer, composer]. Its 36px mask
+   finishes before Maka's card: the button reserves 32px + spacing-3, then
+   .composer adds space-2. Fade all the way to the card instead of leaving
+   a fully blurred strip above it. Scope this to docks with the scroll control;
+   floating WorkHub presentations can omit that control entirely. */
+.maka-chat-layout > div:has(> .astryx-chat-layout-scroll-button) > div:nth-last-child(2) {
+  mask-image: linear-gradient(to bottom, transparent, black calc(32px + var(--spacing-3) + var(--space-2)));
+}
+
 .astryx-chat-layout-scroll-button > div {
   contain: layout style paint;
   will-change: opacity, transform;
@@ -261,6 +261,14 @@
   min-width: 0;
 }
 
+/* Chromium can omit an empty editable's line box when it mounts beneath
+   an inert ancestor, then keep that collapsed layout until the first edit.
+   Generate the empty line in CSS so its height and caret space exist from
+   the first paint, without adding a character to the draft or undo history. */
+.maka-composer-editor > [contenteditable]:empty::before {
+  content: "\200b";
+}
+
 .maka-composer-left-controls {
   display: flex;
   align-items: center;
@@ -336,34 +344,6 @@
    overflow-y:auto for the tall direction. */
 .maka-composer-quiet-menu {
   max-width: min(320px, 92vw);
-}
-
-/* The Git-branch readout beside the usage gauge in the composer footer. A
-   `<span>`, not a control — nothing to click — but it wears the same label type
-   and pill geometry as the model chip. The cap is wider than the model chip's
-   180px so a usual branch (`feat/some-topic`) shows whole; only a genuinely long
-   one ellipsizes, and the `title` carries the full text in that case. */
-.maka-composer-git-branch {
-  font: var(--maka-text-label);
-  height: var(--h-control-md);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-2);
-  border: var(--border-width-hairline) solid transparent;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--muted-foreground);
-  white-space: nowrap;
-  max-width: min(360px, 40vw);
-}
-
-.maka-composer-git-branch-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Model chip (static fallback) still owns its own quiet geometry. */

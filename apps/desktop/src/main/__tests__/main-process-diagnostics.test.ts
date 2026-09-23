@@ -281,6 +281,7 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
         credential: 'private-guest-credential',
       },
       readiness: 'reconnecting',
+      hostId: 'a'.repeat(64),
       reconnect: {
         failures: 27,
         firstFailureAt: Date.parse('2026-09-09T00:00:00Z'),

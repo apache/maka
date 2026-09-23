@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { after, describe, it } from 'node:test';
-import { readGitBranch, readGitReview } from '../git-review-main.js';
+import { readGitReview } from '../git-review-main.js';
 
 const execFileAsync = promisify(execFile);
 const roots = new Set<string>();
@@ -170,29 +170,3 @@ async function git(root: string, ...args: string[]): Promise<void> {
     timeout: 10_000,
   });
 }
-
-describe('Git branch read (composer chip)', () => {
-  it('reads the checked-out branch', async () => {
-    const root = await repository();
-    await git(root, 'checkout', '-b', 'feature/chip');
-    assert.deepEqual(await readGitBranch(root), {
-      ok: true,
-      snapshot: { branch: 'feature/chip', shortSha: null },
-    });
-  });
-
-  it('falls back to the short sha on a detached HEAD', async () => {
-    const root = await repository();
-    await git(root, 'checkout', '--detach', 'HEAD');
-    const result = await readGitBranch(root);
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.snapshot.branch, null);
-    assert.match(result.snapshot.shortSha ?? '', /^[0-9a-f]{7,}$/u);
-  });
-
-  it('reports a non-repository as isGitRepo: false, so no chip is drawn', async () => {
-    const root = await temporaryRoot();
-    assert.deepEqual(await readGitBranch(root), { ok: false, isGitRepo: false });
-  });
-});

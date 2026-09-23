@@ -142,6 +142,9 @@ jobs:
       - name: Test script entrypoint contracts
         run: node --test scripts/script-entrypoints.test.mjs
 
+      - name: Test repository-only plugin examples
+        run: node --test scripts/plugins/codex-app-server-executor/test/plugin.test.mjs
+
       # The packaged Windows lane drives the updater through this wiring. It
       # is a few lines, so it is asserted here on every change rather than by
       # naming its module in that lane's 25-minute path filter.

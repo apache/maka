@@ -19,12 +19,14 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import type {
-  UsageScreen,
-  UsageScreenQuery,
-  UsageScreenRequest,
-  UsageScreenResult,
-  UsageRequestLog,
+import {
+  isUsageScreenSearch,
+  isUsageTimestamp,
+  type UsageScreen,
+  type UsageScreenQuery,
+  type UsageScreenRequest,
+  type UsageScreenResult,
+  type UsageRequestLog,
 } from '@maka/core/settings';
 import { acquireOperationalStateDatabase } from './operational-state-store.js';
 import { CACHE_READ_TOKENS } from './model-call-usage-sql.js';
@@ -228,12 +230,10 @@ export function createUsageScreenReader(root: string) {
 
 function validateQuery(query: UsageScreenQuery): void {
   if (
-    !Number.isSafeInteger(query.range.from) ||
-    !Number.isSafeInteger(query.range.to) ||
-    query.range.from < 0 ||
+    !isUsageTimestamp(query.range.from) ||
+    !isUsageTimestamp(query.range.to) ||
     query.range.to < query.range.from ||
-    typeof query.search !== 'string' ||
-    query.search.length > 1024 ||
+    !isUsageScreenSearch(query.search) ||
     !['all', 'success', 'error', 'aborted'].includes(query.status)
   ) {
     throw new TelemetryQueryValidationError('Invalid Usage screen query');
@@ -281,7 +281,7 @@ function activity(db: DatabaseSync, query: UsageScreenQuery, cursor?: string) {
       !Array.isArray(value) ||
       value.length !== 4 ||
       value[0] !== hash(query) ||
-      !Number.isSafeInteger(value[1]) ||
+      !isUsageTimestamp(value[1]) ||
       value[1] < query.range.from ||
       value[1] > query.range.to ||
       !['canonical', 'legacy', 'tool'].includes(value[2]) ||

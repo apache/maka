@@ -561,8 +561,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (typeof value.visible !== 'boolean' || (value.occluded !== undefined && typeof value.occluded !== 'boolean') || !value.rect ||
               ![value.rect.x, value.rect.y, value.rect.width, value.rect.height].every((n) => typeof n === 'number' && Number.isFinite(n)) ||
               value.rect.width < 0 || value.rect.height < 0) throw new Error('Invalid WorkHub host');
-            if (value.workbar && (typeof value.workbar.collapsed !== 'boolean' || !['right', 'bottom'].includes(value.workbar.placement))) throw new Error('Invalid WorkHub workbar');
-            const workbarChanged = host.workbar?.collapsed !== value.workbar?.collapsed || host.workbar?.placement !== value.workbar?.placement;
+            if (value.workbar && (typeof value.workbar.collapsed !== 'boolean' || !['right', 'bottom'].includes(value.workbar.placement) || (value.workbar.togglePosition !== undefined && !['titlebar', 'edge'].includes(value.workbar.togglePosition)))) throw new Error('Invalid WorkHub workbar');
+            const workbarChanged = host.workbar?.collapsed !== value.workbar?.collapsed || host.workbar?.placement !== value.workbar?.placement || host.workbar?.togglePosition !== value.workbar?.togglePosition;
             // Native child views sit above the main renderer's top layer. Keep
             // a still frame behind its menus/dialogs while yielding native input.
             if (placement === 'docked' && value.visible && value.occluded && !host.occluded && view && container?.getVisible() &&

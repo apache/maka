@@ -545,7 +545,8 @@ interface HostAuxiliaryModelCallInput {
   readonly header: Pick<
     SessionHeader,
     'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
-  >;
+  > &
+    Partial<Pick<SessionHeader, 'backend'>>;
   readonly callKind: ModelCallKind;
   readonly callId: string;
   readonly abortSignal: AbortSignal;
@@ -967,7 +968,8 @@ export async function resolveExecutionTarget(
   header: Pick<
     BackendFactoryContext['header'],
     'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
-  >,
+  > &
+    Partial<Pick<BackendFactoryContext['header'], 'backend'>>,
   runtimePolicy: {
     readonly operations: Pick<
       RuntimePolicyStoresWriter['operations'],
@@ -977,6 +979,11 @@ export async function resolveExecutionTarget(
   oauthCredentials: HostOAuthExecutionAuthority,
   createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
 ): Promise<ResolvedExecutionTarget> {
+  if (header.backend === 'plugin-executor') {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Plugin Executor Sessions do not expose the native auxiliary model authority',
+    );
+  }
   const resolved = await runtimePolicy.operations.resolveExecutionConnection(
     executionConnectionRef(header),
   );

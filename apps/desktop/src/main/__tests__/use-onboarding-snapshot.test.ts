@@ -23,8 +23,13 @@ import type { OnboardingState } from '@maka/core/onboarding';
 import {
   createOnboardingSnapshotPoller,
   getOnboardingActivationCandidate,
+  onboardingSnapshotProjectionEqual,
 } from '../../renderer/use-onboarding-snapshot.js';
 import type { OnboardingSnapshot } from '../../preload/bridge-contract.js';
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 const READY_SNAPSHOT: OnboardingSnapshot = {
   state: {
@@ -89,6 +94,39 @@ describe('getOnboardingActivationCandidate', () => {
   });
 });
 
+describe('onboardingSnapshotProjectionEqual', () => {
+  it('ignores sessions churn — the catalog owns live session rows', () => {
+    assert.equal(
+      onboardingSnapshotProjectionEqual(READY_SNAPSHOT, {
+        ...READY_SNAPSHOT,
+        sessions: [{} as OnboardingSnapshot['sessions'][number]],
+      }),
+      true,
+    );
+  });
+
+  it('detects changes in the render-relevant fields', () => {
+    assert.equal(
+      onboardingSnapshotProjectionEqual(READY_SNAPSHOT, NEEDS_CONNECTION_SNAPSHOT),
+      false,
+    );
+    assert.equal(
+      onboardingSnapshotProjectionEqual(READY_SNAPSHOT, {
+        ...READY_SNAPSHOT,
+        sessionSendOutcomes: { s1: { kind: 'ready' } },
+      }),
+      false,
+    );
+    assert.equal(
+      onboardingSnapshotProjectionEqual(READY_SNAPSHOT, {
+        ...READY_SNAPSHOT,
+        defaultSlug: 'other',
+      }),
+      false,
+    );
+  });
+});
+
 describe('createOnboardingSnapshotPoller', () => {
   it('scrubs getSnapshot rejections before routing them to onError', async () => {
     const events: Array<{ type: 'snap' | 'err'; payload: unknown }> = [];
@@ -110,74 +148,92 @@ describe('createOnboardingSnapshotPoller', () => {
     assert.notEqual(String(events[0]?.payload).includes('sk-live-secret'), true);
   });
 
-  it('older inflight response cannot overwrite newer state (ticket guard)', async () => {
-    let resolveFirst!: (snap: OnboardingSnapshot) => void;
-    let resolveSecond!: (snap: OnboardingSnapshot) => void;
-    let call = 0;
-    const events: Array<{ type: 'snap'; payload: OnboardingSnapshot }> = [];
+  it('a pull issued while another is in flight runs once after it settles', async () => {
+    const resolvers: Array<(snap: OnboardingSnapshot) => void> = [];
+    const events: OnboardingSnapshot[] = [];
     const poller = createOnboardingSnapshotPoller(
       {
         getSnapshot: () =>
           new Promise<OnboardingSnapshot>((resolve) => {
-            call += 1;
-            if (call === 1) resolveFirst = resolve;
-            else resolveSecond = resolve;
+            resolvers.push(resolve);
           }),
       },
       {
-        onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
+        onSnapshot: (s) => events.push(s),
         onError: () => {
           /* not expected */
         },
       },
       () => 'zh-CN',
     );
-    // Fire two overlapping pulls.
     const pull1 = poller.pull();
     const pull2 = poller.pull();
-    // Resolve the newer pull (#2) first.
-    resolveSecond(READY_SNAPSHOT);
-    await pull2;
-    assert.deepEqual(events, [{ type: 'snap', payload: READY_SNAPSHOT }]);
-    // Now resolve the stale pull (#1) — it must be ignored.
-    resolveFirst(NEEDS_CONNECTION_SNAPSHOT);
+    assert.equal(resolvers.length, 1, 'overlapping pull must not start a second getSnapshot');
+    resolvers[0]!(NEEDS_CONNECTION_SNAPSHOT);
+    await flushMicrotasks();
+    assert.equal(resolvers.length, 2, 'the queued pull runs exactly one follow-up');
+    resolvers[1]!(READY_SNAPSHOT);
     await pull1;
-    assert.deepEqual(
-      events,
-      [{ type: 'snap', payload: READY_SNAPSHOT }],
-      'stale response from earlier pull must not emit',
-    );
+    await pull2;
+    assert.deepEqual(events, [NEEDS_CONNECTION_SNAPSHOT, READY_SNAPSHOT]);
   });
 
-  it('older inflight error cannot overwrite newer state', async () => {
-    let rejectFirst!: (err: Error) => void;
-    let resolveSecond!: (snap: OnboardingSnapshot) => void;
-    let call = 0;
-    const snaps: OnboardingSnapshot[] = [];
-    const errs: string[] = [];
+  it('collapses repeated invalidations during one pull into a single follow-up', async () => {
+    const resolvers: Array<(snap: OnboardingSnapshot) => void> = [];
     const poller = createOnboardingSnapshotPoller(
       {
         getSnapshot: () =>
-          new Promise<OnboardingSnapshot>((resolve, reject) => {
-            call += 1;
-            if (call === 1) rejectFirst = reject;
-            else resolveSecond = resolve;
+          new Promise<OnboardingSnapshot>((resolve) => {
+            resolvers.push(resolve);
           }),
       },
       {
-        onSnapshot: (s) => snaps.push(s),
-        onError: (m) => errs.push(m),
+        onSnapshot: () => {
+          /* not asserted */
+        },
+        onError: () => {
+          /* not expected */
+        },
       },
       () => 'zh-CN',
     );
-    const pull1 = poller.pull();
-    const pull2 = poller.pull();
-    resolveSecond(READY_SNAPSHOT);
-    await pull2;
-    rejectFirst(new Error('stale failure'));
-    await pull1;
-    assert.equal(snaps.length, 1);
-    assert.equal(errs.length, 0, 'stale error from older pull must NOT emit');
+    void poller.pull();
+    void poller.pull();
+    void poller.pull();
+    void poller.pull();
+    assert.equal(resolvers.length, 1);
+    resolvers[0]!(READY_SNAPSHOT);
+    await flushMicrotasks();
+    assert.equal(resolvers.length, 2, 'four queued invalidations produce one follow-up');
+    resolvers[1]!(READY_SNAPSHOT);
+    await flushMicrotasks();
+    assert.equal(resolvers.length, 2);
+  });
+
+  it('a response in flight across dispose cannot write after re-activation', async () => {
+    const resolvers: Array<(snap: OnboardingSnapshot) => void> = [];
+    const events: OnboardingSnapshot[] = [];
+    const poller = createOnboardingSnapshotPoller(
+      {
+        getSnapshot: () =>
+          new Promise<OnboardingSnapshot>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      },
+      {
+        onSnapshot: (s) => events.push(s),
+        onError: () => {
+          /* not expected */
+        },
+      },
+      () => 'zh-CN',
+    );
+    const pull = poller.pull();
+    poller.dispose();
+    poller.activate();
+    resolvers[0]!(READY_SNAPSHOT);
+    await pull;
+    assert.deepEqual(events, [], 'pre-dispose response must stay dropped after re-activation');
   });
 
   it('dispose() prevents pending getSnapshot callbacks after unmount', async () => {

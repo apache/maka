@@ -58,7 +58,6 @@ import {
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type SetCredentialInput,
-  type MigrateSystemSeedInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
   type UpdateNetworkProxyInput,
@@ -111,7 +110,6 @@ import {
   connectionRequestHeadersLocator,
   type CredentialStatusQueryResult,
   type BeginConnectionTestResult,
-  type BeginConnectionUsageResult,
   type BoundCredentialMaterialExportResult,
   type BeginModelFetchResult,
   type BeginInteractiveOAuthLoginResult,
@@ -124,7 +122,6 @@ import {
   type CommitConnectionOnboardingResult,
   type ConnectionOnboardingTicket,
   type ConnectionTestTicket,
-  type ConnectionUsageTicket,
   type InteractiveOAuthLoginCompletionResult,
   type InteractiveOAuthLoginInput,
   type InteractiveOAuthLoginProvider,
@@ -172,7 +169,7 @@ interface PreparedConnectionMaterial {
   readonly networkProxy: RuntimePolicy['networkProxy'];
 }
 
-type ConnectionTicketKind = 'model_fetch' | 'connection_test' | 'connection_usage';
+type ConnectionTicketKind = 'model_fetch' | 'connection_test';
 type TicketState = 'available' | 'in_flight' | 'consumed';
 
 type EffectiveProxyConfigurationBasis =
@@ -208,9 +205,6 @@ type SemanticConnectionBasis =
       readonly kind: 'connection_test';
       readonly requestBodyOverlayJson: string;
       readonly model: ConnectionTestModelBasis;
-    })
-  | (CommonSemanticConnectionBasis & {
-      readonly kind: 'connection_usage';
     });
 
 interface ConnectionTicketRecord {
@@ -474,10 +468,6 @@ export class RuntimePolicyCoordinator {
     return this.inLane(async (root) =>
       this.projectCatalogMutation(root, await this.catalog.setDefaultTarget(root, input)),
     );
-  }
-
-  migrateSystemSeed(input: MigrateSystemSeedInput) {
-    return this.inLane((root) => this.catalog.migrateSystemSeed(root, input));
   }
 
   setCredential(rawInput: SetCredentialInput) {
@@ -1669,30 +1659,6 @@ export class RuntimePolicyCoordinator {
     );
   }
 
-  beginConnectionUsage(connectionId: string): Promise<BeginConnectionUsageResult> {
-    return this.inLane(async (root) => {
-      const prepared = await this.prepareConnectionOperation(root, connectionId, 'read_usage');
-      if (prepared.kind !== 'ready') return prepared;
-      const ticket = this.issueTicket('connection_usage', connectionUsageSemanticBasis(prepared));
-      return deepFreeze({
-        kind: 'ready' as const,
-        ticket: ticket as ConnectionUsageTicket,
-        connection: structuredClone(prepared.connection),
-        secretMaterial: prepared.secretMaterial,
-        networkProxy: structuredClone(prepared.networkProxy),
-      });
-    });
-  }
-
-  /**
-   * Read-only counterpart of `completeConnectionTest`: nothing was written, so
-   * there is no catalog state to revalidate — the ticket is simply spent.
-   */
-  async completeConnectionUsage(ticket: ConnectionUsageTicket): Promise<void> {
-    const claimed = this.claimTicket(ticket, 'connection_usage');
-    await this.completeClaimedTicket(claimed, async () => undefined);
-  }
-
   private async prepareConnectionOperation(
     root: string,
     connectionId: string,
@@ -2327,12 +2293,6 @@ function connectionTestSemanticBasis(
   };
 }
 
-function connectionUsageSemanticBasis(
-  prepared: PreparedConnectionMaterial,
-): Extract<SemanticConnectionBasis, { readonly kind: 'connection_usage' }> {
-  return { kind: 'connection_usage', ...commonSemanticConnectionBasis(prepared) };
-}
-
 function isCanonicalConnectionTestModel(
   connection: ConnectionCatalogEntry,
   modelId: string,
@@ -2478,8 +2438,6 @@ function ticketLabel(kind: ConnectionTicketKind): string {
       return 'model fetch';
     case 'connection_test':
       return 'connection test';
-    case 'connection_usage':
-      return 'connection usage';
   }
 }
 

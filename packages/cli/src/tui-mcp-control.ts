@@ -47,6 +47,8 @@ import type {
 } from '@maka/runtime-host/client';
 import { createMcpCapabilityProvider } from './mcp-capability-provider.js';
 
+import { McpCapabilityPublication } from './mcp-capability-publication.js';
+
 const RUNTIME_HOST_CREDENTIAL_ENV = 'MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL';
 
 export type TuiMcpPublicationState =
@@ -256,15 +258,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     | undefined;
   #actionLane: Promise<void> = Promise.resolve();
   #publicationSuppressed = false;
-  #publicationRequested = false;
-  #publicationTask: Promise<void> | undefined;
-  #published:
-    | {
-        readonly identity: string;
-        readonly revision: number;
-        readonly registered: boolean;
-      }
-    | undefined;
+  readonly #publication: McpCapabilityPublication;
   #snapshot: TuiMcpSnapshot = freezeSnapshot({
     initialization: 'loading',
     configuration: 'synchronizing',
@@ -283,6 +277,26 @@ class TuiMcpControllerImpl implements TuiMcpController {
         connection.setCredential && connection.removeCredential,
       ),
     });
+    this.#publication = new McpCapabilityPublication({
+      connectionIdentity: () =>
+        this.#availability.kind === 'connected'
+          ? connectionIdentity(this.#availability)
+          : undefined,
+      revision: () => this.#deps.manager.toolSnapshot().revision,
+      createProvider: () => this.#deps.createProvider(this.#deps.manager),
+      replace: (provider) => this.#connection.replaceClientCapabilities(provider),
+      unregister: () => this.#connection.unregisterClientCapabilities(),
+      onState: (state) => {
+        this.#updateSnapshot({
+          publication:
+            state === 'unavailable'
+              ? this.#availability.kind === 'unavailable'
+                ? (this.#availability.reason ?? 'host_unavailable')
+                : 'waiting'
+              : state,
+        });
+      },
+    });
     this.#disposeManagerChange = deps.manager.onChange(() => {
       try {
         this.#refreshManagerSnapshot();
@@ -297,7 +311,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       (availability) => {
         this.#availability = availability;
         if (availability.kind === 'unavailable') {
-          this.#published = undefined;
+          this.#publication.invalidate();
           this.#updateSnapshot({
             publication: availability.reason ?? 'host_unavailable',
             ...(availability.reason === 'provider_conflict'
@@ -378,15 +392,11 @@ class TuiMcpControllerImpl implements TuiMcpController {
     this.#disposeConnectionAvailability();
     this.#listeners.clear();
     this.#preparedImport = undefined;
-    this.#publicationRequested = false;
+    const publicationClosing = this.#publication.close().catch(() => undefined);
     const managerClosing = this.#deps.manager.close();
     await this.#actionLane.catch(() => undefined);
     this.#config = undefined;
-    await this.#publicationTask?.catch(() => undefined);
-    if (this.#availability.kind === 'connected') {
-      await this.#connection.unregisterClientCapabilities().catch(() => undefined);
-    }
-    this.#published = undefined;
+    await publicationClosing;
     await this.#connection.closePublication?.().catch(() => undefined);
     await managerClosing;
     await this.#initialization.catch(() => undefined);
@@ -618,9 +628,12 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 
   async #settlePublication(): Promise<TuiMcpActionEffect> {
-    this.#requestPublication();
-    while (!this.#closed && (this.#publicationTask || this.#publicationRequested)) {
-      await this.#publicationTask?.catch(() => undefined);
+    if (
+      !this.#closed &&
+      this.#snapshot.initialization === 'ready' &&
+      !this.#publicationSuppressed
+    ) {
+      await this.#publication.settle();
     }
     if (
       this.#snapshot.publication === 'error' ||
@@ -670,73 +683,9 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 
   #requestPublication(): void {
-    if (this.#closed) {
-      this.#publicationRequested = false;
+    if (this.#closed || this.#snapshot.initialization !== 'ready' || this.#publicationSuppressed)
       return;
-    }
-    if (this.#snapshot.initialization !== 'ready' || this.#publicationSuppressed) return;
-    this.#publicationRequested = true;
-    if (this.#publicationTask) return;
-    this.#publicationTask = this.#runPublicationQueue().finally(() => {
-      this.#publicationTask = undefined;
-      if (this.#publicationRequested) this.#requestPublication();
-    });
-  }
-
-  async #runPublicationQueue(): Promise<void> {
-    while (this.#publicationRequested && !this.#closed) {
-      this.#publicationRequested = false;
-      await this.#publishCurrentSnapshot();
-    }
-  }
-
-  async #publishCurrentSnapshot(): Promise<void> {
-    const availability = this.#availability;
-    if (availability.kind !== 'connected') {
-      this.#updateSnapshot({ publication: availability.reason ?? 'host_unavailable' });
-      return;
-    }
-    const identity = connectionIdentity(availability);
-    const revision = this.#deps.manager.toolSnapshot().revision;
-    if (this.#published?.identity === identity && this.#published.revision === revision) {
-      this.#updateSnapshot({
-        publication: this.#snapshot.toolCount === 0 ? 'not_published' : 'published',
-      });
-      return;
-    }
-    let provider: ClientCapabilityProvider | undefined;
-    this.#updateSnapshot({ publication: 'publishing' });
-    try {
-      provider = this.#deps.createProvider(this.#deps.manager);
-      if (provider) {
-        await this.#connection.replaceClientCapabilities(provider);
-      } else if (this.#published?.identity === identity && this.#published.registered) {
-        await this.#connection.unregisterClientCapabilities();
-      }
-    } catch {
-      await closeProvider(provider);
-      if (this.#isCurrent(identity, revision)) {
-        this.#updateSnapshot({ publication: 'error' });
-      } else {
-        this.#requestPublication();
-      }
-      return;
-    }
-    if (!this.#isCurrent(identity, revision)) {
-      this.#requestPublication();
-      return;
-    }
-    this.#published = { identity, revision, registered: provider !== undefined };
-    this.#updateSnapshot({ publication: provider ? 'published' : 'not_published' });
-  }
-
-  #isCurrent(identity: string, revision: number): boolean {
-    return (
-      !this.#closed &&
-      this.#availability.kind === 'connected' &&
-      connectionIdentity(this.#availability) === identity &&
-      this.#deps.manager.toolSnapshot().revision === revision
-    );
+    this.#publication.request();
   }
 
   #updateSnapshot(
@@ -793,14 +742,6 @@ function connectionIdentity(
   availability: Extract<RuntimeHostConnectionAvailability, { kind: 'connected' }>,
 ): string {
   return `${availability.hostEpoch}\0${availability.connectionId}`;
-}
-
-async function closeProvider(provider: ClientCapabilityProvider | undefined): Promise<void> {
-  try {
-    await provider?.close?.();
-  } catch {
-    // A rejected provider never crossed into Host ownership.
-  }
 }
 
 function cloneConfig(config: McpConfigFile): McpConfigFile {

@@ -28,6 +28,7 @@ import type { SessionSummary } from '@maka/core/session';
 import type { SettingsSection } from '@maka/core/settings';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { MakaClientExecutorTarget } from '@maka/ui';
 import {
   chatModelChoiceLabel,
   composerModelSupportsVision,
@@ -44,6 +45,14 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { useNewTaskChoice } from './use-new-task-choice.js';
 
 export type { NewChatModel } from './shell-chat-model-selection.js';
+export type NewChatExecutionTarget = NewChatModel | { executorId: string; model: string };
+
+export function resolveNewChatExecutionThinkingLevel(
+  executorTarget: MakaClientExecutorTarget | undefined,
+  nativeThinkingLevel: ThinkingLevel | undefined,
+): ThinkingLevel | undefined {
+  return executorTarget?.thinkingLevel ?? nativeThinkingLevel;
+}
 
 export type SessionHealthNoticeView = {
   tone: 'info' | 'warning' | 'destructive';
@@ -78,13 +87,12 @@ export function useShellChatModel(options: {
   sessionHealthSession: SessionSummary | undefined;
   persistedComposerDefaults: ComposerDefaults | null;
   usePersistedComposerDefaults: boolean;
-  /** Settings → 通用 → 默认思考级别; undefined means "no preference". */
-  defaultThinkingLevel?: ThinkingLevel;
   connectionSnapshotReady: boolean;
   modelPickerDisabled: boolean;
   openSettingsSection: (section: SettingsSection) => void;
   openModelPicker(): void;
   refreshModelChoices(): void | Promise<void>;
+  setSessionExecutor?(sessionId: string, target: MakaClientExecutorTarget): Promise<boolean>;
 }): {
   chatModelChoices: ChatModelChoice[];
   activeConnection: IdentifiedLlmConnection | undefined;
@@ -94,14 +102,20 @@ export function useShellChatModel(options: {
   activeThinkingLevels: readonly ThinkingLevel[];
   activeThinkingLevel: ThinkingLevel | undefined;
   newChatModel: NewChatModel | undefined;
+  newChatExecutionTarget: NewChatExecutionTarget | undefined;
   newChatModelLabel: string | undefined;
+  newChatProviderType: IdentifiedLlmConnection['providerType'] | undefined;
   newChatThinkingLevels: readonly ThinkingLevel[];
   newChatThinkingLevel: ThinkingLevel | undefined;
+  newChatExecutionThinkingLevel: ThinkingLevel | undefined;
+  /** Raw draft intent; unlike the display value above, undefined stays untouched. */
+  pendingNewChatThinkingLevel: ThinkingLevel | null | undefined;
   composerSupportsVision: boolean | undefined;
   pendingNewChatModel: NewChatModelCandidate | null;
   setPendingNewChatModel: (next: NewChatModelCandidate | null) => void;
-  pendingNewChatThinkingLevel: ThinkingLevel | null;
   setPendingNewChatThinkingLevel: (next: ThinkingLevel | null) => void;
+  executorTarget: MakaClientExecutorTarget | undefined;
+  onExecutorTargetChange: (target: MakaClientExecutorTarget) => Promise<void>;
   sessionHealthNotice: SessionHealthNoticeView | undefined;
 } {
   const {
@@ -116,11 +130,16 @@ export function useShellChatModel(options: {
     openModelPicker,
   } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
-  const [pendingNewChatModelChoice, setPendingNewChatModel] = useNewTaskChoice<
-    NewChatModelCandidate | null
-  >(
-    options.newTaskKey,
-  );
+  const [pendingExecutionChoice, setPendingExecutionChoice] = useNewTaskChoice<
+    NewChatModelCandidate | MakaClientExecutorTarget | null
+  >(options.newTaskKey);
+  const pendingExecutorTarget =
+    pendingExecutionChoice && 'executorId' in pendingExecutionChoice
+      ? pendingExecutionChoice
+      : undefined;
+  const pendingNewChatModelChoice = pendingExecutorTarget
+    ? null
+    : (pendingExecutionChoice as NewChatModelCandidate | null | undefined);
   const pendingNewChatModel = pendingNewChatModelChoice !== undefined
     ? pendingNewChatModelChoice
     : options.usePersistedComposerDefaults
@@ -147,21 +166,26 @@ export function useShellChatModel(options: {
   // candidate wins before the legacy catalog default and first offered choice.
   // Renderer-only — it never mutates the persisted Settings · 模型 default.
   // Three states, because two cannot say this: `undefined` is an untouched
-  // picker, so Settings → 通用 → 默认思考级别 applies; `null` is the user
-  // explicitly choosing the per-chat `默认` option (use the model default),
-  // which must beat the configured Settings default or the picker could not
-  // undo it.
+  // picker, so this exact model's configured default applies; `null` is the
+  // user explicitly choosing the provider's default for this draft.
   //
   // The pick carries its target key so a Host or Project switch cannot apply it
   // to a different execution authority, even for an identically named model.
-  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] =
+  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel, clearPendingNewChatThinkingLevel] =
     useNewTaskChoice<ThinkingLevel | null>(
       options.newTaskKey,
     );
-  const requestedNewChatThinkingLevel =
-    pendingNewChatThinkingLevel === undefined
-      ? options.defaultThinkingLevel ?? null
-      : pendingNewChatThinkingLevel;
+  const setPendingNewChatModel = (next: NewChatModelCandidate | null) => {
+    setPendingExecutionChoice(next);
+    clearPendingNewChatThinkingLevel();
+  };
+  const executorTarget = activeSession?.executorId
+    ? {
+        executorId: activeSession.executorId,
+        ...(activeSession.model === activeSession.executorId ? {} : { model: activeSession.model }),
+        ...(activeSession.thinkingLevel ? { thinkingLevel: activeSession.thinkingLevel } : {}),
+      }
+    : (pendingExecutorTarget ?? undefined);
   // A pick only stays in effect while it is still an offered choice. If the user
   // later disables/removes that connection or model, fall through to another
   // offered candidate so the home chip never shows — nor sends — a stale model.
@@ -181,6 +205,15 @@ export function useShellChatModel(options: {
     catalogDefault: catalogDefaultNewChatModel,
     choices: chatModelChoices,
   });
+  const newChatModelChoice = chatModelChoices.find(
+    (choice) =>
+      choice.connectionId === newChatModel?.llmConnectionId &&
+      choice.connectionSlug === newChatModel?.llmConnectionSlug &&
+      choice.model === newChatModel?.model,
+  );
+  const requestedNewChatThinkingLevel = pendingNewChatThinkingLevel === undefined
+    ? newChatModelChoice?.defaultThinkingLevel ?? null
+    : pendingNewChatThinkingLevel;
   // A task whose backend was retired has no model to name (#3211). That verdict
   // comes from the readiness projection, not from reading `activeSession.backend`
   // here: the projection is the single authority on whether a task is usable,
@@ -226,14 +259,9 @@ export function useShellChatModel(options: {
   const newChatThinkingLevels = useMemo(
     () => {
       if (!newChatModel) return [];
-      return chatModelChoices.find(
-        (choice) =>
-          choice.connectionId === newChatModel.llmConnectionId &&
-          choice.connectionSlug === newChatModel.llmConnectionSlug &&
-          choice.model === newChatModel.model,
-      )?.thinkingLevels ?? [];
+      return newChatModelChoice?.thinkingLevels ?? [];
     },
-    [newChatModel, chatModelChoices],
+    [newChatModel, newChatModelChoice],
   );
   // The membership check is what keeps a configured default honest: a level the
   // current model does not offer falls through to that model's own default
@@ -317,16 +345,34 @@ export function useShellChatModel(options: {
     activeThinkingLevels,
     activeThinkingLevel,
     newChatModel,
+    newChatExecutionTarget:
+      pendingExecutorTarget?.model
+        ? { executorId: pendingExecutorTarget.executorId, model: pendingExecutorTarget.model }
+        : newChatModel,
     newChatModelLabel,
+    newChatProviderType: connections.find(
+      (connection) => connection.slug === newChatModel?.llmConnectionSlug,
+    )?.providerType,
     newChatThinkingLevels,
     newChatThinkingLevel,
+    pendingNewChatThinkingLevel,
+    newChatExecutionThinkingLevel: resolveNewChatExecutionThinkingLevel(
+      pendingExecutorTarget,
+      newChatThinkingLevel,
+    ),
     composerSupportsVision,
     pendingNewChatModel,
     setPendingNewChatModel,
-    // Resolved, not raw: callers want the level the next chat would actually
-    // request, and must not have to re-apply the settings fallback themselves.
-    pendingNewChatThinkingLevel: requestedNewChatThinkingLevel,
     setPendingNewChatThinkingLevel,
+    executorTarget,
+    onExecutorTargetChange: async (target) => {
+      if (activeSession) {
+        await options.setSessionExecutor?.(activeSession.id, target);
+      } else {
+        setPendingExecutionChoice(target);
+        setPendingNewChatThinkingLevel(target.thinkingLevel ?? null);
+      }
+    },
     sessionHealthNotice,
   };
 }

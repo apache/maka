@@ -56,7 +56,7 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 **Apache Releases**: Maka has not made an Apache release yet. When one exists, the signed source archive will be the official release; packages distributed elsewhere are convenience artifacts. See the [downloads page](https://maka.apache.org/en/downloads/) and [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) for candidate criteria, signing procedures, and verification steps.
 
-**Desktop Nightly**: Built daily from `main` for developers and testers, for macOS on Apple Silicon and Intel, Windows x64 and Linux x64 and arm64; the Windows and Linux builds are unsigned previews. It is not an ASF release and is not intended for production use. The [downloads page](https://maka.apache.org/en/downloads/) has the installers and the platform status.
+**Development testing**: To contribute or help test unreleased changes, see [CONTRIBUTING](./CONTRIBUTING.md) and the [development mailing list](https://lists.apache.org/list.html?dev@maka.apache.org). Development builds are not approved Apache releases.
 
 **Build from source**: To compile and run Desktop, the TUI, or the CLI directly from a source checkout, see the [Build from source](#build-from-source) section below.
 

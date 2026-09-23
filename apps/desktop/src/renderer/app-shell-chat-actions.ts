@@ -72,13 +72,12 @@ type RefBox<T> = { current: T };
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
-type PendingNewChatModel = {
-  llmConnectionId: string;
-  llmConnectionSlug: string;
-  model: string;
-} | null;
+type PendingNewChatModel =
+  | { llmConnectionId: string; llmConnectionSlug: string; model: string }
+  | { executorId: string; model: string }
+  | null;
 
-type PendingNewChatThinkingLevel = ThinkingLevel | null;
+type PendingNewChatThinkingLevel = ThinkingLevel | null | undefined;
 type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
 type DesktopSessionSummary = DesktopBridge.DesktopSessionSummary;
 type InteractionFormResponse = Parameters<
@@ -103,6 +102,7 @@ type MessageContextOptions = {
 };
 type SendOptions = MessageContextOptions & {
   waitForHostAdmission?: boolean;
+  targetSessionId?: string;
   turnOrchestration?: TurnOrchestration;
   displayText?: string;
   onSessionResolved?: (sessionId: string, newTaskDraftKey?: string) => void;
@@ -183,6 +183,7 @@ export function createAppShellChatActions(deps: {
   ) => void;
   toastApi: ToastApi;
   newChatModel: PendingNewChatModel;
+  /** Undefined applies the Host's model default; null explicitly keeps the provider default. */
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   /**
    * The user's explicit choice for this draft, or undefined when they made
@@ -307,7 +308,7 @@ export function createAppShellChatActions(deps: {
     options: SendOptions = {},
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
-    const initialSessionId = activeIdRef.current;
+    const initialSessionId = options.targetSessionId ?? activeIdRef.current;
     const sendOwner = captureComposerImportOwner();
     const selectionIsCurrent = captureSelection();
     if (!initialSessionId && !newTaskTarget) return false;
@@ -343,19 +344,17 @@ export function createAppShellChatActions(deps: {
     };
     try {
       async function submitIntoSession(sessionId: string, messageId: string) {
-        const attachmentItems =
-          pending?.length
-            ? Conversation.toComposerIngestItems(pending)
-            : undefined;
-        const retainedAttachments =
-          pending?.length
-            ? Conversation.retainedAttachmentRefs(pending)
-            : undefined;
         const sendCommand = {
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...copiedArray('attachmentItems', attachmentItems),
-          ...copiedArray('retainedAttachments', retainedAttachments),
+          ...copiedArray(
+            'attachmentItems',
+            pending && Conversation.toComposerIngestItems(pending),
+          ),
+          ...copiedArray(
+            'retainedAttachments',
+            pending && Conversation.retainedAttachmentRefs(pending),
+          ),
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
@@ -380,14 +379,8 @@ export function createAppShellChatActions(deps: {
         if (pending?.length) preflightAttachmentItems(pending);
         const session = await window.maka.newTasks.create(newTaskTarget, {
           name: DEFAULT_SESSION_NAME,
-          ...(newChatModel
-            ? {
-                llmConnectionId: newChatModel.llmConnectionId,
-                llmConnectionSlug: newChatModel.llmConnectionSlug,
-                model: newChatModel.model,
-              }
-            : {}),
-          ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
+          ...(newChatModel !== null ? { ...newChatModel } : {}),
+          thinkingLevel: pendingNewChatThinkingLevel,
           ...(newChatPermissionChoice ? { permissionMode: newChatPermissionChoice } : {}),
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,
@@ -435,7 +428,7 @@ export function createAppShellChatActions(deps: {
         void refreshSessions().catch(() => undefined);
         return true;
       }
-      if (!onFollowLatest(initialSessionId)) return false;
+      if (!options.targetSessionId && !onFollowLatest(initialSessionId)) return false;
       optimisticSessionId = initialSessionId;
       publishTransientUserMessage(initialSessionId, {
         id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',

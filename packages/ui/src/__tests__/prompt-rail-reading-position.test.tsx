@@ -182,6 +182,49 @@ test('portals landmarks into the layout host and keeps them actionable', async (
   assert.match(dom.container.innerHTML, /aria-label="Jump to prompt: Prompt 2"/);
 });
 
+test('re-rendering a tick keeps its hover card bound to the same trigger', async () => {
+  dom = installTranscriptDom();
+  const scrollRef = { current: null };
+  const turns: PromptAnchorRailTurn[] = Array.from({ length: 3 }, (_, index) => ({
+    turnId: `turn-${index}`, label: `Prompt ${index}`,
+  }));
+  const render = (navigate: (turn: PromptAnchorRailTurn) => void) =>
+    createElement(LocaleProvider, {
+      locale: 'en', children: createElement(ChatSurfaceLayout, {
+        composer: null, children: createElement(PromptAnchorRail, { turns, scrollRef, onNavigateTurn: navigate }),
+      }),
+    });
+  await dom.render(render(() => {}));
+  const tick = dom.container.querySelector<HTMLElement>('[data-prompt-turn-id="turn-1"]')!;
+  const bound: string[] = [];
+  const addEventListener = tick.addEventListener.bind(tick);
+  tick.addEventListener = (type: string, ...rest: [EventListenerOrEventListenerObject, AddEventListenerOptions?]) => {
+    bound.push(type);
+    addEventListener(type, ...rest);
+  };
+  await dom.render(render(() => {}));
+  assert.equal(dom.container.querySelector('[data-prompt-turn-id="turn-1"]'), tick);
+  assert.deepEqual(bound.filter((type) => /^(pointer|mouse|focus)/.test(type)), []);
+});
+
+test('a streaming reply re-renders only its own tick when the caller passes a fresh highlight handler', async () => {
+  const { dom } = await mountTranscript();
+  // A tick that re-renders hands its button new handler props.
+  const tickProps = (turnId: string): unknown => {
+    const tick = dom.container.querySelector(`[data-prompt-turn-id="${turnId}"]`)!;
+    const key = Object.keys(tick).find((name) => name.startsWith('__reactProps$'))!;
+    return (tick as unknown as Record<string, unknown>)[key];
+  };
+  await dom.render(view(turnMessages(), { onPromptRailHighlight: () => {} }));
+  const settled = tickProps('turn-0');
+  const streaming = tickProps('turn-5');
+  const delta = turnMessages().map((message) =>
+    message.id === 'assistant-5' && message.type === 'assistant' ? { ...message, text: '答案还在写' } : message);
+  await dom.render(view(delta, { onPromptRailHighlight: () => {} }));
+  assert.ok(tickProps('turn-0') === settled, 'the settled tick did not re-render');
+  assert.ok(tickProps('turn-5') !== streaming, 'the streaming tick re-rendered');
+});
+
 test('a retained tick uses updated content, decoration, and navigation callbacks', async () => {
   dom = installTranscriptDom();
   const scrollRef = { current: null };

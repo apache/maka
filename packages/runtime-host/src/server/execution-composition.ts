@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { attachmentKindFromMimeType, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
@@ -29,14 +30,13 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
 import { readLogicalRuntimeExecutionForRun } from '@maka/core/runtime-logical-execution';
-import { foldForMatch } from '@maka/core/thread-search';
+import { foldForMatch } from '@maka/core/transcript-search';
 import type { PermissionMode } from '@maka/core/permission';
 import {
   runtimeInvocationOutcome,
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
 import {
-  isDeepResearchSession,
   type SessionHeader,
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
@@ -54,9 +54,10 @@ import {
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
-import { buildRecallTools } from '@maka/runtime/recall-tools';
+import { buildRecallTools, type RecallToolDeps } from '@maka/runtime/recall-tools';
 import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
 import { createRecallMaterialFetch } from './recall-material-fetch.js';
+import { HostRecallCoordinator } from './recall-coordinator.js';
 import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
@@ -149,7 +150,6 @@ import { HostChangeFeed } from './host-change-feed.js';
 import { HostConfigurationCoordinator } from './configuration-coordinator.js';
 import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
-import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
 import { prepareHostAiSdkBackend } from './execution-model-composition.js';
 import {
@@ -168,6 +168,7 @@ import {
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { HostSessionBundleCoordinator } from './session-bundle-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
@@ -234,6 +235,7 @@ import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import {
   createSessionTranscriptReader,
+  createTurnResultReader,
   type SessionTranscriptReader,
 } from './session-transcript-reader.js';
 import {
@@ -401,7 +403,6 @@ export async function createExecutionRuntimeHostComposition(
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
     const openedScheduledTaskStore = storage.scheduledTasks;
     const openedPlanStore = storage.plan;
-    const openedDeepResearchStore = storage.deepResearch;
     const openedDailyReviewStore = storage.dailyReview;
     const openedGoalStore = storage.goal;
     const memoryStore = storage.memoryBundle;
@@ -691,7 +692,10 @@ export async function createExecutionRuntimeHostComposition(
         webSearchService.search({ query, limit, ...(abortSignal ? { abortSignal } : {}) }),
       fetch: (input) => webFetchService.fetch(input),
     });
-    const recallTools = buildRecallTools({
+    // The recall surface is built once and shared: the model's tools and the
+    // Host's `recall.query` operation answer from the same dependency graph, so
+    // a UI search and a model recall cannot diverge in what they can see.
+    const recallDeps: RecallToolDeps = {
       listSessions: () => requireSessionManager(manager).listSessions(),
       readMessages: async (sessionId, abortSignal) => {
         if (abortSignal?.aborted) return null;
@@ -744,7 +748,9 @@ export async function createExecutionRuntimeHostComposition(
         incognitoActive: (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy
           .incognitoActive,
       }),
-    });
+    };
+    const recallTools = buildRecallTools(recallDeps);
+    const recall = new HostRecallCoordinator(recallDeps);
     const childHostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
@@ -858,6 +864,7 @@ export async function createExecutionRuntimeHostComposition(
     );
     let rootCoordinator: RootTurnCoordinator | undefined;
     let workHubCoordination: HostWorkHubCoordinationCoordinator;
+    let workHubResults: ReturnType<typeof createWorkHubResultRuntime> | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
@@ -866,7 +873,6 @@ export async function createExecutionRuntimeHostComposition(
     let scheduledTasks: HostScheduledTaskCoordinator | undefined;
     let scheduledTaskTool: MakaTool | undefined;
     let goal: HostGoalCoordinator | undefined;
-    let deepResearch: HostDeepResearchCoordinator | undefined;
     let dailyReview: HostDailyReviewCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readLatestRootTurnLineage: (identity) =>
@@ -937,23 +943,19 @@ export async function createExecutionRuntimeHostComposition(
       (sessionId) => continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'plan'),
       context.requestDrain,
     );
-    unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
-      continuityCoordinator.enqueueCanonicalRefresh(sessionId),
-    );
+    unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) => {
+      continuityCoordinator.enqueueCanonicalRefresh(sessionId);
+      sessionAdmission.detach(() => workHubResults?.notify(sessionId));
+    });
     unsubscribeRuntimeEventCommits = stores.runtimeEventStore.subscribeRuntimeEventCommits(
-      (sessionId) => continuityCoordinator.enqueueTranscriptAdvanced(sessionId),
+      (sessionId) => {
+        continuityCoordinator.enqueueTranscriptAdvanced(sessionId);
+        sessionAdmission.detach(() => workHubResults?.notify(sessionId));
+      },
     );
     unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
       continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'usage'),
     );
-    deepResearch = new HostDeepResearchCoordinator({
-      store: openedDeepResearchStore,
-      artifacts: openedArtifactStore,
-      sessions: stores.sessionStore,
-      sessionAdmission,
-      onProjectionChanged: (sessionId) =>
-        continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'deep_research'),
-    });
     dailyReview = new HostDailyReviewCoordinator({
       store: openedDailyReviewStore,
       usage: openedUsageStores,
@@ -992,8 +994,10 @@ export async function createExecutionRuntimeHostComposition(
         canonicalProjectionReader.fitsCandidate(sessionId, {
           interactions: interactionProjection,
         }),
-      refreshCanonicalContinuity: (sessionId, admission) =>
-        continuityCoordinator.refreshCanonical(sessionId, admission),
+      refreshCanonicalContinuity: async (sessionId, admission) => {
+        await continuityCoordinator.refreshCanonical(sessionId, admission);
+        sessionAdmission.detach(() => workHubResults?.notify(sessionId));
+      },
       onPoison: (error) => {
         if (poisonFailure) return;
         poisonFailure = error;
@@ -1068,14 +1072,13 @@ export async function createExecutionRuntimeHostComposition(
           resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
         ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
         planStore,
-        deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
-          backendContext.sessionId,
-        ),
         goalTools: requireGoal(goal).tools,
         builtinTools,
         hostTools,
         resolveRootTools: (sessionId) =>
-          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults
+            ? Promise.resolve([workHubResults.tool])
+            : requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
         resolvePluginTools: (sessionId, coreTools) =>
           pluginTools.resolveContributions(sessionId, coreTools),
         resolvePluginSystemPrompt: async (sessionId, promptContext, baseText) => {
@@ -1142,6 +1145,12 @@ export async function createExecutionRuntimeHostComposition(
             new PluginExecutorBackend({
               sessionId: factoryContext.sessionId,
               cwd: factoryContext.header.cwd,
+              ...(factoryContext.header.model === executorId
+                ? {}
+                : { model: factoryContext.header.model }),
+              ...(factoryContext.header.thinkingLevel
+                ? { thinkingLevel: factoryContext.header.thinkingLevel }
+                : {}),
               ...(factoryContext.systemPrompt ? { instructions: factoryContext.systemPrompt } : {}),
               binding,
             }),
@@ -1229,7 +1238,9 @@ export async function createExecutionRuntimeHostComposition(
         requireClientCapabilities(clientCapabilities).snapshotForSession(sessionId);
       try {
         const [graphTools, planState] = await Promise.all([
-          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults
+            ? Promise.resolve([workHubResults.tool])
+            : requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
           planStore.readState(sessionId),
         ]);
         const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
@@ -1259,13 +1270,6 @@ export async function createExecutionRuntimeHostComposition(
             mode: header.collaborationMode ?? 'agent',
             permissionMode: header.permissionMode,
           },
-          ...(isDeepResearchSession(header.labels)
-            ? {
-                deepResearch: {
-                  tools: requireDeepResearch(deepResearch).toolsForSession(sessionId),
-                },
-              }
-            : {}),
         }).tools.map((tool) => tool.name);
       } finally {
         capabilitySnapshot?.release();
@@ -1519,6 +1523,12 @@ export async function createExecutionRuntimeHostComposition(
     };
     clientCapabilities = new HostClientCapabilityCoordinator({
       activation: runtimePolicyActivation,
+      isSessionRetired: async (sessionId) => {
+        const state = await stores.sessionStore.probeSessionRemoval(sessionId);
+        return (
+          state.kind === 'removed' || (state.kind === 'present' && state.record.header.isArchived)
+        );
+      },
       onModelToolsChanged: registerBackendInvalidation,
       interactions,
       grants: stores.interactionStore,
@@ -1900,7 +1910,6 @@ export async function createExecutionRuntimeHostComposition(
     const interactiveTurns = new HostInteractiveTurnCoordinator({
       executions: coordinator,
       turns: stores.agentRunStore,
-      runtime: manager,
     });
     // Compile-time guarantee that the three Turn coordinators together cover
     // every key in TURN_OPERATION_SPECS. Domain composition seeds all domain
@@ -1916,7 +1925,6 @@ export async function createExecutionRuntimeHostComposition(
       ? new SessionTurnAccessRequestCoordinator({
           authority: context.sessionAccessAuthority,
           startTurn: interactiveTurns.handlers['turn.start'],
-          regenerateTurn: interactiveTurns.handlers['turn.regenerate'],
           hostEpoch: context.hostEpoch,
           acquireResidency: () => context.acquireResidency('collaboration-turn-request'),
           requestDrain: context.requestDrain,
@@ -2290,7 +2298,12 @@ export async function createExecutionRuntimeHostComposition(
                   workspace: input.create.workspace,
                   name: input.create.title,
                   ...(input.create.defaults?.executorId
-                    ? { executorId: input.create.defaults.executorId }
+                    ? {
+                        executorId: input.create.defaults.executorId,
+                        ...(input.create.defaults.executorModel
+                          ? { executorModel: input.create.defaults.executorModel }
+                          : {}),
+                      }
                     : {
                         modelTarget: input.create.defaults?.model
                           ? {
@@ -2303,6 +2316,9 @@ export async function createExecutionRuntimeHostComposition(
                       }),
                   ...(input.create.defaults?.permissionMode
                     ? { permissionMode: input.create.defaults.permissionMode }
+                    : {}),
+                  ...(input.create.defaults?.thinkingLevel
+                    ? { thinkingLevel: input.create.defaults.thinkingLevel }
                     : {}),
                   collaborationMode: 'agent',
                   orchestrationMode: 'default',
@@ -2375,6 +2391,7 @@ export async function createExecutionRuntimeHostComposition(
                       ? WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION
                       : 1,
                     kind: 'delegation_assigned',
+                    returnResults: true,
                     actionId: input.actionId,
                     actionFingerprint: input.actionFingerprint,
                     coordinationTurnId: input.coordinationTurnId ?? input.actionId,
@@ -2446,6 +2463,24 @@ export async function createExecutionRuntimeHostComposition(
       },
       requestDrain: context.requestDrain,
     });
+    workHubResults = createWorkHubResultRuntime({
+      stores,
+      executions: coordinator,
+      messages,
+      interactions,
+      admission: sessionAdmission,
+      readTurnResult: createTurnResultReader({
+        stores,
+        canonicalPermissionOutcomes,
+        ensureTranscriptLedger: (sessionId) =>
+          requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId),
+      }),
+      acquireResidency: () => context.acquireResidency('hosted-execution'),
+      onError: (error) =>
+        console.error(
+          `[runtime-host] WorkHub result reconciliation failed: ${boundedFailureDiagnostic(error)}`,
+        ),
+    });
     scheduledTasks = new HostScheduledTaskCoordinator({
       store: openedScheduledTaskStore,
       sessions: stores.sessionStore,
@@ -2473,6 +2508,10 @@ export async function createExecutionRuntimeHostComposition(
       lease: context.owner.lease,
       fenceSubtree: (sessionId, operation) =>
         requireSessionManager(manager).runSessionSubtreeQuiescentMutation(sessionId, operation),
+      recoverInterruptedSessions: (sessionIds) =>
+        requireSessionManager(manager)
+          .recoverInterruptedSessionsForSessions(sessionIds)
+          .then(() => undefined),
       onImported: (sessionId) => hostChanges.publishSessionCatalog(sessionId),
     });
     const externalSessions = new HostExternalSessionCoordinator({
@@ -2543,7 +2582,6 @@ export async function createExecutionRuntimeHostComposition(
         // writer: publishing a per-Session `plan` invalidation for state that is
         // being removed would only wake subscribers to read nothing.
         await openedPlanStore.purgeSessionState(sessionId);
-        await openedDeepResearchStore.purgeSessionState(sessionId);
       },
       purgeAgentGraphState: async (sessionId) => {
         for (const graphId of await requireGraphCoordinator(graphCoordinator).listGraphIds(
@@ -2650,11 +2688,6 @@ export async function createExecutionRuntimeHostComposition(
               ),
             );
             await sessionRevisions.recover();
-            for (const session of recoverySessions) {
-              await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(
-                session.id,
-              );
-            }
           },
         },
       }),
@@ -2674,6 +2707,7 @@ export async function createExecutionRuntimeHostComposition(
           oauth.handlers,
           externalAgentSetup.handlers,
           webSearch.handlers,
+          recall.handlers,
           networkProxy.handlers,
           configuration.handlers,
         ],
@@ -2734,8 +2768,15 @@ export async function createExecutionRuntimeHostComposition(
                 try {
                   await clientBoundRecovery;
                 } catch (error) {
+                  // The registration mutation has already committed. Returning a
+                  // failure now would make the Client discard its new registration
+                  // identity and mistake the old registration's release for
+                  // authoritative Session retirement. Drain the unhealthy Host, but
+                  // acknowledge the committed mutation so reconnect can republish it.
+                  console.error(
+                    `[runtime-host] post-commit Client Capability recovery failed: ${boundedFailureDiagnostic(error)}`,
+                  );
                   context.requestDrain();
-                  throw error;
                 }
               }
               return outcome;
@@ -2752,11 +2793,6 @@ export async function createExecutionRuntimeHostComposition(
         },
         drain: [() => clientCapabilities.beginDrain()],
         close: [() => clientCapabilities.close()],
-      }),
-      createRuntimeHostDomainModule({
-        id: 'deep-research',
-        handlers: [requireDeepResearch(deepResearch).handlers],
-        close: [() => deepResearch?.close()],
       }),
       createRuntimeHostDomainModule({
         id: 'daily-review',
@@ -2812,6 +2848,7 @@ export async function createExecutionRuntimeHostComposition(
           },
         },
         drain: [
+          () => workHubResults?.coordinator.beginDrain(),
           () => turnAccessRequests?.beginDrain(),
           () => rootCoordinator?.beginDrain(),
           () => workspaceExecution?.beginDrain(),
@@ -2827,6 +2864,7 @@ export async function createExecutionRuntimeHostComposition(
             rootCloseTask ??= coordinator.close();
             await rootCloseTask;
           },
+          () => workHubResults?.coordinator.close(),
           () => runtimeResources?.close(),
           () => workspaceExecution?.close(),
           () => sessionEffects?.close(),
@@ -2882,7 +2920,9 @@ export async function createExecutionRuntimeHostComposition(
     if (draining) beginDrain();
     const handlers = composeRuntimeHostDomainHandlers(domainModules);
     const recover = () => {
-      recoveryTask ??= recoverRuntimeHostDomainModules(domainModules);
+      recoveryTask ??= recoverRuntimeHostDomainModules(domainModules).then(() => {
+        if (!draining) workHubResults?.coordinator.start();
+      });
       return recoveryTask;
     };
     const close = () => {
@@ -3219,13 +3259,6 @@ function requireScheduledTasks(
   coordinator: HostScheduledTaskCoordinator | undefined,
 ): HostScheduledTaskCoordinator {
   if (!coordinator) throw new Error('Runtime Host ScheduledTask coordinator is not composed');
-  return coordinator;
-}
-
-function requireDeepResearch(
-  coordinator: HostDeepResearchCoordinator | undefined,
-): HostDeepResearchCoordinator {
-  if (!coordinator) throw new Error('Runtime Host Deep Research coordinator is not composed');
   return coordinator;
 }
 

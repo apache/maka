@@ -28,28 +28,86 @@ import type { MakaTool } from '../tool-runtime.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 
 describe('ApplyPatch profile routing', () => {
-  test('derives the effective profile from the provider adapter contract', () => {
+  test('routes supported Codex and DeepSeek models through their supported tool transports', () => {
+    assert.deepEqual(
+      resolveModelRuntime({ providerType: 'openai-codex' }, 'gpt-6-astra').applyPatchProfile,
+      { kind: 'codex-v4a-freeform' },
+    );
+    assert.deepEqual(
+      resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-flash').applyPatchProfile,
+      { kind: 'portable-v4a' },
+    );
+    assert.equal(resolveModelRuntime({ providerType: 'xai' }, 'unknown').applyPatchProfile, null);
+    assert.equal(
+      resolveModelRuntime({ providerType: 'openai-codex' }, 'unknown').applyPatchProfile,
+      null,
+    );
+    assert.equal(
+      resolveModelRuntime({ providerType: 'deepseek' }, 'unknown').applyPatchProfile,
+      null,
+    );
+    assert.deepEqual(
+      resolveModelRuntime({ providerType: 'openai-compatible' }, 'gpt-5.6-luna').applyPatchProfile,
+      { kind: 'portable-v4a' },
+    );
+  });
+
+  test('overrides are per model and work for future models without a name whitelist', () => {
+    const connection = {
+      providerType: 'openai-codex' as const,
+      modelOverrides: { disabled: { applyPatch: false }, future: { applyPatch: true } },
+    };
+    assert.equal(resolveModelRuntime(connection, 'disabled').applyPatchProfile, null);
+    assert.deepEqual(resolveModelRuntime(connection, 'future').applyPatchProfile, {
+      kind: 'codex-v4a-freeform',
+    });
+    assert.deepEqual(
+      resolveModelRuntime(
+        { providerType: 'anthropic', modelOverrides: { future: { applyPatch: true } } },
+        'future',
+      ).applyPatchProfile,
+      { kind: 'portable-v4a' },
+    );
+    assert.equal(
+      resolveModelRuntime(
+        { providerType: 'anthropic', modelOverrides: { future: { applyPatch: true } } },
+        'other',
+      ).applyPatchProfile,
+      null,
+    );
+  });
+
+  test('explicit enablement uses ordinary functions on relays and explicit disablement wins on OpenAI', () => {
+    assert.deepEqual(
+      resolveModelRuntime(
+        {
+          providerType: 'openai-responses-compatible',
+          modelOverrides: { future: { applyPatch: true } },
+        },
+        'future',
+      ).applyPatchProfile,
+      { kind: 'portable-v4a' },
+    );
+    assert.equal(
+      resolveModelRuntime(
+        { providerType: 'openai', modelOverrides: { 'gpt-5.4': { applyPatch: false } } },
+        'gpt-5.4',
+      ).applyPatchProfile,
+      null,
+    );
     assert.equal(
       resolveModelRuntime(
         {
           providerType: 'deepseek',
-          baseUrl: 'https://gateway.example/v1',
+          modelOverrides: { 'deepseek-v4-flash': { applyPatch: false } },
         },
         'deepseek-v4-flash',
       ).applyPatchProfile,
       null,
     );
-    assert.equal(
-      resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-pro').applyPatchProfile,
-      null,
-    );
-    assert.equal(
-      resolveModelRuntime({ providerType: 'xai' }, 'deepseek-v4-flash').applyPatchProfile,
-      null,
-    );
   });
 
-  test('keeps portable Write/Edit when DeepSeek cannot carry custom ApplyPatch', () => {
+  test('projects the editing surface and the matching input schema', () => {
     const tool = (name: string, providerTool?: MakaTool['providerTool']): MakaTool => ({
       name,
       description: name,
@@ -57,46 +115,50 @@ describe('ApplyPatch profile routing', () => {
       providerTool,
       impl: async () => undefined,
     });
-    const routed = routeApplyPatchTools(
-      [tool('Write'), tool('Edit'), tool('apply_patch', { kind: 'openai-apply-patch' })],
-      resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-flash').applyPatchProfile,
-    );
-
+    const tools = [
+      tool('Read'),
+      tool('Write'),
+      tool('Edit'),
+      tool('apply_patch', { kind: 'openai-apply-patch' }),
+    ];
     assert.deepEqual(
-      routed.map(({ name }) => name),
-      ['Write', 'Edit'],
+      routeApplyPatchTools(tools, null).map((t) => t.name),
+      ['Read', 'Write', 'Edit'],
     );
+    const portable = routeApplyPatchTools(tools, { kind: 'portable-v4a' });
+    assert.deepEqual(
+      portable.map((t) => t.name),
+      ['Read', 'apply_patch'],
+    );
+    assert.equal(portable[1]?.providerTool, undefined);
+    const custom = routeApplyPatchTools(tools, { kind: 'codex-v4a-freeform' });
+    assert.equal(custom[1]?.providerTool?.kind, 'codex-apply-patch');
+    assert.equal(tools[3]?.providerTool?.kind, 'openai-apply-patch');
   });
 
-  test('does not expose the dormant Codex V4A freeform target path', () => {
+  test('preserves multi-file history in custom and portable forms', () => {
+    const patch = '*** Begin Patch\n*** Delete File: a.txt\n*** Delete File: b.txt\n*** End Patch';
+    const portable = { patch };
     assert.equal(
-      resolveApplyPatchProfile(
-        {
-          wire: 'openai-responses',
-          applyPatchProtocol: 'codex-v4a-freeform',
-        },
-        'deepseek-v4-flash',
-      ),
+      normalizeApplyPatchReplayInput({ kind: 'codex-v4a-freeform' }, 'c', portable),
+      patch,
+    );
+    assert.deepEqual(
+      normalizeApplyPatchReplayInput({ kind: 'portable-v4a' }, 'c', patch),
+      portable,
+    );
+    assert.equal(normalizeApplyPatchReplayInput({ kind: 'portable-v4a' }, 'c', portable), portable);
+    assert.equal(
+      normalizeApplyPatchReplayInput({ kind: 'openai-structured' }, 'c', portable),
       null,
     );
+    assert.equal(normalizeApplyPatchReplayInput(null, 'c', portable), null);
     assert.equal(
-      resolveApplyPatchProfile(
-        { wire: 'openai-chat', applyPatchProtocol: 'codex-v4a-freeform' },
-        'deepseek-v4-flash',
-      ),
-      null,
+      normalizeApplyPatchReplayInput({ kind: 'codex-v4a-freeform' }, 'c', {
+        operation: { type: 'delete_file', path: 'old.txt' },
+      }),
+      '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch',
     );
-    assert.equal(
-      resolveApplyPatchProfile(
-        {
-          wire: 'openai-responses',
-          applyPatchProtocol: 'codex-v4a-freeform',
-        },
-        'deepseek-v4-pro',
-      ),
-      null,
-    );
-    assert.equal(resolveApplyPatchProfile({ wire: 'openai-responses' }, 'deepseek-v4-flash'), null);
   });
 
   test('preserves structured routing for documented native OpenAI models', () => {
@@ -107,12 +169,12 @@ describe('ApplyPatch profile routing', () => {
       ),
       { kind: 'openai-structured' },
     );
-    assert.equal(
+    assert.deepEqual(
       resolveApplyPatchProfile(
         { wire: 'openai-chat', applyPatchProtocol: 'openai-structured' },
         'gpt-5.6',
       ),
-      null,
+      { kind: 'portable-v4a' },
     );
     assert.equal(
       resolveApplyPatchProfile(
@@ -121,7 +183,9 @@ describe('ApplyPatch profile routing', () => {
       ),
       null,
     );
-    assert.equal(resolveApplyPatchProfile({ wire: 'openai-responses' }, 'gpt-5.6'), null);
+    assert.deepEqual(resolveApplyPatchProfile({ wire: 'openai-responses' }, 'gpt-5.6'), {
+      kind: 'portable-v4a',
+    });
   });
 
   test('normalizes portable single-operation history', () => {

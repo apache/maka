@@ -22,7 +22,10 @@ import test from 'node:test';
 import { act, createElement } from 'react';
 import { parseHTML } from 'linkedom';
 import { deferred } from '@maka/core/test-only/async-primitives';
-import type { SearchRequest, SearchResult } from '@maka/core/search';
+import type {
+  RecallSearchOutcome,
+  RecallSearchRequest,
+} from '@maka/ui';
 
 // Cover the complete overlay owner -> modal -> Desktop service path.
 // A rebase must preserve request identity and cancellation from #5256.
@@ -53,18 +56,18 @@ test('overlay search preserves cancellation across supersession, close, reopen, 
     await import('../../renderer/features/overlays/index.js');
   const { createDesktopOverlaysServices } =
     await import('../../renderer/platform/desktop/create-overlays-services.js');
-  const requests: ReturnType<typeof deferred<SearchResult[]>>[] = [];
+  const requests: ReturnType<typeof deferred<RecallSearchOutcome>>[] = [];
   const requestIds: string[] = [];
   const cancelled: string[] = [];
   const search = {
-    thread: (_request: SearchRequest, requestId?: string) => {
+    recall: (_request: RecallSearchRequest, requestId?: string) => {
       assert.ok(requestId);
       requestIds.push(requestId);
-      const request = deferred<SearchResult[]>();
+      const request = deferred<RecallSearchOutcome>();
       requests.push(request);
       return request.promise;
     },
-    cancelThread: async (requestId: string) => { cancelled.push(requestId); },
+    cancelRecall: async (requestId: string) => { cancelled.push(requestId); },
   };
   const root = createRoot(document.getElementById('root')!);
   let overlays: import('../../renderer/features/overlays/testing.js').OverlaysShellProjection;
@@ -105,15 +108,35 @@ test('overlay search preserves cancellation across supersession, close, reopen, 
     await type('older');
     await type('maka');
     assert.equal(requests.length, 3);
-    await act(async () => { requests[2]!.resolve([
-      { source: 'thread', title: 'Latest maka match', target: { kind: 'thread', sessionId: 'latest' } },
-    ]); });
+    await act(async () => { requests[2]!.resolve({
+      passages: [{
+        sessionId: 'latest',
+        sessionTitle: 'Latest maka match',
+        anchorMessageId: 'latest-anchor',
+        sequence: 0,
+        messages: [{
+          messageId: 'latest-anchor',
+          role: 'assistant',
+          matchKind: 'assistant_message',
+          text: 'Latest maka match',
+          timestamp: 1,
+          isAnchor: true,
+        }],
+        matchedTerms: ['maka'],
+        score: 1,
+      }],
+      gaps: '',
+      searchedEverySession: true,
+    }); });
     assert.match(document.body.textContent ?? '', /Latest maka match/);
     assert.equal(busy(), 0, 'completed results must not wait for the superseded request');
     assert.equal(input().value, 'maka');
     assert.deepEqual(cancelled, [requestIds[0], requestIds[1]]);
 
-    await act(async () => { requests[0]!.resolve([]); requests[1]!.resolve([]); });
+    await act(async () => {
+      requests[0]!.resolve({ passages: [], gaps: '', searchedEverySession: true });
+      requests[1]!.resolve({ passages: [], gaps: '', searchedEverySession: true });
+    });
     assert.match(document.body.textContent ?? '', /Latest maka match/);
     assert.equal(busy(), 0);
 
