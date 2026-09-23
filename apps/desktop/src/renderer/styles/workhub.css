@@ -24,75 +24,9 @@
   initial-value: 0px;
 }
 
-.workhub-body {
-  display: grid;
-  width: 100%;
-  min-width: 0;
-  /* Reserve the outer transcript gutters and balanced message-list padding
-     outside the shared reading measure; --spacing-4 is Astryx balanced list padding (16px). */
-  grid-template-columns: minmax(0, 220px) minmax(0, calc(var(--maka-reading-measure) + 2 * (var(--maka-transcript-gutter) + var(--spacing-4)))) minmax(0, 220px);
-  gap: var(--space-6, 24px);
-  justify-content: center;
-}
-
-.workhub-conversation-shell {
-  width: 100%;
-  min-width: 0;
-  grid-column: 2;
-}
-
-.workhub-anchor-rail {
-  position: sticky;
-  top: var(--space-3, 12px);
-  align-self: start;
-  max-height: calc(100vh - 180px);
-  padding: var(--space-3, 12px) 0;
-  overflow-y: auto;
-}
-
-.workhub-anchor-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--color-border-subtle, var(--border));
-}
-
-.workhub-filters {
-  width: 100%;
-  margin-block: 8px;
-}
-
-.workhub-anchors {
-  display: flex;
-  flex-direction: column;
-}
-
-.workhub-anchor-rail nav[data-dragging='true'],
-.workhub-anchor-rail nav[data-dragging='true'] * { cursor: grabbing; user-select: none; }
-
-.workhub-anchor-empty {
-  margin: 0;
-  padding: 12px 0;
-}
-
 /* Delegation status shares the prompt's timestamp row. */
 .workhub-delegation-status {
   color: var(--muted-foreground);
-}
-
-.workhub-work-identity {
-  --workhub-work-color: oklch(0.58 0.1 var(--workhub-work-hue));
-  --workhub-work-highlight: oklch(0.48 0.18 var(--workhub-work-hue));
-}
-
-.dark .workhub-work-identity {
-  --workhub-work-color: oklch(0.76 0.105 var(--workhub-work-hue));
-  --workhub-work-highlight: oklch(0.85 0.15 var(--workhub-work-hue));
-}
-
-.workhub-work-identity[data-work-highlighted='true'] {
-  --workhub-work-color: var(--workhub-work-highlight);
 }
 
 .workhub-surface {
@@ -105,22 +39,8 @@
   --workhub-highlight: 0.85 0.15;
 }
 
-.workhub-navigation-item { position: relative; padding-inline-start: var(--space-3); }
-.workhub-navigation-item::before { content: ''; position: absolute; inset-block: var(--space-2); inset-inline-start: 0; width: 4px; border-radius: var(--radius-pill); background: var(--workhub-work-color); }
-
-.workhub-navigation-item[data-work-highlighted='true'] {
-  background: color-mix(in oklch, var(--workhub-work-color) 8%, transparent);
-}
-
 .workhub-surface .maka-prompt-rail:has([data-highlighted='true']) {
   opacity: 1;
-}
-
-.workhub-navigation-label {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
   .workHubLive, .workHubDock { width: 100%; height: 100%; min-width: 0; min-height: 0; }
@@ -177,7 +97,6 @@
   }
   .workHubLive[data-placement='floating'][data-conversation-expanded='false'], body:has(.workHubLive[data-placement='floating'][data-conversation-expanded='false'])::after { border-radius: 20px; }
   .workHubLive[data-placement='floating'][data-conversation-expanded='false']::before { opacity: 1; }
-  .workHubLive[data-placement='floating'] .workhub-anchor-rail { display: none; }
   .workHubLive[data-placement='floating'] .maka-chat-layout { background: transparent; }
   /* Keep the sticky dock bottom-aligned even before the native window has
      grown enough to fit its composer, 32px scroll button and 12px gaps. */
@@ -205,13 +124,6 @@
   .workHubExpandButton { position: absolute; top: 6px; right: 8px; z-index: 2; color: var(--muted-foreground); -webkit-app-region: no-drag; }
 
 html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { background: transparent; }
-
-@media (max-width: 1240px) {
-  .workhub-body { display: flex; flex-direction: column; gap: var(--space-3); }
-  .workhub-conversation-shell { width: 100%; }
-  .workhub-anchor-rail { position: static; width: min(var(--maka-reading-measure), 100%); max-height: 180px; margin-inline: auto; padding: var(--space-3); }
-  .workhub-anchors { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); overflow-x: auto; }
-}
 
 /* Progress and conversation share the same editor, including its IME state. */
 .workHubLive[data-placement='floating'][data-progress='true'] {

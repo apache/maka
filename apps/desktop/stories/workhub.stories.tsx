@@ -210,8 +210,7 @@ export const FullConversationAndWorkIdentity: Story = {
     expect(canvasElement.querySelector('.workhub-result-card')).toBeNull();
     await userEvent.click(canvasElement.querySelector('.workhub-turn-label') as HTMLElement);
     await waitFor(() => expect(writes.open).toHaveBeenCalledWith(targetId));
-    const navigation = canvasElement.querySelector('.workhub-navigation-item') as HTMLElement;
-    await userEvent.hover(navigation);
+    await userEvent.hover(canvasElement.querySelector('.maka-user-message .workhub-message-rail') as HTMLElement);
     await waitFor(() => expect(canvasElement.querySelector('.workhub-turn-label')).toHaveAttribute('data-work-highlighted', 'true'));
   },
 };
@@ -222,7 +221,7 @@ export const UsageInspector: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText(/接下来会核对并发回调的处理结果/);
-    const conversation = canvasElement.querySelector('.workhub-conversation-shell')!;
+    const conversation = canvasElement.querySelector('[data-chat-scroll-container]')!;
     const editor = canvasElement.querySelector('[contenteditable="true"]')!;
     await userEvent.click(editor);
     await userEvent.type(editor, '再检查一下并发回调。');
@@ -347,7 +346,7 @@ async function expectPromptRailClearance(canvasElement: HTMLElement) {
       const hit = tick.getBoundingClientRect();
       expect(tick.contains(document.elementFromPoint(hit.x + hit.width / 2, hit.y + hit.height / 2))).toBe(true);
     }
-    const body = canvasElement.querySelector('.workhub-body')!;
+    const body = canvasElement.querySelector('.workHubHistory')!;
     expect(body.scrollWidth - body.clientWidth).toBeLessThanOrEqual(1);
   });
   // At full desktop width, WorkHub must reach the same shared reading measure
@@ -411,9 +410,6 @@ export const ColoredWorkHistory: Story = {
     const metadataRights = [...canvasElement.querySelectorAll('.maka-user-message .maka-message-meta')].map((element) => element.getBoundingClientRect().right);
     expect(metadataRights).toHaveLength(4);
     expect(Math.max(...metadataRights) - Math.min(...metadataRights)).toBeLessThan(1);
-    const workName = getComputedStyle(canvasElement.querySelector('.workhub-navigation-label')!).color;
-    expect(workName).toBe(getComputedStyle(canvasElement.querySelector('.workhub-anchor-heading')!.firstElementChild!).color);
-    expect(getComputedStyle(canvasElement.querySelector('.workhub-navigation-item')!, '::before').backgroundColor).not.toBe(workName);
     const label = turns[0]!.querySelector<HTMLElement>('.workhub-turn-label')!;
     await userEvent.hover(label);
     await waitFor(() => expect(turns[2]!.querySelector('.workhub-turn-label')).toHaveAttribute('data-work-highlighted', 'true'));
@@ -551,30 +547,12 @@ export const FilterWorkConversations: Story = {
     expect(writes.open).not.toHaveBeenCalled();
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
-    const rail = canvasElement.querySelectorAll('.workhub-navigation-item')[1] as HTMLElement;
-    await userEvent.click(rail);
-    await waitFor(() => expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。'));
-    expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4);
-    expect(writes.open).not.toHaveBeenCalled();
-    await userEvent.click(rail);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(1));
-    expect(canvas.getByText('请检查发布检查清单。')).toBeInTheDocument();
-    expect(writes.open).not.toHaveBeenCalled();
-    await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     const answerRail = canvasElement.querySelector('.maka-assistant-answer .workhub-message-rail') as HTMLElement;
     answerRail.focus();
     expect(answerRail).toHaveFocus();
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
-    await userEvent.click(rail);
-    await waitFor(() => expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。'));
-    expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4);
-    (rail.querySelector('button') as HTMLButtonElement).focus();
-    await userEvent.keyboard('{Enter}');
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(1));
-    await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     expect(writes.open).not.toHaveBeenCalled();
   },
@@ -589,7 +567,7 @@ function PagedWorkConversation() {
     { type: 'user', id: 'discussion', turnId: 'discussion-turn', ts: 3, text: '先讨论一下整体计划。' },
   ];
   return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider>
-    <WorkHubHighlightContext.Provider value={{ sessionId: undefined, highlight: () => {}, navigateWork: () => {}, selectedWork, selectWork, toggleWork: (work) => selectWork((current) => current?.sessionId === work.sessionId ? undefined : work) }}>
+    <WorkHubHighlightContext.Provider value={{ sessionId: undefined, highlight: () => {}, selectedWork, selectWork, toggleWork: (work) => selectWork((current) => current?.sessionId === work.sessionId ? undefined : work) }}>
       <ChatSurfaceLayout composer={null}><div className="workhub-surface"><WorkHubConversation messages={messages} onOpenWork={() => {}} onNew={() => {}} scrollBehavior="auto"
         activeSession={{ id: sessionId, name: 'WorkHub', isFlagged: false, isArchived: false, labels: [], hasUnread: false, status: 'active', runningTurnIds: [], backend: 'ai-sdk', llmConnectionId: 'connection-test', llmConnectionSlug: 'test', connectionLocked: false, model: 'model-a', permissionMode: 'ask' }}
         hasEarlierHistory={!loaded} onLoadEarlierHistory={() => setLoaded(true)}
@@ -633,21 +611,11 @@ export const WorkFilterHoverAndToggle: Story = {
     expect(getComputedStyle(stripe()).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     expect(stripe().getBoundingClientRect().width).toBe(originalWidth);
     expect(canvasElement.querySelector('.maka-assistant-answer .workhub-message-rail')).toHaveAttribute('data-work-highlighted', 'true');
-    expect(canvasElement.querySelector('.workhub-navigation-item')).toHaveAttribute('data-work-highlighted', 'true');
     await userEvent.unhover(stripe());
     await waitFor(() => expect(color()).toBe(original));
     await userEvent.click(stripe());
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvasElement.querySelector('.maka-assistant-answer .workhub-message-rail') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
-    await userEvent.click(stripe());
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
-    await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
-    await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
-    await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
-    await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     expect(writes.open).not.toHaveBeenCalled();
     expect(canvasElement.querySelector('[data-turn-source-count]')).toBe(transcriptElement);

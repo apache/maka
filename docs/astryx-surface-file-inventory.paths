@@ -99,7 +99,6 @@ apps/desktop/src/renderer/features/workhub/ui/main-navigation.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-composer.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-conversation.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-dock.tsx
-apps/desktop/src/renderer/features/workhub/ui/workhub-navigation-rail.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-progress-card.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx
