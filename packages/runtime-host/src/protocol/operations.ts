@@ -334,6 +334,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'session.lifecycle.set',
   'session.shared.query',
   'session.metadata.update',
+  'session.prompt-suggestion.generate',
   'session.read_marker.set',
   'session.recap.generate',
   'session.remove',
