@@ -557,10 +557,14 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 
   async #followConfigChange(): Promise<void> {
-    if (this.#closed || this.#snapshot.initialization !== 'ready') return;
+    if (this.#closed) return;
+    if (this.#snapshot.initialization === 'error') return this.#initialize();
     const latest = await this.#deps.configStore.get();
     // An import preview survives: its commit re-checks each server it replaces.
-    if (JSON.stringify(latest) !== JSON.stringify(this.#config)) {
+    if (
+      this.#snapshot.configuration !== 'ready' ||
+      JSON.stringify(latest) !== JSON.stringify(this.#config)
+    ) {
       await this.#synchronizeCommittedConfig(latest);
     }
   }

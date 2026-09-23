@@ -1421,6 +1421,19 @@ export const ExtensionsMcpEditedElsewhere: Story = {
   },
 };
 
+// Real path: sidebar → 扩展 → MCP → a connection imported as " team " → 编辑 → 保存连接.
+export const ExtensionsMcpEditPaddedId: Story = {
+  decorators: [withMcpServices({ version: 3, mcpServers: { ' team ': { url: 'https://team.example.com/mcp' } } }, [])],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const doc = canvasElement.ownerDocument;
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.includes('team') === true)).click();
+    (await waitForStoryButton(doc.body, (button) => button.textContent?.trim() === '编辑')).click();
+    (await waitForStoryButton(doc.body, (button) => button.textContent?.trim() === '保存连接')).click();
+    await waitForStoryText(doc.body, 'MCP 已保存');
+  },
+};
+
 // Real path: sidebar → 扩展 → MCP → select a remote connection requiring OAuth.
 export const ExtensionsMcpLoginRequired: Story = {
   decorators: [withConfiguredMcpBridge],

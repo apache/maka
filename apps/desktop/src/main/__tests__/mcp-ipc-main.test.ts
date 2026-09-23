@@ -655,6 +655,33 @@ test('a change another process makes to mcp.json reaches the manager until unreg
   assert.equal(desktop.synced.length, seen);
 });
 
+test('following never leaves the manager on a copy older than the last one read', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-follow-order-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  let notify!: (error?: Error) => void;
+  t.mock.method(store, 'subscribeChanges', (listener: (error?: Error) => void) => {
+    notify = listener;
+    return () => {};
+  });
+  let finishSlowRead!: () => void;
+  const reads = [
+    new Promise<McpConfigFile>((resolve) => {
+      finishSlowRead = () => resolve({ version: MCP_CONFIG_VERSION, mcpServers: { older: { command: 'node' } } });
+    }),
+    Promise.resolve<McpConfigFile>({ version: MCP_CONFIG_VERSION, mcpServers: { newer: { command: 'node' } } }),
+  ];
+  t.mock.method(store, 'get', () => reads.shift()!);
+  const desktop = registerWithStore(t, store);
+
+  notify();
+  notify();
+  await new Promise((resolve) => setImmediate(resolve));
+  finishSlowRead();
+  await waitUntil(() => desktop.synced.length === 2);
+  assert.deepEqual(desktop.synced.map((config) => Object.keys(config.mcpServers)), [['older'], ['newer']]);
+});
+
 test('following another process never holds a login claim behind a slow connect', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-follow-lane-'));
   t.after(() => rm(root, { recursive: true, force: true }));

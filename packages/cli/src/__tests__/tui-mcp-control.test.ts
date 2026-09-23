@@ -557,6 +557,34 @@ test('TUI MCP follows a change Desktop makes while the TUI is still starting', a
   await controller.close();
 });
 
+test('TUI MCP recovers on the next mcp.json change after a failed start or sync', async () => {
+  const store = mutableConfigStore(emptyConfig(), []);
+  const manager = managementManager([]);
+  manager.failNextSync();
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connectionHarness().connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  await waitFor(() => controller.snapshot().initialization === 'error', 'the failed start');
+
+  store.replaceElsewhere({ version: 3, mcpServers: { desktop: { command: 'server' } } });
+  await waitFor(
+    () => controller.snapshot().initialization === 'ready',
+    'recovery from the failed start',
+  );
+
+  const fixed: McpConfigFile = { version: 3, mcpServers: { fixed: { command: 'server' } } };
+  manager.failNextSync();
+  store.replaceElsewhere(fixed);
+  await waitFor(() => controller.snapshot().configuration === 'out_of_sync', 'the failed sync');
+  store.replaceElsewhere(fixed);
+  await waitFor(
+    () => controller.snapshot().configuration === 'ready',
+    'recovery from the failed sync',
+  );
+  await controller.close();
+});
+
 test('TUI MCP keeps a durable mutation visible when manager synchronization fails', async () => {
   const order: string[] = [];
   const store = mutableConfigStore(emptyConfig(), order);

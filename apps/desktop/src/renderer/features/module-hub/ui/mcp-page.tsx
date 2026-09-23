@@ -242,7 +242,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     let server: McpServerConfig;
     try { server = mcpConfigFromDraft(editor.draft, copy); }
     catch (failure) { toast.error(copy.errors.save, classifiedErrorFallback(failure, getSettingsSharedCopy(locale).unknownError, locale, 'mcp')); return; }
-    const id = editor.draft.id.trim();
+    const id = editor.editing?.id ?? editor.draft.id.trim();
     // Checked against the server as shown now, not as opened: a change made
     // elsewhere already shows as the notice, so saving replaces it. One not
     // shown yet comes back stale, and the refresh brings up the notice.
