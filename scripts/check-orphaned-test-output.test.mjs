@@ -46,7 +46,7 @@ function fixture(t, files) {
   writeFileSync(
     join(root, 'package.json'),
     JSON.stringify({
-      workspaces: ['packages/example', 'apps/desktop', 'packages/unbuilt'],
+      workspaces: ['fixtures/library', 'fixtures/desktop', 'fixtures/unbuilt'],
       scripts: {
         prebuild: rootPackage.scripts.prebuild,
         build: "node -e \"require('node:fs').writeFileSync('build-ran', 'yes')\"",
@@ -71,19 +71,19 @@ function check(root) {
 
 test('deleted and renamed test sources are reported even when output is newer', (t) => {
   const root = fixture(t, {
-    'packages/example/src/renamed.test.ts': '',
-    'packages/example/dist/old.test.js': 'old test',
-    'apps/desktop/dist/main/__tests__/deleted.test.js': 'deleted test',
+    'fixtures/library/src/renamed.test.ts': '',
+    'fixtures/library/dist/old.test.js': 'old test',
+    'fixtures/desktop/dist/main/__tests__/deleted.test.js': 'deleted test',
   });
   const result = check(root);
   assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /packages[/\\]example[/\\]dist[/\\]old\.test\.js/u);
+  assert.match(result.stderr, /fixtures[/\\]library[/\\]dist[/\\]old\.test\.js/u);
   assert.match(
     result.stderr,
-    /apps[/\\]desktop[/\\]dist[/\\]main[/\\]__tests__[/\\]deleted\.test\.js/u,
+    /fixtures[/\\]desktop[/\\]dist[/\\]main[/\\]__tests__[/\\]deleted\.test\.js/u,
   );
   assert.match(result.stderr, /npm run rebuild/u);
-  assert.equal(readFileSync(join(root, 'packages/example/dist/old.test.js'), 'utf8'), 'old test');
+  assert.equal(readFileSync(join(root, 'fixtures/library/dist/old.test.js'), 'utf8'), 'old test');
 });
 
 test('existing TS, TSX and module-specific sources do not block incremental builds', (t) => {
@@ -96,14 +96,14 @@ test('existing TS, TSX and module-specific sources do not block incremental buil
     ['common', 'cts', 'cjs'],
     ['copied', 'js', 'js'],
   ]) {
-    files[`packages/example/src/__tests__/${stem}.test.${source}`] = '';
-    files[`packages/example/dist/__tests__/${stem}.test.${output}`] = '';
+    files[`fixtures/library/src/__tests__/${stem}.test.${source}`] = '';
+    files[`fixtures/library/dist/__tests__/${stem}.test.${output}`] = '';
   }
-  files['apps/desktop/src/main/__tests__/current.test.ts'] = '';
-  files['apps/desktop/dist/main/__tests__/current.test.js'] = '';
-  files['packages/example/dist/__tests__/helper.js'] = '';
-  files['packages/example/dist/removed.test.d.ts'] = '';
-  files['packages/example/dist/removed.test.js.map'] = '';
+  files['fixtures/desktop/src/main/__tests__/current.test.ts'] = '';
+  files['fixtures/desktop/dist/main/__tests__/current.test.js'] = '';
+  files['fixtures/library/dist/__tests__/helper.js'] = '';
+  files['fixtures/library/dist/removed.test.d.ts'] = '';
+  files['fixtures/library/dist/removed.test.js.map'] = '';
   const result = check(fixture(t, files));
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, '');
@@ -116,8 +116,8 @@ test('an unbuilt checkout passes', (t) => {
 
 test('root build stops before compiling and rebuild clears the stale state', (t) => {
   const root = fixture(t, {
-    'packages/example/dist/deleted.test.js': 'stale test',
-    'packages/example/tsconfig.tsbuildinfo': 'stale compiler state',
+    'fixtures/library/dist/deleted.test.js': 'stale test',
+    'fixtures/library/tsconfig.tsbuildinfo': 'stale compiler state',
   });
   const npm = (command) =>
     spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', command], {
@@ -131,7 +131,7 @@ test('root build stops before compiling and rebuild clears the stale state', (t)
   assert.equal(existsSync(join(root, 'build-ran')), false);
   const rebuilt = npm('rebuild');
   assert.equal(rebuilt.status, 0, rebuilt.stderr);
-  assert.equal(existsSync(join(root, 'packages/example/dist/deleted.test.js')), false);
-  assert.equal(existsSync(join(root, 'packages/example/tsconfig.tsbuildinfo')), false);
+  assert.equal(existsSync(join(root, 'fixtures/library/dist/deleted.test.js')), false);
+  assert.equal(existsSync(join(root, 'fixtures/library/tsconfig.tsbuildinfo')), false);
   assert.equal(existsSync(join(root, 'build-ran')), true);
 });
