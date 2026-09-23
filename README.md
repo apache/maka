@@ -60,6 +60,8 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 **Build from source**: To compile and run Desktop, the TUI, or the CLI directly from a source checkout, see the [Build from source](#build-from-source) section below.
 
+**macOS Computer Use dependency**: Desktop's optional Computer Use feature bundles [Cua Driver](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.28.2). Its top-level license is MIT and the executable includes MPL-2.0 UniFFI dependencies; see the [provenance and binary-distribution conditions](./docs/computer-use-provenance.md). Users do not need to install Cua separately.
+
 ## Build from source
 
 ### Requirements

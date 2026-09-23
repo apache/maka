@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { app, nativeImage, powerMonitor, screen } from 'electron';
+import { app, nativeImage, powerMonitor, screen, systemPreferences } from 'electron';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildBrowserTools } from './browser/browser-tools.js';
 import {
@@ -100,27 +100,14 @@ export function assembleDesktopNativeCapabilities(
     physicalInputRecentlyActive: createDesktopPhysicalInputGuard(
       () => powerMonitor.getSystemIdleTime(),
     ),
+    requestAccessibilityPermission: () => {
+      systemPreferences.isTrustedAccessibilityClient(true);
+    },
     screenLocked: ({ sessionId }) => {
       if (!computerUseScreenLock.locked()) return false;
       computerUseScreenLock.noteSessionActive(sessionId);
       return true;
     },
-    ...(deps.isComputerUseRealModelE2e
-      ? {
-          onTrace: (event) => {
-            const tracePath = process.env.MAKA_CU_REAL_MODEL_TRACE;
-            if (!tracePath) return;
-            void import('node:fs/promises')
-              .then(({ appendFile }) =>
-                appendFile(tracePath, `${JSON.stringify(event)}\n`, {
-                  encoding: 'utf8',
-                  mode: 0o600,
-                }),
-              )
-              .catch(() => undefined);
-          },
-        }
-      : {}),
     overlay: withComputerUseStatusItem(
       withComputerUseScreenLock(
         withComputerUsePip(createComputerUseOverlayHook(computerUseOverlay), computerUsePip),

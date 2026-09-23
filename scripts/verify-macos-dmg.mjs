@@ -126,6 +126,35 @@ async function readPlistValue(run, infoPlist, key) {
   return stdout.trim();
 }
 
+export async function verifyBundledCuaDriver(
+  resources,
+  { run = runCommandFromRepo, checksum = sha256File } = {},
+) {
+  const manifest = JSON.parse(
+    await readFile(join(resources, 'bundled-tools.json'), 'utf8'),
+  ).cuaDriver;
+  if (manifest?.distributionReady !== true || !/^[a-f0-9]{64}$/.test(manifest.binarySha256 ?? '')) {
+    throw new Error('Packaged Cua Driver has no release-ready digest');
+  }
+  const binary = join(resources, 'bin', 'cua-driver');
+  if ((await checksum(binary)) !== manifest.binarySha256) {
+    throw new Error('Packaged Cua Driver digest differs from the pinned release');
+  }
+  await run('codesign', ['--verify', '--strict', '--verbose=2', binary]);
+  const signature = await run('codesign', ['-dv', '--verbose=4', binary]);
+  const signatureText = `${signature.stdout}${signature.stderr}`;
+  if (
+    !signatureText.includes('TeamIdentifier=YCK386LBJ7') ||
+    !signatureText.includes('Authority=Developer ID Application: Cua AI, Inc. (YCK386LBJ7)')
+  ) {
+    throw new Error('Packaged Cua Driver lost its pinned Developer ID signature');
+  }
+  const version = await run(binary, ['--version']);
+  if (!version.stdout.includes('cua-driver 0.28.2')) {
+    throw new Error('Packaged Cua Driver version differs from the pinned release');
+  }
+}
+
 export async function verifyPackagedMacApp(
   appPath,
   {
@@ -167,6 +196,7 @@ export async function verifyPackagedMacApp(
 
   await requirePath(executable);
   await assertPackagedResources(resources, { requirePath, forbidPath });
+  await verifyBundledCuaDriver(resources, { run });
   await assertPackagedUpdateConfiguration(resources, { channel });
   await assertPackagedDependencyClosure(resources);
 

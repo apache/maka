@@ -94,7 +94,7 @@ export type PermissionCenterCopy = {
   /** macOS drag-to-grant onboarding (accessibility / screen recording). */
   dragGrant: string;
   dragGranting: string;
-  // Single-backend assumption: CU_BACKEND_IDS is ['maka-cu'], so the backend
+  // Single-backend assumption: CU_BACKEND_IDS is ['cua-driver'], so the backend
   // name stays a literal in copy. Revisit when a second backend lands.
   cuBackendStatus(missingPermissionLabels: readonly string[], health: RuntimeProbeState): string;
   reasonFallback: string;
@@ -148,11 +148,11 @@ const PERMISSION_CENTER_COPY = {
     auditSection: '审计记录', noAudit: '暂无审计记录', auditAria: (label) => `${label}审计记录列表`,
     impact: '影响功能', opening: '打开中…', openSettings: '前往系统设置', requesting: '请求中…', request: '请求授权', dragGrant: '引导授权', dragGranting: '引导中…',
     cuBackendStatus: (missing, health) =>
-      'maka-cu artifact 已通过本地完整性检查。'
+      'Cua Driver 已通过本地完整性检查。'
       + (missing.length > 0 ? `等待${missing.join('、')}权限。` : '')
       + ({
-        not_available: 'maka-cu service 启动失败、已退出或已停止。',
-        degraded: 'maka-cu service 正在启动或恢复。',
+        not_available: 'Cua Driver 启动失败、已退出或已停止。',
+        degraded: 'Cua Driver 正在启动或恢复。',
         healthy: '操作与截图 service 已就绪；按目标与动作类别授权后可操作本机应用。',
         not_run: 'service 将在首次调用时启动；按目标与动作类别授权后可操作本机应用。',
       } satisfies Record<RuntimeProbeState, string>)[health],
@@ -205,11 +205,11 @@ const PERMISSION_CENTER_COPY = {
     auditSection: '審計記錄', noAudit: '暫無審計記錄', auditAria: (label) => `${label}審計記錄列表`,
     impact: '影響功能', opening: '開啟中…', openSettings: '前往系統設定', requesting: '請求中…', request: '請求授權', dragGrant: '引導授權', dragGranting: '引導中…',
     cuBackendStatus: (missing, health) =>
-      'maka-cu artifact 已通過本機完整性檢查。'
+      'Cua Driver 已通過本機完整性檢查。'
       + (missing.length > 0 ? `等待${missing.join('、')}權限。` : '')
       + ({
-        not_available: 'maka-cu service 啟動失敗、已退出或已停止。',
-        degraded: 'maka-cu service 正在啟動或恢復。',
+        not_available: 'Cua Driver 啟動失敗、已退出或已停止。',
+        degraded: 'Cua Driver 正在啟動或恢復。',
         healthy: '操作與截圖 service 已就緒；依目標與動作類別授權後可操作本機應用程式。',
         not_run: 'service 將在首次呼叫時啟動；依目標與動作類別授權後可操作本機應用程式。',
       } satisfies Record<RuntimeProbeState, string>)[health],
@@ -262,11 +262,11 @@ const PERMISSION_CENTER_COPY = {
     auditSection: 'Audit records', noAudit: 'No audit records', auditAria: (label) => `${label} audit records`,
     impact: 'Affects', opening: 'Opening…', openSettings: 'Open System Settings', requesting: 'Requesting…', request: 'Request permission', dragGrant: 'Guide me', dragGranting: 'Opening…',
     cuBackendStatus: (missing, health) =>
-      'The maka-cu artifact passed the local integrity check. '
+      'The Cua Driver artifact passed the local integrity check. '
       + (missing.length > 0 ? `Waiting for ${missing.join(', ')} permission. ` : '')
       + ({
-        not_available: 'The maka-cu service failed to start, exited, or was stopped.',
-        degraded: 'The maka-cu service is starting or recovering.',
+        not_available: 'The Cua Driver service failed to start, exited, or was stopped.',
+        degraded: 'The Cua Driver service is starting or recovering.',
         healthy: 'The action and screenshot service is ready; grant by target and action category to operate local apps.',
         not_run: 'The service starts on first use; grant by target and action category to operate local apps.',
       } satisfies Record<RuntimeProbeState, string>)[health],

@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -333,6 +334,19 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
     join(resources, 'app-update.yml'),
     'provider: github\nowner: apache\nrepo: maka\nchannel: dev\nupdaterCacheDirName: "@makadesktop-updater"\n',
   );
+  const cuaBinary = join(resources, 'bin', 'cua-driver');
+  const cuaFixture = 'cua-driver fixture';
+  await mkdir(dirname(cuaBinary), { recursive: true });
+  await writeFile(cuaBinary, cuaFixture);
+  await writeFile(
+    join(resources, 'bundled-tools.json'),
+    JSON.stringify({
+      cuaDriver: {
+        distributionReady: true,
+        binarySha256: createHash('sha256').update(cuaFixture).digest('hex'),
+      },
+    }),
+  );
   const version = '0.2.0-dev.14.20260902';
   const app = join(dirname(resources), 'Maka.app');
   await mkdir(join(app, 'Contents'), { recursive: true });
@@ -357,14 +371,60 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
         return { stdout: `${values[args[1]]}\n` };
       }
       if (command === 'lipo') return { stdout: 'x86_64\n' };
-      if (
-        ['codesign', 'spctl', 'xcrun', join(app, 'Contents', 'MacOS', 'Maka')].includes(command)
-      ) {
-        return { stdout: '' };
-      }
+      if (command === 'codesign' && args[0] === '-dv')
+        return {
+          stdout: '',
+          stderr:
+            'TeamIdentifier=YCK386LBJ7\nAuthority=Developer ID Application: Cua AI, Inc. (YCK386LBJ7)',
+        };
+      if (command === join(app, 'Contents', 'Resources', 'bin', 'cua-driver'))
+        return { stdout: 'cua-driver 0.28.2\n' };
+      if (['codesign', 'spctl', 'xcrun', join(app, 'Contents', 'MacOS', 'Maka')].includes(command))
+        return { stdout: '', stderr: '' };
       throw new Error(`Unexpected command: ${command}`);
     },
   });
+});
+
+test('the Cua release gate rejects a replaced binary and the wrong signing identity', async (t) => {
+  const { verifyBundledCuaDriver } = await import('./verify-macos-dmg.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'maka-cua-package-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const binary = join(root, 'bin', 'cua-driver');
+  const manifestPath = join(root, 'bundled-tools.json');
+  const pinnedDigest = createHash('sha256').update('pinned binary').digest('hex');
+  await mkdir(dirname(binary), { recursive: true });
+  await writeFile(binary, 'pinned binary');
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      cuaDriver: {
+        distributionReady: true,
+        binarySha256: pinnedDigest,
+      },
+    }),
+  );
+  const run = async (command, args) => {
+    if (command === 'codesign' && args[0] === '-dv')
+      return {
+        stdout: '',
+        stderr: 'TeamIdentifier=OTHER\nAuthority=Developer ID Application: Other',
+      };
+    if (command === binary) return { stdout: 'cua-driver 0.28.2\n' };
+    return { stdout: '', stderr: '' };
+  };
+  await assert.rejects(() => verifyBundledCuaDriver(root, { run }), /signatur/);
+  await writeFile(
+    manifestPath,
+    JSON.stringify({ cuaDriver: { distributionReady: false, binarySha256: pinnedDigest } }),
+  );
+  await assert.rejects(() => verifyBundledCuaDriver(root, { run }), /release-ready/);
+  await writeFile(
+    manifestPath,
+    JSON.stringify({ cuaDriver: { distributionReady: true, binarySha256: pinnedDigest } }),
+  );
+  await writeFile(binary, 'replaced binary');
+  await assert.rejects(() => verifyBundledCuaDriver(root, { run }), /digest differs/);
 });
 
 describe('assertPackagedDependencyClosure', () => {

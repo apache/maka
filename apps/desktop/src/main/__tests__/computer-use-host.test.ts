@@ -30,31 +30,27 @@ import {
 
 describe('Computer Use host health', () => {
   const snapshot = (
-    state: 'idle' | 'starting' | 'ready' | 'backing_off' | 'unavailable' | 'disposed',
-  ) => ({ state, generation: 1, restartAttempts: 0 });
+    state: 'idle' | 'starting' | 'ready' | 'unavailable' | 'disposed',
+  ) => ({ state, generation: 1 });
 
   it('does not report a binary-only executor as healthy before first use', () => {
-    assert.deepEqual(computerUseServiceHealth('maka-cu', snapshot('idle')), {
+    assert.deepEqual(computerUseServiceHealth('cua-driver', snapshot('idle')), {
       state: 'not_run',
       reason: 'cu_executor_lazy_start',
     });
   });
 
   it('reports ready, recovery, and unavailable states', () => {
-    assert.equal(computerUseServiceHealth('maka-cu', snapshot('ready')).state, 'healthy');
+    assert.equal(computerUseServiceHealth('cua-driver', snapshot('ready')).state, 'healthy');
     assert.equal(
-      computerUseServiceHealth('maka-cu', snapshot('backing_off')).reason,
-      'cu_executor_recovering',
-    );
-    assert.equal(
-      computerUseServiceHealth('maka-cu', snapshot('starting')).state,
+      computerUseServiceHealth('cua-driver', snapshot('starting')).state,
       'degraded',
     );
-    assert.deepEqual(computerUseServiceHealth('maka-cu', snapshot('unavailable')), {
+    assert.deepEqual(computerUseServiceHealth('cua-driver', snapshot('unavailable')), {
       state: 'not_available',
       reason: 'cu_executor_start_failed',
     });
-    assert.deepEqual(computerUseServiceHealth('maka-cu', snapshot('disposed')), {
+    assert.deepEqual(computerUseServiceHealth('cua-driver', snapshot('disposed')), {
       state: 'not_available',
       reason: 'cu_executor_stopped',
     });
@@ -65,16 +61,16 @@ describe('Computer Use host health', () => {
   });
 
   it('constructs a backend only when the local artifact matches the manifest hash', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'maka-cu-host-'));
+    const directory = await mkdtemp(join(tmpdir(), 'cua-driver-host-'));
     try {
-      const binaryPath = join(directory, 'maka-cu');
+      const binaryPath = join(directory, 'cua-driver');
       const manifestPath = join(directory, 'bundled-tools.json');
       const bytes = Buffer.from('#!/bin/sh\nexit 0\n');
       await writeFile(binaryPath, bytes);
       await chmod(binaryPath, 0o755);
       const hash = createHash('sha256').update(bytes).digest('hex');
       await writeFile(manifestPath, JSON.stringify({
-        makaCu: { binarySha256: hash, distributionReady: false },
+        cuaDriver: { binarySha256: hash, distributionReady: false },
       }));
 
       const validForDevelopment = createComputerUseHost({
@@ -85,7 +81,7 @@ describe('Computer Use host health', () => {
         physicalInputRecentlyActive: () => false,
       });
       assert.equal(validForDevelopment.selected.backendId, process.platform === 'darwin'
-        ? 'maka-cu'
+        ? 'cua-driver'
         : 'none');
 
       const blockedForDistribution = createComputerUseHost({
@@ -98,7 +94,7 @@ describe('Computer Use host health', () => {
       assert.equal(blockedForDistribution.selected.backendId, 'none');
 
       await writeFile(manifestPath, JSON.stringify({
-        makaCu: { binarySha256: hash, distributionReady: true },
+        cuaDriver: { binarySha256: hash, distributionReady: true },
       }));
       const validForDistribution = createComputerUseHost({
         isPackaged: true,
@@ -108,11 +104,11 @@ describe('Computer Use host health', () => {
         physicalInputRecentlyActive: () => false,
       });
       assert.equal(validForDistribution.selected.backendId, process.platform === 'darwin'
-        ? 'maka-cu'
+        ? 'cua-driver'
         : 'none');
 
       await writeFile(manifestPath, JSON.stringify({
-        makaCu: {
+        cuaDriver: {
           binarySha256: '0'.repeat(64),
           distributionReady: true,
         },
@@ -126,7 +122,7 @@ describe('Computer Use host health', () => {
       });
       assert.equal(invalid.selected.backendId, 'none');
 
-      const linkedBinaryPath = join(directory, 'linked-maka-cu');
+      const linkedBinaryPath = join(directory, 'linked-cua-driver');
       await symlink(binaryPath, linkedBinaryPath);
       const linked = createComputerUseHost({
         isPackaged: false,

@@ -1030,9 +1030,7 @@ test('everything that runs before dependency setup imports only node builtins', 
   ].join('\n');
 
   // `[\w./-]`, not `[\w.-]`: a class without `/` cannot match a path with a
-  // directory in it, which is how `scripts/computer-use/lab-root.test.mjs` —
-  // named by a step above the install — was dropped from this derivation while
-  // the count still looked right.
+  // directory in it, so nested script paths remain visible to this check.
   const entryPoints = [
     ...new Set([...commands.matchAll(/(scripts\/[\w./-]+\.mjs)/gu)].map(([, path]) => path)),
   ].sort();

@@ -20,14 +20,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { CuDispatchBackend } from '@maka/runtime/computer-use-types';
-import type { MakaCuBackendOptions } from '../maka-cu-backend.js';
+import type { CuaDriverBackendOptions } from '../cua-driver-backend.js';
 import { selectComputerUseBackend } from '../select-backend.js';
 
 test('service invalidation producer advances Runtime to reobserve', async () => {
   if (process.platform !== 'darwin') return;
-  let invalidate:
-    | ((input: { sessionId: string; reason: 'child_exit'; outcomeUnknown: boolean }) => void)
-    | undefined;
+  let invalidate: ((input: { sessionId: string }) => void) | undefined;
   const backend: CuDispatchBackend = {
     async preflight() {
       return { accessibility: true, screenRecording: true };
@@ -72,8 +70,6 @@ test('service invalidation producer advances Runtime to reobserve', async () => 
   assert.equal(selected.tools.sessionEvents.snapshot('session-1').status, 'active');
   invalidate?.({
     sessionId: 'session-1',
-    reason: 'child_exit',
-    outcomeUnknown: false,
   });
   assert.equal(selected.tools.sessionEvents.snapshot('session-1').status, 'reobserve_required');
 });
@@ -81,7 +77,7 @@ test('service invalidation producer advances Runtime to reobserve', async () => 
 test('physical input policy is passed to the selected backend', () => {
   if (process.platform !== 'darwin') return;
   const physicalInputRecentlyActive = () => true;
-  let received: MakaCuBackendOptions['physicalInputRecentlyActive'];
+  let received: CuaDriverBackendOptions['physicalInputRecentlyActive'];
   const backend: CuDispatchBackend = {
     async preflight() {
       return { accessibility: true, screenRecording: true };

@@ -241,6 +241,7 @@ export interface CuObservation {
 export type CuSemanticAction =
   | {
       type: 'click_element';
+      deliveryMode?: 'background' | 'foreground';
       observationId: string;
       elementId: string;
       elementIdentity?: CuObservedElement['identity'];
@@ -261,6 +262,7 @@ export type CuSemanticAction =
     }
   | {
       type: 'secondary_action';
+      deliveryMode?: 'background' | 'foreground';
       observationId: string;
       elementId: string;
       action: string;
@@ -278,6 +280,7 @@ export type CuSemanticAction =
        * executors already speak it — this is the member that lets Maka say it.
        */
       type: 'scroll_element';
+      deliveryMode?: 'background' | 'foreground';
       observationId: string;
       elementId: string;
       direction: 'up' | 'down' | 'left' | 'right';
@@ -311,6 +314,7 @@ export type CuSemanticAction =
     }
   | {
       type: 'press_key';
+      deliveryMode?: 'background' | 'foreground';
       observationId: string;
       key: string;
       /** The control to focus before the key is posted, when the model named one. */
@@ -369,9 +373,8 @@ export interface CuOverlayHook {
 export type CuPresentationAction = { type: CuSemanticAction['type'] } | CuAction;
 
 /**
- * The host dispatch seam. Implemented in @maka/computer-use by the maka-cu
- * backend, which spawns the maka-cu executor and speaks `maka.cu/2` over stdio.
- * Alternative backends can plug in behind this same interface later.
+ * The host dispatch seam. The Cua Driver adapter in @maka/computer-use speaks
+ * private stdio MCP while Runtime keeps the model-facing tool and session state.
  */
 export interface CuDispatchBackend {
   /** Live macOS TCC status. Called at EVERY action-start — cached "granted" is

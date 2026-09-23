@@ -3,10 +3,10 @@ doc_id: computer-use-foundation-contract
 title: "Maka Computer Use Foundation Contract"
 language: zh-CN
 source_language: zh-CN
-implementation_status: current
+implementation_status: partial
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-11
+last_verified: 2026-09-23
 owners:
   - maka-backend
 ---
@@ -31,9 +31,11 @@ owners:
 
 # Maka Computer Use Foundation Contract
 
-状态：Accepted
+状态：目标合同；Cua Driver 适配尚未完成全部重新验收
 适用范围：Desktop foundation；CLI 仅实验性 opt-in；Eval subject 通过 Runtime Host 继承同一边界
 目的：定义 stacked PR 不可破坏的合同与验证门。
+
+更换 native executor 后，下述 WebContent generation、稳定元素身份、键盘 ownership、真实设备恢复路径仍需针对 Cua Driver 重新验证。当前实现用 Cua 的 snapshot token 和 Maka Runtime Host 的 observation claim 阻止旧动作重放，但不能据此声称已满足这些更强的条款。前台使用目前由 Agent 在对话中申请并等待用户回复；Maka 尚无独立的前台授权状态，因此这是一项 Agent 行为约定，而非宿主强制审批。
 
 外部证据参考（不属于本仓库）：
 
@@ -58,7 +60,7 @@ owners:
 2. Action binding
    - mutation 在第一次异步边界前完成参数快照、规范化、fingerprint、claim，并绑定 active observation。
    - 有顺序依赖的动作按 Computer Use session 串行；不同 session 不全局串行。
-   - stale、replay、unclaimed、malformed、targetless action 均 fail closed，不得回退到裸 pixel、foreground activation 或当前系统焦点。
+   - stale、replay、unclaimed、malformed、targetless action 均 fail closed，不得回退到裸 pixel 或当前系统焦点；前台执行仅在后台动作失败或经新观察确认未生效、Agent 向用户说明具体应用/窗口/动作并获得明确同意后，对该动作单次请求。
 
 3. Exact target validation
    - coordinate action 在 dispatch 前验证同一 window identity、geometry、screenshot scale、page identity 和 occlusion。
@@ -68,8 +70,8 @@ owners:
    - WebContent click 只有在 host/window 与 renderer generation 都验证后才能走 `skylight_pid`；失败不得退回 AX mirror 或 JavaScript click。
 
 4. Execution ownership
-   - maka-cu 是唯一 native executor；window/page discovery、semantic preparation、input dispatch 和 effect readback 均留在该边界内。
-   - agent 不得移动真实鼠标、抢前台焦点、临时 activate 窗口或执行 windowless desktop input。
+   - Cua Driver 是 macOS 唯一 native executor；Maka 的 Runtime Host 仍是 Session、Turn、policy 和 tool result 的权威，私有 MCP 仅作为到子进程的传输。
+   - agent 不得移动真实鼠标或执行 windowless desktop input。默认后台；需要前台时先在对话中说明并等用户明确同意，再重新观察，只对该动作传 `delivery_mode=foreground`。没有自动前台重试，也没有独立的 Maka 前台审批状态。
    - keyboard ownership 绑定 `session + turn + generation + pid + windowId + page/frame`，并在失败、stale、新 observation、intervention、service generation 变化、turn/session 结束时撤销。
    - child process 在未知 action outcome 下退出时必须 re-observe，禁止自动重放。
 
@@ -153,7 +155,7 @@ Maka 自己的 Electron renderer 也是 Computer Use 的目标。它不能依赖
 | Semantic identity refetch | PASS | renderer frame-only reflow 仅允许同进程世代 unique replacement；missing/ambiguous fail closed；native frame change 继续拒绝；真机全部零误点 | 保留跨 toolkit 录制回归 |
 | Stable AX revision / post-action diff | PASS | DFS stable ID、跨 fresh token 继承、ordered changes、removed ranges、no-change/full fallback；host 显式 observe 保持 full | 增加真实长树 token-saving trajectory 样本 |
 | Modal / multi-window routing | PARTIAL | app→sheet、exact secondary、button/scroll/close 功能矩阵 5/5；精确 pin 的高频 sentinel 捕获 1,738 个 target-frontmost 样本，后台安全未通过 | 修复原生 AX press 的瞬时前台抢占，再重跑同一聚合矩阵 |
-| Occlusion、no foreground/pixel fallback | PASS | coordinate/semantic occlusion 与 fail-closed tests | real-window safety sentinel |
+| Occlusion、无自动前台/裸 pixel 回退 | 部分验证 | Cua 拒绝码映射与 Runtime fail-closed tests | 前台同意与真实窗口 sentinel |
 | Fresh postcondition、effect verification | PARTIAL | mutation 后 fresh observation；5 轮 primary oracle=1、slider 业务值/readback=42、scroll tree delta + oracle=76 | 继续补 secondary action 与跨窗口业务 oracle |
 | Per-session queue、generation lease | PARTIAL | session queue/frame claim；lease 修复尚在本地 | concurrent-session 与 intervention-before-dispatch tests |
 | Physical intervention、lock、stop | FAIL | 有状态机原型，无 Desktop production event producer | 真实 host wiring 与 transition tests |

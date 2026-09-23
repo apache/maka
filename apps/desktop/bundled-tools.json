@@ -1,16 +1,14 @@
 {
-  "makaCu": {
-    "repo": "maka-agent/maka-cu",
-    "branch": "maka/base",
-    "commit": "4a9787d2c7f2fbc6a29b33d691916c6b84543661",
-    "expectedProtocolVersion": "maka.cu/2",
-    "binaryName": "maka-cu",
-    "binarySizeBytes": 3268832,
-    "binarySha256": "70defb1c753a8d69f7b036c2717ed788f55bb8a10112f8245a572df56a027979",
-    "buildProvenance": "local-source-build",
-    "signature": "adhoc",
-    "hardenedRuntime": false,
-    "notarization": "missing",
+  "cuaDriver": {
+    "repo": "trycua/cua",
+    "release": "cua-driver-rs-v0.28.2",
+    "archiveName": "cua-driver-rs-0.28.2-darwin-universal-binary.tar.gz",
+    "archiveSha256": "386db225a3080714a0f9f935525e61efaf46709587ef8b94dd2df81aeb2f6daa",
+    "binaryName": "cua-driver",
+    "binarySha256": "af30d29cf33bd3bbda1330be7225b18881ea4c5af6df374e08627914b5ac334d",
+    "teamIdentifier": "YCK386LBJ7",
+    "signature": "developer-id",
+    "hardenedRuntime": true,
     "distributionReady": false
   }
 }

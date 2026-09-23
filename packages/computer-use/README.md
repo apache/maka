@@ -19,105 +19,13 @@
 
 # `@maka/computer-use`
 
-`@maka/computer-use` adapts Maka's Runtime-owned Computer Use contracts to the
-native `maka-cu` executor. It owns backend selection, the executor process and
-protocol lifecycle, host-side result decoding, display snapshot mapping, and
-the cursor-overlay hook. Runtime owns the model-facing tools and session state;
-Desktop supplies the executable and presentation dependencies.
+This package adapts the bundled Cua Driver CLI to Maka's existing `CuDispatchBackend`. Desktop verifies the pinned executable before selecting the backend. Runtime remains the authority for tool calls, sessions, observation binding, policy, and user-visible results.
 
-## Public seam
+The CLI runs as a private stdio MCP child in direct embedded mode. Its MCP tools are not registered with the agent; the agent sees only `maka_computer`. The driver reads and acts in the background by default. A foreground action is explicit and limited to one tool call. When background delivery fails or a fresh observation proves it had no effect, the agent must tell the user which app, window, and action need foreground access, wait for an explicit reply, then observe again before retrying that action with `delivery_mode=foreground`. Maka does not maintain a separate foreground approval state.
 
-The package exposes one root entry point through `src/index.ts`:
+`node scripts/computer-use.mjs prepare` downloads the pinned macOS universal release, verifies the release archive, executable digest, version, and Developer ID signature, then stages `apps/desktop/resources/bin/cua-driver`. This binary is ignored by Git and included in macOS packages. The package uses the upstream signature unchanged so its runtime digest remains stable. A complete signed and notarized package still needs release validation.
 
-- `selectComputerUseBackend()` selects the available executor and builds the
-  Runtime tool set. `CU_BACKEND_IDS` currently contains only `maka-cu`.
-- `createMakaCuBackend()` adapts the native executor to Runtime's
-  `CuDispatchBackend` contract.
-- `MakaCuService` supervises the executor process and owns the JSON-RPC request,
-  cancellation, restart, and generation lifecycle.
-- The `maka-cu-protocol` exports decode and validate `maka.cu/2` envelopes,
-  snapshots, dispatch results, domain errors, and key chords.
-- `resolveCuaDisplaySnapshots()` maps executor screenshots to Electron display
-  coordinates without guessing when the display geometry is ambiguous.
-- `createComputerUseOverlayHook()` projects action lifecycle events to a
-  presentation-only cursor sink. It does not choose or authorize targets.
+The executor is currently macOS-only. Selection fails closed when the file or digest is missing. An exited child invalidates its generation; an uncertain action is not replayed automatically. The backend never uses windowless desktop input.
 
-Other packages should import these exports from `@maka/computer-use`, not from
-undeclared internal source paths.
-
-## Current platform boundary
-
-The shipped selector enables Computer Use only when all of these conditions
-hold:
-
-1. the host platform is macOS (`process.platform === 'darwin'`);
-2. the composition supplies a `maka-cu` executable path; and
-3. the composition supplies the executable's expected SHA-256 digest.
-
-On another platform, with missing inputs, or when backend construction fails,
-selection fails closed to `backendId: 'none'` with an empty tool set. This
-package does not discover, download, or choose an unpinned executable.
-
-The executable's build, provenance, signing, and distribution status are
-separate release concerns. See
-[`computer-use-provenance.md`](../../docs/computer-use-provenance.md) rather
-than assuming that installing this workspace supplies a runnable binary.
-
-Cross-platform work is tracked separately:
-
-- [#3896](https://github.com/apache/maka/issues/3896) — platform abstraction;
-- [#3891](https://github.com/apache/maka/issues/3891) — Linux backend;
-- [#3785](https://github.com/apache/maka/issues/3785) — Windows executor
-  hardening and production evidence.
-
-## Protocol and lifecycle
-
-The host and executor communicate over line-delimited JSON-RPC using the
-versioned `maka.cu/2` protocol. `MakaCuService` verifies that the executable is
-usable and checks any configured digest before spawning it, completes a
-`host.hello` handshake, and exposes the executor version, capabilities, limits,
-and process generation. The product selector always supplies the required
-digest.
-
-Lifecycle and protocol failures remain distinct:
-
-- `MakaCuLifecycleError` reports unavailable, mismatched, aborted, or
-  outcome-unknown process states;
-- `MakaCuRpcError` reports a JSON-RPC error response for one method; and
-- `MakaCuProtocolViolation` reports malformed or contradictory wire data.
-
-An executor exit releases affected sessions and invalidates their observations.
-Requests that may have reached the executor surface as outcome-unknown rather
-than being replayed automatically. Runtime must re-observe before another
-action.
-
-## Ownership rules
-
-- Keep provider-neutral Computer Use types and model-facing contracts in
-  `@maka/core` and `@maka/runtime`.
-- Keep native executor transport, decoding, and lifecycle handling in this
-  package.
-- Keep Electron windows, screen-lock integration, binary provisioning, and
-  product status UI in `apps/desktop`.
-- Add a second backend only after it has a real adapter and platform evidence;
-  do not widen `CU_BACKEND_IDS` with a placeholder.
-- Preserve fail-closed selection and snapshot-bound dispatch. Missing or stale
-  authority must not fall back to global pointer or foreground input.
-
-The cross-layer safety and evidence rules live in the
-[`Computer Use foundation contract`](../../docs/computer-use-foundation-contract.md)
-and [`host events contract`](../../docs/computer-use-host-events-contract.md).
-
-## Verification
-
-Install dependencies once at the repository root, then run:
-
-```sh
-npm run build
-npm --workspace @maka/computer-use run test:dist
-npm --workspace @maka/computer-use run typecheck
-```
-
-The package tests cover protocol decoding, process lifecycle, backend behavior,
-host-event propagation, display mapping, overlay projection, and the cumulative
-Computer Use path.
+The release source and license obligations are recorded in [`computer-use-provenance.md`](../../docs/computer-use-provenance.md). The driver includes MPL-2.0 dependencies, so the top-level MIT license alone is not sufficient to qualify a binary release.
+The manifest keeps `distributionReady: false` until the complete binary dependency notices and ASF release review are finished. Development builds can exercise the adapter, while packaged macOS builds fail the release gate.

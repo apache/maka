@@ -183,9 +183,12 @@ export const exclusionRules = [
   {
     id: 'third-party-license-texts',
     justification:
-      'Third-party license and notice texts redistributed with the product. An ASF header on any of them would assert ASF provenance over content ASF does not own. The upstream texts additionally have to stay byte-identical to what their projects published, and the aggregated notices are generator output that a hand-written header would not survive.',
+      'Third-party license and attribution texts redistributed with the product. An ASF header on any of them would confuse the ownership of the licensed work. Upstream license texts stay byte-identical; aggregated notices are curated or generated attribution.',
     matches: isOneOf(
       'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt',
+      'apps/desktop/resources/licenses/cua-driver/LICENSE',
+      'apps/desktop/resources/licenses/cua-driver/MPL-2.0.txt',
+      'apps/desktop/resources/licenses/cua-driver/NOTICE.txt',
       'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
       'apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
