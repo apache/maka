@@ -29,9 +29,11 @@ import { isMcpStdioConfig } from '@maka/core/mcp';
 import {
   Banner,
   Button,
+  ClickableCard,
   Collapsible,
   Divider,
   EmptyState,
+  Grid,
   Heading,
   HStack,
   IconButton,
@@ -53,7 +55,6 @@ import {
   DialogHeader,
 } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
-import { Link } from '@astryxdesign/core/Link';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import {
   ModulePage,
@@ -103,7 +104,6 @@ const MCP_SUGGESTIONS = [
   { id: 'notion', url: 'https://mcp.notion.com/mcp' },
   { id: 'linear', url: 'https://mcp.linear.app/mcp' },
   { id: 'feishu', url: 'https://mcp.feishu.cn/mcp' },
-  { id: 'maxcompute', url: 'https://mcp.maxcompute.aliyun.com/mcp' },
   { id: 'mcp-docs', url: 'https://modelcontextprotocol.io/mcp' },
 ] as const;
 
@@ -267,7 +267,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   ) : null;
 
   const connectionsPanel = busy === 'load' || entries.length > 0 ? (
-    <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
+    <div className="maka-module-page-panel maka-mcp-connections-panel" ref={rowsContainerRef} {...rovingRows}>
       {/* Selecting a row moves no focus, so nothing else would tell a screen
           reader that the details opened. This says so, politely. */}
       <p className="maka-visually-hidden" role="status" aria-live="polite">
@@ -303,7 +303,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
            delete controls that used to ride the row now live in the
            inspector — no interactive elements inside an interactive list
            item. */
-        <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.page.connections}>
+        <List density="balanced" hasDividers aria-label={copy.page.connections} className="maka-module-page-rows">
           {connectionEntries.map(([serverId, server]) => {
             const status = statusById.get(serverId);
             const state = presentStatus(status, server.enabled !== false, copy);
@@ -405,31 +405,35 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           </div>
         )}
       >
-        {connectionsPanel}
-        <section className="maka-mcp-recommendations" aria-label={copy.page.recommended}>
-          <VStack gap={1}>
-            <Heading level={2}>{copy.page.recommended}</Heading>
-            <Text type="supporting" color="secondary">{copy.page.recommendedDetail}</Text>
+        <VStack gap={8} className="maka-mcp-sections">
+          {connectionsPanel && (
+            <VStack gap={3}>
+              <Heading level={3}>{copy.page.connections}</Heading>
+              {connectionsPanel}
+            </VStack>
+          )}
+          <VStack gap={3}>
+            <Heading level={3}>{copy.page.recommended}</Heading>
+            <Divider />
+            <Grid columns={{ minWidth: 320 }} gap={2}>
+              {MCP_SUGGESTIONS.map(({ id, url }) => (
+                <ClickableCard
+                  key={id}
+                  label={copy.page.suggestions[id].name}
+                  variant="transparent"
+                  padding={2}
+                  isDisabled={busy !== null}
+                  onClick={() => openSuggestedServer(id, url)}
+                >
+                  <VStack gap={0}>
+                    <Text type="body" weight="semibold">{copy.page.suggestions[id].name}</Text>
+                    <Text type="supporting" color="secondary">{copy.page.suggestions[id].description}</Text>
+                  </VStack>
+                </ClickableCard>
+              ))}
+            </Grid>
           </VStack>
-          <List density="balanced" className="maka-mcp-recommendations-list" aria-label={copy.page.recommended}>
-            {MCP_SUGGESTIONS.map(({ id, url }) => (
-              <ListItem
-                key={id}
-                label={copy.page.suggestions[id].name}
-                description={copy.page.suggestions[id].description}
-                endContent={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />}
-                isDisabled={busy !== null}
-                onClick={() => openSuggestedServer(id, url)}
-              />
-            ))}
-          </List>
-          <Text type="supporting" color="secondary">
-            {copy.page.credentialGuides}{' '}
-            <Link href="https://developer.amap.com/api/mcp-server/gettingstarted" isExternalLink>{copy.page.amapGuide}</Link>
-            {' · '}
-            <Link href="https://developer.cloud.tencent.com/mcp/server/11803" isExternalLink>{copy.page.tencentDocsGuide}</Link>
-          </Text>
-        </section>
+        </VStack>
       </ModulePage>
 
       {editor && (

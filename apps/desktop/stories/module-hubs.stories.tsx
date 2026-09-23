@@ -1039,7 +1039,7 @@ export const ExtensionsMcpSetupRequired: Story = {
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, '0 个连接');
-    await waitForStoryText(canvasElement, '推荐的 MCP');
+    await waitForStoryText(canvasElement, '推荐');
     await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled);
     if (canvasElement.querySelector('.maka-module-page-panel')) {
       throw new Error('Empty MCP connections must not push recommendations below an empty panel');
@@ -1053,14 +1053,14 @@ export const ExtensionsMcpSetupRequired: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 推荐的 MCP → Notion, before saving.
+// Real path: sidebar → 扩展 → MCP → 推荐 → Notion, before saving.
 export const ExtensionsMcpRecommended: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    await waitForStoryText(canvasElement, '推荐的 MCP');
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.includes('Notion') === true)).click();
+    await waitForStoryText(canvasElement, '推荐');
+    (await waitForStoryButton(canvasElement, (button) => button.getAttribute('aria-label') === 'Notion')).click();
     const body = canvasElement.ownerDocument.body;
     const fields = await waitForStorySelector<HTMLElement>(body, '.maka-mcp-primary-fields');
     const inputs = [...fields.querySelectorAll<HTMLInputElement>('input')];
@@ -1093,7 +1093,7 @@ export const ExtensionsMcpJsonImport: Story = {
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    await waitForStoryText(canvasElement, '推荐的 MCP');
+    await waitForStoryText(canvasElement, '推荐');
     (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
     const body = canvasElement.ownerDocument.body;
     (await waitForStoryButton(body, (button) => button.textContent?.trim() === '粘贴 JSON')).click();

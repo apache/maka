@@ -39,8 +39,8 @@ export type McpCopy = {
     toolbarAria: string; connections: string; localStdio: string; searchPlaceholder: string; searchAria: string;
     clearSearch: string; loading: string;
     noConnectionsMatch: string; noConnectionsMatchDetail(query: string): string;
-    recommended: string; recommendedDetail: string; credentialGuides: string; amapGuide: string; tencentDocsGuide: string;
-    suggestions: Record<'notion' | 'linear' | 'feishu' | 'maxcompute' | 'mcp-docs', { name: string; description: string }>;
+    recommended: string;
+    suggestions: Record<'notion' | 'linear' | 'feishu' | 'mcp-docs', { name: string; description: string }>;
   };
   detail: {
     label: string; enabled: string; transport: string;
@@ -90,18 +90,16 @@ const MCP_COPY = {
       actionsAria: 'MCP 操作', refreshing: '刷新中…', refresh: '刷新', add: '添加 MCP',
       metaConnections: (count) => `${count} 个连接`, metaErrors: (count) => `${count} 个连接异常`,
       searchMatches: (count) => `${count} 个匹配`,
-      toolbarAria: 'MCP 连接操作', connections: '连接', localStdio: '本地命令',
+      toolbarAria: 'MCP 连接操作', connections: '已添加', localStdio: '本地命令',
       searchPlaceholder: '搜索连接…', searchAria: '搜索 MCP 连接',
       clearSearch: '清空搜索', loading: '正在读取 MCP 连接…',
       noConnectionsMatch: '没有匹配的 MCP 连接', noConnectionsMatchDetail: (query) => `换一个关键词，或清空「${query}」查看全部连接。`,
-      recommended: '推荐的 MCP', recommendedDetail: '选择服务后确认连接信息并保存。',
-      credentialGuides: '需先准备凭据：', amapGuide: '高德地图（API Key）', tencentDocsGuide: '腾讯文档（Token）',
+      recommended: '推荐',
       suggestions: {
-        notion: { name: 'Notion', description: '工作区页面 · 需要登录' },
-        linear: { name: 'Linear', description: '问题与项目 · 需要登录' },
-        feishu: { name: '飞书', description: '飞书文档等 · 需要登录' },
-        maxcompute: { name: '阿里云 MaxCompute', description: '数据分析 · 首次需管理员授权' },
-        'mcp-docs': { name: 'MCP 官方文档', description: '搜索协议文档 · 无需登录' },
+        notion: { name: 'Notion', description: '访问工作区页面' },
+        linear: { name: 'Linear', description: '访问问题与项目' },
+        feishu: { name: '飞书', description: '访问飞书文档' },
+        'mcp-docs': { name: 'MCP 官方文档', description: '搜索协议文档' },
       },
     },
     detail: {
@@ -156,18 +154,16 @@ const MCP_COPY = {
       actionsAria: 'MCP 操作', refreshing: '重新整理中…', refresh: '重新整理', add: '新增 MCP',
       metaConnections: (count) => `${count} 個連線`, metaErrors: (count) => `${count} 個連線異常`,
       searchMatches: (count) => `${count} 個符合`,
-      toolbarAria: 'MCP 連線操作', connections: '連線', localStdio: '本地命令',
+      toolbarAria: 'MCP 連線操作', connections: '已新增', localStdio: '本地命令',
       searchPlaceholder: '搜尋連線…', searchAria: '搜尋 MCP 連線',
       clearSearch: '清空搜尋', loading: '正在讀取 MCP 連線…',
       noConnectionsMatch: '沒有符合的 MCP 連線', noConnectionsMatchDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部連線。`,
-      recommended: '推薦的 MCP', recommendedDetail: '選擇服務後確認連線資訊並儲存。',
-      credentialGuides: '需先準備憑證：', amapGuide: '高德地圖（API Key）', tencentDocsGuide: '騰訊文件（Token）',
+      recommended: '推薦',
       suggestions: {
-        notion: { name: 'Notion', description: '工作區頁面 · 需要登入' },
-        linear: { name: 'Linear', description: '議題與專案 · 需要登入' },
-        feishu: { name: '飛書', description: '飛書文件等 · 需要登入' },
-        maxcompute: { name: '阿里雲 MaxCompute', description: '資料分析 · 首次需管理員授權' },
-        'mcp-docs': { name: 'MCP 官方文件', description: '搜尋協議文件 · 無需登入' },
+        notion: { name: 'Notion', description: '存取工作區頁面' },
+        linear: { name: 'Linear', description: '存取議題與專案' },
+        feishu: { name: '飛書', description: '存取飛書文件' },
+        'mcp-docs': { name: 'MCP 官方文件', description: '搜尋協議文件' },
       },
     },
     detail: {
@@ -222,18 +218,16 @@ const MCP_COPY = {
       actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
       metaConnections: (count) => `${count} connections`, metaErrors: (count) => `${count} ${count === 1 ? 'connection error' : 'connection errors'}`,
       searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
-      toolbarAria: 'MCP connection controls', connections: 'Connections', localStdio: 'Local command',
+      toolbarAria: 'MCP connection controls', connections: 'Added', localStdio: 'Local command',
       searchPlaceholder: 'Search connections…', searchAria: 'Search MCP connections',
       clearSearch: 'Clear search', loading: 'Loading MCP connections…',
       noConnectionsMatch: 'No matching MCP connections', noConnectionsMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every connection.`,
-      recommended: 'Recommended MCP servers', recommendedDetail: 'Choose a service, review its connection details, and save.',
-      credentialGuides: 'Credentials required:', amapGuide: 'Amap Maps (API key)', tencentDocsGuide: 'Tencent Docs (token)',
+      recommended: 'Recommended',
       suggestions: {
-        notion: { name: 'Notion', description: 'Workspace pages · Sign in required' },
-        linear: { name: 'Linear', description: 'Issues and projects · Sign in required' },
-        feishu: { name: 'Feishu', description: 'Documents and more · Sign in required' },
-        maxcompute: { name: 'Alibaba Cloud MaxCompute', description: 'Data analytics · Admin setup required first' },
-        'mcp-docs': { name: 'Official MCP docs', description: 'Search protocol docs · No sign-in' },
+        notion: { name: 'Notion', description: 'Access workspace pages' },
+        linear: { name: 'Linear', description: 'Access issues and projects' },
+        feishu: { name: 'Feishu', description: 'Access Feishu documents' },
+        'mcp-docs': { name: 'Official MCP docs', description: 'Search protocol docs' },
       },
     },
     detail: {
