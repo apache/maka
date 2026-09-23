@@ -24,7 +24,7 @@
 // panel inside a centred column squeezes the rows every time it opens, so the
 // detail never shares the column.
 
-import { useRef, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { Dialog, DialogHeader, HStack, Heading, StackItem, Text, VStack } from '@astryxdesign/core';
 import { Layout, LayoutContent, LayoutFooter, LayoutHeader } from '@astryxdesign/core/Layout';
 import { useConfirmOpen } from '../toast.js';
@@ -87,6 +87,29 @@ export function ModulePage({
   // A confirm (删除 and the like) replaces the detail rather than stacking on
   // it; the detail comes back if the confirm is cancelled.
   const confirmOpen = useConfirmOpen();
+  const open = detail != null && !confirmOpen;
+
+  // Focus is settled here, not left to Astryx: it returns focus to whatever
+  // was focused when the dialog opened, which after the editor or a confirm
+  // hands the detail back is a control of that dialog, gone by then. The row
+  // is recorded in a layout effect, before Astryx's open effect moves focus,
+  // and focus moves a frame later, after the other dialog's close has run.
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (open && active instanceof HTMLElement && !active.closest('dialog')) {
+      openerRef.current = active;
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      // The header title, which Astryx makes the dialog's initial focus.
+      if (open) dialogRef.current?.querySelector<HTMLElement>('[tabindex="-1"]')?.focus();
+      else if (openerRef.current?.isConnected && !document.querySelector('dialog[open]')) openerRef.current.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
+
   const dismiss = (open: boolean) => {
     if (!open) onDetailDismiss?.();
   };
@@ -134,7 +157,7 @@ export function ModulePage({
               row on the open→closed transition, which an unmount would skip.
               Astryx names the dialog from a header present at mount, and this
               one mounts empty, so the name is passed explicitly. */}
-          <Dialog isOpen={detail != null && !confirmOpen} onOpenChange={dismiss} purpose="info" width={560} aria-label={shownDetail?.title}>
+          <Dialog ref={dialogRef} isOpen={open} onOpenChange={dismiss} purpose="info" width={560} aria-label={shownDetail?.title}>
             {shownDetail ? (
               <Layout
                 header={(

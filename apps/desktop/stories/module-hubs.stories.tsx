@@ -1501,8 +1501,29 @@ export const ScheduledTasksDetail: Story = {
       canvasElement,
       (candidate) => candidate.textContent?.includes('每周发布风险复盘') === true,
     );
+    // A real click focuses the row first; a scripted one does not.
+    row.focus();
     row.click();
-    await waitForStoryText(canvasElement.ownerDocument.body, '立即触发');
+    const body = canvasElement.ownerDocument.body;
+    await waitForStoryText(body, '立即触发');
+    // The form takes the detail's place and hands it back; closing the detail
+    // afterwards returns focus to the row instead of stranding it on the page.
+    const doc = canvasElement.ownerDocument;
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
+    const dialogButton = (name: string) =>
+      [...body.querySelectorAll<HTMLButtonElement>('dialog[open] button')]
+        .find((button) => button.textContent?.trim() === name || button.getAttribute('aria-label') === name);
+    dialogButton('编辑')?.click();
+    await waitForStoryText(body, '编辑定时任务');
+    dialogButton('关闭')?.click();
+    await waitForStoryText(body, '立即触发');
+    await settle();
+    if (!doc.activeElement?.closest('dialog[open]')) throw new Error('Closing the form must return focus to the detail');
+    dialogButton('关闭')?.click();
+    await settle();
+    if (doc.activeElement !== row) throw new Error('Closing the detail must return focus to its row');
+    row.click();
+    await waitForStoryText(body, '立即触发');
     expectModuleBodyAlignedWithHeader(canvasElement);
   },
 };
