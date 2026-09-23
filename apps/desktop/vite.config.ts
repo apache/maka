@@ -64,6 +64,9 @@ export default defineConfig({
     ],
   },
   build: {
+    // Small KaTeX fonts must remain local files: the renderer CSP allows
+    // same-origin fonts, while Vite's default inlining produces blocked data URLs.
+    assetsInlineLimit: (filePath) => /\.(?:woff2?|ttf|otf)$/iu.test(filePath) ? false : undefined,
     // Renderer bundle lives in dist-renderer (sibling of dist), separate from
     // dist/renderer. dist/renderer holds tsc side-files that build:main emits
     // for helpers imported by main/__tests__; emptyOutDir:true clears only
