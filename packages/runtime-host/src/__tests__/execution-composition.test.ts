@@ -1774,11 +1774,24 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       };
       const replayed = await actWorkHub(composition, retry, context);
       assert.deepEqual(replayed, resumed);
-      const fresh = await actWorkHub(
-        composition,
-        { ...retry, actionId: 'workhub-resume-again' },
-        context,
-      );
+      const freshAction = { ...retry, actionId: 'workhub-resume-again' };
+      let fresh;
+      try {
+        fresh = await actWorkHub(composition, freshAction, context);
+      } catch (error) {
+        assert.match(String(error), /"code":"session_busy"/u);
+        const feedback = (await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID)).find(
+          ({ turnId, status }) => turnId.startsWith('whf_') && status === 'running',
+        );
+        assert.ok(feedback);
+        await waitFor(async () => {
+          const turns = await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID);
+          return turns.some(
+            ({ turnId, status }) => turnId === feedback.turnId && status === 'completed',
+          );
+        }, 10_000);
+        fresh = await actWorkHub(composition, freshAction, context);
+      }
       assert.equal(fresh.ok, true, JSON.stringify(fresh));
       if (!fresh.ok || fresh.result.disposition !== 'resume_work' || !fresh.result.targetTurnId)
         return;
