@@ -2700,6 +2700,70 @@ export const UsageSingleProvider: Story = {
 export const UsageMultiModel: Story = {
   decorators: [withUsageMultiModelBridge],
   render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement, globals }) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(
+      globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN',
+    );
+    const summary = within(await canvas.findByRole('group', { name: copy.summaryAria }));
+    const total = await summary.findByText('1.3M');
+    const tokenDetail = summary.getByText(copy.tokenDetail('914k', '370k'));
+    expect(summary.getByText('436k')).toBeVisible();
+    expect(summary.getByText(copy.cacheDetail('0', '436k', '0'))).toBeVisible();
+
+    async function expectExactTooltip(trigger: HTMLElement, exactValue: string) {
+      await waitFor(() => {
+        const tooltipId = trigger.getAttribute('aria-describedby');
+        expect(tooltipId).toBeTruthy();
+        const tooltip = canvasElement.ownerDocument.getElementById(tooltipId!);
+        expect(tooltip).toHaveAttribute('role', 'tooltip');
+        expect(tooltip).toBeVisible();
+        expect(tooltip?.textContent).toBe(exactValue);
+        expect(trigger).toHaveAccessibleDescription(exactValue);
+      });
+    }
+
+    await userEvent.hover(total);
+    await expectExactTooltip(total, '1,284,000');
+    await userEvent.unhover(total);
+    // Start at the summary value so one real Tab proves its adjacent detail
+    // is keyboard-reachable without coupling to the settings rail's tab order.
+    expect(total).toHaveAttribute('tabindex', '0');
+    total.focus();
+    await userEvent.tab();
+    expect(tokenDetail).toHaveFocus();
+    await expectExactTooltip(tokenDetail, copy.tokenDetail('914,000', '370,000'));
+    tokenDetail.blur();
+
+    const tabs = within(canvas.getByRole('navigation', { name: copy.viewAria }));
+    await userEvent.click(tabs.getByRole('button', { name: new RegExp(`^${copy.tabs[2]}`) }));
+    const table = await canvas.findByRole('table', { name: copy.tables.modelsAria });
+    const modelTable = within(table);
+    const compactCounts = ['624k', '318k', '214k', '96k', '32k'];
+    for (const compactCount of compactCounts) {
+      const token = modelTable.getByText(compactCount);
+      const cell = token.closest('td');
+      if (!cell) throw new Error('Model token count did not render inside a table cell');
+      const range = canvasElement.ownerDocument.createRange();
+      range.selectNodeContents(token);
+      const cellStyle = getComputedStyle(cell);
+      const requiredWidth = range.getBoundingClientRect().width
+        + Number.parseFloat(cellStyle.paddingLeft)
+        + Number.parseFloat(cellStyle.paddingRight);
+      expect(requiredWidth).toBeLessThanOrEqual(cell.clientWidth);
+    }
+
+    const firstModelTokens = modelTable.getByText('624k');
+    await userEvent.hover(firstModelTokens);
+    await expectExactTooltip(firstModelTokens, '624,000');
+    await userEvent.unhover(firstModelTokens);
+    firstModelTokens.focus();
+    await userEvent.tab();
+    const secondModelTokens = modelTable.getByText('318k');
+    expect(secondModelTokens).toHaveFocus();
+    await expectExactTooltip(secondModelTokens, '318,000');
+    secondModelTokens.blur();
+  },
 };
 // Real path: 设置 → 使用统计 → 详情记录 on → 活动记录, with long model and tool names.
 export const UsageLongTail: Story = {

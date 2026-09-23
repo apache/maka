@@ -26,14 +26,15 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 export type DayPeriod = 'morning' | 'noon' | 'afternoon' | 'evening';
 
 /** Compact token count: 999 → "999", 45,200 → "45.2k", 128,000 → "128k", 1,048,576 → "1M". */
-function formatCompactTokenCount(count: number): string {
+export function formatCompactTokenCount(count: number): string {
   if (count < 1_000) return `${count}`;
   if (count >= 1_000_000) {
     const millions = count / 1_000_000;
     return `${millions >= 100 ? Math.round(millions) : Math.round(millions * 10) / 10}M`;
   }
   const thousands = count / 1_000;
-  return `${thousands >= 100 ? Math.round(thousands) : Math.round(thousands * 10) / 10}k`;
+  const roundedThousands = thousands >= 100 ? Math.round(thousands) : Math.round(thousands * 10) / 10;
+  return roundedThousands >= 1_000 ? '1M' : `${roundedThousands}k`;
 }
 
 /** Wall-clock units per locale (zh uses words, en letters); each copy entry supplies its own. */

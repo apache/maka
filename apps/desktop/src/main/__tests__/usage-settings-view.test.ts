@@ -26,6 +26,7 @@ import { act, createElement, createRef, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   createDefaultSettings,
   mergeSettings,
@@ -97,7 +98,7 @@ afterEach(() => Object.assign(globalThis, originalGlobals));
 
 /** Install a linkedom DOM + the browser globals React DOM needs, return the root. */
 function setupDom(): { container: HTMLElement; root: Root } {
-  const { document, window } = parseHTML('<div id="root"></div>');
+  const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
   const matchMedia = (media: string) => ({
     matches: false,
     media,
@@ -108,13 +109,16 @@ function setupDom(): { container: HTMLElement; root: Root } {
     removeEventListener() {},
     dispatchEvent: () => false,
   });
-  Object.assign(window, { matchMedia, scrollTo: () => {} });
+  const getComputedStyle = () => ({
+    color: 'currentColor', direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  Object.assign(window, { matchMedia, getComputedStyle, scrollTo: () => {} });
   Object.assign(globalThis, {
     document,
     window,
     matchMedia,
     HTMLElement: window.HTMLElement,
-    getComputedStyle: () => ({ color: 'currentColor' }) as CSSStyleDeclaration,
+    getComputedStyle,
     requestAnimationFrame: (cb: FrameRequestCallback) => setTimeout(cb, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
     CSS: { supports: () => false, escape: (v: string) => v },
@@ -139,9 +143,10 @@ function tree(opts: {
   settings: AppSettings;
   targetKey: string;
   services: UsageServices;
+  locale?: UiLocale;
 }): ReactNode {
   return createElement(LocaleProvider, {
-    locale: 'en' as const,
+    locale: opts.locale ?? 'en',
     children: createElement(AstryxLocaleProvider, {
       children: createElement(ToastProvider, {
         children: createElement(UsageFeatureScope, {
@@ -165,6 +170,178 @@ const flush = async () => {
   await Promise.resolve();
   await Promise.resolve();
 };
+
+function statsWithLargeTokenCounts(): UsageStats {
+  return {
+    ...statsWithRequests(1_284),
+    summary: {
+      totalRequests: 1_284,
+      totalCostUsd: 12.34,
+      totalTokens: 1_048_576,
+      inputTokens: 1_003_376,
+      outputTokens: 45_200,
+      cacheTokens: 1_000_500,
+      cacheMiss: 128_000,
+      cacheRead: 999_500,
+      cacheCreation: 1_000,
+      reasoning: 0,
+    },
+    logs: [{
+      id: 'large-request',
+      ts: 1,
+      kind: 'model',
+      provider: 'example-provider',
+      model: 'example-model',
+      inputTokens: 1_003_376,
+      outputTokens: 45_200,
+      costUsd: 12.34,
+      latencyMs: 1_284,
+      status: 'success',
+    }],
+    byProvider: [{ provider: 'example-provider', requests: 1_284, tokens: 1_048_576, costUsd: 12.34 }],
+    byModel: [{ model: 'example-model', requests: 1_284, tokens: 1_048_576, costUsd: 12.34 }],
+    provenance: {
+      ...EMPTY_USAGE_PROVENANCE,
+      coverage: {
+        ...EMPTY_USAGE_PROVENANCE.coverage,
+        attempts: 1_284,
+        pricedAttempts: 1_284,
+        usageReportedAttempts: 1_284,
+      },
+    },
+  };
+}
+
+async function assertCompactTooltip(scope: Element, compact: string, exact: string): Promise<void> {
+  const trigger = [...scope.querySelectorAll<HTMLElement>('[tabindex="0"][aria-describedby]')]
+    .find((element) => element.textContent === compact);
+  assert.ok(trigger, `missing keyboard-accessible compact value: ${compact}`);
+  const originalMatches = trigger.matches.bind(trigger);
+  // linkedom has no keyboard modality or :focus-visible implementation.
+  trigger.matches = ((selector: string) => selector === ':focus-visible'
+    || originalMatches(selector)) as typeof trigger.matches;
+  await act(async () => {
+    trigger.dispatchEvent(new window.Event('focusin', { bubbles: true }));
+    await flush();
+  });
+  trigger.matches = originalMatches;
+  const descriptions = (trigger.getAttribute('aria-describedby') ?? '').split(/\s+/)
+    .map((id) => trigger.ownerDocument.getElementById(id));
+  const tooltip = descriptions.find((element) => element?.getAttribute('role') === 'tooltip');
+  assert.ok(tooltip, `keyboard focus must reveal the exact value for ${compact}`);
+  assert.equal(tooltip.textContent, exact);
+  assert.notEqual(tooltip.style.display, 'none');
+}
+
+for (const expected of [
+  {
+    locale: 'en',
+    tokenDetail: 'Input 1M / output 45.2k',
+    exactTokenDetail: 'Input 1,003,376 / output 45,200',
+    cacheDetail: 'New 128k / hit 1M / created 1k',
+    exactCacheDetail: 'New 128,000 / hit 999,500 / created 1,000',
+  },
+  {
+    locale: 'zh-CN',
+    tokenDetail: '输入 1M / 输出 45.2k',
+    exactTokenDetail: '输入 1,003,376 / 输出 45,200',
+    cacheDetail: '新 128k / 命中 1M / 创建 1k',
+    exactCacheDetail: '新 128,000 / 命中 999,500 / 创建 1,000',
+  },
+  {
+    locale: 'zh-TW',
+    tokenDetail: '輸入 1M / 輸出 45.2k',
+    exactTokenDetail: '輸入 1,003,376 / 輸出 45,200',
+    cacheDetail: '新 128k / 命中 1M / 建立 1k',
+    exactCacheDetail: '新 128,000 / 命中 999,500 / 建立 1,000',
+  },
+] as const) {
+  it(`shows compact tokens with exact keyboard tooltips throughout Usage in ${expected.locale}`, async () => {
+    const { container, root } = setupDom();
+    const stats = statsWithLargeTokenCounts();
+    const base = mergeSettings(createDefaultSettings(), {
+      usage: { range: 'all', activeTab: 'providers', showDetails: true },
+    });
+    const services: UsageServices = {
+      loadUsageStats: async () => stats,
+      updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
+    };
+
+    try {
+      for (const activeTab of ['providers', 'models', 'requests'] as const) {
+        const settings = mergeSettings(base, { usage: { activeTab } });
+        await act(async () => {
+          root.render(tree({ active: true, settings, targetKey: 'host', services, locale: expected.locale }));
+          await flush();
+        });
+
+        if (activeTab === 'providers') {
+          const values = [...container.querySelectorAll('[data-slot="stat-tile-value"]')];
+          assert.deepEqual(values.map((element) => element.textContent), ['1284', '$12.34', '1M', '1M']);
+          const cards = container.querySelectorAll('[data-slot="stat-tile"]');
+          await assertCompactTooltip(cards[2]!, '1M', '1,048,576');
+          await assertCompactTooltip(cards[2]!, expected.tokenDetail, expected.exactTokenDetail);
+          await assertCompactTooltip(cards[3]!, '1M', '1,000,500');
+          await assertCompactTooltip(cards[3]!, expected.cacheDetail, expected.exactCacheDetail);
+        }
+
+        const row = container.querySelector('tbody tr');
+        assert.ok(row, `${activeTab} must display the loaded record`);
+        const cells = row.querySelectorAll('td');
+        const tokenIndex = activeTab === 'requests' ? 4 : 2;
+        assert.equal(cells[tokenIndex]?.textContent, '1M');
+        assert.equal(cells[tokenIndex + 1]?.textContent, '$12.34');
+        if (activeTab === 'requests') {
+          assert.equal(cells[6]?.textContent, '1284ms', 'latency remains an exact millisecond value');
+        } else {
+          assert.equal(cells[1]?.textContent, '1284', 'request counts are not token counts');
+        }
+        await assertCompactTooltip(cells[tokenIndex]!, '1M', '1,048,576');
+      }
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+}
+
+it('keeps unavailable token placeholders distinct from loaded zero counts and empty tables', async () => {
+  const { container, root } = setupDom();
+  const settings = mergeSettings(createDefaultSettings(), {
+    usage: { range: 'all', activeTab: 'providers' },
+  });
+  const load = deferred<UsageStats | null>();
+  const services: UsageServices = {
+    loadUsageStats: () => load.promise,
+    updateUsageSettings: async () => settings.usage,
+  };
+  try {
+    await act(async () => {
+      root.render(tree({ active: true, settings, targetKey: 'host', services }));
+      await flush();
+    });
+    assert.deepEqual(
+      [...container.querySelectorAll('[data-slot="stat-tile-value"]')].map((element) => element.textContent),
+      ['—', '—', '—', '—'],
+    );
+    await act(async () => {
+      load.resolve(statsWithRequests(0));
+      await flush();
+    });
+    assert.deepEqual(
+      [...container.querySelectorAll('[data-slot="stat-tile-value"]')].map((element) => element.textContent),
+      ['0', '$0.00', '0', '0'],
+    );
+    assert.match(container.textContent ?? '', /No provider usage/);
+    assert.equal(container.querySelector('tbody tr'), null);
+    const cards = container.querySelectorAll('[data-slot="stat-tile"]');
+    await assertCompactTooltip(cards[2]!, '0', '0');
+    await assertCompactTooltip(cards[2]!, 'Input 0 / output 0', 'Input 0 / output 0');
+    await assertCompactTooltip(cards[3]!, '0', '0');
+    await assertCompactTooltip(cards[3]!, 'New 0 / hit 0 / created 0', 'New 0 / hit 0 / created 0');
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
 
 describe('Usage feature scope', () => {
   it('re-displays the last snapshot immediately when returning to the section, then refreshes', async () => {

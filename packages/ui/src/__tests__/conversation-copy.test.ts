@@ -19,7 +19,36 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getConversationCopy } from '../conversation-copy.js';
+import { formatCompactTokenCount, getConversationCopy } from '../conversation-copy.js';
+
+test('compact token counts keep familiar k/M units and promote rounded millions', () => {
+  const cases: Array<[number, string]> = [
+    [0, '0'],
+    [999, '999'],
+    [1_000, '1k'],
+    [45_200, '45.2k'],
+    [128_000, '128k'],
+    [999_499, '999k'],
+    [999_500, '1M'],
+    [999_999, '1M'],
+    [1_000_000, '1M'],
+    [1_048_576, '1M'],
+    [1_500_000, '1.5M'],
+    [128_000_000, '128M'],
+  ];
+
+  for (const [count, expected] of cases) {
+    assert.equal(formatCompactTokenCount(count), expected, `token count: ${count}`);
+  }
+});
+
+test('goal token labels use the same compact units across locales', () => {
+  for (const locale of ['zh-CN', 'zh-TW', 'en'] as const) {
+    const { goalTokens } = getConversationCopy(locale).chat;
+    assert.equal(goalTokens(45_200, 128_000), '45.2k / 128k');
+    assert.equal(goalTokens(999_500, 1_048_576), '1M / 1M');
+  }
+});
 
 test('labels the Chinese default thinking level as default', () => {
   assert.equal(getConversationCopy('zh-CN').model.defaultLevel, '默认');
