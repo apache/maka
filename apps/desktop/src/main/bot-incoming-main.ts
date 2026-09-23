@@ -29,6 +29,7 @@ import {
   plaintextHelpReply,
 } from '@maka/core/bot-events';
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
+import type { InteractionRequest } from '@maka/runtime-host/protocol';
 import type { BotIncomingMessage, BotRegistry, BotReplyStream } from '@maka/runtime/bots';
 import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
 import { isBotSessionUnavailableError } from './bot-session-adapter.js';
@@ -41,6 +42,20 @@ const BOT_CONVERSATION_RATE_BURST = 8;
 const BOT_CONVERSATION_RATE_REFILL_MS = 5_000;
 const BOT_CONVERSATION_RATE_BUCKET_TTL_MS = 60 * 60 * 1_000;
 const BOT_CONVERSATION_RATE_BUCKET_LIMIT = 1_000;
+const BOT_APPROVAL_TTL_MS = 15 * 60 * 1_000;
+const BOT_APPROVAL_LIMIT = 1_000;
+
+interface PendingBotApproval {
+  readonly code: string;
+  readonly sessionId: string;
+  readonly interactionId: string;
+  readonly turnId: string;
+  readonly request: InteractionRequest;
+  readonly platform: BotIncomingMessage['platform'];
+  readonly chatId: string;
+  readonly userId: string;
+  readonly createdAt: number;
+}
 
 interface BotConversationRateBucket {
   tokens: number;
@@ -63,6 +78,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   const botConversationQueues = new Map<string, Promise<void>>();
   const botRecentSourceEventKeys = new Map<string, number>();
   const botConversationRateBuckets = new Map<string, BotConversationRateBucket>();
+  const pendingBotApprovals = new Map<string, PendingBotApproval>();
   const activeTasks = new Set<Promise<void>>();
   let closed = false;
   let closeTask: Promise<void> | undefined;
@@ -73,6 +89,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       botConversationSessions.delete(conversationKey);
       botConversationRateBuckets.delete(conversationKey);
     }
+    clearBotApprovalsForSession(sessionId);
   }
 
   function handleBotIncomingMessage(message: BotIncomingMessage): Promise<void> {
@@ -123,6 +140,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       botConversationQueues.clear();
       botRecentSourceEventKeys.clear();
       botConversationRateBuckets.clear();
+      pendingBotApprovals.clear();
     });
     return closeTask;
   }
@@ -231,6 +249,19 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     // accumulate transient noise after a few weeks of use. The actual
     // agent reply does NOT get this TTL — the answer must stay visible.
     const SYSTEM_NOTICE_TTL_MS = 5 * 60 * 1_000;
+    const approvalCommand = parseBotApprovalCommand(text);
+    if (approvalCommand || startsBotApprovalCommand(text)) {
+      if (!approvalCommand) {
+        await sendTransientBotNotice(
+          message,
+          '审批指令格式：批准 <代码> 或 拒绝 <代码>。',
+          SYSTEM_NOTICE_TTL_MS,
+        );
+        return;
+      }
+      await decideBotApproval(conversationKey, message, approvalCommand, SYSTEM_NOTICE_TTL_MS);
+      return;
+    }
     // PR-BOT-PLAINTEXT-HELP-COMMAND-0: DM-only quick "what can I do here?"
     // hint. Lands BEFORE the reset path so a user typing "help" gets a
     // capability list, not a (silent) reset.
@@ -253,8 +284,10 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     // conversation key is `${platform}:${chatId}` — in a group chat any
     // member would otherwise be able to wipe everyone else's context.
     if (isPlaintextResetCommand({ text, isGroup: message.isGroup })) {
+      const sessionId = botConversationSessions.get(conversationKey);
       const had = botConversationSessions.delete(conversationKey);
       botConversationRateBuckets.delete(conversationKey);
+      if (sessionId) clearBotApprovalsForSession(sessionId);
       const replyOptions = {
         ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
         ephemeralTtlMs: SYSTEM_NOTICE_TTL_MS,
@@ -348,7 +381,10 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       })();
       let reply: string;
       try {
-        reply = botReply(await turn);
+        const result = await turn;
+        reply = result.kind === 'suspended'
+          ? publishBotApprovalRequests(result, sessionId, message)
+          : botReply(result);
       } finally {
         typingAbort.abort();
         await typingLoop.catch(() => {});
@@ -422,6 +458,108 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     return false;
   }
 
+  async function decideBotApproval(
+    conversationKey: string,
+    message: BotIncomingMessage,
+    command: { readonly decision: 'allow' | 'deny'; readonly code: string },
+    noticeTtlMs: number,
+  ): Promise<void> {
+    prunePendingBotApprovals(Date.now());
+    const pending = pendingBotApprovals.get(command.code);
+    if (
+      !pending ||
+      pending.platform !== message.platform ||
+      pending.chatId !== message.chatId ||
+      conversationKey !== botConversationKey(message)
+    ) {
+      await sendTransientBotNotice(message, '审批请求不存在、已过期或不属于当前会话。', noticeTtlMs);
+      return;
+    }
+    if (pending.userId !== message.userId) {
+      await sendTransientBotNotice(message, '只有发起该请求的飞书用户可以处理此审批。', noticeTtlMs);
+      return;
+    }
+    if (!deps.sessions.respondToApproval) {
+      await sendTransientBotNotice(message, '当前运行时不支持从机器人处理审批，请在桌面端完成。', noticeTtlMs);
+      return;
+    }
+    try {
+      const continuation = await deps.sessions.respondToApproval({
+        sessionId: pending.sessionId,
+        interactionId: pending.interactionId,
+        turnId: pending.turnId,
+        request: pending.request,
+        decision: command.decision,
+      });
+      pendingBotApprovals.delete(pending.code);
+      await sendTransientBotNotice(
+        message,
+        command.decision === 'allow' ? '已批准这一次请求。' : '已拒绝该请求。',
+        noticeTtlMs,
+      );
+      if (continuation.kind === 'completed' && continuation.text.trim()) {
+        await deps.botRegistry.sendMessage(message.platform, message.chatId, continuation.text.trim(), {
+          ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        }).catch(() => null);
+      } else if (continuation.kind === 'suspended') {
+        if (continuation.pendingApprovals?.length) {
+          const followup = publishBotApprovalRequests(continuation, pending.sessionId, message);
+          await deps.botRegistry.sendMessage(message.platform, message.chatId, followup, {
+            ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+          }).catch(() => null);
+        } else {
+          await sendTransientBotNotice(message, botReply(continuation), noticeTtlMs);
+        }
+      } else if (continuation.kind === 'errored') {
+        await sendTransientBotNotice(message, botReply(continuation), noticeTtlMs);
+      }
+    } catch {
+      pendingBotApprovals.delete(pending.code);
+      await sendTransientBotNotice(message, '该审批已失效或已被处理，请回到任务查看最新状态。', noticeTtlMs);
+    }
+  }
+
+  function publishBotApprovalRequests(
+    result: Extract<BotSessionTurnResult, { readonly kind: 'suspended' }>,
+    sessionId: string,
+    message: BotIncomingMessage,
+  ): string {
+    if (message.platform !== 'feishu') return botReply(result);
+    const now = Date.now();
+    prunePendingBotApprovals(now);
+    const lines: string[] = [];
+    for (const interaction of result.pendingApprovals ?? []) {
+      if (pendingBotApprovals.size >= BOT_APPROVAL_LIMIT) break;
+      const code = createBotApprovalCode(pendingBotApprovals);
+      pendingBotApprovals.set(code, {
+        code,
+        sessionId,
+        interactionId: interaction.interactionId,
+        turnId: interaction.turnId,
+        request: interaction.request,
+        platform: message.platform,
+        chatId: message.chatId,
+        userId: message.userId,
+        createdAt: now,
+      });
+      lines.push(`${describeBotApproval(interaction.request)}\n批准：批准 ${code}\n拒绝：拒绝 ${code}`);
+    }
+    if (lines.length === 0) return botReply(result);
+    return `任务等待审批（15 分钟内有效，仅原发起用户可处理；批准仅对本次请求生效）：\n\n${lines.join('\n\n')}`;
+  }
+
+  function prunePendingBotApprovals(now: number): void {
+    for (const [code, pending] of pendingBotApprovals) {
+      if (now - pending.createdAt > BOT_APPROVAL_TTL_MS) pendingBotApprovals.delete(code);
+    }
+  }
+
+  function clearBotApprovalsForSession(sessionId: string): void {
+    for (const [code, pending] of pendingBotApprovals) {
+      if (pending.sessionId === sessionId) pendingBotApprovals.delete(code);
+    }
+  }
+
   return { handleBotIncomingMessage, invalidateSessionBindings, close };
 }
 
@@ -432,4 +570,48 @@ function botReply(result: BotSessionTurnResult): string {
   }
   if (result.kind === 'errored') return `Maka 处理失败：${result.reason}`;
   return result.text;
+}
+
+function createBotApprovalCode(existing: ReadonlyMap<string, unknown>): string {
+  let code: string;
+  do {
+    code = randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase();
+  } while (existing.has(code));
+  return code;
+}
+
+function parseBotApprovalCommand(
+  text: string,
+): { readonly decision: 'allow' | 'deny'; readonly code: string } | null {
+  const match = /^(批准|同意|approve|拒绝|驳回|deny)\s+([a-f0-9]{12})$/iu.exec(text.trim());
+  if (!match) return null;
+  const verb = match[1]!.toLowerCase();
+  return {
+    decision: verb === '拒绝' || verb === '驳回' || verb === 'deny' ? 'deny' : 'allow',
+    code: match[2]!.toUpperCase(),
+  };
+}
+
+function startsBotApprovalCommand(text: string): boolean {
+  return /^(批准|同意|approve|拒绝|驳回|deny)(?:\s|$)/iu.test(text.trim());
+}
+
+function describeBotApproval(request: InteractionRequest): string {
+  switch (request.kind) {
+    case 'permission':
+      return `工具审批：${request.prompt.toolName}（${request.prompt.reason}）\n${truncateApprovalDetail(JSON.stringify(request.prompt.review))}`;
+    case 'sandbox_boundary':
+      return `执行边界审批：${request.justification}\n${truncateApprovalDetail(JSON.stringify(request.expansion))}`;
+    case 'client_capability':
+      return `能力审批：${request.target.capability} / ${request.target.toolName}（${request.target.providerId}）`;
+    case 'question':
+      return '此请求是普通问题，不支持通过批准/拒绝指令处理。';
+    case 'form':
+      return '此请求需要填写表单，不支持通过批准/拒绝指令处理。';
+  }
+}
+
+function truncateApprovalDetail(value: string): string {
+  const limit = 1_000;
+  return value.length > limit ? `${value.slice(0, limit)}…` : value;
 }
