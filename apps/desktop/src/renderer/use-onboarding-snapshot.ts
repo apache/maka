@@ -21,11 +21,11 @@
  * `useOnboardingSnapshot` — renderer hook over the PR110b IPC.
  *
  * @kenji + @xuan PR110c review gates:
- *   1. Renderer NEVER re-derives provider readiness; only consumes
- *      `onboarding:getSnapshot()`. Connections, secrets, default
+ *   1. Renderer NEVER re-derives provider readiness; it consumes
+ *      `onboarding:getSnapshot()` and targeted onboarding updates. Connections, secrets, default
  *      slugs etc. are not touched.
- *   2. Invalidation uses ONLY existing event channels —
- *      `sessions:changed` and `connections:event`. No new event bus
+ *   2. Invalidation uses existing event channels —
+ *      `sessions:changed`, `connections:event`, and Host profile changes. No new event bus
  *      for PR110c.
  *   3. `refresh()` is provided for action-driven re-pulls (e.g.
  *      "the user just clicked '打开设置 · 模型' so re-pull when the
@@ -33,12 +33,15 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { type UiLocale } from '@maka/core/ui-locale';
-import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import { useUiLocale, valuesEqual } from '@maka/ui';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
-import { getOnboardingCopy } from './locales/onboarding-copy.js';
+import type { DesktopOnboardingSessionUpdate } from '../preload/bridge-contract.js';
+import {
+  desktopOnboardingSnapshotDeps,
+  onboardingSnapshotErrorMessage,
+} from './platform/desktop/onboarding-snapshot-bridge.js';
+export { getOnboardingActivationCandidate } from './platform/desktop/onboarding-snapshot-bridge.js';
 
 /**
  * Hook return type — `snapshot` is `null` while the initial getSnapshot
@@ -57,13 +60,14 @@ export interface UseOnboardingSnapshotResult {
 export interface UseOnboardingSnapshotDeps {
   /** Fetch the current snapshot. */
   getSnapshot: () => Promise<OnboardingSnapshot>;
+  getSessionUpdate?: (sessionId: string) => Promise<DesktopOnboardingSessionUpdate | null>;
   /**
    * Subscribe to invalidation signals. The handler is fired
    * (debounced internally by the caller if needed) whenever an
    * upstream event suggests the snapshot may be stale. Return value
    * is an unsubscribe function.
    */
-  subscribeInvalidations: (onInvalidate: () => void) => () => void;
+  subscribeInvalidations: (onInvalidate: (sessionId?: string) => void) => () => void;
 }
 
 /**
@@ -71,23 +75,6 @@ export interface UseOnboardingSnapshotDeps {
  * guide is settled or workspace history exists, normal Composer preference
  * rules own new-task selection again.
  */
-export function getOnboardingActivationCandidate(
-  snapshot: Pick<OnboardingSnapshot, 'state' | 'milestones'> | null,
-  hasWorkspaceHistory: boolean,
-): { llmConnectionSlug: string; model: string } | undefined {
-  if (
-    snapshot?.state.kind !== 'ready_empty' ||
-    hasWorkspaceHistory ||
-    hasSettledInitialOnboarding(snapshot.milestones)
-  ) {
-    return undefined;
-  }
-  return {
-    llmConnectionSlug: snapshot.state.connectionSlug,
-    model: snapshot.state.model,
-  };
-}
-
 /**
  * `sessions` is excluded: it is boot-time seed data (the session catalog is
  * the live authority) whose rows churn on every background message event,
@@ -142,6 +129,10 @@ export function useOnboardingSnapshotImpl(
         );
         setError(null);
       },
+      onSessionUpdate: (update) => {
+        setSnapshot((prev) => prev === null ? prev : applyOnboardingSessionUpdate(prev, update));
+        setError(null);
+      },
       onError: (message) => {
         setError(message);
       },
@@ -152,8 +143,9 @@ export function useOnboardingSnapshotImpl(
     const poller = pollerRef.current!;
     poller.activate();
     void poller.pull();
-    const unsubscribe = deps.subscribeInvalidations(() => {
-      void poller.pull();
+    const unsubscribe = deps.subscribeInvalidations((sessionId) => {
+      if (sessionId) void poller.pullSession(sessionId);
+      else void poller.pull();
     });
     return () => {
       unsubscribe();
@@ -173,8 +165,8 @@ export function useOnboardingSnapshotImpl(
 }
 
 /**
- * React-less poller. Serializes getSnapshot IPCs — an invalidation while a
- * pull is in flight schedules a single follow-up — and gates callbacks on
+ * React-less poller. Serializes complete and targeted IPCs — an invalidation while a
+ * read is in flight schedules a bounded follow-up — and gates callbacks on
  * the active flag plus a dispose-bumped ticket so pending responses cannot
  * write after the first-run surface unmounts. Extracted from
  * `useOnboardingSnapshotImpl` so the pull discipline is testable without a
@@ -182,6 +174,7 @@ export function useOnboardingSnapshotImpl(
  */
 export interface OnboardingSnapshotPollerCallbacks {
   onSnapshot(snapshot: OnboardingSnapshot): void;
+  onSessionUpdate?(update: Extract<DesktopOnboardingSessionUpdate, {kind: 'delta'}>): void;
   onError(message: string): void;
 }
 
@@ -190,19 +183,24 @@ export interface OnboardingSnapshotPoller {
   activate(): void;
   /** Fetch the latest snapshot unless disposed. */
   pull(): Promise<void>;
+  /** Refresh one Session's projection after an identified change. */
+  pullSession(sessionId: string): Promise<void>;
   /** Stop accepting callbacks. Pending IPC responses become no-ops. */
   dispose(): void;
 }
 
 export function createOnboardingSnapshotPoller(
-  deps: Pick<UseOnboardingSnapshotDeps, 'getSnapshot'>,
+  deps: Pick<UseOnboardingSnapshotDeps, 'getSnapshot' | 'getSessionUpdate'>,
   callbacks: OnboardingSnapshotPollerCallbacks,
   getLocale: () => UiLocale,
 ): OnboardingSnapshotPoller {
   let inflightTicket = 0;
   let active = true;
   let inflight: Promise<void> | null = null;
-  let pullAgain = false;
+  let fullPending = false;
+  let hasSnapshot = false;
+  const pendingSessions = new Set<string>();
+  const maxPendingSessions = 64;
 
   function emitSnapshot(snapshot: OnboardingSnapshot): void {
     if (!active) return;
@@ -218,12 +216,51 @@ export function createOnboardingSnapshotPoller(
     const ticket = ++inflightTicket;
     try {
       const next = await deps.getSnapshot();
-      if (!active || ticket !== inflightTicket) return; // unmounted or re-disposed
+      if (!active || ticket !== inflightTicket || fullPending) return;
+      hasSnapshot = true;
       emitSnapshot(next);
     } catch (err) {
-      if (!active || ticket !== inflightTicket) return;
+      if (!active || ticket !== inflightTicket || fullPending) return;
       emitError(onboardingSnapshotErrorMessage(err, getLocale()));
     }
+  }
+
+  async function runSessionUpdate(sessionId: string): Promise<void> {
+    const ticket = ++inflightTicket;
+    try {
+      const update = await deps.getSessionUpdate!(sessionId);
+      if (!active || ticket !== inflightTicket) return;
+      if (update?.kind === 'resync') {
+        fullPending = true;
+      } else if (update?.kind === 'delta' && !fullPending && !pendingSessions.has(sessionId)) {
+        callbacks.onSessionUpdate?.(update);
+      }
+    } catch (error) {
+      if (!active || ticket !== inflightTicket || fullPending) return;
+      emitError(onboardingSnapshotErrorMessage(error, getLocale()));
+    }
+  }
+
+  function drain(): Promise<void> {
+    if (!active) return Promise.resolve();
+    if (inflight !== null) return inflight;
+    const loop = (async () => {
+      do {
+        if (fullPending) {
+          fullPending = false;
+          pendingSessions.clear();
+          await runPull();
+        } else {
+          const sessionId = pendingSessions.values().next().value;
+          if (sessionId === undefined) break;
+          pendingSessions.delete(sessionId);
+          await runSessionUpdate(sessionId);
+        }
+      } while (active && (fullPending || pendingSessions.size > 0));
+      inflight = null;
+    })();
+    inflight = loop;
+    return loop;
   }
 
   return {
@@ -232,39 +269,60 @@ export function createOnboardingSnapshotPoller(
     },
     pull(): Promise<void> {
       if (!active) return Promise.resolve();
-      // Invalidations arriving while a pull is in flight collapse into one
-      // follow-up, so the IPC rate tracks pull latency, not event rate.
-      if (inflight !== null) {
-        pullAgain = true;
-        return inflight;
+      fullPending = true;
+      pendingSessions.clear();
+      return drain();
+    },
+    pullSession(sessionId: string): Promise<void> {
+      if (!active) return Promise.resolve();
+      if (
+        !deps.getSessionUpdate ||
+        (!hasSnapshot && inflight === null) ||
+        (pendingSessions.size >= maxPendingSessions && !pendingSessions.has(sessionId))
+      ) {
+        fullPending = true;
+        pendingSessions.clear();
+        return drain();
       }
-      const loop = (async () => {
-        do {
-          pullAgain = false;
-          await runPull();
-        } while (pullAgain && active);
-        inflight = null;
-      })();
-      inflight = loop;
-      return loop;
+      if (!fullPending) pendingSessions.add(sessionId);
+      return drain();
     },
     dispose(): void {
       active = false;
       inflightTicket += 1;
+      fullPending = false;
+      pendingSessions.clear();
+      hasSnapshot = false;
     },
   };
 }
 
-export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale): string {
-  const fallback = getOnboardingCopy(locale).snapshotErrorFallback;
-  return generalizedErrorMessageForLocale(error, fallback, locale);
+export function applyOnboardingSessionUpdate(
+  snapshot: OnboardingSnapshot,
+  update: Extract<DesktopOnboardingSessionUpdate, {kind: 'delta'}>,
+): OnboardingSnapshot {
+  const previous = snapshot.sessionSendOutcomes[update.sessionId];
+  const outcomeChanged = update.outcome === null
+    ? previous !== undefined
+    : !valuesEqual(previous, update.outcome);
+  const state = update.defaultHost?.state ?? snapshot.state;
+  const milestones = update.defaultHost?.milestones ?? snapshot.milestones;
+  if (!outcomeChanged && valuesEqual(state, snapshot.state) &&
+    valuesEqual(milestones, snapshot.milestones)) return snapshot;
+  const sessionSendOutcomes = outcomeChanged
+    ? { ...snapshot.sessionSendOutcomes }
+    : snapshot.sessionSendOutcomes;
+  if (outcomeChanged) {
+    if (update.outcome === null) delete sessionSendOutcomes[update.sessionId];
+    else sessionSendOutcomes[update.sessionId] = update.outcome;
+  }
+  return { ...snapshot, state, milestones, sessionSendOutcomes };
 }
 
 /**
- * Default renderer binding: subscribes to `sessions:changed` and
- * `connections:event` so any session lifecycle (create / delete / archive /
- * rebound / message-appended) or connection change (verified / disabled /
- * removed) invalidates the snapshot.
+ * Default renderer binding lives in the Desktop platform adapter. Named
+ * Session events use targeted reads; connection and Owner profile changes
+ * request complete snapshots.
  *
  * Settings changes are NOT subscribed: there is no existing
  * settings-wide event channel and PR110c is not inventing one. If a
@@ -278,17 +336,5 @@ export function onboardingSnapshotErrorMessage(error: unknown, locale: UiLocale)
 export function useOnboardingSnapshot(): UseOnboardingSnapshotResult {
   // Bind to the live IPC bridge. `deps` is memoized as a module-level
   // object so the effect deps stay stable across re-renders.
-  return useOnboardingSnapshotImpl(LIVE_DEPS);
+  return useOnboardingSnapshotImpl(desktopOnboardingSnapshotDeps);
 }
-
-const LIVE_DEPS: UseOnboardingSnapshotDeps = {
-  getSnapshot: () => window.maka.onboarding.getSnapshot(),
-  subscribeInvalidations(onInvalidate) {
-    const unsubscribeSessions = window.maka.sessions.subscribeChanges(() => onInvalidate());
-    const unsubscribeConnections = window.maka.connections.subscribeEvents(() => onInvalidate());
-    return () => {
-      unsubscribeSessions();
-      unsubscribeConnections();
-    };
-  },
-};

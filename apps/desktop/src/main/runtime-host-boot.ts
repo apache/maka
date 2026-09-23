@@ -1771,6 +1771,10 @@ function registerHostClientIpc(
     },
     listSessions: async () =>
       (await client.listSessions()).map(toDesktopHostSessionSummary),
+    getSession: async (sessionId) => {
+      const session = await client.getSession(sessionId);
+      return session === null ? null : toDesktopHostSessionSummary(session);
+    },
     getMilestones: async () =>
       (await settingsStore.get()).onboarding.milestones,
     upsertMilestone: (id, status) =>

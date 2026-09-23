@@ -21,6 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { OnboardingState } from '@maka/core/onboarding';
 import {
+  applyOnboardingSessionUpdate,
   createOnboardingSnapshotPoller,
   getOnboardingActivationCandidate,
   onboardingSnapshotProjectionEqual,
@@ -127,7 +128,117 @@ describe('onboardingSnapshotProjectionEqual', () => {
   });
 });
 
+it('one outcome delta leaves unrelated outcomes and default state in place', () => {
+  const initial = {
+    ...READY_SNAPSHOT,
+    sessionSendOutcomes: { first: { kind: 'ready' } as const, second: { kind: 'ready' } as const },
+  };
+  const changed = applyOnboardingSessionUpdate(initial, {
+    kind: 'delta', sessionId: 'second',
+    outcome: { kind: 'blocked', reason: 'fake_backend', connectionLocked: false },
+  });
+  assert.deepEqual(changed.sessionSendOutcomes.first, { kind: 'ready' });
+  assert.equal(changed.state, initial.state);
+  assert.equal(initial.sessionSendOutcomes.second.kind, 'ready');
+  assert.equal(applyOnboardingSessionUpdate(changed, {
+    kind: 'delta', sessionId: 'second', outcome: changed.sessionSendOutcomes.second,
+  }), changed, 'an unchanged high-frequency outcome does not copy the entire record');
+  const removed = applyOnboardingSessionUpdate(changed, {
+    kind: 'delta', sessionId: 'second', outcome: null,
+  });
+  assert.equal(removed.sessionSendOutcomes.second, undefined);
+  assert.deepEqual(removed.sessionSendOutcomes.first, { kind: 'ready' });
+});
+
 describe('createOnboardingSnapshotPoller', () => {
+  it('uses one targeted read for a named event after bootstrap', async () => {
+    let fullReads = 0;
+    const updates: string[] = [];
+    const emitted: unknown[] = [];
+    const poller = createOnboardingSnapshotPoller({
+      getSnapshot: async () => { fullReads++; return READY_SNAPSHOT; },
+      getSessionUpdate: async (id) => {
+        updates.push(id);
+        return { kind: 'delta', sessionId: id, outcome: { kind: 'ready' } };
+      },
+    }, {
+      onSnapshot: (snapshot) => emitted.push(snapshot),
+      onSessionUpdate: (update) => emitted.push(update),
+      onError: (error) => assert.fail(error),
+    }, () => 'zh-CN');
+    await poller.pull();
+    await poller.pullSession('one');
+    assert.equal(fullReads, 1);
+    assert.deepEqual(updates, ['one']);
+    assert.equal(emitted.length, 2);
+  });
+
+  it('keeps the accepted snapshot when a targeted Host read fails', async () => {
+    const snapshots: OnboardingSnapshot[] = [];
+    const errors: string[] = [];
+    const poller = createOnboardingSnapshotPoller({
+      getSnapshot: async () => READY_SNAPSHOT,
+      getSessionUpdate: async () => { throw new Error('Host disconnected'); },
+    }, {
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+      onError: (message) => errors.push(message),
+    }, () => 'zh-CN');
+    await poller.pull();
+    await poller.pullSession('one');
+    assert.deepEqual(snapshots, [READY_SNAPSHOT]);
+    assert.equal(errors.length, 1);
+  });
+
+  it('coalesces a repeat while a targeted read is in flight', async () => {
+    let resolveFirst!: (value: { kind: 'delta'; sessionId: string; outcome: { kind: 'ready' } }) => void;
+    let calls = 0;
+    const emitted: string[] = [];
+    const poller = createOnboardingSnapshotPoller({
+      getSnapshot: async () => READY_SNAPSHOT,
+      getSessionUpdate: (id) => {
+        calls++;
+        return calls === 1
+          ? new Promise((resolve) => { resolveFirst = resolve; })
+          : Promise.resolve({ kind: 'delta' as const, sessionId: id, outcome: { kind: 'ready' as const } });
+      },
+    }, {
+      onSnapshot: () => {},
+      onSessionUpdate: (update) => emitted.push(update.sessionId),
+      onError: (error) => assert.fail(error),
+    }, () => 'zh-CN');
+    await poller.pull();
+    const first = poller.pullSession('one');
+    void poller.pullSession('one');
+    resolveFirst({ kind: 'delta', sessionId: 'one', outcome: { kind: 'ready' } });
+    await first;
+    assert.equal(calls, 2);
+    assert.deepEqual(emitted, ['one'], 'the older response stays unpublished');
+  });
+
+  it('bounds distinct pending IDs and falls back to one complete resync', async () => {
+    let release!: (value: { kind: 'delta'; sessionId: string; outcome: { kind: 'ready' } }) => void;
+    let fullReads = 0;
+    let targetedReads = 0;
+    const poller = createOnboardingSnapshotPoller({
+      getSnapshot: async () => { fullReads++; return READY_SNAPSHOT; },
+      getSessionUpdate: (id) => {
+        targetedReads++;
+        return new Promise((resolve) => { release = resolve; });
+      },
+    }, {
+      onSnapshot: () => {},
+      onSessionUpdate: () => assert.fail('superseded update must not publish'),
+      onError: (error) => assert.fail(error),
+    }, () => 'zh-CN');
+    await poller.pull();
+    const first = poller.pullSession('active');
+    for (let index = 0; index < 65; index++) void poller.pullSession(`pending-${index}`);
+    release({ kind: 'delta', sessionId: 'active', outcome: { kind: 'ready' } });
+    await first;
+    assert.equal(targetedReads, 1);
+    assert.equal(fullReads, 2);
+  });
+
   it('scrubs getSnapshot rejections before routing them to onError', async () => {
     const events: Array<{ type: 'snap' | 'err'; payload: unknown }> = [];
     const poller = createOnboardingSnapshotPoller(
@@ -175,7 +286,7 @@ describe('createOnboardingSnapshotPoller', () => {
     resolvers[1]!(READY_SNAPSHOT);
     await pull1;
     await pull2;
-    assert.deepEqual(events, [NEEDS_CONNECTION_SNAPSHOT, READY_SNAPSHOT]);
+    assert.deepEqual(events, [READY_SNAPSHOT], 'the superseded full response stays unpublished');
   });
 
   it('collapses repeated invalidations during one pull into a single follow-up', async () => {
