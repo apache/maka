@@ -121,8 +121,26 @@ async function loadBridge(changeDuringRead: 'guest' | 'owner') {
     crypto: globalThis.crypto,
   });
   assert.ok(bridge);
-  return { bridge, catalogReads: () => catalogReads, scopedCalls };
+  return {
+    bridge,
+    catalogReads: () => catalogReads,
+    scopedCalls,
+    emitOwnerCatalogChanged: () => emit('external-agents:catalog-changed', owner),
+  };
 }
+
+test('successful external-agent setup invalidates the new-task executor catalog', async () => {
+  const { bridge, emitOwnerCatalogChanged } = await loadBridge('guest');
+  await bridge.newTasks.getCatalog();
+  let changes = 0;
+  const unsubscribe = bridge.newTasks.subscribeChanges(() => { changes++; });
+  try {
+    emitOwnerCatalogChanged();
+    assert.equal(changes, 1);
+  } finally {
+    unsubscribe();
+  }
+});
 
 test('offline Guest notifications cannot starve the Local new-task catalog or redirect onboarding', async () => {
   const { bridge, catalogReads, scopedCalls } = await loadBridge('guest');

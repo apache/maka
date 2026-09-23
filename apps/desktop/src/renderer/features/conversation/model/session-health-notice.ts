@@ -48,7 +48,7 @@ import { type IdentifiedLlmConnection } from '@maka/core/llm-connections';
 import { type SessionSendProjection, type SessionSendProjectionSession } from '@maka/core/session-send-projection';
 
 import { type UiLocale } from '@maka/core/ui-locale';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 
 export interface SessionHealthNoticeInput {
   locale: UiLocale;

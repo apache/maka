@@ -877,6 +877,7 @@ export async function createDesktopRuntimeHostCandidate(
       registerRuntimeHostSessionCatalogIpc(
         {
           client,
+          queryExecutors: (input) => client.request('plugin.executor.query', input),
           runningTurnIds: (sessionId) => sessionObserver.observedRunningTurnIds(sessionId),
           resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
           emitSessionsChanged,

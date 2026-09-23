@@ -1012,6 +1012,7 @@ export interface MakaBridge {
   };
 
   newTasks: {
+    getExecutors(target: DesktopNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
     addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
@@ -1149,6 +1150,8 @@ export interface MakaBridge {
 
   };
   sessions: {
+    setExecutorModelConfiguration(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    getExecutorState(sessionId: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
     get(sessionId: string): Promise<DesktopSessionSummary | null>;
     listWithCoverage(): Promise<{

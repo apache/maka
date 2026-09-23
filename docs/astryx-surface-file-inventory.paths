@@ -242,6 +242,7 @@ packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/directory-reference-chip.tsx
+packages/ui/src/executor-model-picker.tsx
 packages/ui/src/form-interaction-prompt.tsx
 packages/ui/src/icons.tsx
 packages/ui/src/inline-reference.tsx
@@ -253,6 +254,7 @@ packages/ui/src/markdown-math.tsx
 packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
 packages/ui/src/model-picker-internals.tsx
+packages/ui/src/model-picker-panel.tsx
 packages/ui/src/model-picker.tsx
 packages/ui/src/model-wheel-picker.tsx
 packages/ui/src/module-hub-selector.tsx
@@ -266,6 +268,7 @@ packages/ui/src/primitives/stat-tile.tsx
 packages/ui/src/prompt-anchor-rail.tsx
 packages/ui/src/quote-ref-chip.tsx
 packages/ui/src/relative-time.tsx
+packages/ui/src/running-indicator.tsx
 packages/ui/src/sandbox-boundary-prompt.tsx
 packages/ui/src/scheduled-task-form-dialog.tsx
 packages/ui/src/scheduled-task-inspector.tsx

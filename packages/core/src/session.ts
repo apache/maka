@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { ExecutorConfiguration } from './executor-catalog.js';
+
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isExecutorId } from './executor-id.js';
 import { isToolCallOutcome } from './tool-result-status.js';
@@ -300,6 +302,7 @@ export interface SessionHeader {
   backend: PersistedBackendKind;
   /** Named black-box executor contributed by a plugin. Present exactly for plugin-executor. */
   executorId?: string;
+  executorConfig?: ExecutorConfiguration;
   /** Immutable Connection entity identity. Optional only on legacy Session records. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
@@ -412,6 +415,7 @@ export interface SessionSummary {
   revisionState?: 'preparing' | 'committed';
   backend: PersistedBackendKind;
   executorId?: string;
+  executorConfig?: ExecutorConfiguration;
   /** Immutable Connection entity identity. Optional only on legacy summaries. */
   llmConnectionId?: string;
   llmConnectionSlug: string;

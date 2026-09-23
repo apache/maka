@@ -62,6 +62,8 @@ export interface SharedUiCopy {
     optional: string;
   };
   modelPicker: {
+    empty: string;
+    noResults: string;
     searchPlaceholder: string;
   };
   moduleHubs: {
@@ -157,6 +159,8 @@ const SHARED_UI_COPY = {
       optional: '可选',
     },
     modelPicker: {
+      empty: '暂无可用模型',
+      noResults: '没有匹配的模型',
       searchPlaceholder: '搜索模型…',
     },
     moduleHubs: {
@@ -235,6 +239,8 @@ const SHARED_UI_COPY = {
       optional: '可選',
     },
     modelPicker: {
+      empty: '暫無可用模型',
+      noResults: '沒有符合的模型',
       searchPlaceholder: '搜尋模型…',
     },
     moduleHubs: {
@@ -313,6 +319,8 @@ const SHARED_UI_COPY = {
       optional: 'Optional',
     },
     modelPicker: {
+      empty: 'No models available',
+      noResults: 'No matching models',
       searchPlaceholder: 'Search models…',
     },
     moduleHubs: {

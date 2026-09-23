@@ -535,6 +535,7 @@ export interface SessionConfigurationStoreUpdate {
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
     readonly executorId?: string;
+    readonly executorConfig?: import('@maka/core/executor-catalog').ExecutorConfiguration;
     readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
@@ -1271,6 +1272,11 @@ export class SessionManager {
           current.revision,
         );
       }
+      if (current.header.executorId)
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'External executor workspace is fixed. Start a new task.',
+        );
       if (current.header.isArchived) {
         throw new SessionConfigurationTransitionError(
           'operation_conflict',
@@ -5275,7 +5281,12 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
     ...(h.revisionIndex !== undefined ? { revisionIndex: h.revisionIndex } : {}),
     ...(h.revisionState ? { revisionState: h.revisionState } : {}),
     backend: h.backend,
-    ...(h.executorId ? { executorId: h.executorId } : {}),
+    ...(h.executorId
+      ? {
+          executorId: h.executorId,
+          ...(h.executorConfig ? { executorConfig: h.executorConfig } : {}),
+        }
+      : {}),
     ...(h.llmConnectionId === undefined ? {} : { llmConnectionId: h.llmConnectionId }),
     llmConnectionSlug: h.llmConnectionSlug,
     connectionLocked: h.connectionLocked,
@@ -5463,6 +5474,7 @@ function sessionConfigurationWithPermissionMode(
   return {
     backend: header.backend,
     executorId: header.executorId,
+    executorConfig: header.executorConfig,
     llmConnectionId: header.llmConnectionId,
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
@@ -5481,6 +5493,7 @@ function sessionConfigurationMatchesExceptPermissionMode(
   return (
     header.backend === configuration.backend &&
     header.executorId === configuration.executorId &&
+    header.executorConfig?.model === configuration.executorConfig?.model &&
     header.llmConnectionId === configuration.llmConnectionId &&
     header.llmConnectionSlug === configuration.llmConnectionSlug &&
     header.connectionLocked === configuration.connectionLocked &&
