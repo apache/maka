@@ -2306,11 +2306,13 @@ export function buildComputerUseTools(deps: {
                 error: code,
               };
             }
-            if (!observationLease?.ok) {
+            // The observe record was created before taking the lease, so both
+            // must be present before accepting this capture.
+            if (!observingRecord || !observationLease?.ok) {
               const blocked = state.beforeAction();
               return sessionFailure(blocked.ok ? 'reobserve_required' : blocked.reason, 'observe');
             }
-            const observation = acceptObservation(state, observingRecord!, observationLease.lease, {
+            const observation = acceptObservation(state, observingRecord, observationLease.lease, {
               ...withRequestedView(backendObservation, {
                 ...(input.query ? { query: input.query } : {}),
                 ...(input.menu ? { menu: input.menu } : {}),
