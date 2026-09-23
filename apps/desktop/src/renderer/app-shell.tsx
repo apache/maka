@@ -310,7 +310,6 @@ function AppShellContent({
     retiredSessionIds,
     messages,
     transientMessages,
-    setMessages,
     commitTranscript,
     addTransientMessage,
     updateTransientMessage,

@@ -81,15 +81,10 @@ function fakeStaged(log: StagedLog): RevisionStagedContext {
   };
 }
 
-function createEnv(input: {
-  messages: StoredMessage[];
-  staged: StagedLog;
-  preparedMessages?: StoredMessage[];
-}) {
+function createEnv(input: { messages: StoredMessage[]; staged: StagedLog }) {
   const activeIdRef = { current: 'session-1' };
   const revisionDraftRef: { current: TurnRevisionDraftBase<string> | null } = { current: null };
   const toasts: Array<{ kind: 'info' | 'error'; title: string; description?: string }> = [];
-  const readSettledCalls: string[] = [];
   const composer = { text: '' };
   let attempts = 0;
   const env: RevisionActionsEnv<string, TurnRevisionDraftBase<string>> = {
@@ -116,7 +111,6 @@ function createEnv(input: {
       activeIdRef.current = sessionId;
     },
     refreshSessions: async () => [],
-    setMessages: () => {},
     commitRevisionDraft: (draft) => {
       revisionDraftRef.current = draft;
     },
@@ -128,10 +122,6 @@ function createEnv(input: {
     copy,
     reviseBeforeTurn: async () => ({ id: 'session-2' }),
     abandonSessionCopy: async () => {},
-    readSettledMessages: async (sessionId) => {
-      readSettledCalls.push(sessionId);
-      return { messages: input.preparedMessages ?? [], settled: true };
-    },
     localizedShellErrorMessage: (_error, fallback) => fallback,
     reportSessionWorkspaceUnavailable: () => false,
     acquireCopyAttempt: (_key, turnId) => ({
@@ -143,7 +133,7 @@ function createEnv(input: {
     abandonCopyAttempt: () => true,
     completeCopyAttempt: () => {},
   };
-  return { env, activeIdRef, revisionDraftRef, toasts, readSettledCalls };
+  return { env, activeIdRef, revisionDraftRef, toasts };
 }
 
 const quotedQuote: QuoteRef = { text: 'a large pasted excerpt', sourceTurnId: 'turn-0' };
@@ -153,12 +143,11 @@ describe('revision lifecycle (#5109)', () => {
     const staged = emptyStagedLog();
     // The branch child transcript a revision copy really produces: the
     // revised turn is excluded, so turn-1's message is absent and nothing in
-    // the copy rewrites it. The re-key must read the draft snapshot, not the
-    // transcript (#5109 review).
+    // the copy rewrites it. The re-key therefore reads the draft snapshot —
+    // nothing ever consults a transcript (#5109 review).
     const h = createEnv({
       messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
       staged,
-      preparedMessages: [userMessage('turn-0', 'earlier question')],
     });
     const actions = createRevisionActions(h.env);
 
@@ -166,7 +155,6 @@ describe('revision lifecycle (#5109)', () => {
     assert.deepEqual(staged.restored, [{ ownerKey: 'session-1', quotes: [quotedQuote] }]);
 
     assert.equal(await actions.prepareRevisionSend('edited text'), true);
-    assert.deepEqual(h.readSettledCalls, ['session-2']);
     assert.deepEqual(
       staged.restored.at(-1),
       { ownerKey: 'session-2', quotes: [quotedQuote] },
@@ -239,7 +227,6 @@ describe('revision lifecycle (#5109)', () => {
     const h = createEnv({
       messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
       staged,
-      preparedMessages: [],
     });
     const actions = createRevisionActions(h.env);
 

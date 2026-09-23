@@ -224,7 +224,6 @@ export interface RevisionActionsEnv<
   stagedContext(): RevisionStagedContext;
   openSessionInChat(sessionId: string, turnId?: string): void;
   refreshSessions(): Promise<unknown[]>;
-  setMessages(messages: readonly StoredMessage[]): void;
   commitRevisionDraft(draft: TurnRevisionDraftBase<Phase> | null): void;
   revisionDraftRef: { current: TDraft | null };
   toastApi: RevisionToastApi;
@@ -234,10 +233,6 @@ export interface RevisionActionsEnv<
     input: { sourceTurnId: string; copyId: string },
   ): Promise<{ id: string }>;
   abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
-  readSettledMessages(
-    sessionId: string,
-    options: { signal: AbortSignal },
-  ): Promise<{ messages: readonly StoredMessage[]; settled: boolean }>;
   localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string;
   /** True when the error is the workspace-unavailable class, having toasted. */
   reportSessionWorkspaceUnavailable(error: unknown, sessionId: string): boolean;
@@ -288,13 +283,11 @@ export function createRevisionActions<
     stagedContext,
     openSessionInChat,
     refreshSessions,
-    setMessages,
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
     copy,
   } = env;
-  let revisionPreparationAbort: AbortController | undefined;
 
   function beginEditUserMessage(turnId: string): void {
     const sessionId = activeIdRef.current;
@@ -501,9 +494,6 @@ export function createRevisionActions<
     }
     const sourceSessionId = startedDraft.sourceSessionId;
     let preparedSessionId: string | undefined;
-    const preparationAbort = new AbortController();
-    revisionPreparationAbort?.abort();
-    revisionPreparationAbort = preparationAbort;
     try {
       const newSession = await env.reviseBeforeTurn(sourceSessionId, {
         sourceTurnId: startedDraft.sourceTurnId,
@@ -520,15 +510,8 @@ export function createRevisionActions<
       commitRevisionDraft(prepared);
       openSessionInChat(newSession.id);
       selectionIsCurrent = captureSelection();
-      const { messages: preparedMessages, settled } = await env.readSettledMessages(
-        newSession.id,
-        { signal: preparationAbort.signal },
-      );
-      if (!settled) throw new Error('Revised Session transcript did not become ready');
-      if (
-        !selectionIsCurrent() || activeIdRef.current !== newSession.id ||
-        revisionDraftRef.current !== prepared
-      ) {
+      await refreshSessions();
+      if (!selectionIsCurrent() || revisionDraftRef.current !== prepared) {
         await rollbackPreparedRevision(startedDraft, newSession.id, text, selectionIsCurrent);
         return false;
       }
@@ -540,20 +523,16 @@ export function createRevisionActions<
       // passed, so a failed preparation leaves the plate on the source key.
       staged.restoreQuotes(newSession.id, startedDraft.originalQuotes);
       staged.clearQuotes(startedDraft.sourceSessionId);
-      setMessages(preparedMessages);
       composerRef.current?.focus();
       toastApi.info(copy.revisionReadyTitle, copy.revisionReadyDescription);
-      await refreshSessions();
       return true;
     } catch (error) {
-      if (preparationAbort.signal.aborted) return false;
-      if (preparedSessionId) {
-        await rollbackPreparedRevision(startedDraft, preparedSessionId, text, selectionIsCurrent);
-      }
-      if (!selectionIsCurrent()) return false;
-      if (env.reportSessionWorkspaceUnavailable(error, sourceSessionId)) {
-        return false;
-      } else {
+      // Rollback itself navigates back to the source Session, so the failure
+      // must be surfaced before it runs — checking after it is always stale.
+      if (selectionIsCurrent()) {
+        if (env.reportSessionWorkspaceUnavailable(error, sourceSessionId)) {
+          return false;
+        }
         toastApi.error(
           copy.operationFailedTitle,
           env.localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
@@ -561,15 +540,15 @@ export function createRevisionActions<
           { sessionId: sourceSessionId },
         );
       }
+      if (preparedSessionId) {
+        await rollbackPreparedRevision(startedDraft, preparedSessionId, text, selectionIsCurrent);
+      }
       return false;
-    } finally {
-      if (revisionPreparationAbort === preparationAbort) revisionPreparationAbort = undefined;
     }
   }
 
   async function cancelRevisionDraft(): Promise<void> {
     let selectionIsCurrent = captureSelection();
-    revisionPreparationAbort?.abort();
     const draft = revisionDraftRef.current;
     if (!draft) return;
     const cleanupSessionId = draft.copyPhase !== 'reserved'
