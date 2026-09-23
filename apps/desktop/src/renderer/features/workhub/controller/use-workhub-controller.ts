@@ -36,6 +36,7 @@ import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../../shared
 import type { AttachmentRef, FollowUpMode, MessageQueueEntryProjection, MessageQueuePlacement } from '@maka/core/events';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { WorkHubCreateDefaults } from '@maka/core/session';
 import {
   startWorkHubCoordinationLifecycle,
   WorkHubModelConfigurationRequiredError,
@@ -71,6 +72,9 @@ export function useWorkHubController(onSubmit?: () => void) {
   );
   const [configuringModel, setConfiguringModel] = useState(false);
   const configuringModelRef = useRef(false);
+  const [newWorkDefaults, setNewWorkDefaults] = useState<
+    Omit<WorkHubCreateDefaults, 'permissionMode'>
+  >({});
   const [choices, setChoices] = useState<ChatModelChoice[]>([]);
   const [modelSetupChoicesReady, setModelSetupChoicesReady] = useState(false);
   const [transcript, setTranscript] = useState(emptyTranscript);
@@ -295,6 +299,7 @@ export function useWorkHubController(onSubmit?: () => void) {
 
   useEffect(() => {
     setChoices([]);
+    setNewWorkDefaults({});
     transcriptRef.current = emptyTranscript;
     settledBeforePublication.current.clear();
     setTranscript(emptyTranscript);
@@ -309,6 +314,22 @@ export function useWorkHubController(onSubmit?: () => void) {
       attachments: pending.input.attachments, ts: Date.now(), transientPlacement: 'current_turn',
     }] : [] });
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let disposed = false;
+    void services
+      .getNewWorkDefaults(sessionId)
+      .then((defaults) => {
+        if (!disposed && currentSessionId.current === sessionId) setNewWorkDefaults(defaults);
+      })
+      .catch((reason: unknown) => {
+        if (!disposed && currentSessionId.current === sessionId) report(reason);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [services, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -580,33 +601,50 @@ export function useWorkHubController(onSubmit?: () => void) {
     llmConnectionSlug: string;
     model: string;
   }, thinkingLevel: ThinkingLevel | null = null) {
-    if (!sessionId || !session || busy || configuringModelRef.current) return;
+    if (!sessionId || busy || configuringModelRef.current) return;
     configuringModelRef.current = true;
     setConfiguringModel(true);
     try {
-      const result = await services.configureModel(sessionId, {
-        expectedRevision: session.revision,
-        thinkingLevel,
-        modelTarget: {
-          kind: 'explicit',
-          connectionId: input.llmConnectionId,
-          connectionSlug: input.llmConnectionSlug,
+      const next: Omit<WorkHubCreateDefaults, 'permissionMode'> = {
+        model: {
+          llmConnectionId: input.llmConnectionId,
+          llmConnectionSlug: input.llmConnectionSlug,
           model: input.model,
         },
-      });
-      if (result.kind === 'revision_conflict')
-        throw new Error(workHubLiveCopy[localeRef.current].modelConflict);
-      // Complete the selection only after its authoritative model and revision
-      // are available to the next pick. Older background reads must not undo it.
-      const updated = await services.getSession(sessionId);
+        ...(thinkingLevel ? { thinkingLevel } : {}),
+      };
+      await services.setNewWorkDefaults(sessionId, next);
       if (currentSessionId.current !== sessionId) return;
-      setSessions((current) => current.map((entry) =>
-        entry.id === sessionId && entry.revision <= updated.revision ? updated : entry,
-      ));
+      setNewWorkDefaults(next);
       setError(undefined);
     } catch (reason) {
       if (currentSessionId.current !== sessionId) return;
-      refreshSessions.current();
+      report(reason);
+    } finally {
+      configuringModelRef.current = false;
+      setConfiguringModel(false);
+    }
+  }
+  async function changeExecutor(input: {
+    executorId: string;
+    model?: string;
+    thinkingLevel?: ThinkingLevel;
+  }) {
+    if (!sessionId || busy || configuringModelRef.current) return;
+    configuringModelRef.current = true;
+    setConfiguringModel(true);
+    try {
+      const next: Omit<WorkHubCreateDefaults, 'permissionMode'> = {
+        executorId: input.executorId,
+        ...(input.model ? { executorModel: input.model } : {}),
+        ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
+      };
+      await services.setNewWorkDefaults(sessionId, next);
+      if (currentSessionId.current !== sessionId) return;
+      setNewWorkDefaults(next);
+      setError(undefined);
+    } catch (reason) {
+      if (currentSessionId.current !== sessionId) return;
       report(reason);
     } finally {
       configuringModelRef.current = false;
@@ -646,6 +684,7 @@ export function useWorkHubController(onSubmit?: () => void) {
     session,
     sessions,
     choices,
+    newWorkDefaults,
     transcript,
     activeForm: activeInteraction?.type === 'form_request' ? activeInteraction : undefined,
     respondToUserForm: async (response: import('@maka/core/interaction').InteractionFormResponse) => {
@@ -680,11 +719,28 @@ export function useWorkHubController(onSubmit?: () => void) {
     send,
     stop,
     changeModel,
+    changeExecutor,
     selectSetupModel,
     configuringModel,
     changeThinkingLevel: async (level: ThinkingLevel | undefined) => {
-      if (!session?.llmConnectionId || !session.llmConnectionSlug || !session.model) return;
-      await changeModel({ llmConnectionId: session.llmConnectionId, llmConnectionSlug: session.llmConnectionSlug, model: session.model }, level ?? null);
+      if (newWorkDefaults.executorId) {
+        await changeExecutor({
+          executorId: newWorkDefaults.executorId,
+          ...(newWorkDefaults.executorModel ? { model: newWorkDefaults.executorModel } : {}),
+          ...(level ? { thinkingLevel: level } : {}),
+        });
+        return;
+      }
+      const model = newWorkDefaults.model ??
+        (session?.llmConnectionId && session.llmConnectionSlug && session.model
+          ? {
+              llmConnectionId: session.llmConnectionId,
+              llmConnectionSlug: session.llmConnectionSlug,
+              model: session.model,
+            }
+          : undefined);
+      if (!model) return;
+      await changeModel(model, level ?? null);
     },
     retry: () => {
       const attempt = pendingSend.current;

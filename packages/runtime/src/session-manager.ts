@@ -1482,6 +1482,20 @@ export class SessionManager {
     return this.recoverInterruptedSessionsWithPolicy({ kind: 'best_effort' });
   }
 
+  /**
+   * Recover only the Sessions named by an already-held quiescent operation.
+   *
+   * Bundle export uses this after fencing a Session subtree. A persisted open
+   * invocation can survive a Host restart even though no live execution claim
+   * remains; settling that invocation is safe under the fence and lets export
+   * distinguish an interrupted run from a live one without scanning or
+   * mutating unrelated Sessions.
+   */
+  async recoverInterruptedSessionsForSessions(sessionIds: readonly string[]): Promise<string[]> {
+    const scope = new Set(sessionIds);
+    return this.recoverInterruptedSessionsWithPolicy({ kind: 'best_effort' }, scope);
+  }
+
   async recoverInterruptedSessionsStrict(stores: StrictRecoveryStores): Promise<string[]> {
     if (stores.sessionStore !== this.deps.store || stores.agentRunStore !== this.deps.runStore) {
       throw new Error('Strict recovery stores must match the SessionManager composition');
@@ -1489,9 +1503,12 @@ export class SessionManager {
     return this.recoverInterruptedSessionsWithPolicy({ kind: 'strict', stores });
   }
 
-  private async recoverInterruptedSessionsWithPolicy(policy: RecoveryPolicy): Promise<string[]> {
+  private async recoverInterruptedSessionsWithPolicy(
+    policy: RecoveryPolicy,
+    scope?: ReadonlySet<string>,
+  ): Promise<string[]> {
     const interrupted = (await listSessionsForRecovery(this.deps.store, policy)).filter(
-      (session) => !session.isArchived,
+      (session) => !session.isArchived && (scope === undefined || scope.has(session.id)),
     );
     const recovered = new Set<string>();
     for (const session of interrupted) {

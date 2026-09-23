@@ -27,6 +27,8 @@ import { PluginExecutorService } from '../plugin-executor-service.js';
 test('executor backend converts plugin output and result to ordinary Session events', async () => {
   const { root, binding } = fixture(async (request, context) => {
     assert.equal(request.instructions, 'child instructions');
+    assert.equal(request.model, 'gpt-codex');
+    assert.equal(request.reasoningEffort, 'high');
     context.emit({ type: 'output_delta', text: 'hel' });
     return { status: 'completed', text: 'hello' };
   });
@@ -34,6 +36,8 @@ test('executor backend converts plugin output and result to ordinary Session eve
     sessionId: 'session-a',
     cwd: '/workspace',
     instructions: 'child instructions',
+    model: 'gpt-codex',
+    thinkingLevel: 'high',
     binding,
     newId: ids(),
     now: () => 42,

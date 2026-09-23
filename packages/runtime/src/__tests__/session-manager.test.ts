@@ -3783,9 +3783,31 @@ describe('SessionManager child-session runtime primitive', () => {
         }),
       ],
     );
+    const unrelated = await manager.createSession(
+      makeInput({ name: 'Out of scope', status: 'running' }),
+    );
+    await seedRunningTurn(store, unrelated.id, 'unrelated-turn');
+    await seedRun(
+      runStore,
+      makeRunHeader({
+        sessionId: unrelated.id,
+        runId: 'unrelated-run',
+        turnId: 'unrelated-turn',
+        status: 'running',
+      }),
+      [
+        makeRunEvent({
+          sessionId: unrelated.id,
+          runId: 'unrelated-run',
+          turnId: 'unrelated-turn',
+          type: 'turn_started',
+          ts: 21,
+        }),
+      ],
+    );
     const parentMessagesBefore = await store.readMessages(parent.id);
 
-    const recovered = await manager.recoverInterruptedSessions();
+    const recovered = await manager.recoverInterruptedSessionsForSessions([child.id]);
 
     assert.deepStrictEqual(recovered, [child.id]);
     const recoveredRun = await readInvocation(runStore, child.id, 'child-run');
@@ -3803,6 +3825,8 @@ describe('SessionManager child-session runtime primitive', () => {
       true,
     );
     assert.deepStrictEqual(await store.readMessages(parent.id), parentMessagesBefore);
+    const unrelatedRun = await readInvocation(runStore, unrelated.id, 'unrelated-run');
+    assert.strictEqual(runtimeInvocationOutcome(unrelatedRun), undefined);
   });
 });
 

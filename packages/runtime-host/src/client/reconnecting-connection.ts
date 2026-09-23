@@ -29,7 +29,10 @@ import {
   type ScheduledTaskChangedFrame,
   type SubscriptionOpenInput,
 } from '../protocol/index.js';
-import type { ClientCapabilityProvider } from './client-capability.js';
+import type {
+  ClientCapabilityProvider,
+  ClientCapabilityRegistrationOptions,
+} from './client-capability.js';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
@@ -225,17 +228,17 @@ class RuntimeHostReconnectingConnectionImpl implements RuntimeHostReconnectingCo
 
   async replaceClientCapabilities(
     provider: ClientCapabilityProvider,
-    timeoutMs?: number,
+    options?: number | ClientCapabilityRegistrationOptions,
   ): Promise<ClientCapabilityReplaceResult> {
     const connection = this.#requireCurrent('client.capability.replace');
-    return connection.replaceClientCapabilities(provider, timeoutMs);
+    return connection.replaceClientCapabilities(provider, options);
   }
 
   async unregisterClientCapabilities(
-    timeoutMs?: number,
+    options?: number | ClientCapabilityRegistrationOptions,
   ): Promise<ClientCapabilityUnregisterResult> {
     const connection = this.#requireCurrent('client.capability.unregister');
-    return connection.unregisterClientCapabilities(timeoutMs);
+    return connection.unregisterClientCapabilities(options);
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {

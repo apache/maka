@@ -28,6 +28,29 @@ const EARLY_CHANNELS = new Set([
   'diagnostics:copyPreviousMainProcessInterruption',
 ]);
 
+// These handlers are registered by the Desktop process and remain useful
+// while a Runtime Host is connecting. In particular, session-local data is
+// the offline transcript/cache path and must not wait for a live Host.
+const RUNTIME_HOST_INDEPENDENT_SCOPED_CHANNELS = new Set([
+  'browser:capture-page',
+  'browser:navigate',
+  'browser:back',
+  'browser:forward',
+  'browser:reload',
+  'browser:stop',
+  'browser:get-state',
+  'browser:close-page',
+  'diagnostics:copyReport',
+  'session-local:cancel',
+  'session-local:create',
+  'session-local:discard',
+  'session-local:messages',
+  'session-local:reconcile',
+  'session-local:transcript',
+  'session-local:submit',
+  'sessions:transcript:ack',
+]);
+
 // The renderer mounts while the Runtime Host module graph is still
 // evaluating, so persistent IPC handlers do not exist yet. Holding invokes on
 // this promise turns "called before registration" into "waits for
@@ -41,10 +64,58 @@ const bootReady: Promise<void> = Promise.resolve(
   () => undefined,
 );
 
+function isDesktopTargetScope(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const candidate = value as { hostId?: unknown; targetEpoch?: unknown };
+  return typeof candidate.hostId === 'string' && typeof candidate.targetEpoch === 'string';
+}
+
+const runtimeHostReadyByScope = new Map<string, Promise<void>>();
+
+function runtimeHostScopeKey(scope: { readonly hostId: string; readonly targetEpoch: string }): string {
+  return `${scope.hostId}\u0000${scope.targetEpoch}`;
+}
+
+function shouldAwaitRuntimeHost(channel: string, value: unknown): boolean {
+  return !RUNTIME_HOST_INDEPENDENT_SCOPED_CHANNELS.has(channel) && isDesktopTargetScope(value);
+}
+
+async function awaitRuntimeHostReady(scope: unknown): Promise<void> {
+  const target = scope as { readonly hostId: string; readonly targetEpoch: string };
+  const key = runtimeHostScopeKey(target);
+  let ready = runtimeHostReadyByScope.get(key);
+  if (!ready) {
+    ready = bootReady.then(async () => {
+      try {
+        const result = await ipcRenderer.invoke('runtime-host:awaitReady', scope) as {
+          readonly ready?: unknown;
+        };
+        if (result?.ready !== true) throw new Error('Runtime Host target is unavailable');
+      } catch (error) {
+        // Keep the same fail-open behavior as the bootstrap gate for older or
+        // partially initialized main processes. The real channel still decides
+        // whether the scoped operation is available.
+        const message =
+          error && typeof error === 'object' && 'message' in error
+            ? String((error as { readonly message?: unknown }).message)
+            : String(error);
+        if (!message.includes("No handler registered for 'runtime-host:awaitReady'")) throw error;
+      }
+    });
+    runtimeHostReadyByScope.set(key, ready);
+    void ready.catch(() => {
+      if (runtimeHostReadyByScope.get(key) === ready) runtimeHostReadyByScope.delete(key);
+    });
+  }
+  return ready;
+}
+
 export const invokeWhenReady: typeof ipcRenderer.invoke = (channel, ...args) =>
   EARLY_CHANNELS.has(channel)
     ? ipcRenderer.invoke(channel, ...args)
-    : bootReady.then(() => ipcRenderer.invoke(channel, ...args));
+    : shouldAwaitRuntimeHost(channel, args[0])
+      ? awaitRuntimeHostReady(args[0]).then(() => ipcRenderer.invoke(channel, ...args))
+      : bootReady.then(() => ipcRenderer.invoke(channel, ...args));
 
 // Sends fired during preload evaluation would be dropped before the matching
 // ipcMain.on listener is registered; deferring them to the same gate keeps

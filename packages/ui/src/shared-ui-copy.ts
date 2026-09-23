@@ -63,7 +63,6 @@ export interface SharedUiCopy {
   };
   modelPicker: {
     searchPlaceholder: string;
-    knowledgeCutoff: (date: string) => string;
   };
   moduleHubs: {
     extensions: {
@@ -159,7 +158,6 @@ const SHARED_UI_COPY = {
     },
     modelPicker: {
       searchPlaceholder: '搜索模型…',
-      knowledgeCutoff: (date) => `知识截止：${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -238,7 +236,6 @@ const SHARED_UI_COPY = {
     },
     modelPicker: {
       searchPlaceholder: '搜尋模型…',
-      knowledgeCutoff: (date) => `知識截止：${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -317,7 +314,6 @@ const SHARED_UI_COPY = {
     },
     modelPicker: {
       searchPlaceholder: 'Search models…',
-      knowledgeCutoff: (date) => `Knowledge cutoff: ${date}`,
     },
     moduleHubs: {
       extensions: {

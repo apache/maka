@@ -22,6 +22,7 @@
 // pull the surface and its five nested tool panels back into the eager chunk
 // for every importer of this barrel. Stories reach it through `stories`,
 // which nothing shipped imports.
+export { WorkbarTitlebarActions } from './ui/workbar-toggle';
 export { WorkbarHost } from './ui/workbar-host';
 export { WorkbarServicesProvider } from './services-context';
 export { useWorkbarController } from './controller/use-workbar-controller';

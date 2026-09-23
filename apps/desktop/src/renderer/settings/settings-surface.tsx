@@ -1231,6 +1231,7 @@ function SettingsPageBody(props: {
     case 'appearance':
       return (
         <AppearanceSettingsPage
+          workbarTogglePosition={props.settings.appearance.workbarTogglePosition}
           themePref={props.themePref}
           themePalette={props.themePalette}
           appIcon={props.settings.appearance.appIcon ?? DEFAULT_APP_ICON}

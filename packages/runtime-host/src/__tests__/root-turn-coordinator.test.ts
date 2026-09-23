@@ -875,7 +875,7 @@ test('a failed exact Capability retry does not poison the parked continuation bi
       'inspect',
       'unexpected',
     ]);
-    capabilities.retireSessions([fixture.sessionId]);
+    await capabilities.retireSessions([fixture.sessionId]);
     recovery = fixture.createRecoveryCoordinator();
     await recovery.prepareRecovery();
     await recovery.recover();
