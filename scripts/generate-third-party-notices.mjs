@@ -63,7 +63,7 @@ const REQUIRED_ASSET_NOTICE_MARKERS = [
   '## Simple Icons brand marks',
   '## TDesign Icons WeCom mark',
   '## MingCute DingTalk mark',
-  '## Allogo Feishu mark',
+  '## Allogo service marks',
   'packages/ui/src/bot-brand-logo.tsx',
   'apps/desktop/src/renderer/settings/provider-brand-marks.tsx',
 ];
