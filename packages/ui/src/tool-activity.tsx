@@ -558,14 +558,16 @@ function LinkedAgentList(props: {
           <ListItem
             key={row.key}
             startContent={
-              props.activityObserved && row.status === 'running' ? (
-                <RunningIndicator label={status} />
-              ) : (
-                <StatusDot
-                  variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
-                  label={status}
-                />
-              )
+              <span className="maka-subagent-session-signal">
+                {props.activityObserved && row.status === 'running' ? (
+                  <RunningIndicator label={status} />
+                ) : (
+                  <StatusDot
+                    variant={dotForStatus(linkedAgentStatusSemantic(row.status))}
+                    label={status}
+                  />
+                )}
+              </span>
             }
             label={(
               <span className="maka-subagent-session-label">
