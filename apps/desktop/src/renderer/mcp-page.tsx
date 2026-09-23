@@ -737,16 +737,18 @@ function McpEditorDialog(props: {
         ) : (
           <form className="maka-mcp-manual-form" onSubmit={props.onSave}>
             <div className="maka-mcp-form-fields">
-              <Selector
-                value={props.state.draft.kind}
-                options={[
-                  { value: 'stdio', label: props.copy.editor.localStdio },
-                  { value: 'remote', label: props.copy.editor.remoteUrl },
-                ]}
-                onChange={(kind) => updateDraft('kind', kind as McpEditorDraft['kind'])}
-                label={props.copy.editor.transportAria}
-                width="100%"
-              />
+              <VStack gap={1} align="start">
+                <Text type="label" size="sm">{props.copy.editor.transportAria}</Text>
+                <SegmentedControl
+                  value={props.state.draft.kind}
+                  onChange={(kind) => updateDraft('kind', kind as McpEditorDraft['kind'])}
+                  label={props.copy.editor.transportAria}
+                  size="sm"
+                >
+                  <SegmentedControlItem value="stdio" label={props.copy.editor.localStdio} />
+                  <SegmentedControlItem value="remote" label={props.copy.editor.remoteUrl} />
+                </SegmentedControl>
+              </VStack>
               <div className="maka-mcp-primary-fields">
                 <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.errors.id === 'exists' ? props.copy.editor.idExists : props.copy.editor.required } : undefined} />
                 {props.state.draft.kind === 'stdio' ? (
