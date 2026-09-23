@@ -246,7 +246,7 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     }
   });
 
-  test('keeps Write and Edit when DeepSeek cannot carry custom apply_patch', async () => {
+  test('uses portable ApplyPatch for DeepSeek', async () => {
     const model = completionModel();
     const backend = createBackend({
       connection: {
@@ -267,9 +267,9 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
 
     const names = modelToolNames(model);
-    assert.equal(names.includes('apply_patch'), false);
-    assert.equal(names.includes('Write'), true);
-    assert.equal(names.includes('Edit'), true);
+    assert.equal(names.includes('apply_patch'), true);
+    assert.equal(names.includes('Write'), false);
+    assert.equal(names.includes('Edit'), false);
   });
 
   test('replays a durable apply_patch failure as native provider JSON', async () => {
@@ -416,13 +416,14 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     );
   };
 
-  test('downgrades durable DeepSeek freeform apply_patch history to a fact', async () => {
+  test('downgrades disabled DeepSeek freeform apply_patch history to a fact', async () => {
     await assertApplyPatchHistoryDowngraded(
       {
         ...connection(),
         slug: 'deepseek',
         providerType: 'deepseek',
         defaultModel: 'deepseek-v4-flash',
+        modelOverrides: { 'deepseek-v4-flash': { applyPatch: false } },
       },
       'deepseek-v4-flash',
     );
@@ -2325,68 +2326,6 @@ describe('AiSdkBackend model history', () => {
     }
   });
 
-  test('RuntimeEvent replay renders image attachments as image parts when a reader is wired', async () => {
-    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4, 5, 6]);
-    const model = completionModel();
-    const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      readAttachmentBytes: async () => ({ ok: true, bytes: pngBytes }),
-      supportsVision: true,
-    } as never);
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'current user',
-        context: [],
-        runtimeContext: [
-          runtimeEvent({
-            id: 'rt-u',
-            turnId: 'turn-prev',
-            role: 'user',
-            author: 'user',
-            content: {
-              kind: 'text',
-              text: 'see the attached chart',
-              attachments: [
-                {
-                  kind: 'image',
-                  name: 'chart.png',
-                  mimeType: 'image/png',
-                  bytes: 123,
-                  ref: {
-                    kind: 'session_file',
-                    sessionId: 'sess-1',
-                    relativePath: 'attachments/chart.png',
-                  },
-                },
-              ],
-            },
-          }),
-          runtimeTextEvent({
-            id: 'rt-a',
-            turnId: 'turn-prev',
-            role: 'model',
-            author: 'agent',
-            text: 'projection assistant',
-          }),
-        ],
-      }),
-    );
-
-    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
-    const historicalUser = prompt[0];
-    const parts = historicalUser.content as Array<{ type: string; mediaType?: string }>;
-    const imageLike = parts.find((p) => p.type !== 'text' && p.mediaType === 'image/png');
-    assert.ok(
-      imageLike,
-      `expected a historical image/png part in RuntimeEvent replay, got: ${JSON.stringify(parts)}`,
-    );
-  });
-
   test('a persisted quote-only user event replays its excerpt into the provider prompt (#4804)', async () => {
     // The headline behaviour of #4804 measured at the production seam: a
     // stored user event whose text is empty but whose quotes carry the turn
@@ -2718,8 +2657,7 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('degrades excess replayed image tool results once the per-request budget is exceeded', async () => {
-    const bytes = new Uint8Array(10);
+  test('budgets replayed images across parallel calls and reused tool-call ids', async () => {
     const model = completionModel();
     const backend = createBackend({
       connection: connection(),
@@ -2728,177 +2666,54 @@ describe('AiSdkBackend model history', () => {
       tools: [],
       supportsVision: true,
       maxProviderImageRequestBytes: 25,
-      readAttachmentBytes: async () => ({ ok: true, bytes }),
+      readAttachmentBytes: async () => ({ ok: true, bytes: new Uint8Array(10) }),
     });
-
-    const imageResult = (callId: string, relativePath: string) =>
-      runtimeEvent({
-        id: `rt-result-${callId}`,
-        turnId: 'turn-prev',
-        role: 'tool',
-        author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: callId,
-          name: 'Read',
-          isError: false,
-          result: {
-            kind: 'image',
-            mimeType: 'image/png',
-            ref: { kind: 'session_file', sessionId: 'session-1', relativePath },
-          },
-        },
-      });
-    const call = (callId: string, path: string) =>
-      runtimeEvent({
-        id: `rt-call-${callId}`,
-        turnId: 'turn-prev',
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'function_call', id: callId, name: 'Read', args: { path } },
-      });
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'continue',
-        context: [],
-        runtimeContext: [
-          runtimeTextEvent({
-            id: 'rt-u',
-            turnId: 'turn-prev',
-            role: 'user',
-            author: 'user',
-            text: 'read them',
+    const runtimeContext = ['turn-a', 'turn-b'].flatMap((turnId) => {
+      const ids = turnId === 'turn-a' ? ['reused-id', 'other-id'] : ['reused-id'];
+      return [
+        runtimeTextEvent({ id: turnId, turnId, role: 'user', author: 'user', text: 'Read images' }),
+        ...ids.map((id) =>
+          runtimeEvent({
+            id: turnId + '-' + id + '-call',
+            turnId,
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'function_call', id, name: 'Read', args: { path: id + '.png' } },
           }),
-          call('tool-1', 'a.png'),
-          imageResult('tool-1', 'artifact-1'),
-          call('tool-2', 'b.png'),
-          imageResult('tool-2', 'artifact-2'),
-          call('tool-3', 'c.png'),
-          imageResult('tool-3', 'artifact-3'),
-        ],
-      }),
-    );
-
-    const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
-    const toolOutputs = prompt
-      .filter((message) => message.role === 'tool')
-      .flatMap((message) => message.content as any[])
-      .map((entry) => entry?.output)
-      .filter((output) => output?.type === 'content');
-    const imageData = toolOutputs.filter((output) =>
-      output.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
-    );
-    const degraded = toolOutputs.filter((output) =>
-      output.value.some((part: any) => part.type === 'text' && /image budget/.test(part.text)),
-    );
-    assert.equal(
-      imageData.length,
-      2,
-      `expected two hydrated image tool results, got: ${JSON.stringify(toolOutputs)}`,
-    );
-    assert.equal(
-      degraded.length,
-      1,
-      `expected one budget-degraded tool result, got: ${JSON.stringify(toolOutputs)}`,
-    );
-  });
-
-  test('budgets replayed image tool results by durable occurrence instead of reused tool-call ids', async () => {
-    const bytes = new Uint8Array(10);
-    const model = completionModel();
-    const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      supportsVision: true,
-      maxProviderImageRequestBytes: 15,
-      readAttachmentBytes: async () => ({ ok: true, bytes }),
-    });
-    const call = (eventId: string, turnId: string) =>
-      runtimeEvent({
-        id: eventId,
-        turnId,
-        role: 'model',
-        author: 'agent',
-        content: {
-          kind: 'function_call',
-          id: 'reused-tool-id',
-          name: 'Read',
-          args: { path: `${turnId}.png` },
-        },
-      });
-    const result = (eventId: string, turnId: string) =>
-      runtimeEvent({
-        id: eventId,
-        turnId,
-        role: 'tool',
-        author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: 'reused-tool-id',
-          name: 'Read',
-          isError: false,
-          result: {
-            kind: 'image',
-            mimeType: 'image/png',
-            ref: {
-              kind: 'session_file',
-              sessionId: 'session-1',
-              relativePath: `${turnId}.png`,
+        ),
+        ...ids.map((id) =>
+          runtimeEvent({
+            id: turnId + '-' + id + '-result',
+            turnId,
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id,
+              name: 'Read',
+              result: {
+                kind: 'image',
+                mimeType: 'image/png',
+                ref: { kind: 'session_file', sessionId: 'session-1', relativePath: id + '.png' },
+              },
             },
-          },
-        },
-      });
-
+          }),
+        ),
+      ];
+    });
     await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'continue',
-        context: [],
-        runtimeContext: [
-          runtimeTextEvent({
-            id: 'user-a',
-            turnId: 'turn-a',
-            role: 'user',
-            author: 'user',
-            text: 'read a',
-          }),
-          call('call-a', 'turn-a'),
-          result('result-a', 'turn-a'),
-          runtimeTextEvent({
-            id: 'user-b',
-            turnId: 'turn-b',
-            role: 'user',
-            author: 'user',
-            text: 'read b',
-          }),
-          call('call-b', 'turn-b'),
-          result('result-b', 'turn-b'),
-        ],
-      }),
+      backend.send({ turnId: 'turn-current', text: 'continue', context: [], runtimeContext }),
     );
-
     const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
     const outputs = prompt
       .filter((message) => message.role === 'tool')
       .flatMap((message) => message.content)
-      .map((entry) => entry?.output)
-      .filter((output) => output?.type === 'content');
-    assert.equal(
-      outputs.filter((output) =>
-        output.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
-      ).length,
-      1,
+      .map((part) => part.output);
+    assert.deepEqual(
+      outputs.map((output) => output.value.map((part: any) => part.type)),
+      [['file'], ['file'], ['text']],
     );
-    assert.equal(
-      outputs.filter((output) =>
-        output.value.some((part: any) => part.type === 'text' && /image budget/.test(part.text)),
-      ).length,
-      1,
-    );
+    assert.match(outputs[2].value[0].text, /image budget/);
   });
 
   test('RuntimeEvent replay renders historical image attachments as image parts', async () => {

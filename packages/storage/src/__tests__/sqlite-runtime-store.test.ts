@@ -38,6 +38,7 @@ import {
   acquireOperationalStateDatabase,
   resolveOperationalStateDatabasePath,
 } from '../operational-state-store.js';
+import { createConversationOperationalStateStore } from '../conversation-operational-state.js';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildImmutableRuntimePrefix,
@@ -54,6 +55,7 @@ import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
+  type SqliteRuntimeStoreOptions,
 } from '../sqlite-runtime-store.js';
 
 const PREFIX_PROOF_TEST_BUDGET = {
@@ -81,7 +83,7 @@ describe('SqliteRuntimeStore', () => {
   });
 
   it('refuses every post-terminal append as the typed sealed-run boundary', async () => {
-    await withStore(async (store) => {
+    await withStore(async (store, dbPath) => {
       const opening = functionCallEvent({
         id: 'sealed-run-opening',
         content: { kind: 'text', text: 'hello' },
@@ -126,6 +128,147 @@ describe('SqliteRuntimeStore', () => {
       );
       // Exact-id retry of an already-stored event keeps its dedup answer.
       await store.appendRuntimeEvent(terminal.sessionId, terminal.runId, terminal);
+    });
+  });
+
+  it('loads full recovery payloads only for unfinished and handoff invocations', async () => {
+    await withStore(async (store, dbPath) => {
+      await appendSettledTurn(store, 1);
+      await store.appendRuntimeEvent('session-1', 'run-2', invocationOpeningEvent(2));
+      await store.appendRuntimeEvent('session-1', 'run-3', invocationOpeningEvent(3));
+      await store.appendRuntimeEvent('session-1', 'run-3', {
+        id: 'terminal-3',
+        sessionId: 'session-1',
+        invocationId: 'invocation-3',
+        runId: 'run-3',
+        turnId: 'turn-3',
+        ts: 32,
+        partial: false,
+        role: 'system',
+        author: 'host',
+        actions: {
+          endInvocation: true,
+          handoffPause: {
+            protocol: 'runtime_handoff_pause_v1',
+            handoffId: 'handoff-3',
+            remainingSteps: null,
+            hostEpoch: 'host-1',
+            rootRunId: 'run-3',
+            successorRunId: 'run-4',
+            successorInvocationId: 'invocation-4',
+            claimId: 'claim-3',
+          },
+        },
+      });
+      const ambiguousOpening = invocationOpeningEvent(4);
+      await store.appendRuntimeEvent('session-1', 'run-4', {
+        ...ambiguousOpening,
+        invocationId: 'transcript-ordinary-invocation',
+      });
+      await store.appendRuntimeEvent('session-1', 'run-4', {
+        id: 'terminal-4',
+        sessionId: 'session-1',
+        invocationId: 'transcript-ordinary-invocation',
+        runId: 'run-4',
+        turnId: 'turn-4',
+        ts: 42,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        actions: { endInvocation: true },
+      });
+
+      const database = new DatabaseSync(dbPath);
+      try {
+        assert.equal(
+          (
+            database
+              .prepare('SELECT event_kind FROM runtime_events WHERE event_id = ?')
+              .get('terminal-3') as { event_kind: string }
+          ).event_kind,
+          'invocation_end',
+          'the cheap handoff discriminator must remain implied by the protocol shape',
+        );
+        const plan = database
+          .prepare(`
+            EXPLAIN QUERY PLAN
+            WITH selected(session_id) AS (SELECT value FROM json_each(?))
+            SELECT
+              opening.rowid,
+              opening.session_id,
+              opening.invocation_id,
+              (
+                SELECT terminal.rowid
+                FROM runtime_events AS terminal INDEXED BY runtime_events_terminal
+                WHERE terminal.invocation_id = opening.invocation_id
+                  AND (
+                    json_valid(terminal.payload_json)
+                    AND (
+                      json_extract(terminal.payload_json, '$.actions.endInvocation') = 1
+                      OR json_extract(terminal.payload_json, '$.status')
+                        IN ('completed', 'failed', 'aborted', 'cancelled')
+                    )
+                  )
+                ORDER BY terminal.event_seq
+                LIMIT 1
+              ) AS terminal_rowid
+            FROM selected
+            JOIN runtime_events AS opening INDEXED BY runtime_events_by_session_kind
+              ON opening.session_id = selected.session_id
+              AND opening.event_kind = 'invocation_opened'
+          `)
+          .all(JSON.stringify(['session-1'])) as Array<{ detail: string }>;
+        assert.ok(
+          plan.some((row) =>
+            row.detail.includes(
+              'SEARCH opening USING COVERING INDEX runtime_events_by_session_kind',
+            ),
+          ),
+          `recovery inventory must identify obligations without opening payload pages: ${JSON.stringify(plan)}`,
+        );
+        database
+          .prepare("UPDATE runtime_events SET payload_json = '{' WHERE event_id = ?")
+          .run('opened-1');
+      } finally {
+        database.close();
+      }
+
+      const inventory = await store.listInvocationRecoveryInventory(['session-1']);
+      assert.deepEqual(
+        inventory.map((entry) => ({
+          invocationId: entry.invocationId,
+          candidate: entry.candidate?.invocationId ?? null,
+          identityRunId: entry.identity?.runId ?? null,
+          terminalId: entry.candidate?.terminalEvent?.id ?? null,
+        })),
+        [
+          {
+            invocationId: 'invocation-1',
+            candidate: null,
+            identityRunId: null,
+            terminalId: null,
+          },
+          {
+            invocationId: 'invocation-2',
+            candidate: 'invocation-2',
+            identityRunId: null,
+            terminalId: null,
+          },
+          {
+            invocationId: 'invocation-3',
+            candidate: 'invocation-3',
+            identityRunId: null,
+            terminalId: 'terminal-3',
+          },
+          {
+            invocationId: 'transcript-ordinary-invocation',
+            candidate: null,
+            identityRunId: 'run-4',
+            terminalId: null,
+          },
+        ],
+      );
     });
   });
 
@@ -307,6 +450,179 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('reads recovery message evidence by Turn and exact identity without scanning the Session', async () => {
+    await withStore(async (store, dbPath) => {
+      const prompt = functionCallEvent({
+        id: 'recovery-prompt',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: '恢复这条提示' },
+      });
+      const exact = functionCallEvent({
+        id: 'recovery-exact-tool-call',
+        invocationId: 'invocation-2',
+        runId: 'run-2',
+        turnId: 'turn-2',
+      });
+      const unrelated = functionCallEvent({
+        id: 'recovery-unrelated',
+        invocationId: 'invocation-3',
+        runId: 'run-3',
+        turnId: 'turn-3',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'cold history' },
+      });
+      const steering = functionCallEvent({
+        id: 'recovery-steering',
+        invocationId: 'invocation-4',
+        runId: 'run-4',
+        turnId: 'turn-4',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'steer', steering: true },
+        refs: { providerEventId: 'recovery-steering-message' },
+      });
+      const foreignExact = functionCallEvent({
+        id: 'recovery-foreign-exact',
+        sessionId: 'session-2',
+        invocationId: 'foreign-invocation',
+        runId: 'foreign-run',
+        turnId: 'foreign-turn',
+      });
+      const sameTurnModelText = functionCallEvent({
+        id: 'recovery-model-text',
+        ts: 2,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'cold model body' },
+      });
+      const sameTurnSteering = functionCallEvent({
+        id: 'recovery-same-turn-steering',
+        ts: 3,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'not the prompt', steering: true },
+        refs: { providerEventId: 'recovery-same-turn-steering-message' },
+      });
+      for (const event of [
+        prompt,
+        sameTurnModelText,
+        sameTurnSteering,
+        exact,
+        foreignExact,
+        unrelated,
+        steering,
+      ]) {
+        await store.appendRuntimeEvent(event.sessionId, event.runId, event);
+      }
+
+      const query = {
+        sessionId: 'session-1',
+        turnIds: ['turn-1', 'turn-1'],
+        eventIds: [
+          'recovery-exact-tool-call',
+          'recovery-exact-tool-call',
+          'recovery-foreign-exact',
+        ],
+      };
+      const evidence = await store.readRecoveryMessageEvents({
+        ...query,
+        budget: { maxRecords: 4, maxBytes: 64 * 1024 },
+      });
+      assert.equal(evidence.status, 'complete');
+      if (evidence.status !== 'complete') throw new Error('expected recovery message evidence');
+      assert.deepEqual(
+        evidence.records.map((event) => event.id),
+        ['recovery-prompt', 'recovery-exact-tool-call'],
+      );
+      assert.equal(evidence.sourceRecordCount, 2);
+      assert.ok(evidence.storedBytes > Buffer.byteLength('恢复这条提示', 'utf8'));
+      assert.deepEqual(
+        await store.readRecoveryMessageEvents({
+          ...query,
+          budget: { maxRecords: 4, maxBytes: 1 },
+        }),
+        { status: 'limit_exceeded' },
+      );
+
+      const inspect = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const turnPlan = inspect
+          .prepare(`
+            EXPLAIN QUERY PLAN
+            SELECT event_id
+              FROM runtime_events
+             WHERE session_id = ?
+               AND turn_id IN (?)
+               AND event_kind = 'text'
+               AND CASE
+                 WHEN json_valid(payload_json)
+                 THEN json_extract(payload_json, '$.partial')
+               END = 0
+               AND CASE
+                 WHEN json_valid(payload_json)
+                 THEN json_extract(payload_json, '$.role')
+               END = 'user'
+               AND coalesce(CASE
+                 WHEN json_valid(payload_json)
+                 THEN json_extract(payload_json, '$.content.steering')
+               END, 0) = 0
+          `)
+          .all('session-1', 'turn-1') as Array<{ detail: string }>;
+        assert.ok(
+          turnPlan.some((step) =>
+            step.detail.includes('USING COVERING INDEX runtime_events_recovery_user_message'),
+          ),
+          JSON.stringify(turnPlan),
+        );
+
+        const exactPlan = inspect
+          .prepare(`
+            EXPLAIN QUERY PLAN
+            SELECT event_id
+              FROM runtime_events
+             WHERE event_id IN (?)
+          `)
+          .all('recovery-exact-tool-call') as Array<{ detail: string }>;
+        assert.ok(
+          exactPlan.some(
+            (step) => step.detail.startsWith('SEARCH') && step.detail.includes('event_id=?'),
+          ),
+          JSON.stringify(exactPlan),
+        );
+
+        const steeringPlan = inspect
+          .prepare(`
+            EXPLAIN QUERY PLAN
+            SELECT event_id
+              FROM runtime_events
+             WHERE session_id = ?
+               AND event_kind = 'text'
+               AND CASE
+                 WHEN json_valid(payload_json)
+                 THEN json_extract(payload_json, '$.partial')
+               END = 0
+               AND CASE
+                 WHEN json_valid(payload_json)
+                 THEN json_extract(payload_json, '$.content.steering')
+               END = 1
+               AND CASE
+                 WHEN json_valid(payload_json)
+                 THEN json_extract(payload_json, '$.refs.providerEventId')
+               END = ?
+          `)
+          .all('session-1', 'recovery-steering-message') as Array<{ detail: string }>;
+        assert.ok(
+          steeringPlan.some((step) => step.detail.includes('runtime_events_steering_message')),
+          JSON.stringify(steeringPlan),
+        );
+      } finally {
+        inspect.close();
+      }
+    });
+  });
+
   it('assigns stable Session ordinals in commit order across Runs', async () => {
     await withStore(async (store, dbPath) => {
       const first = functionCallEvent({ id: 'ordinal-1', ts: 20 });
@@ -459,6 +775,39 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('invalidates a warmed tool-ledger cache after a same-connection conversation copy', async () => {
+    await withStore(async (store) => {
+      const outcome = functionResponseEvent({ ts: 11 });
+      const orphan = functionResponseEvent({
+        id: 'cache-warming-orphan',
+        ts: 10,
+        refs: { toolCallId: 'provider-call-1' },
+      });
+      await assert.rejects(
+        store.appendRuntimeEvent(orphan.sessionId, orphan.runId, orphan),
+        (error: unknown) =>
+          error instanceof ToolLedgerRejectionError && error.code === 'orphan_response',
+      );
+
+      await store.importConversationCopyRuntimeEvents(outcome.sessionId, [
+        {
+          runId: outcome.runId,
+          events: [functionCallEvent(), toolDispatchEvent(), outcome],
+        },
+      ]);
+
+      assert.deepEqual(
+        await store.commitToolOutcome({
+          operationId: 'operation-1',
+          journalEventId: 'operation-1_outcome',
+          runtimeEvent: outcome,
+          committedAt: 20,
+        }),
+        { created: false, runtimeEventSeq: 3 },
+      );
+    });
+  });
+
   // These two pin the ERROR CLASS, not the message. AgentRun exempts exactly
   // one class from the store-unavailable latch (`ToolLedgerRejectionError`), so
   // the class is a behavioural contract between storage and runtime — and both
@@ -485,13 +834,13 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('reports pre-existing damage as ToolLedgerCorruptionError, even from another session', async () => {
+  it('isolates unrelated ledger damage while keeping the damaged invocation fail-closed', async () => {
     await withStore(async (store, dbPath) => {
       store.close();
 
       // Seed damage the store would never have written itself, in a session
-      // this run never touches: the health scan has no WHERE clause, so one
-      // damaged operation anywhere in the workspace is what a later append meets.
+      // this run never touches. Scoped validation must not turn it into a
+      // workspace-wide write outage.
       const raw = new DatabaseSync(dbPath);
       const stranded = functionResponseEvent({
         id: 'stranded-response',
@@ -520,8 +869,28 @@ describe('SqliteRuntimeStore', () => {
       const reopened = createSqliteRuntimeStore(dbPath);
       try {
         const healthy = functionCallEvent();
+        await reopened.appendRuntimeEvent(healthy.sessionId, healthy.runId, healthy);
+        assert.deepEqual(
+          await reopened.readImmutableRuntimeEvents(healthy.sessionId, healthy.runId),
+          [healthy],
+        );
+
+        // The hot write path is closure-scoped. Explicit projection rebuild is
+        // the maintenance owner for auditing every invocation in the workspace.
         await assert.rejects(
-          reopened.appendRuntimeEvent(healthy.sessionId, healthy.runId, healthy),
+          reopened.rebuildToolProjectionsFromRuntimeEvents(),
+          /Corrupt tool RuntimeEvent ledger: orphan_response at stranded-response/,
+        );
+
+        const related = functionCallEvent({
+          id: 'related-call',
+          sessionId: stranded.sessionId,
+          invocationId: stranded.invocationId,
+          runId: stranded.runId,
+          turnId: stranded.turnId,
+        });
+        await assert.rejects(
+          reopened.appendRuntimeEvent(related.sessionId, related.runId, related),
           (error: unknown) =>
             error instanceof ToolLedgerCorruptionError &&
             !(error instanceof ToolLedgerRejectionError) &&
@@ -534,7 +903,7 @@ describe('SqliteRuntimeStore', () => {
   });
 
   it('commits function_call, dispatch fact, and operation projection atomically in T1', async () => {
-    await withStore(async (store) => {
+    await withStore(async (store, dbPath) => {
       const call = functionCallEvent();
       const dispatch = toolDispatchEvent();
 
@@ -577,15 +946,109 @@ describe('SqliteRuntimeStore', () => {
         (await store.listUnsettledToolOperations()).map((operation) => operation.operationId),
         ['operation-1'],
       );
+
+      const database = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const plan = database
+          .prepare(`
+            EXPLAIN QUERY PLAN
+            SELECT call_event.session_id,
+              tool_operations.operation_id, tool_operations.invocation_id,
+              tool_operations.run_id, tool_operations.turn_id,
+              tool_operations.provider_tool_call_id, tool_operations.tool_name,
+              tool_operations.canonical_args_hash, tool_operations.recovery_mode,
+              tool_operations.current_state, tool_operations.call_event_id,
+              tool_operations.dispatch_event_id, tool_operations.result_event_id,
+              tool_operations.version
+            FROM tool_operations
+            JOIN runtime_events AS call_event
+              ON call_event.event_id = tool_operations.call_event_id
+            WHERE tool_operations.current_state = 'prepared'
+              AND tool_operations.result_event_id IS NULL
+              AND tool_operations.dispatch_event_id IS NOT NULL
+            ORDER BY tool_operations.invocation_id ASC, tool_operations.operation_id ASC
+          `)
+          .all() as Array<{ detail: string }>;
+        assert.ok(
+          plan.some((row) => row.detail.includes('tool_operations_unsettled')),
+          `unsettled recovery query must avoid historical tool-operation pages: ${JSON.stringify(plan)}`,
+        );
+      } finally {
+        database.close();
+      }
     });
   });
 
   it('commits nested T1 events with parent operation linkage', async () => {
-    await withStore(async (store) => {
+    await withStore(async (store, dbPath) => {
       const parentRefs = {
         parentToolCallId: 'exec-call-1',
         parentOperationId: 'exec-operation-1',
       } as const;
+      const parentCall = functionCallEvent({
+        id: 'exec-call-event',
+        invocationId: 'exec-invocation',
+        runId: 'exec-run',
+        turnId: 'exec-turn',
+        content: {
+          kind: 'function_call',
+          id: parentRefs.parentToolCallId,
+          name: 'Read',
+          args: { path: '/workspace/repo/README.md' },
+        },
+      });
+      const parentDispatch = toolDispatchEvent({
+        id: 'exec-dispatch-event',
+        invocationId: 'exec-invocation',
+        runId: 'exec-run',
+        turnId: 'exec-turn',
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: parentRefs.parentOperationId,
+            providerToolCallId: parentRefs.parentToolCallId,
+            toolName: 'Read',
+            canonicalArgsHash: READ_ARGS_HASH,
+            recoveryMode: 'replay_safe',
+          },
+        },
+        refs: {
+          operationId: parentRefs.parentOperationId,
+          toolCallId: parentRefs.parentToolCallId,
+        },
+      });
+      await store.commitToolPrepared({
+        operationId: parentRefs.parentOperationId,
+        journalEventId: 'exec-operation-1_prepared',
+        runtimeEvent: parentCall,
+        dispatchRuntimeEvent: parentDispatch,
+        providerToolCallId: parentRefs.parentToolCallId,
+        toolName: 'Read',
+        canonicalArgsHash: READ_ARGS_HASH,
+        recoveryMode: 'replay_safe',
+        committedAt: 5,
+      });
+      const inspect = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const plan = inspect
+          .prepare(`
+            EXPLAIN QUERY PLAN
+            SELECT DISTINCT invocation_id
+              FROM runtime_events
+             WHERE event_kind = 'tool_dispatch'
+               AND CASE
+                 WHEN json_valid(payload_json)
+                 THEN json_extract(payload_json, '$.actions.toolDispatch.operationId')
+               END IN (?)
+          `)
+          .all(parentRefs.parentOperationId) as Array<{ detail: string }>;
+        assert.ok(
+          plan.some((step) => step.detail.includes('runtime_events_tool_dispatch_operation')),
+          JSON.stringify(plan),
+        );
+      } finally {
+        inspect.close();
+      }
       const call = functionCallEvent({
         refs: {
           operationId: 'operation-1',
@@ -615,6 +1078,855 @@ describe('SqliteRuntimeStore', () => {
 
       assert.equal(result.created, true);
       assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), [call, dispatch]);
+    });
+  });
+
+  it('invalidates scoped tool caches across sibling write-view commit and rollback', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-cache-rollback-'));
+    const outer = acquireOperationalStateDatabase(root);
+    const parentWriter = createSqliteRuntimeStore(resolveOperationalStateDatabasePath(root), {
+      databaseLease: acquireOperationalStateDatabase(root),
+    });
+    const purge = createConversationOperationalStateStore(root);
+    let store: Store | undefined;
+    const identity = {
+      sessionId: 'rollback-cache-session',
+      invocationId: 'rollback-cache-invocation',
+      runId: 'rollback-cache-run',
+      turnId: 'rollback-cache-turn',
+    } as const;
+    const parentRefs = {
+      operationId: 'rollback-cache-parent-operation',
+      toolCallId: 'rollback-cache-parent-call',
+    } as const;
+    const parentCall = functionCallEvent({
+      id: 'rollback-cache-parent-call-event',
+      ...identity,
+      content: {
+        kind: 'function_call',
+        id: parentRefs.toolCallId,
+        name: 'Read',
+        args: { path: '/workspace/repo/README.md' },
+      },
+    });
+    const parentDispatch = toolDispatchEvent({
+      id: 'rollback-cache-parent-dispatch-event',
+      ...identity,
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId: parentRefs.operationId,
+          providerToolCallId: parentRefs.toolCallId,
+          toolName: 'Read',
+          canonicalArgsHash: READ_ARGS_HASH,
+          recoveryMode: 'replay_safe',
+        },
+      },
+      refs: {
+        operationId: parentRefs.operationId,
+        toolCallId: parentRefs.toolCallId,
+      },
+    });
+    const childRefs = {
+      operationId: 'rollback-cache-child-operation',
+      toolCallId: 'rollback-cache-child-call',
+      parentOperationId: parentRefs.operationId,
+      parentToolCallId: parentRefs.toolCallId,
+    } as const;
+    const childCall = functionCallEvent({
+      id: 'rollback-cache-child-call-event',
+      ...identity,
+      ts: 20,
+      content: {
+        kind: 'function_call',
+        id: childRefs.toolCallId,
+        name: 'Read',
+        args: { path: '/workspace/repo/README.md' },
+      },
+      refs: childRefs,
+    });
+    const childDispatch = toolDispatchEvent({
+      id: 'rollback-cache-child-dispatch-event',
+      ...identity,
+      ts: 21,
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId: childRefs.operationId,
+          providerToolCallId: childRefs.toolCallId,
+          toolName: 'Read',
+          canonicalArgsHash: READ_ARGS_HASH,
+          recoveryMode: 'replay_safe',
+        },
+      },
+      refs: childRefs,
+    });
+    const childInput = {
+      operationId: childRefs.operationId,
+      journalEventId: `${childRefs.operationId}_prepared`,
+      runtimeEvent: childCall,
+      dispatchRuntimeEvent: childDispatch,
+      providerToolCallId: childRefs.toolCallId,
+      toolName: 'Read',
+      canonicalArgsHash: READ_ARGS_HASH,
+      recoveryMode: 'replay_safe',
+      committedAt: 21,
+    } as const;
+
+    try {
+      await parentWriter.commitToolPrepared({
+        operationId: parentRefs.operationId,
+        journalEventId: `${parentRefs.operationId}_prepared`,
+        runtimeEvent: parentCall,
+        dispatchRuntimeEvent: parentDispatch,
+        providerToolCallId: parentRefs.toolCallId,
+        toolName: 'Read',
+        canonicalArgsHash: READ_ARGS_HASH,
+        recoveryMode: 'replay_safe',
+        committedAt: 10,
+      });
+
+      const committedPurges: Promise<void>[] = [];
+      const committedAttempts: Promise<unknown>[] = [];
+      outer.transaction('write', () => {
+        committedPurges.push(purge.purge(identity.sessionId));
+        committedAttempts.push(parentWriter.commitToolPrepared(childInput));
+      });
+      await Promise.all(committedPurges);
+      await assert.rejects(
+        committedAttempts[0]!,
+        (error: unknown) =>
+          error instanceof ToolLedgerRejectionError &&
+          error.code === 'parent_operation_missing' &&
+          error.eventId === childDispatch.id,
+      );
+      assert.equal(await parentWriter.readToolOperation(parentRefs.operationId), undefined);
+      assert.equal(await parentWriter.readToolOperation(childRefs.operationId), undefined);
+
+      await parentWriter.commitToolPrepared({
+        operationId: parentRefs.operationId,
+        journalEventId: `${parentRefs.operationId}_prepared`,
+        runtimeEvent: parentCall,
+        dispatchRuntimeEvent: parentDispatch,
+        providerToolCallId: parentRefs.toolCallId,
+        toolName: 'Read',
+        canonicalArgsHash: READ_ARGS_HASH,
+        recoveryMode: 'replay_safe',
+        committedAt: 10,
+      });
+      parentWriter.close();
+      store = createSqliteRuntimeStore(resolveOperationalStateDatabasePath(root), {
+        databaseLease: acquireOperationalStateDatabase(root),
+      });
+
+      const purges: Promise<void>[] = [];
+      const attempts: Promise<unknown>[] = [];
+      assert.throws(
+        () =>
+          outer.transaction('write', () => {
+            purges.push(purge.purge(identity.sessionId));
+            attempts.push(store!.commitToolPrepared(childInput));
+            throw new Error('roll back sibling write view');
+          }),
+        /roll back sibling write view/,
+      );
+      await Promise.all(purges);
+      await assert.rejects(
+        attempts[0]!,
+        (error: unknown) =>
+          error instanceof ToolLedgerRejectionError &&
+          error.code === 'parent_operation_missing' &&
+          error.eventId === childDispatch.id,
+      );
+
+      const retried = await store.commitToolPrepared(childInput);
+      assert.equal(retried.created, true);
+      assert.equal(
+        (await store.readToolOperation(parentRefs.operationId))?.currentState,
+        'prepared',
+      );
+    } finally {
+      store?.close();
+      parentWriter.close();
+      purge.close();
+      outer.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('invalidates a lease-less reducer base loaded from a rolled-back transaction', async () => {
+    await withStore(async (store) => {
+      const identity = {
+        sessionId: 'local-rollback-cache-session',
+        invocationId: 'local-rollback-cache-invocation',
+        runId: 'local-rollback-cache-run',
+        turnId: 'local-rollback-cache-turn',
+      } as const;
+      const parentRefs = {
+        operationId: 'local-rollback-parent-operation',
+        toolCallId: 'local-rollback-parent-call',
+      } as const;
+      const parentCall = functionCallEvent({
+        id: 'local-rollback-parent-call-event',
+        ...identity,
+        refs: parentRefs,
+        content: {
+          kind: 'function_call',
+          id: parentRefs.toolCallId,
+          name: 'Read',
+          args: { path: '/workspace/repo/README.md' },
+        },
+      });
+      const parentDispatch = toolDispatchEvent({
+        id: 'local-rollback-parent-dispatch-event',
+        ...identity,
+        refs: parentRefs,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: parentRefs.operationId,
+            providerToolCallId: parentRefs.toolCallId,
+            toolName: 'Read',
+            canonicalArgsHash: READ_ARGS_HASH,
+            recoveryMode: 'replay_safe',
+          },
+        },
+      });
+      const childRefs = {
+        operationId: 'local-rollback-child-operation',
+        toolCallId: 'local-rollback-child-call',
+        parentOperationId: parentRefs.operationId,
+        parentToolCallId: parentRefs.toolCallId,
+      } as const;
+      const childCall = functionCallEvent({
+        id: 'local-rollback-child-call-event',
+        ...identity,
+        ts: 20,
+        refs: childRefs,
+        content: {
+          kind: 'function_call',
+          id: childRefs.toolCallId,
+          name: 'Read',
+          args: { path: '/workspace/repo/README.md' },
+        },
+      });
+      const childDispatch = toolDispatchEvent({
+        id: 'local-rollback-child-dispatch-event',
+        ...identity,
+        ts: 21,
+        refs: childRefs,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: childRefs.operationId,
+            providerToolCallId: childRefs.toolCallId,
+            toolName: 'Read',
+            canonicalArgsHash: READ_ARGS_HASH,
+            recoveryMode: 'replay_safe',
+          },
+        },
+      });
+      const internal = store as unknown as {
+        transaction<T>(operation: () => T): T;
+        insertRuntimeEvent(event: RuntimeEvent, committedAt: number, exact: boolean): number;
+        assertToolLedgerTransition(
+          candidateEvents: readonly RuntimeEvent[],
+          expectedTransition: 't1_prepare',
+        ): void;
+      };
+
+      assert.throws(
+        () =>
+          internal.transaction(() => {
+            internal.insertRuntimeEvent(parentCall, 10, true);
+            internal.insertRuntimeEvent(parentDispatch, 11, false);
+            internal.assertToolLedgerTransition([childCall, childDispatch], 't1_prepare');
+            throw new Error('roll back local write view');
+          }),
+        /roll back local write view/,
+      );
+
+      await assert.rejects(
+        store.commitToolPrepared({
+          operationId: childRefs.operationId,
+          journalEventId: `${childRefs.operationId}_prepared`,
+          runtimeEvent: childCall,
+          dispatchRuntimeEvent: childDispatch,
+          providerToolCallId: childRefs.toolCallId,
+          toolName: 'Read',
+          canonicalArgsHash: READ_ARGS_HASH,
+          recoveryMode: 'replay_safe',
+          committedAt: 21,
+        }),
+        (error: unknown) =>
+          error instanceof ToolLedgerRejectionError &&
+          error.code === 'parent_operation_missing' &&
+          error.eventId === childDispatch.id,
+      );
+    });
+  });
+
+  it('bounds active tool reducer residency with least-recently-used eviction', async () => {
+    await withStore(
+      async (store) => {
+        for (let index = 0; index < 4; index += 1) {
+          assert.equal((await commitPreparedInvocation(store, index)).created, true);
+        }
+        assert.deepEqual(toolLedgerCacheSnapshot(store).seedInvocationIds, [
+          'cache-invocation-1',
+          'cache-invocation-2',
+          'cache-invocation-3',
+        ]);
+
+        assert.equal((await commitOutcomeInvocation(store, 1)).created, true);
+        assert.equal((await commitPreparedInvocation(store, 4)).created, true);
+
+        const snapshot = toolLedgerCacheSnapshot(store);
+        assert.deepEqual(snapshot.seedInvocationIds, [
+          'cache-invocation-3',
+          'cache-invocation-1',
+          'cache-invocation-4',
+        ]);
+        assert.equal(snapshot.entries, 3);
+        assert.ok(snapshot.events <= 12);
+        assert.ok(snapshot.estimatedBytes <= 1024 * 1024);
+        assert.equal(snapshot.metrics.hits, 1);
+        assert.equal(snapshot.metrics.misses, 5);
+        assert.equal(snapshot.metrics.budgetEvictions, 2);
+      },
+      {
+        toolLedgerCacheBudget: {
+          maxEntries: 3,
+          maxEstimatedBytes: 1024 * 1024,
+          maxSingleEntryEstimatedBytes: 1024 * 1024,
+        },
+      },
+    );
+  });
+
+  it('records cache misses across streaming partial commits and hits only in quiet windows', async () => {
+    await withStore(async (store) => {
+      await commitPreparedInvocation(store, 0);
+      assert.deepEqual(toolLedgerCacheSnapshot(store).metrics, {
+        hits: 0,
+        misses: 1,
+        budgetEvictions: 0,
+        terminalEvictions: 0,
+        transientEntries: 0,
+      });
+
+      const identity = cacheInvocationIdentity(0);
+      await store.appendRuntimeEvent(identity.sessionId, identity.runId, {
+        id: 'cache-stream-partial-0',
+        ...identity,
+        ts: 2.5,
+        partial: true,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'working' },
+        refs: { providerEventId: 'cache-stream-message-0' },
+      });
+      await commitOutcomeInvocation(store, 0);
+      let snapshot = toolLedgerCacheSnapshot(store);
+      assert.equal(snapshot.metrics.hits, 0);
+      assert.equal(snapshot.metrics.misses, 2);
+
+      await commitOutcomeInvocation(store, 0);
+      snapshot = toolLedgerCacheSnapshot(store);
+      assert.equal(snapshot.metrics.hits, 1);
+      assert.equal(snapshot.metrics.misses, 2);
+
+      await store.appendRuntimeEvent(identity.sessionId, identity.runId, {
+        id: 'cache-stream-partial-1',
+        ...identity,
+        ts: 3.5,
+        partial: true,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'still working' },
+        refs: { providerEventId: 'cache-stream-message-0' },
+      });
+      await commitOutcomeInvocation(store, 0);
+      snapshot = toolLedgerCacheSnapshot(store);
+      assert.equal(snapshot.metrics.hits, 1);
+      assert.equal(snapshot.metrics.misses, 3);
+    });
+  });
+
+  it('evicts a cached tool reducer when its invocation is sealed', async () => {
+    await withStore(async (store) => {
+      await commitPreparedInvocation(store, 0);
+      assert.equal(toolLedgerCacheSnapshot(store).entries, 1);
+
+      const identity = cacheInvocationIdentity(0);
+      await store.appendRuntimeEvent(identity.sessionId, identity.runId, {
+        id: 'cache-terminal-0',
+        ...identity,
+        ts: 4,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        actions: { endInvocation: true },
+      });
+
+      const snapshot = toolLedgerCacheSnapshot(store);
+      assert.equal(snapshot.entries, 0);
+      assert.equal(snapshot.events, 0);
+      assert.equal(snapshot.estimatedBytes, 0);
+      assert.equal(snapshot.metrics.terminalEvictions, 1);
+    });
+  });
+
+  it('evicts a cached reducer after confirming a sibling terminal write', async () => {
+    await withStore(async (store, dbPath) => {
+      await commitPreparedInvocation(store, 0);
+      assert.equal(toolLedgerCacheSnapshot(store).entries, 1);
+
+      const identity = cacheInvocationIdentity(0);
+      const terminal: RuntimeEvent = {
+        id: 'cache-sibling-terminal-0',
+        ...identity,
+        ts: 4,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        actions: { endInvocation: true },
+      };
+      const sibling = createSqliteRuntimeStore(dbPath);
+      try {
+        await sibling.appendRuntimeEvent(identity.sessionId, identity.runId, terminal);
+      } finally {
+        sibling.close();
+      }
+
+      await store.ensureTerminalRuntimeEventDurable(identity.sessionId, identity.runId, terminal);
+      const snapshot = toolLedgerCacheSnapshot(store);
+      assert.equal(snapshot.entries, 0);
+      assert.equal(snapshot.metrics.terminalEvictions, 1);
+    });
+  });
+
+  it('bounds aggregate tool reducer residency by estimated bytes', async () => {
+    await withStore(
+      async (store) => {
+        assert.equal((await commitPreparedInvocation(store, 0)).created, true);
+
+        const snapshot = toolLedgerCacheSnapshot(store);
+        assert.equal(snapshot.entries, 0);
+        assert.equal(snapshot.events, 0);
+        assert.equal(snapshot.estimatedBytes, 0);
+        assert.equal(snapshot.metrics.budgetEvictions, 1);
+        assert.equal(snapshot.metrics.transientEntries, 0);
+      },
+      {
+        toolLedgerCacheBudget: {
+          maxEntries: 3,
+          maxEstimatedBytes: 1,
+          maxSingleEntryEstimatedBytes: 1024 * 1024,
+        },
+      },
+    );
+  });
+
+  it('uses a transient reducer when one scope exceeds its byte admission budget', async () => {
+    await withStore(
+      async (store) => {
+        assert.equal((await commitPreparedInvocation(store, 0)).created, true);
+        let snapshot = toolLedgerCacheSnapshot(store);
+        assert.equal(snapshot.entries, 0);
+        assert.equal(snapshot.metrics.budgetEvictions, 1);
+
+        assert.equal((await commitPreparedInvocation(store, 0)).created, false);
+        snapshot = toolLedgerCacheSnapshot(store);
+        assert.equal(snapshot.entries, 0);
+        assert.equal(snapshot.metrics.transientEntries, 1);
+      },
+      {
+        toolLedgerCacheBudget: {
+          maxEntries: 3,
+          maxEstimatedBytes: 1024 * 1024,
+          maxSingleEntryEstimatedBytes: 1,
+        },
+      },
+    );
+  });
+
+  it('keeps a transaction-pinned reducer until settlement then enforces the byte budget', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-cache-pin-'));
+    const outer = acquireOperationalStateDatabase(root);
+    const store = createSqliteRuntimeStore(resolveOperationalStateDatabasePath(root), {
+      databaseLease: acquireOperationalStateDatabase(root),
+      toolLedgerCacheBudget: {
+        maxEntries: 3,
+        maxEstimatedBytes: 16 * 1024,
+        maxSingleEntryEstimatedBytes: 1024 * 1024,
+      },
+    });
+    try {
+      await commitPreparedInvocation(store, 0);
+      assert.equal(toolLedgerCacheSnapshot(store).entries, 1);
+
+      let duringTransaction: ReturnType<typeof toolLedgerCacheSnapshot> | undefined;
+      const writes: Array<ReturnType<typeof commitOutcomeInvocation>> = [];
+      outer.transaction('write', () => {
+        writes.push(commitOutcomeInvocation(store, 0, 'x'.repeat(32 * 1024)));
+        duringTransaction = toolLedgerCacheSnapshot(store);
+      });
+      await Promise.all(writes);
+
+      assert.ok(duringTransaction);
+      assert.equal(duringTransaction.entries, 1);
+      assert.ok(duringTransaction.estimatedBytes > 16 * 1024);
+      const settled = toolLedgerCacheSnapshot(store);
+      assert.equal(settled.entries, 0);
+      assert.equal(settled.estimatedBytes, 0);
+      assert.equal(settled.metrics.budgetEvictions, 1);
+    } finally {
+      store.close();
+      outer.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a nested T1 whose referenced parent operation is missing', async () => {
+    await withStore(async (store) => {
+      const parentRefs = {
+        parentToolCallId: 'missing-parent-call',
+        parentOperationId: 'missing-parent-operation',
+      } as const;
+      const call = functionCallEvent({
+        refs: {
+          operationId: 'operation-1',
+          toolCallId: 'provider-call-1',
+          ...parentRefs,
+        },
+      });
+      const dispatch = toolDispatchEvent({
+        refs: {
+          operationId: 'operation-1',
+          toolCallId: 'provider-call-1',
+          ...parentRefs,
+        },
+      });
+
+      await assert.rejects(
+        store.commitToolPrepared({
+          operationId: 'operation-1',
+          journalEventId: 'operation-1_prepared',
+          runtimeEvent: call,
+          dispatchRuntimeEvent: dispatch,
+          providerToolCallId: 'provider-call-1',
+          toolName: 'Read',
+          canonicalArgsHash: READ_ARGS_HASH,
+          recoveryMode: 'replay_safe',
+          committedAt: 10,
+        }),
+        (error: unknown) =>
+          error instanceof ToolLedgerRejectionError &&
+          error.code === 'parent_operation_missing' &&
+          error.eventId === dispatch.id,
+      );
+      assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), []);
+    });
+  });
+
+  it('reports a referenced parent invocation corruption as existing damage', async () => {
+    await withStore(async (store, dbPath) => {
+      store.close();
+      const parentRefs = {
+        parentToolCallId: 'corrupt-parent-call',
+        parentOperationId: 'corrupt-parent-operation',
+      } as const;
+      const parentIdentity = {
+        sessionId: 'parent-session',
+        invocationId: 'corrupt-parent-invocation',
+        runId: 'corrupt-parent-run',
+        turnId: 'corrupt-parent-turn',
+      } as const;
+      const parentCall = functionCallEvent({
+        id: 'corrupt-parent-call-event',
+        ...parentIdentity,
+        content: {
+          kind: 'function_call',
+          id: parentRefs.parentToolCallId,
+          name: 'Read',
+          args: { path: '/workspace/repo/README.md' },
+        },
+      });
+      const parentDispatch = toolDispatchEvent({
+        id: 'corrupt-parent-dispatch-event',
+        ...parentIdentity,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: parentRefs.parentOperationId,
+            providerToolCallId: parentRefs.parentToolCallId,
+            toolName: 'Read',
+            canonicalArgsHash: READ_ARGS_HASH,
+            recoveryMode: 'replay_safe',
+          },
+        },
+        refs: {
+          operationId: parentRefs.parentOperationId,
+          toolCallId: parentRefs.parentToolCallId,
+        },
+      });
+      const stranded = functionResponseEvent({
+        id: 'corrupt-parent-orphan-response',
+        ...parentIdentity,
+        content: {
+          kind: 'function_response',
+          id: 'stranded-parent-call',
+          name: 'Read',
+          result: 'unbound',
+        },
+        refs: { toolCallId: 'stranded-parent-call' },
+      });
+      const raw = new DatabaseSync(dbPath);
+      try {
+        const insert = raw.prepare(`
+          INSERT INTO runtime_events
+            (event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind,
+             payload_json, committed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const [index, event] of [parentCall, parentDispatch, stranded].entries()) {
+          const canonical = encodeCanonicalRuntimeEvent(event).event;
+          const eventKind = canonical.actions?.toolDispatch
+            ? 'tool_dispatch'
+            : (canonical.content?.kind ?? 'control');
+          insert.run(
+            canonical.id,
+            canonical.sessionId,
+            canonical.invocationId,
+            canonical.runId,
+            canonical.turnId,
+            index + 1,
+            eventKind,
+            JSON.stringify(canonical),
+            canonical.ts,
+          );
+        }
+      } finally {
+        raw.close();
+      }
+
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        const call = functionCallEvent({
+          refs: {
+            operationId: 'operation-1',
+            toolCallId: 'provider-call-1',
+            ...parentRefs,
+          },
+        });
+        const dispatch = toolDispatchEvent({
+          refs: {
+            operationId: 'operation-1',
+            toolCallId: 'provider-call-1',
+            ...parentRefs,
+          },
+        });
+        await assert.rejects(
+          reopened.commitToolPrepared({
+            operationId: 'operation-1',
+            journalEventId: 'operation-1_prepared',
+            runtimeEvent: call,
+            dispatchRuntimeEvent: dispatch,
+            providerToolCallId: 'provider-call-1',
+            toolName: 'Read',
+            canonicalArgsHash: READ_ARGS_HASH,
+            recoveryMode: 'replay_safe',
+            committedAt: 10,
+          }),
+          (error: unknown) =>
+            error instanceof ToolLedgerCorruptionError &&
+            !(error instanceof ToolLedgerRejectionError) &&
+            error.code === 'orphan_response' &&
+            error.eventId === stranded.id,
+        );
+      } finally {
+        reopened.close();
+      }
+    });
+  });
+
+  it('does not reuse a corrupt child cache scope for its clean parent', async () => {
+    await withStore(async (store, dbPath) => {
+      const parentRefs = {
+        parentToolCallId: 'clean-parent-call',
+        parentOperationId: 'clean-parent-operation',
+      } as const;
+      const parentIdentity = {
+        sessionId: 'parent-session',
+        invocationId: 'clean-parent-invocation',
+        runId: 'clean-parent-run',
+        turnId: 'clean-parent-turn',
+      } as const;
+      const parentCall = functionCallEvent({
+        id: 'clean-parent-call-event',
+        ...parentIdentity,
+        content: {
+          kind: 'function_call',
+          id: parentRefs.parentToolCallId,
+          name: 'Read',
+          args: { path: '/workspace/repo/README.md' },
+        },
+      });
+      const parentDispatch = toolDispatchEvent({
+        id: 'clean-parent-dispatch-event',
+        ...parentIdentity,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: parentRefs.parentOperationId,
+            providerToolCallId: parentRefs.parentToolCallId,
+            toolName: 'Read',
+            canonicalArgsHash: READ_ARGS_HASH,
+            recoveryMode: 'replay_safe',
+          },
+        },
+        refs: {
+          operationId: parentRefs.parentOperationId,
+          toolCallId: parentRefs.parentToolCallId,
+        },
+      });
+      await store.commitToolPrepared({
+        operationId: parentRefs.parentOperationId,
+        journalEventId: 'clean-parent-operation_prepared',
+        runtimeEvent: parentCall,
+        dispatchRuntimeEvent: parentDispatch,
+        providerToolCallId: parentRefs.parentToolCallId,
+        toolName: 'Read',
+        canonicalArgsHash: READ_ARGS_HASH,
+        recoveryMode: 'replay_safe',
+        committedAt: 5,
+      });
+
+      const childIdentity = {
+        sessionId: 'child-session',
+        invocationId: 'corrupt-child-invocation',
+        runId: 'corrupt-child-run',
+        turnId: 'corrupt-child-turn',
+      } as const;
+      const childRefs = {
+        operationId: 'corrupt-child-operation',
+        toolCallId: 'corrupt-child-call',
+        ...parentRefs,
+      } as const;
+      const childCall = functionCallEvent({
+        id: 'corrupt-child-call-event',
+        ...childIdentity,
+        content: {
+          kind: 'function_call',
+          id: childRefs.toolCallId,
+          name: 'Read',
+          args: { path: '/workspace/repo/child.md' },
+        },
+        refs: childRefs,
+      });
+      const childDispatch = toolDispatchEvent({
+        id: 'corrupt-child-dispatch-event',
+        ...childIdentity,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: childRefs.operationId,
+            providerToolCallId: childRefs.toolCallId,
+            toolName: 'Read',
+            canonicalArgsHash: canonicalToolArgsHash('Read', {
+              path: '/workspace/repo/child.md',
+            }),
+            recoveryMode: 'replay_safe',
+          },
+        },
+        refs: childRefs,
+      });
+      const stranded = functionResponseEvent({
+        id: 'corrupt-child-orphan-response',
+        ...childIdentity,
+        content: {
+          kind: 'function_response',
+          id: 'stranded-child-call',
+          name: 'Read',
+          result: 'unbound',
+        },
+        refs: { toolCallId: 'stranded-child-call' },
+      });
+      const raw = new DatabaseSync(dbPath);
+      try {
+        const insert = raw.prepare(`
+          INSERT INTO runtime_events
+            (event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind,
+             payload_json, committed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const [index, event] of [childCall, childDispatch, stranded].entries()) {
+          const canonical = encodeCanonicalRuntimeEvent(event).event;
+          const eventKind = canonical.actions?.toolDispatch
+            ? 'tool_dispatch'
+            : (canonical.content?.kind ?? 'control');
+          insert.run(
+            canonical.id,
+            canonical.sessionId,
+            canonical.invocationId,
+            canonical.runId,
+            canonical.turnId,
+            index + 1,
+            eventKind,
+            JSON.stringify(canonical),
+            canonical.ts,
+          );
+        }
+      } finally {
+        raw.close();
+      }
+
+      await assert.rejects(
+        store.commitToolPrepared({
+          operationId: childRefs.operationId,
+          journalEventId: 'corrupt-child-operation_prepared',
+          runtimeEvent: childCall,
+          dispatchRuntimeEvent: childDispatch,
+          providerToolCallId: childRefs.toolCallId,
+          toolName: 'Read',
+          canonicalArgsHash: canonicalToolArgsHash('Read', {
+            path: '/workspace/repo/child.md',
+          }),
+          recoveryMode: 'replay_safe',
+          committedAt: 10,
+        }),
+        (error: unknown) =>
+          error instanceof ToolLedgerCorruptionError && error.code === 'orphan_response',
+      );
+
+      const parentOutcome = functionResponseEvent({
+        id: 'clean-parent-response-event',
+        ...parentIdentity,
+        content: {
+          kind: 'function_response',
+          id: parentRefs.parentToolCallId,
+          name: 'Read',
+          result: 'clean',
+        },
+        refs: {
+          operationId: parentRefs.parentOperationId,
+          toolCallId: parentRefs.parentToolCallId,
+        },
+      });
+      const result = await store.commitToolOutcome({
+        operationId: parentRefs.parentOperationId,
+        journalEventId: 'clean-parent-operation_outcome',
+        runtimeEvent: parentOutcome,
+        committedAt: 20,
+      });
+      assert.equal(result.created, true);
+      assert.equal(
+        (await store.readToolOperation(parentRefs.parentOperationId))?.currentState,
+        'outcome_committed',
+      );
     });
   });
 
@@ -671,6 +1983,33 @@ describe('SqliteRuntimeStore', () => {
       assert.equal(await store.readToolOperation('operation-t1-failure'), undefined);
       assert.deepEqual(await store.readToolJournal('operation-t1-failure'), []);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 0);
+
+      setFailpoint(undefined);
+      const retried = await store.commitToolPrepared({
+        operationId: 'operation-t1-failure',
+        journalEventId: 'operation-t1-failure_prepared',
+        runtimeEvent: functionCallEvent({ id: 'call-t1-failure' }),
+        dispatchRuntimeEvent: toolDispatchEvent({
+          id: 'dispatch-t1-failure',
+          refs: { operationId: 'operation-t1-failure', toolCallId: 'provider-call-1' },
+          actions: {
+            toolDispatch: {
+              protocol: 't1_after_preflight_v1',
+              operationId: 'operation-t1-failure',
+              providerToolCallId: 'provider-call-1',
+              toolName: 'Read',
+              canonicalArgsHash: READ_ARGS_HASH,
+              recoveryMode: 'replay_safe',
+            },
+          },
+        }),
+        providerToolCallId: 'provider-call-1',
+        toolName: 'Read',
+        canonicalArgsHash: READ_ARGS_HASH,
+        recoveryMode: 'replay_safe',
+        committedAt: 11,
+      });
+      assert.equal(retried.created, true);
     });
   });
 
@@ -796,6 +2135,7 @@ describe('SqliteRuntimeStore', () => {
   it('rolls back T2 without hiding the previously committed prepared boundary', async () => {
     await withStore(async (store, _dbPath, setFailpoint) => {
       await commitPrepared(store);
+      const cacheBefore = toolLedgerCacheSnapshot(store);
       setFailpoint('after_runtime_event_insert');
 
       await assert.rejects(
@@ -818,6 +2158,10 @@ describe('SqliteRuntimeStore', () => {
         ['prepared'],
       );
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 2);
+      const cacheAfter = toolLedgerCacheSnapshot(store);
+      assert.equal(cacheAfter.entries, cacheBefore.entries);
+      assert.equal(cacheAfter.events, cacheBefore.events);
+      assert.equal(cacheAfter.estimatedBytes, cacheBefore.estimatedBytes);
     });
   });
 
@@ -1778,6 +3122,43 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('lists only selected continuation claims whose target invocation is not terminal', async () => {
+    await withStore(async (store) => {
+      const claim = continuationClaim();
+      const start = continuationStartEvent(claim);
+      await persistImmutablePrefix(store, continuationSourcePrefix());
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+
+      assert.deepEqual(
+        await store.listUnsettledContinuationClaimsForRecovery([claim.target.sessionId]),
+        [{ claim }],
+      );
+      assert.deepEqual(
+        await store.listUnsettledContinuationClaimsForRecovery(['unrelated-session']),
+        [],
+      );
+
+      await store.commitContinuationStart({ claim, event: start });
+      assert.deepEqual(
+        await store.listUnsettledContinuationClaimsForRecovery([claim.target.sessionId]),
+        [{ claim, startEventId: start.id, startKind: 'runtime_admission' }],
+      );
+
+      await store.appendRuntimeEvent(claim.target.sessionId, claim.target.runId, {
+        ...start,
+        id: 'continuation-terminal-1',
+        ts: start.ts + 1,
+        content: undefined,
+        status: 'failed',
+        actions: { endInvocation: true },
+      });
+      assert.deepEqual(
+        await store.listUnsettledContinuationClaimsForRecovery([claim.target.sessionId]),
+        [],
+      );
+    });
+  });
+
   it('stores continuation start provenance through separate admission and repair commands', async () => {
     await withStore(async (store) => {
       const claim = continuationClaim();
@@ -2423,7 +3804,6 @@ describe('SqliteRuntimeStore', () => {
         await store.readImmutableSteeringMessageProof('session-1', 'message-steering'),
         { event: steering },
       );
-      await store.repairImmutableSteeringMessageProofsForRecovery('session-1');
       await assert.rejects(
         store.appendRuntimeEvent(
           'session-1',
@@ -2452,11 +3832,13 @@ async function withStore(
     dbPath: string,
     setFailpoint: (point: SqliteRuntimeStoreFailpoint | undefined) => void,
   ) => Promise<void>,
+  options: SqliteRuntimeStoreOptions = {},
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-runtime-'));
   const dbPath = join(root, 'runtime.sqlite');
   let failpoint: SqliteRuntimeStoreFailpoint | undefined;
   const store = createSqliteRuntimeStore(dbPath, {
+    ...options,
     failpoint: (point) => {
       if (failpoint === point) throw new Error(`sqlite runtime failpoint: ${point}`);
     },
@@ -2675,36 +4057,7 @@ async function appendSettledTurn(store: Store, index: number): Promise<void> {
     runId: `run-${index}`,
     turnId: `turn-${index}`,
   };
-  await store.appendRuntimeEvent(
-    run.sessionId,
-    run.runId,
-    buildInvocationOpenedEvent({
-      id: `opened-${index}`,
-      run,
-      openedAt: index * 10,
-      opening: {
-        kind: 'invocation_opened',
-        protocol: 'invocation_opened_v1',
-        route: {
-          provenance: 'runtime',
-          backendKind: 'fake',
-          llmConnectionId: 'fake-connection',
-          llmConnectionSlug: 'fake',
-          modelId: 'fake-model',
-        },
-        configuration: {
-          cwd: '/tmp',
-          permissionMode: 'ask',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
-          orchestrationSource: 'session',
-          toolMode: DEFAULT_TOOL_MODE,
-        },
-        root: { kind: 'user' },
-        source: { kind: 'fresh' },
-      },
-    }),
-  );
+  await store.appendRuntimeEvent(run.sessionId, run.runId, invocationOpeningEvent(index));
   await store.appendRuntimeEvent(run.sessionId, run.runId, {
     id: `prompt-${index}`,
     ...run,
@@ -2723,6 +4076,40 @@ async function appendSettledTurn(store: Store, index: number): Promise<void> {
     author: 'system',
     status: 'completed',
     actions: { endInvocation: true },
+  });
+}
+
+function invocationOpeningEvent(index: number): RuntimeEvent {
+  return buildInvocationOpenedEvent({
+    id: `opened-${index}`,
+    run: {
+      sessionId: 'session-1',
+      invocationId: `invocation-${index}`,
+      runId: `run-${index}`,
+      turnId: `turn-${index}`,
+    },
+    openedAt: index * 10,
+    opening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'fake-connection',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+      },
+      configuration: {
+        cwd: '/tmp',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: DEFAULT_TOOL_MODE,
+      },
+      root: { kind: 'user' },
+      source: { kind: 'fresh' },
+    },
   });
 }
 
@@ -2748,6 +4135,106 @@ function functionCallEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent 
       args: { path: '/workspace/repo/README.md' },
     },
     ...overrides,
+  };
+}
+
+function cacheInvocationIdentity(index: number) {
+  return {
+    sessionId: `cache-session-${index}`,
+    invocationId: `cache-invocation-${index}`,
+    runId: `cache-run-${index}`,
+    turnId: `cache-turn-${index}`,
+  } as const;
+}
+
+function commitPreparedInvocation(store: Store, index: number) {
+  const identity = cacheInvocationIdentity(index);
+  const operationId = `cache-operation-${index}`;
+  const toolCallId = `cache-tool-call-${index}`;
+  const args = { path: `/workspace/cache-${index}.txt` };
+  const canonicalArgsHash = canonicalToolArgsHash('Read', args);
+  return store.commitToolPrepared({
+    operationId,
+    journalEventId: `${operationId}_prepared`,
+    runtimeEvent: functionCallEvent({
+      id: `cache-call-${index}`,
+      ...identity,
+      ts: index * 10 + 1,
+      content: { kind: 'function_call', id: toolCallId, name: 'Read', args },
+    }),
+    dispatchRuntimeEvent: toolDispatchEvent({
+      id: `cache-dispatch-${index}`,
+      ...identity,
+      ts: index * 10 + 2,
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId,
+          providerToolCallId: toolCallId,
+          toolName: 'Read',
+          canonicalArgsHash,
+          recoveryMode: 'replay_safe',
+        },
+      },
+      refs: { operationId, toolCallId },
+    }),
+    providerToolCallId: toolCallId,
+    toolName: 'Read',
+    canonicalArgsHash,
+    recoveryMode: 'replay_safe',
+    committedAt: index * 10 + 2,
+  });
+}
+
+function commitOutcomeInvocation(store: Store, index: number, result = `cache contents ${index}`) {
+  const identity = cacheInvocationIdentity(index);
+  const operationId = `cache-operation-${index}`;
+  const toolCallId = `cache-tool-call-${index}`;
+  return store.commitToolOutcome({
+    operationId,
+    journalEventId: `${operationId}_outcome`,
+    runtimeEvent: functionResponseEvent({
+      id: `cache-response-${index}`,
+      ...identity,
+      ts: index * 10 + 3,
+      content: {
+        kind: 'function_response',
+        id: toolCallId,
+        name: 'Read',
+        result,
+      },
+      refs: { operationId, toolCallId },
+    }),
+    committedAt: index * 10 + 3,
+  });
+}
+
+function toolLedgerCacheSnapshot(store: Store) {
+  const internal = store as unknown as {
+    toolLedgerCache: Map<
+      string,
+      {
+        seedInvocationIds: ReadonlySet<string>;
+      }
+    >;
+    toolLedgerCacheEstimatedBytes: number;
+    toolLedgerCacheEventCount: number;
+    toolLedgerCacheMetrics: {
+      hits: number;
+      misses: number;
+      budgetEvictions: number;
+      terminalEvictions: number;
+      transientEntries: number;
+    };
+  };
+  return {
+    entries: internal.toolLedgerCache.size,
+    estimatedBytes: internal.toolLedgerCacheEstimatedBytes,
+    events: internal.toolLedgerCacheEventCount,
+    seedInvocationIds: [...internal.toolLedgerCache.values()].flatMap((entry) => [
+      ...entry.seedInvocationIds,
+    ]),
+    metrics: { ...internal.toolLedgerCacheMetrics },
   };
 }
 

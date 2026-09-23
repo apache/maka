@@ -3299,6 +3299,23 @@ export class SqliteSessionMetadataStore {
     return rows.map(decodeAgentGraphScheduleUpdateRow);
   }
 
+  async listAgentGraphScheduleRecoveryGraphIds(): Promise<string[]> {
+    this.assertOpen();
+    const rows = this.db
+      .prepare(`
+        SELECT DISTINCT graph_id
+        FROM agent_graph_schedule_updates
+        ORDER BY graph_id
+      `)
+      .all() as Array<{ graph_id?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.graph_id !== 'string') {
+        throw new Error('Invalid Agent Graph schedule identity');
+      }
+      return row.graph_id;
+    });
+  }
+
   async claimAgentGraphSupervisorWake(
     request: ClaimAgentGraphSupervisorWakeRequest,
   ): Promise<{ wake: AgentGraphSupervisorWakeRecord; created: boolean }> {

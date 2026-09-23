@@ -26,6 +26,7 @@
  * writer could set independently of the events.
  */
 
+import type { WorkHubResultOrigin } from './turn-origin.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 import type {
   RuntimeEvent,
@@ -34,6 +35,13 @@ import type {
 } from './runtime-event.js';
 import { isTerminalRuntimeEvent } from './runtime-event.js';
 import type { WorkHubRoutingDecision } from './workhub-routing.js';
+
+/** Persisted namespace used only by deterministic legacy-transcript conversion runs. */
+export const TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX = 'transcript-' as const;
+
+export function mayBeTranscriptLedgerInvocationId(invocationId: string): boolean {
+  return invocationId.startsWith(TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX);
+}
 
 export interface RuntimeInvocationRecord {
   sessionId: string;
@@ -250,6 +258,8 @@ export type RootExecutionDescriptor =
       inputDigest: `sha256:${string}`;
       /** Model-derived, Policy-owned advice bound before the main Turn starts. */
       routingDecision?: WorkHubRoutingDecision;
+      /** Host-owned result delivery; never admitted by the public answer endpoint. */
+      feedback?: WorkHubResultOrigin;
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }

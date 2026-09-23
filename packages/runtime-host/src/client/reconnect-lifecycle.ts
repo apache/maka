@@ -72,9 +72,7 @@ export class RuntimeHostPermanentReconnectError extends Error {
   }
 }
 
-export async function startRuntimeHostReconnectLifecycle<
-  T extends RuntimeHostReconnectResource,
->(input: {
+export interface RuntimeHostReconnectLifecycleInput<T extends RuntimeHostReconnectResource> {
   readonly initial?: T;
   readonly connect: (signal: AbortSignal) => Promise<T>;
   /** A predicate applies until the first successful connection, not to later reconnects. */
@@ -83,8 +81,22 @@ export async function startRuntimeHostReconnectLifecycle<
   readonly onReconnectError?: (error: Error) => void;
   readonly onFatalError?: (error: Error) => void;
   readonly backoff?: RuntimeHostReconnectBackoff;
-}): Promise<RuntimeHostReconnectLifecycle<T>> {
-  const lifecycle = new RuntimeHostReconnectLifecycleImpl(input);
+}
+
+/**
+ * A lifecycle that exists before its first connection. `waitForCurrent` parks
+ * until `start()` installs one and rejects if the start fails permanently.
+ */
+export function createRuntimeHostReconnectLifecycle<T extends RuntimeHostReconnectResource>(
+  input: RuntimeHostReconnectLifecycleInput<T>,
+): RuntimeHostReconnectLifecycle<T> & { start(): Promise<void> } {
+  return new RuntimeHostReconnectLifecycleImpl(input);
+}
+
+export async function startRuntimeHostReconnectLifecycle<T extends RuntimeHostReconnectResource>(
+  input: RuntimeHostReconnectLifecycleInput<T>,
+): Promise<RuntimeHostReconnectLifecycle<T>> {
+  const lifecycle = createRuntimeHostReconnectLifecycle(input);
   await lifecycle.start();
   return lifecycle;
 }
@@ -131,15 +143,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   #wakeDelay: (() => void) | undefined;
   #wakeGeneration = 0;
 
-  constructor(input: {
-    readonly initial?: T;
-    readonly connect: (signal: AbortSignal) => Promise<T>;
-    readonly retryInitialFailure?: boolean | ((error: Error) => boolean);
-    readonly initialSignal?: AbortSignal;
-    readonly onReconnectError?: (error: Error) => void;
-    readonly onFatalError?: (error: Error) => void;
-    readonly backoff?: RuntimeHostReconnectBackoff;
-  }) {
+  constructor(input: RuntimeHostReconnectLifecycleInput<T>) {
     this.#connect = input.connect;
     this.#initial = input.initial;
     this.#retryInitialFailure = input.retryInitialFailure ?? false;
