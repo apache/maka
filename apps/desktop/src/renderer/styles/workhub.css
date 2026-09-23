@@ -58,25 +58,9 @@
   border-bottom: 1px solid var(--color-border-subtle, var(--border));
 }
 
-.workhub-anchor-heading strong {
-  font-size: var(--font-size-body-sm, 12px);
-}
-
-.workhub-anchor-heading span,
-.workhub-anchor-empty {
-  color: var(--color-text-secondary, var(--muted-foreground));
-  font-size: var(--font-size-body-xs, 12px);
-}
-
 .workhub-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 8px 0;
-}
-
-.workhub-filter-button {
-  font-size: var(--font-size-body-xs, 12px);
+  width: 100%;
+  margin-block: 8px;
 }
 
 .workhub-anchors {
@@ -97,12 +81,8 @@
   color: var(--muted-foreground);
 }
 
-.workhub-surface { --workhub-identity-label-tone: 0.42 0.075; }
-.dark .workhub-surface { --workhub-identity-label-tone: 0.8 0.09; }
-
 .workhub-work-identity {
   --workhub-work-color: oklch(0.58 0.1 var(--workhub-work-hue));
-  --workhub-work-label: oklch(var(--workhub-identity-label-tone) var(--workhub-work-hue));
   --workhub-work-highlight: oklch(0.48 0.18 var(--workhub-work-hue));
 }
 
@@ -113,7 +93,6 @@
 
 .workhub-work-identity[data-work-highlighted='true'] {
   --workhub-work-color: var(--workhub-work-highlight);
-  --workhub-work-label: var(--workhub-work-highlight);
 }
 
 .workhub-surface {
@@ -126,9 +105,8 @@
   --workhub-highlight: 0.85 0.15;
 }
 
-.workhub-navigation-item {
-  color: var(--workhub-work-label);
-}
+.workhub-navigation-item { position: relative; padding-inline-start: var(--space-3); }
+.workhub-navigation-item::before { content: ''; position: absolute; inset-block: var(--space-2); inset-inline-start: 0; width: 4px; border-radius: var(--radius-pill); background: var(--workhub-work-color); }
 
 .workhub-navigation-item[data-work-highlighted='true'] {
   background: color-mix(in oklch, var(--workhub-work-color) 8%, transparent);
@@ -141,7 +119,6 @@
 .workhub-navigation-label {
   display: block;
   overflow: hidden;
-  color: var(--workhub-work-label);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -234,7 +211,6 @@ html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { backgr
   .workhub-conversation-shell { width: 100%; }
   .workhub-anchor-rail { position: static; width: min(var(--maka-reading-measure), 100%); max-height: 180px; margin-inline: auto; padding: var(--space-3); }
   .workhub-anchors { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); overflow-x: auto; }
-  .workhub-filters { flex-wrap: nowrap; overflow-x: auto; }
 }
 
 /* Progress and conversation share the same editor, including its IME state. */
@@ -289,32 +265,14 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 
 .workhub-turn-label {
   max-width: 100%;
-  color: var(--workhub-work-label);
-  /* Approved compact identity typography, expressed through the Text role. */
-  --text-supporting-size: 11px;
-  --text-supporting-leading: 16px;
   white-space: normal;
   overflow-wrap: anywhere;
   text-align: right;
 }
 
-.workhub-navigation-workspace {
-  color: var(--workhub-work-label);
-}
-
 .workhub-surface .maka-user-message :has(> .workhub-turn-heading) {
   row-gap: 4px;
 }
-
-.maka-assistant-answer .workhub-turn-heading {
-  justify-content: flex-start;
-  margin-bottom: -4px;
-}
-
-.maka-assistant-answer .workhub-turn-label {
-  text-align: left;
-}
-
 
 
 /* The button owns the rounded stripe; transparent message borders reserve its

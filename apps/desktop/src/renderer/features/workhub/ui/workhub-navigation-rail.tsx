@@ -20,8 +20,8 @@
 import { useContext, useRef, useState, type CSSProperties } from 'react';
 import type { WorkHubRailCopy } from '../../../locales/workhub-copy.js';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { Button, dotForStatus, presentSessionStatus } from '@maka/ui';
-import { List, ListItem, StatusDot } from '@astryxdesign/core';
+import { dotForStatus, presentSessionStatus } from '@maka/ui';
+import { List, ListItem, Selector, StatusDot, Text } from '@astryxdesign/core';
 import {
   deriveWorkHubAnchors,
   matchesWorkHubFilter,
@@ -55,22 +55,18 @@ export function WorkHubNavigationRail(props: {
   return (
     <aside className="workhub-anchor-rail" aria-label={props.copy.workNavigation}>
       <div className="workhub-anchor-heading">
-        <strong>{props.copy.work}</strong>
-        <span>{props.copy.anchorCount(anchors.length, matchingWorkCount, props.sessions.length)}</span>
+        <Text type="label">{props.copy.work}</Text>
+        <Text type="supporting" color="secondary">{props.copy.anchorCount(anchors.length, matchingWorkCount, props.sessions.length)}</Text>
       </div>
-      <div className="workhub-filters" role="toolbar" aria-label={props.copy.filterWork}>
-        {props.copy.filters.map((candidate) => (
-          <Button
-            key={candidate.id}
-            className="workhub-filter-button"
-            variant={filter === candidate.id ? 'secondary' : 'ghost'}
-            size="sm"
-            label={candidate.label}
-            aria-pressed={filter === candidate.id}
-            onClick={() => setFilter(candidate.id)}
-          />
-        ))}
-      </div>
+      <Selector
+        className="workhub-filters"
+        size="sm"
+        label={props.copy.filterWork}
+        isLabelHidden
+        value={filter}
+        options={props.copy.filters.map((candidate) => ({ value: candidate.id, label: candidate.label }))}
+        onChange={(value) => setFilter(value as WorkHubWorkFilter)}
+      />
       <nav
         aria-label={props.copy.workNavigation}
         onPointerDownCapture={(event) => {
@@ -127,7 +123,7 @@ export function WorkHubNavigationRail(props: {
                   onFocus={() => highlight.highlight(anchor.target.sessionId)}
                   onBlur={() => highlight.highlight(undefined)}
                   label={<span className="workhub-navigation-label" title={workHubLiveCopy[props.locale].navigationGesture}>{anchor.sessionName}</span>}
-                  description={<><span className="workhub-navigation-workspace">{anchor.projectName}</span>{` · ${anchor.target.sessionId === props.focusSessionId ? `${props.copy.focused} · ` : ''}${state}`}</>}
+                  description={<>{anchor.projectName}{` · ${anchor.target.sessionId === props.focusSessionId ? `${props.copy.focused} · ` : ''}${state}`}</>}
                   startContent={variant ? <StatusDot variant={variant} label={state} /> : undefined}
                   isSelected={anchor.target.sessionId === props.focusSessionId}
                   aria-current={anchor.target.sessionId === props.focusSessionId ? 'page' : undefined}
@@ -137,7 +133,7 @@ export function WorkHubNavigationRail(props: {
             })}
           </List>
         ) : (
-          <p className="workhub-anchor-empty">{props.copy.noFilteredWork}</p>
+          <Text type="supporting" color="secondary" display="block" className="workhub-anchor-empty">{props.copy.noFilteredWork}</Text>
         )}
       </nav>
     </aside>

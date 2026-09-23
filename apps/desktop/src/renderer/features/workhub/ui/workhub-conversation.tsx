@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useContext, useMemo, type ComponentProps, type CSSProperties } from 'react';
+import { useContext, useMemo, type ComponentProps } from 'react';
 import { ChatView, useUiLocale } from '@maka/ui';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { Button, Link, Text } from '@astryxdesign/core';
@@ -92,9 +92,8 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
     header: <div className="workhub-turn-heading">
       {works.map((work) => <Link
         key={work.targetSessionId}
-        type="supporting" color="inherit"
-        className="workhub-work-identity workhub-turn-label"
-        style={{ '--workhub-work-hue': workHubIdentityHue(work.targetSessionId) } as CSSProperties}
+        type="supporting" color="secondary"
+        className="workhub-turn-label"
         data-work-session-id={work.targetSessionId}
         data-work-highlighted={highlight.sessionId === work.targetSessionId}
         aria-label={`${work.workspaceName ? `${work.workspaceName} / ` : ''}${work.targetSessionName} · ${promptTextByTurn.get(turnId) ?? turnId}`}

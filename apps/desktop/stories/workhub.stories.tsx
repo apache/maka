@@ -380,12 +380,16 @@ export const ColoredWorkHistory: Story = {
     expect(turns[1]!.querySelector('.workhub-turn-label')).toHaveTextContent('desktop / 发布检查清单');
     expect(canvasElement.querySelector('[data-transcript-turn-id="unlinked-turn"]')).not.toHaveAttribute('data-turn-accent');
     for (const [index, turn] of turns.entries()) {
-      expect(turn.querySelectorAll('.workhub-turn-label')).toHaveLength(2);
+      expect(turn.querySelectorAll('.workhub-turn-label')).toHaveLength(1);
+      expect(turn.querySelector('.maka-assistant-answer .workhub-turn-label')).toBeNull();
       const status = turn.querySelector('.maka-user-message .workhub-delegation-status')!;
       await waitFor(() => expect(status).toHaveTextContent(['已完成', '等待用户', '进行中'][index]!));
       expect(turn.querySelector('.maka-assistant-answer .workhub-delegation-status')).toBeNull();
       expect(canvasElement.querySelector('.workhub-result-card')).toBeNull();
-      expect(getComputedStyle(turn.querySelector('.workhub-turn-label span')!).fontSize).toBe('11px');
+      const label = getComputedStyle(turn.querySelector('.workhub-turn-label span')!);
+      const time = getComputedStyle(turn.querySelector('.maka-user-message .maka-message-meta')!);
+      expect(label.fontSize).toBe(time.fontSize);
+      expect(label.color).toBe(time.color);
       const prompt = getComputedStyle(turn.querySelector('.maka-user-message')!);
       const answer = getComputedStyle(turn.querySelector('.maka-assistant-answer')!);
       expect(prompt.borderRightWidth).toBe('4px');
@@ -407,11 +411,13 @@ export const ColoredWorkHistory: Story = {
     const metadataRights = [...canvasElement.querySelectorAll('.maka-user-message .maka-message-meta')].map((element) => element.getBoundingClientRect().right);
     expect(metadataRights).toHaveLength(4);
     expect(Math.max(...metadataRights) - Math.min(...metadataRights)).toBeLessThan(1);
+    const workName = getComputedStyle(canvasElement.querySelector('.workhub-navigation-label')!).color;
+    expect(workName).toBe(getComputedStyle(canvasElement.querySelector('.workhub-anchor-heading')!.firstElementChild!).color);
+    expect(getComputedStyle(canvasElement.querySelector('.workhub-navigation-item')!, '::before').backgroundColor).not.toBe(workName);
     const label = turns[0]!.querySelector<HTMLElement>('.workhub-turn-label')!;
     await userEvent.hover(label);
     await waitFor(() => expect(turns[2]!.querySelector('.workhub-turn-label')).toHaveAttribute('data-work-highlighted', 'true'));
-    const dark = canvasElement.ownerDocument.documentElement.classList.contains('dark');
-    await waitFor(() => expect(getComputedStyle(label).color).toMatch(dark ? /^okl(?:ch|ab)\(0\.85 / : /^okl(?:ch|ab)\(0\.48 /));
+    await waitFor(() => expect(turns[2]!.querySelector('.maka-user-message .workhub-message-rail')).toHaveAttribute('data-work-highlighted', 'true'));
     await userEvent.click(label);
     expect(writes.open).toHaveBeenCalledWith(targetId);
     await userEvent.unhover(label);
