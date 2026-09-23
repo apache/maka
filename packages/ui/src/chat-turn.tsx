@@ -18,7 +18,7 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { ICON_SIZE, ChevronRight, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration } from './chat-display-helpers.js';
@@ -557,6 +557,15 @@ export const TurnView = memo(function TurnView(props: {
           <span>{copy.goalContinued}</span>
         </Marker>
       )}
+      {turn.user?.hostOrigin?.kind === 'workhub_result' && (
+        <ChatSystemMessage
+          className="maka-chat-system-message"
+          icon={<GitBranch size={ICON_SIZE.meta} aria-hidden="true" />}
+          aria-label={`${copy.workHubResultReceived} · ${turn.user.text}`}
+        >
+          {copy.workHubResultReceived} · {turn.user.text}
+        </ChatSystemMessage>
+      )}
       {turn.user?.hostOrigin?.kind === 'agent_graph' && (
         <Marker
           variant="host-origin"
@@ -570,7 +579,7 @@ export const TurnView = memo(function TurnView(props: {
       {props.transientMessages?.map((message) => (
         <TransientUserMessage key={message.id} message={message} />
       ))}
-      {turn.user && (
+      {turn.user && turn.user.hostOrigin?.kind !== 'workhub_result' && (
         <LocalizedChatMessage
           accessibleLabel={
             turn.user.hostOrigin?.kind === 'legacy_automation'
@@ -1429,6 +1438,9 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
   // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = props.running || manualOpen === true;
+  const chevron = props.running ? null : (
+    <Icon icon="chevronRight" size="xsm" color="inherit" className="maka-processing-chevron" />
+  );
   return (
     <details
       className="maka-processing-sequence"
@@ -1448,11 +1460,14 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
         {props.statusRow ? (
           <span className="maka-turn-statusbar" data-turn-status={props.statusRow.status}>
             <TurnStatusRow {...props.statusRow} />
+            {chevron}
           </span>
         ) : (
-          <span>{copy.processDetails}</span>
+          <>
+            <span>{copy.processDetails}</span>
+            {chevron}
+          </>
         )}
-        {!props.running && <ChevronRight size={ICON_SIZE.meta} aria-hidden="true" />}
       </summary>
       <div className="maka-processing-body">
         {props.entries.map((entry, index) => (

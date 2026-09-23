@@ -133,6 +133,7 @@ const BIG_RESULT = 'x'.repeat(20_000) + 'BIG_RESULT_';
 interface ReactiveFixtureOptions {
   script: CallKind[];
   contextWindow?: number;
+  modelMaxOutputTokens?: number;
   declareContextWindow?: boolean;
   /**
    * A model that declares no context window, on a provider whose default
@@ -682,7 +683,13 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       models: [
         options.withoutContextWindow
           ? { id: 'mock-model-id' }
-          : { id: 'mock-model-id', contextWindow },
+          : {
+              id: 'mock-model-id',
+              contextWindow,
+              ...(options.modelMaxOutputTokens !== undefined
+                ? { maxOutputTokens: options.modelMaxOutputTokens }
+                : {}),
+            },
       ],
       ...(options.declareContextWindow
         ? { modelOverrides: { 'mock-model-id': { compactionThreshold: contextWindow } } }
@@ -1237,6 +1244,20 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(lastCall?.inputTokens, 220);
     assert.equal(lastCall?.outputTokens, 30);
     assert.equal(lastCall?.totalTokens, 250);
+  });
+
+  test('lowers a 128K output cap on the request after overflow recovery', async () => {
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+      modelMaxOutputTokens: 128_000,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.model.doStreamCalls[0]?.maxOutputTokens, 128_000);
+    assert.equal(fixture.model.doStreamCalls[1]?.maxOutputTokens, 128_000);
+    assert.equal(fixture.model.doStreamCalls[2]?.maxOutputTokens, 8_000);
   });
 
   test('a fold-shrunk retry input is not reported as provider dropping', async () => {

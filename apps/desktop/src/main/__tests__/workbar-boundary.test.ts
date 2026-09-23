@@ -111,9 +111,9 @@ describe('Workbar feature boundary', () => {
     ]) {
       assert.equal(appShell.includes(forbidden), false, forbidden);
     }
-    assert.equal(
-      appShell.includes('<WorkbarHost model={workbar.host} />'),
-      true,
+    assert.match(
+      appShell,
+      /<WorkbarHost\b[^>]*\bmodel=\{workbar\.host\}/,
     );
   });
 

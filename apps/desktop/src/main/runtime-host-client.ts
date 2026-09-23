@@ -77,6 +77,7 @@ import {
   type ExternalSessionCatalogQueryResult,
   type ExternalSessionImportResult,
   type ExternalSessionSourceQueryResult,
+  type WorkspaceTarget,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type InteractionAnswerInput,
@@ -154,7 +155,6 @@ import {
   type TurnMessageSubmitInput,
   type TurnMessageSubmitResult,
   type WorkspaceProjection,
-  type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 
 const decodeStoredMessage = (value: unknown): StoredMessage =>
@@ -1047,6 +1047,7 @@ export class DesktopRuntimeHostClient {
   async importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
+    readonly workspace?: WorkspaceTarget;
   }): Promise<ExternalSessionImportResult<SessionCatalogProjection>> {
     const result = await this.request("external-session.import", input);
     return result.kind === 'imported'

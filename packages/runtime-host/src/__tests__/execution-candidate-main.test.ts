@@ -114,6 +114,27 @@ test('execution imports happen after local admission and are skipped by losing c
   }
 });
 
+test('candidate entry does not evaluate the Host kernel or domain composition before bootstrap runs', () => {
+  const candidateEntry = new URL('../candidate-entry.js', import.meta.url).href;
+  const kernelModule = new URL('../server/host-kernel.js', import.meta.url).href;
+  const domainCompositionModule = new URL('../server/host-composition.js', import.meta.url).href;
+  const bootstrap = `
+    import { registerHooks } from 'node:module';
+    registerHooks({ load(url, context, nextLoad) {
+      return url === ${JSON.stringify(kernelModule)} || url === ${JSON.stringify(domainCompositionModule)}
+        ? { format: 'module', shortCircuit: true, source: "throw new Error('heavy Host module loaded eagerly')" }
+        : nextLoad(url, context);
+    } });
+    await import(${JSON.stringify(candidateEntry)});
+  `;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', bootstrap], {
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('classifies invalid candidate arguments as an internal startup failure', () => {
   const result = spawnSync(
     process.execPath,

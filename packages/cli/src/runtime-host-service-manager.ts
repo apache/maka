@@ -35,6 +35,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   canonicalProjectDirectoryRootSpec,
   isCanonicalRuntimeHostWebSocketPath,
@@ -49,6 +50,7 @@ import {
 import {
   resolveRuntimeHostManagedServiceId,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
+  RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostReconciliationProvider,
   type RuntimeHostServiceErrorCode,
   type RuntimeHostSupervisorProvider,
@@ -78,6 +80,7 @@ const DEFAULT_WEBSOCKET_PATH = '/runtime-host';
 const SERVICE_OPERATION_LOCK_TIMEOUT_MS = 60_000;
 const SERVICE_READY_TIMEOUT_MS = 45_000;
 const SERVICE_READY_POLL_MS = 50;
+const SERVICE_READINESS_LOG_MAX_BYTES = 1_024;
 
 export interface RuntimeHostManagedServiceConfig {
   readonly schemaVersion: 1 | 2;
@@ -928,6 +931,34 @@ export function formatRuntimeHostServiceLogs(
     .join('\n');
 }
 
+export function formatRuntimeHostServiceReadinessDiagnostic(input: {
+  readonly lastFailure: string;
+  readonly status?: Pick<
+    RuntimeHostServiceBackendStatus,
+    'state' | 'active' | 'pid' | 'lastExitCode'
+  >;
+  readonly logs?: string;
+}): string {
+  const lines = [`Runtime Host service did not become ready: ${redactSecrets(input.lastFailure)}`];
+  if (input.status) {
+    lines.push(
+      `service state: ${input.status.state}; active: ${String(input.status.active)}; pid: ${input.status.pid ?? 'none'}; last exit code: ${input.status.lastExitCode ?? 'unknown'}`,
+    );
+  }
+  if (input.logs?.trim()) {
+    const safeLogs = takeUtf8Tail(
+      redactSecrets(input.logs.trim()),
+      SERVICE_READINESS_LOG_MAX_BYTES,
+    );
+    lines.push(`service logs (tail):\n${safeLogs}`);
+  }
+  return truncateUtf8(
+    lines.join('\n'),
+    RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
+    '\n<diagnostic truncated>',
+  );
+}
+
 function takeUtf8Tail(value: string, maximumBytes: number): string {
   const encoded = Buffer.from(value);
   if (encoded.byteLength <= maximumBytes) return value;
@@ -1313,8 +1344,23 @@ export async function verifyRuntimeHostManagedServiceReady(
   }
   throw new RuntimeHostServiceManagerError(
     'service_manager_operation_failed',
-    `Runtime Host service did not become ready: ${lastFailure}`,
+    await formatRuntimeHostServiceReadinessFailure(lastFailure, backend),
   );
+}
+
+async function formatRuntimeHostServiceReadinessFailure(
+  lastFailure: string,
+  backend: RuntimeHostServiceBackend,
+): Promise<string> {
+  const [status, logs] = await Promise.all([
+    backend.status().catch(() => undefined),
+    backend.logs().catch(() => undefined),
+  ]);
+  return formatRuntimeHostServiceReadinessDiagnostic({
+    lastFailure,
+    status,
+    logs,
+  });
 }
 
 async function prepareRuntimeHostRetirement(

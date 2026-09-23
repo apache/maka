@@ -821,4 +821,33 @@ describe('useTaskEntryController', () => {
     }]);
     assert.deepEqual(handoffs, []);
   });
+
+  it('explains that a running Session must settle before workspace recovery', async () => {
+    const { root } = installReactRenderer();
+    const errors: unknown[] = [];
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => catalog(),
+      },
+      sessions: {
+        relocateWorkspace: async () => ({ ok: false, reason: 'session_busy' }),
+      },
+    });
+
+    await act(async () => renderController(root, services, errors));
+    await act(async () => {
+      await controller().commands.relocateSessionWorkspace({
+        sessionId: 'session-1',
+        profileId: 'local',
+        projectId: 'project-a',
+      });
+    });
+
+    assert.deepEqual(errors, [{
+      title: 'Could not move task',
+      description: 'A task is running. Wait for it to finish before moving this one.',
+      profileId: 'local',
+    }]);
+  });
 });

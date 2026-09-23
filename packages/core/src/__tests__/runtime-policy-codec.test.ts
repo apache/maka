@@ -597,3 +597,16 @@ test('credential domain validation requires material but leaves capacity to call
     RuntimePolicyDomainDecodeError,
   );
 });
+
+test('per-model ApplyPatch overrides survive persistence and reject non-booleans', () => {
+  const profiles = {
+    enabled: { applyPatch: true },
+    disabled: { applyPatch: false },
+    automatic: {},
+  };
+  assert.deepEqual(decodeModelOverridesTable(JSON.parse(JSON.stringify(profiles))), profiles);
+  assert.throws(
+    () => decodeModelOverridesTable({ model: { applyPatch: 'true' } }),
+    RuntimePolicyDomainDecodeError,
+  );
+});

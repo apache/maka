@@ -41,7 +41,10 @@ export type ToolLedgerIssueCode =
   | 'canonical_args_hash_conflict'
   | 'invocation_identity_conflict'
   | 'identity_conflict'
-  | 'event_order_conflict';
+  | 'event_order_conflict'
+  | 'parent_operation_missing'
+  | 'parent_identity_conflict'
+  | 'parent_dependency_cycle';
 
 export interface ToolLedgerIssue {
   code: ToolLedgerIssueCode;
@@ -59,11 +62,11 @@ export interface ToolLedgerIssue {
  * at `running` with no terminal event at all (#2234). This error is always a
  * producer bug: something emitted a fact the ledger's invariants forbid.
  *
- * It deliberately does NOT cover a ledger that is already corrupt. That refusal
- * rejects well-formed candidates because of damage elsewhere in the workspace,
- * so "the store is healthy" is false and the run must keep failing closed —
- * see `ToolLedgerCorruptionError`, which is a plain durability failure and is
- * classified as one.
+ * It deliberately does NOT cover a ledger dependency closure that is already
+ * corrupt. That refusal rejects well-formed candidates because of damage in
+ * the facts they depend on, so "the store is healthy for this run" is false and
+ * the run must keep failing closed — see `ToolLedgerCorruptionError`, which is
+ * a plain durability failure and is classified as one.
  */
 export class ToolLedgerRejectionError extends Error {
   readonly name = 'ToolLedgerRejectionError';
@@ -77,10 +80,11 @@ export class ToolLedgerRejectionError extends Error {
 }
 
 /**
- * The ledger the store already holds is corrupt, so it refuses writes that have
- * nothing wrong with them. Unlike `ToolLedgerRejectionError` this is not a
- * producer bug and the store is not usable: nothing the run emits next can be
- * trusted to land, so it stays on the fail-closed path.
+ * The selected tool dependency closure is already corrupt, so it refuses a
+ * candidate that has nothing wrong with it. Unlike `ToolLedgerRejectionError`
+ * this is not a producer bug. The affected run stays on the fail-closed path;
+ * unrelated closures remain writable and explicit full-ledger audit owns
+ * discovery outside the active closure.
  */
 export class ToolLedgerCorruptionError extends Error {
   readonly name = 'ToolLedgerCorruptionError';
@@ -109,6 +113,20 @@ export interface ToolLedgerScanResult {
   operations: ToolLedgerScanOperation[];
   issues: ToolLedgerIssue[];
   hasCorruption: boolean;
+}
+
+/** Operation identities whose invocation closure must accompany these facts. */
+export function referencedToolOperationIds(events: readonly RuntimeEvent[]): Set<string> {
+  const operationIds = new Set<string>();
+  for (const event of events) {
+    const dispatchOperationId = event.actions?.toolDispatch?.operationId;
+    const recoveryOperationId = event.actions?.toolRecovery?.payload.operationId;
+    if (dispatchOperationId) operationIds.add(dispatchOperationId);
+    if (recoveryOperationId) operationIds.add(recoveryOperationId);
+    if (event.refs?.operationId) operationIds.add(event.refs.operationId);
+    if (event.refs?.parentOperationId) operationIds.add(event.refs.parentOperationId);
+  }
+  return operationIds;
 }
 
 export type ToolLedgerLaneValidation =
@@ -146,6 +164,16 @@ export type ToolLedgerTransitionValidation =
       operationId?: string;
       toolCallId?: string;
     };
+
+export type ToolLedgerTransitionFailure = Extract<ToolLedgerTransitionValidation, { ok: false }>;
+
+export type IncrementalToolLedgerTransitionValidation =
+  | {
+      ok: true;
+      checkpoint: number;
+      appendedEvents: number;
+    }
+  | ({ source: 'existing' | 'candidate' } & ToolLedgerTransitionFailure);
 
 /**
  * Enforces the semantic boundary for durable tool-ledger facts.
@@ -210,95 +238,158 @@ export function validateToolLedgerTransition(input: {
   candidateEvents: readonly RuntimeEvent[];
   expectedTransition: ToolLedgerTransitionKind;
 }): ToolLedgerTransitionValidation {
-  const existing = scanToolLedger(input.existingEvents);
-  if (existing.hasCorruption) return issueValidation(existing.issues[0]!);
-
-  const existingById = new Map(input.existingEvents.map((event) => [event.id, event]));
-  const candidates: RuntimeEvent[] = [];
-  for (const candidate of input.candidateEvents) {
-    const prior = existingById.get(candidate.id);
-    if (!prior) {
-      candidates.push(candidate);
-      continue;
-    }
-    if (!nodeUtil.isDeepStrictEqual(prior, candidate)) {
-      return { ok: false, code: 'duplicate_event_id', eventId: candidate.id };
-    }
+  const reducer = new ToolLedgerReducer(input.existingEvents);
+  const validation = validateIncrementalToolLedgerTransition({
+    reducer,
+    candidateEvents: input.candidateEvents,
+    expectedTransition: input.expectedTransition,
+  });
+  if (validation.ok) {
+    reducer.commit(validation.checkpoint);
+    return { ok: true };
   }
-  const shape = validateTransitionShape(candidates, input.expectedTransition);
-  if (!shape.ok) return shape;
-
-  const prospective = scanToolLedger([...input.existingEvents, ...candidates]);
-  if (prospective.hasCorruption) return issueValidation(prospective.issues[0]!);
-  return { ok: true };
+  const { source: _source, ...failure } = validation;
+  return failure;
 }
 
 /**
- * Scans immutable RuntimeEvents once, in physical ledger order. It owns the
- * duplicate/order/identity interpretation shared by Resolver and projection
- * rebuild; neither consumer may rebuild these maps independently.
+ * Stateful interpretation of an immutable RuntimeEvent prefix.
+ *
+ * Candidate appends mutate the reducer behind a checkpoint. The caller either
+ * commits that checkpoint after durable transaction commit or rolls it back.
+ * Rollback records only the fields touched by the candidate batch, so a small
+ * append does not clone maps proportional to the full checked prefix.
  */
-export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanResult {
-  const operations: ToolLedgerScanOperation[] = [];
-  const issues: ToolLedgerIssue[] = [];
-  const seenEventIds = new Set<string>();
-  const byToolCall = new Map<string, ToolLedgerScanOperation>();
-  const byOperation = new Map<string, ToolLedgerScanOperation>();
-  const invocationSpines = new Map<string, string>();
+export class ToolLedgerReducer {
+  private readonly operations: ToolLedgerScanOperation[] = [];
+  private readonly issues: ToolLedgerIssue[] = [];
+  private readonly eventsById = new Map<string, RuntimeEvent>();
+  private readonly byToolCall = new Map<string, ToolLedgerScanOperation>();
+  private readonly byOperation = new Map<string, ToolLedgerScanOperation>();
+  private readonly invocationSpines = new Map<string, string>();
+  private readonly undoLog: Array<() => void> = [];
+  private recordUndo = false;
 
-  const addIssue = (operation: ToolLedgerScanOperation | undefined, issue: ToolLedgerIssue) => {
-    issues.push(issue);
-    operation?.issues.push(issue);
-  };
+  constructor(events: readonly RuntimeEvent[] = []) {
+    this.consume(events, false);
+  }
 
-  for (const event of events) {
-    if (seenEventIds.has(event.id)) {
-      addIssue(undefined, { code: 'duplicate_event_id', eventId: event.id });
-      continue;
+  scan(): ToolLedgerScanResult {
+    const dependencyIssues = this.toolDependencyIssues();
+    if (dependencyIssues.length === 0) {
+      return {
+        operations: this.operations,
+        issues: this.issues,
+        hasCorruption: this.issues.length > 0,
+      };
     }
-    seenEventIds.add(event.id);
+    const issuesByOperation = new Map<ToolLedgerScanOperation, ToolLedgerIssue[]>();
+    for (const { operation, issue } of dependencyIssues) {
+      const issues = issuesByOperation.get(operation);
+      if (issues) issues.push(issue);
+      else issuesByOperation.set(operation, [issue]);
+    }
+    return {
+      operations: this.operations.map((operation) => {
+        const dependency = issuesByOperation.get(operation);
+        return dependency
+          ? { ...operation, issues: [...operation.issues, ...dependency] }
+          : operation;
+      }),
+      issues: [...this.issues, ...dependencyIssues.map(({ issue }) => issue)],
+      hasCorruption: true,
+    };
+  }
+
+  event(eventId: string): RuntimeEvent | undefined {
+    return this.eventsById.get(eventId);
+  }
+
+  checkpoint(): number {
+    return this.undoLog.length;
+  }
+
+  append(events: readonly RuntimeEvent[]): void {
+    this.consume(events, true);
+  }
+
+  rollback(checkpoint: number): void {
+    this.assertCheckpoint(checkpoint);
+    for (let index = this.undoLog.length - 1; index >= checkpoint; index -= 1) {
+      this.undoLog[index]!();
+    }
+    this.undoLog.length = checkpoint;
+  }
+
+  commit(checkpoint: number): void {
+    this.assertCheckpoint(checkpoint);
+    this.undoLog.length = checkpoint;
+  }
+
+  private assertCheckpoint(checkpoint: number): void {
+    if (!Number.isSafeInteger(checkpoint) || checkpoint < 0 || checkpoint > this.undoLog.length) {
+      throw new RangeError('Invalid tool ledger reducer checkpoint');
+    }
+  }
+
+  private consume(events: readonly RuntimeEvent[], recordUndo: boolean): void {
+    const previous = this.recordUndo;
+    this.recordUndo = recordUndo;
+    try {
+      for (const event of events) this.consumeEvent(event);
+    } finally {
+      this.recordUndo = previous;
+    }
+  }
+
+  private consumeEvent(event: RuntimeEvent): void {
+    if (this.eventsById.has(event.id)) {
+      this.addIssue(undefined, { code: 'duplicate_event_id', eventId: event.id });
+      return;
+    }
+    this.setMap(this.eventsById, event.id, event);
     const spine = JSON.stringify([event.sessionId, event.runId, event.turnId]);
-    const existingSpine = invocationSpines.get(event.invocationId);
+    const existingSpine = this.invocationSpines.get(event.invocationId);
     if (existingSpine !== undefined && existingSpine !== spine) {
-      addIssue(undefined, {
+      this.addIssue(undefined, {
         code: 'invocation_identity_conflict',
         eventId: event.id,
       });
     } else {
-      invocationSpines.set(event.invocationId, spine);
+      this.setMap(this.invocationSpines, event.invocationId, spine);
     }
     const lane = validateToolLedgerEventLane(event);
     if (!lane.ok) {
-      addIssue(undefined, { code: lane.code, eventId: lane.eventId });
-      continue;
+      this.addIssue(undefined, { code: lane.code, eventId: lane.eventId });
+      return;
     }
-    if (event.partial) continue;
+    if (event.partial) return;
 
     if (lane.lane === 'function_call') {
       const content = event.content;
-      if (content?.kind !== 'function_call') continue;
+      if (content?.kind !== 'function_call') return;
       const toolCallKey = toolCallIdentity(event.invocationId, content.id);
-      const existing = byToolCall.get(toolCallKey);
+      const existing = this.byToolCall.get(toolCallKey);
       if (existing) {
         if (!existing.callEvent) {
-          existing.callEvent = event;
+          this.setOperationField(existing, 'callEvent', event);
           if (existing.toolName !== content.name) {
-            addIssue(existing, {
+            this.addIssue(existing, {
               code: 'identity_conflict',
               eventId: event.id,
               toolCallId: content.id,
               ...(existing.operationId ? { operationId: existing.operationId } : {}),
             });
           }
-          continue;
+          return;
         }
-        addIssue(existing, {
+        this.addIssue(existing, {
           code: 'duplicate_call',
           eventId: event.id,
           toolCallId: content.id,
           ...(existing.operationId ? { operationId: existing.operationId } : {}),
         });
-        continue;
+        return;
       }
       const operation: ToolLedgerScanOperation = {
         toolCallId: content.id,
@@ -308,16 +399,16 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
         decisionEvents: [],
         issues: [],
       };
-      byToolCall.set(toolCallKey, operation);
-      operations.push(operation);
-      continue;
+      this.setMap(this.byToolCall, toolCallKey, operation);
+      this.push(this.operations, operation);
+      return;
     }
 
     if (lane.lane === 'tool_dispatch') {
       const dispatch = event.actions?.toolDispatch;
-      if (!dispatch) continue;
+      if (!dispatch) return;
       const toolCallKey = toolCallIdentity(event.invocationId, dispatch.providerToolCallId);
-      let operation = byToolCall.get(toolCallKey);
+      let operation = this.byToolCall.get(toolCallKey);
       if (!operation) {
         operation = {
           toolCallId: dispatch.providerToolCallId,
@@ -328,25 +419,25 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
           decisionEvents: [],
           issues: [],
         };
-        byToolCall.set(toolCallKey, operation);
-        operations.push(operation);
-        addIssue(operation, {
+        this.setMap(this.byToolCall, toolCallKey, operation);
+        this.push(this.operations, operation);
+        this.addIssue(operation, {
           code: 'event_order_conflict',
           eventId: event.id,
           operationId: dispatch.operationId,
           toolCallId: dispatch.providerToolCallId,
         });
       } else if (operation.dispatchEvent) {
-        addIssue(operation, {
+        this.addIssue(operation, {
           code: 'duplicate_dispatch',
           eventId: event.id,
           operationId: dispatch.operationId,
           toolCallId: dispatch.providerToolCallId,
         });
-        continue;
+        return;
       }
 
-      const existingOperation = byOperation.get(dispatch.operationId);
+      const existingOperation = this.byOperation.get(dispatch.operationId);
       if (existingOperation && existingOperation !== operation) {
         const issue: ToolLedgerIssue = {
           code: 'duplicate_operation',
@@ -354,22 +445,23 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
           operationId: dispatch.operationId,
           toolCallId: dispatch.providerToolCallId,
         };
-        issues.push(issue);
-        existingOperation.issues.push(issue);
-        operation.issues.push(issue);
-        continue;
+        this.push(this.issues, issue);
+        this.push(existingOperation.issues, issue);
+        this.push(operation.issues, issue);
+        return;
       }
 
-      operation.operationId = dispatch.operationId;
-      operation.dispatchEvent = event;
-      byOperation.set(dispatch.operationId, operation);
+      this.setOperationField(operation, 'operationId', dispatch.operationId);
+      this.setOperationField(operation, 'dispatchEvent', event);
+      this.setMap(this.byOperation, dispatch.operationId, operation);
       if (
         operation.toolName !== dispatch.toolName ||
         event.refs?.operationId !== dispatch.operationId ||
         event.refs?.toolCallId !== dispatch.providerToolCallId ||
-        (operation.callEvent !== undefined && !sameExecutionIdentity(operation.callEvent, event))
+        (operation.callEvent !== undefined && !sameExecutionIdentity(operation.callEvent, event)) ||
+        callRefsConflict(operation.callEvent, event)
       ) {
-        addIssue(operation, {
+        this.addIssue(operation, {
           code: 'identity_conflict',
           eventId: event.id,
           operationId: dispatch.operationId,
@@ -385,7 +477,7 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
           // A provider call that is not strict JSON cannot authenticate T1.
         }
         if (canonicalArgsHash !== dispatch.canonicalArgsHash) {
-          addIssue(operation, {
+          this.addIssue(operation, {
             code: 'canonical_args_hash_conflict',
             eventId: event.id,
             operationId: dispatch.operationId,
@@ -394,7 +486,7 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
         }
       }
       if (operation.responseEvent) {
-        addIssue(operation, {
+        this.addIssue(operation, {
           code: 'event_order_conflict',
           eventId: event.id,
           operationId: dispatch.operationId,
@@ -405,7 +497,7 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
           operation.responseEvent.refs?.toolCallId !== dispatch.providerToolCallId ||
           !sameExecutionIdentity(event, operation.responseEvent)
         ) {
-          addIssue(operation, {
+          this.addIssue(operation, {
             code: 'identity_conflict',
             eventId: operation.responseEvent.id,
             operationId: dispatch.operationId,
@@ -413,14 +505,14 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
           });
         }
       }
-      continue;
+      return;
     }
 
     if (lane.lane === 'function_response') {
       const content = event.content;
-      if (content?.kind !== 'function_response') continue;
+      if (content?.kind !== 'function_response') return;
       const toolCallKey = toolCallIdentity(event.invocationId, content.id);
-      const operation = byToolCall.get(toolCallKey);
+      const operation = this.byToolCall.get(toolCallKey);
       if (!operation) {
         const orphan: ToolLedgerScanOperation = {
           toolCallId: content.id,
@@ -430,25 +522,25 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
           decisionEvents: [],
           issues: [],
         };
-        operations.push(orphan);
-        byToolCall.set(toolCallKey, orphan);
-        addIssue(orphan, {
+        this.push(this.operations, orphan);
+        this.setMap(this.byToolCall, toolCallKey, orphan);
+        this.addIssue(orphan, {
           code: 'orphan_response',
           eventId: event.id,
           toolCallId: content.id,
         });
-        continue;
+        return;
       }
       if (operation.responseEvent) {
-        addIssue(operation, {
+        this.addIssue(operation, {
           code: 'duplicate_response',
           eventId: event.id,
           toolCallId: content.id,
           ...(operation.operationId ? { operationId: operation.operationId } : {}),
         });
-        continue;
+        return;
       }
-      operation.responseEvent = event;
+      this.setOperationField(operation, 'responseEvent', event);
       if (
         operation.toolName !== content.name ||
         !sameExecutionIdentity(operation.callEvent, event) ||
@@ -456,35 +548,211 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
           (event.refs?.operationId !== operation.operationId ||
             event.refs.toolCallId !== operation.toolCallId))
       ) {
-        addIssue(operation, {
+        this.addIssue(operation, {
           code: 'identity_conflict',
           eventId: event.id,
           toolCallId: content.id,
           ...(operation.operationId ? { operationId: operation.operationId } : {}),
         });
       }
-      continue;
+      return;
     }
 
     if (lane.lane === 'reconcile_result' || lane.lane === 'recovery_decision') {
       const fact = event.actions?.toolRecovery;
-      if (!fact) continue;
-      const operation = byOperation.get(fact.payload.operationId);
+      if (!fact) return;
+      const operation = this.byOperation.get(fact.payload.operationId);
       if (!operation) {
-        addIssue(undefined, {
+        this.addIssue(undefined, {
           code: 'event_order_conflict',
           eventId: event.id,
           operationId: fact.payload.operationId,
           ...(event.refs?.toolCallId ? { toolCallId: event.refs.toolCallId } : {}),
         });
-        continue;
+        return;
       }
-      if (lane.lane === 'reconcile_result') operation.reconcileEvents.push(event);
-      else operation.decisionEvents.push(event);
+      if (lane.lane === 'reconcile_result') this.push(operation.reconcileEvents, event);
+      else this.push(operation.decisionEvents, event);
     }
   }
 
-  return { operations, issues, hasCorruption: issues.length > 0 };
+  private addIssue(operation: ToolLedgerScanOperation | undefined, issue: ToolLedgerIssue): void {
+    this.push(this.issues, issue);
+    if (operation) this.push(operation.issues, issue);
+  }
+
+  private push<T>(values: T[], value: T): void {
+    const length = values.length;
+    this.undo(() => {
+      values.length = length;
+    });
+    values.push(value);
+  }
+
+  private setMap<K, V>(values: Map<K, V>, key: K, value: V): void {
+    const had = values.has(key);
+    const previous = values.get(key);
+    this.undo(() => {
+      if (had) values.set(key, previous!);
+      else values.delete(key);
+    });
+    values.set(key, value);
+  }
+
+  private setOperationField<K extends keyof ToolLedgerScanOperation>(
+    operation: ToolLedgerScanOperation,
+    key: K,
+    value: ToolLedgerScanOperation[K],
+  ): void {
+    const had = Object.hasOwn(operation, key);
+    const previous = operation[key];
+    this.undo(() => {
+      if (had) operation[key] = previous;
+      else delete operation[key];
+    });
+    operation[key] = value;
+  }
+
+  private undo(operation: () => void): void {
+    if (this.recordUndo) this.undoLog.push(operation);
+  }
+
+  private toolDependencyIssues(): Array<{
+    operation: ToolLedgerScanOperation;
+    issue: ToolLedgerIssue;
+  }> {
+    const result: Array<{ operation: ToolLedgerScanOperation; issue: ToolLedgerIssue }> = [];
+    const parents = new Map<ToolLedgerScanOperation, ToolLedgerScanOperation>();
+    for (const operation of this.operations) {
+      const dispatch = operation.dispatchEvent;
+      const parentOperationId = dispatch?.refs?.parentOperationId;
+      const parentToolCallId = dispatch?.refs?.parentToolCallId;
+      if (!dispatch || !parentOperationId || !parentToolCallId) continue;
+      const parent = this.byOperation.get(parentOperationId);
+      if (!parent) {
+        result.push({
+          operation,
+          issue: {
+            code: 'parent_operation_missing',
+            eventId: dispatch.id,
+            ...(operation.operationId ? { operationId: operation.operationId } : {}),
+            toolCallId: operation.toolCallId,
+          },
+        });
+        continue;
+      }
+      if (parent.toolCallId !== parentToolCallId) {
+        result.push({
+          operation,
+          issue: {
+            code: 'parent_identity_conflict',
+            eventId: dispatch.id,
+            ...(operation.operationId ? { operationId: operation.operationId } : {}),
+            toolCallId: operation.toolCallId,
+          },
+        });
+        continue;
+      }
+      parents.set(operation, parent);
+    }
+
+    const state = new Map<ToolLedgerScanOperation, 'visiting' | 'visited'>();
+    const stack: ToolLedgerScanOperation[] = [];
+    const stackIndex = new Map<ToolLedgerScanOperation, number>();
+    const cyclic = new Set<ToolLedgerScanOperation>();
+    const visit = (operation: ToolLedgerScanOperation): void => {
+      if (state.get(operation) === 'visited') return;
+      state.set(operation, 'visiting');
+      stackIndex.set(operation, stack.length);
+      stack.push(operation);
+      const parent = parents.get(operation);
+      if (parent) {
+        const parentState = state.get(parent);
+        if (parentState === 'visiting') {
+          const index = stackIndex.get(parent);
+          if (index !== undefined) {
+            for (let cursor = index; cursor < stack.length; cursor += 1) cyclic.add(stack[cursor]!);
+          }
+        } else if (parentState !== 'visited') {
+          visit(parent);
+        }
+      }
+      stack.pop();
+      stackIndex.delete(operation);
+      state.set(operation, 'visited');
+    };
+    for (const operation of parents.keys()) visit(operation);
+    for (const operation of this.operations) {
+      if (!cyclic.has(operation) || !operation.dispatchEvent) continue;
+      result.push({
+        operation,
+        issue: {
+          code: 'parent_dependency_cycle',
+          eventId: operation.dispatchEvent.id,
+          ...(operation.operationId ? { operationId: operation.operationId } : {}),
+          toolCallId: operation.toolCallId,
+        },
+      });
+    }
+    return result;
+  }
+}
+
+/**
+ * Applies one prospective writer batch to a checked prefix. A successful call
+ * leaves the candidate delta applied until the caller commits or rolls back the
+ * returned checkpoint. A rejected candidate restores the reducer immediately.
+ */
+export function validateIncrementalToolLedgerTransition(input: {
+  reducer: ToolLedgerReducer;
+  candidateEvents: readonly RuntimeEvent[];
+  expectedTransition: ToolLedgerTransitionKind;
+}): IncrementalToolLedgerTransitionValidation {
+  const existing = input.reducer.scan();
+  if (existing.hasCorruption) {
+    return { source: 'existing', ...issueValidation(existing.issues[0]!) };
+  }
+
+  const candidates: RuntimeEvent[] = [];
+  for (const candidate of input.candidateEvents) {
+    const prior = input.reducer.event(candidate.id);
+    if (!prior) {
+      candidates.push(candidate);
+      continue;
+    }
+    if (!nodeUtil.isDeepStrictEqual(prior, candidate)) {
+      return {
+        ok: false,
+        source: 'candidate',
+        code: 'duplicate_event_id',
+        eventId: candidate.id,
+      };
+    }
+  }
+  const shape = validateTransitionShape(candidates, input.expectedTransition);
+  if (!shape.ok) return { source: 'candidate', ...shape };
+
+  const checkpoint = input.reducer.checkpoint();
+  try {
+    input.reducer.append(candidates);
+  } catch (error) {
+    input.reducer.rollback(checkpoint);
+    throw error;
+  }
+  const issue = input.reducer.scan().issues[0];
+  if (issue) {
+    input.reducer.rollback(checkpoint);
+    return { source: 'candidate', ...issueValidation(issue) };
+  }
+  return { ok: true, checkpoint, appendedEvents: candidates.length };
+}
+
+/**
+ * Scans immutable RuntimeEvents once, in physical ledger order. Resolver,
+ * projection rebuild and incremental writers all use the same reducer rules.
+ */
+export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanResult {
+  return new ToolLedgerReducer(events).scan();
 }
 
 function matchesLaneEnvelope(
@@ -573,7 +841,7 @@ function validateTransitionShape(
   };
 }
 
-function issueValidation(issue: ToolLedgerIssue): ToolLedgerTransitionValidation {
+function issueValidation(issue: ToolLedgerIssue): ToolLedgerTransitionFailure {
   return {
     ok: false,
     code: issue.code,
@@ -590,6 +858,25 @@ function sameExecutionIdentity(first: RuntimeEvent | undefined, second: RuntimeE
     first.invocationId === second.invocationId &&
     first.runId === second.runId &&
     first.turnId === second.turnId
+  );
+}
+
+function callRefsConflict(call: RuntimeEvent | undefined, dispatch: RuntimeEvent): boolean {
+  if (!call?.refs) return false;
+  const expected = dispatch.actions?.toolDispatch;
+  if (!expected) return false;
+  if (
+    (call.refs.operationId !== undefined && call.refs.operationId !== expected.operationId) ||
+    (call.refs.toolCallId !== undefined && call.refs.toolCallId !== expected.providerToolCallId)
+  ) {
+    return true;
+  }
+  const callHasParent =
+    call.refs.parentOperationId !== undefined || call.refs.parentToolCallId !== undefined;
+  return (
+    callHasParent &&
+    (call.refs.parentOperationId !== dispatch.refs?.parentOperationId ||
+      call.refs.parentToolCallId !== dispatch.refs?.parentToolCallId)
   );
 }
 

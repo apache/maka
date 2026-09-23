@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { attachmentKindFromMimeType, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
@@ -167,6 +168,7 @@ import {
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostExternalSessionCoordinator } from './external-session-coordinator.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { HostSessionBundleCoordinator } from './session-bundle-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import { HostGoalExecutionCoordinator } from './goal-execution-coordinator.js';
@@ -233,6 +235,7 @@ import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import {
   createSessionTranscriptReader,
+  createTurnResultReader,
   type SessionTranscriptReader,
 } from './session-transcript-reader.js';
 import {
@@ -861,6 +864,7 @@ export async function createExecutionRuntimeHostComposition(
     );
     let rootCoordinator: RootTurnCoordinator | undefined;
     let workHubCoordination: HostWorkHubCoordinationCoordinator;
+    let workHubResults: ReturnType<typeof createWorkHubResultRuntime> | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
@@ -939,11 +943,15 @@ export async function createExecutionRuntimeHostComposition(
       (sessionId) => continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'plan'),
       context.requestDrain,
     );
-    unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
-      continuityCoordinator.enqueueCanonicalRefresh(sessionId),
-    );
+    unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) => {
+      continuityCoordinator.enqueueCanonicalRefresh(sessionId);
+      sessionAdmission.detach(() => workHubResults?.notify(sessionId));
+    });
     unsubscribeRuntimeEventCommits = stores.runtimeEventStore.subscribeRuntimeEventCommits(
-      (sessionId) => continuityCoordinator.enqueueTranscriptAdvanced(sessionId),
+      (sessionId) => {
+        continuityCoordinator.enqueueTranscriptAdvanced(sessionId);
+        sessionAdmission.detach(() => workHubResults?.notify(sessionId));
+      },
     );
     unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
       continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'usage'),
@@ -986,8 +994,10 @@ export async function createExecutionRuntimeHostComposition(
         canonicalProjectionReader.fitsCandidate(sessionId, {
           interactions: interactionProjection,
         }),
-      refreshCanonicalContinuity: (sessionId, admission) =>
-        continuityCoordinator.refreshCanonical(sessionId, admission),
+      refreshCanonicalContinuity: async (sessionId, admission) => {
+        await continuityCoordinator.refreshCanonical(sessionId, admission);
+        sessionAdmission.detach(() => workHubResults?.notify(sessionId));
+      },
       onPoison: (error) => {
         if (poisonFailure) return;
         poisonFailure = error;
@@ -1066,7 +1076,9 @@ export async function createExecutionRuntimeHostComposition(
         builtinTools,
         hostTools,
         resolveRootTools: (sessionId) =>
-          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults
+            ? Promise.resolve([workHubResults.tool])
+            : requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
         resolvePluginTools: (sessionId, coreTools) =>
           pluginTools.resolveContributions(sessionId, coreTools),
         resolvePluginSystemPrompt: async (sessionId, promptContext, baseText) => {
@@ -1226,7 +1238,9 @@ export async function createExecutionRuntimeHostComposition(
         requireClientCapabilities(clientCapabilities).snapshotForSession(sessionId);
       try {
         const [graphTools, planState] = await Promise.all([
-          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults
+            ? Promise.resolve([workHubResults.tool])
+            : requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
           planStore.readState(sessionId),
         ]);
         const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
@@ -1509,6 +1523,12 @@ export async function createExecutionRuntimeHostComposition(
     };
     clientCapabilities = new HostClientCapabilityCoordinator({
       activation: runtimePolicyActivation,
+      isSessionRetired: async (sessionId) => {
+        const state = await stores.sessionStore.probeSessionRemoval(sessionId);
+        return (
+          state.kind === 'removed' || (state.kind === 'present' && state.record.header.isArchived)
+        );
+      },
       onModelToolsChanged: registerBackendInvalidation,
       interactions,
       grants: stores.interactionStore,
@@ -2371,6 +2391,7 @@ export async function createExecutionRuntimeHostComposition(
                       ? WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION
                       : 1,
                     kind: 'delegation_assigned',
+                    returnResults: true,
                     actionId: input.actionId,
                     actionFingerprint: input.actionFingerprint,
                     coordinationTurnId: input.coordinationTurnId ?? input.actionId,
@@ -2442,6 +2463,24 @@ export async function createExecutionRuntimeHostComposition(
       },
       requestDrain: context.requestDrain,
     });
+    workHubResults = createWorkHubResultRuntime({
+      stores,
+      executions: coordinator,
+      messages,
+      interactions,
+      admission: sessionAdmission,
+      readTurnResult: createTurnResultReader({
+        stores,
+        canonicalPermissionOutcomes,
+        ensureTranscriptLedger: (sessionId) =>
+          requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId),
+      }),
+      acquireResidency: () => context.acquireResidency('hosted-execution'),
+      onError: (error) =>
+        console.error(
+          `[runtime-host] WorkHub result reconciliation failed: ${boundedFailureDiagnostic(error)}`,
+        ),
+    });
     scheduledTasks = new HostScheduledTaskCoordinator({
       store: openedScheduledTaskStore,
       sessions: stores.sessionStore,
@@ -2469,6 +2508,10 @@ export async function createExecutionRuntimeHostComposition(
       lease: context.owner.lease,
       fenceSubtree: (sessionId, operation) =>
         requireSessionManager(manager).runSessionSubtreeQuiescentMutation(sessionId, operation),
+      recoverInterruptedSessions: (sessionIds) =>
+        requireSessionManager(manager)
+          .recoverInterruptedSessionsForSessions(sessionIds)
+          .then(() => undefined),
       onImported: (sessionId) => hostChanges.publishSessionCatalog(sessionId),
     });
     const externalSessions = new HostExternalSessionCoordinator({
@@ -2645,11 +2688,6 @@ export async function createExecutionRuntimeHostComposition(
               ),
             );
             await sessionRevisions.recover();
-            for (const session of recoverySessions) {
-              await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(
-                session.id,
-              );
-            }
           },
         },
       }),
@@ -2730,8 +2768,15 @@ export async function createExecutionRuntimeHostComposition(
                 try {
                   await clientBoundRecovery;
                 } catch (error) {
+                  // The registration mutation has already committed. Returning a
+                  // failure now would make the Client discard its new registration
+                  // identity and mistake the old registration's release for
+                  // authoritative Session retirement. Drain the unhealthy Host, but
+                  // acknowledge the committed mutation so reconnect can republish it.
+                  console.error(
+                    `[runtime-host] post-commit Client Capability recovery failed: ${boundedFailureDiagnostic(error)}`,
+                  );
                   context.requestDrain();
-                  throw error;
                 }
               }
               return outcome;
@@ -2803,6 +2848,7 @@ export async function createExecutionRuntimeHostComposition(
           },
         },
         drain: [
+          () => workHubResults?.coordinator.beginDrain(),
           () => turnAccessRequests?.beginDrain(),
           () => rootCoordinator?.beginDrain(),
           () => workspaceExecution?.beginDrain(),
@@ -2818,6 +2864,7 @@ export async function createExecutionRuntimeHostComposition(
             rootCloseTask ??= coordinator.close();
             await rootCloseTask;
           },
+          () => workHubResults?.coordinator.close(),
           () => runtimeResources?.close(),
           () => workspaceExecution?.close(),
           () => sessionEffects?.close(),
@@ -2873,7 +2920,9 @@ export async function createExecutionRuntimeHostComposition(
     if (draining) beginDrain();
     const handlers = composeRuntimeHostDomainHandlers(domainModules);
     const recover = () => {
-      recoveryTask ??= recoverRuntimeHostDomainModules(domainModules);
+      recoveryTask ??= recoverRuntimeHostDomainModules(domainModules).then(() => {
+        if (!draining) workHubResults?.coordinator.start();
+      });
       return recoveryTask;
     };
     const close = () => {

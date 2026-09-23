@@ -584,6 +584,34 @@ index 1975140..bf6cb77 100644
      tabIndex: isDisabled ? undefined : -1,
      onPointerMove: handlePointerMove,
      startContent: icon ? renderIconSlot(icon, {
+diff --git a/node_modules/@astryxdesign/core/dist/Layer/useTouchTrigger.js b/node_modules/@astryxdesign/core/dist/Layer/useTouchTrigger.js
+index 95e7519..3680732 100644
+--- a/node_modules/@astryxdesign/core/dist/Layer/useTouchTrigger.js
++++ b/node_modules/@astryxdesign/core/dist/Layer/useTouchTrigger.js
+@@ -25,7 +25,7 @@
+  * is `auto`; `tap` and `none` state the choice outright, which is what an
+  * icon-button whose only job is to reveal the layer needs.
+  */
+-import { useCallback, useEffect, useRef } from 'react';
++import { useCallback, useEffect, useMemo, useRef } from 'react';
+ import { getInteractionModality, useInteractionModalityTracking } from "../utils/interactionModality.js";
+
+ /**
+@@ -229,11 +229,11 @@ export function useTouchTrigger(options) {
+     }
+     wasOpenRef.current = isOpen;
+   }, [isOpen, disarmOutsideDismiss]);
+-  return {
++  return useMemo(() => ({
+     isTouchPointerRef,
+     isTouchInteraction,
+     handlePointerEnter,
+     handlePointerDown,
+     clearTapOpen: disarmOutsideDismiss
+-  };
++  }), [isTouchInteraction, handlePointerEnter, handlePointerDown, disarmOutsideDismiss]);
+ }
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
 index 8753b5f..43a5abe 100644
 --- a/node_modules/@astryxdesign/core/dist/List/List.js
@@ -1627,6 +1655,41 @@ index 3fad1b4..e7d1e89 100644
        tabIndex={isDisabled ? undefined : -1}
        onPointerMove={handlePointerMove}
        startContent={
+diff --git a/node_modules/@astryxdesign/core/src/Layer/useTouchTrigger.ts b/node_modules/@astryxdesign/core/src/Layer/useTouchTrigger.ts
+index cb027d3..8f0e5e6 100644
+--- a/node_modules/@astryxdesign/core/src/Layer/useTouchTrigger.ts
++++ b/node_modules/@astryxdesign/core/src/Layer/useTouchTrigger.ts
+@@ -26,7 +26,7 @@
+  * icon-button whose only job is to reveal the layer needs.
+  */
+
+-import {useCallback, useEffect, useRef, type RefObject} from 'react';
++import {useCallback, useEffect, useMemo, useRef, type RefObject} from 'react';
+ import {
+   getInteractionModality,
+   useInteractionModalityTracking,
+@@ -354,11 +354,14 @@ export function useTouchTrigger(
+     wasOpenRef.current = isOpen;
+   }, [isOpen, disarmOutsideDismiss]);
+
+-  return {
+-    isTouchPointerRef,
+-    isTouchInteraction,
+-    handlePointerEnter,
+-    handlePointerDown,
+-    clearTapOpen: disarmOutsideDismiss,
+-  };
++  return useMemo(
++    () => ({
++      isTouchPointerRef,
++      isTouchInteraction,
++      handlePointerEnter,
++      handlePointerDown,
++      clearTapOpen: disarmOutsideDismiss,
++    }),
++    [isTouchInteraction, handlePointerEnter, handlePointerDown, disarmOutsideDismiss],
++  );
+ }
 diff --git a/node_modules/@astryxdesign/core/src/List/List.tsx b/node_modules/@astryxdesign/core/src/List/List.tsx
 index 5b63cd6..76627fe 100644
 --- a/node_modules/@astryxdesign/core/src/List/List.tsx
