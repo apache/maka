@@ -94,7 +94,6 @@ export function SessionContextLayer(props: {
   onRevisionNavigate?(sessionId: string): void;
   memoryActive?: boolean;
   onOpenMemorySettings?(): void;
-  deepResearchActive?: boolean;
   goal?: SessionContextGoal;
   actions?: ReactNode;
 }) {
@@ -270,28 +269,6 @@ export function SessionContextLayer(props: {
               : undefined,
           },
         ],
-      }],
-    });
-  }
-
-  if (props.deepResearchActive) {
-    contextItems.push({
-      key: 'deep-research',
-      element: (
-        <Token
-          size="sm"
-          color="blue"
-          label={copy.deepResearchAriaLabel}
-          isLabelHidden
-          endContent={copy.deepResearch}
-          description={copy.deepResearchTitle}
-          icon={<Icon icon="search" size="xsm" />}
-        />
-      ),
-      overflowItems: [{
-        label: copy.deepResearchAriaLabel,
-        icon: <Icon icon="search" size="xsm" />,
-        isDisabled: true,
       }],
     });
   }

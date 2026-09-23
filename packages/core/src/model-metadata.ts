@@ -34,12 +34,6 @@ export interface ModelMetadata {
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
   lastUpdated?: string;
-  /**
-   * models.dev prices the model at zero input cost. Marks free-tier
-   * candidates (e.g. opencode-free); display names are not a contract for
-   * this, several free models carry no "Free" suffix.
-   */
-  isFree?: boolean;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**
@@ -495,9 +489,8 @@ function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata 
   return {
     anthropic: ANTHROPIC_MODEL_OVERRIDES,
     'claude-subscription': claudeSubscriptionModelMetadata(active),
-    // Both Command Code providers ride the same Provider-API effort table.
+    // The Command Code Provider-API plan rides the same effort table.
     commandcode: COMMAND_CODE_MODEL_METADATA,
-    'commandcode-go': COMMAND_CODE_MODEL_METADATA,
     'alibaba-token-plan-cn': {
       'qwen3.8-max': {
         thinkingOptions: { efforts: ['none', 'low', 'medium', 'xhigh'], toggle: true },

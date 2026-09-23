@@ -130,17 +130,20 @@ test('handoff keeps cancellation live during progress and disposes input without
     defaultAction: 'cancel',
   };
   surface.update(view);
-  surface.update({
-    ...view,
+  const progress: HostHandoffView = {
     revision: 'progress',
     state: 'progress',
     phase: 'retiring',
+    target: { name: 'Local', location: 'local' },
+    mayExitNaturally: false,
     actions: ['cancel'],
-  });
+    defaultAction: 'cancel',
+  };
+  surface.update(progress);
   assert.deepEqual(actions, []);
   input.write('\n');
   assert.deepEqual(actions, ['progress:cancel']);
-  surface.update({ ...view, revision: 'settling', state: 'progress', actions: [] });
+  surface.update({ ...progress, revision: 'settling', actions: [] });
   surface.close();
   input.end();
   output.end();

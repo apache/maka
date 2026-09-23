@@ -23,7 +23,10 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { createHash } from 'node:crypto';
 import { authorizeConnectionModel, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
-import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
+import {
+  defaultThinkingLevelForConnection,
+  thinkingVariantsForConnection,
+} from '@maka/core/model-thinking';
 import {
   executionBoundaryDisplayMode,
   type ExecutionBoundary,
@@ -209,6 +212,7 @@ interface ResolvedSessionModel {
   readonly connectionId: string;
   readonly connectionSlug: string;
   readonly model: string;
+  readonly thinkingLevel: SessionHeader['thinkingLevel'];
 }
 
 /** A connection+model the import path may attempt, in preference order. */
@@ -349,7 +353,9 @@ export class HostSessionCatalogCoordinator {
    */
   async resolveDefaultCreateTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
     try {
-      return await this.#composeCreateTarget(this.#resolveModel({ kind: 'default' }, undefined));
+      return await this.#composeCreateTarget(
+        this.#resolveModel({ kind: 'default' }, undefined, true),
+      );
     } catch (error) {
       if (
         error instanceof SessionOperationFailure &&
@@ -369,6 +375,7 @@ export class HostSessionCatalogCoordinator {
       llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
       model: model.model,
+      ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
       permissionMode: policy.policy.chatDefaults.permissionMode,
       toolMode: policy.policy.chatDefaults.codeModeEnabled ? 'code_mode' : 'direct',
       collaborationMode: 'agent',
@@ -406,7 +413,7 @@ export class HostSessionCatalogCoordinator {
           ...(model.connectionId ? { llmConnectionId: model.connectionId } : {}),
           llmConnectionSlug: model.connectionSlug,
           model: model.model,
-          ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+          ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
           ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
           permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
           toolMode: policy.policy.chatDefaults.codeModeEnabled ? 'code_mode' : 'direct',
@@ -640,7 +647,7 @@ export class HostSessionCatalogCoordinator {
               ...(model.connectionId ? { llmConnectionId: model.connectionId } : {}),
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
-              ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
+              ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
               ...(input.toolProfile === undefined ? {} : { toolProfile: input.toolProfile }),
               permissionMode: prepared.permissionMode ?? policy.policy.chatDefaults.permissionMode,
               toolMode:
@@ -1070,6 +1077,7 @@ export class HostSessionCatalogCoordinator {
             model: candidate.modelId,
           },
           undefined,
+          true,
         );
       } catch (error) {
         if (!(error instanceof SessionOperationFailure)) throw error;
@@ -1098,7 +1106,8 @@ export class HostSessionCatalogCoordinator {
 
   async #resolveModel(
     target: SessionModelTarget,
-    thinkingLevel: SessionCreateInput['thinkingLevel'],
+    thinkingLevel: Exclude<SessionCreateInput['thinkingLevel'], null>,
+    applyConfiguredDefault = false,
   ): Promise<ResolvedSessionModel> {
     const selected = await this.#selectModelTarget(target);
     const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection({
@@ -1170,25 +1179,37 @@ export class HostSessionCatalogCoordinator {
     // rejected — execution-model-authority rebuilds the runtime connection
     // from the same table, so whatever passes here is exactly what the wire
     // can send.
+    const resolvedThinkingLevel =
+      thinkingLevel ??
+      (applyConfiguredDefault
+        ? defaultThinkingLevelForConnection(
+            {
+              providerType: connection.providerType,
+              modelOverrides: connection.modelOverrides,
+            },
+            selected.modelId,
+          )
+        : undefined);
     if (
-      thinkingLevel !== undefined &&
+      resolvedThinkingLevel !== undefined &&
       !thinkingVariantsForConnection(
         {
           providerType: connection.providerType,
           modelOverrides: connection.modelOverrides,
         },
         selected.modelId,
-      ).includes(thinkingLevel)
+      ).includes(resolvedThinkingLevel)
     ) {
       throw new SessionOperationFailure(
         'invalid_request',
-        `Session model does not support thinking level ${thinkingLevel}`,
+        `Session model does not support thinking level ${resolvedThinkingLevel}`,
       );
     }
     return {
       connectionId: connection.connectionId,
       connectionSlug: connection.slug,
       model: selected.modelId,
+      thinkingLevel: resolvedThinkingLevel,
     };
   }
 
@@ -1236,7 +1257,11 @@ export class HostSessionCatalogCoordinator {
     current: SessionHeader,
     patch: SessionConfigurationUpdateInput['patch'],
   ): Promise<ResolvedSessionConfiguration> {
-    if (current.backend === 'fake' && patch.modelTarget === undefined) {
+    if (
+      current.backend === 'fake' &&
+      patch.modelTarget === undefined &&
+      patch.executorTarget === undefined
+    ) {
       throw new SessionOperationFailure(
         'operation_conflict',
         'Legacy test backend configuration requires an explicit account selection',
@@ -1245,7 +1270,8 @@ export class HostSessionCatalogCoordinator {
     if (
       current.backend !== 'plugin-executor' &&
       current.llmConnectionId === undefined &&
-      patch.modelTarget === undefined
+      patch.modelTarget === undefined &&
+      patch.executorTarget === undefined
     ) {
       throw new SessionOperationFailure(
         'operation_conflict',
@@ -1256,6 +1282,28 @@ export class HostSessionCatalogCoordinator {
       patch.thinkingLevel === undefined
         ? current.thinkingLevel
         : (patch.thinkingLevel ?? undefined);
+    if (patch.executorTarget !== undefined) {
+      try {
+        this.#assertExecutorAvailable?.(current.id, patch.executorTarget.executorId);
+      } catch {
+        throw new SessionOperationFailure(
+          'operation_unavailable',
+          `Plugin executor is unavailable: ${patch.executorTarget.executorId}`,
+        );
+      }
+      return {
+        backend: 'plugin-executor',
+        executorId: patch.executorTarget.executorId,
+        llmConnectionId: undefined,
+        llmConnectionSlug: `executor:${patch.executorTarget.executorId}`,
+        model: patch.executorTarget.model ?? patch.executorTarget.executorId,
+        thinkingLevel,
+        connectionLocked: current.connectionLocked,
+        permissionMode: patch.permissionMode ?? current.permissionMode,
+        collaborationMode: patch.collaborationMode ?? current.collaborationMode ?? 'agent',
+        orchestrationMode: patch.orchestrationMode ?? current.orchestrationMode ?? 'default',
+      };
+    }
     let model: {
       readonly connectionId?: string;
       readonly connectionSlug: string;
@@ -1298,6 +1346,7 @@ export class HostSessionCatalogCoordinator {
     readonly connectionId?: string;
     readonly connectionSlug: string;
     readonly model: string;
+    readonly thinkingLevel?: SessionHeader['thinkingLevel'];
   }> {
     if (input.executorId) {
       try {
@@ -1311,7 +1360,8 @@ export class HostSessionCatalogCoordinator {
       return {
         executorId: input.executorId,
         connectionSlug: `executor:${input.executorId}`,
-        model: input.executorId,
+        model: input.executorModel ?? input.executorId,
+        thinkingLevel: input.thinkingLevel ?? undefined,
       };
     }
     if (!input.modelTarget) {
@@ -1320,7 +1370,11 @@ export class HostSessionCatalogCoordinator {
         'Session creation requires a model target or executor id',
       );
     }
-    return await this.#resolveModel(input.modelTarget, input.thinkingLevel);
+    return await this.#resolveModel(
+      input.modelTarget,
+      input.thinkingLevel ?? undefined,
+      input.thinkingLevel !== null,
+    );
   }
 
   async #readRuntimePolicy(): Promise<
@@ -1356,6 +1410,7 @@ function isPermissionModeOnlyPatch(patch: SessionConfigurationUpdateInput['patch
   return (
     patch.permissionMode !== undefined &&
     patch.modelTarget === undefined &&
+    patch.executorTarget === undefined &&
     patch.thinkingLevel === undefined &&
     patch.collaborationMode === undefined &&
     patch.orchestrationMode === undefined
@@ -1377,6 +1432,9 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
   }
   if (input.executorId !== undefined && !isExecutorId(input.executorId)) {
     throw new SessionOperationFailure('invalid_request', 'Session executor id is invalid');
+  }
+  if (input.executorModel !== undefined && input.executorId === undefined) {
+    throw new SessionOperationFailure('invalid_request', 'Executor model requires an executor id');
   }
   if (input.labels?.some(isExecutionSemanticLabel)) {
     throw new SessionOperationFailure(
@@ -1406,7 +1464,7 @@ function createRequestFingerprint(
   prepared: PreparedSessionCreate,
 ): string {
   const identity = [
-    'session.create.v4',
+    'session.create.v5',
     input.sessionId,
     input.workspace.kind === 'project'
       ? ['project', input.workspace.projectId]
@@ -1414,7 +1472,7 @@ function createRequestFingerprint(
     prepared.name,
     prepared.labels,
     input.executorId
-      ? ['executor', input.executorId]
+      ? ['executor', input.executorId, input.executorModel ?? null]
       : input.modelTarget?.kind === 'default'
         ? ['default']
         : [
@@ -1423,7 +1481,7 @@ function createRequestFingerprint(
             input.modelTarget!.connectionSlug,
             input.modelTarget!.model,
           ],
-    input.thinkingLevel ?? null,
+    input.thinkingLevel === undefined ? ['model_default'] : input.thinkingLevel,
     input.toolProfile ?? null,
     prepared.permissionMode ?? ['runtime_default'],
     input.collaborationMode ?? 'agent',

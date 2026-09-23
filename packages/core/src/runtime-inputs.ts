@@ -99,7 +99,9 @@ export interface CreateSessionInput {
  * type-checks against `bridge-contract.d.ts` alone, so a field added on one
  * side and not the other is a type error nowhere.
  */
-export type CreateSessionRequestInput = Partial<CreateSessionInput> & {
+export type CreateSessionRequestInput = Omit<Partial<CreateSessionInput>, 'thinkingLevel'> & {
+  /** `null` explicitly bypasses the configured per-model default. */
+  thinkingLevel?: ThinkingLevel | null;
   mode?: SessionStartMode;
 };
 

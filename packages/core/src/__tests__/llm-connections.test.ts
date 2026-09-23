@@ -26,7 +26,6 @@ import {
 } from '../model-metadata.js';
 import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import {
-  authorizeConnectionModel,
   effectiveBaseUrl,
   normalizeConnectionBaseUrl,
   providerAuthRequiresSecret,
@@ -415,41 +414,18 @@ test('provider recognition does not resolve inherited object members', () => {
   }
 });
 
-test('a quarantined model id is vetoed even when enabled and present in the inventory', () => {
+test('stored OpenCode Free models cannot be selected', () => {
   const connection = {
-    providerType: 'opencode-free' as ProviderType,
-    enabledModelIds: ['nemotron-3-ultra-free', 'muse-spark-1.2-contributor-free'],
-    models: [{ id: 'nemotron-3-ultra-free' }, { id: 'muse-spark-1.2-contributor-free' }],
-  };
-  assert.equal(authorizeConnectionModel(connection, 'muse-spark-1.2-contributor-free'), undefined);
-  assert.deepEqual(authorizeConnectionModel(connection, 'nemotron-3-ultra-free'), {
-    id: 'nemotron-3-ultra-free',
-  });
-});
-
-test('a quarantined stored default is dropped from the picker, not re-added as a missing-default row', () => {
-  // The retired `x-preview-f-free` was picker-visible before the quarantine, so
-  // an upgrade connection can carry it as `defaultModel` and enabled. `models`
-  // and `enabledModelIds` are filtered against `brokenModelIds`, but the raw
-  // `defaultModel` used to pass through unfiltered and `makeMissingDefaultEntry`
-  // re-added it as a selectable `provider_default` row — visible and pickable
-  // while `authorizeConnectionModel` vetoed the same id. The picker and the send
-  // authority must agree: neither offers it, and the live model still renders.
-  const connection = {
-    connectionId: 'connection-opencode-free',
+    connectionId: 'stored-free',
     slug: 'opencode-free',
     name: 'OpenCode Free',
     providerType: 'opencode-free' as ProviderType,
     enabled: true,
-    defaultModel: 'x-preview-f-free',
-    enabledModelIds: ['x-preview-f-free', 'nemotron-3-ultra-free'],
-    models: [{ id: 'x-preview-f-free' }, { id: 'nemotron-3-ultra-free' }],
-    modelSource: 'fetched' as const,
+    defaultModel: 'nemotron-3-ultra-free',
+    enabledModelIds: ['nemotron-3-ultra-free'],
+    models: [{ id: 'nemotron-3-ultra-free' }],
     createdAt: 1,
     updatedAt: 1,
   };
-  const models = chatModelChoicesFor([connection]).map(({ model }) => model);
-  assert.ok(!models.includes('x-preview-f-free'), 'quarantined default must not be offered');
-  assert.ok(models.includes('nemotron-3-ultra-free'), 'live enabled model still renders');
-  assert.equal(authorizeConnectionModel(connection, 'x-preview-f-free'), undefined);
+  assert.deepEqual(chatModelChoicesFor([connection]), []);
 });

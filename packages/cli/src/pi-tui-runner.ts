@@ -605,7 +605,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     };
   };
   let userQuestionInFlight = false;
-  let userQuestionOverlay: OverlayHandle | undefined;
+  let userQuestionPrompt: UserQuestionOverlay | undefined;
   let userQuestionProgress:
     | {
         requestId: string;
@@ -2266,9 +2266,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       margin: { bottom: BOTTOM_PICKER_MARGIN_ROWS },
     });
 
-  const closeUserQuestionOverlay = (): void => {
-    userQuestionOverlay?.hide();
-    userQuestionOverlay = undefined;
+  const closeUserQuestionPrompt = (): void => {
+    const prompt = userQuestionPrompt;
+    if (!prompt) return;
+    layout.setBlockingInteraction(undefined);
+    userQuestionPrompt = undefined;
+    if (tui.getFocusedComponent() === prompt) tui.setFocus(editorSurface);
   };
 
   const finishUserQuestion = (requestId: string, answers: Array<string | null>): void => {
@@ -2279,7 +2282,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     userQuestionInFlight = true;
-    closeUserQuestionOverlay();
+    closeUserQuestionPrompt();
     void respond
       .call(input.driver, { requestId, answers })
       .then(() => {
@@ -2307,38 +2310,35 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       finishUserQuestion(request.requestId, progress.answers);
       return;
     }
-    closeUserQuestionOverlay();
+    closeUserQuestionPrompt();
     const advance = (answer: string | null): void => {
       progress.answers[progress.index] = answer;
       progress.index += 1;
       showUserQuestion();
     };
-    userQuestionOverlay = showBottomPicker(
-      new UserQuestionOverlay(tui, {
-        title: question.question,
-        rightLabel: `${progress.index + 1} / ${request.questions.length}`,
-        hint: '↑↓ move · type to answer · Enter select · Esc unanswered · Ctrl+C stop',
-        placeholder: 'Other: type your answer…',
-        options: question.options,
-        // Live budget: terminal.rows changes on resize, so read it per render
-        // rather than at overlay construction.
-        maxRows: () => Math.max(1, terminal.rows - BOTTOM_PICKER_MARGIN_ROWS),
-        onSelectOption: (index) => advance(question.options[index]?.label ?? null),
-        onSubmitText: (value) => advance(value),
-        onSkip: () => advance(null),
-      }),
-    );
+    userQuestionPrompt = new UserQuestionOverlay(tui, {
+      title: question.question,
+      rightLabel: `${progress.index + 1} / ${request.questions.length}`,
+      hint: '↑↓ move · type to answer · Enter select · Esc unanswered · Ctrl+C stop',
+      placeholder: 'Other: type your answer…',
+      options: question.options,
+      onSelectOption: (index) => advance(question.options[index]?.label ?? null),
+      onSubmitText: (value) => advance(value),
+      onSkip: () => advance(null),
+    });
+    layout.setBlockingInteraction(userQuestionPrompt);
+    tui.setFocus(userQuestionPrompt);
   };
 
-  const syncUserQuestionOverlay = (): void => {
+  const syncUserQuestionPrompt = (): void => {
     const request = activeUserQuestionRequest(state);
     if (!request) {
-      closeUserQuestionOverlay();
+      closeUserQuestionPrompt();
       userQuestionProgress = undefined;
       return;
     }
     if (userQuestionInFlight) return;
-    if (userQuestionProgress?.requestId !== request.requestId) {
+    if (userQuestionProgress?.requestId !== request.requestId || !userQuestionPrompt) {
       userQuestionProgress = {
         requestId: request.requestId,
         index: 0,
@@ -2479,7 +2479,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       transcriptOverlay?.hide();
       transcriptOverlay = undefined;
     }
-    syncUserQuestionOverlay();
+    syncUserQuestionPrompt();
     syncFormOverlay();
   };
 
@@ -4775,6 +4775,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       else requestTurnInterrupt();
       return { consume: true };
     }
+    // AskUserQuestion is rendered inside the live layout so the transcript is
+    // not covered by a modal overlay. Keep the same input-capture boundary as
+    // the old overlay while the prompt owns focus.
+    if (userQuestionPrompt) return undefined;
     if (tui.hasOverlay()) return undefined;
     if (sideConversation && matchesSideConversationToggle(data)) {
       if (!isKeyRepeat(data)) void toggleSideConversation();

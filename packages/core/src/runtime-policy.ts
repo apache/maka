@@ -154,6 +154,7 @@ export interface RuntimePolicy {
   };
   readonly chatDefaults: {
     readonly permissionMode: ChatDefaultPermissionMode;
+    /** @deprecated Wire compatibility only; task creation ignores this field. */
     readonly thinkingLevel?: ThinkingLevel;
     readonly codeModeEnabled?: boolean;
   };
@@ -374,22 +375,6 @@ export interface UpdateCatalogConnectionInput {
 
 export interface RemoveCatalogConnectionInput {
   readonly expected: ConnectionVersionBasis;
-}
-
-/**
- * Built-in seed evolution as one atomic catalog mutation: a row still exactly
- * matching a historical system seed follows the current seed — enabled ids AND
- * the static inventory — and a system default the migration removes is
- * retargeted in the same document write. Any other inventory is a user
- * selection and is never touched; an already-null default stays null.
- */
-export interface MigrateSystemSeedInput {
-  readonly slug: string;
-  readonly providerType: ProviderType;
-  readonly legacyEnabledModelIds: readonly (readonly string[])[];
-  readonly enabledModelIds: readonly string[];
-  readonly defaultModelId: string;
-  readonly retiredModelIds: readonly string[];
 }
 
 export interface SetDefaultConnectionTargetInput {

@@ -89,7 +89,11 @@ import {
 import { RuntimeHostKernel, type RuntimeHostCompositionContext } from '../server/host-kernel.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import { connectRuntimeHost, RuntimeHostOperationError } from '../client/index.js';
-import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
+import {
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type ClientCapabilityHostFrame,
+} from '../protocol/index.js';
+import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
@@ -964,6 +968,138 @@ test('production composition commits automatic titles through Host-owned Session
   });
 });
 
+test('a committed Client Capability replacement stays acknowledged when recovery drains the Host', async (t) => {
+  await withCompositionRoot(async ({ owner }) => {
+    let drainRequests = 0;
+    const { composition } = await createCapturedExecutionComposition(owner, {
+      context: {
+        retainUntilProcessExit: () => undefined,
+        requestDrain: () => {
+          drainRequests += 1;
+        },
+      },
+    });
+    const frames: ClientCapabilityHostFrame[] = [];
+    const connectionId = 'capability-recovery-client';
+    const connection = composition.clientCapabilities!.attachConnection(
+      clientCapabilityConnectionIdentity(connectionId),
+      {
+        send: async (frame) => {
+          frames.push(frame);
+        },
+      },
+    );
+    const context: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId,
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    const firstRegistrationId = randomUUID();
+    try {
+      const first = await composition.handlers['client.capability.replace'](
+        {
+          registrationId: firstRegistrationId,
+          offers: workHubDesktopCapabilityOffers(),
+        },
+        context,
+      );
+      assert.ok(first.ok, JSON.stringify(first));
+
+      t.mock.method(RootTurnCoordinator.prototype, 'recover', async () => {
+        throw new Error('fixture post-commit recovery failure');
+      });
+      const replacement = await composition.handlers['client.capability.replace'](
+        {
+          registrationId: randomUUID(),
+          offers: workHubDesktopCapabilityOffers(),
+        },
+        context,
+      );
+
+      assert.ok(replacement.ok, JSON.stringify(replacement));
+      assert.equal(drainRequests, 1);
+      await waitFor(async () =>
+        frames.some(
+          (frame) =>
+            frame.kind === 'client.capability.registration_release' &&
+            frame.registrationId === firstRegistrationId,
+        ),
+      );
+    } finally {
+      await connection.close();
+      await composition.close();
+    }
+  });
+});
+
+test('Session capability publication follows durable archive and removal state, including after reconnect', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const { composition } = await createCapturedExecutionComposition(owner);
+    const context: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'scoped-client',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    const attach = () =>
+      composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity(context.connectionId),
+        { send: async () => undefined },
+      );
+    let connection = attach();
+    const publish = (sessionId: string) =>
+      composition.handlers['client.capability.replace'](
+        {
+          registrationId: randomUUID(),
+          sessionId,
+          offers: [],
+        },
+        context,
+      );
+    const setArchived = async (archived: boolean) => {
+      const snapshot = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+      await stores.sessionStore.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: snapshot.revision }],
+        archived,
+      );
+    };
+    try {
+      assert.equal(
+        (await publish(randomUUID())).ok,
+        true,
+        'ACP may publish before Session creation',
+      );
+      assert.equal((await publish(session.id)).ok, true);
+      await setArchived(true);
+      const archived = await publish(session.id);
+      assert.equal(archived.ok, false);
+      if (!archived.ok) assert.match(archived.error.message, /retired/);
+      await connection.close();
+      connection = attach();
+      assert.equal((await publish(session.id)).ok, false, 'reconnect must not bypass retirement');
+      await setArchived(false);
+      assert.equal((await publish(session.id)).ok, true, 'unarchiving allows a fresh publication');
+      const snapshot = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+      await stores.sessionStore.removeSessionsVersioned([
+        { sessionId: session.id, expectedVersion: snapshot.revision },
+      ]);
+      assert.equal((await publish(session.id)).ok, false, 'a tombstone is not a pre-creation ID');
+    } finally {
+      await connection.close();
+      await composition.close();
+    }
+  });
+});
+
 test('default production WorkHub selects and delegates through its durable Host interaction', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
@@ -1184,7 +1320,7 @@ test('default production WorkHub selects and delegates through its durable Host 
 
 test('WorkHub creates new work through the production assignment composition', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
-    const connectionId = await configureFakeDefaultTarget(owner);
+    const connectionId = await configureFakeDefaultTarget(owner, ['fake-model', 'fake-model-b']);
     const { composition, manager } = await createCapturedExecutionComposition(owner);
     const context = {
       hostEpoch: 'execution-composition-test',
@@ -1202,6 +1338,13 @@ test('WorkHub creates new work through the production assignment composition', a
           userText: 'Fix login stability',
           proposal: { disposition: 'create_new', title: 'Login stability' },
           create: { workspace: { kind: 'host_path', path: root } },
+          newWorkDefaults: {
+            model: {
+              llmConnectionId: connectionId,
+              llmConnectionSlug: 'fake',
+              model: 'fake-model-b',
+            },
+          },
         },
         context,
       );
@@ -1212,6 +1355,7 @@ test('WorkHub creates new work through the production assignment composition', a
       const session = (await manager.listSessions()).find(({ id }) => id === targetSessionId);
       assert.equal(session?.name, 'Login stability');
       assert.equal(session?.llmConnectionId, connectionId);
+      assert.equal(session?.model, 'fake-model-b');
 
       const current = await composition.handlers['workhub.coordination.candidates']({}, context);
       assert.equal(current.ok, true);
@@ -2740,7 +2884,10 @@ function compositionContext(owner: InteractiveRootOwner) {
   };
 }
 
-async function configureFakeDefaultTarget(owner: InteractiveRootOwner): Promise<string> {
+async function configureFakeDefaultTarget(
+  owner: InteractiveRootOwner,
+  modelIds: readonly string[] = ['fake-model'],
+): Promise<string> {
   const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
   const created = await policy.connectionCatalog.create({
     expectedCatalogRevision: 0,
@@ -2749,7 +2896,7 @@ async function configureFakeDefaultTarget(owner: InteractiveRootOwner): Promise<
       name: 'Fake',
       providerType: 'ollama',
       enabled: true,
-      enabledModelIds: ['fake-model'],
+      enabledModelIds: [...modelIds],
     },
   });
   assert.equal(created.kind, 'committed');
@@ -2761,7 +2908,7 @@ async function configureFakeDefaultTarget(owner: InteractiveRootOwner): Promise<
   assert.equal(fetch.kind, 'ready');
   if (fetch.kind !== 'ready') throw new Error('Fake model fetch did not start');
   const fetched = await policy.operations.completeModelFetch(fetch.ticket, {
-    models: [{ id: 'fake-model' }],
+    models: modelIds.map((id) => ({ id })),
     source: 'fetched',
     fetchedAt: Date.now(),
   });

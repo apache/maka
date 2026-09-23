@@ -103,7 +103,26 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 167 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 177 as const;
+// 177: External Session import input may carry an optional Host-resolved
+// workspace target. Epoch-176 peers reject the unknown `workspace` key.
+// 176: Session-scoped capability publication and MCP admission require compatible
+// Client and Host builds; older peers do not enforce their isolation contract.
+// 175: WorkHub coordinator model configuration again accepts only native
+// explicit targets. Epoch-174 peers may send an executor target it must reject.
+// 174: WorkHub new-Work defaults may select an executor-specific model and
+// thinking level. Epoch-173 peers reject these fields on strict action shapes.
+// 173: Plugin executor Sessions may select an executor-specific model at
+// creation and configuration time, and propagate its reasoning effort.
+// 172: Usage screen requests and results accept fractional timestamps in the
+// persisted domain. Older peers reject these otherwise valid wire values.
+// 171: Removed the `connection.usage.read` operation along with the Command
+// Code GO provider it served. A peer older than this epoch may still advertise
+// or submit that operation, which this Host no longer answers.
+// 169: The message execution query reports an identity the Host can prove was
+// never admitted as a positive `not_admitted` resolution instead of omitting
+// it, so silence stops meaning both "not admitted" and "cannot say yet".
+// Epoch-168 peers reject the new state as an invalid frame.
 // 167: Removed the turn.regenerate operation. Older peers can no longer
 // safely interoperate because they may submit or advertise that operation.
 // 166: Connection usage reads add an operation, an accepted availability reason

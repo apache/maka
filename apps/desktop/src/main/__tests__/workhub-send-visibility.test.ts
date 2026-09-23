@@ -52,6 +52,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
   const queueMutations: unknown[][] = [];
   const steers: Array<Parameters<WorkHubServices['enqueueMessage']>> = [];
   let steerResult: Awaited<ReturnType<WorkHubServices['enqueueMessage']>> = 'admitted';
+  let newWorkDefaults: Awaited<ReturnType<WorkHubServices['getNewWorkDefaults']>> = {};
   let onSteer: ((input: Parameters<WorkHubServices['enqueueMessage']>) => void) | undefined;
   const interrupts: Array<{ sessionId: string; turnId: string; runId: string }> = [];
   let stopRetractions: string[] = [];
@@ -93,6 +94,10 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     listSessions: async () => [],
     modelChoices: async () => [],
     setDefaultModel: async () => {},
+    getNewWorkDefaults: async () => newWorkDefaults,
+    setNewWorkDefaults: async (_id: string, defaults: typeof newWorkDefaults) => {
+      newWorkDefaults = defaults;
+    },
     subscribeHosts: () => () => {},
     subscribeAvailability: () => () => {},
     subscribeSessions: () => () => {},
@@ -201,77 +206,70 @@ test('WorkHub offers pre-session models and saves the selected default', async (
   assert.equal(h.controller.error, undefined);
 });
 
-test('WorkHub model and thinking selection share versioned saves and reject stale reads', async () => {
+test('WorkHub model selection configures only newly created work', async () => {
   type Session = Awaited<ReturnType<WorkHubServices['getSession']>>;
   const initial = {
     id: JSON.stringify(['host-1', 'workhub-coordination']),
     revision: 1, model: 'A', llmConnectionId: 'connection', llmConnectionSlug: 'provider',
     runningTurnIds: [],
   } as unknown as Session;
-  let snapshot = initial;
   let failSave = false;
-  let notify!: () => void;
-  let nextRead: Promise<Session> | undefined;
-  const requests: Array<Parameters<WorkHubServices['configureModel']>[1]> = [];
+  const requests: Array<Awaited<ReturnType<WorkHubServices['getNewWorkDefaults']>>> = [];
   const h = await mountController(false, {
-    getSession: async () => {
-      const read = nextRead;
-      nextRead = undefined;
-      return read ?? snapshot;
-    },
-    subscribeSessions: (handler) => { notify = handler; return () => {}; },
-    configureModel: async (_id, input) => {
-      requests.push(input);
+    getSession: async () => initial,
+    getNewWorkDefaults: async () => ({}),
+    setNewWorkDefaults: async (_id, defaults) => {
       if (failSave) throw new Error('configuration failed');
-      snapshot = { ...snapshot, model: input.modelTarget.model, thinkingLevel: input.thinkingLevel ?? undefined, revision: snapshot.revision + 1 };
-      return { kind: 'committed', session: snapshot } as unknown as Awaited<ReturnType<WorkHubServices['configureModel']>>;
+      requests.push(defaults);
     },
   });
-  const staleRead = deferred<Session>();
-  nextRead = staleRead.promise;
-  await act(async () => { notify(); });
-  const confirmation = deferred<Session>();
-  nextRead = confirmation.promise;
-  let settled = false;
-  let change!: Promise<void>;
   await act(async () => {
-    change = h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'B' });
-    void change.then(() => { settled = true; });
+    await h.controller.changeExecutor({
+      executorId: 'codex.app-server',
+      model: 'gpt-6-astra',
+      thinkingLevel: 'high',
+    });
   });
-  assert.equal(settled, false, 'the wheel must remain pending until the saved session is available');
-  assert.equal(h.controller.configuringModel, true);
-  await act(async () => { await h.controller.changeThinkingLevel('high'); });
-  assert.equal(requests.length, 1, 'model and thinking saves cannot overlap');
-  await act(async () => { confirmation.resolve(snapshot); await change; });
-  assert.equal(h.controller.session?.model, 'B');
-  assert.equal(h.controller.session?.revision, 2);
-  await act(async () => { staleRead.resolve(initial); });
-  assert.equal(h.controller.session?.model, 'B', 'a late background snapshot cannot roll back a successful pick');
+  assert.deepEqual(requests[0], {
+    executorId: 'codex.app-server',
+    executorModel: 'gpt-6-astra',
+    thinkingLevel: 'high',
+  });
+  assert.equal(h.controller.session?.model, 'A', 'the coordination Session keeps its own model');
+  assert.equal(h.controller.session?.revision, 1);
+
+  await act(async () => { await h.controller.changeThinkingLevel('max'); });
+  assert.equal(requests.at(-1)?.thinkingLevel, 'max');
+  assert.equal(requests.at(-1)?.executorModel, 'gpt-6-astra');
+
   await act(async () => {
-    await h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'C' });
+    await h.controller.changeModel({
+      llmConnectionId: 'connection',
+      llmConnectionSlug: 'provider',
+      model: 'C',
+    });
   });
-  assert.equal(requests[1]?.expectedRevision, 2, 'the next pick uses the committed revision');
-  assert.equal(h.controller.session?.model, 'C');
-  await act(async () => { await h.controller.changeThinkingLevel('high'); });
-  assert.equal(h.controller.session?.thinkingLevel, 'high');
-  assert.equal(requests.at(-1)?.expectedRevision, 3);
-  assert.equal(requests.at(-1)?.modelTarget.model, 'C', 'thinking changes preserve model identity');
+  assert.deepEqual(requests.at(-1), {
+    model: { llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'C' },
+  });
+  assert.equal(h.controller.session?.model, 'A');
+
   failSave = true;
-  await act(async () => { await h.controller.changeThinkingLevel('low'); });
-  assert.equal(h.controller.session?.thinkingLevel, 'high', 'failed writes retain the saved level');
+  await act(async () => {
+    await h.controller.changeModel({
+      llmConnectionId: 'connection',
+      llmConnectionSlug: 'provider',
+      model: 'D',
+    });
+  });
+  assert.equal(h.controller.newWorkDefaults.model?.model, 'C', 'failed writes retain the saved default');
   assert.equal(h.controller.error, 'configuration failed');
   assert.equal(h.controller.configuringModel, false);
-  failSave = false;
-  await act(async () => { await h.controller.changeThinkingLevel(undefined); });
-  assert.equal(requests.at(-1)?.thinkingLevel, null, 'default explicitly clears the stored override');
-  assert.equal(h.controller.session?.thinkingLevel, undefined);
-  await act(async () => { await h.controller.changeThinkingLevel('high'); });
-  await act(async () => { await h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'D' }); });
-  assert.equal(h.controller.session?.thinkingLevel, undefined, 'changing models clears the old model level');
+
   const count = requests.length;
   await act(async () => { h.admit('busy-turn'); });
   await act(async () => { await h.controller.changeThinkingLevel('high'); });
-  assert.equal(requests.length, count, 'running turns cannot change their thinking level');
+  assert.equal(requests.length, count, 'running coordination turns freeze new-work defaults');
 });
 
 test('WorkHub stops presenting execution on observation loss while retaining the Stop target', async () => {
@@ -564,7 +562,7 @@ test('uncertain steering retains its identity across Turn completion and rejecti
   await act(async () => { assert.equal(await h.controller.send('change direction', [], 'steer'), false); });
   const messageId = h.steers[1]![1];
   await act(async () => { assert.equal(await h.controller.send('change direction', []), false); });
-  assert.match(h.controller.error!, /Shift\+Enter/);
+  assert.match(h.controller.error!, /Cmd\/Ctrl\+Enter/);
   assert.equal(h.steers.length, 2, 'Enter cannot silently replay uncertain steering or duplicate it');
   for (const [text, attachments] of [
     ['edited direction', []],

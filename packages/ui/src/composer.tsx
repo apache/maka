@@ -34,12 +34,12 @@ import {
 } from 'react';
 import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
+import { isAppleShortcutPlatform } from './utils.js';
 import {
   ICON_SIZE,
   ArrowUp,
   CircleGauge,
   FileText,
-  GitBranch,
   ListTodo,
   MessagesSquare,
   Network,
@@ -78,6 +78,7 @@ import {
   createTriggerSearchSource,
   fileTransferContainsFiles,
   isChatInputComposing,
+  mentionMatchRank,
   mentionQueryMatches,
   selectedSkillIds,
   slashCommandQuery,
@@ -112,6 +113,7 @@ import {
   type SearchableItem,
   type SearchSource,
 } from '@astryxdesign/core';
+
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -136,6 +138,19 @@ import {
   MakaClientSessionScope,
   MakaClientSlotOutlet,
 } from './client-plugin-slots.js';
+
+// Astryx keeps this selection helper internal, so the shell owns its small
+// equivalent instead of importing an unpublished root export.
+function placeCaretAtEnd(editable: HTMLElement): boolean {
+  const selection = window.getSelection();
+  if (!selection) return false;
+  const range = document.createRange();
+  range.selectNodeContents(editable);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+}
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -193,6 +208,11 @@ type ComposerMentionSuggestion = {
  */
 function skillTokenValue(id: string): string {
   return `/skill:${id}`;
+}
+
+/** What a `/` command is named by, for `mentionMatchRank`: not its description. */
+function commandPrimaryText(command: ComposerSlashCommandOption): string {
+  return `${command.id} ${command.name} ${(command.keywords ?? []).join(' ')}`;
 }
 
 /**
@@ -378,6 +398,8 @@ export const Composer = forwardRef<
     waitForSessionReference?(): Promise<boolean>;
     modelLabel?: string;
     activeSession?: SessionSummary;
+    executorTarget?: import('./client-plugin-slots.js').MakaClientExecutorTarget;
+    onExecutorTargetChange?(target: import('./client-plugin-slots.js').MakaClientExecutorTarget): void | Promise<void>;
     activeModelConnectionId?: string;
     activeModelConnectionSlug?: string;
     activeModel?: string;
@@ -386,6 +408,8 @@ export const Composer = forwardRef<
     modelChoices?: ChatModelChoice[];
     /** Model-picker surface; 'wheel' is the collapsed WorkHub's inline picker, and any non-popover surface drops the thinking picker to a bottom sheet. */
     pickerPresentation?: 'popover' | 'bottom-sheet' | 'wheel';
+    /** Distinguishes the active Session model from defaults applied only to newly created WorkHub Sessions. */
+    modelSelectionPurpose?: 'session' | 'new-work-default';
     /**
      * Close the model/thinking pickers' open surfaces while an interaction
      * prompt occludes the composer — a bottom sheet stays a modal dialog even
@@ -458,17 +482,6 @@ export const Composer = forwardRef<
       metadataContextWindow?: number;
       /** Open the Host-owned trace surface for this readout. */
       onOpen(): void;
-    };
-    /**
-     * The working tree's Git branch, beside the context-usage readout. Omitted
-     * entirely when the session's directory is not a Git repository, so the
-     * chip simply does not exist there rather than sitting empty.
-     */
-    gitBranch?: {
-      /** The branch name, or `undefined` on a detached HEAD. */
-      name?: string;
-      /** The short commit sha, set only when `name` is absent. */
-      shortSha?: string;
     };
     /**
      * Optional edit-and-resend banner above the composer. Desktop owns the
@@ -683,12 +696,7 @@ export const Composer = forwardRef<
       return;
     }
     caretPendingRef.current = false;
-    const selection = document.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(editable);
-    range.collapse(false);
-    selection?.removeAllRanges();
-    selection?.addRange(range);
+    placeCaretAtEnd(editable);
   }
   function focusInput() {
     inputHandleRef.current?.focus();
@@ -1044,6 +1052,9 @@ export const Composer = forwardRef<
       const commandQuery = slashCommandQuery(textBeforeCaret, textAfterCaret, rawQuery);
       const query = skillMentionQuery(rawQuery);
       const selectedSkills = selectedSkillIds(textPort.getValue(), rawQuery);
+      // Ranked, then catalog order: a candidate whose own id/name answers the
+      // query leads the ones only their description mentions (mentionMatchRank).
+      // `Array.prototype.sort` is stable, so equal ranks keep the catalog order.
       const commandItems = commandQuery === null
         ? []
         : (source.slashCommands ?? [])
@@ -1052,6 +1063,10 @@ export const Composer = forwardRef<
                 commandQuery,
                 `${command.id} ${command.name} ${command.description ?? ''} ${(command.keywords ?? []).join(' ')}`,
               ),
+            )
+            .sort((left, right) =>
+              mentionMatchRank(commandQuery, commandPrimaryText(left)) -
+              mentionMatchRank(commandQuery, commandPrimaryText(right)),
             )
             .map((command) => ({
               id: `command:${command.id}`,
@@ -1066,6 +1081,10 @@ export const Composer = forwardRef<
         .filter((skill) => !selectedSkills.has(skill.id.toLowerCase()))
         .filter((skill) =>
           mentionQueryMatches(query, `${skill.id} ${skill.name} ${skill.description ?? ''}`),
+        )
+        .sort((left, right) =>
+          mentionMatchRank(query, `${left.id} ${left.name}`) -
+          mentionMatchRank(query, `${right.id} ${right.name}`),
         )
         .map((skill) => ({
           id: `skill:${skill.id}`,
@@ -1442,7 +1461,7 @@ export const Composer = forwardRef<
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     // Mid-turn the host queues the draft as a follow-up by default; only
-    // Shift+Enter (see onInputKeyDown) steers it into the active Turn.
+    // Cmd/Ctrl+Enter (see onInputKeyDown) steers it into the active Turn.
     void sendCurrent();
   }
 
@@ -1505,15 +1524,18 @@ export const Composer = forwardRef<
       if (handleArrowKey(event)) return;
     }
     if (event.key !== 'Enter') return;
-    // Alt+Enter always inserts a line break. During a running turn, Shift+Enter
-    // steers this one draft into the active Turn; plain Enter queues it.
-    if (event.altKey || (event.shiftKey && !props.streaming)) {
+    // Shift+Enter and Alt+Enter always insert a line break. The platform
+    // primary modifier steers this one draft mid-turn; plain Enter queues it.
+    if (event.altKey || event.shiftKey) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
       return;
     }
     event.preventDefault();
-    void sendCurrent(props.streaming && event.shiftKey ? 'steer' : undefined);
+    const primaryModifier = isAppleShortcutPlatform(navigator.platform)
+      ? event.metaKey
+      : event.ctrlKey;
+    void sendCurrent(props.streaming && primaryModifier ? 'steer' : undefined);
   }
 
   function onInputChange(next: string) {
@@ -1779,6 +1801,26 @@ export const Composer = forwardRef<
   );
   const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
   const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes);
+  const renderNativeThinkingControl = (): ReactNode =>
+    props.activeSession ? (
+      <ThinkingLevelSelector
+        levels={props.activeThinkingLevels ?? []}
+        current={props.activeThinkingLevel}
+        presentation={thinkingPresentation}
+        isReadOnly={props.pickersReadOnly}
+        onChange={props.onThinkingLevelChange}
+        disabled={!modelSwitchAvailability.available}
+        disabledReason={thinkingSwitcherDisabledReason}
+      />
+    ) : (
+      <ThinkingLevelSelector
+        levels={props.newChatThinkingLevels ?? []}
+        current={props.newChatThinkingLevel}
+        presentation={thinkingPresentation}
+        isReadOnly={props.pickersReadOnly}
+        onChange={props.onNewChatThinkingLevelChange}
+      />
+    );
 
   return (
     <>
@@ -2271,6 +2313,34 @@ export const Composer = forwardRef<
                   its explanation, so the footer never reflows when a turn
                   starts or ends. */}
               <div className="maka-model-selection-controls">
+                <MakaClientSessionScope sessionId={props.activeSession?.id}>
+                  <MakaClientSlotOutlet
+                    name="conversation.composer.model-selection"
+                    owner={{
+                      disabled: props.disabled === true,
+                      streaming: props.streaming === true,
+                      hasSession: props.activeSession !== undefined,
+                      presentation: props.pickerPresentation,
+                      isReadOnly: props.pickersReadOnly,
+                      purpose: props.modelSelectionPurpose,
+                      modelChoices: props.modelChoices ?? [],
+                      activeModel: props.activeModel,
+                      activeModelLabel: props.activeModelLabel,
+                      activeModelConnectionId: props.activeModelConnectionId,
+                      activeModelConnectionSlug: props.activeModelConnectionSlug,
+                      activeProviderType: props.activeProviderType,
+                      renderProviderMark: props.renderProviderMark,
+                      newChatModel: props.newChatModel,
+                      executorTarget: props.executorTarget,
+                      onNativeModelChange: props.activeSession
+                        ? props.onModelChange
+                        : props.onPickNewChatModel,
+                      renderNativeThinkingControl,
+                      onExecutorTargetChange: props.onExecutorTargetChange,
+                    }}
+                    options={{
+                      fallback: (
+                        <>
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     presentation={props.pickerPresentation}
@@ -2316,27 +2386,13 @@ export const Composer = forwardRef<
                     showUnavailableStatus={props.showStaticModelUnavailableStatus}
                   />
                 )}
-                {props.activeSession ? (
-                  <ThinkingLevelSelector
-                    levels={props.activeThinkingLevels ?? []}
-                    current={props.activeThinkingLevel}
-                    presentation={thinkingPresentation}
-                    isReadOnly={props.pickersReadOnly}
-                    onChange={props.onThinkingLevelChange}
-                    disabled={!modelSwitchAvailability.available}
-                    disabledReason={thinkingSwitcherDisabledReason}
+                {renderNativeThinkingControl()}
+                        </>
+                      ),
+                    }}
                   />
-                ) : (
-                  <ThinkingLevelSelector
-                    levels={props.newChatThinkingLevels ?? []}
-                    current={props.newChatThinkingLevel}
-                    presentation={thinkingPresentation}
-                    isReadOnly={props.pickersReadOnly}
-                    onChange={props.onNewChatThinkingLevelChange}
-                  />
-                )}
+                </MakaClientSessionScope>
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
-                {props.gitBranch ? <GitBranchChip {...props.gitBranch} /> : null}
               </div>
               {/* The project decides where a NEW chat starts, which makes it a
                   parameter of this send like the model beside it — so it sits
@@ -2351,7 +2407,8 @@ export const Composer = forwardRef<
                   the open menu next to the trigger rather than portaling it, so
                   the palette rebinding and the pinned-footer rules attach
                   here. */}
-              {!props.activeSession && props.workspacePicker ? (
+              {props.workspacePicker &&
+              (!props.activeSession || props.workspacePicker.showForActiveSession) ? (
                 <div className="maka-composer-workspace">
                   <WorkspacePicker workspacePicker={props.workspacePicker} />
                 </div>
@@ -2389,6 +2446,8 @@ export const Composer = forwardRef<
                     disabled: props.disabled === true,
                     streaming: props.streaming === true,
                     hasSession: props.activeSession !== undefined,
+                    executorTarget: props.executorTarget,
+                    onExecutorTargetChange: props.onExecutorTargetChange,
                   }}
                 />
               </MakaClientSessionScope>
@@ -2485,29 +2544,6 @@ function ContextUsageAction(props: {
     >
       {label}
     </UiButton>
-  );
-}
-
-function GitBranchChip(props: { name?: string; shortSha?: string }) {
-  const copy = getConversationCopy(useUiLocale()).messages.systemNotes;
-  // A detached HEAD has no branch name; the short sha is the honest label. Only
-  // one of the two is ever set (the host resolves it), and neither means the
-  // repository state is unknown — the chip stays off rather than guess.
-  const detached = props.name === undefined;
-  if (detached && props.shortSha === undefined) return null;
-  const label = props.name ?? props.shortSha!;
-  // The visible text is the branch; `title` names what it is and carries the
-  // full text, so a branch the row had to shorten is still readable on hover.
-  const title = detached ? copy.gitBranchDetached(props.shortSha!) : copy.gitBranchLabel;
-  // Readout, not a control: a `<span>`, so there is nothing to click or tab to.
-  // The class matches the ghost buttons beside it and widens past the model
-  // chip's 180px cap, so a usual branch shows whole; only a genuinely long one
-  // ellipsizes, and `title` carries it.
-  return (
-    <span className="maka-composer-git-branch" title={`${title}: ${label}`}>
-      <GitBranch size={ICON_SIZE.meta} aria-hidden="true" />
-      <span className="maka-composer-git-branch-text">{label}</span>
-    </span>
   );
 }
 

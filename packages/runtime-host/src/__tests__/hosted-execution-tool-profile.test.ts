@@ -78,7 +78,7 @@ test('the headless coding profile freezes prompt, tools, and memory and passes p
     profile.systemPrompt,
     [
       'Complete the task by acting with the available tools, not by narrating.',
-      'Prefer Read, Glob, and Grep for inspection, Edit and Write for file changes, and Bash for shell commands and tests.',
+      'Prefer Read, Glob, and Grep for inspection, the available file-editing tool for file changes, and Bash for shell commands and tests.',
       'Verify the result when practical.',
       'Stop when the task is complete.',
     ].join('\n'),

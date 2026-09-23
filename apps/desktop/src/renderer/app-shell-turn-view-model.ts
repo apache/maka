@@ -62,7 +62,7 @@ interface TurnPresentationEntry {
   failedExecutionStateLabel?: string;
 }
 
-const PENDING_ACTION_IDS = ['branch', 'copy'] as const;
+const PENDING_ACTION_IDS = ['branch'] as const;
 
 function isSandboxOnlyToolFailure(turn: TurnViewModel): boolean {
   const erroredTools = turn.tools.filter((tool) => tool.status === 'errored');

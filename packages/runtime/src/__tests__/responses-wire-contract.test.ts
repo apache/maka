@@ -192,7 +192,7 @@ describe('responses wire contract', () => {
     assert.deepEqual(sessionHeaders, ['session-opencode-go']);
   });
 
-  test('sends OpenCode Go and Free session identities through their model adapters', async () => {
+  test('sends OpenCode Go session identities through their model adapters', async () => {
     const requests: Array<{ url: string; sessionHeader: string | null }> = [];
     const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const request = new Request(url, init);
@@ -231,8 +231,6 @@ describe('responses wire contract', () => {
     for (const [providerType, modelId] of [
       ['opencode-go', 'kimi-k2.7-code'],
       ['opencode-go', 'minimax-m3'],
-      ['opencode-free', 'nemotron-3-ultra-free'],
-      ['opencode-free', 'nemotron-3-ultra-free'],
     ] as const) {
       const model = getAIModel({
         connection: conn(providerType),
@@ -254,14 +252,6 @@ describe('responses wire contract', () => {
       {
         url: 'https://opencode.ai/zen/go/v1/messages',
         sessionHeader: 'session-opencode-go',
-      },
-      {
-        url: 'https://opencode.ai/zen/v1/chat/completions',
-        sessionHeader: 'session-opencode-free',
-      },
-      {
-        url: 'https://opencode.ai/zen/v1/chat/completions',
-        sessionHeader: 'session-opencode-free',
       },
     ]);
   });
@@ -817,4 +807,119 @@ describe('responses wire request body', () => {
       output: '{"name":"maka"}',
     });
   });
+});
+
+test('Codex custom ApplyPatch streams raw input and replays custom tool results', async () => {
+  const patch = '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch';
+  const item = {
+    type: 'custom_tool_call',
+    status: 'completed',
+    id: 'custom-1',
+    call_id: 'patch-1',
+    name: 'apply_patch',
+    input: patch,
+  };
+  const response = {
+    id: 'response-patch',
+    object: 'response',
+    created_at: 0,
+    model: 'future-model',
+    status: 'completed',
+    output: [item],
+    usage: { input_tokens: 1, output_tokens: 1 },
+  };
+  const requests: Array<Record<string, unknown>> = [];
+  const fetch = (async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    requests.push(body);
+    if (!body.stream) return Response.json(response);
+    const events = [
+      { type: 'response.created', response: { ...response, status: 'in_progress', output: [] } },
+      { type: 'response.output_item.added', output_index: 0, item: { ...item, input: '' } },
+      {
+        type: 'response.custom_tool_call_input.delta',
+        output_index: 0,
+        item_id: item.id,
+        delta: patch,
+      },
+      { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', response },
+    ];
+    return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }) as typeof globalThis.fetch;
+  const connection = conn('openai-codex');
+  const model = getAIModel({ connection, apiKey: 'test-token', modelId: 'future-model', fetch });
+  const adapter = new ModelAdapter({
+    connection,
+    apiKey: 'test-token',
+    modelId: 'future-model',
+    modelFactory: () => model,
+    newId: () => 'test-id',
+    now: () => 0,
+  });
+  const toolSet = {
+    apply_patch: {
+      kind: 'provider' as const,
+      providerTool: { kind: 'codex-apply-patch' as const },
+    },
+  };
+  const stream = await adapter.startStream({
+    model: adapter.resolveModel(),
+    messages: [{ role: 'user', content: 'edit' }],
+    tools: toolSet,
+    activeTools: ['apply_patch'],
+    system: 'Edit files',
+    onStreamActivity: () => {},
+    abortSignal: new AbortController().signal,
+    repairToolCall: async () => null,
+  });
+  const events = [];
+  for await (const event of stream.events) events.push(event);
+  assert.equal(
+    events.find((event) => event.kind === 'error'),
+    undefined,
+  );
+  const call = events.find((event) => event.kind === 'tool-call');
+  assert.equal(call?.toolCall.input, patch);
+  assert.notEqual(call?.toolCall.providerExecuted, true);
+  const declarations = requests[0]?.tools;
+  assert.ok(Array.isArray(declarations));
+  const declaration = declarations[0]!;
+  assert.equal(declaration.type, 'custom');
+  assert.equal(declaration.name, 'apply_patch');
+  assert.equal((declaration.format as { syntax: string }).syntax, 'lark');
+  assert.doesNotMatch(JSON.stringify(declaration.format), /Move to/);
+
+  const tools = lowerModelTools(toolSet);
+  await model.doGenerate({
+    prompt: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCallId: 'patch-1', toolName: 'apply_patch', input: patch },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'patch-1',
+            toolName: 'apply_patch',
+            output: { type: 'json', value: { status: 'failed', output: 'file not found' } },
+          },
+        ],
+      },
+    ],
+    tools: [{ ...(tools.apply_patch as object), name: 'apply_patch' } as never],
+    providerOptions: { openai: { store: false } },
+  });
+  const replay = requests[1]?.input as Array<Record<string, unknown>>;
+  assert.equal(replay[0]?.type, 'custom_tool_call');
+  assert.equal(replay[0]?.input, patch);
+  assert.equal(replay[1]?.type, 'custom_tool_call_output');
+  assert.equal(replay[1]?.call_id, 'patch-1');
+  assert.match(String(replay[1]?.output), /file not found/);
 });

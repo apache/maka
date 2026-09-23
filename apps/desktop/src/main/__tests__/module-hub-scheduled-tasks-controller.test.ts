@@ -482,3 +482,49 @@ afterEach(() => {
   latest = undefined;
   cleanupFakeDom();
 });
+
+test('Scheduled Tasks refresh failures stay silent while the default Host is unavailable', async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const host = { profileId: 'profile-a', hostId: 'host-a' };
+  let defaultHost: typeof host | undefined;
+  const defaults = createFakeModuleHubServices();
+  const services = createFakeModuleHubServices({
+    runtimeHosts: {
+      ...defaults.runtimeHosts,
+      getDefault: async () => {
+        if (!defaultHost) throw new Error('identity is unavailable');
+        return defaultHost;
+      },
+    },
+    scheduledTasks: {
+      ...defaults.scheduledTasks,
+      list: async () => [task('ready-task')],
+    },
+  });
+  await act(async () =>
+    renderController(root, services, {
+      selection: activeSelection,
+      selectModule: () => undefined,
+      toastApi: toastRecorder(records),
+    }),
+  );
+
+  await act(async () => controller().refresh());
+  assert.deepEqual(records, []);
+  assert.deepEqual(controller().scheduledTasks, []);
+
+  defaultHost = host;
+  await act(async () => controller().refresh());
+  assert.deepEqual(
+    controller().scheduledTasks.map(({ id }) => id),
+    ['ready-task'],
+  );
+  assert.deepEqual(records, []);
+
+  services.scheduledTasks.list = async () => {
+    throw new Error('list failed');
+  };
+  await act(async () => controller().refresh());
+  assert.equal(records.filter(({ kind }) => kind === 'error').length, 1);
+});

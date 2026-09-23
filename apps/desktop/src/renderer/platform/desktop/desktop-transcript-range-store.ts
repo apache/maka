@@ -474,7 +474,9 @@ export class DesktopTranscriptRangeStore {
       hostEpoch: this.#hostEpoch,
       durableThrough: this.#value.through,
       oldestSequence: this.#value.order[0] ?? null,
-      hasOlder: this.#value.hasOlder,
+      // A cached snapshot cannot serve earlier reads; the live answer replaces
+      // it rather than continuing it.
+      hasOlder: this.#value.hasOlder && !this.#generation.startsWith('cached:'),
       beginsAtTurnBoundary: this.#value.beginsAtTurnBoundary,
       ready: this.#ready,
     };

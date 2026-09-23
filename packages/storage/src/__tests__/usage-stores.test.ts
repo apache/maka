@@ -344,6 +344,41 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('close waits an admitted Usage screen read and rejects later reads', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const accepted = stores.readUsageScreen({ kind: 'screen', query: screenQuery });
+      const closed = stores.close();
+
+      assert.throws(
+        () => stores.readUsageScreen({ kind: 'screen', query: screenQuery }),
+        InteractiveUsageStoresClosedError,
+      );
+      assert.equal((await accepted).kind, 'screen');
+      await closed;
+      await owner.close();
+    });
+  });
+
+  test('a failed admitted Usage read settles the barrier without poisoning close', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const failed = stores.readUsageScreen({
+        kind: 'screen',
+        query: { ...screenQuery, search: '界'.repeat(342) },
+      });
+      const closed = stores.close();
+
+      await assert.rejects(failed, /Invalid Usage screen query/);
+      await closed;
+      await owner.close();
+    });
+  });
+
   test('lease-bound facade exposes separate LLM and filtered tool logs', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -622,6 +657,30 @@ describe('InteractiveUsageStores', () => {
         (error) => error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
       );
       await stores.close();
+    });
+  });
+
+  test('reader close waits an admitted Usage screen read', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const writer = await openInteractiveUsageStoresForWrite(owner.lease);
+      await writer.close();
+      await owner.close();
+
+      const readerOwner = await tryAcquireInteractiveRootReader(capability);
+      assert(readerOwner);
+      const reader = await openInteractiveUsageStoresForRead(readerOwner.lease);
+      const accepted = reader.readUsageScreen({ kind: 'screen', query: screenQuery });
+      const closed = reader.close();
+
+      await assert.rejects(
+        reader.readUsageScreen({ kind: 'screen', query: screenQuery }),
+        InteractiveUsageStoresClosedError,
+      );
+      assert.equal((await accepted).kind, 'screen');
+      await closed;
+      await readerOwner.close();
     });
   });
 
@@ -939,6 +998,61 @@ describe('revision-consistent Usage screen', () => {
       await assert.rejects(
         stores.readUsageScreen({ ...continuation(screen), cursor: 'malformed' }),
         /cursor/,
+      );
+    });
+  });
+
+  test('shares the protocol UTF-8 search boundary', async () => {
+    await withScreenStores(async (stores) => {
+      const accepted = { ...screenQuery, search: '界'.repeat(341) + 'x' };
+      assert.equal(
+        (await stores.readUsageScreen({ kind: 'screen', query: accepted })).kind,
+        'screen',
+      );
+      await assert.rejects(
+        stores.readUsageScreen({
+          kind: 'screen',
+          query: { ...screenQuery, search: '界'.repeat(342) },
+        }),
+        /Invalid Usage screen query/,
+      );
+    });
+  });
+
+  test('continues after a fractional timestamp without duplicate or missing rows', async () => {
+    await withScreenStores(async (stores) => {
+      for (let i = 0; i < 49; i++) {
+        await stores.telemetry.recordLlmCall(llmRecord({ id: `newer-${i}`, ts: 200 + i }));
+      }
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'fractional-boundary', ts: 100.5 }));
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'older', ts: 100 }));
+
+      const screen = await initialScreen(stores);
+      assert.equal(screen.logs.length, 50);
+      assert.equal(screen.logs.at(-1)?.id, 'fractional-boundary');
+      const result = await stores.readUsageScreen(continuation(screen));
+      assert.ok(result.kind === 'activity');
+      assert.deepEqual(
+        result.page.logs.map((row) => row.id),
+        ['older'],
+      );
+      assert.equal(result.page.nextCursor, null);
+      assert.equal(new Set([...screen.logs, ...result.page.logs].map((row) => row.id)).size, 51);
+    });
+  });
+
+  test('accepts fractional query bounds from the shared timestamp domain', async () => {
+    await withScreenStores(async (stores) => {
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'inside-fractional-range', ts: 100.5 }));
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'outside-fractional-range', ts: 101 }));
+
+      const screen = await initialScreen(stores, {
+        ...screenQuery,
+        range: { from: 100.25, to: 100.75 },
+      });
+      assert.deepEqual(
+        screen.logs.map((row) => row.id),
+        ['inside-fractional-range'],
       );
     });
   });

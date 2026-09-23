@@ -131,22 +131,6 @@ describe('projectToolArgsPreview', () => {
     );
   });
 
-  it('names deep research starts from their bounded objective preview', () => {
-    const preview = projectToolArgsPreview('deep_research_start', {
-      objective: 'Inspect the runtime host boundary',
-      scope_level: 'standard',
-      artifact_content: 'must not reach the live wire',
-    });
-    assert.deepEqual(preview, {
-      objective: 'Inspect the runtime host boundary',
-      scope_level: 'standard',
-    });
-    assert.equal(
-      formatToolInvocationLine({ toolName: 'deep_research_start', args: preview }, 'en'),
-      'Inspect the runtime host boundary (standard)',
-    );
-  });
-
   it('bounds long values and whole-preview size', () => {
     const preview = projectToolArgsPreview('Bash', { command: 'x'.repeat(5000) });
     const command = (preview as { command: string }).command;

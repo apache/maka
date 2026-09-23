@@ -171,7 +171,7 @@ test('shell settings default, normalize, and merge through their shared boundary
   );
 });
 
-test('a chat-default thinking level the app does not recognize drops to no preference', () => {
+test('an unrecognized legacy chat thinking field drops to no preference', () => {
   const normalized = normalizeSettings({
     chatDefaults: { thinkingLevel: 'ultra' as unknown as undefined },
   });
@@ -421,4 +421,23 @@ test('proxy credentials never enter persisted settings', () => {
   assert.strictEqual('credential' in normalized.network.proxy, false);
   assert.strictEqual('password' in normalized.network.proxy, false);
   assert.strictEqual('passwordConfigured' in normalized.network.proxy, false);
+});
+
+test('Workbar toggle position defaults to edge and survives other appearance updates', () => {
+  assert.equal(createDefaultSettings().appearance.workbarTogglePosition, 'edge');
+  for (const workbarTogglePosition of [undefined, null, 'invalid', 1]) {
+    assert.equal(
+      normalizeSettings({ appearance: { workbarTogglePosition } as never }).appearance
+        .workbarTogglePosition,
+      'edge',
+    );
+  }
+  for (const workbarTogglePosition of ['edge', 'titlebar'] as const) {
+    const saved = normalizeSettings({ appearance: { theme: 'auto', workbarTogglePosition } });
+    const updated = mergeSettings(saved, { appearance: { theme: 'dark' } });
+    assert.equal(
+      normalizeSettings(JSON.parse(JSON.stringify(updated))).appearance.workbarTogglePosition,
+      workbarTogglePosition,
+    );
+  }
 });

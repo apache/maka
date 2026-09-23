@@ -83,30 +83,41 @@ export type HostHandoffObservation<T> =
   | { readonly kind: 'ready'; readonly value: T }
   | { readonly kind: 'blocked'; readonly blocker: HostHandoffBlocker };
 
-/** Data-only projection. A Surface cannot supply policy, a target, or a transaction. */
-export interface HostHandoffView {
+export type HostHandoffReason =
+  | 'replacement_required'
+  | 'busy'
+  | 'activity_unknown'
+  | 'operator_required'
+  | 'repair_required'
+  | 'retry_required';
+
+interface HostHandoffViewBase {
   readonly revision: string;
   readonly target: HostHandoffTarget;
-  readonly state: 'attention' | 'progress';
-  readonly reason:
-    | 'replacement_required'
-    | 'busy'
-    | 'activity_unknown'
-    | 'operator_required'
-    | 'repair_required'
-    | 'retry_required';
   readonly activity?: HostActivitySnapshot;
   readonly mayExitNaturally: boolean;
   readonly manualRecheck?: boolean;
   readonly packageChange?: { readonly current: string; readonly target: string };
   readonly operation?: 'replace' | 'repair';
-  readonly phase?: HostHandoffPhase;
   readonly actions: readonly HostHandoffAction[];
   readonly defaultAction: 'cancel';
   readonly recoveryBlocker?: HostHandoffRecoveryBlocker;
   readonly operatorStep?: string;
   readonly diagnostic?: string;
 }
+
+export interface HostHandoffAttentionView extends HostHandoffViewBase {
+  readonly state: 'attention';
+  readonly reason: HostHandoffReason;
+}
+
+export interface HostHandoffProgressView extends HostHandoffViewBase {
+  readonly state: 'progress';
+  readonly phase: HostHandoffPhase;
+}
+
+/** Data-only projection. A Surface cannot supply policy, a target, or a transaction. */
+export type HostHandoffView = HostHandoffAttentionView | HostHandoffProgressView;
 
 export interface HostHandoffSurface {
   update(view: HostHandoffView): void;
@@ -128,7 +139,7 @@ export class HostHandoffCancelledError extends RuntimeHostPermanentReconnectErro
 /** Noninteractive callers receive the same decision instead of prompting or silently stopping work. */
 export class HostHandoffRequiredError extends RuntimeHostPermanentReconnectError {
   readonly code = 'runtime_host_handoff_required';
-  constructor(readonly view: HostHandoffView) {
+  constructor(readonly view: HostHandoffAttentionView) {
     const copy = formatHostHandoff(view, 'en');
     super([copy.title, copy.description, copy.detail, view.diagnostic].filter(Boolean).join('\n'));
     this.name = 'HostHandoffRequiredError';
@@ -277,11 +288,13 @@ export async function runHostHandoff<T extends { close(): Promise<void> }>(input
           : attemptAbort.signal;
         const progress = (phase: HostHandoffPhase) =>
           publish({
-            ...current,
             revision: randomUUID(),
+            target: current.target,
             state: 'progress',
             phase: cooperative && !interrupt && phase === 'retiring' ? 'pausing' : phase,
             actions: cancelled ? [] : ['cancel'],
+            defaultAction: 'cancel',
+            mayExitNaturally: false,
           });
         if (input.openSurface) surface ??= input.openSurface(submit);
         progress(cooperative && !interrupt ? 'pausing' : 'checking');
@@ -353,7 +366,7 @@ function projectBlocker(
   revision: string,
   recovery?: string,
   activeWorkRefused = false,
-): HostHandoffView {
+): HostHandoffAttentionView {
   const replacement = blocker.replacement;
   return {
     revision,

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkbarTogglePosition } from '@maka/core/settings';
 import { isNativeSurfaceOccluded } from '../../../application/contracts/native-surface-occlusion.js';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core';
@@ -26,12 +27,12 @@ import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
 /** The main window owns only this landing space; the live view keeps its React owner. */
-export function WorkHubDock({ enabled, visible = true, workbarCollapsed }: { enabled: boolean; visible?: boolean; workbarCollapsed: boolean }) {
+export function WorkHubDock({ enabled, visible = true, workbarCollapsed, workbarTogglePosition = 'edge' }: { enabled: boolean; visible?: boolean; workbarCollapsed: boolean; workbarTogglePosition?: WorkbarTogglePosition }) {
   const { presentation } = useWorkHubServices();
   const t = workHubLiveCopy[useUiLocale()];
   const element = useRef<HTMLElement>(null);
-  const collapsed = useRef(workbarCollapsed);
-  collapsed.current = workbarCollapsed;
+  const workbarState = useRef({ collapsed: workbarCollapsed, togglePosition: workbarTogglePosition });
+  workbarState.current = { collapsed: workbarCollapsed, togglePosition: workbarTogglePosition };
   const [snapshot, setSnapshot] = useState<WorkHubPresentationSnapshot>();
   const [backdrop, setBackdrop] = useState<string>();
   const [error, setError] = useState<string>();
@@ -65,7 +66,7 @@ export function WorkHubDock({ enabled, visible = true, workbarCollapsed }: { ena
       const host = {
         visible: enabled && visible && rect.width > 0 && rect.height > 0,
         occluded,
-        workbar: { collapsed: collapsed.current, placement: window.matchMedia('(max-width: 990px)').matches ? 'bottom' as const : 'right' as const },
+        workbar: { ...workbarState.current, placement: window.matchMedia('(max-width: 990px)').matches ? 'bottom' as const : 'right' as const },
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
       const key = JSON.stringify(host);

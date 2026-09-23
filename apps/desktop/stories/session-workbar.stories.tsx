@@ -829,7 +829,6 @@ function bridge(options: {
         if (options.reviewFail) throw new Error('读取变更失败：无法运行 git diff');
         return options.review ?? { ok: true, snapshot: gitReviewSnapshot };
       },
-      branch: async () => ({ ok: true, snapshot: { branch: 'main', shortSha: null } }),
       subscribeSessionEvents: unsubscribe,
     },
     terminal: {

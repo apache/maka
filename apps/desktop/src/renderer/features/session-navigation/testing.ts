@@ -39,6 +39,7 @@ export {
 export { useSessionSelection } from './controller/use-session-selection.js';
 export type { SessionNavigationRowActions } from './controller/session-row-actions.js';
 export { useSessionNavigationReads } from './controller/use-session-navigation-reads.js';
+export { SessionNavigationProvider } from './ui/session-navigation-provider.js';
 export { sessionMatchesRail } from './model/session-nav-filter.js';
 export { deriveBranchBanner } from './model/branch-banner.js';
 export { deriveSessionRail } from './model/session-rail.js';
@@ -68,6 +69,7 @@ export function createFakeSessionNavigationServices(
       rename: async () => undefined,
       remove: async () => ({ disposition: 'removed', archivedSubtaskCount: 0 }),
       previewRemoval: async () => 0,
+      moveToProject: async () => ({ ok: true }),
     },
     ...overrides,
   };

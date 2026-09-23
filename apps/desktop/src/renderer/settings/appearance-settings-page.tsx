@@ -29,6 +29,7 @@ import {
   TERMINAL_FONT_SIZE_MIN,
   type ThemePalette,
   type ThemePreference,
+  type WorkbarTogglePosition,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
   type UpdateAppSettingsResult,
@@ -154,6 +155,7 @@ const appIconGroupLabelId = (group: string) => `settings-appearance-app-icon-${g
 const FONT_SIZE_SECTION_HEADING_ID = 'settings-appearance-font-size-heading';
 
 export function AppearanceSettingsPage(props: {
+  workbarTogglePosition?: WorkbarTogglePosition;
   themePref: ThemePreference;
   themePalette: ThemePalette;
   appIcon: AppIconChoice;
@@ -467,6 +469,19 @@ export function AppearanceSettingsPage(props: {
             </Grid>
           </VStack>
         ))}
+      </SettingsSection>
+      <SettingsSection variant="bare" title={copy.workbar.title}>
+        <SettingsRow
+          label={copy.workbar.titlebarToggle}
+          description={copy.workbar.help}
+          end={
+            <Switch
+              label={copy.workbar.titlebarToggle}
+              value={props.workbarTogglePosition === 'titlebar'}
+              onChange={(enabled) => void persistAppearance({ workbarTogglePosition: enabled ? 'titlebar' : 'edge' })}
+            />
+          }
+        />
       </SettingsSection>
       <SettingsSection
         variant="bare"
