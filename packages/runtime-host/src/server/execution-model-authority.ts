@@ -393,13 +393,24 @@ export function createHostDailyReviewModel(
 
 export function createHostPromptSuggestionModel(input: HostSessionEffectModelInput) {
   const authority = createAuxiliaryModelCallAuthority(input);
-  return async (source: import('./prompt-suggestion.js').PromptSuggestionSource, abortSignal: AbortSignal): Promise<string | undefined> => {
+  return async (
+    source: import('./prompt-suggestion.js').PromptSuggestionSource,
+    abortSignal: AbortSignal,
+  ): Promise<string | undefined> => {
     const result = await runHostAuxiliaryModelCall(authority, {
-      transportContextId: source.sessionId, telemetrySessionId: source.sessionId,
+      transportContextId: source.sessionId,
+      telemetrySessionId: source.sessionId,
       header: { ...source.header, thinkingLevel: 'off' },
-      callKind: 'prompt_suggestion', callId: `prompt_suggestion_${source.terminalEventId}`,
+      callKind: 'prompt_suggestion',
+      callId: `prompt_suggestion_${source.terminalEventId}`,
       abortSignal,
-      buildRequest: () => ({ prompt: buildPromptSuggestionPrompt(source.messages, source.header.role === 'workhub_coordination'), maxOutputTokens: 128 }),
+      buildRequest: () => ({
+        prompt: buildPromptSuggestionPrompt(
+          source.messages,
+          source.header.role === 'workhub_coordination',
+        ),
+        maxOutputTokens: 128,
+      }),
     });
     return result.finishReason === 'length' ? undefined : result.text;
   };

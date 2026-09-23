@@ -130,7 +130,13 @@ export function installStorybookRenderProbe({ storyId }) {
         smoke.finished = true;
       }
     });
-    for (const eventName of ['storyErrored', 'storyThrewException', 'storyMissing', 'playFunctionThrewException', 'unhandledErrorsWhilePlaying']) {
+    for (const eventName of [
+      'storyErrored',
+      'storyThrewException',
+      'storyMissing',
+      'playFunctionThrewException',
+      'unhandledErrorsWhilePlaying',
+    ]) {
       channel.on(eventName, (payload) => {
         if (belongsToStory(payload)) {
           smoke.failures.push(`${eventName}: ${eventMessage(payload)}`);
@@ -176,7 +182,12 @@ export function catalogJobs(
       if (entry.id === 'product-workhub--next-prompt-suggestion') {
         return COLOR_SCHEMES.flatMap((colorScheme) =>
           [RENDER_VIEWPORT, NARROW_RENDER_VIEWPORT].map((viewport) => ({
-            storyId: entry.id, colorScheme, forcedColors: 'none', palette: 'default', locale: 'zh-CN', viewport,
+            storyId: entry.id,
+            colorScheme,
+            forcedColors: 'none',
+            palette: 'default',
+            locale: 'zh-CN',
+            viewport,
           })),
         );
       }

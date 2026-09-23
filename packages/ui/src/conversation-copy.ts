@@ -85,6 +85,9 @@ export interface ConversationCopy {
     headlineFallback: (greeting: string, tail: string) => string;
   };
   composer: {
+    promptSuggestionLabel: string;
+    promptSuggestionAccept: string;
+    promptSuggestionDescription: string;
     placeholder: string;
     textareaAriaLabel: string;
     pastedQuoteLabel: string;
@@ -448,6 +451,7 @@ const CONVERSATION_COPY = {
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做点什么？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
     },
     composer: {
+      promptSuggestionLabel: '下一步输入建议', promptSuggestionAccept: 'Tab 接受建议', promptSuggestionDescription: '回复后额外调用模型生成建议',
       placeholder: '描述任务，@ 引用文件或会话，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
@@ -573,6 +577,7 @@ const CONVERSATION_COPY = {
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做點什麼？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
     },
     composer: {
+      promptSuggestionLabel: '下一步輸入建議', promptSuggestionAccept: 'Tab 接受建議', promptSuggestionDescription: '回覆後額外呼叫模型生成建議',
       placeholder: '描述任務，@ 引用檔案，/ 選擇技能…', textareaAriaLabel: '訊息輸入框', pastedQuoteLabel: '貼上的文本', selectedSkillsAriaLabel: '已選擇的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你確認權限…',
       sending: '正在傳送…', importing: '正在匯入…', sendLabel: '傳送',
       queuedMessagesAriaLabel: (count) => `${count} 條待發送訊息`,
@@ -698,6 +703,7 @@ const CONVERSATION_COPY = {
       headlineWithLabel: (greeting, label) => `${greeting} ${label} — what shall we tackle today?`, headlineFallback: (greeting, tail) => `${greeting} — ${tail}.`,
     },
     composer: {
+      promptSuggestionLabel: 'Next prompt suggestions', promptSuggestionAccept: 'Tab to accept', promptSuggestionDescription: 'Uses an extra model request after each reply',
       placeholder: 'Describe a task, @ to reference files or sessions, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,

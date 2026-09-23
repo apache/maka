@@ -1425,23 +1425,43 @@ export async function createExecutionRuntimeHostComposition(
     sessionEffects = sessionEffectCoordinator;
     const promptSuggestionCoordinator = new HostPromptSuggestionCoordinator({
       generate: createHostPromptSuggestionModel({
-        runtimePolicy: runtimePolicyStores, oauthCredentials, usage: openedUsageStores,
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
-      readSource: (sessionId) => sessionAdmission.run(sessionId, async () => {
-        if ((await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy.incognitoActive) return undefined;
-        const canonical = await canonicalProjectionReader.read(sessionId);
-        const turn = canonical?.rootTurn;
-        if (!canonical || !turn || turn.status !== 'completed' || turn.contextCompactionOutcome
-          || canonical.session.isArchived || canonical.interactions.pending.length
-          || canonical.queue.followup.length || canonical.queue.steering.length
-          || canonical.goal?.status === 'active'
-          || requireSessionManager(manager).runningTurnIds(sessionId).length) return undefined;
-        const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
-        if (!supportsPromptSuggestion(sessionId, header)) return undefined;
-        const view = await recapReadModel.getSessionView(sessionId);
-        return { sessionId, turnId: turn.turnId, terminalEventId: turn.terminalEventId, header, messages: view.messages };
-      }),
+      readSource: (sessionId) =>
+        sessionAdmission.run(sessionId, async () => {
+          if (
+            (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy.incognitoActive
+          )
+            return undefined;
+          const canonical = await canonicalProjectionReader.read(sessionId);
+          const turn = canonical?.rootTurn;
+          if (
+            !canonical ||
+            !turn ||
+            turn.status !== 'completed' ||
+            turn.contextCompactionOutcome ||
+            canonical.session.isArchived ||
+            canonical.interactions.pending.length ||
+            canonical.queue.followup.length ||
+            canonical.queue.steering.length ||
+            canonical.goal?.status === 'active' ||
+            requireSessionManager(manager).runningTurnIds(sessionId).length
+          )
+            return undefined;
+          const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+          if (!supportsPromptSuggestion(sessionId, header)) return undefined;
+          const view = await recapReadModel.getSessionView(sessionId);
+          return {
+            sessionId,
+            turnId: turn.turnId,
+            terminalEventId: turn.terminalEventId,
+            header,
+            messages: view.messages,
+          };
+        }),
     });
     promptSuggestions = promptSuggestionCoordinator;
     const resolveChildTools = async (sessionId: string) => {

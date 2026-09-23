@@ -921,8 +921,8 @@ export const Composer = forwardRef<
     blocked: Boolean(props.disabled || props.hidden || props.goalActive || props.planModeActive
       || props.pendingAttachments?.length || props.pendingQuotes?.length || props.pendingSessionReferences?.length),
   });
-  const suggestionLabel = locale === 'en' ? 'Next prompt suggestions' : locale === 'zh-TW' ? '下一步輸入建議' : '下一步输入建议';
-  const suggestionAcceptLabel = locale === 'en' ? 'Tab to accept' : locale === 'zh-TW' ? 'Tab 接受建議' : 'Tab 接受建议';
+  const suggestionLabel = copy.promptSuggestionLabel;
+  const suggestionAcceptLabel = copy.promptSuggestionAccept;
   function acceptNextPrompt() {
     if (!nextPrompt.text || compositionActiveRef.current || textPort.getValue().length) return;
     const value = nextPrompt.text;
@@ -2298,7 +2298,7 @@ export const Composer = forwardRef<
                     {nextPrompt.service ? (
                       <DropdownMenuCheckboxItem label={suggestionLabel} value={nextPrompt.service.enabled}
                         endContent={nextPrompt.service.enabled ? <SelectionMark state="checked" size="sm" /> : undefined}
-                        description={locale === 'en' ? 'Uses an extra model request after each reply' : locale === 'zh-TW' ? '回覆後額外呼叫模型生成建議' : '回复后额外调用模型生成建议'}
+                        description={copy.promptSuggestionDescription}
                         onChange={(enabled) => { nextPrompt.dismiss(); nextPrompt.service?.setEnabled(enabled); }} />
                     ) : null}
                     {hasPlusMenuModes ? (
