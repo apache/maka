@@ -253,7 +253,7 @@ test('MCP IPC transports corrupt-file details for reads and every mutation witho
     return true;
   });
   await writeFile(path, source);
-  const ipc = mutationHarness(store);
+  const ipc = mutationHarness(t, store);
   const calls: [string, ...unknown[]][] = [
     ['mcp:getConfig'],
     ['mcp:importConfig', '{"new":{"command":"unused"}}'],

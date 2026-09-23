@@ -683,3 +683,53 @@ test('corrupt persisted MCP JSON has a safe actionable error and mutations canno
     },
   );
 });
+
+for (const prefix of ['', '\uFEFF']) {
+  test(`reads MCP UTF-8 JSON ${prefix ? 'with' : 'without'} a BOM without rewriting it`, async () => {
+    const root = await tempRoot();
+    const path = join(root, 'mcp.json');
+    const config = {
+      version: 3,
+      mcpServers: { example: { command: 'node', args: ['\uFEFFdata'] } },
+    };
+    const bytes = Buffer.from(prefix + JSON.stringify(config));
+    await writeFile(path, bytes);
+    assert.deepEqual(await createMcpConfigStore(root).get(), normalizeMcpConfig(config));
+    assert.deepEqual(await readFile(path), bytes);
+    for (const source of [config, config.mcpServers]) {
+      assert.deepEqual(
+        normalizeMcpImport(prefix + JSON.stringify(source)),
+        normalizeMcpConfig(config),
+      );
+    }
+  });
+}
+
+test('a UTF-8 BOM does not bypass MCP syntax checks or permit overwriting corrupt data', async () => {
+  const root = await tempRoot();
+  const path = join(root, 'mcp.json');
+  const store = createMcpConfigStore(root);
+  for (const source of ['\uFEFF{"token":"sk-private",', '\uFEFF\uFEFF{"mcpServers":{}}']) {
+    const bytes = Buffer.from(source);
+    await writeFile(path, bytes);
+    for (const operation of [
+      () => store.get(),
+      () => store.upsert('new', { command: 'node' }),
+      () =>
+        store.transform(() => {
+          throw new Error('must not reach transform');
+        }),
+    ]) {
+      await assert.rejects(operation(), (error) => {
+        assert.ok(error instanceof McpConfigSourceError);
+        assert.equal(error.reason, 'invalid-json');
+        assert.equal(error.path, path);
+        assert.equal(error.message.includes('sk-private'), false);
+        assert.equal(error.cause, undefined);
+        return true;
+      });
+      assert.deepEqual(await readFile(path), bytes);
+    }
+    assert.throws(() => normalizeMcpImport(source), { reason: 'invalid-json', path: undefined });
+  }
+});

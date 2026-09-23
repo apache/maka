@@ -193,6 +193,7 @@ Workspace 数据默认放在 Electron `userData` 下：
   artifacts/
 ```
 
+- 手动编辑 `settings.json` 或 `mcp.json` 时，请保存为 UTF-8（建议不带 BOM；也支持 UTF-8 BOM）。Maka 不会猜测无 BOM 文件的其他编码，也不会自动转换 UTF-16；请先在编辑器中显式转换为 UTF-8，再使用这些文件。
 - API key 一类的机密存在本地明文文件（`credential-vault.json`），只有你的系统账号能读。界面进程拿不到明文。
 - 写文件、跑 Shell 的工具必须先过沙箱边界。
 - `runtime.sqlite` 是当前生效的那份记录。更早的 JSONL transcript 和 Electron `safeStorage` 凭据不会导入；升级后会话可能是空的，那些凭据需要重新填写。

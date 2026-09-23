@@ -743,3 +743,130 @@ test('a ready empty list scrolls to its add guidance in a short terminal and rem
   overlay.handleInput('a');
   assert.doesNotMatch(render(), /not published/u);
 });
+
+for (const destination of ['list', 'input', 'closed', 'newer-success', 'newer-error'] as const) {
+  test(`late MCP file diagnostics after Esc respect ${destination}`, async () => {
+    let resolve!: (value: TuiMcpActionResult) => void;
+    const pending = new Promise<TuiMcpActionResult>((done) => {
+      resolve = done;
+    });
+    const mcp = surface(listSnapshot());
+    mcp.execute = () => pending;
+    let changes = 0;
+    let closed = false;
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      tui: fakeTui(),
+      surface: mcp,
+      viewportRows: () => 20,
+      onClose: () => {
+        closed = true;
+      },
+      onChange: () => {
+        changes++;
+      },
+    });
+    const render = () => overlay.render(160).map(stripAnsi).join('\n');
+    render();
+    overlay.handleInput(' ');
+    overlay.handleInput('\u001b');
+    assert.match(render(), /filesystem/u);
+    if (destination === 'input') {
+      overlay.handleInput('a');
+      overlay.handleInput('j');
+      overlay.handleInput('{"draft":');
+    } else if (destination === 'closed') {
+      overlay.handleInput('q');
+    } else if (destination.startsWith('newer-')) {
+      mcp.execute = async () =>
+        destination === 'newer-success'
+          ? { status: 'applied', effect: 'published' }
+          : { status: 'failed', reason: 'invalid-config-file', path: '/newer/mcp.json' };
+      overlay.handleInput(' ');
+      await new Promise<void>((done) => setImmediate(done));
+    }
+    const before = render();
+    const priorChanges = changes;
+    resolve({ status: 'failed', reason: 'invalid-config-file', path: '/late/mcp.json' });
+    await new Promise<void>((done) => setImmediate(done));
+    if (destination === 'closed' || destination.startsWith('newer-')) {
+      assert.equal(changes, priorChanges);
+      assert.equal(render(), before);
+      assert.equal(closed, destination === 'closed');
+      assert.doesNotMatch(render(), /\/late\/mcp.json/u);
+    } else {
+      if (destination === 'input') {
+        assert.equal(render(), before, 'the draft must remain intact');
+        overlay.handleInput('\u001b');
+      }
+      assert.match(render(), /\/late\/mcp.json/u);
+      assert.match(render(), /back up and repair/u);
+      overlay.handleInput('\u001b');
+      assert.equal(closed, false);
+      assert.match(render(), /filesystem/u);
+      assert.doesNotMatch(render(), /\/late\/mcp.json/u);
+    }
+  });
+}
+
+test('Esc during busy still discards an ordinary late result without interrupting a draft', async () => {
+  let resolve!: (value: TuiMcpActionResult) => void;
+  const mcp = surface(listSnapshot());
+  mcp.execute = () =>
+    new Promise<TuiMcpActionResult>((done) => {
+      resolve = done;
+    });
+  const overlay = new McpManagementOverlay({
+    locale: 'en',
+    tui: fakeTui(),
+    surface: mcp,
+    viewportRows: () => 20,
+    onClose: () => {},
+    onChange: () => {},
+  });
+  const render = () => overlay.render(160).map(stripAnsi).join('\n');
+  render();
+  overlay.handleInput(' ');
+  overlay.handleInput('\u001b');
+  overlay.handleInput('a');
+  overlay.handleInput('j');
+  overlay.handleInput('unfinished draft');
+  const before = render();
+  resolve({ status: 'applied', effect: 'published' });
+  await new Promise<void>((done) => setImmediate(done));
+  assert.equal(render(), before);
+});
+
+for (const succeeds of [true, false]) {
+  test(`a deferred diagnostic is ${succeeds ? 'cleared by a successful write' : 'retained after another failure'}`, async () => {
+    let resolve!: (value: TuiMcpActionResult) => void;
+    const mcp = surface(listSnapshot());
+    mcp.execute = () =>
+      new Promise<TuiMcpActionResult>((done) => {
+        resolve = done;
+      });
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: mcp,
+      viewportRows: () => 20,
+      onClose: () => {},
+      onChange: () => {},
+    });
+    const render = () => overlay.render(160).map(stripAnsi).join('\n');
+    render();
+    overlay.handleInput(' ');
+    overlay.handleInput('\u001b');
+    overlay.handleInput('d');
+    const confirmation = render();
+    resolve({ status: 'failed', reason: 'invalid-config-file', path: '/late/mcp.json' });
+    await new Promise<void>((done) => setImmediate(done));
+    assert.equal(render(), confirmation);
+    mcp.execute = async () =>
+      succeeds
+        ? { status: 'applied', effect: 'published' }
+        : { status: 'failed', reason: 'manager-failed' };
+    overlay.handleInput('y');
+    await new Promise<void>((done) => setImmediate(done));
+    assert.equal(render().includes('/late/mcp.json'), !succeeds);
+  });
+}

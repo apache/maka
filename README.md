@@ -194,6 +194,7 @@ Workspace data lives under Electron `userData` by default:
   artifacts/
 ```
 
+- When editing `settings.json` or `mcp.json` by hand, save the file as UTF-8 (preferably without a BOM). A UTF-8 BOM is accepted. Maka does not guess other encodings for files without a BOM or automatically convert UTF-16; explicitly convert those files to UTF-8 in your editor before using them.
 - API keys and similar secrets are a local plaintext file (`credential-vault.json`), readable only by your OS account. The renderer never sees them.
 - Tools that write files or run a shell must pass the sandbox boundary first.
 - `runtime.sqlite` is the live record. Older JSONL transcripts and Electron `safeStorage` credential files are not imported; an upgraded workspace can show empty threads, and those credentials must be entered again.
