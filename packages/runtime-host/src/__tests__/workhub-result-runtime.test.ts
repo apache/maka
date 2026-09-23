@@ -19,10 +19,14 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import type { MakaToolContext } from '@maka/runtime/tool-runtime';
 import { createWorkHubResultRuntime } from '../server/workhub-result-runtime.js';
-import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import {
+  SessionAdmissionGate,
+  type SessionAdmissionLease,
+} from '../server/session-admission-gate.js';
 
 type Options = Parameters<typeof createWorkHubResultRuntime>[0];
 function fixture() {
@@ -30,6 +34,10 @@ function fixture() {
     stopped = false;
   let requests = true;
   let status = 'waiting_for_user';
+  let disposition: 'owned_root' | 'cancelled' = 'owned_root';
+  let resultReads = 0;
+  let rejectRelay: ((reason: Error) => void) | undefined;
+  const closedRelays: unknown[] = [];
   const assignment = {
     actionId: 'action',
     delegationId: 'delegation',
@@ -53,10 +61,18 @@ function fixture() {
   };
   const admission = new SessionAdmissionGate();
   const forwarded: unknown[] = [];
+  const startWorkHubResult: Options['executions']['startWorkHubResult'] = async (
+    _origin,
+    prepare,
+  ) => {
+    await prepare({} as SessionAdmissionLease);
+    return 'delivered';
+  };
   const runtime = createWorkHubResultRuntime({
     // Each stub is an external authority; use the real admission gate and tool.
     stores: {
       sessionStore: {
+        listHeaders: async () => [{ id: 'target', isArchived: false }],
         readWorkHubAssignment: async () => assignment,
         readHeaderSnapshot: async () => ({ isArchived: false }),
         readActiveWorkHubAssignmentsByTarget: async () => (active ? [assignment] : []),
@@ -68,6 +84,7 @@ function fixture() {
       interactionStore: { listSessionPending: async () => (requests ? [record] : []) },
     } as unknown as Options['stores'],
     executions: {
+      startWorkHubResult,
       readLatestRootTurnLineage: async () => ({
         sessionId: 'target',
         turnId: 'target-turn',
@@ -76,13 +93,17 @@ function fixture() {
       read: async () => ({ status, terminalEventId: 'terminal' }),
     } as unknown as Options['executions'],
     messages: {
-      readMessageExecutionDispositionAdmitted: async () => ({
-        kind: 'owned_root',
-        turnId: 'target-turn',
-        runId: 'target-run',
-      }),
+      readMessageExecutionDispositionAdmitted: async () =>
+        disposition === 'cancelled'
+          ? { kind: 'cancelled' }
+          : { kind: 'owned_root', turnId: 'target-turn', runId: 'target-run' },
     } as unknown as Options['messages'],
     interactions: {
+      closeRelayedQuestion: async (turnId, toolCallId) => {
+        closedRelays.push({ turnId, toolCallId });
+        rejectRelay?.(new Error('Relay closed after original question settled'));
+        return true;
+      },
       answerDelegatedQuestion: async (input, lease) =>
         admission.runAdmitted('target', lease, async () => {
           forwarded.push(input);
@@ -90,16 +111,19 @@ function fixture() {
         }),
     } as Options['interactions'],
     manager: {
-      getMessages: async () => [
-        {
-          type: 'assistant',
-          modelId: 'fake-model',
-          id: 'answer',
-          turnId: 'target-turn',
-          text: '😀'.repeat(16001),
-          ts: 1,
-        },
-      ],
+      getMessages: async () => {
+        resultReads++;
+        return [
+          {
+            type: 'assistant',
+            modelId: 'fake-model',
+            id: 'answer',
+            turnId: 'target-turn',
+            text: '😀'.repeat(16001),
+            ts: 1,
+          },
+        ];
+      },
     },
     admission,
     acquireResidency: () => ({ release() {} }),
@@ -123,6 +147,20 @@ function fixture() {
     context,
     questions,
     forwarded,
+    closedRelays,
+    resultReads: () => resultReads,
+    notify: runtime.notify,
+    reconcile: () => runtime.coordinator.reconcile(),
+    setRelayReject: (reject: (reason: Error) => void) => {
+      rejectRelay = reject;
+    },
+    setOriginalAnswered: () => {
+      requests = false;
+      status = 'completed';
+    },
+    setDisposition: (value: typeof disposition) => {
+      disposition = value;
+    },
     setActive: (value: boolean) => {
       active = value;
     },
@@ -283,4 +321,48 @@ test('a still-running delegation reports pending and asks the model to yield', a
     status: 'obsolete',
     targetSessionId: 'target',
   });
+});
+
+test('a message cancelled before execution returns a durable cancellation result', async () => {
+  const f = fixture();
+  f.setDisposition('cancelled');
+  const result = (await f.call({ actionId: 'action' })) as { status: string; details: unknown };
+  assert.equal(result.status, 'cancelled');
+  assert.deepEqual(result.details, { abortSource: 'message_cancelled_before_execution' });
+  assert.equal(f.resultReads(), 0);
+});
+
+test('delivered terminal events do not reread the target transcript on reconciliation', async () => {
+  const f = fixture();
+  f.setCompleted();
+  await f.reconcile();
+  await f.reconcile();
+  assert.equal(f.resultReads(), 1);
+});
+
+test('answering the original task closes the copied WorkHub question', async () => {
+  const f = fixture();
+  const presented = deferred();
+  const relayed = f.call(
+    { actionId: 'action', operation: 'ask_question', interactionId: 'question' },
+    {
+      ...f.context,
+      askUserQuestion: async () =>
+        new Promise((_, reject) => {
+          f.setRelayReject(reject);
+          presented.resolve();
+        }),
+    },
+  );
+  await withTimeout(presented.promise, 1000, 'Question was not presented');
+  f.setOriginalAnswered();
+  f.notify('target');
+  assert.deepEqual(await withTimeout(Promise.resolve(relayed), 1000, 'Relay remained blocked'), {
+    status: 'question_settled_in_target',
+    targetSessionId: 'target',
+    message:
+      'The original task question has settled. Wait for the automatic task result; do not ask again.',
+  });
+  assert.deepEqual(f.closedRelays, [{ turnId: 'feedback-turn', toolCallId: 'relay' }]);
+  assert.equal(f.forwarded.length, 0);
 });

@@ -91,14 +91,28 @@ export function createWorkHubResultRuntime(options: {
   async function inspectLocked(
     assignment: WorkHubDelegationAssignedMessage,
     lease: SessionAdmissionLease,
+    includeResult = true,
   ): Promise<WorkHubResultObservation | undefined> {
     try {
-      if (!(await isActive(assignment))) return undefined;
+      // The lightweight sweep receives active assignments from listAssignments.
+      // Delivery and tool reads still revalidate under both Session admissions.
+      if (includeResult && !(await isActive(assignment))) return undefined;
       const disposition = await messages.readMessageExecutionDispositionAdmitted(
         assignment.targetSessionId,
         assignment.targetMessageId,
         lease,
       );
+      if (disposition.kind === 'cancelled') {
+        return {
+          turnId: assignment.targetTurnId,
+          runId: `message:${assignment.targetMessageId}`,
+          eventKey: 'message_cancelled_before_execution',
+          status: 'cancelled',
+          result: 'The delegated message was cancelled before execution.',
+          details: { abortSource: 'message_cancelled_before_execution' },
+          sharedTurn: false,
+        };
+      }
       if (disposition.kind !== 'owned_root' && disposition.kind !== 'shared_turn') return undefined;
       const identity = await executions.readLatestRootTurnLineage({
         sessionId: assignment.targetSessionId,
@@ -134,7 +148,7 @@ export function createWorkHubResultRuntime(options: {
         snapshot.status !== 'cancelled'
       )
         return undefined;
-      const transcript = await manager.getMessages(assignment.targetSessionId);
+      const transcript = includeResult ? await manager.getMessages(assignment.targetSessionId) : [];
       const answer = [...transcript]
         .reverse()
         .find((m) => m.type === 'assistant' && m.turnId === identity.turnId && m.text.trim());
@@ -163,11 +177,12 @@ export function createWorkHubResultRuntime(options: {
   async function inspect(
     assignment: WorkHubDelegationAssignedMessage,
     lease?: SessionAdmissionLease,
+    includeResult = true,
   ) {
     return lease
-      ? inspectLocked(assignment, lease)
+      ? inspectLocked(assignment, lease, includeResult)
       : admission.runMany([WORKHUB_COORDINATION_SESSION_ID, assignment.targetSessionId], (lane) =>
-          inspectLocked(assignment, lane),
+          inspectLocked(assignment, lane, includeResult),
         );
   }
   const coordinator = new HostWorkHubResultCoordinator({
@@ -177,6 +192,11 @@ export function createWorkHubResultRuntime(options: {
     acquireResidency: options.acquireResidency,
     onError: options.onError,
   });
+  const relayWatchers = new Map<string, Set<() => void>>();
+  function notify(sessionId: string): void {
+    coordinator.notify(sessionId);
+    for (const wake of relayWatchers.get(sessionId) ?? []) wake();
+  }
   const parameters = z
     .object({
       actionId: z.string().min(1),
@@ -232,12 +252,72 @@ export function createWorkHubResultRuntime(options: {
       );
       if (!request || request.request.kind !== 'question')
         throw new Error('Only pending user questions can be relayed');
-      const answer = await ctx.askUserQuestion(
-        request.request.questions.map((q) => ({
-          question: q.question,
-          options: q.options.map((o) => ({ ...o })),
-        })),
-      );
+      const relayState: { closed: boolean; status: 'question_settled_in_target' | 'obsolete' } = {
+        closed: false,
+        status: 'obsolete',
+      };
+      let checking = false;
+      const checkOriginal = () => {
+        if (checking || relayState.closed) return;
+        checking = true;
+        void admission
+          .run(assignment.targetSessionId, async () => ({
+            active: await isActive(assignment),
+            questionPending: (await pending(assignment.targetSessionId)).some(
+              (item) => item.interactionId === request.interactionId,
+            ),
+          }))
+          .then(async ({ active, questionPending }) => {
+            if (active && questionPending) return;
+            relayState.status = active ? 'question_settled_in_target' : 'obsolete';
+            relayState.closed = true;
+            if (!(await options.interactions.closeRelayedQuestion(ctx.turnId, ctx.toolCallId)))
+              relayState.closed = false;
+          })
+          .catch((error) => {
+            relayState.closed = false;
+            try {
+              options.onError(error);
+            } catch {
+              // The relay watcher must not leave an unhandled timer rejection.
+            }
+          })
+          .finally(() => {
+            checking = false;
+          });
+      };
+      let watchers = relayWatchers.get(assignment.targetSessionId);
+      if (!watchers) {
+        watchers = new Set();
+        relayWatchers.set(assignment.targetSessionId, watchers);
+      }
+      watchers.add(checkOriginal);
+      const timer = setInterval(checkOriginal, 5000);
+      timer.unref();
+      let answer: Awaited<ReturnType<NonNullable<typeof ctx.askUserQuestion>>>;
+      try {
+        answer = await ctx.askUserQuestion(
+          request.request.questions.map((q) => ({
+            question: q.question,
+            options: q.options.map((o) => ({ ...o })),
+          })),
+        );
+      } catch (error) {
+        if (relayState.closed)
+          return {
+            status: relayState.status,
+            targetSessionId: assignment.targetSessionId,
+            message:
+              relayState.status === 'question_settled_in_target'
+                ? 'The original task question has settled. Wait for the automatic task result; do not ask again.'
+                : 'The delegated task is no longer active.',
+          };
+        throw error;
+      } finally {
+        clearInterval(timer);
+        watchers.delete(checkOriginal);
+        if (watchers.size === 0) relayWatchers.delete(assignment.targetSessionId);
+      }
       ctx.abortSignal.throwIfAborted();
       // Recheck the original delegation after the human responds. A late answer
       // must not revive a cancelled/replaced task or answer another interaction.
@@ -258,9 +338,9 @@ export function createWorkHubResultRuntime(options: {
       );
       if (!outcome) return { status: 'obsolete' };
       if (!outcome.ok) throw new Error(outcome.error.message);
-      coordinator.notify(assignment.targetSessionId);
+      notify(assignment.targetSessionId);
       return { status: outcome.result.status, targetSessionId: assignment.targetSessionId };
     },
   };
-  return { coordinator, tool };
+  return { coordinator, tool, notify };
 }

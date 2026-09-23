@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import type {
   FormRequestEvent,
   SandboxBoundaryRequestEvent,
@@ -248,6 +249,44 @@ describe('HostInteractionCoordinator', () => {
           coordinator.answerDelegatedQuestion({ ...input, sessionId: 'other-session' }, lease),
         );
         assert.equal(wrongSession.ok, false);
+      } finally {
+        await owner.close('turn_terminal');
+        owner.release();
+        await coordinator.close();
+      }
+    });
+  });
+
+  test('settled target question closes only its copied WorkHub relay', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store);
+      const run = { ...RUN, sessionId: WORKHUB_COORDINATION_SESSION_ID };
+      const owner = coordinator.bindRun(run);
+      const closures: string[] = [];
+      try {
+        await owner.acceptUserQuestionRequest({
+          request: {
+            ...questionEvent('copied-question', 10),
+            turnId: run.turnId,
+            toolUseId: 'relay-tool',
+          },
+          continuation: {
+            ...questionContinuation('copied-question'),
+            applyClosure: async (reason) => {
+              closures.push(reason);
+            },
+          },
+        });
+        assert.equal(await coordinator.closeRelayedQuestion(run.turnId, 'wrong-tool'), false);
+        assert.equal((await store.listPending(run)).length, 1);
+        assert.equal(await coordinator.closeRelayedQuestion(run.turnId, 'relay-tool'), true);
+        assert.equal(await coordinator.closeRelayedQuestion(run.turnId, 'relay-tool'), false);
+        assert.deepEqual(closures, ['producer_cancelled']);
+        assert.equal((await store.listPending(run)).length, 0);
+        assert.equal(
+          (await store.readInteraction('copied-question'))?.outcome?.outcome.kind,
+          'closure',
+        );
       } finally {
         await owner.close('turn_terminal');
         owner.release();

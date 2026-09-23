@@ -944,12 +944,12 @@ export async function createExecutionRuntimeHostComposition(
     );
     unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) => {
       continuityCoordinator.enqueueCanonicalRefresh(sessionId);
-      sessionAdmission.detach(() => workHubResults?.coordinator.notify(sessionId));
+      sessionAdmission.detach(() => workHubResults?.notify(sessionId));
     });
     unsubscribeRuntimeEventCommits = stores.runtimeEventStore.subscribeRuntimeEventCommits(
       (sessionId) => {
         continuityCoordinator.enqueueTranscriptAdvanced(sessionId);
-        sessionAdmission.detach(() => workHubResults?.coordinator.notify(sessionId));
+        sessionAdmission.detach(() => workHubResults?.notify(sessionId));
       },
     );
     unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
@@ -995,7 +995,7 @@ export async function createExecutionRuntimeHostComposition(
         }),
       refreshCanonicalContinuity: async (sessionId, admission) => {
         await continuityCoordinator.refreshCanonical(sessionId, admission);
-        sessionAdmission.detach(() => workHubResults?.coordinator.notify(sessionId));
+        sessionAdmission.detach(() => workHubResults?.notify(sessionId));
       },
       onPoison: (error) => {
         if (poisonFailure) return;

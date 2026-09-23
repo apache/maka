@@ -229,3 +229,31 @@ test('a transient startup read failure retries even before any target was discov
     await coordinator.close();
   }
 });
+
+test('a new target event wakes reconciliation ahead of the delivered-event backstop', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  let inspections = 0;
+  const inspect = f.ports.inspect;
+  f.ports.inspect = (...args) => {
+    inspections++;
+    return inspect(...args);
+  };
+  const coordinator = new HostWorkHubResultCoordinator(f.ports);
+  try {
+    coordinator.start();
+    t.mock.timers.tick(100);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const afterDelivery = inspections;
+    assert.ok(afterDelivery > 0);
+    t.mock.timers.tick(5000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(inspections, afterDelivery);
+    coordinator.notify(assignment.targetSessionId);
+    t.mock.timers.tick(100);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(inspections > afterDelivery);
+  } finally {
+    await coordinator.close();
+  }
+});

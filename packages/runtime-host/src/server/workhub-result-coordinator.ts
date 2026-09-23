@@ -41,6 +41,7 @@ export interface WorkHubResultPorts {
   inspect(
     assignment: WorkHubDelegationAssignedMessage,
     lease?: SessionAdmissionLease,
+    includeResult?: boolean,
   ): Promise<WorkHubResultObservation | undefined>;
   deliver(
     origin: WorkHubResultOrigin,
@@ -106,8 +107,10 @@ export class HostWorkHubResultCoordinator {
   #draining = false;
   #dirty = false;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  #timerDue = 0;
   #running: Promise<void> | undefined;
   #targets = new Set<string>();
+  #needsRetry = false;
   readonly #delivered = new Set<string>();
   constructor(private readonly ports: WorkHubResultPorts) {}
 
@@ -126,9 +129,16 @@ export class HostWorkHubResultCoordinator {
     this.#schedule(100);
   }
   #schedule(delay: number): void {
-    if (!this.#active || this.#timer || this.#running) return;
+    if (!this.#active || this.#running) return;
+    const due = Date.now() + delay;
+    if (this.#timer) {
+      if (this.#timerDue <= due) return;
+      clearTimeout(this.#timer);
+    }
+    this.#timerDue = due;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
+      this.#timerDue = 0;
       const residency = this.ports.acquireResidency();
       let retry = false;
       this.#running = this.reconcile()
@@ -141,32 +151,42 @@ export class HostWorkHubResultCoordinator {
           this.#running = undefined;
           // Also handles provider reconnect and events committed before our watcher existed.
           if (this.#active && (this.#dirty || this.#targets.size || retry))
-            this.#schedule(this.#dirty ? 100 : 5000);
+            this.#schedule(this.#dirty ? 100 : this.#needsRetry || retry ? 5000 : 60000);
         });
     }, delay);
     this.#timer.unref();
   }
   async reconcile(): Promise<void> {
     this.#dirty = false;
+    this.#needsRetry = false;
     const assignments = (await this.ports.listAssignments()).filter((a) => a.returnResults);
     this.#targets = new Set(assignments.map((a) => a.targetSessionId));
     for (const assignment of assignments) {
       if (this.#draining) break;
       try {
-        const observed = await this.ports.inspect(assignment);
-        if (!observed) continue;
+        // Identify the event before materializing a terminal Turn's full transcript.
+        const observed = await this.ports.inspect(assignment, undefined, false);
+        if (!observed) {
+          this.#needsRetry = true;
+          continue;
+        }
         const origin = workHubResultOrigin(assignment, observed);
         if (this.#delivered.has(origin.eventId)) continue;
         const result = await this.ports.deliver(origin, async (lease) => {
-          const current = await this.ports.inspect(assignment, lease);
+          const current = await this.ports.inspect(assignment, lease, true);
           if (!current || workHubResultOrigin(assignment, current).eventId !== origin.eventId)
             return undefined;
           return workHubResultContent(assignment, current);
         });
         if (result === 'delivered') this.#delivered.add(origin.eventId);
-        if (result === 'pending') break;
+        if (result === 'obsolete') this.#needsRetry = true;
+        if (result === 'pending') {
+          this.#needsRetry = true;
+          break;
+        }
       } catch (error) {
         // One unavailable target must not starve results from other delegations.
+        this.#needsRetry = true;
         this.ports.onError(error);
       }
     }
@@ -176,6 +196,7 @@ export class HostWorkHubResultCoordinator {
     this.#active = false;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
+    this.#timerDue = 0;
   }
   async close(): Promise<void> {
     this.beginDrain();
