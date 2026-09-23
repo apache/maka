@@ -24,16 +24,32 @@ import type {
 } from '@maka/core/mcp';
 import { isMcpStdioConfig, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import type { McpCopy } from '../../../locales/mcp-copy.js';
+import { isMcpConfigFileFailure, type McpIpcResult } from '../../../../shared/mcp-ipc.js';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
 
-/** Electron preserves error messages, but not custom error fields. Map only
- * the fixed config-error messages to safe, localized presentation. */
-export function mcpConfigFailureMessage(error: unknown, copy: McpCopy): string | undefined {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  const invalidFile = /MCP config at ([^\r\n]+) contains invalid JSON\. The file was not modified\. Close the app, back up and repair this file before retrying\.$/u.exec(message);
-  if (invalidFile) {
-    return copy.errors.invalidConfigFile(invalidFile[1].replace(/[\u0000-\u001f\u007f-\u009f]/gu, ''));
+class McpConfigFileError extends Error {
+  constructor(readonly path: string) {
+    super('Invalid persisted MCP configuration');
   }
+}
+
+/** Unwrap in the renderer, after both IPC and contextBridge serialization. */
+export function unwrapMcpIpcResult<T>(result: McpIpcResult<T>): T {
+  if (isMcpConfigFileFailure(result)) {
+    throw new McpConfigFileError(result.path.replace(/[\u0000-\u001f\u007f-\u009f]/gu, ''));
+  }
+  return result;
+}
+
+export function mcpConfigFailureMessage(error: unknown, copy: McpCopy): string | undefined {
+  // Runtime Host actions add a diagnostic-target wrapper inside the renderer.
+  // Follow its local cause without interpreting display text as an IPC code.
+  const seen = new Set<unknown>();
+  for (let cause = error; cause instanceof Error && !seen.has(cause); cause = cause.cause) {
+    if (cause instanceof McpConfigFileError) return copy.errors.invalidConfigFile(cause.path);
+    seen.add(cause);
+  }
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   if (message.includes('MCP write durability is uncertain and runtime state is out of sync')) {
     return copy.errors.writeOutOfSync;
   }

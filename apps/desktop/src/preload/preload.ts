@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { McpIpcResult } from '../shared/mcp-ipc.js';
 import { invokeWhenReady, sendWhenReady } from './bootstrap-invoke.js';
 import { createClientPluginRouting } from './client-plugin-routing.js';
 import type {
@@ -3184,41 +3185,41 @@ const makaBridge = {
     },
   },
   mcp: {
-    getConfig(host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+    getConfig(host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>> {
       return invokeSelectedRuntimeHost(host, 'mcp:getConfig');
     },
-    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]> {
+    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus[]>> {
       return invokeSelectedRuntimeHost(host, 'mcp:listStatuses');
     },
-    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpConfigImportResult> {
+    importConfig(source: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigImportResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:importConfig', source);
     },
-    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult> {
+    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigAddResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:add', serverId, config);
     },
-    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult> {
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:update', serverId, config, basis);
     },
-    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult> {
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigUpdateResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:setEnabled', serverId, enabled);
     },
-    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpConfigFile>> {
       return invokeSelectedRuntimeHost(host, 'mcp:remove', serverId);
     },
-    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult> {
+    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpTestResult>> {
       return invokeSelectedRuntimeHost(host, 'mcp:test', serverId);
     },
     // Same scoped seam as every other MCP method: the handlers live on the
     // Runtime Host's ScopedIpcMain, whose first argument is the host ref —
     // a raw invoke would put serverId in that slot and fail the scope check
     // before the handler ever ran.
-    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus> {
+    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>> {
       return invokeSelectedRuntimeHost(host, 'mcp:login', serverId);
     },
-    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean> {
+    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<boolean>> {
       return invokeSelectedRuntimeHost(host, 'mcp:cancelLogin', serverId);
     },
-    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus> {
+    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpIpcResult<McpServerStatus>> {
       return invokeSelectedRuntimeHost(host, 'mcp:logout', serverId);
     },
     chromeStatus(host?: DesktopRuntimeHostRef): Promise<OpencliChromeStatus> {
