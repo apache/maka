@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 35 |
+| portable-candidate | 36 |
 | platform-contract | 38 |
 
-Total Windows-excluded declarations: **100**
+Total Windows-excluded declarations: **101**
 
 ## Inventory
 
@@ -74,6 +74,7 @@ Total Windows-excluded declarations: **100**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` rejects local invalid input without poisoning transport and correlates a private canonical copy | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-two-client-uds.test.ts` two clients share usage projection and one revision-CAS pricing authority | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/filesystem-apply-patch.test.ts` deletes a self-referential symlink entry without following it | `process.platform === 'win32'` |
+| portable-candidate | `packages/runtime/src/__tests__/filesystem-authority.test.ts` the model-facing Glob result marks a capped permission-limited walk incomplete | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-process-runner.test.ts` filesystem worker rejects boundedly when a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
 | platform-contract | `packages/runtime/src/__tests__/glob-search.test.ts` both Glob paths report permission failures and recover after permissions are restored | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
