@@ -157,7 +157,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   editDisabled?: boolean;
   editDisabledReason?: string;
   delivery?: TransientUserMessageProjection;
-  status?: ReactNode;
 }) {
   const locale = useUiLocale();
   const copyText = getConversationCopy(locale).messages;
@@ -182,11 +181,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       className="maka-message-meta"
       footer={
         <>
-          {props.status ? <span className="maka-message-status-time">
-            {props.status}
-            {timeOrDelivery ? <span aria-hidden="true">·</span> : null}
-            {timeOrDelivery}
-          </span> : timeOrDelivery}
+          {timeOrDelivery}
           {props.delivery?.deliveryActions?.map((action) => (
             <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
           ))}
@@ -279,7 +274,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
 export function TransientUserMessage(props: {
   message: TransientUserMessageProjection;
-  status?: ReactNode;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
@@ -298,7 +292,6 @@ export function TransientUserMessage(props: {
           quotes={message.quotes}
           directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
-          status={props.status}
           delivery={message}
         />
       </LocalizedChatMessage>
@@ -375,12 +368,7 @@ function CopyButton(props: {
  */
 export const TurnView = memo(function TurnView(props: {
   turn: TurnViewModel;
-  /** Optional identity repeated beside each prompt and answer in this turn. */
-  messageHeader?: ReactNode;
-  /** Optional accessible action on each message edge. */
-  messageRail?: ReactNode;
-  /** Host-owned status of the root prompt, displayed before its timestamp. */
-  promptStatus?: ReactNode;
+  answerFooter?: ReactNode;
   transientMessages?: readonly TransientUserMessageProjection[];
   userLabel?: string;
   /**
@@ -589,10 +577,7 @@ export const TurnView = memo(function TurnView(props: {
           sender="user"
           className="maka-chat-message maka-user-message"
         >
-          {props.messageRail}
-          {props.messageHeader}
           <UserMessageBody
-            status={props.promptStatus}
             messageId={turn.user.id}
             text={turn.user.text}
             ts={turn.user.ts}
@@ -659,8 +644,6 @@ export const TurnView = memo(function TurnView(props: {
               sender="user"
               className="maka-chat-message maka-user-message maka-steering-message"
             >
-              {props.messageRail}
-              {props.messageHeader}
               <UserMessageBody
                 messageId={message.id}
                 text={message.text}
@@ -719,8 +702,6 @@ export const TurnView = memo(function TurnView(props: {
               className="maka-chat-message maka-assistant-answer"
             >
             <div className="maka-assistant-answer-content">
-              {props.messageRail}
-              {props.messageHeader}
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.
@@ -800,6 +781,7 @@ export const TurnView = memo(function TurnView(props: {
                 </Banner>
               )}
             </div>
+            {ownsTurnChrome && props.answerFooter}
             {ownsTurnChrome && reverseBadges.length > 0 && (
               <Marker variant="lineage-row-reverse" aria-label={copy.derivativesAriaLabel}>
                 {reverseBadges.map((badge) => (

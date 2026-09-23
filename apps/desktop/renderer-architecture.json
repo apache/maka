@@ -84,7 +84,6 @@
     "src/renderer/locales/shell-remaining-copy.ts",
     "src/renderer/locales/task-readiness-copy.ts",
     "src/renderer/locales/work-board-error-copy.ts",
-    "src/renderer/locales/workhub-copy.ts",
     "src/renderer/main.tsx",
     "src/renderer/mcp-brand-contrast.ts",
     "src/renderer/mcp-brand-marks.tsx",
@@ -1632,15 +1631,6 @@
         "dependencyPaths": {
           "@maka/core/ui-locale": 1
         }
-      },
-      "src/renderer/locales/workhub-copy.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
       },
       "src/renderer/mcp-brand-contrast.ts": {
         "bridgePaths": {},

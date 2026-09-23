@@ -19,7 +19,6 @@
 
 import {
   createContext,
-  useCallback,
   useContext,
   memo,
   useEffect,
@@ -83,9 +82,6 @@ export function observeActivePromptRailVisibility(
 }
 
 export interface PromptAnchorRailTurn {
-  /** Optional host identity color; ordinary Session ticks remain neutral. */
-  accentColor?: string;
-  highlighted?: boolean;
   turnId: string;
   label: string;
   reply?: string;
@@ -132,8 +128,6 @@ function shallowEqual(left: object, right: object): boolean {
 }
 
 export interface PromptAnchorRailProps {
-  /** Presentation-only hover/focus linkage; never navigates the transcript. */
-  onHighlightTurn?: (turn: PromptAnchorRailTurn | undefined) => void;
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
   onNavigateTurn: (turn: PromptAnchorRailTurn) => void;
@@ -171,7 +165,7 @@ export function selectPromptRailTick(input: {
 export const PromptAnchorRailHostContext = createContext<HTMLElement | null>(null);
 
 /** Right-edge rail: bounded prompt landmarks for the loaded Turns. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateTurn, onHighlightTurn }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateTurn }: PromptAnchorRailProps): React.ReactElement | null {
   const host = useContext(PromptAnchorRailHostContext);
   const copy = getConversationCopy(useUiLocale()).sessions;
   const authority = useTranscriptScrollAuthority();
@@ -281,16 +275,6 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     return observeActivePromptRailVisibility(rail);
   }, [orderedTurnIds, host]);
 
-  // Callers pass a fresh highlight handler on every render; ticks get a stable
-  // one so a streaming delta does not re-render all of them.
-  const onHighlightTurnRef = useRef(onHighlightTurn);
-  onHighlightTurnRef.current = onHighlightTurn;
-  const highlightTurn = useCallback((turn: PromptAnchorRailTurn | undefined) => onHighlightTurnRef.current?.(turn), []);
-  const hoverTurn = useCallback((turn: PromptAnchorRailTurn, index: number) => {
-    setHoveredIndex(index);
-    highlightTurn(turn);
-  }, [highlightTurn]);
-
   // A rail is only useful once there are a few prompts to jump between.
   if (railTurns.length < 3 || !host) return null;
 
@@ -310,7 +294,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         className="maka-prompt-rail"
         aria-label={copy.promptRailAriaLabel}
         ref={railRef}
-        onPointerLeave={() => { setHoveredIndex(null); highlightTurn(undefined); }}
+        onPointerLeave={() => setHoveredIndex(null)}
       >
         {railTurns.map((turn, index) => {
           const isActive = turn.turnId === activeRailTurnId;
@@ -327,8 +311,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
               isActive={isActive}
               scale={scale}
               onNavigate={onNavigateTurn}
-              onHover={hoverTurn}
-              onHighlight={highlightTurn}
+              onHover={setHoveredIndex}
             />
           );
         })}
@@ -341,15 +324,14 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
 // Reading-position updates change the active ticks, not every preview. Keep
 // each tick's interaction tree reusable; content and locale changes still render.
 const PromptRailTick = memo(function PromptRailTick({
-  turn, index, isActive, scale, onNavigate, onHover, onHighlight,
+  turn, index, isActive, scale, onNavigate, onHover,
 }: {
   turn: PromptAnchorRailTurn;
   index: number;
   isActive: boolean;
   scale: number;
   onNavigate(turn: PromptAnchorRailTurn): void;
-  onHover(turn: PromptAnchorRailTurn, index: number): void;
-  onHighlight: PromptAnchorRailProps['onHighlightTurn'];
+  onHover(index: number): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const preview = turn.label.trim() || copy.emptyPrompt;
@@ -372,15 +354,11 @@ const PromptRailTick = memo(function PromptRailTick({
         label={copy.jumpToPrompt(preview)}
         className="maka-prompt-rail-tick"
         data-prompt-turn-id={turn.turnId}
-        data-highlighted={turn.highlighted || undefined}
         data-active={isActive ? 'true' : undefined}
         aria-current={isActive ? 'true' : undefined}
         onClick={() => onNavigate(turn)}
-        onPointerEnter={() => onHover(turn, index)}
-        onFocus={() => onHighlight?.(turn)}
-        onBlur={() => onHighlight?.(undefined)}
+        onPointerEnter={() => onHover(index)}
         style={{
-          color: turn.accentColor,
           '--maka-prompt-rail-index': index,
           '--maka-prompt-rail-scale': scale,
         } as CSSProperties}

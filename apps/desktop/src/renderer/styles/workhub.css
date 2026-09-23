@@ -24,128 +24,6 @@
   initial-value: 0px;
 }
 
-.workhub-body {
-  display: grid;
-  width: 100%;
-  min-width: 0;
-  /* Reserve the outer transcript gutters and balanced message-list padding
-     outside the shared reading measure; --spacing-4 is Astryx balanced list padding (16px). */
-  grid-template-columns: minmax(0, 220px) minmax(0, calc(var(--maka-reading-measure) + 2 * (var(--maka-transcript-gutter) + var(--spacing-4)))) minmax(0, 220px);
-  gap: var(--space-6, 24px);
-  justify-content: center;
-}
-
-.workhub-conversation-shell {
-  width: 100%;
-  min-width: 0;
-  grid-column: 2;
-}
-
-.workhub-anchor-rail {
-  position: sticky;
-  top: var(--space-3, 12px);
-  align-self: start;
-  max-height: calc(100vh - 180px);
-  padding: var(--space-3, 12px) 0;
-  overflow-y: auto;
-}
-
-.workhub-anchor-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--color-border-subtle, var(--border));
-}
-
-.workhub-anchor-heading strong {
-  font-size: var(--font-size-body-sm, 12px);
-}
-
-.workhub-anchor-heading span,
-.workhub-anchor-empty {
-  color: var(--color-text-secondary, var(--muted-foreground));
-  font-size: var(--font-size-body-xs, 12px);
-}
-
-.workhub-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 8px 0;
-}
-
-.workhub-filter-button {
-  font-size: var(--font-size-body-xs, 12px);
-}
-
-.workhub-anchors {
-  display: flex;
-  flex-direction: column;
-}
-
-.workhub-anchor-rail nav[data-dragging='true'],
-.workhub-anchor-rail nav[data-dragging='true'] * { cursor: grabbing; user-select: none; }
-
-.workhub-anchor-empty {
-  margin: 0;
-  padding: 12px 0;
-}
-
-/* Delegation status shares the prompt's timestamp row. */
-.workhub-delegation-status {
-  color: var(--muted-foreground);
-}
-
-.workhub-surface { --workhub-identity-label-tone: 0.42 0.075; }
-.dark .workhub-surface { --workhub-identity-label-tone: 0.8 0.09; }
-
-.workhub-work-identity {
-  --workhub-work-color: oklch(0.58 0.1 var(--workhub-work-hue));
-  --workhub-work-label: oklch(var(--workhub-identity-label-tone) var(--workhub-work-hue));
-  --workhub-work-highlight: oklch(0.48 0.18 var(--workhub-work-hue));
-}
-
-.dark .workhub-work-identity {
-  --workhub-work-color: oklch(0.76 0.105 var(--workhub-work-hue));
-  --workhub-work-highlight: oklch(0.85 0.15 var(--workhub-work-hue));
-}
-
-.workhub-work-identity[data-work-highlighted='true'] {
-  --workhub-work-color: var(--workhub-work-highlight);
-  --workhub-work-label: var(--workhub-work-highlight);
-}
-
-.workhub-surface {
-  --workhub-tone: 0.58 0.1;
-  --workhub-highlight: 0.48 0.18;
-}
-
-.dark .workhub-surface {
-  --workhub-tone: 0.76 0.105;
-  --workhub-highlight: 0.85 0.15;
-}
-
-.workhub-navigation-item {
-  color: var(--workhub-work-label);
-}
-
-.workhub-navigation-item[data-work-highlighted='true'] {
-  background: color-mix(in oklch, var(--workhub-work-color) 8%, transparent);
-}
-
-.workhub-surface .maka-prompt-rail:has([data-highlighted='true']) {
-  opacity: 1;
-}
-
-.workhub-navigation-label {
-  display: block;
-  overflow: hidden;
-  color: var(--workhub-work-label);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
   .workHubLive, .workHubDock { width: 100%; height: 100%; min-width: 0; min-height: 0; }
   .workHubLive { position: relative; display: flex; flex-direction: column; background: var(--background); }
   .workHubWorkspace { display: flex; flex: 1; min-height: 0; }
@@ -200,7 +78,6 @@
   }
   .workHubLive[data-placement='floating'][data-conversation-expanded='false'], body:has(.workHubLive[data-placement='floating'][data-conversation-expanded='false'])::after { border-radius: 20px; }
   .workHubLive[data-placement='floating'][data-conversation-expanded='false']::before { opacity: 1; }
-  .workHubLive[data-placement='floating'] .workhub-anchor-rail { display: none; }
   .workHubLive[data-placement='floating'] .maka-chat-layout { background: transparent; }
   /* Keep the sticky dock bottom-aligned even before the native window has
      grown enough to fit its composer, 32px scroll button and 12px gaps. */
@@ -227,15 +104,10 @@
   .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], dialog, a) { -webkit-app-region: no-drag; }
   .workHubExpandButton { position: absolute; top: 6px; right: 8px; z-index: 2; color: var(--muted-foreground); -webkit-app-region: no-drag; }
 
-html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { background: transparent; }
+.workhub-work-progress { display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-2); }
+.workhub-delegation-end { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--muted-foreground); }
 
-@media (max-width: 1240px) {
-  .workhub-body { display: flex; flex-direction: column; gap: var(--space-3); }
-  .workhub-conversation-shell { width: 100%; }
-  .workhub-anchor-rail { position: static; width: min(var(--maka-reading-measure), 100%); max-height: 180px; margin-inline: auto; padding: var(--space-3); }
-  .workhub-anchors { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 1fr); overflow-x: auto; }
-  .workhub-filters { flex-wrap: nowrap; overflow-x: auto; }
-}
+html:has(.workHubLive), body:has(.workHubLive), #root:has(.workHubLive) { background: transparent; }
 
 /* Progress and conversation share the same editor, including its IME state. */
 .workHubLive[data-placement='floating'][data-progress='true'] {
@@ -267,68 +139,3 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 @media (prefers-reduced-motion: reduce) {
   .workHubLive[data-placement='floating'], .workHubLive[data-placement='floating']::before, body:has(.workHubLive[data-placement='floating'])::after, .workHubLive[data-conversation-expanded] .workHubHistory { transition: none; }
 }
-
-/* Each message carries Work identity on its sender's edge. */
-.workhub-surface .maka-user-message {
-  border-inline-end: 4px solid transparent;
-  padding-inline-end: 12px;
-}
-
-.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > .maka-assistant-answer {
-  border-inline-start: 4px solid transparent;
-  padding-inline-start: 12px;
-}
-
-.workhub-turn-heading {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-  margin-bottom: 0;
-}
-
-.workhub-turn-label {
-  max-width: 100%;
-  color: var(--workhub-work-label);
-  /* Approved compact identity typography, expressed through the Text role. */
-  --text-supporting-size: 11px;
-  --text-supporting-leading: 16px;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
-.workhub-navigation-workspace {
-  color: var(--workhub-work-label);
-}
-
-.workhub-surface .maka-user-message :has(> .workhub-turn-heading) {
-  row-gap: 4px;
-}
-
-.maka-assistant-answer .workhub-turn-heading {
-  justify-content: flex-start;
-  margin-bottom: -4px;
-}
-
-.maka-assistant-answer .workhub-turn-label {
-  text-align: left;
-}
-
-
-
-/* The button owns the rounded stripe; transparent message borders reserve its
-   gutter. Hover expands only the paint, so the conversation never shifts. */
-.workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > :is(.maka-user-message, .maka-assistant-answer) { position: relative; }
-.workhub-surface .workhub-message-rail { --button-icon-only-aspect: auto; position: absolute; inset-block: 0; width: 16px; min-width: 0; height: auto; border: 0; border-radius: 5px; padding: 0; background: transparent; cursor: pointer; z-index: 1; }
-.workhub-message-rail::before { content: ''; position: absolute; inset-block: 0; inset-inline-start: 0; width: 4px; border-radius: 999px; background: var(--maka-turn-accent); transform-origin: left center; transition: transform 150ms ease-out, background-color 150ms ease-out; pointer-events: none; }
-.maka-user-message .workhub-message-rail { inset-inline-end: -4px; }
-.maka-user-message .workhub-message-rail::before { inset-inline-start: auto; inset-inline-end: 0; transform-origin: right center; }
-.maka-assistant-answer .workhub-message-rail { inset-inline-start: -4px; }
-.workhub-message-rail:is(:hover, :focus-visible, [data-work-highlighted='true'])::before { transform: scaleX(1.5); }
-.workhub-message-rail:focus-visible { outline: 2px solid var(--maka-turn-accent); outline-offset: 2px; }
-@media (prefers-reduced-motion: reduce) {
-  .workhub-surface .workhub-message-rail, .workhub-message-rail::before { transition: none; }
-}
-.workhub-conversation-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 16px; }
-.workhub-conversation-filter > span { overflow-wrap: anywhere; }

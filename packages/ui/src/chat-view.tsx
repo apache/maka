@@ -25,7 +25,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -214,8 +213,8 @@ export function ChatView(props: {
    * the regular prompt-suggestion hero shows.
    */
   emptyOverride?: ReactNode;
-  /** Optional host-owned identity beside a turn; absent for ordinary transcripts. */
-  turnDecorations?: ReadonlyMap<string, { header: ReactNode; accentColor?: string; promptStatus?: ReactNode; messageRail?: ReactNode }>;
+  /** Host-owned content closing a turn's answer, keyed by turn id. */
+  answerFooters?: ReadonlyMap<string, ReactNode>;
   /** Session-owned records anchored after a durable conversation turn. */
   conversationItems?: ReadonlyArray<{
     id: string;
@@ -287,9 +286,6 @@ export function ChatView(props: {
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
   /** Loads `messages` back to the start of an indexed Turn. */
   onLoadTranscriptTurn?(turn: { turnId: string; sequence: number }): void | Promise<void>;
-  /** Optional identity decorations shared with a host's work navigation. */
-  promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
-  onPromptRailHighlight?(turnId: string | undefined): void;
   /**
    * PR109f: when the active session is a branched session
    * (`parentSessionId` set on its summary), show a banner above the
@@ -458,13 +454,10 @@ export function ChatView(props: {
           reply: finalAssistantReplyText(turn),
         }));
       const merged = mergePromptAnchorRailTurns(loaded, props.transcriptTurnIndex, turnIds);
-      const decorated = props.promptRailDecorations
-        ? merged.map((turn) => ({ ...turn, ...props.promptRailDecorations?.get(turn.turnId) }))
-        : merged;
-      promptRailTurnsRef.current = reusePromptAnchorRailTurns(promptRailTurnsRef.current, decorated);
+      promptRailTurnsRef.current = reusePromptAnchorRailTurns(promptRailTurnsRef.current, merged);
       return promptRailTurnsRef.current;
     },
-    [turns, props.transcriptTurnIndex, turnIds, props.promptRailDecorations],
+    [turns, props.transcriptTurnIndex, turnIds],
   );
   // Turn identity and order only, so a streaming delta keeps the same array.
   const orderedTurnIdsRef = useRef<readonly string[]>([]);
@@ -672,8 +665,7 @@ export function ChatView(props: {
               {transientMessages.length > 0 && (
                 <section className="maka-turn">
                   {transientMessages.map((message) => (
-                    <TransientUserMessage key={message.id} message={message}
-                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined} />
+                    <TransientUserMessage key={message.id} message={message} />
                   ))}
                 </section>
               )}
@@ -772,7 +764,6 @@ export function ChatView(props: {
         {/* ChatSurfaceLayout hosts the rail outside bounded transcript columns. */}
         <PromptAnchorRail
           turns={promptRailTurns}
-          onHighlightTurn={props.onPromptRailHighlight ? (turn) => props.onPromptRailHighlight?.(turn?.turnId) : undefined}
           scrollRef={scrollRef}
           onNavigateTurn={navigatePromptRail}
         />
@@ -811,26 +802,20 @@ export function ChatView(props: {
                   keepMounted={[...keepMountedIndexes]}
                 >
                   {(turn, index) => {
-                    const decoration = props.turnDecorations?.get(turn.turnId);
                     return (
                       <div
                         key={`${props.activeSession?.id}:${turn.turnId}`}
                         className="maka-transcript-turn"
                         data-transcript-turn-id={turn.turnId}
-                        data-turn-accent={decoration?.accentColor ? 'true' : undefined}
                         style={{
                           // The list's row gap does not reach inside the virtualizer.
                           paddingBlockEnd: index < turns.length - 1 ? 'var(--spacing-4)' : undefined,
-                          ...(decoration?.accentColor
-                            ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined),
                         }}
                       >
                         <TurnView
                           turn={turn}
                           activityObserved={turn.turnId === props.activeTurn?.turnId}
-                          messageHeader={decoration?.header}
-                          messageRail={decoration?.messageRail}
-                          promptStatus={decoration?.promptStatus}
+                          answerFooter={props.answerFooters?.get(turn.turnId)}
                           transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
                           userLabel={props.userLabel}
                           footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
@@ -884,7 +869,6 @@ export function ChatView(props: {
                     <TransientUserMessage
                       key={message.id}
                       message={message}
-                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined}
                     />
                   ))}
                 </section>

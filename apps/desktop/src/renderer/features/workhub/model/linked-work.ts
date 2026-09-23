@@ -17,9 +17,6 @@
  * under the License.
  */
 
-
-import { workspaceNameFromCwd } from './workspace-name.js';
-
 import type { StoredMessage } from '@maka/core/session';
 
 export type WorkHubDelegationState =
@@ -49,7 +46,6 @@ export interface WorkHubLinkedWork {
   readonly coordinationTurnId: string;
   readonly targetSessionId: string;
   readonly targetSessionName: string;
-  readonly workspaceName?: string;
   readonly targetMessageId?: string;
   readonly targetTurnId?: string;
   readonly state?: WorkHubDelegationState;
@@ -59,11 +55,10 @@ export interface WorkHubLinkedWork {
 /** Links come from successful tool results in the same durable conversation. */
 export function workHubLinkedWork(
   messages: readonly StoredMessage[],
-  sessions: readonly { id: string; name: string; cwd?: string }[],
+  sessions: readonly { id: string; name: string }[],
   fallbackName: string,
 ): WorkHubLinkedWork[] {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
-  const workspaceName = (id: string) => workspaceNameFromCwd(sessionById.get(id)?.cwd);
   const taskCalls = new Set(messages.flatMap((message) =>
     message.type === 'tool_call' && message.toolName === 'mcp__desktop_workhub__tasks' ? [message.id] : [],
   ));
@@ -73,7 +68,6 @@ export function workHubLinkedWork(
       coordinationTurnId: message.coordinationTurnId,
       targetSessionId: message.targetSessionId,
       targetSessionName: sessionById.get(message.targetSessionId)?.name ?? message.targetSessionName,
-      workspaceName: workspaceName(message.targetSessionId),
       targetMessageId: message.targetMessageId,
       targetTurnId: message.targetTurnId,
       state: 'accepted',
@@ -93,7 +87,6 @@ export function workHubLinkedWork(
       coordinationTurnId: message.turnId,
       targetSessionId: result.targetSessionKey,
       targetSessionName: sessionById.get(result.targetSessionKey)?.name ?? fallbackName,
-      workspaceName: workspaceName(result.targetSessionKey),
     }];
   });
 }

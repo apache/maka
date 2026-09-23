@@ -207,7 +207,7 @@ test('re-rendering a tick keeps its hover card bound to the same trigger', async
   assert.deepEqual(bound.filter((type) => /^(pointer|mouse|focus)/.test(type)), []);
 });
 
-test('a streaming reply re-renders only its own tick when the caller passes a fresh highlight handler', async () => {
+test('a streaming reply re-renders only its own tick', async () => {
   const { dom } = await mountTranscript();
   // A tick that re-renders hands its button new handler props.
   const tickProps = (turnId: string): unknown => {
@@ -215,17 +215,17 @@ test('a streaming reply re-renders only its own tick when the caller passes a fr
     const key = Object.keys(tick).find((name) => name.startsWith('__reactProps$'))!;
     return (tick as unknown as Record<string, unknown>)[key];
   };
-  await dom.render(view(turnMessages(), { onPromptRailHighlight: () => {} }));
+  await dom.render(view(turnMessages()));
   const settled = tickProps('turn-0');
   const streaming = tickProps('turn-5');
   const delta = turnMessages().map((message) =>
     message.id === 'assistant-5' && message.type === 'assistant' ? { ...message, text: '答案还在写' } : message);
-  await dom.render(view(delta, { onPromptRailHighlight: () => {} }));
+  await dom.render(view(delta));
   assert.ok(tickProps('turn-0') === settled, 'the settled tick did not re-render');
   assert.ok(tickProps('turn-5') !== streaming, 'the streaming tick re-rendered');
 });
 
-test('a retained tick uses updated content, decoration, and navigation callbacks', async () => {
+test('a retained tick uses updated content and navigation callbacks', async () => {
   dom = installTranscriptDom();
   const scrollRef = { current: null };
   const turns: PromptAnchorRailTurn[] = Array.from({ length: 3 }, (_, index) => ({
@@ -243,7 +243,7 @@ test('a retained tick uses updated content, decoration, and navigation callbacks
   await dom.render(render(turns, () => calls.push('old')));
   const tick = dom.container.querySelector('[data-prompt-turn-id="turn-1"]')!;
   const updated = turns.map((turn, index) => index === 1
-    ? { ...turn, label: 'Updated prompt', reply: 'Updated answer', highlighted: true }
+    ? { ...turn, label: 'Updated prompt', reply: 'Updated answer' }
     : turn);
   await dom.render(render(updated, (turn) => {
     assert.equal(turn, updated[1]);
@@ -251,7 +251,6 @@ test('a retained tick uses updated content, decoration, and navigation callbacks
   }));
   assert.equal(dom.container.querySelector('[data-prompt-turn-id="turn-1"]'), tick);
   assert.equal(tick.getAttribute('aria-label'), 'Jump to prompt: Updated prompt');
-  assert.equal(tick.getAttribute('data-highlighted'), 'true');
   await act(() => { tick.dispatchEvent(new dom!.window.Event('click', { bubbles: true })); });
   assert.deepEqual(calls, ['new:turn-1']);
 });

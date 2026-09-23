@@ -29,9 +29,6 @@ import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
 import { getShellCopy } from '../../../locales/shell-copy.js';
 import { WorkbarEdgeToggle } from '../../../application/contracts/workbar-edge-toggle.js';
-import { WorkHubNavigationRail } from './workhub-navigation-rail.js';
-import { useWorkHubHighlightState, WorkHubHighlightContext, WorkHubHueProvider } from './workhub-work-identity.js';
-import { getWorkHubRailCopy } from '../../../locales/workhub-copy.js';
 import { useWorkHubController } from '../controller/use-workhub-controller.js';
 import type { WorkHubControlSnapshot } from '../../../../shared/workhub-control.js';
 import type { WorkHubPresentationSnapshot } from '../../../../shared/workhub-presentation.js';
@@ -71,8 +68,7 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
 }
 
 export function WorkHubRoot() {
-  const highlight = useWorkHubHighlightState();
-  const controller = useWorkHubController(() => highlight.selectWork(undefined));
+  const controller = useWorkHubController();
   const { services, session, transcript, busy } = controller;
   useEffect(() => {
     services.bindBrowserSession(controller.sessionId ?? null);
@@ -114,12 +110,6 @@ export function WorkHubRoot() {
   const surface = useRef<HTMLElement>(null);
   const [editingProgressRequest, setEditingProgressRequest] = useState<number>();
   const [expandedOverride, setConversationExpanded] = useState<boolean>();
-  const promptStates = new Map<string, import('../model/linked-work.js').WorkHubDelegationState>();
-  for (const message of transcript.messages) if (message.type === 'turn_state') promptStates.set(message.turnId, message.status);
-  for (const [turnId, state] of Object.entries(controller.turnStates)) promptStates.set(turnId, state);
-  if (controller.liveTurn && !controller.liveTurn.terminal) promptStates.set(controller.liveTurn.turnId, 'running');
-  if (controller.pendingTurnId && controller.sending) promptStates.set(controller.pendingTurnId, 'running');
-  if (controller.activeInteraction) promptStates.set(controller.activeInteraction.turnId, 'waiting_for_user');
   const hasConversation = transcript.messages.length > 0 || busy || Boolean(controller.liveTurn);
   const conversationExpanded = expandedOverride ?? hasConversation;
   const hasConversationRef = useRef(hasConversation);
@@ -258,12 +248,7 @@ export function WorkHubRoot() {
       focus();
     };
   }, [services]);
-  const tasks = controller.sessions.filter((candidate) => candidate.id !== controller.sessionId && !candidate.labels.includes('mode:side_conversation') && !candidate.subagent).map((task) => ({
-    target: { sessionId: task.id }, projectName: task.cwd?.replace(/[/\\]+$/, '').split(/[/\\]/).at(-1) ?? '',
-    sessionName: task.name, archived: task.isArchived, state: task.status,
-    updatedAt: task.lastMessageAt ?? task.statusUpdatedAt ?? 0,
-  }));
-  const links = useMemo(() => workHubLinkedWork(transcript.messages, controller.sessions, getWorkHubRailCopy(locale).work), [transcript.messages, controller.sessions, locale]);
+  const links = useMemo(() => workHubLinkedWork(transcript.messages, controller.sessions, t.work), [transcript.messages, controller.sessions, locale]);
   const [delegationFeedback, setDelegationFeedback] = useState<readonly WorkHubDelegationFeedback[]>([]);
   useEffect(() => {
     let current = true;
@@ -288,13 +273,10 @@ export function WorkHubRoot() {
     () => applyWorkHubDelegationFeedback(links, delegationFeedback),
     [links, delegationFeedback],
   );
-  const delegatedSessionIds = linksWithFeedback.map((link) => link.targetSessionId);
   const call = (task: Promise<unknown>) => {
     void task.catch(controller.report);
   };
   return (
-    <WorkHubHighlightContext.Provider value={highlight}>
-    <WorkHubHueProvider sessionIds={[...tasks.map((task) => task.target.sessionId), ...delegatedSessionIds]}>
     <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-maka-content-ready data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
       {!floating && presentation?.workbar && presentation.workbar.togglePosition !== 'titlebar' && <WorkbarEdgeToggle label={getShellCopy(locale).chrome[presentation.workbar.collapsed ? 'expandWorkbar' : 'collapseWorkbar']} {...presentation.workbar} onToggle={() => call(services.presentation.toggleWorkbar())} />}
       {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
@@ -426,11 +408,7 @@ export function WorkHubRoot() {
         }
       >
         <div ref={history} className="workHubHistory" aria-hidden={!showConversation} inert={!showConversation}>
-        <div className="workhub-body">
-        <WorkHubNavigationRail locale={locale} sessions={tasks} delegatedSessionIds={delegatedSessionIds} copy={getWorkHubRailCopy(locale)} />
-        <div className="workhub-conversation-shell">
         <WorkHubConversation
-          promptStates={promptStates}
           workLinks={linksWithFeedback}
           onReadAttachmentBytes={services.readAttachmentBytes}
           onOpenWork={(id) => call(services.presentation.openSession(id))}
@@ -454,12 +432,9 @@ export function WorkHubRoot() {
             </div>
           }
         />
-        </div></div>
         </div>
       </ChatSurfaceLayout>
       </div></div>
     </section>
-    </WorkHubHueProvider>
-    </WorkHubHighlightContext.Provider>
   );
 }

@@ -192,28 +192,17 @@ test('ChatSurfaceLayout preserves the public emptyState for absent children', ()
 });
 
 
-test('turn identity stays on its exact durable anchor and is absent from ordinary transcripts', async () => {
-  const messages = ['one', 'two'].map((turnId) => ({ type: 'user' as const, id: `user-${turnId}`, turnId, text: turnId, ts: 1 }));
+test('an answer footer closes only its own turn answer and leaves prompts plain', async () => {
+  const messages = ['one', 'two'].flatMap((turnId) => [
+    { type: 'user' as const, id: `user-${turnId}`, turnId, text: turnId, ts: 1 },
+    { type: 'assistant' as const, id: `answer-${turnId}`, turnId, text: `answer ${turnId}`, ts: 2, modelId: 'model' },
+  ]);
   const { document } = parseHTML(await renderChat(undefined, {
     messages,
-    turnDecorations: new Map([['one', { header: <span>Workspace / Work</span>, accentColor: 'red', promptStatus: <span data-test-status>Running work</span> }]]),
+    answerFooters: new Map([['one', <span data-test-footer>Payments · Running</span>]]),
   }));
-  const one = document.querySelector('[data-transcript-turn-id="one"]')!;
-  assert.equal(one.getAttribute('data-turn-accent'), 'true');
-  assert.match(one.textContent!, /Workspace \/ Work/);
-  assert.equal(one.querySelectorAll('.maka-user-message [data-test-status]').length, 1);
-  assert.equal(document.querySelector('[data-transcript-turn-id="two"] [data-test-status]'), null);
-  assert.match(one.querySelector('.maka-message-meta')!.textContent!, /Running work/);
-  assert.equal(document.querySelector('[data-transcript-turn-id="two"]')!.getAttribute('data-turn-accent'), null);
-  assert.doesNotMatch(await renderChat(undefined, { messages }), /data-turn-accent|Workspace \/ Work/);
-});
-
-
-test('an initial optimistic prompt uses the same status projection as a durable prompt', async () => {
-  const { document } = parseHTML(await renderChat(undefined, {
-    messages: [], transientMessages: [{ id: 'pending', hostTurnId: 'choosing', text: 'Choose work', ts: 1, transientPlacement: 'current_turn' }],
-    turnDecorations: new Map([['choosing', { header: <></>, promptStatus: <span data-test-status>Waiting for user</span> }]]),
-  }));
-  assert.equal(document.querySelectorAll('[data-test-status]').length, 1);
-  assert.match(document.querySelector('.maka-message-meta')!.textContent!, /Waiting for user/);
+  const footers = document.querySelectorAll('[data-test-footer]');
+  assert.equal(footers.length, 1);
+  assert.ok(footers[0]!.closest('[data-transcript-turn-id="one"] .maka-assistant-answer'));
+  assert.equal(document.querySelector('.maka-user-message [data-test-footer]'), null);
 });
