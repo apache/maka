@@ -9,4 +9,6 @@ The executable embeds the Inter font, Copyright 2020 The Inter Project Authors, 
 
 The pinned Cargo graph also contains webpki-roots 1.0.7 with derived Common CA Database data under CDLA-Permissive-2.0. See CDLA-Permissive-2.0.txt in this directory and https://github.com/rustls/webpki-roots.
 
+The declared licenses, available upstream license and copyright texts, versions, and source locations of the other pinned Cargo dependencies are in THIRD_PARTY_NOTICES.txt in this directory. It includes whitespace-normalized upstream license texts for crates that omitted those files from their crates.io archives.
+
 The Apache Software Foundation's Category B terms apply to MPL-2.0 and SIL Open Font License 1.1 components. The source release does not contain the Cua Driver executable, UniFFI source, or Inter font binary. The full conservative Cargo inventory and audit limits are in docs/computer-use-provenance.md of the source tree.
