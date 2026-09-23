@@ -119,7 +119,7 @@ test('every copy button on the downloads page has its own accessible name', () =
         /<button class="copy"[^>]*aria-label="([^"]+)"/gu,
       ),
     ].map(([, name]) => name);
-    assert.equal(names.length, 5, locale);
+    assert.equal(names.length, 3, locale);
     assert.equal(new Set(names).size, names.length, locale);
   }
 });
@@ -127,6 +127,36 @@ test('every copy button on the downloads page has its own accessible name', () =
 test('the font licenses ship with the fonts', () => {
   for (const pkg of ['geist', 'geist-mono']) {
     assert.match(page(`licenses/${pkg}/LICENSE`), /SIL Open Font License/u);
+  }
+});
+
+test('public pages direct downloads to release status and keep development separate', () => {
+  for (const locale of locales) {
+    for (const path of pages) {
+      const html = page(`${locale}/${path}`);
+      const targets = [...hrefs(html)];
+      assert.ok(
+        !targets.some((href) =>
+          /^https:\/\/github\.com\/apache\/maka\/releases(?:[/?#]|$)/u.test(href),
+        ),
+        `${locale}/${path}`,
+      );
+      assert.doesNotMatch(html, /npm ci|npm run build|git clone|Desktop Nightly/u);
+      assert.ok(
+        targets.some((href) =>
+          href.endsWith(locale === 'en' ? '/CONTRIBUTING.md' : '/CONTRIBUTING.zh-CN.md'),
+        ),
+      );
+    }
+    assert.match(
+      page(`${locale}/index.html`),
+      new RegExp(`class="btn primary" href="/${locale}/downloads/#apache-releases"`, 'u'),
+    );
+    assert.ok(
+      hrefs(page(`${locale}/downloads/index.html`)).has(
+        'https://lists.apache.org/list.html?dev@maka.apache.org',
+      ),
+    );
   }
 });
 

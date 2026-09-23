@@ -30,9 +30,10 @@ import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
-import type { TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
+import type { SessionCreateInput, TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
 import { DesktopSessionLocalStore, type LocalMessageIntent } from '../session-local-store.js';
 import {
+  createSessionLocalChangedEmitter,
   DesktopSessionLocalService,
   desktopSessionLocalPartition,
   registerDesktopSessionLocalIpc,
@@ -247,6 +248,46 @@ test('a catalog read begun before local creation cannot erase that Session or it
   assert.equal(store.list('authority').length, 1);
 });
 
+test('a locally-owned Session change signals a list refresh, not a targeted row read', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target' },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  const sent: { channel: string; payload: unknown }[] = [];
+  const emit = createSessionLocalChangedEmitter({
+    send: (channel, _scope, payload) => sent.push({ channel, payload }),
+    locallyOwned: (scope, sessionId) => service.locallyOwned(scope, sessionId),
+  });
+  // The store still holds the creation intent, so no Host row exists for a
+  // targeted `sessions.get` to read.
+  store.saveSession(
+    'authority',
+    { id: 'session-1', name: 'task' } as DesktopSessionSummaryInput,
+    { sessionId: 'session-1' } as SessionCreateInput,
+  );
+  emit(target.scope, 'session-1');
+  assert.deepEqual(
+    sent.map(({ channel, payload }) => [channel, (payload as { sessionId?: string }).sessionId]),
+    [
+      ['session-local:changed', 'session-1'],
+      ['sessions:changed', undefined],
+    ],
+  );
+  // Host admission clears the creation marker, so the targeted path resumes.
+  store.saveSession('authority', { id: 'session-1', name: 'task' } as DesktopSessionSummaryInput);
+  emit(target.scope, 'session-1');
+  const last = sent[sent.length - 1]?.payload as { sessionId?: string } | undefined;
+  assert.equal(last?.sessionId, 'session-1');
+});
+
 test('an authorization failure quarantines the still-connected authority from cache and admission', async (t) => {
   const { store, beforeClose } = await database(t);
   const target: DesktopSessionLocalTarget = {
@@ -453,6 +494,166 @@ test('lost ACK recovery never changes epoch or ID and does not block another Ses
   assert.equal(calls.find((call) => call.messageId === 'message-2')?.originHostEpoch, 'epoch-2');
 });
 
+test('a Message dispatched in a released epoch is settled from the Host, never replayed', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const submissions: TurnMessageSubmitInput[] = [];
+  const queried: string[][] = [];
+  let quiescent = false;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target-1' },
+    client: {
+      ...client('epoch-2'),
+      async queryMessageExecutions(input) {
+        queried.push([...input.messageIds]);
+        return {
+          resolutions: [
+            { messageId: 'message-1', state: 'owned', turnId: 'turn-recovered', runId: 'run-1' },
+          ],
+        };
+      },
+    },
+    submit: async (input) => {
+      submissions.push(input);
+      return accepted;
+    },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  // Dispatch once in the previous epoch, then lose the answer the way a Host
+  // restart does: the local copy is left `unknown` with a dead dispatch epoch.
+  const dispatched = store.enqueue('authority', intent());
+  store.update({
+    ...dispatched,
+    state: 'unknown',
+    intent: { ...dispatched.intent, originHostEpoch: 'epoch-1' },
+  });
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-1')?.state === 'accepted');
+  assert.deepEqual(queried, [['message-1']]);
+  // The old epoch's submit is never replayed: that answer can only be
+  // `outcome_unknown`, which would freeze the copy forever.
+  assert.deepEqual(submissions, []);
+  assert.equal(store.get('authority', 'message-1')?.result?.disposition, 'turn_started');
+});
+
+test('a stale-epoch Message the Host never admitted is retired so later sends proceed', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const submissions: string[] = [];
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target-1' },
+    client: {
+      ...client('epoch-2'),
+      async queryMessageExecutions(input) {
+        // The Host holds no receipt, steering proof, tombstone, or admission
+        // for this identity, so it reports that absence positively.
+        return {
+          resolutions: input.messageIds.map(
+            (messageId) => ({ messageId, state: 'not_admitted' as const }),
+          ),
+        };
+      },
+    },
+    submit: async (input) => {
+      submissions.push(input.messageId);
+      return accepted;
+    },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  const dispatched = store.enqueue('authority', intent());
+  store.update({
+    ...dispatched,
+    state: 'unknown',
+    intent: { ...dispatched.intent, originHostEpoch: 'epoch-1' },
+  });
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-1')?.state === 'failed');
+  // A settled non-delivery releases the Session's ordering.
+  store.enqueue('authority', intent('message-2'));
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-2')?.state === 'accepted');
+  assert.deepEqual(submissions, ['message-2']);
+});
+
+test('a running Host that cannot yet resolve a stale Message leaves the copy unresolved', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target-1' },
+    client: {
+      ...client('epoch-2'),
+      async queryMessageExecutions() {
+        throw new RuntimeHostOperationError('turn.message.execution.query', 'host_not_ready', 'busy');
+      },
+    },
+    submit: async () => accepted,
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  const dispatched = store.enqueue('authority', intent());
+  store.update({
+    ...dispatched,
+    state: 'unknown',
+    intent: { ...dispatched.intent, originHostEpoch: 'epoch-1' },
+  });
+  service.wake();
+  await nextTurn();
+  // Guessing "never delivered" here would let the user resend a Message the
+  // Host may already own, so the copy stays unresolved instead.
+  assert.equal(store.get('authority', 'message-1')?.state, 'unknown');
+});
+
+test('an omitted resolution leaves the stale copy unresolved rather than failed', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority',
+    profileId: 'profile',
+    scope: { hostId: 'root', targetEpoch: 'target-1' },
+    client: {
+      ...client('epoch-2'),
+      // The Host answered successfully but could not assert anything about the
+      // identity, so it omitted it. That is "cannot say yet", not "not admitted".
+      async queryMessageExecutions() {
+        return { resolutions: [] };
+      },
+    },
+    submit: async () => accepted,
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target],
+    changed() {},
+    onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  const dispatched = store.enqueue('authority', intent());
+  store.update({
+    ...dispatched,
+    state: 'unknown',
+    intent: { ...dispatched.intent, originHostEpoch: 'epoch-1' },
+  });
+  service.wake();
+  await waitFor(() => store.get('authority', 'message-1')?.state === 'unknown');
+  // Only a positive `not_admitted` may retire the copy; silence must not.
+  assert.equal(store.get('authority', 'message-1')?.state, 'unknown');
+});
+
 test('a removed authority cannot be repopulated by an in-flight admission', async (t) => {
   const { store, beforeClose } = await database(t);
   const response = deferred<TurnMessageSubmitResult>();
@@ -482,7 +683,7 @@ test('a removed authority cannot be repopulated by an in-flight admission', asyn
   assert.deepEqual(store.list('authority'), []);
 });
 
-test('cache restoration never includes live overlay and expires independently of the outbox', async (t) => {
+test('cache restoration expires independently of the outbox', async (t) => {
   let now = 1;
   const { store } = await database(t, () => now);
   store.enqueue('authority', intent());
@@ -497,11 +698,10 @@ test('cache restoration never includes live overlay and expires independently of
         message: { type: 'user', id: 'durable-1', turnId: 'turn', ts: 1, text: 'persisted' },
       },
     ],
-    overlay: [{ type: 'user', id: 'live-1', turnId: 'turn', ts: 2, text: 'in flight' }],
     hasOlder: false,
-    hasNewer: false,
+    beginsAtTurnBoundary: true,
   });
-  assert.deepEqual(store.transcript('authority', 'session-1')?.snapshot.overlay, []);
+  assert.equal(store.transcript('authority', 'session-1')?.snapshot.durableThrough, 1);
   assert.equal(store.transcript('different-authority', 'session-1'), undefined);
   now += 31 * 24 * 60 * 60 * 1000;
   assert.equal(store.transcript('authority', 'session-1'), undefined);
@@ -551,9 +751,8 @@ test('durable Host evidence retires delivery independently of cache admission an
               },
             },
           ],
-          overlay: [],
           hasOlder: false,
-          hasNewer: false,
+          beginsAtTurnBoundary: true,
         };
         service.cacheTranscript(target.scope, snapshot);
         if (cacheLoss === 'revision') db.store.enqueue('other-authority', intent('other-message'));

@@ -193,6 +193,52 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': recovery message evidence has equivalent UTF-8 byte budgets', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const promptText = '需要按 UTF-8 字节计量';
+      const prompt: RuntimeEvent = {
+        id: 'recovery-budget-prompt',
+        sessionId: 'recovery-budget-session',
+        invocationId: 'recovery-budget-invocation',
+        runId: 'recovery-budget-run',
+        turnId: 'recovery-budget-turn',
+        ts: 1,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: promptText },
+      };
+      await s.appendRuntimeEvent(prompt.sessionId, prompt.runId, prompt);
+      const query = {
+        sessionId: prompt.sessionId,
+        turnIds: [prompt.turnId],
+        eventIds: [prompt.id],
+      };
+      const complete = await s.readRecoveryMessageEvents({
+        ...query,
+        budget: { maxRecords: 1, maxBytes: 16 * 1024 },
+      });
+      assert.equal(complete.status, 'complete');
+      if (complete.status !== 'complete') throw new Error('expected recovery evidence');
+      assert.deepEqual(complete.records, [prompt]);
+      assert.equal(complete.sourceRecordCount, 1);
+      assert.ok(complete.storedBytes > promptText.length);
+      assert.deepEqual(
+        await s.readRecoveryMessageEvents({
+          ...query,
+          budget: { maxRecords: 0, maxBytes: 16 * 1024 },
+        }),
+        { status: 'limit_exceeded' },
+      );
+      assert.deepEqual(
+        await s.readRecoveryMessageEvents({
+          ...query,
+          budget: { maxRecords: 1, maxBytes: 1 },
+        }),
+        { status: 'limit_exceeded' },
+      );
+    });
+  });
   test(backend + ': transcript projection consumes bounded detached event iterators', async () => {
     await withProvider(make(), async ({ runtimeEventStore: s }) => {
       const run = {
@@ -233,7 +279,6 @@ for (const backend of ['Local', 'Memory'] as const) {
         direction: 'older' as const,
         throughOrdinal,
         position: throughOrdinal,
-        limit: 1,
         maxEvents: 10,
         maxBytes: 64 * 1024,
         maxRecordBytes: 16 * 1024,
@@ -246,22 +291,19 @@ for (const backend of ['Local', 'Memory'] as const) {
         last: header.lastOrdinal,
         entries: [...entries].map(({ ordinal, event }) => ({ ordinal, id: event.id })),
       });
-      const expected = await s.readTranscriptInvocations(run.sessionId, request, project);
-      assert.equal(expected.length, 1);
+      const expected = await s.readTranscriptRun(run.sessionId, request, project);
+      assert.ok(expected);
       assert.deepEqual(
-        expected[0]!.entries.map((e) => e.id),
+        expected.entries.map((e) => e.id),
         [opening.id, body.id, ending.id],
       );
-      assert.equal(expected[0]!.last, throughOrdinal);
-      await s.readTranscriptInvocations(run.sessionId, request, (header, entries) => {
+      assert.equal(expected.last, throughOrdinal);
+      await s.readTranscriptRun(run.sessionId, request, (header, entries) => {
         header.invocation.opening.route.modelId = 'mutated';
         for (const entry of entries) entry.event.author = 'user';
         return null;
       });
-      assert.deepEqual(
-        await s.readTranscriptInvocations(run.sessionId, request, project),
-        expected,
-      );
+      assert.deepEqual(await s.readTranscriptRun(run.sessionId, request, project), expected);
       assert.equal(
         (await s.readRunInvocation(run.sessionId, run.runId))!.opening.route.modelId,
         'fake-model',
@@ -272,35 +314,293 @@ for (const backend of ['Local', 'Memory'] as const) {
       );
       for (const field of ['maxEvents', 'maxBytes', 'maxRecordBytes'] as const) {
         await assert.rejects(
-          s.readTranscriptInvocations(run.sessionId, { ...request, [field]: 1 }, project),
+          s.readTranscriptRun(run.sessionId, { ...request, [field]: 1 }, project),
           RuntimeTranscriptOversizedTurnError,
         );
         await assert.rejects(
-          s.readTranscriptInvocations(run.sessionId, { ...request, [field]: 0 }, project),
+          s.readTranscriptRun(run.sessionId, { ...request, [field]: 0 }, project),
           /Invalid/,
         );
       }
-      const firstOnly = await s.readTranscriptInvocations(
+      const firstOnly = await s.readTranscriptRun(
         run.sessionId,
         { ...request, maxEvents: 1 },
         (_header, entries) => entries[Symbol.iterator]().next().value?.event.id,
       );
-      assert.deepEqual(firstOnly, [opening.id]);
+      assert.equal(firstOnly, opening.id);
       // Projectors own their results, which can contain live methods (the
       // production transcript reader returns a fold), not just cloneable data.
       const projected = { read: () => 'caller-owned projection' };
-      const results = await s.readTranscriptInvocations(
-        run.sessionId,
-        request,
-        (_header, entries) => {
-          assert.equal([...entries].length, 3);
-          return projected;
-        },
-      );
-      assert.equal(results[0], projected);
-      assert.equal(results[0]!.read(), 'caller-owned projection');
+      const result = await s.readTranscriptRun(run.sessionId, request, (_header, entries) => {
+        assert.equal([...entries].length, 3);
+        return projected;
+      });
+      assert.equal(result, projected);
+      assert.equal(result!.read(), 'caller-owned projection');
     });
   });
+  test(backend + ': transcript serves a running Turn up to the watermark', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const sessionId = 'watermark-session';
+      const turn = (name: string) => ({
+        sessionId,
+        runId: `${name}-run`,
+        turnId: `${name}-turn`,
+        invocationId: `${name}-invocation`,
+      });
+      const settled = turn('settled');
+      const running = turn('running');
+      const opened = (run: typeof settled) =>
+        buildInvocationOpenedEvent({
+          id: `${run.invocationId}-opened`,
+          run,
+          openedAt: 1,
+          opening: invocationOpening(),
+        });
+      const text = (run: typeof settled, id: string, role: 'user' | 'model'): RuntimeEvent => ({
+        ...run,
+        id,
+        ts: 2,
+        partial: false,
+        role,
+        author: role === 'user' ? 'user' : 'agent',
+        content: { kind: 'text', text: id },
+      });
+      const ending = (run: typeof settled): RuntimeEvent => ({
+        ...run,
+        id: `${run.invocationId}-ended`,
+        ts: 3,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        actions: { endInvocation: true },
+        status: 'completed',
+      });
+      const commits: string[] = [];
+      const unsubscribe = s.subscribeRuntimeEventCommits((id) => commits.push(id));
+      const highWaters: Array<number | null> = [await s.readTranscriptHighWater(sessionId)];
+      for (const event of [
+        opened(settled),
+        text(settled, 'settled-prompt', 'user'),
+        ending(settled),
+        opened(running),
+        text(running, 'running-prompt', 'user'),
+        text(running, 'running-answer', 'model'),
+      ]) {
+        await s.appendRuntimeEvent(sessionId, event.runId, event);
+        highWaters.push(await s.readTranscriptHighWater(sessionId));
+      }
+      assert.deepEqual(highWaters, [null, 1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(commits, Array(6).fill(sessionId));
+      await assert.rejects(
+        s.appendRuntimeEvent(sessionId, settled.runId, text(settled, 'late', 'model')),
+      );
+      assert.equal(commits.length, 6);
+
+      // One call answers with one run, so a walk is the whole sweep: step past
+      // the run until nothing is left. A run reaches the walk's own bound when
+      // no other Turn stops it, which is why the outermost run of each
+      // direction ends at 0 or at the watermark rather than at a Turn's edge.
+      const read = async (
+        direction: 'older' | 'newer',
+        position: number,
+        throughOrdinal: number,
+      ) => {
+        const seen: Array<{
+          invocationId: string;
+          first: number;
+          last: number;
+          ordinals: number[];
+        }> = [];
+        for (let at = Math.min(position, throughOrdinal); at >= 0 && at <= throughOrdinal; ) {
+          const run = await s.readTranscriptRun(
+            sessionId,
+            {
+              direction,
+              position: at,
+              throughOrdinal,
+              maxEvents: 16,
+              maxBytes: 64 * 1024,
+              maxRecordBytes: 16 * 1024,
+            },
+            (header, entries) => ({
+              invocationId: header.invocation.invocationId,
+              first: header.firstOrdinal,
+              last: header.lastOrdinal,
+              ordinals: [...entries].map((entry) => entry.ordinal),
+            }),
+          );
+          if (!run) break;
+          seen.push(run);
+          at = direction === 'older' ? run.first - 1 : run.last + 1;
+        }
+        return seen.sort((a, b) => a.first - b.first);
+      };
+      assert.deepEqual(await read('older', 6, 6), [
+        { invocationId: settled.invocationId, first: 0, last: 3, ordinals: [1, 2, 3] },
+        { invocationId: running.invocationId, first: 4, last: 6, ordinals: [4, 5, 6] },
+      ]);
+      assert.deepEqual(await read('newer', 1, 6), [
+        { invocationId: settled.invocationId, first: 1, last: 3, ordinals: [1, 2, 3] },
+        { invocationId: running.invocationId, first: 4, last: 6, ordinals: [4, 5, 6] },
+      ]);
+      assert.deepEqual(await read('newer', 5, 6), [
+        { invocationId: running.invocationId, first: 5, last: 6, ordinals: [4, 5, 6] },
+      ]);
+      assert.deepEqual(await read('older', 6, 5), [
+        { invocationId: settled.invocationId, first: 0, last: 3, ordinals: [1, 2, 3] },
+        { invocationId: running.invocationId, first: 4, last: 5, ordinals: [4, 5] },
+      ]);
+      assert.deepEqual(await read('newer', 1, 2), [
+        { invocationId: settled.invocationId, first: 1, last: 2, ordinals: [1, 2] },
+      ]);
+
+      await s.importConversationCopyRuntimeEvents(sessionId, [
+        {
+          runId: 'copied-run',
+          events: [opened(turn('copied')), text(turn('copied'), 'copied-prompt', 'user')],
+        },
+      ]);
+      assert.equal(commits.length, 7);
+      unsubscribe();
+      await s.appendRuntimeEvent(sessionId, running.runId, ending(running));
+      assert.equal(commits.length, 7);
+    });
+  });
+  test(
+    backend + ': a transcript Turn spans every visible invocation carrying its turnId',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: s }) => {
+        const sessionId = 'turn-extent-session';
+        const invocation = (name: string, turnId = `${name}-turn`) => ({
+          sessionId,
+          runId: `${name}-run`,
+          turnId,
+          invocationId: `${name}-invocation`,
+        });
+        const outer = invocation('outer');
+        const inner = invocation('inner');
+        const resumed = invocation('resumed', outer.turnId);
+        const hidden = invocation('hidden');
+        const later = invocation('later');
+        const opened = (run: typeof outer, opening: Parameters<typeof invocationOpening>[0] = {}) =>
+          buildInvocationOpenedEvent({
+            id: `${run.invocationId}-opened`,
+            run,
+            openedAt: 1,
+            opening: invocationOpening(opening),
+          });
+        const text = (run: typeof outer, id: string, role: 'user' | 'model'): RuntimeEvent => ({
+          ...run,
+          id,
+          ts: 2,
+          partial: false,
+          role,
+          author: role === 'user' ? 'user' : 'agent',
+          content: { kind: 'text', text: id },
+        });
+        const ending = (run: typeof outer): RuntimeEvent => ({
+          ...run,
+          id: `${run.invocationId}-ended`,
+          ts: 3,
+          partial: false,
+          role: 'system',
+          author: 'system',
+          actions: { endInvocation: true },
+          status: 'completed',
+        });
+        for (const event of [
+          opened(outer), // 1
+          text(outer, 'outer-prompt', 'user'), // 2
+          opened(inner), // 3
+          text(inner, 'inner-prompt', 'user'), // 4
+          ending(inner), // 5
+          opened(hidden, { lineage: { parentRunId: outer.runId } }), // 6
+          text(hidden, 'hidden-answer', 'model'), // 7
+          opened(resumed, {
+            source: {
+              kind: 'handoff',
+              rootRunId: outer.runId,
+              sourceInvocationId: outer.invocationId,
+              sourceRunId: outer.runId,
+              sourceTurnId: outer.turnId,
+              sourceRuntimeEventHighWater: 2,
+              claimId: 'handoff-claim',
+              boundaryDigest: `sha256:${'0'.repeat(64)}`,
+            },
+          }), // 8
+          text(resumed, 'resumed-answer', 'model'), // 9
+          ending(resumed), // 10
+          opened(later), // 11
+          text(later, 'later-prompt', 'user'), // 12
+        ]) {
+          await s.appendRuntimeEvent(sessionId, event.runId, event);
+        }
+
+        const extents = (turns: Awaited<ReturnType<typeof s.readTranscriptTurns>>) =>
+          turns.map(({ turnId, firstOrdinal, lastOrdinal, prompt }) => ({
+            turnId,
+            firstOrdinal,
+            lastOrdinal,
+            prompt: prompt?.event.id,
+          }));
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { throughOrdinal: 12, limit: 8 })),
+          [
+            { turnId: outer.turnId, firstOrdinal: 1, lastOrdinal: 10, prompt: 'outer-prompt' },
+            { turnId: inner.turnId, firstOrdinal: 3, lastOrdinal: 5, prompt: 'inner-prompt' },
+            { turnId: later.turnId, firstOrdinal: 11, lastOrdinal: 12, prompt: 'later-prompt' },
+          ],
+        );
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { throughOrdinal: 10, limit: 1 })),
+          [{ turnId: inner.turnId, firstOrdinal: 3, lastOrdinal: 5, prompt: 'inner-prompt' }],
+        );
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { turnId: outer.turnId })).map(
+            ({ lastOrdinal }) => lastOrdinal,
+          ),
+          [10],
+        );
+        assert.deepEqual(await s.readTranscriptTurns(sessionId, { turnId: hidden.turnId }), []);
+        const crossings: number[] = [];
+        for (let ordinal = 1; ordinal <= 13; ordinal += 1) {
+          if (await s.readTranscriptTurnCrossing(sessionId, ordinal)) crossings.push(ordinal);
+        }
+        assert.deepEqual(crossings, [2, 3, 4, 5, 6, 7, 8, 9, 10, 12]);
+
+        // Repair renumbers every ordinal, so the extents move with them.
+        await s.resequenceSessionEventOrdinals(sessionId);
+        const entries = await s.readSessionRuntimeEventEntries(sessionId);
+        const ordinalsOf = (turnId: string) =>
+          entries.filter((entry) => entry.event.turnId === turnId).map((entry) => entry.ordinal);
+        const [moved] = await s.readTranscriptTurns(sessionId, { turnId: outer.turnId });
+        assert.deepEqual(
+          [moved?.firstOrdinal, moved?.lastOrdinal],
+          [Math.min(...ordinalsOf(outer.turnId)), Math.max(...ordinalsOf(outer.turnId))],
+        );
+
+        // The opening decides visibility, so events committed before it count.
+        const early = invocation('early');
+        await s.appendRuntimeEvent(sessionId, early.runId, text(early, 'early-prompt', 'user'));
+        await s.appendRuntimeEvent(sessionId, early.runId, opened(early));
+        const earlyOrdinals = (await s.readSessionRuntimeEventEntries(sessionId))
+          .filter((entry) => entry.event.turnId === early.turnId)
+          .map((entry) => entry.ordinal);
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { turnId: early.turnId })),
+          [
+            {
+              turnId: early.turnId,
+              firstOrdinal: Math.min(...earlyOrdinals),
+              lastOrdinal: Math.max(...earlyOrdinals),
+              prompt: 'early-prompt',
+            },
+          ],
+        );
+      });
+    },
+  );
   test(backend + ': steering reorder preserves unselected and followup queue slots', async () => {
     await withProvider(make(), async ({ sessionStore: s }, root) => {
       const session = await s.create(sessionInput(root));
@@ -490,6 +790,97 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': imported message projection finishes before commit starts', async (t) => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      let commitStarted = false;
+      const originalReplace = String.prototype.replace;
+      t.mock.method(
+        String.prototype,
+        'replace',
+        function (this: string, ...args: Parameters<typeof originalReplace>) {
+          if (String(this) === 'force projection failure') {
+            throw new Error('forced projection failure');
+          }
+          return Reflect.apply(originalReplace, this, args) as string;
+        },
+      );
+      await assert.rejects(
+        s.createImportedSession(
+          sessionInput(root),
+          [
+            {
+              type: 'user',
+              id: 'imported-user',
+              turnId: 'imported-turn',
+              ts: 1,
+              text: 'force projection failure',
+            },
+          ],
+          { adapterId: 'fake', sourceSessionId: 'source' },
+          { onCommitStarted: () => (commitStarted = true) },
+        ),
+        /forced projection failure/,
+      );
+      assert.equal(commitStarted, false);
+      assert.deepEqual(await s.listHeaders(), []);
+    });
+  });
+  test(backend + ': external import lookup excludes staged Sessions', async () => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      const createImport = (sourceSessionId: string) =>
+        s.createImportedSession(
+          sessionInput(root),
+          [
+            {
+              type: 'user',
+              id: `imported-${sourceSessionId}`,
+              turnId: `turn-${sourceSessionId}`,
+              ts: 1,
+              text: `imported ${sourceSessionId}`,
+            },
+          ],
+          {
+            adapterId: 'fake',
+            sourceSessionId,
+          },
+        );
+      const published = await createImport('shared-source');
+      const stagedShared = await createImport('shared-source');
+      const stagedOnly = await createImport('staged-only');
+      await s.updateHeader(published.id, { transcriptLedgerVersion: 1 });
+
+      assert.deepEqual(
+        await s.lookupExternalSessionImports(
+          'fake',
+          ['shared-source', 'staged-only', 'missing'],
+          8,
+        ),
+        [
+          {
+            sourceSessionId: 'shared-source',
+            livePublishedImportCount: 1,
+            recentSessionIds: [published.id],
+          },
+        ],
+      );
+
+      assert.deepEqual(
+        (await s.list()).map((session) => session.id),
+        [published.id],
+      );
+
+      const page = await s.listCatalogPage(undefined, undefined, 8);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') throw new Error('Expected a catalog page');
+      assert.deepEqual(
+        page.records.map((record) => record.header.id),
+        [published.id],
+      );
+      await assert.rejects(s.readCatalogRecord(stagedShared.id), SessionNotFoundError);
+      await assert.rejects(s.readCatalogRecord(stagedOnly.id), SessionNotFoundError);
+      assert.equal((await s.readCatalogRecord(published.id)).header.id, published.id);
+    });
+  });
   test(
     backend + ': catalog pagination visits mixed-case tied IDs exactly once in Local order',
     async () => {

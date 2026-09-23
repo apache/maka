@@ -21,7 +21,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type ConnectionThinkingContext,
+  defaultThinkingLevelForConnection,
   normalizeModelOverrides,
+  modelApplyPatchEnabled,
   modelOverride,
   resolveThinkingLevel,
   thinkingOptionsForModel,
@@ -50,6 +52,27 @@ test('relay profiles preserve the fast service tier declaration', () => {
     m: { serviceTier: 'fast' },
   });
   assert.deepEqual(normalizeModelOverrides({ m: { serviceTier: 'unknown' } }), { m: {} });
+});
+
+test('per-model thinking defaults resolve only when the model offers the level', () => {
+  const connection = {
+    providerType: 'openai-compatible',
+    modelOverrides: {
+      reasoner: { thinkingLevels: ['low', 'high'], defaultThinkingLevel: 'high' },
+      stale: { thinkingLevels: ['low'], defaultThinkingLevel: 'high' },
+      invalid: { thinkingLevels: ['low'], defaultThinkingLevel: 'turbo' },
+    },
+  } as unknown as ConnectionThinkingContext;
+  assert.equal(defaultThinkingLevelForConnection(connection, 'reasoner'), 'high');
+  assert.equal(defaultThinkingLevelForConnection(connection, 'stale'), undefined);
+  assert.equal(defaultThinkingLevelForConnection(connection, 'invalid'), undefined);
+  assert.deepEqual(normalizeModelOverrides(connection.modelOverrides)?.reasoner, {
+    thinkingLevels: ['low', 'high'],
+    defaultThinkingLevel: 'high',
+  });
+  assert.deepEqual(normalizeModelOverrides(connection.modelOverrides)?.invalid, {
+    thinkingLevels: ['low'],
+  });
 });
 
 test('Fast visibility mirrors the pinned OpenAI SDK priority-processing families', () => {
@@ -212,3 +235,32 @@ test('Alibaba Token Plan exposes the formal Qwen3.8 effort and disable contract'
 // reasoning_content in tool-call history (400 otherwise), and other relays
 // ignore it, so the runtime replays unconditionally. That contract is
 // enforced per provider by the runtime provider-contract matrix, not here.
+
+test('normalizes per-model ApplyPatch without confusing false with automatic', () => {
+  assert.deepEqual(
+    normalizeModelOverrides({
+      on: { applyPatch: true },
+      off: { applyPatch: false },
+      auto: {},
+      invalid: { applyPatch: 'true' },
+    }),
+    { on: { applyPatch: true }, off: { applyPatch: false }, auto: {}, invalid: {} },
+  );
+});
+
+test('ApplyPatch defaults are model-specific and explicit choices win', () => {
+  for (const model of [
+    'gpt-5.6-luna',
+    'gpt-6-astra',
+    'gpt-5.4-2026-03-05',
+    'deepseek-v4-flash',
+    'deepseek-v4-pro',
+  ]) {
+    assert.equal(modelApplyPatchEnabled(model), true, model);
+    assert.equal(modelApplyPatchEnabled(model, { applyPatch: false }), false, model);
+  }
+  for (const model of ['unknown', 'future-model', 'deepseek-v99', 'gpt-99', 'gemini-3.8-flash']) {
+    assert.equal(modelApplyPatchEnabled(model), false, model);
+    assert.equal(modelApplyPatchEnabled(model, { applyPatch: true }), true, model);
+  }
+});

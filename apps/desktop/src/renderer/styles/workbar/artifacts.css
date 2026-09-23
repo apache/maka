@@ -372,6 +372,20 @@
 
 /* Narrow windows place the single workbar below the conversation. */
 @media (max-width: 990px) {
+  .maka-workbar-edge:not([data-placement]) {
+    top: auto; right: auto; bottom: 12px; left: 50%; transform: translateX(-50%); width: 112px; height: 12px;
+  }
+  .maka-workbar-edge:not([data-placement]) .maka-workbar-edge-glass {
+    top: auto; right: auto; bottom: -12px; left: 50%; width: 112px; height: 28px;
+    clip-path: path('M0 28 C22 28 27 0 56 0 C85 0 90 28 112 28 Z');
+    transform-origin: center bottom; transform: translateX(-50%) scaleY(.08);
+  }
+  .maka-workbar-edge:not([data-placement]):is(:hover, :focus-visible) .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(1); }
+  .maka-workbar-edge:not([data-placement]):active .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(.86); }
+  .maka-workbar-edge:not([data-placement]) svg { rotate: 90deg; translate: 0 -4px; }
+  @media (hover: none) {
+    .maka-workbar-edge:not([data-placement]) .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(1); }
+  }
   .maka-window-titlebar {
     --maka-titlebar-workbar-reserve: 0px;
   }

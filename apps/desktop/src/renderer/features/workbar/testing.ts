@@ -68,6 +68,7 @@ export function createFakeWorkbarServices(
   overrides: Partial<WorkbarServices> = {},
 ): WorkbarServices {
   return {
+    popupMenu: async () => null,
     review: {
       read: async () => {
         throw new Error('Fake review.read is not configured');
@@ -91,6 +92,7 @@ export function createFakeWorkbarServices(
     browser: {
       setActiveSession: () => undefined,
       setViewport: () => undefined,
+      capturePage: async () => undefined,
       navigate: async () => undefined,
       back: async () => undefined,
       forward: async () => undefined,
@@ -154,7 +156,6 @@ export function createFakeWorkbarServices(
       setPermissionMode: async () => {
         throw new Error('Fake sideChat.setPermissionMode is not configured');
       },
-      regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,

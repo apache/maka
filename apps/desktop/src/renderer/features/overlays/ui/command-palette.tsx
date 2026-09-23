@@ -37,6 +37,8 @@ import {
 import { Kbd } from '@astryxdesign/core/Kbd';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { getShellCopy } from '../../../locales/shell-copy.js';
+import type { SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
+import { usePaletteSessionCommands } from '../model/palette-session-commands.js';
 import type { Command } from '../model/command.js';
 import { useOverlays } from './overlays-context.js';
 
@@ -54,11 +56,31 @@ function fuzzy(query: string, text: string): boolean {
   return i === q.length;
 }
 
-export function CommandPalette(props: { readonly commands: Command[] }) {
+export function CommandPalette(props: {
+  readonly commands: Command[];
+  /** The shell's session catalog — the palette subscribes it only while open. */
+  readonly sessionCatalog: SessionCatalogController;
+  /** Sessions the rail hides (mounted side-chat forks) — the palette skips them too. */
+  readonly hiddenSessionIds: ReadonlySet<string>;
+  readonly activeSessionId: string | undefined;
+  readonly onSelectSession: (id: string) => void;
+}) {
   const { commands: overlayCommands, selectors } = useOverlays();
   const isOpen = selectors.paletteOpen;
   const locale = useUiLocale();
   const copy = getShellCopy(locale).commandPalette;
+  const sessionCommands = usePaletteSessionCommands({
+    catalog: props.sessionCatalog,
+    hiddenSessionIds: props.hiddenSessionIds,
+    paletteOpen: isOpen,
+    activeSessionId: props.activeSessionId,
+    locale,
+    onSelectSession: props.onSelectSession,
+  });
+  const commands = useMemo(
+    () => [...props.commands, ...sessionCommands],
+    [props.commands, sessionCommands],
+  );
   const astryxOverrides = useMemo(
     () => ({
       '@astryx.commandPalette.list.label': copy.resultsLabel,
@@ -71,12 +93,12 @@ export function CommandPalette(props: { readonly commands: Command[] }) {
   }>;
   const items = useMemo<PaletteItem[]>(
     () =>
-      props.commands.map((command) => ({
+      commands.map((command) => ({
         id: command.id,
         label: command.label,
         auxiliaryData: { command, group: command.group },
       })),
-    [props.commands],
+    [commands],
   );
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const pendingCommandRef = useRef<Command | null>(null);

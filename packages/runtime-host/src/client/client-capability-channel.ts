@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import {
+  CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL,
   CLIENT_CAPABILITY_MAX_RESULT_BYTES,
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
   decodeClientCapabilityClientFrame,
@@ -39,6 +40,7 @@ import type { ClientCapabilityProvider } from './client-capability.js';
 
 interface ClientCapabilityRegistration {
   readonly registrationId: string;
+  readonly sessionId?: string;
   readonly provider: ClientCapabilityProvider;
   readonly offers: ReturnType<ClientCapabilityProvider['offers']>;
   readonly services: NonNullable<ReturnType<NonNullable<ClientCapabilityProvider['services']>>>;
@@ -48,6 +50,7 @@ interface ClientCapabilityInvocation {
   readonly controller: AbortController;
   admission?: ClientCapabilityAdmission;
   interaction?: ClientCapabilityPendingInteraction;
+  progress?: { current: number; total: number };
   released: boolean;
 }
 
@@ -90,8 +93,8 @@ export class ClientCapabilityChannel {
   readonly #registrations = new Map<string, ClientCapabilityRegistration>();
   readonly #invocations = new Map<string, ClientCapabilityInvocation>();
   readonly #releasedRegistrationIds = new Set<string>();
-  #currentRegistrationId: string | undefined;
-  #mutationPending = false;
+  readonly #currentRegistrationIds = new Map<string | undefined, string>();
+  readonly #pendingMutations = new Set<string | undefined>();
   #closedError: Error | undefined;
 
   constructor(options: ClientCapabilityChannelOptions) {
@@ -101,65 +104,77 @@ export class ClientCapabilityChannel {
   async replace(
     provider: ClientCapabilityProvider,
     timeoutMs: number,
+    sessionId?: string,
   ): Promise<ClientCapabilityReplaceResult> {
     this.#assertOpen();
-    if (this.#mutationPending) {
+    if (this.#pendingMutations.has(sessionId)) {
       throw new Error('A Client Capability registration mutation is already pending');
     }
-    this.#mutationPending = true;
+    this.#pendingMutations.add(sessionId);
     const registrationId = randomUUID();
     let registration: ClientCapabilityRegistration | undefined;
     try {
       const services = provider.services?.() ?? [];
       const canonical = decodeClientCapabilityReplaceInput({
         registrationId,
+        ...(sessionId === undefined ? {} : { sessionId }),
         offers: provider.offers(),
         ...(services.length === 0 ? {} : { services }),
       });
       registration = {
         registrationId,
+        ...(canonical.sessionId === undefined ? {} : { sessionId: canonical.sessionId }),
         provider,
         offers: canonical.offers,
         services: canonical.services ?? [],
       };
       this.#registrations.set(registrationId, registration);
       const result = await this.#options.replace(canonical, timeoutMs);
+      this.#assertOpen();
       if (result.registrationId !== registrationId) {
         throw new Error('Runtime Host replaced a different Client Capability registration');
       }
-      this.#currentRegistrationId = registrationId;
+      this.#currentRegistrationIds.set(sessionId, registrationId);
       this.#collectReleasedRegistrations();
       return result;
     } catch (error) {
-      if (registration && this.#currentRegistrationId !== registrationId) {
+      if (registration && this.#currentRegistrationIds.get(sessionId) !== registrationId) {
         this.#registrations.delete(registrationId);
       }
       throw error;
     } finally {
-      this.#mutationPending = false;
+      this.#pendingMutations.delete(sessionId);
+      this.#settleReleasedCurrentRegistration(sessionId);
+      this.#collectReleasedRegistrations();
     }
   }
 
-  async unregister(timeoutMs: number): Promise<ClientCapabilityUnregisterResult> {
+  async unregister(
+    timeoutMs: number,
+    sessionId?: string,
+  ): Promise<ClientCapabilityUnregisterResult> {
     this.#assertOpen();
-    if (this.#mutationPending) {
+    if (this.#pendingMutations.has(sessionId)) {
       throw new Error('A Client Capability registration mutation is already pending');
     }
-    const registrationId = this.#currentRegistrationId;
+    const registrationId = this.#currentRegistrationIds.get(sessionId);
     if (!registrationId) throw new Error('No Client Capability registration is active');
-    this.#mutationPending = true;
+    this.#pendingMutations.add(sessionId);
     try {
       const result = await this.#options.unregister({ registrationId }, timeoutMs);
+      this.#assertOpen();
       if (result.registrationId !== registrationId) {
         throw new Error('Runtime Host unregistered a different Client Capability registration');
       }
-      if (this.#currentRegistrationId === registrationId) {
-        this.#currentRegistrationId = undefined;
+      if (this.#currentRegistrationIds.get(sessionId) === registrationId) {
+        this.#currentRegistrationIds.delete(sessionId);
       }
       this.#collectReleasedRegistrations();
       return result;
     } finally {
-      this.#mutationPending = false;
+      this.#pendingMutations.delete(sessionId);
+      this.#settleReleasedCurrentRegistration(sessionId);
+      this.#collectReleasedRegistrations();
     }
   }
 
@@ -195,10 +210,17 @@ export class ClientCapabilityChannel {
         this.#invocations.delete(frame.invocationId);
         return;
       }
-      case 'client.capability.registration_release':
+      case 'client.capability.registration_release': {
+        const registration = this.#registrations.get(frame.registrationId);
         this.#releasedRegistrationIds.add(frame.registrationId);
+        // A successful replacement can enqueue the old release before its response. Defer
+        // current-slot retirement until the in-flight mutation establishes which ID won.
+        if (registration && !this.#pendingMutations.has(registration.sessionId)) {
+          this.#settleReleasedCurrentRegistration(registration.sessionId);
+        }
         this.#collectReleasedRegistrations();
         return;
+      }
       case 'client.capability.admitted': {
         const invocation = this.#invocations.get(frame.invocationId);
         if (!invocation?.admission || !invocation.admission.resolve()) {
@@ -236,7 +258,7 @@ export class ClientCapabilityChannel {
     );
     this.#registrations.clear();
     this.#releasedRegistrationIds.clear();
-    this.#currentRegistrationId = undefined;
+    this.#currentRegistrationIds.clear();
     for (const provider of providers) this.#closeProvider(provider);
   }
 
@@ -249,7 +271,13 @@ export class ClientCapabilityChannel {
     const offered = offer?.tools.some(
       (tool) => tool.serverId === frame.serverId && tool.name === frame.toolName,
     );
-    if (!registration || !offer || !offered || !registration.provider.call) {
+    if (
+      !registration ||
+      (registration.sessionId !== undefined && registration.sessionId !== frame.sessionId) ||
+      !offer ||
+      !offered ||
+      !registration.provider.call
+    ) {
       void this.#options
         .write({
           kind: 'client.capability.rejected',
@@ -340,6 +368,38 @@ export class ClientCapabilityChannel {
       });
       return accepting;
     };
+    let pendingProgress: { current: number; total: number } | undefined;
+    let progressWriting = false;
+    let progressWrite: Promise<void> = Promise.resolve();
+    const scheduleProgressWrite = (): void => {
+      if (progressWriting) return;
+      progressWriting = true;
+      progressWrite = (async () => {
+        while (pendingProgress) {
+          const next = pendingProgress;
+          pendingProgress = undefined;
+          try {
+            await this.#options.write({
+              kind: 'client.capability.progress',
+              invocationId,
+              current: next.current,
+              total: next.total,
+            });
+          } catch {
+            // Progress is advisory: a failed write must not fail the invocation.
+            return;
+          }
+        }
+      })().finally(() => {
+        progressWriting = false;
+      });
+    };
+    const flushProgress = async (): Promise<void> => {
+      do {
+        scheduleProgressWrite();
+        await progressWrite;
+      } while (pendingProgress);
+    };
     try {
       const progress = (current: number, total: number): void => {
         if (
@@ -349,18 +409,18 @@ export class ClientCapabilityChannel {
           !Number.isInteger(total) ||
           current < 0 ||
           total < 1 ||
+          total > CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL ||
           current > total
         ) {
           return;
         }
-        void this.#options
-          .write({
-            kind: 'client.capability.progress',
-            invocationId,
-            current,
-            total,
-          })
-          .catch((error: unknown) => this.#options.onFailure(asError(error)));
+        const previous = invocation.progress;
+        if (previous && (previous.total !== total || current <= previous.current)) {
+          return;
+        }
+        invocation.progress = { current, total };
+        pendingProgress = { current, total };
+        scheduleProgressWrite();
       };
       const requestInteraction = async (
         request: InteractionFormInput,
@@ -409,6 +469,7 @@ export class ClientCapabilityChannel {
         throw new Error('Client Capability provider returned with a pending interaction');
       }
       await accept({ kind: 'none' });
+      await flushProgress();
       await this.#sendResult(invocationId, result, invocation);
     } catch (error) {
       if (invocation.released) return;
@@ -464,9 +525,10 @@ export class ClientCapabilityChannel {
 
   #collectReleasedRegistrations(): void {
     for (const registrationId of this.#releasedRegistrationIds) {
-      if (registrationId === this.#currentRegistrationId) continue;
-      this.#releasedRegistrationIds.delete(registrationId);
+      if ([...this.#currentRegistrationIds.values()].includes(registrationId)) continue;
       const registration = this.#registrations.get(registrationId);
+      if (registration && this.#pendingMutations.has(registration.sessionId)) continue;
+      this.#releasedRegistrationIds.delete(registrationId);
       if (!registration) continue;
       this.#registrations.delete(registrationId);
       if (
@@ -479,9 +541,28 @@ export class ClientCapabilityChannel {
     }
   }
 
+  #settleReleasedCurrentRegistration(sessionId?: string): void {
+    const registrationId = this.#currentRegistrationIds.get(sessionId);
+    if (!registrationId || !this.#releasedRegistrationIds.has(registrationId)) return;
+    const registration = this.#registrations.get(registrationId);
+    this.#currentRegistrationIds.delete(sessionId);
+    this.#collectReleasedRegistrations();
+    if (registration) this.#notifyCurrentRegistrationRetired(registration.provider);
+  }
+
   #closeProvider(provider: ClientCapabilityProvider): void {
     try {
       void Promise.resolve(provider.close?.()).catch((error: unknown) =>
+        this.#options.onFailure(asError(error)),
+      );
+    } catch (error) {
+      this.#options.onFailure(asError(error));
+    }
+  }
+
+  #notifyCurrentRegistrationRetired(provider: ClientCapabilityProvider): void {
+    try {
+      void Promise.resolve(provider.currentRegistrationRetired?.()).catch((error: unknown) =>
         this.#options.onFailure(asError(error)),
       );
     } catch (error) {

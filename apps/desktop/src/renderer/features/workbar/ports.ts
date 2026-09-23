@@ -35,7 +35,6 @@ import type {
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import type { GitReviewReadResult, GitReviewSource } from '@maka/core/git-review';
 import type { PermissionMode } from '@maka/core/permission';
-import type { RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
@@ -103,6 +102,7 @@ export interface WorkbarTerminalService {
 export interface WorkbarBrowserService {
   setActiveSession(sessionId: string | null): void;
   setViewport(input: { sessionId: string; rect: BrowserViewRect | null }): void;
+  capturePage(sessionId: string): Promise<string | undefined>;
   navigate(sessionId: string, url: string): Promise<void>;
   back(sessionId: string): Promise<void>;
   forward(sessionId: string): Promise<void>;
@@ -254,7 +254,6 @@ export interface SideChatSessionPort {
     sessionId: string,
     mode: PermissionMode,
   ): Promise<SessionSummary>;
-  regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void>;
   respondToSandboxBoundary(
     sessionId: string,
     response: SandboxBoundaryResponse,
@@ -283,6 +282,7 @@ export interface SideChatSessionPort {
 }
 
 export interface WorkbarServices {
+  popupMenu(input: import('../../../shared/native-menu.js').NativeMenuRequest): Promise<string | null>;
   readonly review: WorkbarReviewService;
   readonly terminal: WorkbarTerminalService;
   readonly browser: WorkbarBrowserService;

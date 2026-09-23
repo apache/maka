@@ -165,6 +165,8 @@ interface MidTurnFixtureOptions {
   firstStepFinishReason?: 'length';
   /** Override the final (text) step's reported usage. */
   finalStepUsage?: { input: number; output: number };
+  /** Make the first provider request reject as a context overflow. */
+  firstRequestContextOverflow?: boolean;
   /** Prior-turn RuntimeEvents appended after the shaped priors (e.g. a persisted usage anchor). */
   extraPriorEvents?: readonly RuntimeEvent[];
   /** Run headers for the prior turns, so a persisted anchor can be identity-gated. */
@@ -315,6 +317,12 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         throw Object.assign(new Error('aborted'), { name: 'AbortError' });
       }
       const call = model.doStreamCalls.length;
+      if (options.firstRequestContextOverflow && call === 1) {
+        throw Object.assign(new Error('prompt is too long: 213462 tokens > 200000 maximum'), {
+          name: 'AI_APICallError',
+          statusCode: 400,
+        });
+      }
       if (call === 3) recordedAtThirdRequest = recorded.length > 0;
       const chunks = chunksForCall(call);
       return {
@@ -1925,6 +1933,25 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
       // is irrelevant to both.
       assert.equal(fixture.summarizerCalls, folds ? 1 : 0);
     }
+  });
+
+  test('keeps a useful output floor so a near-window request still recovers', async () => {
+    const fixture = buildFixture({
+      contextWindow: 200_000,
+      modelMaxOutputTokens: 128_000,
+      finalAtSecondCall: true,
+      firstRequestContextOverflow: true,
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 191_999, outputTokens: 0 })],
+      priorInvocations: [priorRunInvocation()],
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 2);
+    assert.equal(fixture.model.doStreamCalls[0]?.maxOutputTokens, 8_000);
+    assert.notEqual(fixture.model.doStreamCalls[0]?.maxOutputTokens, 1);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
   test('an unrescuable turn under the shipped default still dispatches', async () => {

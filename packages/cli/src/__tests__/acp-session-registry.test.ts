@@ -37,13 +37,18 @@ import {
   RuntimeHostRequestInterruptedError,
   RuntimeHostSubscriptionError,
   type RuntimeHostSessionSubscription,
+  type DecodedSessionTranscriptPage,
 } from '@maka/runtime-host/client';
 import {
   SESSION_CATALOG_CWD_MAX_BYTES,
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  type InteractionPendingSnapshot,
+  type InteractionSnapshot,
   type SessionCatalogProjection,
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
+  type SessionTranscriptPage,
+  type SessionTranscriptPageInput,
 } from '@maka/runtime-host/protocol';
 import { AcpSessionRegistry, type AcpSessionRegistryConnection } from '../acp/session-registry.js';
 
@@ -355,7 +360,7 @@ describe('ACP Session registry', () => {
     const registry = new AcpSessionRegistry({
       connect: async () =>
         fakeConnection({
-          request: async (operation) => {
+          request: async (operation, input) => {
             turnRequests.push(operation);
             return catalogSession('session-prompt-validation');
           },
@@ -450,6 +455,334 @@ describe('ACP Session registry', () => {
     assert.deepEqual(new Set(startedTurnIds), new Set(['turn-a', 'turn-b']));
     await registry.dispose();
     assert.equal(subscription.closeCalls, 1);
+  });
+
+  for (const scenario of [
+    'complete',
+    'completed-without-result',
+    'notification-failure',
+    'cancel',
+    'cancel-stalled-notification',
+    'host-failure',
+    'host-abort',
+  ] as const) {
+    test(`tool reconciliation through the real Session channel handles ${scenario}`, async () => {
+      const sessionId = `session-tool-${scenario}`;
+      const turn = runningTurn(sessionId, 'turn-tool');
+      const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+      const pageGate = deferred<void>();
+      const deliveryGate = deferred<void>();
+      subscription.transcriptPageGate = pageGate.promise;
+      let subscriptionOpens = 0;
+      let stopped = 0;
+      let terminalDeliveryStarted = false;
+      let failedToolDelivered = false;
+      let settled = false;
+      const completesNormally =
+        scenario === 'complete' ||
+        scenario === 'completed-without-result' ||
+        scenario === 'notification-failure' ||
+        scenario === 'cancel-stalled-notification';
+      const hasResult = scenario !== 'completed-without-result';
+      const notifications: SessionNotification[] = [];
+      const registry = new AcpSessionRegistry({
+        connect: async () =>
+          fakeConnection({
+            request: async (operation) => {
+              if (operation === 'session.create') return catalogSession(sessionId);
+              if (operation === 'turn.start') {
+                subscription.setRoot(turn);
+                if (completesNormally && hasResult)
+                  subscription.appendToolResult(turn.turnId, turn.runId, 'tool');
+                else subscription.appendToolStart(turn.turnId, turn.runId, 'tool');
+                subscription.publishTranscript([
+                  ...(hasResult
+                    ? [
+                        {
+                          type: 'tool_result' as const,
+                          id: 'stored-result',
+                          turnId: turn.turnId,
+                          ts: 2,
+                          toolUseId: 'tool',
+                          isError: false,
+                          content: { kind: 'text' as const, text: 'authoritative result' },
+                        },
+                      ]
+                    : []),
+                  ...(!completesNormally
+                    ? []
+                    : [
+                        {
+                          type: 'turn_state' as const,
+                          id: 'stored-terminal',
+                          turnId: turn.turnId,
+                          ts: 3,
+                          status: 'completed' as const,
+                        },
+                      ]),
+                ]);
+                if (completesNormally) subscription.setRoot(completedTurn(sessionId, turn.turnId));
+                return {
+                  kind: 'started',
+                  turn,
+                  skillInvocation: { loaded: [], failed: [], receipts: [] },
+                };
+              }
+              if (operation === 'turn.stop') {
+                stopped += 1;
+                subscription.setRoot({
+                  ...turn,
+                  status: 'cancelled',
+                  terminalEventId: 'cancelled',
+                  abortSource: 'user',
+                });
+                return {};
+              }
+              throw new Error(`Unexpected operation ${operation}`);
+            },
+            openSessionSubscriptionOnce: async () => {
+              subscriptionOpens += 1;
+              return subscription;
+            },
+            openSessionSubscription: async () => {
+              throw new Error('Reconciliation must not open another subscription');
+            },
+          }),
+        newSessionId: () => sessionId,
+        newTurnId: () => turn.turnId,
+      });
+      await registry.create({ cwd: '/workspace', mcpServers: [] });
+      const prompt = registry.prompt(
+        { sessionId, prompt: [{ type: 'text', text: 'use the tool' }] },
+        {
+          signal: new AbortController().signal,
+          notify: async (notification) => {
+            if (
+              (notification.update.sessionUpdate === 'tool_call' ||
+                notification.update.sessionUpdate === 'tool_call_update') &&
+              notification.update.status === 'failed'
+            ) {
+              failedToolDelivered = true;
+            }
+            if (
+              (notification.update.sessionUpdate === 'tool_call' ||
+                notification.update.sessionUpdate === 'tool_call_update') &&
+              notification.update.rawOutput !== undefined
+            ) {
+              terminalDeliveryStarted = true;
+              if (scenario === 'notification-failure')
+                throw new Error('terminal notification rejected');
+              await deliveryGate.promise;
+            }
+            notifications.push(notification);
+          },
+        },
+      );
+      void prompt.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await waitFor(() => subscription.transcriptPageReads > 0);
+      assert.equal(settled, false);
+      if (scenario === 'cancel') {
+        await registry.cancel({ sessionId });
+        assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+        assert.equal(stopped, 1);
+        pageGate.resolve();
+        deliveryGate.resolve();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(terminalDeliveryStarted, false);
+      } else if (scenario === 'cancel-stalled-notification') {
+        pageGate.resolve();
+        await waitFor(() => terminalDeliveryStarted);
+        await registry.cancel({ sessionId });
+        assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+        assert.equal(stopped, 0);
+        deliveryGate.reject(new Error('Late transport failure'));
+        await new Promise((resolve) => setImmediate(resolve));
+      } else if (scenario === 'host-failure' || scenario === 'host-abort') {
+        subscription.setRoot(
+          scenario === 'host-failure'
+            ? {
+                ...turn,
+                status: 'failed',
+                terminalEventId: 'failed',
+                failureClass: 'provider_failure',
+              }
+            : {
+                ...turn,
+                status: 'cancelled',
+                terminalEventId: 'aborted',
+                abortSource: 'host',
+              },
+        );
+        assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+        assert.equal(stopped, 0);
+        pageGate.resolve();
+        deliveryGate.resolve();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(terminalDeliveryStarted, false);
+        assert.equal(failedToolDelivered, true);
+      } else {
+        pageGate.resolve();
+        if (hasResult) await waitFor(() => terminalDeliveryStarted);
+        if (scenario === 'complete') {
+          assert.equal(settled, false);
+          deliveryGate.resolve();
+          assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+          assert.ok(
+            notifications.some(
+              ({ update }) =>
+                (update.sessionUpdate === 'tool_call_update' ||
+                  update.sessionUpdate === 'tool_call') &&
+                update.rawOutput !== undefined,
+            ),
+          );
+        } else if (scenario === 'completed-without-result') {
+          assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+          assert.equal(terminalDeliveryStarted, false);
+          assert.equal(failedToolDelivered, true);
+        } else await assert.rejects(prompt);
+      }
+      assert.equal(subscriptionOpens, 1);
+      await registry.dispose();
+    });
+  }
+
+  test('recovers mid-prompt and settles a live tool from the replacement transcript', async () => {
+    const sessionId = 'session-tool-recovery';
+    const turn = runningTurn(sessionId, 'turn-tool-recovery');
+    const first = new FakeSubscription(continuitySnapshot(sessionId));
+    const replacement = new FakeSubscription(
+      { ...continuitySnapshot(sessionId), rootTurn: turn },
+      Promise.resolve([]),
+      'subscription-recovered',
+    );
+    let recoveries = 0;
+    const notifications: SessionNotification[] = [];
+    const registry = new AcpSessionRegistry({
+      connect: async () =>
+        fakeConnection({
+          request: async (operation) => {
+            if (operation === 'session.create') return catalogSession(sessionId);
+            if (operation === 'turn.start') {
+              first.setRoot(turn);
+              first.appendToolStart(turn.turnId, turn.runId, 'tool');
+              first.publishTranscript([]);
+              return {
+                kind: 'started',
+                turn,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              };
+            }
+            throw new Error(`Unexpected operation ${operation}`);
+          },
+          openSessionSubscriptionOnce: async () => first,
+          openSessionSubscription: async () => {
+            recoveries += 1;
+            return replacement;
+          },
+        }),
+      newSessionId: () => sessionId,
+      newTurnId: () => turn.turnId,
+    });
+    await registry.create({ cwd: '/workspace', mcpServers: [] });
+    const prompt = registry.prompt(
+      { sessionId, prompt: [{ type: 'text', text: 'use the tool' }] },
+      promptContext(notifications),
+    );
+    await waitFor(() => notifications.some(({ update }) => update.sessionUpdate === 'tool_call'));
+    first.fail(new RuntimeHostSubscriptionError('connection_closed', 'Connection was lost'));
+    await waitFor(() => recoveries === 1 && replacement.nextCalls > 0);
+    replacement.publishTranscript([
+      {
+        type: 'tool_result',
+        id: 'stored-result',
+        turnId: turn.turnId,
+        ts: 2,
+        toolUseId: 'tool',
+        isError: false,
+        content: { kind: 'text', text: 'recovered result' },
+      },
+      {
+        type: 'turn_state',
+        id: 'stored-terminal',
+        turnId: turn.turnId,
+        ts: 3,
+        status: 'completed',
+      },
+    ]);
+    replacement.setRoot(completedTurn(sessionId, turn.turnId));
+    assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+    assert.ok(
+      notifications.some(
+        ({ update }) =>
+          (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') &&
+          (update.rawOutput as { kind?: string; text?: string } | undefined)?.kind === 'text' &&
+          (update.rawOutput as { kind?: string; text?: string } | undefined)?.text ===
+            'recovered result',
+      ),
+    );
+    await registry.dispose();
+  });
+
+  test('explicit cancellation wins after a notification transport failure', async () => {
+    const sessionId = 'session-cancel-failed-delivery';
+    const turn = runningTurn(sessionId, 'turn-cancel-failed-delivery');
+    const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+    let stopped = 0;
+    const registry = new AcpSessionRegistry({
+      connect: async () =>
+        fakeConnection({
+          request: async (operation) => {
+            if (operation === 'session.create') return catalogSession(sessionId);
+            if (operation === 'turn.start') {
+              subscription.setRoot(turn);
+              subscription.appendToolStart(turn.turnId, turn.runId, 'tool');
+              return {
+                kind: 'started',
+                turn,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              };
+            }
+            if (operation === 'turn.stop') {
+              stopped += 1;
+              subscription.setRoot({
+                ...turn,
+                status: 'cancelled',
+                terminalEventId: 'cancelled',
+                abortSource: 'user',
+              });
+              return {};
+            }
+            throw new Error(`Unexpected operation ${operation}`);
+          },
+          openSessionSubscriptionOnce: async () => subscription,
+        }),
+      newSessionId: () => sessionId,
+      newTurnId: () => turn.turnId,
+    });
+    await registry.create({ cwd: '/workspace', mcpServers: [] });
+    let cancellation: Promise<void> | undefined;
+    const prompt = registry.prompt(
+      { sessionId, prompt: [{ type: 'text', text: 'use the tool' }] },
+      {
+        signal: new AbortController().signal,
+        notify: async ({ update }) => {
+          if (update.sessionUpdate !== 'tool_call') return;
+          cancellation = registry.cancel({ sessionId });
+          throw new Error('notification transport failed');
+        },
+      },
+    );
+    assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+    await cancellation;
+    assert.equal(stopped, 1);
+    await registry.dispose();
   });
 
   test('latches cancellation while the real Session subscription is opening', async () => {
@@ -592,6 +925,356 @@ describe('ACP Session registry', () => {
       opening.resolve(subscription);
       await registry.dispose();
       await Promise.allSettled([cancelled, continuing]);
+    }
+  });
+
+  test('a second prompt settling cannot reopen a cancelled Turn interaction replay', async () => {
+    const sessionId = 'session-overlapping-interaction-cancel';
+    const turnIds = ['turn-a', 'turn-b'];
+    const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+    const stopEntered = deferred<void>();
+    const stopRelease = deferred<void>();
+    const abortA = new AbortController();
+    const starts: string[] = [];
+    let queries = 0;
+    let dialogs = 0;
+    let answers = 0;
+    const pending: InteractionPendingSnapshot = {
+      schemaVersion: 1,
+      interactionId: 'question-a',
+      sessionId,
+      turnId: 'turn-a',
+      runId: 'run-turn-a',
+      revision: 1,
+      status: 'pending',
+      outcome: null,
+      request: {
+        kind: 'question',
+        toolUseId: 'tool-a',
+        questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+      },
+    };
+    const turnA = runningTurn(sessionId, 'turn-a');
+    const registry = new AcpSessionRegistry({
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession(sessionId);
+            if (operation === 'turn.start') {
+              const turnId = (input as { turnId: string }).turnId;
+              starts.push(turnId);
+              if (turnId === 'turn-b') {
+                return {
+                  kind: 'blocked',
+                  skillInvocation: { loaded: [], failed: [], receipts: [] },
+                };
+              }
+              subscription.setRoot(turnA);
+              return {
+                kind: 'started',
+                turn: turnA,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              };
+            }
+            if (operation === 'turn.stop') {
+              stopEntered.resolve();
+              await stopRelease.promise;
+              subscription.setRoot({
+                ...turnA,
+                status: 'cancelled',
+                terminalEventId: 'cancelled-a',
+                abortSource: 'user',
+              });
+              return {};
+            }
+            if (operation === 'interaction.query') {
+              queries += 1;
+              return pending;
+            }
+            if (operation === 'interaction.answer') {
+              answers += 1;
+              const answer = (input as { answer: { answers: readonly string[] } }).answer;
+              return {
+                ...pending,
+                revision: 2,
+                status: 'answered',
+                outcome: {
+                  kind: 'question_answer',
+                  answers: answer.answers,
+                  committedAt: 1,
+                },
+              };
+            }
+            throw new Error(`Unexpected operation ${operation}`);
+          },
+          openSessionSubscriptionOnce: async () => subscription,
+        }),
+      newSessionId: () => sessionId,
+      newTurnId: () => turnIds.shift()!,
+    });
+    const interactions = {
+      capabilities: { elicitation: { form: {} } },
+      createElicitation: async () => {
+        dialogs += 1;
+        return { action: 'accept' as const, content: { q0: 'Yes' } };
+      },
+      requestPermission: async () => assert.fail('Unexpected permission request'),
+    };
+    await registry.create({ cwd: '/workspace', mcpServers: [] });
+    const cancelled = registry.prompt(
+      { sessionId, prompt: [{ type: 'text', text: 'cancel A' }] },
+      { ...promptContext([]), signal: abortA.signal, interactions },
+    );
+    try {
+      await waitFor(() => starts.includes('turn-a'));
+      abortA.abort();
+      await stopEntered.promise;
+      await assert.rejects(
+        registry.prompt(
+          { sessionId, prompt: [{ type: 'text', text: 'block B' }] },
+          { ...promptContext([]), interactions },
+        ),
+      );
+
+      subscription.project({ interactions: { pending: [pending] } });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(queries, 0);
+      assert.equal(dialogs, 0);
+      assert.equal(answers, 0);
+    } finally {
+      stopRelease.resolve();
+      assert.deepEqual(await cancelled, { stopReason: 'cancelled' });
+      await registry.dispose();
+    }
+  });
+
+  test('an externally resolved interaction cannot clear a cancelled Turn fence before settlement', async () => {
+    const sessionId = 'session-same-turn-interaction-cancel';
+    const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+    const stopEntered = deferred<void>();
+    const stopRelease = deferred<void>();
+    const firstDialog = deferred<never>();
+    const abort = new AbortController();
+    const first: InteractionPendingSnapshot = {
+      schemaVersion: 1,
+      interactionId: 'question-first',
+      sessionId,
+      turnId: 'turn-cancelled',
+      runId: 'run-cancelled',
+      revision: 1,
+      status: 'pending',
+      outcome: null,
+      request: {
+        kind: 'question',
+        toolUseId: 'tool-first',
+        questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+      },
+    };
+    const second: InteractionPendingSnapshot = {
+      ...first,
+      interactionId: 'permission-second',
+      request: {
+        kind: 'permission',
+        toolUseId: 'tool-second',
+        prompt: {
+          kind: 'tool_permission',
+          toolName: 'fixture',
+          category: 'read',
+          reason: 'custom',
+          review: { kind: 'path', operation: 'read', path: '/workspace/file' },
+          rememberForTurnAllowed: false,
+        },
+      },
+    };
+    let current: InteractionSnapshot = first;
+    let dialogs = 0;
+    let permissionDialogs = 0;
+    let answers = 0;
+    const turn = runningTurn(sessionId, first.turnId, first.runId);
+    const registry = new AcpSessionRegistry({
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession(sessionId);
+            if (operation === 'turn.start') {
+              subscription.setRoot(turn);
+              return {
+                kind: 'started',
+                turn,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              };
+            }
+            if (operation === 'turn.stop') {
+              stopEntered.resolve();
+              await stopRelease.promise;
+              subscription.setRoot({
+                ...turn,
+                status: 'cancelled',
+                terminalEventId: 'cancelled',
+                abortSource: 'user',
+              });
+              return {};
+            }
+            if (operation === 'interaction.query') return current;
+            if (operation === 'interaction.answer') {
+              answers += 1;
+              return current;
+            }
+            throw new Error(`Unexpected operation ${operation}`);
+          },
+          openSessionSubscriptionOnce: async () => subscription,
+        }),
+      newSessionId: () => sessionId,
+      newTurnId: () => turn.turnId,
+    });
+    const interactions = {
+      capabilities: { elicitation: { form: {} } },
+      createElicitation: async () => {
+        dialogs += 1;
+        return firstDialog.promise;
+      },
+      requestPermission: async (request: { options: readonly { optionId: string }[] }) => {
+        permissionDialogs += 1;
+        return {
+          outcome: { outcome: 'selected' as const, optionId: request.options[0]!.optionId },
+        };
+      },
+    };
+    await registry.create({ cwd: '/workspace', mcpServers: [] });
+    const prompt = registry.prompt(
+      { sessionId, prompt: [{ type: 'text', text: 'cancel during interaction' }] },
+      { ...promptContext([]), signal: abort.signal, interactions },
+    );
+    try {
+      await waitFor(() => subscription.snapshot.rootTurn?.turnId === turn.turnId);
+      subscription.project({ interactions: { pending: [first] } });
+      await waitFor(() => dialogs === 1);
+      abort.abort();
+      await stopEntered.promise;
+
+      current = {
+        ...first,
+        revision: 2,
+        status: 'answered',
+        outcome: { kind: 'question_answer', answers: ['External'], committedAt: 1 },
+      };
+      subscription.project({ interactions: { pending: [] } });
+      await new Promise((resolve) => setImmediate(resolve));
+      current = second;
+      subscription.project({ interactions: { pending: [second] } });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(dialogs, 1);
+      assert.equal(permissionDialogs, 0);
+      assert.equal(answers, 0);
+    } finally {
+      stopRelease.resolve();
+      assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+      await registry.dispose();
+    }
+  });
+
+  test('a failed Stop keeps a cancelled Turn fenced after the ACP prompt settles', async () => {
+    const sessionId = 'session-failed-stop-interaction';
+    const subscription = new FakeSubscription(continuitySnapshot(sessionId));
+    const abort = new AbortController();
+    const turn = runningTurn(sessionId, 'turn-failed-stop');
+    const first: InteractionPendingSnapshot = {
+      schemaVersion: 1,
+      interactionId: 'question-before-stop',
+      sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+      revision: 1,
+      status: 'pending',
+      outcome: null,
+      request: {
+        kind: 'question',
+        toolUseId: 'tool-question',
+        questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+      },
+    };
+    const second: InteractionPendingSnapshot = {
+      ...first,
+      interactionId: 'permission-after-stop',
+      request: {
+        kind: 'permission',
+        toolUseId: 'tool-permission',
+        prompt: {
+          kind: 'tool_permission',
+          toolName: 'fixture',
+          category: 'read',
+          reason: 'custom',
+          review: { kind: 'path', operation: 'read', path: '/workspace/file' },
+          rememberForTurnAllowed: false,
+        },
+      },
+    };
+    let dialogs = 0;
+    let answers = 0;
+    const registry = new AcpSessionRegistry({
+      connect: async () =>
+        fakeConnection({
+          request: async (operation, input) => {
+            if (operation === 'session.create') return catalogSession(sessionId);
+            if (operation === 'turn.start') {
+              subscription.setRoot(turn);
+              return {
+                kind: 'started',
+                turn,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              };
+            }
+            if (operation === 'turn.stop') throw new Error('Stop delivery failed');
+            if (operation === 'interaction.query')
+              return (input as { interactionId: string }).interactionId === first.interactionId
+                ? first
+                : second;
+            if (operation === 'interaction.answer') {
+              answers += 1;
+              return second;
+            }
+            throw new Error(`Unexpected operation ${operation}`);
+          },
+          openSessionSubscriptionOnce: async () => subscription,
+        }),
+      newSessionId: () => sessionId,
+      newTurnId: () => turn.turnId,
+    });
+    const interactions = {
+      capabilities: { elicitation: { form: {} } },
+      createElicitation: async () => {
+        dialogs += 1;
+        return new Promise<never>(() => undefined);
+      },
+      requestPermission: async (request: { options: readonly { optionId: string }[] }) => {
+        dialogs += 1;
+        return {
+          outcome: { outcome: 'selected' as const, optionId: request.options[0]!.optionId },
+        };
+      },
+    };
+    await registry.create({ cwd: '/workspace', mcpServers: [] });
+    const prompt = registry.prompt(
+      { sessionId, prompt: [{ type: 'text', text: 'cancel while waiting' }] },
+      { ...promptContext([]), signal: abort.signal, interactions },
+    );
+    try {
+      await waitFor(() => subscription.snapshot.rootTurn?.turnId === turn.turnId);
+      subscription.project({ interactions: { pending: [first] } });
+      await waitFor(() => dialogs === 1);
+      abort.abort();
+      assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+      assert.equal(subscription.snapshot.rootTurn?.status, 'running');
+      subscription.project({ interactions: { pending: [first, second] } });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(dialogs, 1);
+      assert.equal(answers, 0);
+    } finally {
+      await registry.dispose();
     }
   });
 
@@ -2781,16 +3464,26 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;
+  #transcriptWatermark: number | null = null;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{
     resolve(result: IteratorResult<SubscriptionFrame>): void;
     reject(error: Error): void;
   }> = [];
+  #readied = false;
+  #openGate: () => void = () => undefined;
+  readonly #readyGate = new Promise<void>((resolve) => {
+    this.#openGate = resolve;
+  });
   #sequence = 0;
   #closed = false;
   #failure: Error | undefined;
   closeCalls = 0;
   nextCalls = 0;
+  transcriptPageReads = 0;
+  transcriptPageGate?: Promise<void>;
+  #liveTranscript: StoredMessage[] = [];
+  readonly #decodedPages = new WeakMap<SessionTranscriptPage, readonly StoredMessage[]>();
 
   constructor(
     public snapshot: SessionContinuitySnapshot,
@@ -2798,6 +3491,10 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     readonly subscriptionId = 'subscription-1',
     private readonly onClose: () => void = () => undefined,
   ) {}
+
+  get transcriptWatermark(): number | null {
+    return this.#transcriptWatermark;
+  }
 
   subscribePtyData(): () => void {
     return () => undefined;
@@ -2811,8 +3508,19 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     return this;
   }
 
+  async ready(): Promise<void> {
+    this.#readied = true;
+    this.#openGate();
+  }
+
   next(): Promise<IteratorResult<SubscriptionFrame>> {
     this.nextCalls += 1;
+    // The Host holds frames until the subscriber declares readiness, so a fake
+    // that hands them over earlier would let an ordering bug pass.
+    return this.#readied ? this.#deliver() : this.#readyGate.then(() => this.#deliver());
+  }
+
+  #deliver(): Promise<IteratorResult<SubscriptionFrame>> {
     const frame = this.#frames.shift();
     if (frame) return Promise.resolve({ done: false, value: frame });
     if (this.#failure) return Promise.reject(this.#failure);
@@ -2821,6 +3529,9 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   }
 
   push(frame: SubscriptionFrame): void {
+    if (frame.kind === 'subscription.transcript_advanced') {
+      this.#transcriptWatermark = frame.throughSequence;
+    }
     const waiter = this.#waiters.shift();
     if (waiter) waiter.resolve({ done: false, value: frame });
     else this.#frames.push(frame);
@@ -2861,6 +3572,56 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     });
   }
 
+  appendToolResult(turnId: string, runId: string, toolUseId: string): void {
+    this.push({
+      kind: 'subscription.session_event',
+      hostEpoch: this.hostEpoch,
+      subscriptionId: this.subscriptionId,
+      sequence: ++this.#sequence,
+      sessionId: this.snapshot.session.sessionId,
+      runId,
+      event: {
+        type: 'tool_result',
+        id: `tool-result-${toolUseId}`,
+        turnId,
+        ts: 2,
+        toolUseId,
+        status: 'completed',
+      },
+    });
+  }
+
+  appendToolStart(turnId: string, runId: string, toolUseId: string): void {
+    this.push({
+      kind: 'subscription.session_event',
+      hostEpoch: this.hostEpoch,
+      subscriptionId: this.subscriptionId,
+      sequence: ++this.#sequence,
+      sessionId: this.snapshot.session.sessionId,
+      runId,
+      event: {
+        type: 'tool_start',
+        id: `tool-start-${toolUseId}`,
+        turnId,
+        ts: 1,
+        toolUseId,
+        toolName: 'fixture',
+      },
+    });
+  }
+
+  publishTranscript(messages: StoredMessage[]): void {
+    this.#liveTranscript = messages;
+    this.push({
+      kind: 'subscription.transcript_advanced',
+      hostEpoch: this.hostEpoch,
+      subscriptionId: this.subscriptionId,
+      sequence: ++this.#sequence,
+      sessionId: this.snapshot.session.sessionId,
+      throughSequence: messages.length * 8 + 7,
+    });
+  }
+
   project(overrides: Partial<SessionContinuitySnapshot>): void {
     this.snapshot = {
       ...this.snapshot,
@@ -2889,12 +3650,36 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
     return [];
   }
 
-  async decodeTranscriptPage(): Promise<never> {
-    throw new Error('Fake subscription does not expose transcript pages');
+  async decodeTranscriptPage<T>(
+    page: SessionTranscriptPage,
+    decodeMessage: (value: unknown) => T,
+  ): Promise<DecodedSessionTranscriptPage<T>> {
+    return {
+      messages: (this.#decodedPages.get(page) ?? []).map((message, index) => ({
+        identity: index * 8,
+        message: decodeMessage(message),
+      })),
+      nextCursor: page.nextCursor,
+    };
   }
 
-  async loadTranscriptPage(): Promise<never> {
-    throw new Error('Fake subscription does not expose transcript pages');
+  async loadTranscriptPage(
+    input: Omit<SessionTranscriptPageInput, 'subscriptionId'>,
+  ): Promise<SessionTranscriptPage> {
+    this.transcriptPageReads += 1;
+    await this.transcriptPageGate;
+    const page: SessionTranscriptPage = {
+      kind: 'page',
+      sessionId: this.snapshot.session.sessionId,
+      direction: input.direction,
+      throughSequence: input.throughSequence,
+      rawBytes: 0,
+      fragments: [],
+      nextCursor: null,
+      endsAtTurnBoundary: true,
+    };
+    this.#decodedPages.set(page, this.#liveTranscript);
+    return page;
   }
 
   async close(): Promise<void> {

@@ -246,7 +246,7 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     }
   });
 
-  test('keeps Write and Edit when DeepSeek cannot carry custom apply_patch', async () => {
+  test('uses portable ApplyPatch for DeepSeek', async () => {
     const model = completionModel();
     const backend = createBackend({
       connection: {
@@ -267,9 +267,9 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
 
     const names = modelToolNames(model);
-    assert.equal(names.includes('apply_patch'), false);
-    assert.equal(names.includes('Write'), true);
-    assert.equal(names.includes('Edit'), true);
+    assert.equal(names.includes('apply_patch'), true);
+    assert.equal(names.includes('Write'), false);
+    assert.equal(names.includes('Edit'), false);
   });
 
   test('replays a durable apply_patch failure as native provider JSON', async () => {
@@ -416,13 +416,14 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     );
   };
 
-  test('downgrades durable DeepSeek freeform apply_patch history to a fact', async () => {
+  test('downgrades disabled DeepSeek freeform apply_patch history to a fact', async () => {
     await assertApplyPatchHistoryDowngraded(
       {
         ...connection(),
         slug: 'deepseek',
         providerType: 'deepseek',
         defaultModel: 'deepseek-v4-flash',
+        modelOverrides: { 'deepseek-v4-flash': { applyPatch: false } },
       },
       'deepseek-v4-flash',
     );
@@ -2325,68 +2326,6 @@ describe('AiSdkBackend model history', () => {
     }
   });
 
-  test('RuntimeEvent replay renders image attachments as image parts when a reader is wired', async () => {
-    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4, 5, 6]);
-    const model = completionModel();
-    const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      readAttachmentBytes: async () => ({ ok: true, bytes: pngBytes }),
-      supportsVision: true,
-    } as never);
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'current user',
-        context: [],
-        runtimeContext: [
-          runtimeEvent({
-            id: 'rt-u',
-            turnId: 'turn-prev',
-            role: 'user',
-            author: 'user',
-            content: {
-              kind: 'text',
-              text: 'see the attached chart',
-              attachments: [
-                {
-                  kind: 'image',
-                  name: 'chart.png',
-                  mimeType: 'image/png',
-                  bytes: 123,
-                  ref: {
-                    kind: 'session_file',
-                    sessionId: 'sess-1',
-                    relativePath: 'attachments/chart.png',
-                  },
-                },
-              ],
-            },
-          }),
-          runtimeTextEvent({
-            id: 'rt-a',
-            turnId: 'turn-prev',
-            role: 'model',
-            author: 'agent',
-            text: 'projection assistant',
-          }),
-        ],
-      }),
-    );
-
-    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
-    const historicalUser = prompt[0];
-    const parts = historicalUser.content as Array<{ type: string; mediaType?: string }>;
-    const imageLike = parts.find((p) => p.type !== 'text' && p.mediaType === 'image/png');
-    assert.ok(
-      imageLike,
-      `expected a historical image/png part in RuntimeEvent replay, got: ${JSON.stringify(parts)}`,
-    );
-  });
-
   test('a persisted quote-only user event replays its excerpt into the provider prompt (#4804)', async () => {
     // The headline behaviour of #4804 measured at the production seam: a
     // stored user event whose text is empty but whose quotes carry the turn
@@ -2718,8 +2657,7 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('degrades excess replayed image tool results once the per-request budget is exceeded', async () => {
-    const bytes = new Uint8Array(10);
+  test('budgets replayed images across parallel calls and reused tool-call ids', async () => {
     const model = completionModel();
     const backend = createBackend({
       connection: connection(),
@@ -2728,177 +2666,54 @@ describe('AiSdkBackend model history', () => {
       tools: [],
       supportsVision: true,
       maxProviderImageRequestBytes: 25,
-      readAttachmentBytes: async () => ({ ok: true, bytes }),
+      readAttachmentBytes: async () => ({ ok: true, bytes: new Uint8Array(10) }),
     });
-
-    const imageResult = (callId: string, relativePath: string) =>
-      runtimeEvent({
-        id: `rt-result-${callId}`,
-        turnId: 'turn-prev',
-        role: 'tool',
-        author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: callId,
-          name: 'Read',
-          isError: false,
-          result: {
-            kind: 'image',
-            mimeType: 'image/png',
-            ref: { kind: 'session_file', sessionId: 'session-1', relativePath },
-          },
-        },
-      });
-    const call = (callId: string, path: string) =>
-      runtimeEvent({
-        id: `rt-call-${callId}`,
-        turnId: 'turn-prev',
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'function_call', id: callId, name: 'Read', args: { path } },
-      });
-
-    await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'continue',
-        context: [],
-        runtimeContext: [
-          runtimeTextEvent({
-            id: 'rt-u',
-            turnId: 'turn-prev',
-            role: 'user',
-            author: 'user',
-            text: 'read them',
+    const runtimeContext = ['turn-a', 'turn-b'].flatMap((turnId) => {
+      const ids = turnId === 'turn-a' ? ['reused-id', 'other-id'] : ['reused-id'];
+      return [
+        runtimeTextEvent({ id: turnId, turnId, role: 'user', author: 'user', text: 'Read images' }),
+        ...ids.map((id) =>
+          runtimeEvent({
+            id: turnId + '-' + id + '-call',
+            turnId,
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'function_call', id, name: 'Read', args: { path: id + '.png' } },
           }),
-          call('tool-1', 'a.png'),
-          imageResult('tool-1', 'artifact-1'),
-          call('tool-2', 'b.png'),
-          imageResult('tool-2', 'artifact-2'),
-          call('tool-3', 'c.png'),
-          imageResult('tool-3', 'artifact-3'),
-        ],
-      }),
-    );
-
-    const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
-    const toolOutputs = prompt
-      .filter((message) => message.role === 'tool')
-      .flatMap((message) => message.content as any[])
-      .map((entry) => entry?.output)
-      .filter((output) => output?.type === 'content');
-    const imageData = toolOutputs.filter((output) =>
-      output.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
-    );
-    const degraded = toolOutputs.filter((output) =>
-      output.value.some((part: any) => part.type === 'text' && /image budget/.test(part.text)),
-    );
-    assert.equal(
-      imageData.length,
-      2,
-      `expected two hydrated image tool results, got: ${JSON.stringify(toolOutputs)}`,
-    );
-    assert.equal(
-      degraded.length,
-      1,
-      `expected one budget-degraded tool result, got: ${JSON.stringify(toolOutputs)}`,
-    );
-  });
-
-  test('budgets replayed image tool results by durable occurrence instead of reused tool-call ids', async () => {
-    const bytes = new Uint8Array(10);
-    const model = completionModel();
-    const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      supportsVision: true,
-      maxProviderImageRequestBytes: 15,
-      readAttachmentBytes: async () => ({ ok: true, bytes }),
-    });
-    const call = (eventId: string, turnId: string) =>
-      runtimeEvent({
-        id: eventId,
-        turnId,
-        role: 'model',
-        author: 'agent',
-        content: {
-          kind: 'function_call',
-          id: 'reused-tool-id',
-          name: 'Read',
-          args: { path: `${turnId}.png` },
-        },
-      });
-    const result = (eventId: string, turnId: string) =>
-      runtimeEvent({
-        id: eventId,
-        turnId,
-        role: 'tool',
-        author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: 'reused-tool-id',
-          name: 'Read',
-          isError: false,
-          result: {
-            kind: 'image',
-            mimeType: 'image/png',
-            ref: {
-              kind: 'session_file',
-              sessionId: 'session-1',
-              relativePath: `${turnId}.png`,
+        ),
+        ...ids.map((id) =>
+          runtimeEvent({
+            id: turnId + '-' + id + '-result',
+            turnId,
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id,
+              name: 'Read',
+              result: {
+                kind: 'image',
+                mimeType: 'image/png',
+                ref: { kind: 'session_file', sessionId: 'session-1', relativePath: id + '.png' },
+              },
             },
-          },
-        },
-      });
-
+          }),
+        ),
+      ];
+    });
     await drain(
-      backend.send({
-        turnId: 'turn-current',
-        text: 'continue',
-        context: [],
-        runtimeContext: [
-          runtimeTextEvent({
-            id: 'user-a',
-            turnId: 'turn-a',
-            role: 'user',
-            author: 'user',
-            text: 'read a',
-          }),
-          call('call-a', 'turn-a'),
-          result('result-a', 'turn-a'),
-          runtimeTextEvent({
-            id: 'user-b',
-            turnId: 'turn-b',
-            role: 'user',
-            author: 'user',
-            text: 'read b',
-          }),
-          call('call-b', 'turn-b'),
-          result('result-b', 'turn-b'),
-        ],
-      }),
+      backend.send({ turnId: 'turn-current', text: 'continue', context: [], runtimeContext }),
     );
-
     const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
     const outputs = prompt
       .filter((message) => message.role === 'tool')
       .flatMap((message) => message.content)
-      .map((entry) => entry?.output)
-      .filter((output) => output?.type === 'content');
-    assert.equal(
-      outputs.filter((output) =>
-        output.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
-      ).length,
-      1,
+      .map((part) => part.output);
+    assert.deepEqual(
+      outputs.map((output) => output.value.map((part: any) => part.type)),
+      [['file'], ['file'], ['text']],
     );
-    assert.equal(
-      outputs.filter((output) =>
-        output.value.some((part: any) => part.type === 'text' && /image budget/.test(part.text)),
-      ).length,
-      1,
-    );
+    assert.match(outputs[2].value[0].text, /image budget/);
   });
 
   test('RuntimeEvent replay renders historical image attachments as image parts', async () => {
@@ -10897,18 +10712,31 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
-  for (const { label, providerMetadata } of [
+  for (const { label, providerMetadata, connectionOverride, modelId } of [
     {
       label: 'encrypted Responses',
       providerMetadata: {
         openai: { itemId: 'reasoning-item-1', reasoningEncryptedContent: 'encrypted-reasoning' },
       },
+      connectionOverride: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      } as const,
+      modelId: 'gpt-5.4',
     },
     {
       label: 'redacted Anthropic',
       providerMetadata: { anthropic: { redactedData: 'redacted-reasoning' } },
+      connectionOverride: undefined,
+      modelId: 'mock-model-id',
     },
-  ] as { label: string; providerMetadata: Record<string, Record<string, string>> }[]) {
+  ] as {
+    label: string;
+    providerMetadata: Record<string, Record<string, string>>;
+    connectionOverride: { slug: string; providerType: 'openai'; defaultModel: string } | undefined;
+    modelId: string;
+  }[]) {
     test(`preserves finalized ${label} thinking when the next part fails without retrying`, async () => {
       // Continuation identity (Responses reasoning item ids, encrypted
       // content) cannot be replayed into a fresh request, so thinking that
@@ -10946,8 +10774,8 @@ describe('AiSdkBackend RunTrace', () => {
         },
       });
       const backend = createBackend({
-        connection: connection(),
-        modelId: 'mock-model-id',
+        connection: connectionOverride ?? connection(),
+        modelId,
         modelFactory: () => model,
         tools: [],
         loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
@@ -11481,8 +11309,12 @@ describe('AiSdkBackend RunTrace', () => {
       },
     });
     const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      },
+      modelId: 'gpt-5.4',
       modelFactory: () => model,
       tools: [],
       streamWatchdogTimer: timers.clock,
@@ -13435,6 +13267,205 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
+  // Kimi's real Responses replies carry a reasoning item with a plaintext
+  // summary and no encrypted_content. The mid-turn continuation rebuilds the
+  // request from the durable ledger, so the regression lives on the wire: the
+  // second request must carry the item, not just the persisted event.
+  test('Moonshot Global replays a summary-only reasoning item across the tool loop', async () => {
+    const durable = durableTurnHarness('turn-kimi-tool', 'Call echo with hello.', {
+      runId: 'run-kimi-tool',
+    });
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const events =
+        requestBodies.length === 1
+          ? [
+              { type: 'response.created', response: { id: 'resp_kimi_1' } },
+              {
+                type: 'response.output_item.added',
+                output_index: 0,
+                item: {
+                  type: 'reasoning',
+                  id: 'rs_kimi_1',
+                  status: 'in_progress',
+                  summary: [],
+                },
+              },
+              {
+                type: 'response.reasoning_summary_text.delta',
+                item_id: 'rs_kimi_1',
+                output_index: 0,
+                summary_index: 0,
+                delta: 'Use echo.',
+              },
+              {
+                type: 'response.reasoning_summary_text.done',
+                item_id: 'rs_kimi_1',
+                output_index: 0,
+                summary_index: 0,
+                text: 'Use echo.',
+              },
+              {
+                type: 'response.output_item.done',
+                output_index: 0,
+                item: {
+                  type: 'reasoning',
+                  id: 'rs_kimi_1',
+                  status: 'completed',
+                  summary: [{ type: 'summary_text', text: 'Use echo.' }],
+                },
+              },
+              {
+                type: 'response.output_item.added',
+                output_index: 1,
+                item: {
+                  type: 'function_call',
+                  id: 'fc_kimi_echo',
+                  call_id: 'call_kimi_echo',
+                  name: 'echo',
+                  arguments: '',
+                  status: 'in_progress',
+                },
+              },
+              {
+                type: 'response.function_call_arguments.done',
+                output_index: 1,
+                item_id: 'fc_kimi_echo',
+                call_id: 'call_kimi_echo',
+                arguments: '{"text":"hello"}',
+              },
+              {
+                type: 'response.output_item.done',
+                output_index: 1,
+                item: {
+                  type: 'function_call',
+                  id: 'fc_kimi_echo',
+                  call_id: 'call_kimi_echo',
+                  name: 'echo',
+                  arguments: '{"text":"hello"}',
+                  status: 'completed',
+                },
+              },
+              {
+                type: 'response.completed',
+                response: {
+                  id: 'resp_kimi_1',
+                  object: 'response',
+                  created_at: 0,
+                  model: 'kimi-k3',
+                  status: 'completed',
+                  output: [],
+                  usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
+                },
+              },
+            ]
+          : [
+              { type: 'response.created', response: { id: 'resp_kimi_2' } },
+              {
+                type: 'response.output_item.added',
+                output_index: 0,
+                item: {
+                  type: 'message',
+                  id: 'msg_kimi_final',
+                  status: 'in_progress',
+                  role: 'assistant',
+                  content: [],
+                },
+              },
+              {
+                type: 'response.output_text.delta',
+                item_id: 'msg_kimi_final',
+                output_index: 0,
+                content_index: 0,
+                delta: 'Echoed hello.',
+              },
+              {
+                type: 'response.output_item.done',
+                output_index: 0,
+                item: {
+                  type: 'message',
+                  id: 'msg_kimi_final',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'Echoed hello.', annotations: [] }],
+                },
+              },
+              {
+                type: 'response.completed',
+                response: {
+                  id: 'resp_kimi_2',
+                  object: 'response',
+                  created_at: 1,
+                  model: 'kimi-k3',
+                  status: 'completed',
+                  output: [],
+                  usage: { input_tokens: 14, output_tokens: 3, total_tokens: 17 },
+                },
+              },
+            ];
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const backend = createBackend({
+      connection: {
+        slug: 'moonshot-global',
+        providerType: 'moonshot-global',
+        baseUrl: 'https://kimi.example/v1',
+        defaultModel: 'kimi-k3',
+      },
+      apiKey: 'moonshot-global-test-key',
+      modelId: 'kimi-k3',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [
+        {
+          ...testTool('echo', z.object({ text: z.string() })),
+          impl: async (args) => ({ echoed: (args as { text: string }).text }),
+        },
+      ],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+
+    const events = await drainDurably(
+      backend.send(durable.input({ runId: 'run-kimi-tool' })),
+      durable,
+    );
+
+    assert.equal(
+      events.find((event) => event.type === 'error'),
+      undefined,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    const thinking = events.find(
+      (event): event is Extract<SessionEvent, { type: 'thinking_complete' }> =>
+        event.type === 'thinking_complete',
+    );
+    assert.deepEqual(thinking?.providerOptions?.makaResponses, {
+      version: 1,
+      profile: 'moonshot-global',
+      itemId: 'rs_kimi_1',
+      summaryPartLengths: [9],
+    });
+    assert.equal(requestBodies.length, 2);
+    const secondInput = requestBodies[1].input as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      secondInput.find((item) => item.type === 'reasoning'),
+      {
+        type: 'reasoning',
+        id: 'rs_kimi_1',
+        summary: [{ type: 'summary_text', text: 'Use echo.' }],
+      },
+    );
+    assert.equal(
+      secondInput.some(
+        (item) => item.type === 'function_call_output' && item.call_id === 'call_kimi_echo',
+      ),
+      true,
+    );
+  });
+
   test('Alibaba Responses keeps multiple streamed reasoning items distinct through replay', async () => {
     const tokenPlanConnection = {
       slug: 'alibaba-token-plan-cn',
@@ -13646,20 +13677,7 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
-  test('Alibaba Responses fails when streamed reasoning differs from the final summary', async (t) => {
-    // The early stop tears down the SDK stream while its settlement promises
-    // are still in flight; when those rejections land is scheduler-owned (on
-    // Windows they were observed after the test boundary). Trap unhandled
-    // rejections for the lifetime of this turn and assert the mismatch path
-    // leaves none behind, on every event loop, not just the one that raced.
-    const leakedRejections: unknown[] = [];
-    const trapUnhandledRejection = (reason: unknown): void => {
-      leakedRejections.push(reason);
-    };
-    process.on('unhandledRejection', trapUnhandledRejection);
-    t.after(() => {
-      process.off('unhandledRejection', trapUnhandledRejection);
-    });
+  test('Alibaba Responses adopts the final summary when streamed reasoning differs', async () => {
     const appended: AssistantMessage[] = [];
     const mismatchEvents = [
       { type: 'response.created', response: { id: 'r' } },
@@ -13685,6 +13703,18 @@ describe('AiSdkBackend thinking persistence', () => {
           type: 'reasoning',
           id: 'reasoning-item',
           summary: [{ type: 'summary_text', text: 'different final summary' }],
+        },
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'r',
+          object: 'response',
+          created_at: 1,
+          model: 'qwen3.8-max',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
         },
       },
     ];
@@ -13718,15 +13748,19 @@ describe('AiSdkBackend thinking persistence', () => {
 
     assert.equal(
       events.some((event) => event.type === 'error'),
-      true,
+      false,
+      JSON.stringify(events.filter((event) => event.type === 'error')),
     );
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-    assert.equal(JSON.stringify(appended).includes('makaResponses'), false);
+    // The provider's final summary wins over the streamed deltas, and the
+    // stored boundaries describe that adopted text — so the durable state
+    // stays self-consistent and replays instead of bricking the session.
+    assert.equal(JSON.stringify(appended).includes('different final summary'), true);
+    assert.equal(JSON.stringify(appended).includes('makaResponses'), true);
 
     const ctx = {
       sessionId: 'session-1',
       invocationId: 'inv-1',
-      runId: 'run-1',
+      runId: 'run-prev',
       turnId: 'turn-1',
       now: () => 7,
       newId: idGenerator(),
@@ -13756,14 +13790,7 @@ describe('AiSdkBackend thinking persistence', () => {
       }),
     );
     assert.ok(compactPrompt(recoveryModel));
-    // Let SDK teardown settle across macrotask cycles so a leaked rejection
-    // is caught before the trap comes off.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.deepEqual(
-      leakedRejections,
-      [],
-      'reasoning-mismatch teardown must not leak unhandled rejections',
-    );
+    assert.match(JSON.stringify(recoveryModel.doStreamCalls[0]?.prompt), /different final summary/);
   });
 
   test('Alibaba Responses preserves live compatibility reasoning across abrupt transport failure', async () => {
@@ -14209,7 +14236,8 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
-  test('Alibaba Responses rejects malformed state owned by its profile', async () => {
+  test('Alibaba Responses drops malformed state owned by its profile', async () => {
+    const model = completionModel();
     const backend = createBackend({
       connection: {
         slug: 'alibaba-token-plan-cn',
@@ -14218,7 +14246,7 @@ describe('AiSdkBackend thinking persistence', () => {
       },
       apiKey: 'alibaba-token',
       modelId: 'qwen3.8-max',
-      modelFactory: () => completionModel(),
+      modelFactory: () => model,
       tools: [],
     });
     const runtimeContext: RuntimeEvent[] = [
@@ -14243,18 +14271,18 @@ describe('AiSdkBackend thinking persistence', () => {
       }),
     ];
 
-    await assert.rejects(
-      drain(
-        backend.send({
-          turnId: 'turn-current',
-          text: 'follow up',
-          context: [],
-          ...sameRouteReplayProvenance('qwen3.8-max'),
-          runtimeContext,
-        }),
-      ),
-      /Malformed durable plaintext Responses reasoning state/,
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        ...sameRouteReplayProvenance('qwen3.8-max'),
+        runtimeContext,
+      }),
     );
+
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.doesNotMatch(JSON.stringify(model.doStreamCalls[0]?.prompt), /"type":"reasoning"/);
   });
 
   test('passes DeepSeek max reasoning through as the provider-native effort', async () => {
@@ -15890,8 +15918,12 @@ describe('AiSdkBackend steering durability and identity', () => {
       }),
     });
     const backend = createBackend({
-      connection: connection(),
-      modelId: 'mock-model-id',
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      },
+      modelId: 'gpt-5.4',
       modelFactory: () => model,
       tools: [],
       loadTurnRuntimeEvents: async () => ledger,

@@ -123,7 +123,11 @@ export interface ModelOverride {
   readonly capabilities?: Omit<NonNullable<ModelInfo['capabilities']>, 'vision'>;
   readonly modalities?: ModelInfo['modalities'];
   readonly thinkingLevels?: readonly ThinkingLevel[];
+  /** Thinking level used when a new Session starts on this exact model. */
+  readonly defaultThinkingLevel?: ThinkingLevel;
   readonly vision?: boolean;
+  /** Override ApplyPatch file editing. Omit to use this model's known support default. */
+  readonly applyPatch?: boolean;
   readonly contextWindow?: number;
   readonly compactionThreshold?: number;
   readonly inputLimit?: number;
@@ -138,6 +142,48 @@ export interface ModelOverride {
 
 export type ModelOverrides = Readonly<Record<string, ModelOverride>>;
 
+/** Known patch-capable models. Unknown models stay off until explicitly enabled. */
+const APPLY_PATCH_MODELS: ReadonlySet<string> = new Set([
+  'gpt-5-codex',
+  'gpt-5.1',
+  'gpt-5.1-codex',
+  'gpt-5.1-codex-mini',
+  'gpt-5.1-codex-max',
+  'gpt-5.2',
+  'gpt-5.2-codex',
+  'gpt-5.3-codex',
+  'gpt-5.3-codex-spark',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+  'gpt-5.4-pro',
+  'gpt-5.5',
+  'gpt-5.6',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-6-astra',
+  'deepseek-v4-flash',
+  'deepseek-v4-flash-vision-exp',
+  'deepseek-v4-pro',
+]);
+
+/** Shared by model settings and tool routing so the displayed switch matches execution. */
+export function modelApplyPatchEnabled(
+  modelId: string,
+  override?: Pick<ModelOverride, 'applyPatch'>,
+): boolean {
+  return (
+    override?.applyPatch ??
+    APPLY_PATCH_MODELS.has(
+      modelId
+        .trim()
+        .toLowerCase()
+        .replace(/-\d{4}-\d{2}-\d{2}$/, ''),
+    )
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -149,7 +195,9 @@ function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
     capabilities?: ModelOverride['capabilities'];
     modalities?: ModelOverride['modalities'];
     thinkingLevels?: readonly ThinkingLevel[];
+    defaultThinkingLevel?: ThinkingLevel;
     vision?: boolean;
+    applyPatch?: boolean;
     contextWindow?: number;
     compactionThreshold?: number;
     inputLimit?: number;
@@ -179,7 +227,11 @@ function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
       );
     }
   }
+  if (isThinkingLevel(entry.defaultThinkingLevel)) {
+    declared.defaultThinkingLevel = entry.defaultThinkingLevel;
+  }
   if (typeof entry.vision === 'boolean') declared.vision = entry.vision;
+  if (typeof entry.applyPatch === 'boolean') declared.applyPatch = entry.applyPatch;
   for (const field of [
     'contextWindow',
     'compactionThreshold',
@@ -308,6 +360,22 @@ export function thinkingVariantsForConnection(
 }
 
 /**
+ * Resolve the configured new-Session default against the model's effective
+ * capability ladder. A stale declaration falls back to the provider default
+ * instead of reaching Session creation as an unsupported level.
+ */
+export function defaultThinkingLevelForConnection(
+  connection: ConnectionThinkingContext,
+  modelId: string,
+): ThinkingLevel | undefined {
+  const configured = modelOverride(connection, modelId)?.defaultThinkingLevel;
+  return configured !== undefined &&
+    thinkingVariantsForConnection(connection, modelId).includes(configured)
+    ? configured
+    : undefined;
+}
+
+/**
  * Discard-semantics gate: returns the level when the model offers it,
  * `undefined` otherwise. Callers that must *reject* a bad level (IPC/session
  * boundaries with an error channel) keep their own `includes` branch — the
@@ -361,9 +429,11 @@ export function applyModelOverride(
   if (!override) return model;
   const {
     thinkingLevels: _thinking,
+    defaultThinkingLevel: _defaultThinking,
     serviceTier: _tier,
     compactionThreshold: _threshold,
     maxOutputTokens: _outputBudget,
+    applyPatch: _applyPatch,
     vision,
     capabilities,
     ...facts

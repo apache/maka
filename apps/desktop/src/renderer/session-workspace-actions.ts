@@ -35,7 +35,10 @@
 
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
-import { clearNewTaskReloadIntent, markNewTaskReloadIntent } from './new-task-reload-intent.js';
+import {
+  clearNewTaskReloadIntent,
+  markNewTaskReloadIntent,
+} from './application/contracts/new-task-reload-intent.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import {
   mergeTransientMessageProjection,
@@ -101,14 +104,7 @@ export function createSessionWorkspaceActions(deps: {
   ): TransientUserMessage[] {
     const pending = transientMessagesBySessionRef.current.get(sessionId);
     if (!pending || pending.size === 0) return [];
-    let includeTransient = true;
-    try {
-      const range = transcriptRangeRef.current?.store.range();
-      includeTransient = range?.sessionId !== sessionId || !range.hasNewer;
-    } catch {
-      // An unopened transcript has no historical range to hide the live tail from.
-    }
-    const projected = reconcileTransientMessages(pending, durable, { includeTransient });
+    const projected = reconcileTransientMessages(pending, durable);
     if (pending.size === 0) {
       transientMessagesBySessionRef.current.delete(sessionId);
     }

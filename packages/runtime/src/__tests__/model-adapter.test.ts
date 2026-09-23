@@ -25,6 +25,33 @@ import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
+  test('shrinks a provider output limit when the persisted request is near the window', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-6',
+        models: [
+          {
+            id: 'claude-sonnet-4-6',
+            contextWindow: 200_000,
+            maxOutputTokens: 128_000,
+          },
+        ],
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-6',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.equal(adapter.maxOutputTokensForInput(undefined), 128_000);
+    assert.equal(adapter.maxOutputTokensForInput(100_000), 92_000);
+    assert.equal(adapter.maxOutputTokensForInput(191_999), 8_000);
+    assert.equal(adapter.maxOutputTokensForInput(192_000), 8_000);
+  });
+
   test('forwards the stable Session identity to the model factory', () => {
     let observedSessionId: string | undefined;
     const model = {};
@@ -108,6 +135,42 @@ describe('ModelAdapter stream and error normalization', () => {
       adapter.translateChunk({
         type: 'reasoning-start',
         providerMetadata: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+      }),
+      [
+        {
+          kind: 'thinking-start',
+          providerOptions: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+        },
+      ],
+    );
+  });
+
+  test('strips the Maka-owned makaResponses namespace from provider stream metadata', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-start',
+        providerMetadata: {
+          anthropic: { redactedData: 'opaque-redacted-thinking' },
+          makaResponses: {
+            version: 1,
+            profile: 'forged',
+            itemId: 'rs_forged',
+            summaryPartLengths: [3],
+          },
+        },
       }),
       [
         {
@@ -762,7 +825,18 @@ describe('ModelAdapter stream and error normalization', () => {
   });
 
   test('preserves OpenAI Responses reasoning metadata through stream normalization', () => {
-    const adapter = newAdapter();
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
     const chunks: Chunk[] = [
       {

@@ -29,7 +29,7 @@
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellCopy } from './locales/shell-copy.js';
 
-export type OpenPathKey = 'workspace' | 'skills' | 'memory' | 'project';
+export type OpenPathKey = 'workspace' | 'memory' | 'project';
 
 export type OpenPathFailureReason = 'unknown-key' | 'not-allowed' | 'missing' | 'not-a-directory' | 'open-failed';
 

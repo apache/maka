@@ -25,6 +25,9 @@ import type {
 } from '@maka/core/daily-review';
 
 import type { CreateScheduledTaskInput, ScheduledTaskEffect, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
+import type { SkillLocationDefinition, SkillLocationRef } from '@maka/core/skill-locations';
+
+export type { SkillLocationRef } from '@maka/core/skill-locations';
 
 export interface SkillEntry {
   kind?: 'skill' | 'discovery_diagnostic';
@@ -60,6 +63,15 @@ export interface SkillEntry {
   needsReview?: boolean;
   discoveryDiagnosticReason?: 'blocked_path' | 'read_failed';
   manageable?: boolean;
+}
+
+export interface SkillLocation {
+  ref: SkillLocationRef;
+  scope: SkillLocationDefinition['scope'];
+  source: SkillLocationDefinition['source'];
+  path: string;
+  status: 'available' | 'missing' | 'blocked_path' | 'read_failed';
+  skillCount: number;
 }
 
 export type SkillGovernanceStatus = 'not_managed' | 'source_missing' | 'up_to_date' | 'update_available' | 'local_modified' | 'metadata_error';

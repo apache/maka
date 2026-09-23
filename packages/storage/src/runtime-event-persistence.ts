@@ -19,6 +19,7 @@
 
 import { join } from 'node:path';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecoveryInventoryEntry } from '@maka/core/runtime-event-store';
 import type {
   RuntimeInvocationPageInput,
   RuntimeInvocationPageResult,
@@ -47,6 +48,9 @@ export type RuntimeEventReadPersistence = {
 
 export interface RuntimeEventReadStore {
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  listInvocationRecoveryInventory(
+    sessionIds: readonly string[],
+  ): Promise<RuntimeInvocationRecoveryInventoryEntry[]>;
   readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
   listSessionInvocationsBounded(
     sessionId: string,
@@ -69,6 +73,12 @@ export interface RuntimeEventReadStore {
   readSessionRuntimeEventEntries(
     sessionId: string,
   ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>>;
+  /** Recall's narrowing over the ledger; see `RuntimeEventStore`. */
+  listSessionsWithRuntimeEventText(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[]>;
+  countRuntimeEventMessages(sessionIds: readonly string[]): Promise<number>;
 }
 
 export async function openRuntimeEventPersistence(input: {
@@ -101,6 +111,8 @@ export async function openRuntimeEventReadPersistence(input: {
     kind: 'sqlite',
     runtimeEventStore: Object.freeze({
       listSessionInvocations: (sessionId: string) => store.listSessionInvocations(sessionId),
+      listInvocationRecoveryInventory: (sessionIds: readonly string[]) =>
+        store.listInvocationRecoveryInventory(sessionIds),
       readRunInvocation: (sessionId: string, runId: string) =>
         store.readRunInvocation(sessionId, runId),
       listSessionInvocationsBounded: (sessionId: string, limit: number) =>
@@ -118,6 +130,10 @@ export async function openRuntimeEventReadPersistence(input: {
       readSessionRuntimeEvents: (sessionId: string) => store.readSessionRuntimeEvents(sessionId),
       readSessionRuntimeEventEntries: (sessionId: string) =>
         store.readSessionRuntimeEventEntries(sessionId),
+      listSessionsWithRuntimeEventText: (sessionIds: readonly string[], terms: readonly string[]) =>
+        store.listSessionsWithRuntimeEventText(sessionIds, terms),
+      countRuntimeEventMessages: (sessionIds: readonly string[]) =>
+        store.countRuntimeEventMessages(sessionIds),
     }),
     close: () => store.close(),
   };

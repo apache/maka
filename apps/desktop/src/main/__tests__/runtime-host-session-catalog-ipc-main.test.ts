@@ -51,34 +51,36 @@ test('session creation forwards the caller name for a mode that carries none', a
   registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
 
   await ipc.invoke('sessions:create', { mode: 'bot', name: '飞书 任务' });
-  await ipc.invoke('sessions:create', { mode: 'deep_research', name: '飞书 任务' });
+  await assert.rejects(
+    () => ipc.invoke('sessions:create', { mode: 'deep_research', name: '飞书 任务' }),
+    /Invalid session start mode/,
+  );
 
   assert.deepEqual(
     creates.map((input) => [input.mode, input.name]),
     [
       ['bot', '飞书 任务'],
-      ['deep_research', '飞书 任务'],
     ],
   );
 });
 
-test('session creation forwards a plugin executor without a model target', async () => {
+test('session creation forwards a plugin executor model without a native model target', async () => {
   const creates: SessionCreateInput[] = [];
   const ipc = ipcHarness();
   registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
 
-  await ipc.invoke('sessions:create', { executorId: 'codex.app-server' });
+  await ipc.invoke('sessions:create', { executorId: 'codex.app-server', model: 'gpt-5' });
 
   assert.equal(creates[0]?.executorId, 'codex.app-server');
+  assert.equal(creates[0]?.executorModel, 'gpt-5');
   assert.equal(creates[0]?.modelTarget, undefined);
   await assert.rejects(
     ipc.invoke('sessions:create', {
       executorId: 'codex',
       llmConnectionId: 'connection-1',
       llmConnectionSlug: 'openai',
-      model: 'gpt-5',
     }),
-    /cannot include a model target/,
+    /cannot include a model connection/,
   );
 });
 

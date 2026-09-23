@@ -19,6 +19,7 @@
 
 import {
   CombinedAutocompleteProvider,
+  CURSOR_MARKER,
   Editor,
   Key,
   SelectList,
@@ -560,6 +561,7 @@ const USER_QUESTION_ROW_PREFIX_WIDTH = 2;
  */
 export class UserQuestionOverlay implements Component {
   private readonly editor: Editor;
+  private viewportRows = Number.POSITIVE_INFINITY;
   // Highlight index over [0, options.length]. `options.length` is the input row.
   private activeIndex = 0;
 
@@ -571,14 +573,6 @@ export class UserQuestionOverlay implements Component {
       hint: string;
       placeholder: string;
       options: readonly UserQuestionOption[];
-      /**
-       * Live row budget for the overlay (the runner derives it from
-       * `terminal.rows`, so it stays correct across resizes). When the wrapped
-       * content would exceed it, render() degrades gracefully instead of
-       * letting pi-tui clip the tail — the input row and divider must always
-       * render (#4610).
-       */
-      maxRows?(): number;
       onSelectOption(index: number): void;
       onSubmitText(value: string): void;
       onSkip(): void;
@@ -598,6 +592,15 @@ export class UserQuestionOverlay implements Component {
 
   private get inputRowIndex(): number {
     return this.input.options.length;
+  }
+
+  minimumViewportRows(): number {
+    // One title, every option, the answer field, and the closing divider.
+    return this.input.options.length + 3;
+  }
+
+  setViewportRows(rows: number): void {
+    this.viewportRows = Math.max(this.minimumViewportRows(), Math.floor(rows));
   }
 
   private get onInputRow(): boolean {
@@ -666,28 +669,40 @@ export class UserQuestionOverlay implements Component {
     const hint = padLine(ansi.dim(this.input.hint), safeWidth);
     const blank = padLine('', safeWidth);
     const divider = padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth);
-    const inputRows = this.renderInputRow(safeWidth);
+    const allInputRows = this.renderInputRow(safeWidth);
+    const inputBudget = Math.max(1, this.viewportRows - this.input.options.length - 2);
+    const cursorRow = Math.max(
+      0,
+      allInputRows.findIndex((line) => line.includes(CURSOR_MARKER)),
+    );
+    const inputStart = Math.max(0, Math.min(cursorRow, allInputRows.length - inputBudget));
+    const inputRows = allInputRows.slice(inputStart, inputStart + inputBudget);
     const optionRows = this.input.options.map((option, index) =>
       formatUserQuestionOptionRow(option, index === this.activeIndex, safeWidth),
     );
-    const assemble = (title: string[], options: string[][]): string[] => [
+    const assemble = (title: string[], options: string[][], help = [hint, blank]): string[] => [
       ...title,
-      hint,
-      blank,
+      ...help,
       ...options.flat(),
       ...inputRows,
       divider,
     ];
     const full = assemble(titleLines, optionRows);
-    const budget = this.input.maxRows?.() ?? Number.POSITIVE_INFINITY;
+    const budget = this.viewportRows;
     if (full.length <= budget) return full;
-    // Over budget pi-tui would slice(0, maxHeight) — silently dropping the
-    // input row and divider. Degrade instead: cap the title at two lines and
-    // give every option an equal share of the remaining rows, each ending in
-    // a visible ellipsis when clamped. Only a terminal too short for one row
-    // per option still overflows, falling back to the pre-existing clip.
-    const cappedTitle = clampRowsWithEllipsis(titleLines, 2, safeWidth);
-    const fixedRows = cappedTitle.length + 2 + inputRows.length + 1;
+    // The layout owns the available height. Short screens first lose spacing
+    // and the hint, retaining the question, every choice, and the answer field.
+    const titleBudget = Math.min(
+      2,
+      Math.max(1, budget - this.input.options.length - inputRows.length - 3),
+    );
+    const cappedTitle = clampRowsWithEllipsis(titleLines, titleBudget, safeWidth);
+    const helpBudget = Math.max(
+      0,
+      budget - cappedTitle.length - this.input.options.length - inputRows.length - 1,
+    );
+    const help = [hint, blank].slice(0, helpBudget);
+    const fixedRows = cappedTitle.length + help.length + inputRows.length + 1;
     const optionBudget = Math.max(this.input.options.length, budget - fixedRows);
     const perOption = Math.max(
       1,
@@ -696,6 +711,7 @@ export class UserQuestionOverlay implements Component {
     return assemble(
       cappedTitle,
       optionRows.map((rows) => clampRowsWithEllipsis(rows, perOption, safeWidth)),
+      help,
     );
   }
 
@@ -829,6 +845,10 @@ export interface SessionSearchOverlayInput {
   locale: UiLocale;
   choices: readonly SessionSearchChoice[];
   scopeLabel: string;
+  title?: string;
+  emptyText?: string;
+  notice?: string;
+  onQuery?: (query: string) => void;
   onSelect: (item: SelectItem) => void;
   onCancel: () => void;
   onToggleScope: () => void;
@@ -843,6 +863,7 @@ export class SessionSearchOverlay implements Component {
   private list: SelectList;
   private selectedValue: string | undefined;
   private scopeLabel: string;
+  private notice: string | undefined;
 
   constructor(
     private readonly tui: TUI,
@@ -852,15 +873,26 @@ export class SessionSearchOverlay implements Component {
     this.choices = input.choices;
     this.filtered = input.choices;
     this.scopeLabel = input.scopeLabel;
+    this.notice = input.notice;
     this.list = this.buildList();
     this.searchEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
     this.searchEditor.onChange = (text) => this.applyQuery(text);
   }
 
-  updateChoices(choices: readonly SessionSearchChoice[], scopeLabel: string): void {
+  updateChoices(
+    choices: readonly SessionSearchChoice[],
+    scopeLabel: string,
+    notice?: string,
+  ): void {
     this.choices = choices;
     this.scopeLabel = scopeLabel;
-    this.applyQuery(this.searchEditor.getText());
+    this.notice = notice;
+    if (this.input.onQuery) {
+      this.filtered = choices;
+      this.list = this.buildList();
+    } else {
+      this.applyQuery(this.searchEditor.getText());
+    }
   }
 
   private buildList(): SelectList {
@@ -888,6 +920,10 @@ export class SessionSearchOverlay implements Component {
 
   private applyQuery(text: string): void {
     const query = text.trim().toLocaleLowerCase();
+    if (this.input.onQuery) {
+      this.input.onQuery(query);
+      return;
+    }
     this.filtered = query
       ? this.choices.filter((choice) => choice.searchText.includes(query))
       : this.choices;
@@ -924,13 +960,17 @@ export class SessionSearchOverlay implements Component {
     }
     this.searchEditor.focused = true;
     return [
-      padLine(`${this.copy.resumeSessionTitle} ${ansi.accent(this.scopeLabel)}`, safeWidth),
+      padLine(
+        `${this.input.title ?? this.copy.resumeSessionTitle} ${ansi.accent(this.scopeLabel)}`,
+        safeWidth,
+      ),
       padLine(ansi.dim(this.copy.sessionSearchHint), safeWidth),
       padLine('', safeWidth),
       ...this.renderFieldRow(safeWidth),
       padLine('', safeWidth),
+      ...(this.notice ? [padLine(ansi.dim(this.notice), safeWidth)] : []),
       ...(this.filtered.length === 0
-        ? [padLine(ansi.dim(this.copy.noMatchingSessions), safeWidth)]
+        ? [padLine(ansi.dim(this.input.emptyText ?? this.copy.noMatchingSessions), safeWidth)]
         : this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth))),
       padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth),
     ];

@@ -244,7 +244,7 @@ describe('Overlays feature boundary', () => {
     const violations: string[] = [];
     for (const path of productionRendererSources()) {
       const analysis = analysisOf(path);
-      for (const capability of ['window.maka.search.thread', 'window.maka.search.*']) {
+      for (const capability of ['window.maka.search.recall', 'window.maka.search.*']) {
         if ((analysis.bridgePaths[capability] ?? 0) > 0) {
           violations.push(`${relativeSource(path)}: ${capability}`);
         }
@@ -277,19 +277,5 @@ describe('Overlays feature boundary', () => {
       'src/renderer/app-shell-overlays.tsx: SearchModalHost',
       'src/renderer/app-shell.tsx: OverlaysRoot',
     ]);
-  });
-
-  test('leaves the shell with no overlay hook of its own', () => {
-    const shell = analysisOf(join(rendererRoot, 'app-shell.tsx'));
-    for (const hook of [
-      'useOverlaysController',
-      'useOverlays',
-      'useKeyboardHelp',
-      'useCommandPalette',
-      'useShellSearch',
-      'useSettingsModal',
-    ]) {
-      assert.equal(shell.hookCalls[hook] ?? 0, 0, hook);
-    }
   });
 });

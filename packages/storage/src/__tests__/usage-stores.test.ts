@@ -18,7 +18,18 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
+import type { UsageScreen, UsageScreenRequest } from '@maka/core/settings';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  realpath,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -333,6 +344,41 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('close waits an admitted Usage screen read and rejects later reads', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const accepted = stores.readUsageScreen({ kind: 'screen', query: screenQuery });
+      const closed = stores.close();
+
+      assert.throws(
+        () => stores.readUsageScreen({ kind: 'screen', query: screenQuery }),
+        InteractiveUsageStoresClosedError,
+      );
+      assert.equal((await accepted).kind, 'screen');
+      await closed;
+      await owner.close();
+    });
+  });
+
+  test('a failed admitted Usage read settles the barrier without poisoning close', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const failed = stores.readUsageScreen({
+        kind: 'screen',
+        query: { ...screenQuery, search: '界'.repeat(342) },
+      });
+      const closed = stores.close();
+
+      await assert.rejects(failed, /Invalid Usage screen query/);
+      await closed;
+      await owner.close();
+    });
+  });
+
   test('lease-bound facade exposes separate LLM and filtered tool logs', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -614,6 +660,30 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('reader close waits an admitted Usage screen read', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const writer = await openInteractiveUsageStoresForWrite(owner.lease);
+      await writer.close();
+      await owner.close();
+
+      const readerOwner = await tryAcquireInteractiveRootReader(capability);
+      assert(readerOwner);
+      const reader = await openInteractiveUsageStoresForRead(readerOwner.lease);
+      const accepted = reader.readUsageScreen({ kind: 'screen', query: screenQuery });
+      const closed = reader.close();
+
+      await assert.rejects(
+        reader.readUsageScreen({ kind: 'screen', query: screenQuery }),
+        InteractiveUsageStoresClosedError,
+      );
+      assert.equal((await accepted).kind, 'screen');
+      await closed;
+      await readerOwner.close();
+    });
+  });
+
   test('reader close releases local resources after lease revocation', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -769,3 +839,379 @@ function appendModelCallAuthorityEvent(
     lease.close();
   }
 }
+
+const screenQuery = {
+  range: { from: 0, to: Date.UTC(2030, 0, 1) },
+  search: '',
+  status: 'all' as const,
+};
+function continuation(screen: UsageScreen): Extract<UsageScreenRequest, { kind: 'activity' }> {
+  assert.ok(screen.nextCursor);
+  return {
+    kind: 'activity',
+    query: screen.query,
+    revision: screen.revision,
+    queryIdentity: screen.queryIdentity,
+    cursor: screen.nextCursor,
+  };
+}
+async function withScreenStores(
+  run: (
+    stores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>,
+    root: string,
+  ) => Promise<void>,
+) {
+  await withInteractiveRoot(async ({ root, capability }) => {
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    try {
+      await run(stores, root);
+    } finally {
+      await stores.close();
+      await owner.close();
+    }
+  });
+}
+async function initialScreen(
+  stores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>,
+  query = screenQuery,
+) {
+  const result = await stores.readUsageScreen({ kind: 'screen', query });
+  assert.equal(result.kind, 'screen');
+  assert.ok(result.kind === 'screen');
+  return result.screen;
+}
+async function seedScreen(stores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>) {
+  for (let i = 0; i < 61; i++)
+    await stores.telemetry.recordLlmCall(llmRecord({ id: `legacy-${i}` }));
+}
+
+describe('revision-consistent Usage screen', () => {
+  test('SQL totals and connection/model/tool groups preserve canonical and legacy accounting', async () => {
+    await withScreenStores(async (stores, root) => {
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          connectionSlug: 'custom',
+          cacheHitInputTokens: 100,
+          cachedInputTokens: 100,
+          sessionId: 's',
+        }),
+      );
+      await stores.telemetry.recordToolInvocation(
+        toolRecord({ toolName: 'Read', status: 'error' }),
+      );
+      appendModelCallAuthorityEvent(root, modelCallAttempt('canonical-session'));
+      await stores.modelCalls.catchUpModelCallProjection();
+      const screen = await initialScreen(stores);
+      const legacy = await stores.telemetry.summary({ range: screenQuery.range });
+      const canonical = (
+        await stores.modelCalls.modelCallSummary({ range: screenQuery.range }, screenQuery.range.to)
+      ).projection;
+      assert.equal(screen.summary.totalRequests, legacy.totalRequests + canonical.totalRequests);
+      assert.equal(screen.summary.totalCostUsd, legacy.totalCostUsd + canonical.totalCostUsd);
+      assert.equal(
+        screen.summary.totalTokens,
+        legacy.totalTokens.total + canonical.totalTokens.total,
+      );
+      assert.equal(screen.summary.cacheRead, 10);
+      assert.deepEqual(screen.byProvider.map((row) => row.provider).sort(), ['custom', 'openai']);
+      assert.deepEqual(screen.byModel, [
+        { model: 'gpt-5', requests: 2, tokens: 32, costUsd: 0.002 },
+      ]);
+      assert.deepEqual(screen.byTool, [
+        { tool: 'Read', calls: 1, errors: 1, success: 0, avgDurationMs: 30 },
+      ]);
+      assert.equal(screen.provenance.legacyRecords, 1);
+      assert.equal(screen.provenance.coverage.pricedAttempts, 1);
+      const db = acquireOperationalStateDatabase(root);
+      try {
+        db.database.exec(
+          "UPDATE usage_model_call_attempts SET cost_basis = 'unpriced', cost_usd = NULL",
+        );
+        const unpriced = await initialScreen(stores);
+        assert.equal(unpriced.provenance.coverage.unpricedAttempts, 1);
+        assert.equal(
+          Object.hasOwn(unpriced.logs.find((row) => row.id === 'attempt-1')!, 'costUsd'),
+          false,
+        );
+        db.database.exec(
+          "UPDATE usage_model_call_attempts SET cost_basis = 'priced', cost_usd = 0",
+        );
+        assert.equal(
+          (await initialScreen(stores)).logs.find((row) => row.id === 'attempt-1')?.costUsd,
+          0,
+        );
+        db.database.exec("DELETE FROM core_agent_runs WHERE session_id = 'canonical-session'");
+        assert.equal(
+          (await initialScreen(stores)).summary.totalRequests,
+          2,
+          'Session deletion retains Usage history',
+        );
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  test('keyset pages handle equal timestamps and duplicate display IDs across sources without loss', async () => {
+    await withScreenStores(async (stores, root) => {
+      await seedScreen(stores);
+      await stores.telemetry.recordToolInvocation(toolRecord({ id: 'legacy-0' }));
+      appendModelCallAuthorityEvent(root, {
+        ...modelCallAttempt('tie-session'),
+        attemptId: 'legacy-0',
+        completedAt: Date.UTC(2026, 0, 1),
+      });
+      await stores.modelCalls.catchUpModelCallProjection();
+      const db = acquireOperationalStateDatabase(root);
+      try {
+        db.database.exec(
+          "INSERT INTO usage_llm_calls SELECT 'other-key', id, ts, record_json, session_id FROM usage_llm_calls LIMIT 1",
+        );
+      } finally {
+        db.close();
+      }
+      const screen = await initialScreen(stores);
+      assert.equal(screen.logs.length, 50);
+      assert.equal(screen.activityTotal, 64);
+      const result = await stores.readUsageScreen(continuation(screen));
+      assert.ok(result.kind === 'activity');
+      assert.equal(result.page.logs.length, 14);
+      assert.equal(result.page.nextCursor, null);
+      assert.equal(screen.summary.totalRequests, 63);
+      assert.equal(result.page.revision, screen.revision);
+      assert.equal(screen.logs.filter((row) => row.kind === 'tool').length, 1);
+      await assert.rejects(
+        stores.readUsageScreen({ ...continuation(screen), queryIdentity: 'wrong' }),
+        /query changed/,
+      );
+      const other = await initialScreen(stores, { ...screenQuery, search: 'missing' });
+      await assert.rejects(
+        stores.readUsageScreen({
+          ...continuation(screen),
+          query: other.query,
+          queryIdentity: other.queryIdentity,
+        }),
+        /cursor/,
+      );
+      await assert.rejects(
+        stores.readUsageScreen({ ...continuation(screen), cursor: 'malformed' }),
+        /cursor/,
+      );
+    });
+  });
+
+  test('shares the protocol UTF-8 search boundary', async () => {
+    await withScreenStores(async (stores) => {
+      const accepted = { ...screenQuery, search: '界'.repeat(341) + 'x' };
+      assert.equal(
+        (await stores.readUsageScreen({ kind: 'screen', query: accepted })).kind,
+        'screen',
+      );
+      await assert.rejects(
+        stores.readUsageScreen({
+          kind: 'screen',
+          query: { ...screenQuery, search: '界'.repeat(342) },
+        }),
+        /Invalid Usage screen query/,
+      );
+    });
+  });
+
+  test('continues after a fractional timestamp without duplicate or missing rows', async () => {
+    await withScreenStores(async (stores) => {
+      for (let i = 0; i < 49; i++) {
+        await stores.telemetry.recordLlmCall(llmRecord({ id: `newer-${i}`, ts: 200 + i }));
+      }
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'fractional-boundary', ts: 100.5 }));
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'older', ts: 100 }));
+
+      const screen = await initialScreen(stores);
+      assert.equal(screen.logs.length, 50);
+      assert.equal(screen.logs.at(-1)?.id, 'fractional-boundary');
+      const result = await stores.readUsageScreen(continuation(screen));
+      assert.ok(result.kind === 'activity');
+      assert.deepEqual(
+        result.page.logs.map((row) => row.id),
+        ['older'],
+      );
+      assert.equal(result.page.nextCursor, null);
+      assert.equal(new Set([...screen.logs, ...result.page.logs].map((row) => row.id)).size, 51);
+    });
+  });
+
+  test('accepts fractional query bounds from the shared timestamp domain', async () => {
+    await withScreenStores(async (stores) => {
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'inside-fractional-range', ts: 100.5 }));
+      await stores.telemetry.recordLlmCall(llmRecord({ id: 'outside-fractional-range', ts: 101 }));
+
+      const screen = await initialScreen(stores, {
+        ...screenQuery,
+        range: { from: 100.25, to: 100.75 },
+      });
+      assert.deepEqual(
+        screen.logs.map((row) => row.id),
+        ['inside-fractional-range'],
+      );
+    });
+  });
+
+  test('filters search the full range with Unicode and do not narrow headline totals or breakdowns', async () => {
+    await withScreenStores(async (stores) => {
+      await seedScreen(stores);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'old-match', ts: 1, modelId: 'ÄModel', status: 'error' }),
+      );
+      const query = { ...screenQuery, search: 'ämodel', status: 'error' as const };
+      const result = await stores.readUsageScreen({ kind: 'screen', query });
+      assert.ok(result.kind === 'screen');
+      assert.equal(result.screen.summary.totalRequests, 62);
+      assert.equal(result.screen.logs.length, 1);
+      assert.equal(result.screen.activityTotal, 1);
+      assert.equal(result.screen.logs[0]?.id, 'old-match');
+      assert.equal(result.screen.byModel.length, 2);
+      assert.deepEqual(
+        (await initialScreen(stores, { ...screenQuery, search: '%_' })).logs,
+        [],
+        'SQL wildcards stay literal',
+      );
+    });
+  });
+
+  test('each durable writer, correction, deletion, and rollback fences continuation', async () => {
+    await withScreenStores(async (stores, root) => {
+      await seedScreen(stores);
+      const db = acquireOperationalStateDatabase(root);
+      try {
+        const beforeRollback = await initialScreen(stores);
+        db.database.exec(
+          "INSERT INTO core_agent_runs(session_id, run_id, created_at) VALUES ('unrelated', 'run', 0)",
+        );
+        db.database.exec(
+          "UPDATE core_agent_runs SET created_at = 1 WHERE session_id = 'unrelated'",
+        );
+        assert.equal(
+          (await initialScreen(stores)).revision,
+          beforeRollback.revision,
+          'non-Usage source metadata does not invalidate',
+        );
+        assert.throws(() =>
+          db.transaction('write', () => {
+            db.database.exec('DELETE FROM usage_llm_calls');
+            throw new Error('rollback');
+          }),
+        );
+        assert.equal((await initialScreen(stores)).revision, beforeRollback.revision);
+        assert.equal((await stores.readUsageScreen(continuation(beforeRollback))).kind, 'activity');
+        const mutations = [
+          () => stores.telemetry.recordLlmCall(llmRecord({ id: 'legacy-0', costUsd: 12 })),
+          () => stores.telemetry.recordToolInvocation(toolRecord()),
+          () =>
+            stores.pricing.upsert(0, {
+              modelKey: 'openai:gpt-5',
+              inputUsdPer1M: 1,
+              outputUsdPer1M: 2,
+            }),
+          () => appendModelCallAuthorityEvent(root, modelCallAttempt('source-session')),
+          () => stores.modelCalls.catchUpModelCallProjection(),
+          () => db.database.exec('UPDATE usage_model_call_attempts SET cost_usd = 3'),
+          () =>
+            db.database.exec(
+              'UPDATE usage_model_call_projection_checkpoints SET unreadable_events = 1',
+            ),
+          () => db.database.exec('DELETE FROM usage_tool_invocations'),
+          () => db.database.exec('DELETE FROM usage_model_call_attempts'),
+          () => db.database.exec('DELETE FROM core_agent_run_events'),
+          () => db.database.exec('DELETE FROM core_agent_runs'),
+        ];
+        for (const mutate of mutations) {
+          const before = await initialScreen(stores);
+          await mutate();
+          assert.deepEqual(await stores.readUsageScreen(continuation(before)), {
+            kind: 'revision_changed',
+          });
+        }
+        const stable = await initialScreen(stores);
+        await stores.pricing.upsert(1, {
+          modelKey: 'openai:gpt-5',
+          inputUsdPer1M: 1,
+          outputUsdPer1M: 2,
+        });
+        await stores.modelCalls.catchUpModelCallProjection();
+        assert.equal(
+          (await initialScreen(stores)).revision,
+          stable.revision,
+          'idempotent price and repair do not invalidate',
+        );
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  test('a concurrent WAL commit between aggregate and activity reads cannot mix versions', async () => {
+    await withScreenStores(async (stores, root) => {
+      await seedScreen(stores);
+      const lease = acquireOperationalStateDatabase(await realpath(root));
+      const external = new DatabaseSync(lease.databasePath);
+      let committed = false;
+      lease.database.function('usage_screen_lower', (value) => {
+        if (!committed) {
+          committed = true;
+          external.exec(
+            "UPDATE usage_llm_calls SET record_json = json_set(record_json, '$.costUsd', 99)",
+          );
+        }
+        return String(value).toLowerCase();
+      });
+      try {
+        const screen = await initialScreen(stores, { ...screenQuery, search: 'gpt' });
+        assert.ok(committed);
+        assert.ok(screen.summary.totalCostUsd < 1);
+        assert.ok(screen.logs.every((row) => row.costUsd === 0.001));
+        assert.deepEqual(await stores.readUsageScreen(continuation(screen)), {
+          kind: 'revision_changed',
+        });
+        assert.equal((await initialScreen(stores)).summary.totalCostUsd, 61 * 99);
+      } finally {
+        external.close();
+        lease.close();
+      }
+    });
+  });
+
+  test('database reopen rejects old tokens even when durable incarnation and counter repeat', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      let stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      try {
+        await seedScreen(stores);
+        const screen = await initialScreen(stores);
+        const lease = acquireOperationalStateDatabase(root);
+        const backupPath = `${root}.snapshot`;
+        const databasePath = lease.databasePath;
+        try {
+          await lease.backup(backupPath);
+        } finally {
+          lease.close();
+        }
+        await stores.telemetry.recordLlmCall(llmRecord({ id: 'later-write' }));
+        await stores.close();
+        await copyFile(backupPath, databasePath);
+        stores = await openInteractiveUsageStoresForWrite(owner.lease);
+        assert.deepEqual(await stores.readUsageScreen(continuation(screen)), {
+          kind: 'revision_changed',
+        });
+        assert.equal(
+          (await initialScreen(stores)).summary.totalRequests,
+          screen.summary.totalRequests,
+        );
+      } finally {
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+});

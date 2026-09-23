@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isExecutorConfiguration } from '@maka/core/executor-catalog';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import { isExecutorId } from '@maka/core/executor-id';
@@ -108,7 +109,12 @@ export function buildSessionHeader(
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
     backend: input.executorId ? 'plugin-executor' : 'ai-sdk',
-    ...(input.executorId ? { executorId: input.executorId } : {}),
+    ...(input.executorId
+      ? {
+          executorId: input.executorId,
+          ...(input.executorConfig ? { executorConfig: input.executorConfig } : {}),
+        }
+      : {}),
     ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
     llmConnectionSlug: input.llmConnectionSlug,
     // A subagent Session's route is chosen by the spawn that created it and is
@@ -350,9 +356,12 @@ function isPersistedBackendKind(value: unknown): value is SessionHeader['backend
 
 function isValidExecutorSelection(header: SessionHeader): boolean {
   if (header.backend === 'plugin-executor') {
-    return isExecutorId(header.executorId);
+    return (
+      isExecutorId(header.executorId) &&
+      (header.executorConfig === undefined || isExecutorConfiguration(header.executorConfig))
+    );
   }
-  return header.executorId === undefined;
+  return header.executorId === undefined && header.executorConfig === undefined;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -393,7 +402,12 @@ export function toSummary(header: SessionHeader): SessionSummary {
     ...(header.revisionIndex !== undefined ? { revisionIndex: header.revisionIndex } : {}),
     ...(header.revisionState ? { revisionState: header.revisionState } : {}),
     backend: header.backend,
-    ...(header.executorId ? { executorId: header.executorId } : {}),
+    ...(header.executorId
+      ? {
+          executorId: header.executorId,
+          ...(header.executorConfig ? { executorConfig: header.executorConfig } : {}),
+        }
+      : {}),
     ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,

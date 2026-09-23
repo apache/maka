@@ -18,6 +18,7 @@
  */
 
 import {
+  EXTERNAL_SESSION_CWD_MAX_BYTES,
   EXTERNAL_SESSION_LIMIT_KINDS,
   type ExternalSessionLimit,
 } from '@maka/core/external-session';
@@ -42,12 +43,12 @@ export const EXTERNAL_SESSION_PAGE_MAX_ITEMS = 16;
  *  matcher would accept can always reach it. */
 export const EXTERNAL_SESSION_QUERY_TEXT_MAX_BYTES = 800;
 export const EXTERNAL_SESSION_RESULT_MAX_BYTES = 72 * 1024;
-export const EXTERNAL_SESSION_CWD_MAX_BYTES = 4 * 1024;
+export { EXTERNAL_SESSION_CWD_MAX_BYTES };
 export const EXTERNAL_SESSION_NAME_MAX_BYTES = 320;
 export const EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES = 512;
 export const EXTERNAL_SESSION_SOURCE_MAX_ITEMS = 16;
 export const EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS = 8;
-const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 32;
+const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 512;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -57,6 +58,7 @@ const QUERY_ERRORS = [
   'persistence_failed',
   'internal_failure',
 ] as const;
+const CATALOG_QUERY_ERRORS = [...QUERY_ERRORS, 'source_limit_exceeded'] as const;
 const IMPORT_ERRORS = [
   ...QUERY_ERRORS,
   'not_found',
@@ -105,6 +107,8 @@ export interface ExternalSessionCatalogItem {
 export interface ExternalSessionImportInput {
   readonly adapterId: string;
   readonly sourceSessionId: string;
+  /** Optional target chosen by a Desktop client; older clients retain source cwd fallback. */
+  readonly workspace?: WorkspaceTarget;
 }
 
 /** A completed import command may refuse the source before any Session is written. */
@@ -127,12 +131,12 @@ export const EXTERNAL_SESSION_OPERATION_SPECS = {
   'external-session.catalog.query': defineHostPathOperation<
     ExternalSessionCatalogQueryInput,
     ExternalSessionCatalogQueryResult,
-    (typeof QUERY_ERRORS)[number]
+    (typeof CATALOG_QUERY_ERRORS)[number]
   >(
     {
       mode: 'query',
       availability: 'ready',
-      errors: QUERY_ERRORS,
+      errors: CATALOG_QUERY_ERRORS,
       decodeInput: decodeExternalSessionCatalogQueryInput,
       decodeOutput: decodeExternalSessionCatalogQueryResult,
     },
@@ -222,10 +226,12 @@ export function decodeExternalSessionCatalogQueryResult(
 }
 
 export function decodeExternalSessionImportInput(value: unknown): ExternalSessionImportInput {
-  const input = requireExactRecord(value, 'external Session import input', [
-    'adapterId',
-    'sourceSessionId',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'external Session import input',
+    ['adapterId', 'sourceSessionId'],
+    ['workspace'],
+  );
   const sourceSessionId = requireUtf8String(
     input.sourceSessionId,
     'external source Session id',
@@ -234,7 +240,13 @@ export function decodeExternalSessionImportInput(value: unknown): ExternalSessio
   if (/[\u0000-\u001f\u007f]/.test(sourceSessionId)) {
     throw invalidProtocolFrame('Invalid external source Session id');
   }
-  return { adapterId: adapterId(input.adapterId), sourceSessionId };
+  return {
+    adapterId: adapterId(input.adapterId),
+    sourceSessionId,
+    ...(Object.hasOwn(input, 'workspace')
+      ? { workspace: decodeWorkspaceTarget(input.workspace) }
+      : {}),
+  };
 }
 
 export function decodeExternalSessionImportResult(value: unknown): ExternalSessionImportResult {
@@ -353,7 +365,7 @@ function cursor(value: unknown): string {
     'external Session cursor',
     EXTERNAL_SESSION_CURSOR_MAX_BYTES,
   );
-  if (!/^\d+$/.test(decoded) || !Number.isSafeInteger(Number(decoded))) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9:_-]*$/.test(decoded)) {
     throw invalidProtocolFrame('Invalid external Session cursor');
   }
   return decoded;

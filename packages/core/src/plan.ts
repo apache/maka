@@ -343,6 +343,8 @@ export function planUserControlMutationInput(
 
 export interface PlanStore {
   readState(sessionId: string): Promise<PlanSessionState>;
+  /** Sessions whose latest execution lifecycle fact leaves a Plan active. */
+  listPlanRecoverySessionIds?(): Promise<string[]>;
   readOperationReceipt(
     sessionId: string,
     operationId: string,

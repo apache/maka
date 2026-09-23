@@ -23,11 +23,12 @@ import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
-import type { SessionWorkspaceComponent } from '../../../application/contracts/session-workspace.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
 import { FormInteractionPrompt } from '@maka/ui';
+import { getShellCopy } from '../../../locales/shell-copy.js';
+import { WorkbarEdgeToggle } from '../../../application/contracts/workbar-edge-toggle.js';
 import { WorkHubNavigationRail } from './workhub-navigation-rail.js';
 import { useWorkHubHighlightState, WorkHubHighlightContext, WorkHubHueProvider } from './workhub-work-identity.js';
 import { getWorkHubRailCopy } from '../../../locales/workhub-copy.js';
@@ -69,19 +70,38 @@ function revealWordmark(element: HTMLDivElement | null, content: HTMLDivElement 
   }
 }
 
-export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorkspaceComponent }) {
+export function WorkHubRoot() {
   const highlight = useWorkHubHighlightState();
   const controller = useWorkHubController(() => highlight.selectWork(undefined));
   const { services, session, transcript, busy } = controller;
-  const sessionIds = useMemo(() => controller.sessionId
-    ? new Set([...controller.sessions.map((candidate) => candidate.id), controller.sessionId])
-    : undefined, [controller.sessions, controller.sessionId]);
-  const modelChoice = controller.choices.find((choice) =>
+  useEffect(() => {
+    services.bindBrowserSession(controller.sessionId ?? null);
+    return () => services.bindBrowserSession(null);
+  }, [services, controller.sessionId]);
+  const coordinationModelChoice = controller.choices.find((choice) =>
     choice.connectionId === session?.llmConnectionId && choice.connectionSlug === session?.llmConnectionSlug && choice.model === session?.model,
   );
-  const thinkingLevels = modelChoice?.thinkingLevels ?? [];
-  const liveContextUsage = useLiveContextUsage({ inspector: services.inspector, sessionId: controller.sessionId, model: session?.model, providerType: modelChoice?.providerType });
-  const thinkingLevel = session?.thinkingLevel && thinkingLevels.includes(session.thinkingLevel) ? session.thinkingLevel : undefined;
+  const newWorkNativeModel = controller.newWorkDefaults.executorId
+    ? undefined
+    : controller.newWorkDefaults.model ??
+      (session?.llmConnectionId && session.llmConnectionSlug && session.model
+        ? {
+            llmConnectionId: session.llmConnectionId,
+            llmConnectionSlug: session.llmConnectionSlug,
+            model: session.model,
+          }
+        : undefined);
+  const newWorkModelChoice = controller.choices.find((choice) =>
+    choice.connectionId === newWorkNativeModel?.llmConnectionId &&
+    choice.connectionSlug === newWorkNativeModel.llmConnectionSlug &&
+    choice.model === newWorkNativeModel.model,
+  );
+  const thinkingLevels = newWorkModelChoice?.thinkingLevels ?? [];
+  const liveContextUsage = useLiveContextUsage({ inspector: services.inspector, sessionId: controller.sessionId, model: session?.model, providerType: coordinationModelChoice?.providerType });
+  const thinkingLevel = controller.newWorkDefaults.thinkingLevel &&
+    thinkingLevels.includes(controller.newWorkDefaults.thinkingLevel)
+    ? controller.newWorkDefaults.thinkingLevel
+    : undefined;
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
   const shortcutLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘⇧K' : 'Ctrl+Shift+K';
@@ -275,7 +295,8 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
   return (
     <WorkHubHighlightContext.Provider value={highlight}>
     <WorkHubHueProvider sessionIds={[...tasks.map((task) => task.target.sessionId), ...delegatedSessionIds]}>
-    <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
+    <section ref={surface} data-progress={progress} data-progress-editing={editingProgress} className="workHubLive workhub-surface" data-maka-content-ready data-placement={presentation?.placement ?? 'docked'} data-conversation-expanded={showConversation} aria-label={t.title}>
+      {!floating && presentation?.workbar && presentation.workbar.togglePosition !== 'titlebar' && <WorkbarEdgeToggle label={getShellCopy(locale).chrome[presentation.workbar.collapsed ? 'expandWorkbar' : 'collapseWorkbar']} {...presentation.workbar} onToggle={() => call(services.presentation.toggleWorkbar())} />}
       {progress && <WorkHubProgressCard ref={progressHeader} request={presentation.progressRequest!} control={control} liveTurn={controller.liveTurn} messages={transcript.messages} busy={Boolean(controller.activeTurn) || controller.sending} onOpen={() => {
         setConversationExpanded(true);
         if (presentation.progressRequest !== undefined) call(services.presentation.expandProgress(presentation.progressRequest));
@@ -288,16 +309,10 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
         </div>
       </div>}
       <div className="workHubRevealMark" ref={revealMark} aria-hidden="true"><MakaWordmark width={192} /></div>
-      <Workspace className="workHubWorkspace" layoutScope="workhub" session={session} sessionIds={sessionIds} modelChoices={controller.choices} visible={showConversation} composerRef={composer}
-        onShowConversation={() => {
-          setConversationExpanded(true);
-          if (progress) call(services.presentation.expandProgress(presentation.progressRequest));
-        }}
-        onOpenSession={(id) => call(services.presentation.openSession(id))}>
-      {(workbar) => <ChatSurfaceLayout
+      <div className="workHubWorkspace"><div className="mainColumn">
+      <ChatSurfaceLayout
         scrollButton={showConversation ? undefined : null}
         style={!showConversation ? { height: expandedLayoutHeight, flex: 'none', position: 'absolute', bottom: 0, width: '100%' } : undefined}
-        onReturnToTail={transcript.hasNewer ? controller.loadLatest : undefined}
         composer={
           <div className="workHubComposerSurface" ref={composerSurface} onFocusCapture={editProgress} onPointerUpCapture={editProgress}>
             {(controller.error || control?.error) && (
@@ -308,7 +323,15 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
                 )}
               </div>
             )}
-            {controller.activeForm && <FormInteractionPrompt request={controller.activeForm} onRespond={controller.respondToUserForm} onStop={controller.stop} stopPending={controller.stopPending} />}
+            {controller.activeForm && (
+              <FormInteractionPrompt
+                request={controller.activeForm}
+                modelChoices={controller.choices}
+                onRespond={controller.respondToUserForm}
+                onStop={controller.stop}
+                stopPending={controller.stopPending}
+              />
+            )}
             {controller.activeQuestion && <UserQuestionPrompt key={controller.activeQuestion.requestId}
               request={controller.activeQuestion} onRespond={controller.respondToUserQuestion}
               onStop={controller.stop} stopPending={controller.stopPending} />}
@@ -326,6 +349,15 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
               sessionId={controller.sessionId}
               streaming={busy}
               sendBlocked={!controller.sessionId || controller.sending || !session?.model}
+              sendBlockedReason={controller.modelSetupRequired
+                ? controller.modelSetupChoicesReady
+                  ? controller.choices.length > 0
+                    ? t.selectModelToSend
+                    : t.configureModelToSend
+                  : t.loadingModels
+                : undefined}
+              noModelConnection={controller.modelSetupRequired && controller.modelSetupChoicesReady && controller.choices.length === 0}
+              noModelHint={t.noModelsAvailable}
               allowAttachmentImportWhileStreaming
               stopPending={controller.stopPending}
               onSend={async (text, attachments, followUpMode) => {
@@ -338,29 +370,49 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
               }}
               onStop={controller.stop}
               activeSession={session}
-              activeModel={session?.model}
-              activeModelLabel={modelChoice?.label}
-              activeProviderType={modelChoice?.providerType}
-              activeModelConnectionId={session?.llmConnectionId}
-              activeModelConnectionSlug={session?.llmConnectionSlug}
+              executorTarget={controller.newWorkDefaults.executorId
+                ? {
+                    executorId: controller.newWorkDefaults.executorId,
+                    ...(controller.newWorkDefaults.executorModel
+                      ? { model: controller.newWorkDefaults.executorModel }
+                      : {}),
+                    ...(controller.newWorkDefaults.thinkingLevel
+                      ? { thinkingLevel: controller.newWorkDefaults.thinkingLevel }
+                      : {}),
+                  }
+                : undefined}
+              onExecutorTargetChange={controller.changeExecutor}
+              activeModel={newWorkNativeModel?.model}
+              activeModelLabel={newWorkModelChoice?.label}
+              activeProviderType={newWorkModelChoice?.providerType}
+              activeModelConnectionId={newWorkNativeModel?.llmConnectionId}
+              activeModelConnectionSlug={newWorkNativeModel?.llmConnectionSlug}
               modelChoices={controller.choices}
+              pickerPresentation={showConversation ? 'popover' : 'wheel'}
+              modelSelectionPurpose="new-work-default"
+              pickersReadOnly={Boolean(controller.activeQuestion || controller.activeForm || controller.configuringModel)}
               maxInputRows={progress && !editingProgress ? 1 : showConversation ? undefined : 6}
               onModelChange={controller.changeModel}
+              onPickNewChatModel={controller.modelSetupRequired && controller.modelSetupChoicesReady && controller.choices.length > 0
+                ? controller.selectSetupModel
+                : undefined}
+              onOpenModelSettings={controller.modelSetupRequired && controller.modelSetupChoicesReady && controller.choices.length === 0
+                ? () => call(services.presentation.openSettings('models'))
+                : undefined}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
               contextUsage={session ? {
-                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, transcript, session.model, session),
-                declaredContextWindow: modelChoice?.declaredContextWindow,
+                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, session.model, session),
+                declaredContextWindow: coordinationModelChoice?.declaredContextWindow,
                 meteredContextWindow: liveContextUsage?.contextWindow,
-                metadataContextWindow: modelChoice?.contextWindow,
-                onOpen: workbar.openUsage,
+                metadataContextWindow: coordinationModelChoice?.contextWindow,
+                onOpen: () => call(services.presentation.openUsage()),
               } : undefined}
-              activeThinkingLevels={thinkingLevels}
-              activeThinkingLevel={thinkingLevel}
-              onThinkingLevelChange={controller.changeThinkingLevel}
+              activeThinkingLevels={progress ? [] : thinkingLevels}
+              activeThinkingLevel={progress ? undefined : thinkingLevel}
+              onThinkingLevelChange={progress ? undefined : controller.changeThinkingLevel}
               modelSwitchHasHistory={transcript.messages.length > 0}
               footerAccessory={
                 <div className="workHubComposerActions">
-                  {workbar.toggle}
                   {control?.canUndo && <IconButton type="button" size="sm" variant="ghost" icon={<Undo2 size={16} />} label={t.undo} isDisabled={busy} onClick={() => call(services.control.undo())} />}
                   {!floating && <IconButton type="button" size="sm" variant="ghost" icon={<PictureInPicture2 size={16} />} label={t.float} tooltip={`${t.float} · ${shortcutLabel}`} onClick={() => call(services.presentation.detach())} />}
                 </div>
@@ -385,10 +437,8 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
           scrollBehavior="auto"
           onNew={() => composer.current?.focus()}
           messages={[...transcript.messages]}
-          hasOlderHistory={transcript.hasOlder}
-          hasNewerHistory={transcript.hasNewer}
-          onPrefetchHistory={controller.prefetchHistory}
-          onRetainWindow={controller.retainWindow}
+          hasEarlierHistory={transcript.hasOlder}
+          onLoadEarlierHistory={controller.loadEarlier}
           transientMessages={controller.transientMessages}
           viewportNavigation={controller.viewportNavigation}
           liveTurns={controller.liveTurns}
@@ -406,8 +456,8 @@ export function WorkHubRoot({ workspace: Workspace }: { workspace: SessionWorksp
         />
         </div></div>
         </div>
-      </ChatSurfaceLayout>}
-      </Workspace>
+      </ChatSurfaceLayout>
+      </div></div>
     </section>
     </WorkHubHueProvider>
     </WorkHubHighlightContext.Provider>

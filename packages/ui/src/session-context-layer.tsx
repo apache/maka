@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useReducer, type ReactElement } from 'react';
+import { useEffect, useReducer, type ReactElement, type ReactNode } from 'react';
 import {
   BreadcrumbItem,
   Breadcrumbs,
@@ -37,6 +37,7 @@ import { getConversationCopy } from './conversation-copy.js';
 import { ICON_SIZE, Pause, Play } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { dotForStatus } from './status-vocabulary.js';
+import { RunningIndicator } from './running-indicator.js';
 
 export interface SessionContextBranch {
   parentSessionId: string;
@@ -94,8 +95,8 @@ export function SessionContextLayer(props: {
   onRevisionNavigate?(sessionId: string): void;
   memoryActive?: boolean;
   onOpenMemorySettings?(): void;
-  deepResearchActive?: boolean;
   goal?: SessionContextGoal;
+  actions?: ReactNode;
 }) {
   const copy = getConversationCopy(useUiLocale()).chat;
   const contextItems: ContextItem[] = [];
@@ -153,17 +154,14 @@ export function SessionContextLayer(props: {
       key: 'goal',
       element: (
         <div className="maka-session-context__goal">
-          <StatusDot
-            variant={dotForStatus(paused ? 'attention' : 'active')}
-            label={
-              paused
-                ? copy.goalPausedAriaLabel
-                : waiting
-                  ? copy.goalWaitingAriaLabel
-                  : copy.goalRunningAriaLabel
-            }
-            isPulsing={!paused && !waiting}
-          />
+          {paused || waiting ? (
+            <StatusDot
+              variant={dotForStatus(paused ? 'attention' : 'active')}
+              label={paused ? copy.goalPausedAriaLabel : copy.goalWaitingAriaLabel}
+            />
+          ) : (
+            <RunningIndicator label={copy.goalRunningAriaLabel} />
+          )}
           <Text type="supporting" hasTabularNumbers>
             {goalText}
           </Text>
@@ -273,28 +271,6 @@ export function SessionContextLayer(props: {
     });
   }
 
-  if (props.deepResearchActive) {
-    contextItems.push({
-      key: 'deep-research',
-      element: (
-        <Token
-          size="sm"
-          color="blue"
-          label={copy.deepResearchAriaLabel}
-          isLabelHidden
-          endContent={copy.deepResearch}
-          description={copy.deepResearchTitle}
-          icon={<Icon icon="search" size="xsm" />}
-        />
-      ),
-      overflowItems: [{
-        label: copy.deepResearchAriaLabel,
-        icon: <Icon icon="search" size="xsm" />,
-        isDisabled: true,
-      }],
-    });
-  }
-
   if (props.memoryActive) {
     contextItems.push({
       key: 'memory',
@@ -338,7 +314,7 @@ export function SessionContextLayer(props: {
     });
   }
 
-  if (!props.branch && contextItems.length === 0) return null;
+  if (!props.branch && contextItems.length === 0 && !props.actions) return null;
   const parentSessionId = props.branch?.parentSessionId;
 
   return (
@@ -392,29 +368,32 @@ export function SessionContextLayer(props: {
             </Breadcrumbs>
           ) : null}
         </div>
-        {contextItems.length > 0 && (
+        {(contextItems.length > 0 || props.actions) && (
           <div className="maka-session-context__cluster">
-            <OverflowList
-              gap={1}
-              minVisibleItems={1}
-              collapseFrom="end"
-              overflowRenderer={(overflowItems) => {
-                const items = overflowItems.flatMap(({ index }) => contextItems[index]?.overflowItems ?? []);
-                return (
-                  <MoreMenu
-                    label={copy.sessionContextMore(items.length)}
-                    size="sm"
-                    items={items}
-                  />
-                );
-              }}
-            >
-              {contextItems.map((item) => (
-                <div key={item.key} className="maka-session-context__item">
-                  {item.element}
-                </div>
-              ))}
-            </OverflowList>
+            {contextItems.length > 0 ? (
+              <OverflowList
+                gap={1}
+                minVisibleItems={1}
+                collapseFrom="end"
+                overflowRenderer={(overflowItems) => {
+                  const items = overflowItems.flatMap(({ index }) => contextItems[index]?.overflowItems ?? []);
+                  return (
+                    <MoreMenu
+                      label={copy.sessionContextMore(items.length)}
+                      size="sm"
+                      items={items}
+                    />
+                  );
+                }}
+              >
+                {contextItems.map((item) => (
+                  <div key={item.key} className="maka-session-context__item">
+                    {item.element}
+                  </div>
+                ))}
+              </OverflowList>
+            ) : null}
+            {props.actions}
           </div>
         )}
       </div>

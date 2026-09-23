@@ -26,8 +26,13 @@
   max-width: 100%;
 }
 
-/* Model and thinking triggers share the footer's ghost-button chrome.
-   The model control expands into the shared inline magnetic wheel. */
+/* The composer footer's model picker is a ghost-trigger Selector — the same
+   searchable list the settings pages use — and the thinking picker beside it
+   is the same control minus search; resting, hover, focus, and disabled
+   chrome all derive from Astryx, so no product overlay is needed here.
+   Trigger geometry (min/max width) is owned by composer.css, the one real
+   context these triggers render in. The collapsed WorkHub window is the one
+   exception: its model picker keeps the inline wheel. */
 
 .maka-model-picker-root {
   display: inline-flex;
@@ -76,4 +81,189 @@
 .modelPickerProviderMark .providerAssetMask {
   width: 100%;
   height: 100%;
+}
+.modelPickerOption {
+  min-width: 0;
+}
+
+/* The prompt-cache notice leads the session switcher's list as an option
+   whose activation acknowledges it (chat-model-switcher.tsx). Its label wraps
+   because it is passed as a node; only the glyph needs the warning tone. */
+.modelPickerSwitchNoticeGlyph {
+  color: var(--warning-text);
+}
+
+/* Selector's popover stretches to its positioning context, not its content —
+   left alone it renders far wider than the option labels. Hug the widest row
+   instead, and cap it so one long id cannot stretch the popup past the
+   viewport: at ~44 chars per line this covers p99 of models.dev ids (p90=32,
+   p99=44), and the rare path-style ids ellipsize at the start. Scoped by the
+   option class renderModelPickerOption emits. */
+.astryx-selector-popup:has(.modelPickerOption) {
+  /* min-width keeps the painted card covering the trigger-sized layer, whose
+     leftover strip would otherwise swallow clicks without dismissing. */
+  min-width: 100%;
+  width: fit-content;
+  max-width: min(340px, 92vw);
+}
+
+.modelPickerOptionLabel {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* User-set connection names are unbounded too, but a heading is wayfinding —
+   one ellipsized line, not a tall row. */
+.astryx-selector-popup:has(.modelPickerOption) .astryx-selector-section-heading {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-executor-selector {
+  min-width: 0;
+  max-width: min(300px, 48vw);
+  flex: 0 0 auto;
+}
+
+.maka-executor-picker-panel {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(260px, 1.3fr);
+  width: 100%;
+  height: min(320px, calc(70vh - 56px));
+  min-height: 240px;
+  overflow: hidden;
+}
+
+.maka-executor-picker-rail,
+.maka-executor-picker-models {
+  min-width: 0;
+  min-height: 0;
+}
+
+.maka-executor-picker-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  border-right: var(--border-width-hairline) solid var(--border);
+  overflow-y: auto;
+}
+
+.maka-executor-picker-panel .maka-executor-picker-entry,
+.maka-executor-picker-panel .maka-executor-picker-model {
+  height: auto;
+  min-height: 28px;
+  flex-shrink: 0;
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+}
+
+.maka-executor-picker-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.maka-executor-picker-entry[data-active='true'],
+.maka-executor-picker-model[aria-selected='true'] {
+  background: var(--muted);
+}
+
+.maka-executor-picker-entry-status {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.maka-executor-picker-manage {
+  margin-top: auto;
+}
+
+.maka-executor-picker-models {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-left: var(--space-3);
+}
+
+.maka-executor-picker-search {
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.maka-executor-picker-model-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.maka-executor-picker-model small {
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-executor-picker-native {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 0;
+}
+
+.maka-executor-picker-option {
+  flex-shrink: 0;
+}
+
+.maka-executor-picker-option .maka-executor-picker-model {
+  width: 100%;
+}
+
+.maka-executor-picker-group {
+  padding: var(--space-1) var(--space-2);
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.maka-executor-picker-readiness {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-top: var(--space-1);
+}
+
+.maka-executor-picker-readiness {
+  flex-direction: column;
+}
+
+@media (max-width: 640px) {
+  .maka-executor-picker-panel {
+    grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.2fr);
+  }
+}
+
+.maka-executor-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 12px;
+  line-height: 1.5;
 }

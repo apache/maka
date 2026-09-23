@@ -18,6 +18,8 @@
     "packages/storage",
     "packages/mcp",
     "packages/runtime",
+    "packages/acp-executor-plugin",
+    "packages/antigravity-acp-plugin",
     "packages/runtime-host",
     "packages/eval",
     "packages/computer-use",
@@ -46,8 +48,8 @@
     "dev:full": "npm run build && npm --workspace @maka/desktop run start",
     "dev:full:peer": "npm run build && npm --workspace @maka/desktop run start:peer",
     "cli:dev": "node packages/cli/dist/dev-cli.js",
-    "build": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build",
-    "build:test": "npm run clean && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build:test",
+    "build": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/acp-executor-plugin run build && npm --workspace @maka/antigravity-acp-plugin run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build",
+    "build:test": "npm run clean && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/acp-executor-plugin run build && npm --workspace @maka/antigravity-acp-plugin run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build:test",
     "clean": "node scripts/clean-build.mjs",
     "rebuild": "npm run clean && npm run build",
     "check:stale": "node scripts/check-stale-dist.mjs",
@@ -111,17 +113,17 @@
   },
   "devDependencies": {
     "@ai-sdk/provider-utils": "5.0.40",
-    "@astryxdesign/cli": "0.5.2",
-    "@astryxdesign/core": "0.5.2",
-    "@biomejs/biome": "2.5.11",
+    "@astryxdesign/cli": "0.6.2",
+    "@astryxdesign/core": "0.6.2",
+    "@biomejs/biome": "2.5.13",
     "@electron/asar": "4.3.0",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.5.1",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
-    "knip": "^6.33.0",
+    "knip": "^6.35.1",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",
-    "yaml": "2.9.0"
+    "yaml": "2.9.1"
   },
   "allowScripts": {
     "esbuild@0.27.7": true,
@@ -131,9 +133,6 @@
   "overrides": {
     "@ai-sdk/code-mode": {
       "run": "2.1.4"
-    },
-    "@astryxdesign/core": {
-      "react-dom": "19.2.8"
     },
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "2.0.12"

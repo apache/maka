@@ -217,7 +217,10 @@ describe('incremental transcript projection', () => {
     assert.strictEqual(settled[0], live[0], 'the handoff is not a whole-transcript event');
     assert.strictEqual(settled[1], live[1]);
     assert.notStrictEqual(settled[2], live[2], 'the turn genuinely changed, so its reference must move');
-    assert.equal(settled[2]?.assistant?.text, 'half an answer');
+    assert.equal(
+      settled[2]?.timeline.some((item) => item.kind === 'text' && item.text === 'half an answer'),
+      true,
+    );
     assert.equal(
       settled[2]?.timeline.some((item) => item.kind === 'text' && item.live === true),
       false,
@@ -335,7 +338,10 @@ describe('incremental transcript projection', () => {
       ],
     });
     assert.notStrictEqual(other[0], first[0], 'a turn from the previous session must not be retained');
-    assert.equal(other[1]?.assistant?.text, 'a different answer');
+    assert.equal(
+      other[1]?.timeline.some((item) => item.kind === 'text' && item.text === 'a different answer'),
+      true,
+    );
 
     // Nothing of session-1 survived: re-projecting it rebuilds every turn.
     const back = projection.project({ locale: 'en', sessionId: SESSION, messages: history() });
@@ -423,6 +429,42 @@ describe('incremental transcript projection', () => {
     assert.equal(tool?.result?.kind, 'shell_run');
     assert.equal(tool?.shellRunSource, 'owned');
   });
+
+  test('a streaming delta moves only the timeline item it grew', () => {
+    // The live turn rebuilds its whole timeline per event. The turn object
+    // moves, but a finished tool row inside it did not — the item-level
+    // reconcile is what lets the memoized entry skip its re-render, so the
+    // identity has to survive here, not just at the fold.
+    const projection = createTranscriptProjection();
+    const live = (text: string): LiveTurnProjection => ({
+      turnId: 'turn-3',
+      steps: [
+        {
+          stepId: 'step-tool',
+          contentOrder: ['tools'],
+          tools: [{ toolUseId: 'bash-9', toolName: 'Bash', status: 'completed', args: { command: 'job' } }],
+        },
+        {
+          stepId: 'step-answer',
+          contentOrder: ['text'],
+          text: { text, truncated: false, complete: false },
+          tools: [],
+        },
+      ],
+    });
+    const before = projection.project({ locale: 'en', sessionId: SESSION, messages: history(), liveTurns: [live('he')] });
+    const after = projection.project({ locale: 'en', sessionId: SESSION, messages: history(), liveTurns: [live('hel')] });
+
+    const liveTurn = (turns: readonly TurnViewModel[]) => turns.find((turn) => turn.turnId === 'turn-3')!;
+    const beforeLive = liveTurn(before);
+    const afterLive = liveTurn(after);
+    assert.notStrictEqual(afterLive, beforeLive, 'the turn moved with its text');
+
+    const item = (turn: TurnViewModel, kind: string) => turn.timeline.find((entry) => entry.kind === kind);
+    assert.strictEqual(item(afterLive, 'tools'), item(beforeLive, 'tools'), 'the finished tool row keeps identity');
+    assert.notStrictEqual(item(afterLive, 'text'), item(beforeLive, 'text'), 'the growing text is a new object');
+    assert.strictEqual(after[0], before[0], 'the settled sibling turn stays untouched');
+  });
 });
 
 /**
@@ -459,7 +501,7 @@ describe('turn identity moves across structural change classes', () => {
       refresh: [...base.slice(0, 2), { type: 'turn_state', id: 's1', turnId: 'turn-1', ts: 5, status: 'failed', errorClass: 'rate_limit', failureMessage: 'Quota exceeded (status=429, requestId=req-4502)' }],
     },
     {
-      field: 'assistant',
+      field: 'timeline',
       refresh: [
         base[0]!,
         { type: 'assistant', id: 'a1', turnId: 'turn-1', ts: 4, text: 'a longer answer', modelId: 'model-1' },

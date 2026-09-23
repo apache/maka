@@ -342,6 +342,10 @@ describe('SQLite recovery authority multi-process races', () => {
           DROP TABLE runtime_managed_mutation_reservations;
           DROP INDEX runtime_events_by_session_kind;
           DROP INDEX runtime_events_one_opening_per_invocation;
+          DROP INDEX runtime_events_recovery_user_message;
+          DROP INDEX runtime_events_steering_message;
+          DROP INDEX runtime_events_tool_dispatch_operation;
+          DROP INDEX tool_operations_unsettled;
           DROP TABLE runtime_legacy_invocation_openings;
           DROP TABLE runtime_session_event_ordinals;
           PRAGMA user_version = 10;

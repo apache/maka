@@ -40,15 +40,6 @@
   max-width: var(--maka-reading-measure);
 }
 
-.maka-return-workhub {
-  --_button-radius: var(--radius-chat);
-  display: flex;
-  width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-6)));
-  min-height: var(--space-10);
-  margin: 0 auto;
-  text-align: center;
-}
-
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
    composer below it stays still. Both otherwise share the dock's filtered
    compositing surface, so Chromium may re-raster the thin context-gauge paths
@@ -56,6 +47,15 @@
    visibly hops by a device pixel. Keep the fading control in its own small
    paint/compositing boundary. `astryx-chat-layout-scroll-button` is Astryx's
    published theme class; the child is its fixed 32px transition container. */
+/* Astryx's dock is [scroll button, blur layer, composer]. Its 36px mask
+   finishes before Maka's card: the button reserves 32px + spacing-3, then
+   .composer adds space-2. Fade all the way to the card instead of leaving
+   a fully blurred strip above it. Scope this to docks with the scroll control;
+   floating WorkHub presentations can omit that control entirely. */
+.maka-chat-layout > div:has(> .astryx-chat-layout-scroll-button) > div:nth-last-child(2) {
+  mask-image: linear-gradient(to bottom, transparent, black calc(32px + var(--spacing-3) + var(--space-2)));
+}
+
 .astryx-chat-layout-scroll-button > div {
   contain: layout style paint;
   will-change: opacity, transform;
@@ -155,6 +155,33 @@
   padding: var(--space-1) var(--space-3) var(--space-2);
 }
 
+/* Session references share the input's surface and stay visible while typing. */
+.maka-composer-session-references {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  min-width: 0;
+  padding: var(--space-1) var(--space-1) 0;
+}
+
+.maka-composer-session-references .maka-composer-session-token {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(420px, 100%);
+  height: 28px;
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-full);
+  font-weight: 400;
+  background: var(--muted);
+}
+
+.maka-composer-session-token-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Astryx ChatComposerDrawer wraps its content in a display:grid whose single
    implicit column sizes to the content's max-content contribution — with a
    long chip row that resolves WIDER than the grid (measured: 896px column in
@@ -232,6 +259,14 @@
   flex-direction: column;
   gap: var(--space-1-5);
   min-width: 0;
+}
+
+/* Chromium can omit an empty editable's line box when it mounts beneath
+   an inert ancestor, then keep that collapsed layout until the first edit.
+   Generate the empty line in CSS so its height and caret space exist from
+   the first paint, without adding a character to the draft or undo history. */
+.maka-composer-editor > [contenteditable]:empty::before {
+  content: "\200b";
 }
 
 .maka-composer-left-controls {
@@ -373,7 +408,18 @@
   min-width: 100px;
   max-width: min(220px, 28vw);
 }
-
+/* External model names share this row with an executor selector. Size the
+   trigger to its label and let the pair wrap instead of squeezing the model
+   into the native model + thinking pair's width budget. */
+.maka-composer-left-controls .maka-model-selection-controls:has(.maka-external-model-selector) {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+.maka-composer-left-controls .maka-external-model-selector {
+  width: max-content;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
 .maka-composer-model-chip-text {
   min-width: 0;
   overflow: hidden;

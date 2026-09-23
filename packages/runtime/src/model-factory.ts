@@ -34,7 +34,10 @@ import {
   type SharedV4ProviderMetadata,
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
-import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import {
+  type ProviderRuntimeAdapter,
+  type RuntimeExecutionConnection,
+} from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
@@ -52,8 +55,11 @@ import {
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import { openResponsesUrl } from './provider-urls.js';
 import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
-import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
-import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
+import {
+  resolveModelRuntime,
+  runtimeProviderName,
+  type ResolvedModelRuntime,
+} from './model-runtime.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 import { createStreamUsageFallbackFetch } from './stream-usage-fallback-fetch.js';
@@ -101,6 +107,27 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   } as const;
   const requestFetch = createRequestCustomizationFetch(baseFetch, requestCustomization);
 
+  const openResponsesSdkModel = () => {
+    const contract = reasoningReplay.kind === 'responses' ? reasoningReplay.contract : undefined;
+    if (contract?.adapter !== 'open-responses') return undefined;
+    const finalizeBody = createOpenResponsesCompatibilityFinalizer(contract.compatibility);
+    // Request customization is applied first; provider compatibility is
+    // the final authority before network dispatch, so an overlay cannot
+    // re-enable storage or violate the provider's tool-choice contract.
+    const responsesFetch = finalizeBody
+      ? createRequestCustomizationFetch(baseFetch, {
+          ...requestCustomization,
+          finalizeBody,
+        })
+      : requestFetch;
+    return createOpenResponses({
+      name: runtimeProviderName(adapter, connection),
+      apiKey,
+      url: openResponsesUrl(baseURL),
+      fetch: responsesFetch,
+    })(modelId);
+  };
+
   switch (adapter.kind) {
     case 'anthropic':
       return createAnthropic({
@@ -123,6 +150,10 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       }).responses(modelId);
 
     case 'openai': {
+      if (wire === 'openai-responses') {
+        const model = openResponsesSdkModel();
+        if (model) return model;
+      }
       const openai = createOpenAI({
         apiKey,
         baseURL,
@@ -151,26 +182,8 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         );
       }
       if (wire === 'openai-responses') {
-        if (reasoningReplay.contract.adapter === 'open-responses') {
-          const finalizeBody = createOpenResponsesCompatibilityFinalizer(
-            reasoningReplay.contract.compatibility,
-          );
-          // Request customization is applied first; provider compatibility is
-          // the final authority before network dispatch, so an overlay cannot
-          // re-enable storage or violate the provider's tool-choice contract.
-          const responsesFetch = finalizeBody
-            ? createRequestCustomizationFetch(baseFetch, {
-                ...requestCustomization,
-                finalizeBody,
-              })
-            : requestFetch;
-          return createOpenResponses({
-            name: runtimeProviderName(adapter, connection),
-            apiKey,
-            url: openResponsesUrl(baseURL),
-            fetch: responsesFetch,
-          })(modelId);
-        }
+        const model = openResponsesSdkModel();
+        if (model) return model;
         return createOpenAI({
           apiKey,
           baseURL,
@@ -646,20 +659,20 @@ function withParallelToolCallOptions(
 
   let providerKey: string;
   let optionKey: 'parallelToolCalls' | 'parallel_tool_calls';
-  if (runtime.adapter.kind === 'openai' || runtime.adapter.kind === 'openai-codex') {
+  if (runtime.wire === 'openai-responses') {
+    // parallelToolCalls is an @ai-sdk/openai provider option; the Open
+    // Responses SDK has no namespaced switch for it.
+    if (runtime.reasoningReplay.contract.adapter !== 'openai') {
+      return options;
+    }
+    providerKey = 'openai';
+    optionKey = 'parallelToolCalls';
+  } else if (runtime.adapter.kind === 'openai') {
     providerKey = 'openai';
     optionKey = 'parallelToolCalls';
   } else if (runtime.adapter.kind === 'openai-compatible') {
-    if (runtime.wire === 'openai-responses') {
-      if (runtime.reasoningReplay.contract.adapter !== 'openai') {
-        return options;
-      }
-      providerKey = 'openai';
-      optionKey = 'parallelToolCalls';
-    } else {
-      providerKey = openAiCompatibleProviderOptionsKey(runtime.adapter, connection);
-      optionKey = 'parallel_tool_calls';
-    }
+    providerKey = openAiCompatibleProviderOptionsKey(runtime.adapter, connection);
+    optionKey = 'parallel_tool_calls';
   } else {
     return options;
   }
@@ -802,7 +815,7 @@ function toCamelCase(name: string): string {
  * silently read nothing for dashed providers.
  */
 function openAiCompatibleProviderOptionsKey(
-  adapter: RuntimeProviderAdapter,
+  adapter: ProviderRuntimeAdapter,
   connection: RuntimeExecutionConnection,
 ): string {
   return toCamelCase(runtimeProviderName(adapter, connection));
