@@ -529,6 +529,34 @@ test('TUI MCP follows a change Desktop makes to mcp.json and keeps an open impor
   await controller.close();
 });
 
+test('TUI MCP follows a change Desktop makes while the TUI is still starting', async () => {
+  const store = mutableConfigStore(emptyConfig(), []);
+  const manager = managementManager([]);
+  const sync = manager.manager.sync;
+  const started = deferredValue<void>();
+  let first = true;
+  manager.manager.sync = async (config: McpConfigFile) => {
+    if (first) {
+      first = false;
+      await started.promise;
+    }
+    return sync(config);
+  };
+  const controller = createTuiMcpController(
+    { workspaceRoot: '/unused', connection: connectionHarness().connection },
+    { configStore: store.store, manager: manager.manager, createProvider: () => undefined },
+  );
+  // Startup has read the empty file and is still connecting.
+  await new Promise((resolve) => setImmediate(resolve));
+  store.replaceElsewhere({ version: 3, mcpServers: { desktop: { command: 'server' } } });
+  started.resolve();
+  await waitFor(
+    () => controller.configForEdit('desktop') !== undefined,
+    'the change made during startup',
+  );
+  await controller.close();
+});
+
 test('TUI MCP keeps a durable mutation visible when manager synchronization fails', async () => {
   const order: string[] = [];
   const store = mutableConfigStore(emptyConfig(), order);

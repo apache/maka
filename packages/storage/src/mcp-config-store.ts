@@ -52,8 +52,9 @@ const CHANGE_SETTLE_MS = 150;
 
 export interface McpConfigStore {
   get(): Promise<McpConfigFile>;
-  /** Called after any process replaces mcp.json, this one included. The
-   * listener re-reads with get(); it receives an error once if watching
+  /** Called after any process replaces mcp.json, this one included, and
+   * once when watching begins, so a change made before that is not missed.
+   * The listener re-reads with get(); it receives an error once if watching
    * stops. */
   subscribeChanges(listener: (error?: Error) => void): () => void;
   /** One cross-process read-transform-write transaction. `apply` sees the
@@ -104,16 +105,19 @@ export function subscribeMcpConfigFileChanges(
   const name = basename(path);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let watcher: ReturnType<typeof watch>;
+  const settle = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => listener(), CHANGE_SETTLE_MS);
+  };
   try {
     watcher = watch(dirname(path), { persistent: false }, (_event, filename) => {
-      if (filename !== null && filename.toString() !== name) return;
-      clearTimeout(timer);
-      timer = setTimeout(() => listener(), CHANGE_SETTLE_MS);
+      if (filename === null || filename.toString() === name) settle();
     });
   } catch (error) {
     queueMicrotask(() => listener(error as Error));
     return () => {};
   }
+  settle();
   const stop = () => {
     clearTimeout(timer);
     watcher.close();

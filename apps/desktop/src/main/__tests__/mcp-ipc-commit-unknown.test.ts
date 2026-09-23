@@ -231,7 +231,9 @@ function mutationHarness(t: TestContext, store: McpConfigStore, overrides: Parti
     emitChanged: (statuses) => { emitted.push(statuses); },
     ...overrides,
   };
-  t.after(registerMcpIpcMain(deps));
+  // These cases are about this process's own writes, not following others'.
+  t.mock.method(store, 'subscribeChanges', () => () => {});
+  registerMcpIpcMain(deps);
   return {
     deps, synced, emitted, retired, publicationErrors,
     invoke(channel: string, ...args: unknown[]) {

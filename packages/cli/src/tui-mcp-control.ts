@@ -325,11 +325,15 @@ class TuiMcpControllerImpl implements TuiMcpController {
         }
       },
     );
-    // Desktop edits the same file. Failing to follow its edits leaves the
-    // TUI's own working, so it stays quiet rather than print over the screen.
+    // Desktop edits the same file. A change during startup waits for it
+    // rather than being dropped, since startup may have read the file first.
+    // Failing to follow leaves the TUI's own edits working, so it stays quiet
+    // rather than print over the screen.
     this.#disposeConfigChanges = deps.configStore.subscribeChanges((error) => {
-      if (!error)
-        void this.#serializeAction(() => this.#followConfigChange()).catch(() => undefined);
+      if (error) return;
+      void this.#initialization
+        .then(() => this.#serializeAction(() => this.#followConfigChange()))
+        .catch(() => undefined);
     });
     this.#initialization = this.#initialize();
   }

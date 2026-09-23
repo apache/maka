@@ -24,7 +24,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createMcpConfigStore, McpServerExistsError, type McpConfigStore } from '@maka/storage/mcp-config-store';
-import { createMcpExclusiveLane, registerMcpIpcMain } from '../mcp-ipc-main.js';
+import { createMcpExclusiveLane, registerMcpIpcMain, type McpIpcMainDeps } from '../mcp-ipc-main.js';
 
 test('MCP IPC commits config before publishing capabilities and emitting status', async () => {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
@@ -639,9 +639,10 @@ test('a change another process makes to mcp.json reaches the manager until unreg
   t.after(() => rm(root, { recursive: true, force: true }));
   const store = createMcpConfigStore(root);
   await store.get();
+  // Written after this process last read the file but before it follows it.
+  await createMcpConfigStore(root).upsert('before', { command: 'node' });
   const desktop = registerWithStore(t, store);
-  // Let the watcher start before the other process writes.
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await waitUntil(() => desktop.synced.some((config) => 'before' in config.mcpServers));
 
   await createMcpConfigStore(root).upsert('tui-added', { command: 'node' });
   await waitUntil(() => desktop.synced.some((config) => 'tui-added' in config.mcpServers));
@@ -654,7 +655,34 @@ test('a change another process makes to mcp.json reaches the manager until unreg
   assert.equal(desktop.synced.length, seen);
 });
 
-function registerWithStore(t: TestContext, store: McpConfigStore) {
+test('following another process never holds a login claim behind a slow connect', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-ipc-follow-lane-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = createMcpConfigStore(root);
+  await store.get();
+  const lane = createMcpExclusiveLane();
+  let connecting!: () => void;
+  let syncing = false;
+  registerWithStore(t, store, {
+    exclusiveLane: lane,
+    manager: {
+      forgetServerCredentials: async () => {},
+      sync: () => {
+        syncing = true;
+        return new Promise<void>((resolve) => { connecting = resolve; });
+      },
+      statuses: () => [],
+      test: async () => { throw new Error('not used'); },
+    },
+  });
+  await waitUntil(() => syncing);
+  const claim = lane(async () => 'claimed');
+  const outcome = await Promise.race([claim, new Promise((resolve) => setTimeout(resolve, 500, 'blocked'))]);
+  connecting();
+  assert.equal(outcome, 'claimed');
+});
+
+function registerWithStore(t: TestContext, store: McpConfigStore, overrides: Partial<McpIpcMainDeps> = {}) {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
   const synced: McpConfigFile[] = [];
   let emitted = 0;
@@ -678,6 +706,7 @@ function registerWithStore(t: TestContext, store: McpConfigStore) {
     publishCapabilities: async () => {},
     onPublicationError: () => {},
     emitChanged: () => { emitted += 1; },
+    ...overrides,
   });
   t.after(stop);
   return { handlers, synced, get emitted() { return emitted; }, stop };

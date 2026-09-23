@@ -319,14 +319,16 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
   });
   // Another process (the TUI, another window) replacing mcp.json is followed
   // the way a change made here is. A login in flight needs nothing: the
-  // manager binds each round to the URL it started against.
+  // manager binds each round to the URL it started against. This stays off
+  // the mutation lane, where a slow connect would hold up login claims; every
+  // write is followed by a notification, so the last sync reads the last file.
   return deps.store.subscribeChanges((error) => {
     if (error) {
       console.error('[mcp] stopped following mcp.json changes:', error);
       return;
     }
     void deps.ensureReady()
-      .then(() => inMutationLane(async () => deps.manager.sync(await deps.store.get())))
+      .then(async () => deps.manager.sync(await deps.store.get()))
       .then(
         () => changed(deps),
         (failure: unknown) => console.error('[mcp] could not apply an mcp.json change:', failure),

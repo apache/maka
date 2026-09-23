@@ -35,22 +35,22 @@ afterEach(async () =>
   Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))),
 );
 
-test('another writer replacing mcp.json notifies a subscriber once until it unsubscribes', async () => {
+test('a subscriber hears when watching begins, then once per replacement until it unsubscribes', async () => {
   const root = await tempRoot();
   const reader = createMcpConfigStore(root);
   const writer = createMcpConfigStore(root);
   await reader.get();
   const notifications: Array<Error | undefined> = [];
   const unsubscribe = reader.subscribeChanges((error) => notifications.push(error));
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await waitUntil(() => notifications.length === 1);
   await writer.upsert('filesystem', { command: 'npx' });
-  await waitUntil(() => notifications.length > 0);
+  await waitUntil(() => notifications.length > 1);
   await new Promise((resolve) => setTimeout(resolve, 400));
-  assert.deepEqual(notifications, [undefined]);
+  assert.deepEqual(notifications, [undefined, undefined]);
   unsubscribe();
   await writer.remove('filesystem');
   await new Promise((resolve) => setTimeout(resolve, 400));
-  assert.equal(notifications.length, 1);
+  assert.equal(notifications.length, 2);
 });
 
 test('creates and atomically updates a Claude-compatible mcp.json', async () => {
