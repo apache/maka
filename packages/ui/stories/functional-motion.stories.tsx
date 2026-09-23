@@ -72,7 +72,9 @@ export const RetainedFunctionalMotion: Story = {
     // frames instead of each adding its own.
     await waitFor(() => expect(spinner.getAnimations()[0]?.startTime).toBe(0));
     // A list re-sorting its rows moves a mounted spinner, which restarts its
-    // animation without remounting it.
+    // animation without remounting it. At timeline time 0 an unpinned restart
+    // would also start at 0, so wait for the clock to move first.
+    await waitFor(() => expect(document.timeline.currentTime).toBeGreaterThan(0));
     const [mounted] = spinner.getAnimations();
     spinner.parentElement!.prepend(spinner);
     await waitFor(() => {
