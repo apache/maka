@@ -17,44 +17,35 @@
   under the License.
 -->
 
-# WorkHub prompt-suggestion UI evidence
+# Prompt-suggestion UI evidence
 
-2026-09-23. Rebased on upstream main `c7d205a42`.
+Validated on 2026-09-23. Suggestions share normal input typography, position and wrapping. Tab or click accepts an editable draft; Enter sends; Esc dismisses.
 
-## Reachable surface and interaction
+## WorkHub Storybook
 
-`Product/WorkHub/NextPromptSuggestion` (`product-workhub--next-prompt-suggestion`) mounts the production WorkHubRoot, controller and shared Composer. Only service transport and predicted text are fixtures. Its play function sends a request, observes the completed reply, compares exact glyph rectangles and typography before/after Tab, verifies that Tab does not send, sends the accepted draft with Enter, dismisses the next suggestion with Esc, then leaves a new suggestion visible.
+`Product/WorkHub/NextPromptSuggestion` mounts the production WorkHubRoot, controller and Composer with fixture service transport. All four Chromium plays passed at 1280/720px × light/dark, checking exact glyph geometry and typography before/after Tab, no send on acceptance, Enter and Esc. Injecting the previous 12px overlay padding makes the geometry assertion fail. This story is included in the CI smoke catalog; the full catalog was not run locally.
 
-The actual smoke catalog explicitly schedules this story at 1280×900 and 720×900 in light and dark themes. The focused real Chromium run used the production smoke probe and completed all four plays with zero recorded failures; see [results.json](results.json). The entire Storybook catalog was not run.
-
-The independent mutation check injects only the former 12px suggestion padding. The play assertion fails on glyph geometry, captured as `playFunctionThrewException`; see [alignment-mutation.json](alignment-mutation.json). This also revealed a missing event listener in the general smoke probe, which now records play exceptions as failures.
-
-## Screenshots
-
-Captured from the built Storybook in the Codex in-app browser after its play reached the final suggestion state. Ego Chromium performed the four assertion runs; its screenshot calls timed out, so images came from the in-app browser instead. Images are not represented as Ego captures.
+Screenshots below came from the built Storybook in the in-app browser. Assertions ran in Ego Chromium; its screenshot calls timed out.
 
 ![1280px light](workhub-light-wide.png)
 
 ![720px dark](workhub-dark-narrow.png)
 
-## Host and native integration
+## Native Electron
 
-The updated [WorkHub native check](../prompt-suggestion-smoke/workhub-check.json) now returns a generated suggestion and verifies Tab without send, native Undo, Enter reaching the durable coordination transcript, Esc, and delayed-result draft preservation. It uses real WorkHub WebContentsView → preload → main → Runtime Host → controlled local HTTP prediction endpoint. Conversation replies use the existing FakeBackend. This validates wiring and interaction, not paid-model suggestion quality.
+The retained [ordinary conversation harness](../prompt-suggestion-smoke/smoke.mjs) and [WorkHub harness](../prompt-suggestion-smoke/workhub-check.mjs) passed through real renderer → preload → main → Runtime Host → controlled HTTP prediction endpoint. Checks cover generation, Tab without sending, native Undo, Enter in the durable transcript, Esc and delayed-result draft preservation. Ordinary conversation checks also cover disabling, deduplication and exact single-line/wrapped text alignment. Replies use FakeBackend; paid-model suggestion quality and other operating systems remain unvalidated.
 
-Only the permanent WorkHub coordination identity is newly eligible. Background child sessions, plan/side sessions, non-AI-SDK sessions, pending interactions, active goals, running/queued work and incognito remain excluded. WorkHub predictions use recent visible conversation and do not revive the original task from the permanent session's distant past. Hidden question/form composers invalidate suggestions.
+![Native suggestion](../prompt-suggestion-smoke/01-offer.png)
 
-## Checks
+![Native accepted draft](../prompt-suggestion-smoke/02-accepted.png)
 
-- Full workspace build; Storybook typecheck and production build; renderer typecheck and architecture: passed.
-- Focused coordinator/UI tests: 13 passed. Smoke-runner unit tests: 15 passed.
-- Execution/model composition suite: 37 passed on standalone rerun. The existing implementation-child-patch test timed out once during a combined run, then passed alone and in the complete standalone suite.
-- Protocol tests in the combined run passed; ASF headers and whitespace checks passed.
-
-Build and open the story:
+After building desktop and dependencies:
 
 ```sh
-npm --workspace @maka/desktop run typecheck:stories
+node docs/reports/prompt-suggestion-smoke/smoke.mjs
+MAKA_SMOKE_MULTILINE=1 node docs/reports/prompt-suggestion-smoke/smoke.mjs
+node docs/reports/prompt-suggestion-smoke/workhub-check.mjs
 npm --workspace @maka/desktop run build-storybook
-python3 -m http.server 6011 --bind 127.0.0.1 --directory apps/desktop/storybook-static
-# /iframe.html?id=product-workhub--next-prompt-suggestion&viewMode=story&globals=colorScheme:light;palette:default
 ```
+
+Native harness output goes to a temporary directory and is not committed. The separate historical React 185 investigation did not reproduce the crash in 2,040 natural cases; this PR does not claim to fix that historical crash.

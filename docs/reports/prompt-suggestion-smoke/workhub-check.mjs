@@ -31,7 +31,7 @@ const multiline = process.env.MAKA_SMOKE_MULTILINE === '1';
 const suggestionText = multiline
   ? '按这个方案实现缓存接口，并补充容量限制、过期清理和并发访问的测试，最后检查边界条件与错误处理是否符合预期，并确认所有测试通过以后再整理修改说明和验证结果。'
   : '按这个方案实现，并补上测试';
-const output = resolve('docs/reports/prompt-suggestion-smoke', multiline ? 'multiline' : '.');
+const output = resolve(tmpdir(), 'maka-prompt-suggestion-evidence', multiline ? 'multiline' : '.');
 await mkdir(output, { recursive: true });
 const profile = await mkdtemp(join(tmpdir(), 'maka-prompt-smoke-'));
 await mkdir(join(profile, 'home'));

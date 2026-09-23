@@ -14,7 +14,6 @@
 /.claude export-ignore
 /.maka-shots export-ignore
 # Prompt-suggestion experiments and screenshots are review evidence, not release source.
-/docs/reports/prompt-suggestion-repro export-ignore
 /docs/reports/prompt-suggestion-smoke export-ignore
 /docs/reports/prompt-suggestion-storybook export-ignore
 /maka-proposal-zh-review.txt export-ignore
