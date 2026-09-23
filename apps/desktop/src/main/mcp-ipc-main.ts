@@ -265,7 +265,7 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): () => void {
   // `basis` is the server as the renderer last showed it, secrets redacted. A
   // server that no longer matches it was changed elsewhere (the TUI edits the
   // same file), and saving over it would silently drop that change.
-  deps.ipcMain.handle(
+  handle(
     'mcp:update',
     (_event, serverId: string, config: McpServerConfig, basis: McpServerConfig) =>
       updateServer(serverId, (current, previous) => {
