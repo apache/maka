@@ -327,10 +327,10 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 9,
-        "nonTriviaTokens": 3594
+        "nonTriviaTokens": 3590
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
-        "importDeclarations": 2,
+        "importDeclarations": 0,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
@@ -345,8 +345,8 @@
           "./shell/window-titlebar": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 2,
-        "nonTriviaTokens": 408
+        "importSpecifiers": 0,
+        "nonTriviaTokens": 122
       },
       "src/renderer/app-shell-command-actions.ts": {
         "importDeclarations": 5,
@@ -830,7 +830,7 @@
           "react": 1
         },
         "importSpecifiers": 86,
-        "nonTriviaTokens": 12682
+        "nonTriviaTokens": 12680
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
