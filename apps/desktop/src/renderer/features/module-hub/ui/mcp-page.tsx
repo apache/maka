@@ -95,10 +95,13 @@ import {
   type McpEditorErrors,
 } from '../model/mcp-editor-validation.js';
 
-type EditorState =
-  | { mode: 'manual'; draft: McpEditorDraft; editingId: string | null }
-  | { mode: 'json'; source: string }
-  | null;
+// Holds both ways of adding, so switching between them keeps what was typed.
+type EditorState = {
+  mode: 'manual' | 'json';
+  draft: McpEditorDraft;
+  source: string;
+  editingId: string | null;
+} | null;
 
 type McpMarkSource = { image: string } | { mask: string } | 'feishu';
 type McpSuggestion = { id: 'notion' | 'linear' | 'feishu' | 'mcp-docs'; url: string; mark: McpMarkSource };
@@ -199,6 +202,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     openEditor({
       mode: 'manual',
       draft: mcpDraftFromConfig(serverId, server),
+      source: '',
       editingId: serverId,
     });
   }
@@ -208,7 +212,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     const result = await controller.save(suggestion.id, server, true);
     if (!result || !mounted.current) return;
     if (result.status === 'exists') {
-      openEditor({ mode: 'manual', draft: mcpDraftFromConfig(suggestion.id, server), editingId: null });
+      openEditor({ mode: 'manual', draft: mcpDraftFromConfig(suggestion.id, server), source: '', editingId: null });
       setEditorErrors({ id: 'exists' });
       return;
     }
@@ -367,7 +371,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             role="group"
             aria-label={copy.page.actionsAria}
           >
-            <Button variant="primary" onClick={() => openEditor({ mode: 'manual', draft: { ...createEmptyMcpDraft(), kind: 'remote' }, editingId: null })} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
+            <Button variant="primary" onClick={() => openEditor({ mode: 'manual', draft: { ...createEmptyMcpDraft(), kind: 'remote' }, source: '', editingId: null })} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
             <IconButton
               variant="ghost"
               label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
@@ -619,7 +623,7 @@ function McpEditorDialog(props: {
   onSave(event: React.FormEvent): void;
   onImport(event: React.FormEvent): void;
 }) {
-  const editing = props.state.mode === 'manual' && Boolean(props.state.editingId);
+  const editing = Boolean(props.state.editingId);
   const draft = props.state.mode === 'manual' ? props.state.draft : null;
   const hasAdvancedSettings = Boolean(draft && (
     draft.kind === 'stdio'
@@ -632,14 +636,12 @@ function McpEditorDialog(props: {
   }, [hasAdvancedSettings]);
 
   const updateDraft = <K extends keyof McpEditorDraft>(key: K, value: McpEditorDraft[K]) => {
-    if (props.state.mode !== 'manual') return;
     props.onChange(
       { ...props.state, draft: { ...props.state.draft, [key]: value } },
       key,
     );
   };
   const updateOAuth = <K extends keyof McpOAuthConfig>(key: K, value: McpOAuthConfig[K]) => {
-    if (props.state.mode !== 'manual') return;
     const oauth = { ...props.state.draft.oauth, [key]: value };
     updateDraft('oauth', Object.values(oauth).some((value) => value !== undefined) ? oauth : undefined);
   };
@@ -648,9 +650,7 @@ function McpEditorDialog(props: {
       variant="ghost"
       className="maka-mcp-editor-mode"
       label={props.state.mode === 'json' ? props.copy.editor.manual : props.copy.editor.pasteJson}
-      onClick={() => props.onChange(props.state.mode === 'json'
-        ? { mode: 'manual', draft: { ...createEmptyMcpDraft(), kind: 'remote' }, editingId: null }
-        : { mode: 'json', source: '' })}
+      onClick={() => props.onChange({ ...props.state, mode: props.state.mode === 'json' ? 'manual' : 'json' })}
     />
   );
   const cancel = <Button variant="ghost" onClick={() => props.onOpenChange(false)} label={props.copy.editor.cancel} />;
@@ -675,7 +675,7 @@ function McpEditorDialog(props: {
         {props.state.mode === 'json' ? (
           <form className="maka-mcp-json-form" onSubmit={props.onImport}>
             <div className="maka-mcp-json-field">
-              <TextArea hasAutoFocus label={props.copy.editor.jsonConfig} description={props.copy.editor.jsonHelp} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} rows={14} placeholder={'{\n  "mcpServers": {\n    "my-tools": { "url": "https://example.com/mcp" }\n  }\n}'} />
+              <TextArea hasAutoFocus label={props.copy.editor.jsonConfig} description={props.copy.editor.jsonHelp} value={props.state.source} onChange={(value) => props.onChange({ ...props.state, source: value })} hasSpellCheck={false} rows={14} placeholder={'{\n  "mcpServers": {\n    "my-tools": { "url": "https://example.com/mcp" }\n  }\n}'} />
             </div>
             {/* Stays a submit button so Enter in the textarea still imports —
                 clickAction would have to replace the form's onSubmit and take

@@ -1204,6 +1204,20 @@ export const ExtensionsMcpAdd: Story = {
     if (!optionalFields || optionalFields.getClientRects().length !== 0) {
       throw new Error('Optional MCP settings must start collapsed');
     }
+    // Switching to 粘贴 JSON and back keeps what was typed on each side.
+    const body = canvasElement.ownerDocument.body;
+    const switchTo = async (label: string) =>
+      (await waitForStoryButton(body, (button) => button.textContent?.trim() === label)).click();
+    setStoryFieldValue(inputs[1]!, 'https://example.com/tools');
+    await switchTo('粘贴 JSON');
+    setStoryFieldValue(await waitForStorySelector<HTMLTextAreaElement>(body, '.maka-mcp-json-field textarea'), '{}');
+    await switchTo('手动填写');
+    const url = (await waitForStorySelector<HTMLElement>(body, '.maka-mcp-primary-fields')).querySelectorAll('input')[1];
+    if (url?.value !== 'https://example.com/tools') throw new Error('Switching modes must keep the typed URL');
+    await switchTo('粘贴 JSON');
+    const source = await waitForStorySelector<HTMLTextAreaElement>(body, '.maka-mcp-json-field textarea');
+    if (source.value !== '{}') throw new Error('Switching modes must keep the pasted JSON');
+    await switchTo('手动填写');
   },
 };
 
