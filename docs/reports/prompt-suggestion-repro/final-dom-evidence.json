@@ -1,0 +1,33 @@
+{
+  "snapshot": "[p1 \"Maka historical inline completion repro\" | space \"Maka historical inline completion repro\"(8): 1 managed, 0 untracked — p1* \"Maka historical inline completion repro\"]\nroot\n  container\n    heading\n      text \"Maka v0.1.11 patched Astryx 0.4.0\"\n    paragraph\n      text \"Real Chromium layout, no geometry mocks.\"\n    textfield \"Prompt\" [ref=9]\n      text \"Implement\"\n      text \"the next step.\"\n    text \"{ \"width\": 640, \"fontSize\": 14, \"lineHeight\": 20, \"zoom\": 1, \"rows\": 10, \"font\": \"Arial\", \"text\": \"Implement \", \"suffix\": \"the next step.\" }\"\n  container\n    button \"翻译\" [ref=10, loc=css:button[aria-label=\"翻译\"]]\n      svg_root\n    button \"朗读\" [ref=11, loc=css:button[aria-label=\"朗读\"]]\n      svg_root\n    button \"词典\" [ref=12, loc=css:button[aria-label=\"词典\"]]\n      image\n  image\n",
+  "metrics": {
+    "errors": [],
+    "commits": 0,
+    "mutations": 402,
+    "field": {
+      "x": 21,
+      "y": 100.5546875,
+      "width": 640,
+      "height": 28,
+      "top": 100.5546875,
+      "right": 661,
+      "bottom": 128.5546875,
+      "left": 21
+    },
+    "offer": {
+      "x": 94.25,
+      "y": 106.5546875,
+      "width": 84.0546875,
+      "height": 15.5,
+      "top": 106.5546875,
+      "right": 178.3046875,
+      "bottom": 122.0546875,
+      "left": 94.25
+    },
+    "scrollHeight": 28,
+    "clientHeight": 28,
+    "scrollTop": 0,
+    "offerText": "the next step.",
+    "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+  }
+}

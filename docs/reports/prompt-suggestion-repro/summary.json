@@ -1,0 +1,18 @@
+{
+  "matrix": {
+    "cases": 1800,
+    "errorCases": 0,
+    "react185Cases": 0,
+    "shown": 1420,
+    "maxMutations": 5,
+    "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+  },
+  "scrolled": {
+    "cases": 240,
+    "errorCases": 0,
+    "react185Cases": 0,
+    "shown": 131,
+    "maxMutations": 9,
+    "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+  }
+}

@@ -55,6 +55,11 @@ export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
   'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
+  readonly promptSuggestions?: {
+    generate(sessionId: string): Promise<string | undefined>;
+    readEnabled(): boolean;
+    writeEnabled(enabled: boolean): void;
+  };
   readonly sessions: {
     getExecutorState?(sessionId: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     setExecutorModelConfiguration?(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<import('../../../shared/desktop-session-projection.js').DesktopSessionUpdateResult<DesktopSessionSummary>>;

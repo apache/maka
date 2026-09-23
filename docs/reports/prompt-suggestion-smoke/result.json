@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "profile": "/var/folders/vs/7v_3rkpj3h74gtq633nrh0z80000gn/T/maka-prompt-smoke-0j5UYk",
+  "sessionId": "[\"2a6f4ab081c6a9a5102ea27bd3275cf8fa4278ed856a501a673ba0b25a7c4ac5\",\"f49302f8-8761-474c-8e33-6611da883312\"]",
+  "requests": [
+    {
+      "path": "/v1/chat/completions",
+      "suggestion": true,
+      "max_tokens": 128
+    },
+    {
+      "path": "/v1/chat/completions",
+      "suggestion": true,
+      "max_tokens": 128
+    },
+    {
+      "path": "/v1/chat/completions",
+      "suggestion": true,
+      "max_tokens": 128
+    },
+    {
+      "path": "/v1/chat/completions",
+      "suggestion": true,
+      "max_tokens": 128
+    },
+    {
+      "path": "/v1/chat/completions",
+      "suggestion": true,
+      "max_tokens": 128
+    }
+  ],
+  "errors": [],
+  "checks": [
+    "empty ghost text",
+    "Tab accepts without send",
+    "native undo",
+    "Esc dismiss",
+    "deduplicated IPC",
+    "accepted Enter reaches durable transcript",
+    "three viewport/zoom combinations",
+    "typing hides suggestion without resurrection",
+    "late response preserves new draft",
+    "disabled makes no prediction request"
+  ]
+}

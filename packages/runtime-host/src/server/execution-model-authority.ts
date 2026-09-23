@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { buildPromptSuggestionPrompt } from './prompt-suggestion.js';
 import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
@@ -388,6 +389,20 @@ export function createHostDailyReviewModel(
       }
     },
   });
+}
+
+export function createHostPromptSuggestionModel(input: HostSessionEffectModelInput) {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return async (source: import('./prompt-suggestion.js').PromptSuggestionSource, abortSignal: AbortSignal): Promise<string | undefined> => {
+    const result = await runHostAuxiliaryModelCall(authority, {
+      transportContextId: source.sessionId, telemetrySessionId: source.sessionId,
+      header: { ...source.header, thinkingLevel: 'off' },
+      callKind: 'prompt_suggestion', callId: `prompt_suggestion_${source.terminalEventId}`,
+      abortSignal,
+      buildRequest: () => ({ prompt: buildPromptSuggestionPrompt(source.messages), maxOutputTokens: 128 }),
+    });
+    return result.finishReason === 'length' ? undefined : result.text;
+  };
 }
 
 /** Creates tool-free Session title and recap calls on canonical Host model authority. */

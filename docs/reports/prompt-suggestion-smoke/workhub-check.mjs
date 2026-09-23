@@ -1,0 +1,105 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { _electron as electron, expect } from '@playwright/test';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { buildFixtureEnv } from '../../../scripts/fixture-env.mjs';
+
+const multiline = process.env.MAKA_SMOKE_MULTILINE === '1';
+const suggestionText = multiline ? '按这个方案实现缓存接口，并补充容量限制、过期清理和并发访问的测试，最后检查边界条件与错误处理是否符合预期，并确认所有测试通过以后再整理修改说明和验证结果。' : '按这个方案实现，并补上测试';
+const output = resolve('docs/reports/prompt-suggestion-smoke', multiline ? 'multiline' : '.');
+await mkdir(output, { recursive: true });
+const profile = await mkdtemp(join(tmpdir(), 'maka-prompt-smoke-'));
+await mkdir(join(profile, 'home'));
+const requests = [];
+let suggestionDelayMs = 0;
+const server = createServer(async (req, res) => {
+  let raw = ''; for await (const chunk of req) raw += chunk;
+  const body = raw ? JSON.parse(raw) : {};
+  const suggestion = JSON.stringify(body).includes('Predict the single short message');
+  requests.push({ path: req.url, suggestion, tools: body.tools, max_tokens: body.max_tokens });
+  if (suggestion && suggestionDelayMs) await new Promise((resolve) => setTimeout(resolve, suggestionDelayMs));
+  res.setHeader('content-type', 'application/json');
+  if (req.url.endsWith('/models')) return res.end(JSON.stringify({ data: [{ id: 'suggestion-test' }] }));
+  res.end(JSON.stringify({ id: 'test-completion', object: 'chat.completion', created: 1, model: 'suggestion-test',
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: suggestion ? suggestionText : 'LRU 接口设计' } }],
+    usage: { prompt_tokens: 42, completion_tokens: 12, total_tokens: 54 } }));
+});
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const capability = await resolveStorageRoot({ path: join(profile, 'workspaces/default'), kind: 'interactive' });
+const owner = await tryAcquireInteractiveRootOwner(capability);
+assert.ok(owner);
+const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+const created = await stores.connectionCatalog.create({ expectedCatalogRevision: 0, connection: {
+  slug: 'suggestion-test', name: 'Suggestion test', providerType: 'openai-compatible',
+  baseUrl: `http://127.0.0.1:${server.address().port}/v1`, enabled: true, enabledModelIds: ['suggestion-test'],
+} });
+assert.equal(created.kind, 'committed');
+const connection = created.snapshot.connections[0];
+await stores.credentialVault.set({ locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' }, expected: null, secret: 'local-test-only' });
+const ticket = await stores.operations.beginModelFetch(connection.connectionId);
+const inventory = await stores.operations.completeModelFetch(ticket.ticket, { models: [{ id: 'suggestion-test' }], source: 'fallback', fetchedAt: Date.now() });
+await stores.connectionCatalog.setDefaultTarget({ expectedCatalogRevision: inventory.snapshot.revision, target: { connectionId: connection.connectionId, modelId: 'suggestion-test' } });
+await owner.close();
+const env = buildFixtureEnv(profile, join(profile, 'home'), { showWindow: true, locale: 'zh-CN' });
+const app = await electron.launch({ args: ['.', `--user-data-dir=${profile}`], cwd: resolve('apps/desktop'), env, timeout: 30000 });
+const page = await app.firstWindow();
+await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 800), multiline ? 780 : 1180);
+const errors = [];
+page.on('pageerror', (e) => errors.push(e.message));
+try {
+  await page.waitForFunction(() => Boolean(window.maka?.sessions));
+  await page.locator('[data-maka-content-ready]').first().waitFor({ timeout: 30000 });
+  await page.evaluate(() => window.maka.settings.updateClient({ workHub: { enabled: true } }));
+  let workhub;
+  await expect.poll(() => {
+    workhub = app.context().pages().find((candidate) => new URL(candidate.url()).searchParams.get('surface') === 'workhub');
+    return Boolean(workhub);
+  }).toBe(true);
+  const input = workhub.locator('.workHubLive .maka-composer-editor [contenteditable="true"]');
+  await input.waitFor();
+  const sessionId = await workhub.evaluate(() => window.maka.workHub.resolveCoordinationSession());
+  await workhub.locator('.maka-composer-plus-menu button').first().click();
+  const toggle = workhub.getByRole('menuitemcheckbox', { name: /下一步输入建议|Next prompt suggestions/ });
+  await toggle.waitFor();
+  await toggle.click();
+  await workhub.keyboard.press('Escape');
+  await input.fill('请先设计缓存接口，下一步再实现。');
+  await input.press('Enter');
+  await expect.poll(async () => {
+    const turns = await workhub.evaluate((id) => window.maka.sessions.listTurns(id), sessionId);
+    return turns.some((turn) => turn.status === 'completed');
+  }, { timeout: 20000 }).toBe(true);
+  const result = await workhub.evaluate((id) => window.maka.sessions.generatePromptSuggestion(id), sessionId);
+  const session = await workhub.evaluate((id) => window.maka.workHub.getSession(id), sessionId);
+  const evidence = { sessionId, role: session.role, result, predictionRequests: requests.filter((r) => r.suggestion).length,
+    offerCount: await workhub.locator('.maka-composer-next-prompt').count(),
+    draft: await input.innerText(), body: (await workhub.locator('body').innerText()).slice(-3000) };
+  await writeFile(join(output, 'workhub-check.json'), JSON.stringify(evidence, null, 2));
+  await workhub.screenshot({ path: join(output, 'workhub-check.png') });
+  console.log(JSON.stringify(evidence, null, 2));
+  assert.deepEqual(result, { kind: 'none' });
+  assert.equal(evidence.predictionRequests, 0);
+} finally { await app.close(); server.close(); }

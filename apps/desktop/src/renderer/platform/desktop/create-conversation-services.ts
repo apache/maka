@@ -28,6 +28,19 @@ export function createDesktopConversationServices(
 ): ConversationServices {
   return {
     ...bridge.sessionLocal,
+    promptSuggestions: {
+      generate: async (sessionId) => {
+        const result = await bridge.sessions.generatePromptSuggestion(sessionId);
+        return result.kind === 'generated' ? result.text : undefined;
+      },
+      readEnabled: () => {
+        try { return localStorage.getItem('maka.promptSuggestions.enabled') === 'true'; }
+        catch { return false; }
+      },
+      writeEnabled: (enabled) => {
+        try { localStorage.setItem('maka.promptSuggestions.enabled', String(enabled)); } catch { /* Private storage can be unavailable. */ }
+      },
+    },
     sessions: bridge.sessions,
     runtimeHosts: {
       subscribeChanges: (handler) => bridge.runtimeHostProfiles.subscribeChanges(handler),

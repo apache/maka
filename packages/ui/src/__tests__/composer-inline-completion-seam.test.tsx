@@ -18,43 +18,19 @@
  */
 
 /**
- * Regression contract for the renderer crash reported in apache/maka#4117.
+ * Regression boundary retained after apache/maka#4117 (React error 185).
+ * Maka 0.1.11 patched Astryx 0.4.0 with a layout-measuring inline offer engine;
+ * the published upstream 0.4.0 package did not contain that engine.
  *
- * The 0.1.11 composer fed a prompt-history completion candidate to the Astryx
- * `ChatComposerInput` inline-offer engine:
+ * The old effect could alternate visibility and announcement state, but this
+ * remains a suspected mechanism, not a reproduced cause of the reported crash.
+ * A real Chromium sweep on 2026-09-22 covered 2,040 natural layout/edit cases
+ * without errors. Artificial alternating geometry caused repeated DOM updates
+ * but did not reproduce React error 185 either. See
+ * docs/reports/prompt-suggestion-repro/README.md for evidence and limitations.
  *
- *     inlineCompletion={matchCompletion(text) ?? undefined}
- *
- * That vendor engine (0.4.0) re-decided the offer after every render through a
- * dependency-less `useEffect(reconcileOffer)`, and both of its exits wrote the
- * same announcement state — `withdrawOffer()` unconditionally called
- * `setInlineCompletionAnnouncement('')` while a standing offer called it with
- * the offer text. Whether the loop terminated depended on a
- * `getBoundingClientRect` comparison (`offerFullyVisible`) agreeing between
- * the pass that inserted the offer span and the pass that re-measured it after
- * the announcement commit. When real layout disagreed — a draft at the
- * max-rows scroll cap, the offer's tail wrapping the field's bottom edge
- * inside the tolerance, zoom or font rounding — the two writes flip-flopped,
- * each flip scheduled another commit-phase update in the same nested chain,
- * and React threw error 185 ("Maximum update depth exceeded") at the
- * fiftieth. The renderer crash dialog in the report is that throw; the
- * minified stack resolves to `withdrawOffer`'s announcement dispatch called
- * from `reconcileOffer` inside `ChatComposerInput`, mounted by the composer
- * form.
- *
- * The seam is closed on two sides — the completion wiring was removed from
- * the composer (#3292), and Astryx 0.5.0 no longer ships the engine (#3755).
- * The flip-flop itself cannot be pinned by a unit harness: it needs real
- * Chromium layout to disagree between the two measurement passes, which no
- * DOM emulator performs. What every reintroduction would have to touch — and
- * what these tests therefore pin — is the seam itself:
- *
- *   1. the composer passes no `inlineCompletion*` prop to `ChatComposerInput`;
- *   2. the history hook carries no prompt-completion source to feed one.
- *
- * A safe reintroduction means a loop-proof offer engine (termination must not
- * rest on cross-pass layout agreement) plus recorded capacity to detect the
- * loop; neither exists today.
+ * Keep the removed history-to-inline-engine wiring closed. Next-prompt
+ * prediction uses an independent overlay with no layout-driven state effects.
  */
 
 import assert from 'node:assert/strict';
@@ -80,7 +56,7 @@ test('the composer passes no inlineCompletion props to ChatComposerInput', () =>
     composerSource,
     /inlineCompletion/,
     'composer.tsx feeds ChatComposerInput an inline completion again — that wiring drove the ' +
-      'layout-dependent announcement flip-flop behind the #4117 renderer crash (React error 185). ' +
+      'suspected layout-dependent announcement loop investigated after #4117 (React error 185). ' +
       'Reintroducing it needs a loop-proof offer engine and a recorded decision; see the file ' +
       'header and the removal in #3292.',
   );
@@ -92,6 +68,6 @@ test('the history hook carries no prompt-completion source', () => {
     historySource,
     /matchCompletion|matchPromptHistory|prompt-history-match/,
     'use-composer-history.ts exposes a prompt-history completion again — the only consumer that ' +
-      'matcher ever had was the inline-completion prop behind the #4117 renderer crash.',
+      'matcher ever had was the inline-completion prop investigated after #4117.',
   );
 });

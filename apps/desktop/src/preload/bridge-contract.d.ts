@@ -1316,6 +1316,7 @@ export interface MakaBridge {
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     /** Read a bounded, redacted tail from another same-Host Session. */
+    generatePromptSuggestion(sessionId: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult>;
     readSnapshot(sessionId: string, options?: { maxChars?: number }): Promise<SessionSnapshot>;
     /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
     listTurnLandmarks(

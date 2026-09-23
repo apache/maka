@@ -1,0 +1,10 @@
+{
+  "sessionId": "[\"f8a8247e3803c846114717158e0e88a2b3ae6e5164bfd84f0272b6aa06cf1495\",\"maka_workhub_coordination\"]",
+  "result": {
+    "kind": "none"
+  },
+  "predictionRequests": 0,
+  "offerCount": 0,
+  "draft": "",
+  "body": "工作\n0/0 个锚点 · 共 0 项\n全部\n进行中\n待处理\n已停止\n\n此筛选下没有工作\n\n请先设计缓存接口，下一步再实现。\n已完成\n·\n现在\n已完成 · 用时 0 秒\nFake backend received: 请先设计缓存接口，下一步再实现。\nThis proves the session stream, SQLite storage, and renderer loop are connected.\n现在\n·\nsuggestion-test\n有什么可以帮你？\n切换当前任务模型: suggestion-test\nsuggestion-test\n用量"
+}
