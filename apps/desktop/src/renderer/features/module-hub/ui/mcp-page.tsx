@@ -58,6 +58,7 @@ import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import {
   ModulePage,
+  BotBrandLogo,
   Selector,
   TextArea,
   useMountedRef,
@@ -101,10 +102,10 @@ type EditorState =
   | null;
 
 const MCP_SUGGESTIONS = [
-  { id: 'notion', url: 'https://mcp.notion.com/mcp' },
-  { id: 'linear', url: 'https://mcp.linear.app/mcp' },
-  { id: 'feishu', url: 'https://mcp.feishu.cn/mcp' },
-  { id: 'mcp-docs', url: 'https://modelcontextprotocol.io/mcp' },
+  { id: 'notion', url: 'https://mcp.notion.com/mcp', logo: new URL('../../../assets/provider-brands/notion.svg', import.meta.url).href },
+  { id: 'linear', url: 'https://mcp.linear.app/mcp', logo: new URL('../../../assets/provider-brands/linear.svg', import.meta.url).href },
+  { id: 'feishu', url: 'https://mcp.feishu.cn/mcp', logo: null },
+  { id: 'mcp-docs', url: 'https://modelcontextprotocol.io/mcp', logo: new URL('../../../assets/provider-brands/mcp.svg', import.meta.url).href },
 ] as const;
 
 export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
@@ -416,7 +417,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             <Heading level={3}>{copy.page.recommended}</Heading>
             <Divider />
             <Grid columns={{ minWidth: 320 }} gap={2}>
-              {MCP_SUGGESTIONS.map(({ id, url }) => (
+              {MCP_SUGGESTIONS.map(({ id, url, logo }) => (
                 <ClickableCard
                   key={id}
                   label={copy.page.suggestions[id].name}
@@ -425,10 +426,15 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                   isDisabled={busy !== null}
                   onClick={() => openSuggestedServer(id, url)}
                 >
-                  <VStack gap={0}>
-                    <Text type="body" weight="semibold">{copy.page.suggestions[id].name}</Text>
-                    <Text type="supporting" color="secondary">{copy.page.suggestions[id].description}</Text>
-                  </VStack>
+                  <HStack gap={3} vAlign="center">
+                    <span className="maka-mcp-recommendation-logo" aria-hidden="true">
+                      {logo ? <img src={logo} alt="" /> : <BotBrandLogo provider="feishu" width={24} height={24} aria-hidden="true" />}
+                    </span>
+                    <VStack gap={0}>
+                      <Text type="body" weight="semibold">{copy.page.suggestions[id].name}</Text>
+                      <Text type="supporting" color="secondary">{copy.page.suggestions[id].description}</Text>
+                    </VStack>
+                  </HStack>
                 </ClickableCard>
               ))}
             </Grid>

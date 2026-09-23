@@ -64,6 +64,25 @@
   padding: 0;
 }
 
+.maka-mcp-recommendation-logo {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  background: #fff;
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.maka-mcp-recommendation-logo > img,
+.maka-mcp-recommendation-logo > svg {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
 .maka-mcp-manual-form,
 .maka-mcp-json-form {
   min-height: 0;
