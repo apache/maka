@@ -896,8 +896,68 @@ index b56c9d5..463f665 100644
        id: `${id}-children`,
        role: "group",
        "aria-labelledby": `${id}-label`,
+diff --git a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
+index ea27c3a..b99db05 100644
+--- a/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
++++ b/node_modules/@astryxdesign/core/dist/Spinner/Spinner.js
+@@ -173,7 +173,8 @@ function pinRingsToTimelineOrigin() {
+   flushScheduled = false;
+   const animations = [];
+   for (const svg of pendingRings) {
+-    animations.push(...svg.getAnimations());
++    // The rotation runs on the ring's host span, not on the svg itself.
++    animations.push(...(svg.parentElement ?? svg).getAnimations());
+   }
+   pendingRings.clear();
+   for (const animation of animations) {
+@@ -200,8 +201,19 @@ function syncRotationPhase(svg) {
+     flushScheduled = true;
+     requestAnimationFrame(pinRingsToTimelineOrigin);
+   }
++  // Moving a mounted spinner (a list re-sorting its rows) restarts its CSS
++  // animation without running this ref again; pin the restarted one too.
++  const host = svg.parentElement ?? svg;
++  const repin = event => {
++    if (event.target !== host) return;
++    for (const animation of host.getAnimations()) {
++      animation.startTime = 0;
++    }
++  };
++  host.addEventListener('animationstart', repin);
+   return () => {
+     pendingRings.delete(svg);
++    host.removeEventListener('animationstart', repin);
+   };
+ }
+ 
+@@ -231,6 +243,16 @@ const styles = {
+     "--_spinner-ring-stroke": "x10qssua",
+     "--_spinner-box-size": "x69vvuq",
+     kmuXW: "x2lah0s",
++    // Chromium animates an <svg> element's transform on the main thread, so
++    // the rotation lives on this HTML box, where the compositor runs it. It
++    // steps 16 times per turn: at the default 525ms that is ~30 frames a
++    // second instead of one per display refresh.
++    willChange: "x1so62im",
++    backfaceVisibility: "xlp1x4z",
++    animationDuration: "x14qxm4i xnh0sag",
++    animationIterationCount: "xa4qsjk",
++    animationName: "x1ka1v4i",
++    animationTimingFunction: "x-spinner-steps",
+     $$css: true
+   },
+   circle: {
+@@ -429,7 +451,7 @@ export function Spinner({
+       height: frameSize,
+       "aria-hidden": "true",
+       ...{
+-        className: "xlp1x4z x1lliihq x6v0vjy x7yyq19 x1so62im x1rea2x4 x14qxm4i xnh0sag xa4qsjk x1ka1v4i x1esw782"
++        className: "x1lliihq x6v0vjy x7yyq19 x1rea2x4"
+       },
+       children: [/*#__PURE__*/_jsx("circle", {
+         cx: "50%",
 diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
-index 465aaab..62e542c 100644
+index 465aaab..2499c49 100644
 --- a/node_modules/@astryxdesign/core/dist/astryx.css
 +++ b/node_modules/@astryxdesign/core/dist/astryx.css
 @@ -578,7 +578,7 @@
@@ -909,7 +969,15 @@ index 465aaab..62e542c 100644
    .x1dordxg:focus-within:not(#\#):not(#\#){overflow:visible}
    .xb0m1lw:has(> div > .astryx-layout-content):not(#\#):not(#\#){margin-inline:0}
    .x16s19ga:has(:focus-visible):not(#\#):not(#\#){outline:var(--focus-outline-width) var(--focus-outline-style) var(--focus-outline-color)}
-@@ -1365,7 +1365,7 @@
+@@ -664,6 +664,7 @@
+   .x4hg4is:not(#\#):not(#\#):not(#\#){animation-timing-function:ease-in-out}
+   .x1esw782:not(#\#):not(#\#):not(#\#){animation-timing-function:linear}
+   .x193epu2:not(#\#):not(#\#):not(#\#){animation-timing-function:steps(10,end)}
++  .x-spinner-steps:not(#\#):not(#\#):not(#\#){animation-timing-function:steps(16)}
+   .x128ha8g:not(#\#):not(#\#):not(#\#){animation-timing-function:var(--ease-standard)}
+   .xjyslct:not(#\#):not(#\#):not(#\#){appearance:none}
+   .x1plog1:not(#\#):not(#\#):not(#\#){aspect-ratio:1}
+@@ -1365,7 +1366,7 @@
    .x7s97pk:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:2px}
    .x13aywxo:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--button-focus-offset)}
    .x1vwwbsn:focus-visible:not(#\#):not(#\#):not(#\#){outline-offset:var(--focus-outline-offset)}
@@ -918,7 +986,7 @@ index 465aaab..62e542c 100644
    .x1jhp3zv:focus-visible:not(#\#):not(#\#):not(#\#){outline-style:var(--focus-outline-style)}
    .x1vidyx5:focus-visible:not(#\#):not(#\#):not(#\#){outline-width:var(--focus-outline-width)}
    .x1n6uwha:is([dir="rtl"] *):not(#\#):not(#\#):not(#\#){padding-inline-end:max(var(--spacing-4),env(safe-area-inset-left,0px))}
-@@ -1844,8 +1844,8 @@
+@@ -1844,8 +1845,8 @@
    .x5lhr3w:not(#\#):not(#\#):not(#\#):not(#\#){width:var(--x-width)}
    .x1wp2rvj.x1wp2rvj:where(.x139im0d:last-child *):not(#\#):not(#\#):not(#\#):not(#\#){border-bottom-width:0}
    .x132qfvm:focus-within:not(#\#):not(#\#):not(#\#):not(#\#){height:auto}
@@ -1984,6 +2052,91 @@ index 6c581d4..d3a9857 100644
        {hasChildren && !isCollapsed && (
          <div
            id={`${id}-children`}
+diff --git a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
+index e6a5837..430de71 100644
+--- a/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
++++ b/node_modules/@astryxdesign/core/src/Spinner/Spinner.tsx
+@@ -167,7 +167,8 @@ function pinRingsToTimelineOrigin(): void {
+   flushScheduled = false;
+   const animations: Animation[] = [];
+   for (const svg of pendingRings) {
+-    animations.push(...svg.getAnimations());
++    // The rotation runs on the ring's host span, not on the svg itself.
++    animations.push(...(svg.parentElement ?? svg).getAnimations());
+   }
+   pendingRings.clear();
+   for (const animation of animations) {
+@@ -196,8 +197,19 @@ function syncRotationPhase(
+     flushScheduled = true;
+     requestAnimationFrame(pinRingsToTimelineOrigin);
+   }
++  // Moving a mounted spinner (a list re-sorting its rows) restarts its CSS
++  // animation without running this ref again; pin the restarted one too.
++  const host = svg.parentElement ?? svg;
++  const repin = (event: AnimationEvent) => {
++    if (event.target !== host) return;
++    for (const animation of host.getAnimations()) {
++      animation.startTime = 0;
++    }
++  };
++  host.addEventListener('animationstart', repin);
+   return () => {
+     pendingRings.delete(svg);
++    host.removeEventListener('animationstart', repin);
+   };
+ }
+ 
+@@ -259,9 +271,24 @@ const styles = stylex.create({
+     // moment it sets `min-width: 0` on its items. A spinner that does not fit
+     // overflows its host visibly instead of being silently sliced.
+     flexShrink: 0,
++    // Chromium animates an <svg> element's transform on the main thread, so
++    // the rotation lives on this HTML box, where the compositor runs it. It
++    // steps 16 times per turn: at the default 525ms that is ~30 frames a
++    // second instead of one per display refresh.
++    backfaceVisibility: 'hidden',
++    willChange: 'transform',
++    // Slow the rotation dramatically under reduced-motion rather than freezing
++    // it (a frozen spinner reads as broken), matching ProgressBar's approach.
++    // The role="status" + "Loading" label still convey busy state (obs-6).
++    animationDuration: {
++      default: durationVars['--duration-slow-min'],
++      '@media (prefers-reduced-motion: reduce)': '3s',
++    },
++    animationIterationCount: 'infinite',
++    animationName: rotation,
++    animationTimingFunction: 'steps(16)',
+   },
+   ring: {
+-    backfaceVisibility: 'hidden',
+     display: 'block',
+     // The frame is the box, read from the same composed var the span is sized
+     // from — not from the size constant, which a theme cannot reach, and not
+@@ -271,7 +298,6 @@ const styles = stylex.create({
+     // One expression, one source of truth, resolves in any layout.
+     width: `var(${BOX_SIZE})`,
+     height: `var(${BOX_SIZE})`,
+-    willChange: 'transform',
+     // The svg is sized in CSS (100% of the span) rather than from the size
+     // constant, so one user unit is one CSS pixel AND the frame follows a
+     // themed diameter: the span's box is `diameter + 2 x stroke`, both public
+@@ -280,16 +306,6 @@ const styles = stylex.create({
+     // diameter — an overflowing grid item aligns to start rather than centre,
+     // which put the ring 1.5-3.3px off across the four sizes.
+     overflow: 'visible',
+-    // Slow the rotation dramatically under reduced-motion rather than freezing
+-    // it (a frozen spinner reads as broken), matching ProgressBar's approach.
+-    // The role="status" + "Loading" label still convey busy state (obs-6).
+-    animationDuration: {
+-      default: durationVars['--duration-slow-min'],
+-      '@media (prefers-reduced-motion: reduce)': '3s',
+-    },
+-    animationIterationCount: 'infinite',
+-    animationName: rotation,
+-    animationTimingFunction: 'linear',
+   },
+   circle: {
+     fill: 'none',
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 index 55b441e..7aa4174 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
