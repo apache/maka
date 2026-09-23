@@ -1466,7 +1466,7 @@ export function buildComputerUseTools(deps: {
       // dispatch implementations. Neither is a thing the model selects, so
       // there was no behaviour it could change on reading it. What it can act
       // on is which action to reach for.
-      'Everything here runs without bringing the target application to the front. ' +
+      'Actions default to background delivery without bringing the target application to the front. ' +
       'Prefer click_element or set_value using an element_id from the immediately preceding observation. ' +
       'An observation is a header line of observation_id/app/pid/window_id followed by one line per element, ' +
       'indented to show containment: "<element_id> <role> \\"<label>\\" =\\"<value>\\" [<state>] @x,y wxh". ' +
