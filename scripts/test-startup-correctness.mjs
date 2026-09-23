@@ -35,76 +35,75 @@ const output = resolve(root, values.output);
 await mkdir(output, { recursive: true });
 // Reuse the tests that own these contracts. New mixed-state checks complement
 // them; copying their implementation into a benchmark would weaken the oracle.
-const tests = (pkg, names) => names.map((name) => `packages/${pkg}/dist/__tests__/${name}.test.js`);
 const groups = [
   {
     id: 'storage-authority',
-    files: tests('storage', [
-      'sqlite-runtime-store',
-      'sqlite-recovery-concurrency',
-      'recovery-persistence-authority',
-    ]),
+    files: [
+      'packages/storage/dist/__tests__/sqlite-runtime-store.test.js',
+      'packages/storage/dist/__tests__/sqlite-recovery-concurrency.test.js',
+      'packages/storage/dist/__tests__/recovery-persistence-authority.test.js',
+    ],
   },
   {
     id: 'tool-execution',
-    files: tests('runtime', [
-      'tool-runtime-durable-boundary',
-      'tool-runtime-sqlite-boundary',
-      'tool-runtime-progress',
-      'tool-runtime-settlement',
-      'tool-runtime-form-interaction',
-      'tool-runtime-sandbox-boundary',
-      'tool-runtime-argument-ownership',
-      'tool-runtime-turn-close-outcome',
-    ]),
+    files: [
+      'packages/runtime/dist/__tests__/tool-runtime-durable-boundary.test.js',
+      'packages/runtime/dist/__tests__/tool-runtime-sqlite-boundary.test.js',
+      'packages/runtime/dist/__tests__/tool-runtime-progress.test.js',
+      'packages/runtime/dist/__tests__/tool-runtime-settlement.test.js',
+      'packages/runtime/dist/__tests__/tool-runtime-form-interaction.test.js',
+      'packages/runtime/dist/__tests__/tool-runtime-sandbox-boundary.test.js',
+      'packages/runtime/dist/__tests__/tool-runtime-argument-ownership.test.js',
+      'packages/runtime/dist/__tests__/tool-runtime-turn-close-outcome.test.js',
+    ],
   },
   {
     id: 'steering-and-recovery',
-    files: tests('runtime', [
-      'agent-run-steering-recovery',
-      'agent-run-recovery',
-      'recovery-authority-equivalence',
-      'recovery-resolver',
-      'sandbox-boundary-restart-recovery',
-    ]),
+    files: [
+      'packages/runtime/dist/__tests__/agent-run-steering-recovery.test.js',
+      'packages/runtime/dist/__tests__/agent-run-recovery.test.js',
+      'packages/runtime/dist/__tests__/recovery-authority-equivalence.test.js',
+      'packages/runtime/dist/__tests__/recovery-resolver.test.js',
+      'packages/runtime/dist/__tests__/sandbox-boundary-restart-recovery.test.js',
+    ],
   },
   {
     id: 'host-process-and-queue',
-    files: tests('runtime-host', [
-      'startup-state-matrix',
-      'root-turn-coordinator',
-      'message-coordinator',
-      'execution-host-recovery',
-      'execution-host-message',
-      'execution-host-queue',
-      'execution-host-continuation',
-      'client-capability-recovery',
-      'interaction-coordinator',
-    ]),
+    files: [
+      'packages/runtime-host/dist/__tests__/startup-state-matrix.test.js',
+      'packages/runtime-host/dist/__tests__/root-turn-coordinator.test.js',
+      'packages/runtime-host/dist/__tests__/message-coordinator.test.js',
+      'packages/runtime-host/dist/__tests__/execution-host-recovery.test.js',
+      'packages/runtime-host/dist/__tests__/execution-host-message.test.js',
+      'packages/runtime-host/dist/__tests__/execution-host-queue.test.js',
+      'packages/runtime-host/dist/__tests__/execution-host-continuation.test.js',
+      'packages/runtime-host/dist/__tests__/client-capability-recovery.test.js',
+      'packages/runtime-host/dist/__tests__/interaction-coordinator.test.js',
+    ],
   },
   {
     id: 'background-authorities',
-    files: tests('runtime-host', [
-      'scheduled-task-coordinator-recovery',
-      'goal-coordinator',
-      'agent-graph-coordinator',
-      'workhub-assignment-crash-recovery',
-    ]),
+    files: [
+      'packages/runtime-host/dist/__tests__/scheduled-task-coordinator-recovery.test.js',
+      'packages/runtime-host/dist/__tests__/goal-coordinator.test.js',
+      'packages/runtime-host/dist/__tests__/agent-graph-coordinator.test.js',
+      'packages/runtime-host/dist/__tests__/workhub-assignment-crash-recovery.test.js',
+    ],
   },
   {
     id: 'desktop-readiness',
     files: [
-      'runtime-host-desktop-manager',
-      'bootstrap-invoke-preload',
-      'use-shell-connections',
-      'runtime-host-memory-ipc-main',
-      'runtime-host-new-task-preload',
-      'message-queue-ui-state',
-    ].map((name) => `apps/desktop/dist/main/__tests__/${name}.test.js`),
+      'apps/desktop/dist/main/__tests__/runtime-host-desktop-manager.test.js',
+      'apps/desktop/dist/main/__tests__/bootstrap-invoke-preload.test.js',
+      'apps/desktop/dist/main/__tests__/use-shell-connections.test.js',
+      'apps/desktop/dist/main/__tests__/runtime-host-memory-ipc-main.test.js',
+      'apps/desktop/dist/main/__tests__/runtime-host-new-task-preload.test.js',
+      'apps/desktop/dist/main/__tests__/message-queue-ui-state.test.js',
+    ],
   },
   {
     id: 'mixed-state-100k',
-    files: tests('runtime-host', ['startup-state-matrix']),
+    files: ['packages/runtime-host/dist/__tests__/startup-state-matrix.test.js'],
     env: { MAKA_STARTUP_MATRIX_HISTORY_EVENTS: '100000' },
   },
 ];
