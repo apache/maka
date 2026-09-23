@@ -1262,6 +1262,7 @@ function deps(
       workspace: { kind: 'host_path', path: '/workspace' },
     }),
     resolveSessionCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
+    resolveExternalSessionImportWorkspace: async () => ({ kind: 'host_path', path: '/workspace' }),
     emitSessionsChanged() {},
     completeDesktopInteractionTurn() {},
     createSessionCopyCleanup: () => ({

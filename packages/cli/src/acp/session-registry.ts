@@ -38,6 +38,7 @@ import {
   type StopReason,
 } from '@agentclientprotocol/sdk';
 import type { SessionEvent } from '@maka/core/events';
+import type { McpConfigFile } from '@maka/core/mcp';
 import { isRuntimeHostTerminalTurn } from '@maka/runtime-host/adapter';
 import {
   readRuntimeHostConnectionCatalog,
@@ -72,6 +73,7 @@ import {
 } from './session-configuration.js';
 import { AcpSessionEventMapper } from './session-event-mapper.js';
 import { mapAcpPromptContent, publishAcpPromptAttachments } from './prompt-content.js';
+import { AcpSessionMcp, createAcpMcpConfig, type AcpMcpConnection } from './session-mcp.js';
 import { AcpSessionInteractions, type AcpInteractionClient } from './session-interactions.js';
 
 const ACP_SESSION_CURSOR_MAX_BYTES = 8 * 1024;
@@ -95,9 +97,14 @@ type AcpSessionRegistryLifecycleOperation =
 
 export interface AcpSessionRegistryConnection
   extends Pick<
-    RuntimeHostReconnectingConnection,
-    'reconnecting' | 'request' | 'openSessionSubscription' | 'openSessionSubscriptionOnce' | 'close'
-  > {}
+      RuntimeHostReconnectingConnection,
+      | 'reconnecting'
+      | 'request'
+      | 'openSessionSubscription'
+      | 'openSessionSubscriptionOnce'
+      | 'close'
+    >,
+    AcpMcpConnection {}
 
 export interface AcpPromptContext {
   readonly signal: AbortSignal;
@@ -147,6 +154,8 @@ export class AcpSessionRegistry {
   readonly #newTurnId: () => string;
   readonly #inFlightOperations = new Set<Promise<unknown>>();
   readonly #ownedSessionIds = new Set<string>();
+  readonly #mcps = new Map<string, AcpSessionMcp>();
+  readonly #creationAbort = new AbortController();
   readonly #attachmentInteractions = new Map<string, AcpSessionInteractions>();
   readonly #attachments = new Map<string, Promise<RuntimeHostSessionChannel>>();
   readonly #attachmentOpenControllers = new Map<string, AbortController>();
@@ -167,10 +176,11 @@ export class AcpSessionRegistry {
     this.#newTurnId = options.newTurnId ?? randomUUID;
   }
 
-  async create(params: NewSessionRequest): Promise<NewSessionResponse> {
+  async create(params: NewSessionRequest, signal?: AbortSignal): Promise<NewSessionResponse> {
     this.#assertOpen('session.create');
     validateNewSessionParams(params);
-    return this.#track(this.#create(params));
+    const mcpConfig = createAcpMcpConfig(params);
+    return this.#track(this.#create(params, mcpConfig, signal));
   }
 
   async list(params: ListSessionsRequest): Promise<ListSessionsResponse> {
@@ -249,6 +259,7 @@ export class AcpSessionRegistry {
   dispose(): Promise<void> {
     this.#closing = true;
     this.#connectAbortController?.abort();
+    this.#creationAbort.abort();
     this.#disposeTask ??= this.#dispose();
     return this.#disposeTask;
   }
@@ -332,6 +343,8 @@ export class AcpSessionRegistry {
       }
       if (active.cancelled) return { stopReason: await this.#cancelledStopReason(active) };
 
+      await this.#mcps.get(params.sessionId)?.ready(active.projectionAbort.signal);
+      if (active.cancelled) return { stopReason: await this.#cancelledStopReason(active) };
       active.transcript = attachment.trackPromptTranscript(turnId);
       const observation = this.#consumePromptEvents(active, attachment.eventsForTurn(turnId));
       // Mark the observer as handled immediately: turn.start may still be in flight
@@ -724,8 +737,8 @@ export class AcpSessionRegistry {
             (active) => active.turnId === pending.turnId && active.dispatchStarted,
           )
         ) {
-          // Idle attachments may observe a Turn started by another client. Do not
-          // present its interaction through this ACP connection's client.
+          // An idle attachment can observe another client's Turn; it does not
+          // transfer that Turn's interaction authority to this ACP client.
           return;
         }
         void interactions.pending(pending);
@@ -839,6 +852,13 @@ export class AcpSessionRegistry {
         closeError = error;
       }
     }
+    const mcp = this.#mcps.get(sessionId);
+    this.#mcps.delete(sessionId);
+    try {
+      await mcp?.close();
+    } catch (error) {
+      closeError ??= error;
+    }
     await delivery;
     const failedCancellation = cancellation.find(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
@@ -886,17 +906,48 @@ export class AcpSessionRegistry {
     if (!this.#ownedSessionIds.has(sessionId)) throw unknownSessionError();
   }
 
-  async #create(params: NewSessionRequest): Promise<NewSessionResponse> {
+  async #create(
+    params: NewSessionRequest,
+    mcpConfig: McpConfigFile,
+    signal?: AbortSignal,
+  ): Promise<NewSessionResponse> {
+    const lifetime = signal
+      ? AbortSignal.any([signal, this.#creationAbort.signal])
+      : this.#creationAbort.signal;
+    lifetime.throwIfAborted();
     const connection = await this.#getConnection('session.create');
     const sessionId = this.#newSessionId();
+    let mcp: AcpSessionMcp | undefined;
+    if (params.mcpServers.length > 0) {
+      mcp = new AcpSessionMcp(sessionId, mcpConfig, connection);
+      this.#mcps.set(sessionId, mcp);
+    }
     let result;
+    let dispatched = false;
     try {
+      await mcp?.prepare(lifetime);
+      lifetime.throwIfAborted();
+      this.#assertOpen('session.create');
+      dispatched = true;
       result = await connection.request('session.create', {
         sessionId,
         workspace: { kind: 'host_path', path: params.cwd },
         modelTarget: { kind: 'default' },
       });
     } catch (error) {
+      const outcomeUnknown =
+        dispatched &&
+        error instanceof RuntimeHostRequestInterruptedError &&
+        error.dispatch === 'dispatched';
+      if (outcomeUnknown && !this.#closing) {
+        // The error returns this ID. Keep its connection-local reservation usable
+        // without guessing whether Host committed or resending Session creation.
+        this.#ownedSessionIds.add(sessionId);
+      } else {
+        this.#mcps.delete(sessionId);
+        await mcp?.close().catch(() => undefined);
+      }
+      if (error instanceof RequestError) throw error;
       throw requestErrorFromRuntimeHost(error, 'session.create', { sessionId });
     }
     // Session creation has committed. Optional presentation failures must not
@@ -1085,6 +1136,9 @@ export class AcpSessionRegistry {
       }
     }
     await Promise.allSettled(cancellations);
+    const mcps = [...this.#mcps.values()];
+    this.#mcps.clear();
+    await Promise.allSettled(mcps.map((mcp) => mcp.close()));
     await Promise.allSettled([this.#closeOwnedConnection()]);
     await Promise.allSettled([
       ...this.#inFlightOperations,
@@ -1182,12 +1236,6 @@ function registryClosedError(operation: AcpSessionRegistryLifecycleOperation): R
 
 function validateNewSessionParams(params: NewSessionRequest): void {
   assertBoundedAbsoluteCwd(params.cwd);
-  if (params.mcpServers.length > 0) {
-    throw RequestError.invalidParams(
-      { field: 'mcpServers', reason: 'unsupported' },
-      'MCP servers are not supported by this ACP adapter yet',
-    );
-  }
   if ((params.additionalDirectories?.length ?? 0) > 0) {
     throw RequestError.invalidParams(
       { field: 'additionalDirectories', reason: 'unsupported' },

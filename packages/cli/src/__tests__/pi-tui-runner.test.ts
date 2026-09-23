@@ -96,7 +96,6 @@ import { EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS } from '../pi-transcript.js';
 import type { TuiMcpAction, TuiMcpManagement } from '../tui-mcp-control.js';
 import {
   autocompleteSuggestionLines,
-  assertBottomPickerPlacement,
   FakeTerminal,
   findInputSurfaceRows,
   latestPlainLineContaining,
@@ -2815,14 +2814,16 @@ Slug openai-work<cursor>
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('Choose an approach'),
     );
-    assertBottomPickerPlacement(
-      terminal,
-      'Choose an approach',
-      'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
-    );
     // The preset options and the free-text "Other" row are on screen together —
     // the option list is no longer swapped out for a separate text overlay.
     const firstScreen = plainTerminalOutput(terminal.screenOutput());
+    const firstLines = firstScreen.split(/\r?\n/);
+    const questionIndex = firstLines.findIndex((line) => line.includes('Choose an approach'));
+    const statusIndex = firstLines.findIndex((line) =>
+      line.includes('Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo'),
+    );
+    assert.ok(questionIndex >= 0 && questionIndex < statusIndex);
+    assert.equal(statusIndex, terminal.rows - 1);
     assert.ok(firstScreen.includes('Extend'));
     assert.ok(firstScreen.includes('Separate'));
     assert.ok(firstScreen.includes('Other: type your answer'));
@@ -2855,7 +2856,51 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('a question overlay opened on a short terminal keeps its input row after the terminal grows (#4610)', async () => {
+  test('keeps the transcript tail visible above a long pending question across resizes', async () => {
+    const terminal = new FakeTerminal(80, 24);
+    const driver = new TranscriptThenQuestionDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Choose an approach'),
+    );
+    let screen = plainTerminalOutput(terminal.screenOutput());
+    assert.ok(
+      screen.includes('MODEL-OUTPUT-19'),
+      'the latest transcript output must remain visible above the question prompt',
+    );
+    for (const rows of [12, 18, 24]) {
+      const writesBeforeResize = terminal.writes.length;
+      terminal.resize(60, rows);
+      await waitFor(
+        () => terminal.writes.length > writesBeforeResize,
+        'the resized question frame',
+      );
+      screen = plainTerminalOutput(terminal.screenOutput());
+      assert.ok(screen.includes('MODEL-OUTPUT-19'), `transcript tail at ${rows} rows:\n${screen}`);
+      assert.ok(screen.includes('Other: type your answer'), `answer field at ${rows} rows`);
+      for (const label of ['Extend', 'Separate', 'Other']) assert.ok(screen.includes(label));
+    }
+
+    terminal.input('\r');
+    await waitFor(() => driver.responses.length === 1);
+    assert.deepEqual(driver.responses, [{ requestId: 'question-1', answers: ['Extend'] }]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a question prompt opened on a short terminal keeps its input row after the terminal grows (#4610)', async () => {
     const terminal = new FakeTerminal(60, 12);
     const driver = new LongOptionsQuestionDriver();
     const run = runMakaPiTui({
@@ -2871,7 +2916,7 @@ Slug openai-work<cursor>
     terminal.input('choose');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Pick a strategy'));
-    // Over the small budget the overlay self-clamps: the free-text input row
+    // Over the small budget the prompt self-clamps: the free-text input row
     // and divider survive and the option tails are elided.
     let screen = plainTerminalOutput(terminal.screenOutput());
     assert.ok(screen.includes('方案甲'), 'option labels stay visible when clamped');
@@ -2895,7 +2940,7 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('Ctrl-C stops a turn while a user-question overlay is open', async () => {
+  test('Ctrl-C stops a turn while a user-question prompt is open', async () => {
     const terminal = new FakeTerminal();
     const driver = new UserQuestionPromptDriver();
     const run = runMakaPiTui({
@@ -11410,6 +11455,61 @@ class ToolOutputDriver extends FakeSessionDriver {
   }
   getSessionId(): string {
     return 'session-1';
+  }
+}
+
+class TranscriptThenQuestionDriver extends ToolOutputDriver {
+  readonly responses: UserQuestionResponse[] = [];
+  private release: (() => void) | undefined;
+
+  override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'text_delta',
+      id: 'event-text',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'message-1',
+      text: Array.from({ length: 20 }, (_, index) => `MODEL-OUTPUT-${index}`).join('\n'),
+    };
+    yield {
+      type: 'user_question_request',
+      id: 'event-question',
+      turnId: 'turn-1',
+      ts: 2,
+      requestId: 'question-1',
+      toolUseId: 'tool-question',
+      questions: [
+        {
+          question: 'Choose an approach',
+          options: [
+            {
+              label: 'Extend',
+              description: 'Keep the transcript readable while waiting '.repeat(30),
+            },
+            {
+              label: 'Separate',
+              description: 'Move the prompt into a separate surface '.repeat(30),
+            },
+            { label: 'Other', description: 'Use another interaction layout '.repeat(30) },
+          ],
+        },
+      ],
+    };
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+    yield {
+      type: 'complete',
+      id: 'event-complete',
+      turnId: 'turn-1',
+      ts: 3,
+      stopReason: 'end_turn',
+    };
+  }
+
+  async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
+    this.responses.push(response);
+    this.release?.();
   }
 }
 

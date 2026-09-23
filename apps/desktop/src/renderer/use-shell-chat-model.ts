@@ -28,6 +28,7 @@ import type { SessionSummary } from '@maka/core/session';
 import type { SettingsSection } from '@maka/core/settings';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { MakaClientExecutorTarget } from '@maka/ui';
 import {
   chatModelChoiceLabel,
   composerModelSupportsVision,
@@ -44,6 +45,14 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { useNewTaskChoice } from './use-new-task-choice.js';
 
 export type { NewChatModel } from './shell-chat-model-selection.js';
+export type NewChatExecutionTarget = NewChatModel | { executorId: string; model: string };
+
+export function resolveNewChatExecutionThinkingLevel(
+  executorTarget: MakaClientExecutorTarget | undefined,
+  nativeThinkingLevel: ThinkingLevel | undefined,
+): ThinkingLevel | undefined {
+  return executorTarget?.thinkingLevel ?? nativeThinkingLevel;
+}
 
 export type SessionHealthNoticeView = {
   tone: 'info' | 'warning' | 'destructive';
@@ -83,6 +92,7 @@ export function useShellChatModel(options: {
   openSettingsSection: (section: SettingsSection) => void;
   openModelPicker(): void;
   refreshModelChoices(): void | Promise<void>;
+  setSessionExecutor?(sessionId: string, target: MakaClientExecutorTarget): Promise<boolean>;
 }): {
   chatModelChoices: ChatModelChoice[];
   activeConnection: IdentifiedLlmConnection | undefined;
@@ -92,15 +102,20 @@ export function useShellChatModel(options: {
   activeThinkingLevels: readonly ThinkingLevel[];
   activeThinkingLevel: ThinkingLevel | undefined;
   newChatModel: NewChatModel | undefined;
+  newChatExecutionTarget: NewChatExecutionTarget | undefined;
   newChatModelLabel: string | undefined;
+  newChatProviderType: IdentifiedLlmConnection['providerType'] | undefined;
   newChatThinkingLevels: readonly ThinkingLevel[];
   newChatThinkingLevel: ThinkingLevel | undefined;
+  newChatExecutionThinkingLevel: ThinkingLevel | undefined;
   /** Raw draft intent; unlike the display value above, undefined stays untouched. */
   pendingNewChatThinkingLevel: ThinkingLevel | null | undefined;
   composerSupportsVision: boolean | undefined;
   pendingNewChatModel: NewChatModelCandidate | null;
   setPendingNewChatModel: (next: NewChatModelCandidate | null) => void;
   setPendingNewChatThinkingLevel: (next: ThinkingLevel | null) => void;
+  executorTarget: MakaClientExecutorTarget | undefined;
+  onExecutorTargetChange: (target: MakaClientExecutorTarget) => Promise<void>;
   sessionHealthNotice: SessionHealthNoticeView | undefined;
 } {
   const {
@@ -115,11 +130,16 @@ export function useShellChatModel(options: {
     openModelPicker,
   } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
-  const [pendingNewChatModelChoice, setPendingNewChatModelChoice] = useNewTaskChoice<
-    NewChatModelCandidate | null
-  >(
-    options.newTaskKey,
-  );
+  const [pendingExecutionChoice, setPendingExecutionChoice] = useNewTaskChoice<
+    NewChatModelCandidate | MakaClientExecutorTarget | null
+  >(options.newTaskKey);
+  const pendingExecutorTarget =
+    pendingExecutionChoice && 'executorId' in pendingExecutionChoice
+      ? pendingExecutionChoice
+      : undefined;
+  const pendingNewChatModelChoice = pendingExecutorTarget
+    ? null
+    : (pendingExecutionChoice as NewChatModelCandidate | null | undefined);
   const pendingNewChatModel = pendingNewChatModelChoice !== undefined
     ? pendingNewChatModelChoice
     : options.usePersistedComposerDefaults
@@ -156,9 +176,16 @@ export function useShellChatModel(options: {
       options.newTaskKey,
     );
   const setPendingNewChatModel = (next: NewChatModelCandidate | null) => {
-    setPendingNewChatModelChoice(next);
+    setPendingExecutionChoice(next);
     clearPendingNewChatThinkingLevel();
   };
+  const executorTarget = activeSession?.executorId
+    ? {
+        executorId: activeSession.executorId,
+        ...(activeSession.model === activeSession.executorId ? {} : { model: activeSession.model }),
+        ...(activeSession.thinkingLevel ? { thinkingLevel: activeSession.thinkingLevel } : {}),
+      }
+    : (pendingExecutorTarget ?? undefined);
   // A pick only stays in effect while it is still an offered choice. If the user
   // later disables/removes that connection or model, fall through to another
   // offered candidate so the home chip never shows — nor sends — a stale model.
@@ -318,14 +345,34 @@ export function useShellChatModel(options: {
     activeThinkingLevels,
     activeThinkingLevel,
     newChatModel,
+    newChatExecutionTarget:
+      pendingExecutorTarget?.model
+        ? { executorId: pendingExecutorTarget.executorId, model: pendingExecutorTarget.model }
+        : newChatModel,
     newChatModelLabel,
+    newChatProviderType: connections.find(
+      (connection) => connection.slug === newChatModel?.llmConnectionSlug,
+    )?.providerType,
     newChatThinkingLevels,
     newChatThinkingLevel,
     pendingNewChatThinkingLevel,
+    newChatExecutionThinkingLevel: resolveNewChatExecutionThinkingLevel(
+      pendingExecutorTarget,
+      newChatThinkingLevel,
+    ),
     composerSupportsVision,
     pendingNewChatModel,
     setPendingNewChatModel,
     setPendingNewChatThinkingLevel,
+    executorTarget,
+    onExecutorTargetChange: async (target) => {
+      if (activeSession) {
+        await options.setSessionExecutor?.(activeSession.id, target);
+      } else {
+        setPendingExecutionChoice(target);
+        setPendingNewChatThinkingLevel(target.thinkingLevel ?? null);
+      }
+    },
     sessionHealthNotice,
   };
 }

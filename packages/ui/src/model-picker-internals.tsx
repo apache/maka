@@ -25,10 +25,8 @@ import {
   type SelectorSection,
 } from '@astryxdesign/core/Selector';
 import type { ProviderType } from '@maka/core/llm-connections';
-import type { UiLocale } from '@maka/core/ui-locale';
 import {
   type ModelMenuGroup,
-  modelChoiceDescription,
 } from './chat-model-helpers.js';
 
 export interface ModelPickerLeadingOption {
@@ -54,10 +52,9 @@ export function providerMarkIcon(
 
 /**
  * Shapes Maka's provider catalog into Astryx Selector's public option model:
- * each option carries its provider mark as `icon` and the catalog line as
- * `description`, so Selector's default row and trigger rendering need no
- * product markup. Search, flattening, keyboard navigation, selection, and
- * empty results remain entirely inside Selector.
+ * each option carries its provider mark as `icon`, so Selector's default row
+ * and trigger rendering need no product markup. Search, flattening, keyboard
+ * navigation, selection, and empty results remain entirely inside Selector.
  *
  * `toValue` is `modelChoiceValue` for the settings catalog (slug-scoped) and
  * `exactModelChoiceValue` for the session switcher (connection-id-scoped).
@@ -66,10 +63,7 @@ export function buildModelPickerOptions(
   groups: readonly ModelMenuGroup[],
   leadingOption: ModelPickerLeadingOption | undefined,
   toValue: ModelChoiceValueFn,
-  extras: {
-    locale: UiLocale;
-    renderProviderMark?(type: ProviderType): ReactNode;
-  },
+  renderProviderMark?: (type: ProviderType) => ReactNode,
 ): SelectorOptionType[] {
   const sections: SelectorSection[] = groups.map((group) => ({
     type: 'section',
@@ -77,8 +71,7 @@ export function buildModelPickerOptions(
     options: group.choices.map((choice) => ({
       value: toValue(choice),
       label: choice.label,
-      icon: providerMarkIcon(group.providerType, extras.renderProviderMark),
-      description: modelChoiceDescription(choice, extras.locale),
+      icon: providerMarkIcon(group.providerType, renderProviderMark),
     })),
   }));
 
@@ -87,7 +80,7 @@ export function buildModelPickerOptions(
   const option: SelectorOptionData = {
     value: leadingOption.value,
     label: leadingOption.label,
-    icon: providerMarkIcon(leadingOption.providerType, extras.renderProviderMark),
+    icon: providerMarkIcon(leadingOption.providerType, renderProviderMark),
     disabled: leadingOption.disabled,
   };
   return sections.length > 0 ? [option, { type: 'divider' }, ...sections] : [option];

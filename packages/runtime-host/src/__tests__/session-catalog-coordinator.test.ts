@@ -885,7 +885,7 @@ test('plugin executor creation bypasses model resolution and persists the execut
       backend: 'plugin-executor',
       executorId: 'codex',
       llmConnectionSlug: 'executor:codex',
-      model: 'codex',
+      model: 'gpt-codex',
     };
   };
   const fixture = createFixture({
@@ -909,6 +909,8 @@ test('plugin executor creation bypasses model resolution and persists the execut
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
       executorId: 'codex',
+      executorModel: 'gpt-codex',
+      thinkingLevel: 'high',
     },
     context,
   );
@@ -917,7 +919,8 @@ test('plugin executor creation bypasses model resolution and persists the execut
   assert.equal(persistedInput?.executorId, 'codex');
   assert.equal(persistedInput?.llmConnectionId, undefined);
   assert.equal(persistedInput?.llmConnectionSlug, 'executor:codex');
-  assert.equal(persistedInput?.model, 'codex');
+  assert.equal(persistedInput?.model, 'gpt-codex');
+  assert.equal(persistedInput?.thinkingLevel, 'high');
   if (outcome.ok && !('kind' in outcome.result)) {
     assert.equal(outcome.result.backend, 'plugin-executor');
     assert.equal(outcome.result.executorId, 'codex');

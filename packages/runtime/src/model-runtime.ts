@@ -31,6 +31,7 @@ import {
   openAiAdapterApiProtocol,
 } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
+import { modelOverride, type ModelOverrides } from '@maka/core/model-thinking';
 import {
   anthropicV1BaseUrl,
   googleV1BetaBaseUrl,
@@ -94,6 +95,7 @@ export type ResolvedModelRuntime = ModelRuntimeCall & {
 };
 
 export interface ModelRuntimeConnection {
+  readonly modelOverrides?: ModelOverrides;
   readonly slug?: string;
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
@@ -165,6 +167,12 @@ export function resolveModelRuntime(
       {
         wire,
         applyPatchProtocol: adapter.applyPatchProtocol,
+        enabled: modelOverride(connection, modelId)?.applyPatch,
+        customTools:
+          wire === 'openai-responses' &&
+          (connection.providerType === 'openai' || connection.providerType === 'openai-codex') &&
+          replay.kind === 'responses' &&
+          replay.contract.adapter === 'openai',
       },
       modelId,
     ),

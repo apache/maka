@@ -1101,6 +1101,14 @@ test('mirrors panel state to WorkHub and routes edge toggles back to Main', asyn
   const update = [...view.webContents.sent].reverse().find(([channel]) => channel.endsWith('changed'));
   assert.ok(update);
   assert.equal(JSON.stringify((update[1] as import('../../shared/workhub-presentation.js').WorkHubPresentationSnapshot).workbar), JSON.stringify({ collapsed: false, placement: 'bottom' }));
+  // A preference-only change must notify the native renderer even if its
+  // placement and collapsed state stay unchanged.
+  const changesBefore = view.webContents.sent.filter(([channel]) => channel.endsWith('changed')).length;
+  await h.command(h.main.webContents, 'host', { ...host, workbar: { collapsed: false, placement: 'bottom', togglePosition: 'edge' } });
+  const changes = view.webContents.sent.filter(([channel]) => channel.endsWith('changed'));
+  assert.equal(changes.length, changesBefore + 1);
+  assert.equal((changes.at(-1)![1] as import('../../shared/workhub-presentation.js').WorkHubPresentationSnapshot).workbar?.togglePosition, 'edge');
+  await assert.rejects(h.command(h.main.webContents, 'host', { ...host, workbar: { ...host.workbar, togglePosition: 'invalid' } }), /Invalid WorkHub workbar/);
   await assert.rejects(h.command(view.webContents, 'host', host), /Only the main window/);
   h.controller.dispose();
 });

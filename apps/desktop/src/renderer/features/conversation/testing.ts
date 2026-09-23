@@ -23,3 +23,9 @@ export {
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
 export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-state.js';
+export {
+  type ActiveExecutionBoundarySnapshot,
+  activeExecutionBoundaryOf,
+  activeExecutionBoundaryUnreadable,
+  startActiveExecutionBoundaryRead,
+} from './controller/use-active-execution-boundary.js';

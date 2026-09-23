@@ -278,10 +278,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     providerTool: { kind: 'openai-apply-patch' },
     executionFacts,
     impl: async (input, ctx) => {
-      if (typeof input !== 'string') {
+      const patch = typeof input === 'string' ? input : input.patch;
+      if (typeof patch !== 'string') {
         return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
       }
-      const operations = parseCodexV4aPatch(input);
+      const operations = parseCodexV4aPatch(patch);
       return await executeApplyPatchOperations(
         operations,
         async (operation) => {

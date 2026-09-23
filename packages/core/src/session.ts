@@ -19,6 +19,7 @@
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isExecutorId } from './executor-id.js';
+import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 
 import {
   MODEL_FAILURE_MESSAGE_MAX_BYTES,
@@ -963,15 +964,21 @@ export type WorkHubDelegationWorkspace =
   | { readonly kind: 'project'; readonly projectId: string }
   | { readonly kind: 'host_path'; readonly path: string };
 
+/** UTF-8 wire limit shared by persisted and protocol Session model identifiers. */
+export const SESSION_MODEL_ID_MAX_BYTES = 512;
+
 /** User-selected creation defaults; never applied to an existing Work. */
 export interface WorkHubCreateDefaults {
   /** Named plugin executor for the new Session. Mutually exclusive with model. */
   readonly executorId?: string;
+  /** Executor-specific model forwarded only when executorId is selected. */
+  readonly executorModel?: string;
   readonly model?: {
     readonly llmConnectionId: string;
     readonly llmConnectionSlug: string;
     readonly model: string;
   };
+  readonly thinkingLevel?: ThinkingLevel;
   readonly permissionMode?: PermissionMode;
 }
 
@@ -979,13 +986,27 @@ export function isWorkHubCreateDefaults(value: unknown): value is WorkHubCreateD
   if (
     !isRecord(value) ||
     Object.keys(value).some(
-      (key) => key !== 'executorId' && key !== 'model' && key !== 'permissionMode',
+      (key) =>
+        key !== 'executorId' &&
+        key !== 'executorModel' &&
+        key !== 'model' &&
+        key !== 'thinkingLevel' &&
+        key !== 'permissionMode',
     )
   )
     return false;
   if (value.permissionMode !== undefined && !isPermissionMode(value.permissionMode)) return false;
   if (value.executorId !== undefined && !isExecutorId(value.executorId)) return false;
+  if (
+    value.executorModel !== undefined &&
+    (typeof value.executorModel !== 'string' ||
+      value.executorModel.trim().length === 0 ||
+      new TextEncoder().encode(value.executorModel).byteLength > SESSION_MODEL_ID_MAX_BYTES)
+  )
+    return false;
+  if (value.executorModel !== undefined && value.executorId === undefined) return false;
   if (value.executorId !== undefined && value.model !== undefined) return false;
+  if (value.thinkingLevel !== undefined && !isThinkingLevel(value.thinkingLevel)) return false;
   if (value.model === undefined) return true;
   const model = value.model;
   return (
@@ -1033,6 +1054,8 @@ interface WorkHubCoordinationMessageEnvelope {
  */
 export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMessageEnvelope {
   kind: 'delegation_assigned';
+  /** New delegations opt into Host-owned asynchronous result delivery. */
+  returnResults?: true;
   delegationId: string;
   targetTurnId: string;
   targetMessageId: string;
@@ -1381,6 +1404,7 @@ const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
     [
       'attachments',
       'targetAttachments',
+      'returnResults',
       'create',
       'steered',
       'replacesActionId',
@@ -1800,6 +1824,7 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.targetMessageId === 'string' &&
     typeof message.targetSessionName === 'string' &&
     message.targetSessionName.trim().length > 0 &&
+    (message.returnResults === undefined || message.returnResults === true) &&
     (message.steered === undefined || message.steered === true) &&
     ((message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION &&
       message.replacesActionId === undefined &&
