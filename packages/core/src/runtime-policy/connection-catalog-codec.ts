@@ -268,6 +268,7 @@ export function decodeModelOverridesTable(value: unknown): Readonly<Record<strin
         'thinkingLevels',
         'defaultThinkingLevel',
         'vision',
+        'applyPatch',
         'contextWindow',
         'serviceTier',
         'compactionThreshold',
@@ -311,6 +312,9 @@ export function decodeModelOverridesTable(value: unknown): Readonly<Record<strin
     }
     if (entry.vision !== undefined) {
       declared.vision = booleanValue(entry.vision, `declared vision for ${modelId}`);
+    }
+    if (entry.applyPatch !== undefined) {
+      declared.applyPatch = booleanValue(entry.applyPatch, `declared ApplyPatch for ${modelId}`);
     }
     for (const field of [
       'contextWindow',

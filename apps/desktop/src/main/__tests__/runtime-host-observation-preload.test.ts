@@ -244,6 +244,7 @@ async function preloadHarness(invoke: (channel: string, ...args: unknown[]) => P
     async invoke(channel: string, ...args: unknown[]) {
       if (channel === 'runtime-host:activeIdentity') return owner;
       if (channel === 'runtime-host:identities') return [owner];
+      if (channel === 'runtime-host:awaitReady') return { ready: true };
       if (channel === 'sessions:unobserve') return;
       return invoke(channel, ...args);
     },

@@ -61,6 +61,7 @@ async function loadBridge(changeDuringRead: 'guest' | 'owner') {
       switch (channel) {
         case 'runtime-host:activeIdentity': return { ...owner };
         case 'runtime-host:identities': return [{ ...owner }, { ...guest }];
+        case 'runtime-host:awaitReady': return { ready: true };
         case 'runtime-host-profiles:getSnapshot':
           catalogReads++;
           return {

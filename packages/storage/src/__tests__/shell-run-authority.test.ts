@@ -86,6 +86,36 @@ describe('interactive ShellRun authority', () => {
     });
   });
 
+  test('lists only Sessions whose ShellRun lifecycle still requires recovery', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const writer = await openInteractiveShellRunStoreForWrite(owner.lease);
+      try {
+        await writer.createShellRun(record());
+        await writer.createShellRun(
+          record({ shellRunId: 'shell-2', sessionId: 'session-2', status: 'starting' }),
+        );
+        await writer.createShellRun(
+          record({ shellRunId: 'shell-3', sessionId: 'session-3', status: 'running' }),
+        );
+        await writer.updateShellRun('session-3', 'shell-3', {
+          status: 'completed',
+          exitCode: 0,
+          completedAt: 2,
+          updatedAt: 2,
+          output: pipeOutput('done'),
+        });
+
+        assert.deepEqual(await writer.listShellRunRecoverySessionIds(), ['session-1', 'session-2']);
+      } finally {
+        writer.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('rejects reads and mutations after its owner lease is released', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -131,7 +161,7 @@ describe('interactive ShellRun authority', () => {
   });
 });
 
-function record(): ShellRunRecord {
+function record(overrides: Partial<ShellRunRecord> = {}): ShellRunRecord {
   return {
     shellRunId: 'shell-1',
     sessionId: 'session-1',
@@ -144,6 +174,7 @@ function record(): ShellRunRecord {
     updatedAt: 1,
     revision: 1,
     output: pipeOutput(''),
+    ...overrides,
   };
 }
 

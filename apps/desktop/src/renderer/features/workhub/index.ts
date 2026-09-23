@@ -36,4 +36,3 @@ export {
   WorkHubModelConfigurationRequiredError,
   type WorkHubCoordinationHostChange,
 } from '../../application/contracts/workhub-workspace/coordination-lifecycle.js';
-export { WorkHubReturnButton } from './ui/return-button.js';

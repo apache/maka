@@ -340,7 +340,7 @@ ipcRenderer.on(
   'runtime-host-profiles:changed',
   (_event, change: RuntimeHostProfileWireEvent) => {
     const previousScopeKey = runtimeHostProfiles.get(change.profileId);
-    const nextScope = change.hostId
+    const nextScope = change.hostId && !change.removed
       ? { hostId: change.hostId, targetEpoch: change.epoch }
       : undefined;
     const nextScopeKey = nextScope ? runtimeHostScopeKey(nextScope) : undefined;
@@ -367,14 +367,7 @@ ipcRenderer.on(
     } else if (change.isDefault) {
       activeRuntimeHost = undefined;
     }
-    if (
-      change.hostId ||
-      change.removed ||
-      change.isDefault ||
-      change.readiness === 'unavailable'
-    ) {
-      activeRuntimeHostGeneration += 1;
-    }
+    activeRuntimeHostGeneration += 1;
     // Guest mounts can only participate in their shared Sessions. Their
     // reconnects cannot change the Hosts/projects available for a new task.
     if (change.profileAccess === 'owner') {

@@ -104,7 +104,6 @@ import {
   ChatComposerInput,
   IconButton,
   Lightbox,
-  placeCaretAtEnd,
   Token,
   Tooltip,
   useChatPasteAsToken,
@@ -114,6 +113,7 @@ import {
   type SearchableItem,
   type SearchSource,
 } from '@astryxdesign/core';
+
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -138,6 +138,19 @@ import {
   MakaClientSessionScope,
   MakaClientSlotOutlet,
 } from './client-plugin-slots.js';
+
+// Astryx keeps this selection helper internal, so the shell owns its small
+// equivalent instead of importing an unpublished root export.
+function placeCaretAtEnd(editable: HTMLElement): boolean {
+  const selection = window.getSelection();
+  if (!selection) return false;
+  const range = document.createRange();
+  range.selectNodeContents(editable);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+}
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -2394,7 +2407,8 @@ export const Composer = forwardRef<
                   the open menu next to the trigger rather than portaling it, so
                   the palette rebinding and the pinned-footer rules attach
                   here. */}
-              {!props.activeSession && props.workspacePicker ? (
+              {props.workspacePicker &&
+              (!props.activeSession || props.workspacePicker.showForActiveSession) ? (
                 <div className="maka-composer-workspace">
                   <WorkspacePicker workspacePicker={props.workspacePicker} />
                 </div>

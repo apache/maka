@@ -49,6 +49,8 @@ export function TitlebarSessionIdentity(props: {
   const copy = getConversationCopy(useUiLocale());
   const clipboard = useClipboardCopyFeedback(undefined, { redact: false });
   const [renaming, setRenaming] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const nameRef = useRef<HTMLButtonElement>(null);
   const handBackFocusRef = useRef(false);
 
@@ -89,7 +91,7 @@ export function TitlebarSessionIdentity(props: {
   ) : null;
 
   return (
-    <div className="maka-titlebar-identity" data-maka-contract="titlebar-identity" role="group" aria-label={copy.chat.titlebarIdentityAriaLabel}>
+    <div className="maka-titlebar-identity" data-maka-contract="titlebar-identity" data-interacting={renaming || projectMenuOpen || actionsMenuOpen || undefined} role="group" aria-label={copy.chat.titlebarIdentityAriaLabel}>
       {props.parentSession ? (
         <IconButton
           className="maka-titlebar-identity__action"
@@ -107,6 +109,8 @@ export function TitlebarSessionIdentity(props: {
             button={{ label: copy.chat.projectInfo, tooltip: copy.chat.projectInfo, icon: <Folder size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
             hasChevron={false}
             alignment="start"
+            isMenuOpen={projectMenuOpen}
+            onOpenChange={setProjectMenuOpen}
           >
             {projectContent}
           </DropdownMenu>
@@ -144,9 +148,11 @@ export function TitlebarSessionIdentity(props: {
         <span className="maka-titlebar-identity__action">
           <DropdownMenu
             className="maka-titlebar-menu"
-            button={{ label: copy.sessions.actionsAriaLabel(props.sessionName), tooltip: copy.sessions.actionsAriaLabel(props.sessionName), icon: <MoreHorizontal size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
+            button={{ label: `${props.sessionName} — ${copy.chat.taskActions}`, tooltip: `${props.sessionName} — ${copy.chat.taskActions}`, icon: <MoreHorizontal size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
             hasChevron={false}
             alignment="end"
+            isMenuOpen={actionsMenuOpen}
+            onOpenChange={setActionsMenuOpen}
           >
             {!props.readOnly ? <DropdownMenuItem label={copy.sessions.rename} onClick={() => setRenaming(true)} /> : null}
             {props.action ? <DropdownMenuItem label={props.action.label} onClick={props.action.onClick} /> : null}

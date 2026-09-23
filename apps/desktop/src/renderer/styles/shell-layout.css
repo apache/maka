@@ -315,6 +315,13 @@
   );
 }
 
+/* Native window dragging consumes clicks before the DOM can dismiss a menu
+   or blur the rename input. Return the blank titlebar to ordinary hit testing
+   only for the duration of that interaction. */
+.maka-window-titlebar:has(.maka-titlebar-identity[data-interacting]) {
+  -webkit-app-region: no-drag;
+}
+
 .appFrame:has(.maka-workbar-resize-handle[data-resizing]) .maka-window-titlebar {
   transition: none;
 }
@@ -346,6 +353,14 @@ dialog:modal {
   -webkit-app-region: no-drag;
   /* Match SideNav unselected icon ink (secondary), not ghost Button primary. */
   color: var(--muted-foreground);
+}
+
+.maka-workspace-top-actions {
+  grid-column: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  -webkit-app-region: no-drag;
 }
 
 /* The title hugs its controls; the remaining track stays draggable. */
@@ -435,7 +450,7 @@ dialog:modal {
 }
 
 /* Titlebar chrome glyph ink is set where the glyph is: `ChromeIcon`
-   (app-shell-chrome-actions.tsx) renders Astryx Icon with `color="secondary"`,
+   (shell/window-titlebar.tsx) renders Astryx Icon with `color="secondary"`,
    and Icon puts `color: var(--color-icon-secondary)` on the svg ITSELF. A
    button-level rule cannot reach past that — a child's own `color` always beats
    an inherited one — so the ghost variant's primary text never applied to these

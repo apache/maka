@@ -51,6 +51,7 @@ import type { ModelAdapter } from './model-adapter.js';
 import type {
   ModelMessage,
   ReasoningPart,
+  ToolResultContentPart,
   ToolResultOutput,
   UserContent,
 } from './model-protocol.js';
@@ -118,8 +119,8 @@ function isImageToolResult(
   );
 }
 
-function toolResultText(text: string): ToolResultOutput {
-  return { type: 'content', value: [{ type: 'text', text }] };
+function toolResultText(text: string): ToolResultContentPart {
+  return { type: 'text', text };
 }
 
 function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutput {
@@ -694,18 +695,30 @@ export class AiSdkMessageProjection {
     decisionKey: string,
   ): Promise<ToolResultOutput> {
     if (isError || !isImageToolResult(output)) return toolResultOutput(output, isError);
+    return {
+      type: 'content',
+      value: [await this.materializeImage(budget, output.ref, output.mimeType, decisionKey)],
+    };
+  }
+
+  private async materializeImage(
+    budget: ProviderImageBudget,
+    ref: StorageRef,
+    mediaType: string,
+    decisionKey: string,
+  ): Promise<ToolResultContentPart> {
     if (this.input.supportsVision !== true) {
       return toolResultText('Image was read, but the selected model does not support image input.');
     }
     if (!this.input.readAttachmentBytes) {
       return toolResultText('Image was read, but its stored bytes are unavailable.');
     }
-    if (budget && budget.decisions.get(decisionKey) === false) {
+    if (budget.decisions.get(decisionKey) === false) {
       return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
     }
     let read: Awaited<ReturnType<AttachmentByteReader>>;
     try {
-      read = await this.input.readAttachmentBytes(output.ref);
+      read = await this.input.readAttachmentBytes(ref);
     } catch {
       return toolResultText('Image could not be loaded from artifact storage: read_failed.');
     }
@@ -716,18 +729,9 @@ export class AiSdkMessageProjection {
       return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
     }
     return {
-      type: 'content',
-      value: [
-        { type: 'text', text: 'Image read successfully.' },
-        {
-          type: 'file',
-          data: {
-            type: 'data',
-            data: Buffer.from(read.bytes).toString('base64'),
-          },
-          mediaType: output.mimeType,
-        },
-      ],
+      type: 'file',
+      data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
+      mediaType,
     };
   }
 
@@ -739,50 +743,16 @@ export class AiSdkMessageProjection {
     if (projection.kind !== 'content') return durableProjectionToToolResultOutput(projection);
     const value: Extract<ToolResultOutput, { type: 'content' }>['value'] = [];
     for (const [index, part] of projection.parts.entries()) {
-      if (part.kind === 'text') {
-        value.push({ type: 'text', text: part.text });
-        continue;
-      }
-      if (this.input.supportsVision !== true) {
-        value.push({
-          type: 'text',
-          text: 'Image was read, but the selected model does not support image input.',
-        });
-        continue;
-      }
-      if (!this.input.readAttachmentBytes) {
-        value.push({
-          type: 'text',
-          text: 'Image was read, but its stored bytes are unavailable.',
-        });
-        continue;
-      }
-      let read: Awaited<ReturnType<AttachmentByteReader>>;
-      try {
-        read = await this.input.readAttachmentBytes(part.ref);
-      } catch {
-        value.push({
-          type: 'text',
-          text: 'Image could not be loaded from artifact storage: read_failed.',
-        });
-        continue;
-      }
-      if (!read.ok) {
-        value.push({
-          type: 'text',
-          text: `Image could not be loaded from artifact storage: ${read.reason}.`,
-        });
-        continue;
-      }
-      if (!this.chargeImageBudget(budget, read.bytes.length, `${decisionKey}:artifact:${index}`)) {
-        value.push({ type: 'text', text: PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE });
-        continue;
-      }
-      value.push({
-        type: 'file',
-        data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
-        mediaType: part.mediaType,
-      });
+      value.push(
+        part.kind === 'text'
+          ? toolResultText(part.text)
+          : await this.materializeImage(
+              budget,
+              part.ref,
+              part.mediaType,
+              `${decisionKey}:artifact:${index}`,
+            ),
+      );
     }
     return { type: 'content', value };
   }

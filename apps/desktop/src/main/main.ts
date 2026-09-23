@@ -217,8 +217,10 @@ if (!app.requestSingleInstanceLock()) {
       const earlyWindow = await import('./early-window.js');
       await earlyWindow.firstWindowConstructed;
       const boot = await import('./runtime-host-boot.js');
-      // The boot module's top-level pass is where every persistent handler
-      // registers; only now may gated renderer invokes flow through.
+      // Wait until the boot module has synchronously registered every handler
+      // used by the renderer's gated IPC.  Runtime Host reconciliation stays
+      // asynchronous so a slow or unavailable Host cannot block first paint.
+      await boot.runtimeHostBootReady;
       bootContext.markIpcReady();
       return boot;
     })

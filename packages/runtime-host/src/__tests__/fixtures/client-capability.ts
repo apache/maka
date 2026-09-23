@@ -40,9 +40,10 @@ export function clientCapabilityConnectionIdentity(
 
 export function clientCapabilityCoordinatorTestAdmission(): Pick<
   HostClientCapabilityCoordinatorOptions,
-  'interactions' | 'grants'
+  'interactions' | 'grants' | 'isSessionRetired'
 > {
   return {
+    isSessionRetired: async () => false,
     interactions: {
       requestClientCapabilityApproval: async () => {
         throw new Error('Unexpected Client Capability approval request');

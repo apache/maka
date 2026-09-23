@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkbarTogglePosition } from '@maka/core/settings';
 import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
 import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
@@ -131,7 +132,7 @@ export interface WorkbarHostModel {
   };
 }
 
-export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
+export function WorkbarHost({ model: props, togglePosition = 'edge' }: { model: WorkbarHostModel; togglePosition?: WorkbarTogglePosition }) {
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getShellCopy(locale).app;
@@ -174,6 +175,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
             }
           >
             <WorkbarSurface
+              togglePosition={togglePosition}
               workspace={props.workspace}
               sessionId={props.activeId}
               projectId={props.projectId}
