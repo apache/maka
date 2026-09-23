@@ -53,6 +53,7 @@ import {
   DialogHeader,
 } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
+import { Link } from '@astryxdesign/core/Link';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import {
   ModulePage,
@@ -68,7 +69,6 @@ import {
 
 import {
   ICON_SIZE,
-  ArrowLeft,
   Plug,
   Plus,
   RefreshCcw,
@@ -95,7 +95,6 @@ import {
 } from '../model/mcp-editor-validation.js';
 
 type EditorState =
-  | { mode: 'choose' }
   | { mode: 'manual'; draft: McpEditorDraft; editingId: string | null }
   | { mode: 'json'; source: string }
   | null;
@@ -103,6 +102,8 @@ type EditorState =
 const MCP_SUGGESTIONS = [
   { id: 'notion', url: 'https://mcp.notion.com/mcp' },
   { id: 'linear', url: 'https://mcp.linear.app/mcp' },
+  { id: 'feishu', url: 'https://mcp.feishu.cn/mcp' },
+  { id: 'maxcompute', url: 'https://mcp.maxcompute.aliyun.com/mcp' },
   { id: 'mcp-docs', url: 'https://modelcontextprotocol.io/mcp' },
 ] as const;
 
@@ -195,6 +196,19 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     });
   }
 
+  function openSuggestedServer(id: string, url: string) {
+    openEditor({
+      mode: 'manual',
+      draft: mcpDraftFromConfig(id, {
+        enabled: true,
+        url,
+        transport: 'auto',
+        protocol: 'auto',
+      }),
+      editingId: null,
+    });
+  }
+
   async function saveDraft(event: React.FormEvent) {
     event.preventDefault();
     if (!editor || editor.mode !== 'manual') return;
@@ -252,7 +266,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     </div>
   ) : null;
 
-  const connectionsPanel = (
+  const connectionsPanel = busy === 'load' || entries.length > 0 ? (
     <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
       {/* Selecting a row moves no focus, so nothing else would tell a screen
           reader that the details opened. This says so, politely. */}
@@ -277,12 +291,6 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             </div>
           ))}
         </div>
-      ) : entries.length === 0 ? (
-        <EmptyState
-          icon={<Plug size={ICON_SIZE.empty} />}
-          title={copy.page.noConnections}
-          description={copy.page.noConnectionsDetail}
-        />
       ) : connectionEntries.length === 0 ? (
         <EmptyState
           icon={<Search size={ICON_SIZE.empty} />}
@@ -330,7 +338,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         </List>
       )}
     </div>
-  );
+  ) : null;
 
   return (
     <section className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="mcp" data-maka-contract="module-main" aria-label={props.hubHeader?.title ?? 'MCP'}>
@@ -366,7 +374,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             role="group"
             aria-label={copy.page.actionsAria}
           >
-            <Button variant="primary" onClick={() => openEditor({ mode: 'choose' })} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
+            <Button variant="primary" onClick={() => openEditor({ mode: 'manual', draft: createEmptyMcpDraft(), editingId: null })} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
             <IconButton
               variant="ghost"
               label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
@@ -398,6 +406,30 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         )}
       >
         {connectionsPanel}
+        <section className="maka-mcp-recommendations" aria-label={copy.page.recommended}>
+          <VStack gap={1}>
+            <Heading level={2}>{copy.page.recommended}</Heading>
+            <Text type="supporting" color="secondary">{copy.page.recommendedDetail}</Text>
+          </VStack>
+          <List density="balanced" className="maka-mcp-recommendations-list" aria-label={copy.page.recommended}>
+            {MCP_SUGGESTIONS.map(({ id, url }) => (
+              <ListItem
+                key={id}
+                label={copy.page.suggestions[id].name}
+                description={copy.page.suggestions[id].description}
+                endContent={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />}
+                isDisabled={busy !== null}
+                onClick={() => openSuggestedServer(id, url)}
+              />
+            ))}
+          </List>
+          <Text type="supporting" color="secondary">
+            {copy.page.credentialGuides}{' '}
+            <Link href="https://developer.amap.com/api/mcp-server/gettingstarted" isExternalLink>{copy.page.amapGuide}</Link>
+            {' · '}
+            <Link href="https://developer.cloud.tencent.com/mcp/server/11803" isExternalLink>{copy.page.tencentDocsGuide}</Link>
+          </Text>
+        </section>
       </ModulePage>
 
       {editor && (
@@ -585,18 +617,9 @@ function McpEditorDialog(props: {
       : draft.transport !== 'auto' || draft.headers.trim() || draft.oauth || mcpDraftProtocolPreference(draft) !== 'auto'
   ));
   const [advancedOpen, setAdvancedOpen] = useState(hasAdvancedSettings);
-  const suggestionsRef = useRef<HTMLDivElement | null>(null);
-
   useEffect(() => {
-    if (props.state.mode === 'choose') setAdvancedOpen(false);
-    else if (hasAdvancedSettings) setAdvancedOpen(true);
-  }, [props.state.mode, hasAdvancedSettings]);
-
-  useEffect(() => {
-    if (props.isOpen && props.state.mode === 'choose') {
-      suggestionsRef.current?.querySelector('button')?.focus();
-    }
-  }, [props.isOpen, props.state.mode]);
+    if (hasAdvancedSettings) setAdvancedOpen(true);
+  }, [hasAdvancedSettings]);
 
   const updateDraft = <K extends keyof McpEditorDraft>(key: K, value: McpEditorDraft[K]) => {
     if (props.state.mode !== 'manual') return;
@@ -622,51 +645,25 @@ function McpEditorDialog(props: {
       <Layout
         header={
           <DialogHeader
-            startContent={!editing && props.state.mode !== 'choose' ? (
-              <IconButton
+            startContent={<Plug size={ICON_SIZE.chrome} />}
+            title={props.state.mode === 'json' ? props.copy.editor.importTitle : editing ? props.copy.editor.editTitle(props.state.draft.id) : props.copy.editor.addTitle}
+            subtitle={props.state.mode === 'json' ? props.copy.editor.importSubtitle : props.copy.editor.manualSubtitle}
+            endContent={!editing ? (
+              <Button
                 variant="ghost"
-                label={props.copy.editor.backToSuggestions}
-                tooltip={props.copy.editor.backToSuggestions}
-                icon={<ArrowLeft size={ICON_SIZE.chrome} />}
-                onClick={() => props.onChange({ mode: 'choose' })}
+                size="sm"
+                label={props.state.mode === 'json' ? props.copy.editor.manual : props.copy.editor.pasteJson}
+                onClick={() => props.onChange(props.state.mode === 'json'
+                  ? { mode: 'manual', draft: createEmptyMcpDraft(), editingId: null }
+                  : { mode: 'json', source: '' })}
               />
-            ) : <Plug size={ICON_SIZE.chrome} />}
-            title={props.state.mode === 'choose' ? props.copy.editor.addTitle : props.state.mode === 'json' ? props.copy.editor.importTitle : editing ? props.copy.editor.editTitle(props.state.draft.id) : props.copy.editor.addTitle}
-            subtitle={props.state.mode === 'choose' ? props.copy.editor.chooseSubtitle : props.state.mode === 'json' ? props.copy.editor.importSubtitle : props.copy.editor.manualSubtitle}
+            ) : undefined}
             onOpenChange={props.onOpenChange}
           />
         }
         content={
           <LayoutContent padding={0} isScrollable={false}>
-        {props.state.mode === 'choose' ? (
-          <div className="maka-mcp-choose" ref={suggestionsRef}>
-            <Text type="label" size="sm">{props.copy.editor.suggested}</Text>
-            <List density="balanced" hasDividers aria-label={props.copy.editor.suggested}>
-              {MCP_SUGGESTIONS.map((suggestion) => (
-                <ListItem
-                  key={suggestion.id}
-                  label={props.copy.editor.suggestions[suggestion.id].name}
-                  description={props.copy.editor.suggestions[suggestion.id].description}
-                  onClick={() => props.onChange({
-                    mode: 'manual',
-                    draft: mcpDraftFromConfig(suggestion.id, {
-                      enabled: true,
-                      url: suggestion.url,
-                      transport: 'auto',
-                      protocol: 'auto',
-                    }),
-                    editingId: null,
-                  })}
-                />
-              ))}
-            </List>
-            <Divider />
-            <HStack gap={2} wrap="wrap">
-              <Button variant="secondary" label={props.copy.editor.manual} onClick={() => props.onChange({ mode: 'manual', draft: createEmptyMcpDraft(), editingId: null })} />
-              <Button variant="ghost" label={props.copy.editor.pasteJson} onClick={() => props.onChange({ mode: 'json', source: '' })} />
-            </HStack>
-          </div>
-        ) : props.state.mode === 'json' ? (
+        {props.state.mode === 'json' ? (
           <form className="maka-mcp-json-form" onSubmit={props.onImport}>
             <div className="maka-mcp-json-field">
               <TextArea hasAutoFocus label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} rows={14} placeholder={'{\n  "mcpServers": {\n    "my-tools": { "url": "https://example.com/mcp" }\n  }\n}'} />

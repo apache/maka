@@ -56,10 +56,23 @@
   white-space: pre-wrap;
 }
 
-.maka-mcp-choose {
+.maka-mcp-recommendations {
   display: grid;
   gap: var(--space-3);
-  padding: var(--space-4);
+  padding-block: var(--space-3) var(--space-6);
+}
+
+.maka-mcp-recommendations-list {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+@media (max-width: 680px) {
+  .maka-mcp-recommendations-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .maka-mcp-manual-form,

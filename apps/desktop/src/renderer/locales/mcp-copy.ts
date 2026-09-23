@@ -37,8 +37,10 @@ export type McpCopy = {
     metaConnections(count: number): string; metaErrors(count: number): string;
     searchMatches(count: number): string;
     toolbarAria: string; connections: string; localStdio: string; searchPlaceholder: string; searchAria: string;
-    clearSearch: string; loading: string; noConnections: string; noConnectionsDetail: string;
+    clearSearch: string; loading: string;
     noConnectionsMatch: string; noConnectionsMatchDetail(query: string): string;
+    recommended: string; recommendedDetail: string; credentialGuides: string; amapGuide: string; tencentDocsGuide: string;
+    suggestions: Record<'notion' | 'linear' | 'feishu' | 'maxcompute' | 'mcp-docs', { name: string; description: string }>;
   };
   detail: {
     label: string; enabled: string; transport: string;
@@ -54,8 +56,6 @@ export type McpCopy = {
   };
   editor: {
     importTitle: string; editTitle(id: string): string; addTitle: string; importSubtitle: string; manualSubtitle: string;
-    chooseSubtitle: string; suggested: string; backToSuggestions: string;
-    suggestions: Record<'notion' | 'linear' | 'mcp-docs', { name: string; description: string }>;
     manual: string; pasteJson: string; jsonConfig: string; jsonHelp: string; cancel: string;
     importConnect: string; transportAria: string; localStdio: string; remoteUrl: string;
     serverId: string; command: string; commandPlaceholder: string; commandHelp: string;
@@ -92,8 +92,17 @@ const MCP_COPY = {
       searchMatches: (count) => `${count} 个匹配`,
       toolbarAria: 'MCP 连接操作', connections: '连接', localStdio: '本地命令',
       searchPlaceholder: '搜索连接…', searchAria: '搜索 MCP 连接',
-      clearSearch: '清空搜索', loading: '正在读取 MCP 连接…', noConnections: '还没有 MCP 连接', noConnectionsDetail: '添加本地命令或远程 MCP 服务。',
+      clearSearch: '清空搜索', loading: '正在读取 MCP 连接…',
       noConnectionsMatch: '没有匹配的 MCP 连接', noConnectionsMatchDetail: (query) => `换一个关键词，或清空「${query}」查看全部连接。`,
+      recommended: '推荐的 MCP', recommendedDetail: '选择服务后确认连接信息并保存。',
+      credentialGuides: '需先准备凭据：', amapGuide: '高德地图（API Key）', tencentDocsGuide: '腾讯文档（Token）',
+      suggestions: {
+        notion: { name: 'Notion', description: '工作区页面 · 需要登录' },
+        linear: { name: 'Linear', description: '问题与项目 · 需要登录' },
+        feishu: { name: '飞书', description: '飞书文档等 · 需要登录' },
+        maxcompute: { name: '阿里云 MaxCompute', description: '数据分析 · 首次需管理员授权' },
+        'mcp-docs': { name: 'MCP 官方文档', description: '搜索协议文档 · 无需登录' },
+      },
     },
     detail: {
       label: '连接详情', enabled: '启用', transport: '传输方式',
@@ -110,8 +119,7 @@ const MCP_COPY = {
     editor: {
       idExists: '已有同名连接，请换个名称。', oauth: 'OAuth 设置', oauthHelp: '通常无需填写。只有服务提供固定客户端凭据时才配置；填写客户端 ID 时还需要授权服务器地址。', issuer: '授权服务器地址（issuer）', clientId: '客户端 ID', clientSecret: '客户端密钥', scopes: '权限范围（空格分隔）', callbackPort: '回调端口（可选）',
       importTitle: '通过 JSON 导入', editTitle: (id) => `编辑 ${id}`, addTitle: '添加 MCP', importSubtitle: '粘贴 MCP 配置；同名连接会被更新。',
-      manualSubtitle: '此连接保存在当前工作区。', chooseSubtitle: '选择一个服务，或添加自己的 MCP 连接。', suggested: '常用服务', backToSuggestions: '返回服务列表',
-      suggestions: { notion: { name: 'Notion', description: '连接工作区页面 · 需要登录' }, linear: { name: 'Linear', description: '连接问题与项目 · 需要登录' }, 'mcp-docs': { name: 'MCP 官方文档', description: '查询 MCP 文档 · 无需登录' } },
+      manualSubtitle: '此连接保存在当前工作区。',
       manual: '手动配置', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
       jsonHelp: '可粘贴完整配置，或仅包含各连接的 JSON 对象；未列出的现有连接会保留。', cancel: '取消', importConnect: '导入配置',
       transportAria: '连接方式', localStdio: '本地命令', remoteUrl: '远程 URL',
@@ -150,8 +158,17 @@ const MCP_COPY = {
       searchMatches: (count) => `${count} 個符合`,
       toolbarAria: 'MCP 連線操作', connections: '連線', localStdio: '本地命令',
       searchPlaceholder: '搜尋連線…', searchAria: '搜尋 MCP 連線',
-      clearSearch: '清空搜尋', loading: '正在讀取 MCP 連線…', noConnections: '還沒有 MCP 連線', noConnectionsDetail: '新增本地命令或遠端 MCP 服務。',
+      clearSearch: '清空搜尋', loading: '正在讀取 MCP 連線…',
       noConnectionsMatch: '沒有符合的 MCP 連線', noConnectionsMatchDetail: (query) => `換一個關鍵詞，或清空「${query}」檢視全部連線。`,
+      recommended: '推薦的 MCP', recommendedDetail: '選擇服務後確認連線資訊並儲存。',
+      credentialGuides: '需先準備憑證：', amapGuide: '高德地圖（API Key）', tencentDocsGuide: '騰訊文件（Token）',
+      suggestions: {
+        notion: { name: 'Notion', description: '工作區頁面 · 需要登入' },
+        linear: { name: 'Linear', description: '議題與專案 · 需要登入' },
+        feishu: { name: '飛書', description: '飛書文件等 · 需要登入' },
+        maxcompute: { name: '阿里雲 MaxCompute', description: '資料分析 · 首次需管理員授權' },
+        'mcp-docs': { name: 'MCP 官方文件', description: '搜尋協議文件 · 無需登入' },
+      },
     },
     detail: {
       label: '連線詳情', enabled: '啟用', transport: '傳輸方式',
@@ -168,8 +185,7 @@ const MCP_COPY = {
     editor: {
       idExists: '已有同名連線，請換個名稱。', oauth: 'OAuth 設定', oauthHelp: '通常無需填寫。只有服務提供固定用戶端憑據時才設定；填寫用戶端 ID 時還需要授權伺服器地址。', issuer: '授權伺服器地址（issuer）', clientId: '用戶端 ID', clientSecret: '用戶端密鑰', scopes: '權限範圍（空格分隔）', callbackPort: '回呼連接埠（選填）',
       importTitle: '透過 JSON 匯入', editTitle: (id) => `編輯 ${id}`, addTitle: '新增 MCP', importSubtitle: '貼上 MCP 設定；同名連線會被更新。',
-      manualSubtitle: '此連線儲存在目前工作區。', chooseSubtitle: '選擇服務，或新增自己的 MCP 連線。', suggested: '常用服務', backToSuggestions: '返回服務列表',
-      suggestions: { notion: { name: 'Notion', description: '連接工作區頁面 · 需要登入' }, linear: { name: 'Linear', description: '連接問題與專案 · 需要登入' }, 'mcp-docs': { name: 'MCP 官方文件', description: '查詢 MCP 文件 · 無需登入' } },
+      manualSubtitle: '此連線儲存在目前工作區。',
       manual: '手動設定', pasteJson: '貼上 JSON', jsonConfig: 'JSON 設定',
       jsonHelp: '可貼上完整設定，或僅包含各連線的 JSON 物件；未列出的現有連線會保留。', cancel: '取消', importConnect: '匯入設定',
       transportAria: '連線方式', localStdio: '本地命令', remoteUrl: '遠端 URL',
@@ -208,8 +224,17 @@ const MCP_COPY = {
       searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
       toolbarAria: 'MCP connection controls', connections: 'Connections', localStdio: 'Local command',
       searchPlaceholder: 'Search connections…', searchAria: 'Search MCP connections',
-      clearSearch: 'Clear search', loading: 'Loading MCP connections…', noConnections: 'No MCP connections', noConnectionsDetail: 'Add a local command or remote MCP service.',
+      clearSearch: 'Clear search', loading: 'Loading MCP connections…',
       noConnectionsMatch: 'No matching MCP connections', noConnectionsMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every connection.`,
+      recommended: 'Recommended MCP servers', recommendedDetail: 'Choose a service, review its connection details, and save.',
+      credentialGuides: 'Credentials required:', amapGuide: 'Amap Maps (API key)', tencentDocsGuide: 'Tencent Docs (token)',
+      suggestions: {
+        notion: { name: 'Notion', description: 'Workspace pages · Sign in required' },
+        linear: { name: 'Linear', description: 'Issues and projects · Sign in required' },
+        feishu: { name: 'Feishu', description: 'Documents and more · Sign in required' },
+        maxcompute: { name: 'Alibaba Cloud MaxCompute', description: 'Data analytics · Admin setup required first' },
+        'mcp-docs': { name: 'Official MCP docs', description: 'Search protocol docs · No sign-in' },
+      },
     },
     detail: {
       label: 'Connection details', enabled: 'Enabled', transport: 'Transport',
@@ -226,8 +251,7 @@ const MCP_COPY = {
     editor: {
       idExists: 'A connection with this name already exists. Choose another name.', oauth: 'OAuth settings', oauthHelp: 'Usually leave this blank. Configure it only when the service provides fixed client credentials; a client ID also requires the authorization server issuer.', issuer: 'Authorization server issuer', clientId: 'Client ID', clientSecret: 'Client secret', scopes: 'Scopes (space separated)', callbackPort: 'Callback port (optional)',
       importTitle: 'Import from JSON', editTitle: (id) => `Edit ${id}`, addTitle: 'Add MCP', importSubtitle: 'Paste MCP configuration; connections with matching names will be updated.',
-      manualSubtitle: 'This connection is saved in the current workspace.', chooseSubtitle: 'Choose a service or add your own MCP connection.', suggested: 'Popular services', backToSuggestions: 'Back to services',
-      suggestions: { notion: { name: 'Notion', description: 'Connect workspace pages · Sign in required' }, linear: { name: 'Linear', description: 'Connect issues and projects · Sign in required' }, 'mcp-docs': { name: 'Official MCP docs', description: 'Search MCP documentation · No sign-in' } },
+      manualSubtitle: 'This connection is saved in the current workspace.',
       manual: 'Manual configuration', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
       jsonHelp: 'Paste a complete configuration or a JSON object of named connections. Existing connections not listed here are preserved.', cancel: 'Cancel', importConnect: 'Import configuration',
       transportAria: 'Connection method', localStdio: 'Local command', remoteUrl: 'Remote URL',

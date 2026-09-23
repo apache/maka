@@ -1038,8 +1038,12 @@ export const ExtensionsMcpSetupRequired: Story = {
   decorators: [withEmptyMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
-    await waitForStoryText(canvasElement, '还没有 MCP 连接');
-    await waitForStoryButton(canvasElement, (candidate) => candidate.textContent?.trim() === '添加 MCP');
+    await waitForStoryText(canvasElement, '0 个连接');
+    await waitForStoryText(canvasElement, '推荐的 MCP');
+    await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled);
+    if (canvasElement.querySelector('.maka-module-page-panel')) {
+      throw new Error('Empty MCP connections must not push recommendations below an empty panel');
+    }
     if ([...canvasElement.querySelectorAll('button')].filter((button) => button.textContent?.trim() === '添加 MCP').length !== 1) {
       throw new Error('Empty MCP page needs one add action');
     }
@@ -1049,33 +1053,30 @@ export const ExtensionsMcpSetupRequired: Story = {
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 添加 MCP, choosing a service.
-export const ExtensionsMcpSuggestions: Story = {
+// Real path: sidebar → 扩展 → MCP → 推荐的 MCP → Notion, before saving.
+export const ExtensionsMcpRecommended: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    await waitForStoryText(canvasElement, '推荐的 MCP');
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.includes('Notion') === true)).click();
     const body = canvasElement.ownerDocument.body;
-    (await waitForStoryButton(body, (button) => button.textContent?.includes('Notion') === true)).click();
     const fields = await waitForStorySelector<HTMLElement>(body, '.maka-mcp-primary-fields');
     const inputs = [...fields.querySelectorAll<HTMLInputElement>('input')];
     if (inputs[0]?.value !== 'notion' || inputs[1]?.value !== 'https://mcp.notion.com/mcp') {
       throw new Error('Suggested MCP must prefill the existing editor with its official endpoint');
     }
-    (await waitForStoryButton(body, (button) => button.getAttribute('aria-label') === '返回服务列表')).click();
-    await waitForStoryText(body, 'MCP 官方文档');
   },
 };
 
-// Real path: sidebar → 扩展 → MCP → 添加 MCP → 手动配置, before choosing optional settings.
+// Real path: sidebar → 扩展 → MCP → 添加 MCP, before choosing optional settings.
 export const ExtensionsMcpAdd: Story = {
   decorators: [withConfiguredMcpBridge],
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
     (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
-    (await waitForStoryButton(canvasElement.ownerDocument.body, (button) => button.textContent?.trim() === '手动配置')).click();
     const fields = await waitForStorySelector<HTMLElement>(canvasElement.ownerDocument.body, '.maka-mcp-primary-fields');
     const inputs = fields.querySelectorAll<HTMLInputElement>('input');
     if (inputs.length !== 2) throw new Error('New MCP needs only its name and connection endpoint');
@@ -1092,6 +1093,7 @@ export const ExtensionsMcpJsonImport: Story = {
   render: () => <ExtensionsMcpSurface />,
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, 'filesystem');
+    await waitForStoryText(canvasElement, '推荐的 MCP');
     (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
     const body = canvasElement.ownerDocument.body;
     (await waitForStoryButton(body, (button) => button.textContent?.trim() === '粘贴 JSON')).click();
