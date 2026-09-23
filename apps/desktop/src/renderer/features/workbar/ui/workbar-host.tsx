@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkbarTogglePosition } from '@maka/core/settings';
 import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { GripVertical, ICON_SIZE } from '@maka/ui/icons';
@@ -133,7 +134,7 @@ export interface WorkbarHostModel {
   };
 }
 
-export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
+export function WorkbarHost({ model: props, togglePosition = 'edge' }: { model: WorkbarHostModel; togglePosition?: WorkbarTogglePosition }) {
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getShellCopy(locale).app;
@@ -210,6 +211,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
             }
           >
             <WorkbarSurface
+              togglePosition={togglePosition}
               workspace={props.workspace}
               sessionId={props.activeId}
               projectId={props.projectId}

@@ -17,18 +17,12 @@
  * under the License.
  */
 
-import { Button } from '@astryxdesign/core/Button';
-import { useUiLocale } from '@maka/ui';
-import { getShellCopy } from '../../../locales/shell-copy.js';
+import { createHash } from 'node:crypto';
 
-export function WorkHubReturnButton({ visible, onReturn }: { visible: boolean; onReturn(): void }) {
-  const locale = useUiLocale();
-  return visible ? (
-    <Button
-      className="maka-return-workhub"
-      label={getShellCopy(locale).navigation.backToWorkHub}
-      variant="secondary"
-      onClick={onReturn}
-    />
-  ) : null;
-}
+// The manager redacts configured environment values in tool output. Observe
+// each child process's environment through a derived value instead.
+process.env.ACP_SESSION_FINGERPRINT = createHash('sha256')
+  .update(process.env.ACP_SESSION_SENTINEL ?? 'missing')
+  .digest('hex');
+
+await import('@maka/mcp/test-only/stdio-server');

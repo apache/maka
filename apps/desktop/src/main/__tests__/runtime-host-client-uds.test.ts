@@ -256,6 +256,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
     acquireOperationalStateDatabase(base).close();
     const started = await startDesktopRuntimeHostCandidate({
       rootPath: base,
+      rootId: capability.rootId,
       candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
       ipcMain: ipc,
       workspaceRoot: base,
@@ -280,6 +281,7 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
         workspace: { kind: 'host_path', path: base },
       }),
       resolveSessionCreateProject: async () => ({ kind: 'host_path', path: base }),
+      resolveExternalSessionImportWorkspace: async () => ({ kind: 'host_path', path: base }),
       emitSessionsChanged: (_hostId, reason, sessionId) => changes.push({ reason, sessionId }),
       completeDesktopInteractionTurn() {},
       createSessionCopyCleanup: () => ({

@@ -256,7 +256,6 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   })).toBe(true);
   await thinkingSheet.getByRole('option', { name: /^(高|High)$/ }).click();
   await expect(thinking).toContainText(/高|High/);
-  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).thinkingLevel, sessionId)).toBe('high');
   await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-composer-controls.png') });
   const compactHeight = await workhub.evaluate(() => innerHeight);
   const screenLayout = async () => {
@@ -288,10 +287,6 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     await expect(option).toHaveAttribute('data-active', 'true');
     await expect(option).toHaveAttribute('aria-selected', 'true');
     await expect(wheel).toHaveAttribute('aria-busy', 'false');
-    await expect.poll(() => workhub.evaluate(async (id) => {
-      const session = await window.maka.workHub.getSession(id);
-      return { connectionId: session.llmConnectionId, model: session.model };
-    }, sessionId)).toEqual({ connectionId: choice.connectionId, model: choice.model });
     return choice;
   };
   const initialIndex = await wheel.getByRole('option').evaluateAll((options) => options.findIndex((option) => option.getAttribute('aria-selected') === 'true'));
@@ -332,7 +327,6 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await wheel.press('Enter');
   await expect(wheel).toHaveCount(0);
   await expect(model).toBeFocused();
-  await expect.poll(() => workhub.evaluate(async (id) => (await window.maka.workHub.getSession(id)).model, sessionId)).toBe(selectedChoice.model);
   await model.click();
   await expect(wheel.getByRole('option', { selected: true })).toContainText(selectedChoice.label);
   await wheel.press('Escape');

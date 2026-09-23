@@ -40,7 +40,9 @@ export function createMakaAcpAgent(options: MakaAcpAgentOptions): AgentApp {
         agentInfo: { name: 'maka', title: 'Maka', version: options.version },
       };
     })
-    .onRequest(methods.agent.session.new, ({ params }) => options.sessionRegistry.create(params))
+    .onRequest(methods.agent.session.new, ({ params, signal }) =>
+      options.sessionRegistry.create(params, signal),
+    )
     .onRequest(methods.agent.session.list, ({ params }) => options.sessionRegistry.list(params))
     .onRequest(methods.agent.session.setConfigOption, ({ params }) =>
       options.sessionRegistry.setConfigOption(params),

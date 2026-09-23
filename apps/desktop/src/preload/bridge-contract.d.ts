@@ -1142,6 +1142,8 @@ export interface MakaBridge {
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<WorkHubPrepareAttachmentsResult>;
     answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
     configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
+    getNewWorkDefaults(coordinationSessionId: string): Promise<Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>>;
+    setNewWorkDefaults(coordinationSessionId: string, defaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>): Promise<void>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string | { readonly kind: 'model_required' }>;
 
@@ -1382,6 +1384,11 @@ export interface MakaBridge {
       llmConnectionId: string;
       llmConnectionSlug: string;
       model: string;
+      thinkingLevel: ThinkingLevel | null;
+    }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    setExecutorConfiguration(sessionId: string, input: {
+      executorId: string;
+      model?: string;
       thinkingLevel: ThinkingLevel | null;
     }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;

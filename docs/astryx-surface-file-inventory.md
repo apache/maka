@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.2` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 293 files — blocker 0, reimplementation 0, polish 4, aligned 289.
+**Totals:** 294 files — blocker 0, reimplementation 0, polish 4, aligned 290.
 
 ## Exclusions (explicit)
 
@@ -28,7 +28,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | Path | Role | Astryx used | Gap / note | Severity |
 |------|------|-------------|------------|----------|
 | `apps/desktop/src/renderer/agent-graph-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, IconButton, Selector, Spinner | aligned — uses Astryx (Banner, Button, EmptyState, IconButton, Selector, Spinner) | aligned |
-| `apps/desktop/src/renderer/app-shell-chrome-actions.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
+| `apps/desktop/src/renderer/app-shell-chrome-actions.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/app-shell-detail-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/app-shell-overlays.tsx` | shell-chrome-or-panel | Spinner | aligned — uses Astryx (Spinner) | aligned |
 | `apps/desktop/src/renderer/app-shell.tsx` | shell-chrome-or-panel | AppShell | aligned — uses Astryx (AppShell) | aligned |
@@ -122,10 +122,10 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx` | shell-chrome-or-panel | Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, Text, VStack | aligned — uses Astryx (Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx` | shell-chrome-or-panel | Card, IconButton, ResizeHandle, Spinner | aligned — uses Astryx (Card, IconButton, ResizeHandle, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx` | shell-chrome-or-panel | Badge, Button, Card, Heading, Icon, Kbd, List, ListItem, Section, Spinner, Tab, TabList | aligned — uses Astryx (Badge, Button, Card, Heading, Icon, Kbd, List, ListItem) | aligned |
+| `apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/control-overlay.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/cursor.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/main-navigation.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/features/workhub/ui/return-button.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-composer.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-conversation.tsx` | other | Button, Link, Text | aligned — uses Astryx (Button, Link, Text) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-dock.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
@@ -190,6 +190,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/tasks-settings-page.tsx` | settings-page | Button, EmptyState, HStack, List, ListItem, MoreMenu, StackItem, TextInput | aligned — uses Astryx (Button, EmptyState, HStack, List, ListItem, MoreMenu, StackItem, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/usage-settings-page.tsx` | settings-page | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/web-search-settings-page.tsx` | settings-page | Banner, Button, EmptyState, Link, Selector, StatusDot, Switch, TextInput | aligned — uses Astryx (Banner, Button, EmptyState, Link, Selector, StatusDot, Switch, TextInput) | aligned |
+| `apps/desktop/src/renderer/shell/window-titlebar.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
 | `apps/desktop/src/renderer/styles.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/agent-graph.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/astryx-mount.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |

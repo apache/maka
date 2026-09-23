@@ -609,31 +609,41 @@ button.maka-workbar-edge {
   grid-area: main;
   position: absolute;
   top: 50%;
-  right: 12px;
+  right: 16px;
   transform: translateY(-50%);
   z-index: 3;
-  width: 12px;
-  height: 112px;
+  width: 28px;
+  min-width: 28px;
+  height: 48px;
   padding: 0;
   border: 0;
+  border-radius: var(--radius-element);
   background: transparent;
   color: var(--muted-foreground);
   cursor: pointer;
   -webkit-app-region: no-drag;
 }
 button.maka-workbar-edge:is(:hover, :active, :focus-visible) { background: transparent; }
+/* Keep the full arc, including the scrollbar lane, inside one continuous
+   activation area without enlarging the decoration or keyboard focus ring. */
+.maka-workbar-edge::before {
+  content: '';
+  position: absolute;
+  inset: -32px -16px -32px 0;
+}
 .maka-detail-with-artifacts:has(.workHubDock[data-native-edge]:not([hidden])) .maka-workbar-edge {
   visibility: hidden;
   pointer-events: none;
 }
 /* Leave space between the anchor targets and the edge control, without moving
    the conversation or its scrollbar. The resize separator stays outside both. */
-:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail { right: 30px; }
-:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail:hover { right: 33px; }
+:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail { right: 48px; }
+:is(.maka-detail-with-artifacts, .workHubLive):has(.maka-workbar-edge) .maka-prompt-rail:hover { right: 51px; }
 .maka-workbar-edge-glass {
   position: absolute;
+  z-index: -1;
   top: 50%;
-  right: -12px;
+  right: -16px;
   display: grid;
   place-items: center;
   width: 28px;
@@ -649,27 +659,27 @@ button.maka-workbar-edge:is(:hover, :active, :focus-visible) { background: trans
   transition: opacity 180ms ease, transform 340ms cubic-bezier(.2,.8,.2,1);
   pointer-events: none;
 }
-.maka-workbar-edge-glass svg { translate: -4px 0; }
+.maka-workbar-edge-glass svg { translate: -8px 0; }
 .maka-workbar-edge:is(:hover, :focus-visible) .maka-workbar-edge-glass {
   opacity: 1;
   transform: translateY(-50%) scaleX(1);
 }
 .maka-workbar-edge:active .maka-workbar-edge-glass { transform: translateY(-50%) scaleX(.86); }
-.maka-workbar-edge:focus-visible { outline: none; }
-.maka-workbar-edge:focus-visible .maka-workbar-edge-glass { background-color: color-mix(in oklch, var(--focus-ring) 24%, var(--background-elevated)); }
+.maka-workbar-edge:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* An explicit placement comes from Main for the native WorkHub renderer,
    whose own width is not the workspace's responsive breakpoint. */
 .maka-workbar-edge[data-placement="bottom"] {
-  top: auto; right: auto; bottom: 12px; left: 50%; transform: translateX(-50%); width: 112px; height: 12px;
+  top: auto; right: auto; bottom: 16px; left: 50%; transform: translateX(-50%); width: 48px; height: 28px;
 }
+.maka-workbar-edge[data-placement="bottom"]::before { inset: 0 -32px -16px -32px; }
 .maka-workbar-edge[data-placement="bottom"] .maka-workbar-edge-glass {
-  top: auto; right: auto; bottom: -12px; left: 50%; width: 112px; height: 28px;
+  top: auto; right: auto; bottom: -16px; left: 50%; width: 112px; height: 28px;
   clip-path: path('M0 28 C22 28 27 0 56 0 C85 0 90 28 112 28 Z');
   transform-origin: center bottom; transform: translateX(-50%) scaleY(.08);
 }
 .maka-workbar-edge[data-placement="bottom"]:is(:hover, :focus-visible) .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(1); }
 .maka-workbar-edge[data-placement="bottom"]:active .maka-workbar-edge-glass { transform: translateX(-50%) scaleY(.86); }
-.maka-workbar-edge[data-placement="bottom"] svg { rotate: 90deg; translate: 0 -4px; }
+.maka-workbar-edge[data-placement="bottom"] svg { rotate: 90deg; translate: 0 -8px; }
 @media (prefers-reduced-motion: reduce) {
   .maka-workbar-edge-glass { transition: none; }
 }

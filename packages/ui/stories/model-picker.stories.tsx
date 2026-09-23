@@ -26,7 +26,6 @@ import type { SessionSummary } from '@maka/core/session';
 import { ChatModelSwitcher, ModelChipStatic, NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
 import {
   exactModelChoiceValue,
-  modelChoiceDescription,
   modelChoiceValue,
   modelMenuGroups,
   type ChatModelChoice,

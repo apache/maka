@@ -29,6 +29,10 @@ export interface SessionSettingsServices {
     sessionId: string,
     input: SessionModelTarget & { thinkingLevel: ThinkingLevel | null },
   ): Promise<DesktopSessionSummary>;
+  setExecutorConfiguration?(
+    sessionId: string,
+    input: { executorId: string; model?: string; thinkingLevel: ThinkingLevel | null },
+  ): Promise<DesktopSessionSummary>;
   setPermissionMode(
     sessionId: string,
     mode: ChatDefaultPermissionMode,
