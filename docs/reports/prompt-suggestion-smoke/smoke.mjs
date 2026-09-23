@@ -145,7 +145,7 @@ try {
   const offer = page.locator('.maka-composer-next-prompt');
   await offer.waitFor({ timeout: 20000 });
   assert.equal(await input.innerText(), '');
-  assert.equal(await offer.locator('span').innerText(), suggestionText);
+  assert.equal(await offer.locator('.maka-composer-next-prompt-text').innerText(), suggestionText);
   async function textMetrics(selector) {
     return page
       .locator(selector)
@@ -168,7 +168,7 @@ try {
         };
       });
   }
-  const suggestionMetrics = await textMetrics('.maka-composer-next-prompt span');
+  const suggestionMetrics = await textMetrics('.maka-composer-next-prompt-text');
   await page.screenshot({ path: join(output, '01-offer.png') });
   await input.press('Tab');
   assert.equal(await input.innerText(), suggestionText);
@@ -183,7 +183,7 @@ try {
   );
   await writeFile(
     join(output, 'text-alignment.json'),
-    JSON.stringify({ suggestionMetrics, acceptedMetrics }, null, 2),
+    JSON.stringify({ suggestionMetrics, acceptedMetrics }, null, 2) + '\n',
   );
   await page.screenshot({ path: join(output, '02-accepted.png') });
   await input.press('Meta+z');
@@ -292,7 +292,7 @@ try {
       },
       null,
       2,
-    ),
+    ) + '\n',
   );
   console.log('PASS', output);
 } catch (e) {

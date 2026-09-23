@@ -687,7 +687,7 @@
 .maka-composer-next-prompt { grid-area: 1 / 1; min-width: 0; }
 .maka-composer-next-prompt {
   position: relative; z-index: 1; align-self: start;
-  display: block; width: 100%; margin: 0; border: 0;
+  display: block; width: 100%; height: auto; margin: 0; border: 0;
   /* Match ChatComposerInput's editable and placeholder typography tokens. */
   padding: var(--spacing-1);
   font-family: var(--font-family-body); font-size: var(--text-body-size);

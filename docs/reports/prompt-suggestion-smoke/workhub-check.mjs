@@ -167,9 +167,9 @@ try {
     draft: await input.innerText(),
     body: (await workhub.locator('body').innerText()).slice(-3000),
   };
-  await writeFile(join(output, 'workhub-check.json'), JSON.stringify(evidence, null, 2));
+  await writeFile(join(output, 'workhub-check.json'), JSON.stringify(evidence, null, 2) + '\n');
   await workhub.screenshot({ path: join(output, 'workhub-check.png') });
-  console.log(JSON.stringify(evidence, null, 2));
+  console.log(JSON.stringify(evidence, null, 2) + '\n');
   assert.equal(result.kind, 'generated');
   assert.equal(evidence.predictionRequests, 1);
   assert.equal(evidence.offerCount, 1);
@@ -220,7 +220,7 @@ try {
     'no resurrection',
   ];
   evidence.ok = true;
-  await writeFile(join(output, 'workhub-check.json'), JSON.stringify(evidence, null, 2));
+  await writeFile(join(output, 'workhub-check.json'), JSON.stringify(evidence, null, 2) + '\n');
   console.log('PASS WorkHub acceptance');
 } finally {
   await app.close();

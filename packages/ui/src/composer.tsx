@@ -2115,11 +2115,17 @@ export const Composer = forwardRef<
               )}
               <div className="maka-composer-input-suggestion-wrap">
                 {nextPrompt.text ? (
-                  <button type="button" className="maka-composer-next-prompt" onClick={acceptNextPrompt}
-                    onMouseDown={(event) => event.preventDefault()} title={`${nextPrompt.text} · ${suggestionAcceptLabel}`}
-                    aria-label={`${suggestionAcceptLabel}: ${nextPrompt.text}`}>
-                    <span>{nextPrompt.text}</span>
-                  </button>
+                  <UiButton
+                    type="button"
+                    variant="ghost"
+                    label={`${suggestionAcceptLabel}: ${nextPrompt.text}`}
+                    className="maka-composer-next-prompt"
+                    onClick={acceptNextPrompt}
+                    onMouseDown={(event) => event.preventDefault()}
+                    tooltip={`${nextPrompt.text} · ${suggestionAcceptLabel}`}
+                  >
+                    <span className="maka-composer-next-prompt-text">{nextPrompt.text}</span>
+                  </UiButton>
                 ) : null}
                 <ChatComposerInput
                   ref={inputRootRef}

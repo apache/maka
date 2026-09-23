@@ -1,7 +1,7 @@
 {
   "ok": true,
-  "profile": "/var/folders/vs/7v_3rkpj3h74gtq633nrh0z80000gn/T/maka-prompt-smoke-0j5UYk",
-  "sessionId": "[\"2a6f4ab081c6a9a5102ea27bd3275cf8fa4278ed856a501a673ba0b25a7c4ac5\",\"f49302f8-8761-474c-8e33-6611da883312\"]",
+  "profile": "/var/folders/vs/7v_3rkpj3h74gtq633nrh0z80000gn/T/maka-prompt-smoke-nRRFSm",
+  "sessionId": "[\"8bbae5c3688b0068d0c0fe41422dc84bb270e8dd5cadff9b24b5bddfb5627058\",\"4c5ca9cd-b5ff-4217-bbbe-dc4e41d2f059\"]",
   "requests": [
     {
       "path": "/v1/chat/completions",
