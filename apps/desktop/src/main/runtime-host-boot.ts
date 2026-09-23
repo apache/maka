@@ -92,7 +92,6 @@ import {
   mainWindowController,
   mainWindowDelegates,
   quitCoordinator,
-  settingsRecovery,
   settingsStore,
   shellEnvReady,
   showDesktopMessageBox,
@@ -179,6 +178,7 @@ import {
 import { registerRuntimeHostConfigIpc } from "./runtime-host-config-ipc-main.js";
 import { createCapabilityRevisionPublisher } from "./runtime-host-capability-revision-publisher.js";
 import { buildClientSettingsTools } from "./client-settings-tools.js";
+import { safeSendToRenderer } from "./main-window.js";
 import { createClientSettingsEffects } from "./client-settings-effects.js";
 import { registerClientSettingsIpc } from "./client-settings-ipc-main.js";
 import { startClientSettingsWatcher } from "./client-settings-watcher.js";
@@ -848,11 +848,11 @@ const clientSettingsEffects = createClientSettingsEffects({
   systemPrefersDark: () => nativeTheme.shouldUseDarkColors,
   observeLocale: (settings) => desktopLocale.observe(settings),
   emitExternalChanged: () => {
-    mainWindowController.send("settings:clientChanged");
+    const emitted = safeSendToRenderer("settings:clientChanged");
     sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() });
+    return emitted;
   },
 });
-settingsRecovery.setEffects(clientSettingsEffects);
 // An OS appearance flip changes no setting, so nothing else would notice it.
 // Only the icon depends on the answer, and `refresh` re-resolves it and
 // no-ops when the resolved tile is the one already applied — which is the
