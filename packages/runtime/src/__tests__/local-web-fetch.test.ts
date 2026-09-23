@@ -91,6 +91,44 @@ test('local WebFetch resolves relative image sources against the response URL', 
   assert.match(result, /!\[wiring\]\(https:\/\/docs\.example\.com\/guide\/images\/wiring\.png\)/);
 });
 
+test('local WebFetch resolves lazy image sources synthesized by Readability', async () => {
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () =>
+      new Response(
+        '<html><body><article><h1>Lazy wiring guide</h1>' +
+          '<p>A useful article body long enough for extraction.</p>' +
+          '<img alt="wiring" data-src="/images/wiring.png">' +
+          '</article></body></html>',
+        { headers: { 'content-type': 'text/html' } },
+      ),
+  });
+
+  const result = await executor.fetch({
+    url: 'https://docs.example.com/guide/install',
+    sessionId: 's1',
+  });
+
+  assert.match(result, /!\[wiring\]\(https:\/\/docs\.example\.com\/images\/wiring\.png\)/);
+});
+
+test('local WebFetch preserves the document base for lazy image sources', async () => {
+  const executor = createLocalWebFetchExecutor({
+    fetch: async () =>
+      new Response(
+        '<html><head><base href="https://cdn.example/assets/"></head><body><article>' +
+          '<h1>Lazy wiring guide</h1>' +
+          '<p>A useful article body long enough for extraction.</p>' +
+          '<img alt="wiring" data-src="images/wiring.png">' +
+          '</article></body></html>',
+        { headers: { 'content-type': 'text/html' } },
+      ),
+  });
+
+  const result = await executor.fetch({ url: 'https://docs.example.com/guide/', sessionId: 's1' });
+
+  assert.match(result, /!\[wiring\]\(https:\/\/cdn\.example\/assets\/images\/wiring\.png\)/);
+});
+
 test('local WebFetch leaves absolute and inline image sources unchanged', async () => {
   const inline = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
   const executor = createLocalWebFetchExecutor({

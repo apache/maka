@@ -168,6 +168,9 @@ function htmlToMarkdown(html: string, pageUrl: string): string {
       // Fall back to the response URL for a malformed page-authored base URL.
     }
   }
+  const documentBase = document.querySelector('base') ?? document.createElement('base');
+  documentBase.setAttribute('href', baseUrl);
+  if (!documentBase.parentNode) document.head?.prepend(documentBase);
   // Turndown renders both `<a href>` and `<img src>` as Markdown links, so each
   // has to carry an absolute URL: a relative path stops meaning anything once
   // the model reads the Markdown apart from the page it was extracted from.
