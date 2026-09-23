@@ -24,10 +24,6 @@ export {
 } from './services-context.js';
 export type {
   ApiKeyOnboardingBridge,
-  CommandCodeBrowserLoginBridge,
-  CommandCodeBrowserLoginCredentials,
-  CommandCodeBrowserLoginResult,
-  CommandCodeBrowserLoginStartResult,
   ConnectionOAuthBridge,
   ConnectionOAuthProviderBridge,
   ConnectionSettingsServices,
@@ -41,8 +37,6 @@ export {
   providerPanelActionErrorMessage,
 } from './provider-panel-shared.js';
 export { OnboardingStepForm } from './onboarding-step-form.js';
-export { CommandCodeBrowserLoginSection } from './commandcode-browser-login-section.js';
-export { CommandCodeBrowserLoginFlow } from './commandcode-browser-login-flow.js';
 export { getProviderSettingsCopy, subscriptionActionErrorMessage, subscriptionResultMessage } from './settings-provider-copy.js';
 export type { ProviderSettingsCopy } from './settings-provider-copy.js';
 export type {

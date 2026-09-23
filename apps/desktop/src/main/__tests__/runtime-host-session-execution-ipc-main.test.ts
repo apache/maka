@@ -2232,6 +2232,69 @@ test('returns the attachment_blocked envelope when an approved source has expire
   assert.deepEqual(result, { ok: false, reason: "attachment_blocked", code: "source_expired" });
 });
 
+test('Session snapshot IPC keeps committed text despite a lagging active marker', async () => {
+  const ipc = ipcHarness();
+  let closes = 0;
+  const opened = runtimeHostSessionFixture({
+    snapshot: {
+      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+      session: { sessionId: 'session-1', metadataRevision: 1, status: 'running', createdAt: 1, isArchived: false },
+      projectionRevision: 1,
+      rootTurn: { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1', status: 'running' },
+      goal: null,
+      queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
+      interactions: { pending: [] },
+    },
+    activeAssistantStreams: [
+      { kind: 'text', turnId: 'turn-1', messageId: 'settled' },
+      { kind: 'text', turnId: 'turn-1', messageId: 'streaming' },
+    ],
+    transcript: Promise.resolve([]),
+    events: (async function* () {})(),
+    async decodeTranscriptPage() {
+      return {
+        messages: [
+          { identity: 1, message: { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'committed question' } },
+          { identity: 3, message: { type: 'assistant', id: 'settled', turnId: 'turn-0', ts: 0, text: 'settled answer', modelId: 'test-model' } },
+        ],
+        nextCursor: 'older-page',
+      };
+    },
+    async close() { closes += 1; throw new Error('connection closed'); },
+  });
+  registerExecutionIpc({ client: executionClient({
+    getSession: async () => session(),
+    openSession: async () => opened,
+  }) }, ipc);
+  const result = await ipc.invoke('sessions:readSnapshot', 'session-1') as import('@maka/core/session-reference').SessionSnapshot;
+  assert.equal(result.text, 'Assistant: settled answer\n\nUser: committed question');
+  assert.equal(result.truncated, true);
+  assert.equal(closes, 1);
+  assert.equal(ipc.reconnectableChannels.has('sessions:readSnapshot'), true);
+
+  opened.snapshot.session.isArchived = true;
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
+  assert.equal(closes, 2, 'archive race must still release the subscription');
+  opened.snapshot.session.isArchived = false;
+  opened.decodeTranscriptPage = async () => { throw new Error('decode failed'); };
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /decode failed/);
+  assert.equal(closes, 3, 'close failure must not mask the original read failure');
+});
+
+test('Session snapshot IPC rejects invalid budgets and unavailable sources before opening', async () => {
+  const ipc = ipcHarness();
+  let lookups = 0;
+  let source: SessionCatalogProjection | null = null;
+  registerExecutionIpc({ client: executionClient({ getSession: async () => { lookups += 1; return source; } }) }, ipc);
+  for (const options of [null, [], 1, { maxChars: 0 }, { maxChars: 32_001 }, { maxChars: 1.5 }]) {
+    await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1', options), /Invalid Session snapshot/);
+  }
+  assert.equal(lookups, 0);
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /not found/);
+  source = { ...session(), isArchived: true };
+  await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
+});
+
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];
 
 function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
@@ -2251,7 +2314,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     queryMessages: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
-    regenerateTurn: unavailable,
+    openSession: unavailable,
     retractQueueEntry: unavailable,
     promoteQueueEntry: unavailable,
     updateQueueEntry: unavailable,
@@ -2363,6 +2426,10 @@ function ipcHarness() {
       assert.ok(handler, `missing handler: ${channel}`);
       return handler({ sender } as never, ...args);
     },
+    rendererNavigate(inPlace = false, mainFrame = true) {
+      sender.emit('did-start-navigation', {}, 'file:///index.html', inPlace, mainFrame);
+    },
+    rendererListenerCount() { return sender.listenerCount('destroyed'); },
     rendererGone() {
       sender.emit('render-process-gone');
     },
@@ -2459,4 +2526,48 @@ test('steers WorkHub through Host admission even though the ordinary Session cat
   });
   assert.deepEqual(submits, [{ sessionId: WORKHUB_COORDINATION_SESSION_ID, messageId: 'workhub-steering', placement: 'current_turn', content: { text: 'Change direction immediately', inlineReferences: [] } }]);
   assert.equal((result as { disposition: string }).disposition, 'steering');
+});
+
+
+test('renderer reload releases old observations without accumulating destroyed listeners', async () => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  const removed: string[] = [];
+  await registry.attach({ async observe() {}, async unobserve(id) { removed.push(id); } });
+  const ipc = observationIpcHarness(registry);
+  for (let i = 0; i < 20; i++) {
+    await ipc.invoke('sessions:observe', 'session-1', `observer-${i}`);
+    assert.equal(ipc.rendererListenerCount(), 2);
+    ipc.rendererNavigate(true); // Same-document navigation keeps live subscriptions.
+    ipc.rendererNavigate(false, false); // So do child-frame navigations.
+    assert.deepEqual(registry.observedSessionIds(), ['session-1']);
+    ipc.rendererNavigate();
+    assert.deepEqual(registry.observedSessionIds(), []);
+    assert.equal(ipc.rendererListenerCount(), 1);
+  }
+  assert.equal(removed.length, 20);
+  await registry.close();
+  assert.equal(ipc.rendererListenerCount(), 0);
+});
+
+test('an observation admitted across document replacement is cancelled before registration', async () => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  const ipc = ipcHarness();
+  const resolving = deferred();
+  registerRuntimeHostSessionObservationIpc({ observations: registry, resolveSideConversation: async () => { await resolving.promise; return false; } }, ipc);
+  const observing = ipc.invoke('sessions:observe', 'session-1', 'old-document');
+  ipc.rendererNavigate();
+  resolving.resolve();
+  assert.deepEqual(await observing, { kind: 'cancelled' });
+  assert.deepEqual(registry.observedSessionIds(), []);
+  await registry.close();
+});
+
+
+test('late transcript acknowledgement after renderer teardown is a no-op', async () => {
+  const registry = new RuntimeHostSessionObservationRegistry();
+  const ipc = observationIpcHarness(registry);
+  await ipc.invoke('sessions:transcript:acknowledge-tail', {
+    consumerId: 'released-consumer', sessionId: 'session-1', hostEpoch: 'epoch-1', through: 4,
+  });
+  await registry.close();
 });

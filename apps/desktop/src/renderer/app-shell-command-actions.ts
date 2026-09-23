@@ -25,16 +25,13 @@ import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from "@maka/ui";
 import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contract.js';
-import type { SessionStartMode } from './application/contracts/session-start-mode.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host-operation.js';
-import {
-  buildCommandList,
-  buildSessionCommands,
-} from "./command-palette-commands.js";
+import { buildCommandList } from "./command-palette-commands.js";
 import type { Command } from './features/overlays/index.js';
+import type { SessionCatalogController } from './application/contracts/session-catalog/session-catalog-state.js';
 import { renderConversationMarkdown } from "./conversation-markdown.js";
 import {
   commandPaletteActionErrorMessage,
@@ -75,20 +72,19 @@ export interface AppShellCommandListOptions {
   newTaskProfileId: string | undefined;
   settingsOpen: boolean;
   settingsProfileId: string | undefined;
-  sessions: readonly SessionSummary[];
+  sessionCatalog: SessionCatalogController;
   themePref: ThemePreference;
-  visibleSessions: SessionSummary[];
+  /** Sessions the rail hides (mounted side-chat forks) — the palette skips them too. */
+  hiddenSessionIds: ReadonlySet<string>;
   captureComposerImportOwner: () => ComposerImportOwner;
   createSession: () => void;
   openSideConversation: () => void;
-  startModeSession: (mode: SessionStartMode) => Promise<boolean>;
   openHelp: () => void;
   openScheduledTaskCreate: () => void;
   openProjectFolder: () => Promise<void>;
   openSessionInChat: (sessionId: string) => void;
   openSettings: () => void;
   openSettingsSection: (section: SettingsSection) => void;
-  openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
   copyTodayDailyReview: () => Promise<void>;
@@ -139,19 +135,14 @@ export function buildAppShellCommandList(
     defaultSlug: options.defaultConnection,
     onNewChat: () => optionsRef.current.createSession(),
     onOpenSideChat: () => optionsRef.current.openSideConversation(),
-    onStartDeepResearch: async () => {
-      const { startModeSession } = optionsRef.current;
-      await startModeSession("deep_research");
-    },
     onStartScheduledTask: () => optionsRef.current.openScheduledTaskCreate(),
     onOpenSettings: () => optionsRef.current.openSettings(),
     onOpenSettingsSection: (section) =>
       optionsRef.current.openSettingsSection(section),
-    // PR-UX-POLISH-1 commit 4 (WAWQAQ `e0dbad11` + kenji `2844f64f`):
-    // use the openHelp callback returned by useKeyboardHelp directly,
-    // instead of dispatching a synthetic KeyboardEvent. Same effect,
-    // clearer intent, and avoids the foot-gun where a typed `?` in a
-    // text input would be swallowed by the global keydown listener.
+    // `openHelp` is the overlays owner's command (`overlays.commands.openHelp`),
+    // handed in by the shell, rather than a synthetic KeyboardEvent: same
+    // effect, clearer intent, and a typed `?` in a text input is never
+    // swallowed by the global keydown listener.
     onOpenShortcuts: () => optionsRef.current.openHelp(),
     onSetTheme: (next) => optionsRef.current.setThemePref(next),
     onTestConnection: async (slug) => {
@@ -220,16 +211,15 @@ export function buildAppShellCommandList(
     ...(options.clientPathsAccessible
       ? {
           onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
-          onOpenSkillsFolder: () => optionsRef.current.openSkillsFolder(),
         }
       : {}),
     onSelectModule: (selection) => {
       optionsRef.current.setNavSelection(selection);
     },
     onExportActiveConversation: async () => {
-      const { activeId, messages, sessions, toastApi } = optionsRef.current;
+      const { activeId, messages, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
-      const session = sessions.find((s) => s.id === activeId);
+      const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
       const markdown = renderConversationMarkdown(
         session?.name ?? copy.newConversation,
         messages,
@@ -246,9 +236,9 @@ export function buildAppShellCommandList(
       }
     },
     onSaveActiveConversationToFile: async () => {
-      const { activeId, messages, sessions, toastApi } = optionsRef.current;
+      const { activeId, messages, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
-      const session = sessions.find((s) => s.id === activeId);
+      const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
       const sessionName = session?.name ?? copy.newConversation;
       const markdown = renderConversationMarkdown(
         sessionName,
@@ -398,20 +388,6 @@ export function buildAppShellCommandList(
   });
 }
 
-export function buildAppShellSessionCommands(
-  optionsRef: RefBox<AppShellCommandListOptions>,
-): ReturnType<typeof buildSessionCommands> {
-  const options = optionsRef.current;
-  return buildSessionCommands({
-    locale: options.uiLocale,
-    sessions: options.visibleSessions,
-    activeSessionId: options.activeId,
-    onSelectSession: (sessionId) => {
-      optionsRef.current.openSessionInChat(sessionId);
-    },
-  });
-}
-
 /**
  * #1045: the palette's command list keeps a stable identity while it is open.
  * app-shell rebuilds commandOptions on every render (streaming ticks
@@ -420,26 +396,33 @@ export function buildAppShellSessionCommands(
  * frozen list still acts on current data. Session rows are derived separately,
  * memoized on the visible session catalog + active session only: background
  * session creates/renames stay live while the palette is open, without
- * reintroducing per-tick rebuilds (visibleSessions is itself memoized in
- * app-shell, so rows rebuild only on real catalog changes).
+ * reintroducing per-tick rebuilds. The catalog subscription lives here — the
+ * consumption point — so shell renders are not driven by palette-only reads.
  */
 export function useAppShellCommands(
   paletteOpen: boolean,
   commandOptions: AppShellCommandListOptions,
-): Command[] {
+): {
+  commands: Command[];
+  sessionCatalog: SessionCatalogController;
+  hiddenSessionIds: ReadonlySet<string>;
+  activeSessionId: string | undefined;
+  onSelectSession: (id: string) => void;
+} {
   const optionsRef = useRef(commandOptions);
   optionsRef.current = commandOptions;
-  const { activeId, uiLocale, visibleSessions } = commandOptions;
-  const baseCommands = useMemo(
+  const { uiLocale } = commandOptions;
+  const commands = useMemo(
     () => buildAppShellCommandList(optionsRef),
     [paletteOpen, uiLocale],
   );
-  const sessionCommands = useMemo(
-    () => buildAppShellSessionCommands(optionsRef),
-    [paletteOpen, visibleSessions, activeId, uiLocale],
-  );
-  return useMemo(
-    () => [...baseCommands, ...sessionCommands],
-    [baseCommands, sessionCommands],
-  );
+  // Session rows subscribe the catalog inside the palette — the consumption
+  // point — so shell renders are not driven by palette-only reads.
+  return {
+    commands,
+    sessionCatalog: commandOptions.sessionCatalog,
+    hiddenSessionIds: commandOptions.hiddenSessionIds,
+    activeSessionId: commandOptions.activeId,
+    onSelectSession: commandOptions.openSessionInChat,
+  };
 }

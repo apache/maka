@@ -193,6 +193,52 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': recovery message evidence has equivalent UTF-8 byte budgets', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const promptText = '需要按 UTF-8 字节计量';
+      const prompt: RuntimeEvent = {
+        id: 'recovery-budget-prompt',
+        sessionId: 'recovery-budget-session',
+        invocationId: 'recovery-budget-invocation',
+        runId: 'recovery-budget-run',
+        turnId: 'recovery-budget-turn',
+        ts: 1,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: promptText },
+      };
+      await s.appendRuntimeEvent(prompt.sessionId, prompt.runId, prompt);
+      const query = {
+        sessionId: prompt.sessionId,
+        turnIds: [prompt.turnId],
+        eventIds: [prompt.id],
+      };
+      const complete = await s.readRecoveryMessageEvents({
+        ...query,
+        budget: { maxRecords: 1, maxBytes: 16 * 1024 },
+      });
+      assert.equal(complete.status, 'complete');
+      if (complete.status !== 'complete') throw new Error('expected recovery evidence');
+      assert.deepEqual(complete.records, [prompt]);
+      assert.equal(complete.sourceRecordCount, 1);
+      assert.ok(complete.storedBytes > promptText.length);
+      assert.deepEqual(
+        await s.readRecoveryMessageEvents({
+          ...query,
+          budget: { maxRecords: 0, maxBytes: 16 * 1024 },
+        }),
+        { status: 'limit_exceeded' },
+      );
+      assert.deepEqual(
+        await s.readRecoveryMessageEvents({
+          ...query,
+          budget: { maxRecords: 1, maxBytes: 1 },
+        }),
+        { status: 'limit_exceeded' },
+      );
+    });
+  });
   test(backend + ': transcript projection consumes bounded detached event iterators', async () => {
     await withProvider(make(), async ({ runtimeEventStore: s }) => {
       const run = {
@@ -744,6 +790,97 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': imported message projection finishes before commit starts', async (t) => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      let commitStarted = false;
+      const originalReplace = String.prototype.replace;
+      t.mock.method(
+        String.prototype,
+        'replace',
+        function (this: string, ...args: Parameters<typeof originalReplace>) {
+          if (String(this) === 'force projection failure') {
+            throw new Error('forced projection failure');
+          }
+          return Reflect.apply(originalReplace, this, args) as string;
+        },
+      );
+      await assert.rejects(
+        s.createImportedSession(
+          sessionInput(root),
+          [
+            {
+              type: 'user',
+              id: 'imported-user',
+              turnId: 'imported-turn',
+              ts: 1,
+              text: 'force projection failure',
+            },
+          ],
+          { adapterId: 'fake', sourceSessionId: 'source' },
+          { onCommitStarted: () => (commitStarted = true) },
+        ),
+        /forced projection failure/,
+      );
+      assert.equal(commitStarted, false);
+      assert.deepEqual(await s.listHeaders(), []);
+    });
+  });
+  test(backend + ': external import lookup excludes staged Sessions', async () => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      const createImport = (sourceSessionId: string) =>
+        s.createImportedSession(
+          sessionInput(root),
+          [
+            {
+              type: 'user',
+              id: `imported-${sourceSessionId}`,
+              turnId: `turn-${sourceSessionId}`,
+              ts: 1,
+              text: `imported ${sourceSessionId}`,
+            },
+          ],
+          {
+            adapterId: 'fake',
+            sourceSessionId,
+          },
+        );
+      const published = await createImport('shared-source');
+      const stagedShared = await createImport('shared-source');
+      const stagedOnly = await createImport('staged-only');
+      await s.updateHeader(published.id, { transcriptLedgerVersion: 1 });
+
+      assert.deepEqual(
+        await s.lookupExternalSessionImports(
+          'fake',
+          ['shared-source', 'staged-only', 'missing'],
+          8,
+        ),
+        [
+          {
+            sourceSessionId: 'shared-source',
+            livePublishedImportCount: 1,
+            recentSessionIds: [published.id],
+          },
+        ],
+      );
+
+      assert.deepEqual(
+        (await s.list()).map((session) => session.id),
+        [published.id],
+      );
+
+      const page = await s.listCatalogPage(undefined, undefined, 8);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') throw new Error('Expected a catalog page');
+      assert.deepEqual(
+        page.records.map((record) => record.header.id),
+        [published.id],
+      );
+      await assert.rejects(s.readCatalogRecord(stagedShared.id), SessionNotFoundError);
+      await assert.rejects(s.readCatalogRecord(stagedOnly.id), SessionNotFoundError);
+      assert.equal((await s.readCatalogRecord(published.id)).header.id, published.id);
+    });
+  });
   test(
     backend + ': catalog pagination visits mixed-case tied IDs exactly once in Local order',
     async () => {

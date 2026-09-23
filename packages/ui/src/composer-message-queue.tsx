@@ -25,6 +25,7 @@ import { List, ListItem } from '@astryxdesign/core/List';
 import type { ConversationCopy } from './conversation-copy.js';
 import { Check, GripVertical, HelpCircle, ICON_SIZE, Trash2, X } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
+import { PlatformShortcutText } from './platform-shortcut-text.js';
 
 type ComposerQueueEntry = Omit<MessageQueueEntryProjection, 'state'> & {
   state: MessageQueueEntryProjection['state'] | 'local';
@@ -150,7 +151,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
       {groups.map((group, index) => <section key={group.placement} data-queue-placement={group.placement}>
         <div className="maka-composer-queue-status">
           <span>{group.placement === 'current_turn' ? copy.steeringPending : copy.followupPending}</span>
-          {index === 0 && <Tooltip alignment="end" content={<span style={{ whiteSpace: 'pre-line' }}>{copy.queueShortcuts}</span>}>
+          {index === 0 && <Tooltip alignment="end" content={<span style={{ whiteSpace: 'pre-line' }}><PlatformShortcutText {...copy.queueShortcuts} /></span>}>
             <IconButton variant="ghost" size="sm" type="button" label={copy.queueShortcutsLabel}
               icon={<HelpCircle size={ICON_SIZE.control} aria-hidden="true" />} />
           </Tooltip>}

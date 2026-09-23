@@ -45,6 +45,7 @@ import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   createSessionTranscriptReader,
+  createTurnResultReader,
   TRANSCRIPT_TURN_MAX_BYTES,
 } from '../server/session-transcript-reader.js';
 import {
@@ -566,6 +567,10 @@ test('pages the ledger without materializing Turns it takes no rows from', async
       stores,
       canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
     });
+    const readTurnResult = createTurnResultReader({
+      stores,
+      canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+    });
     // Measure actual JSON decoded, not only the eventual response size.
     //
     // A read decodes the Turns it takes rows from, and no others. That bound is
@@ -588,6 +593,18 @@ test('pages the ledger without materializing Turns it takes no rows from', async
       return result;
     };
     const through = await read.readDurableHighWater(session.id);
+    assert.equal(
+      await decoding('early Turn result', SMALL_TURN_BUDGET, () =>
+        readTurnResult(session.id, 'turn-0'),
+      ),
+      '',
+    );
+    assert.equal(
+      await decoding('large Turn result', ONE_BIG_TURN_BUDGET, () =>
+        readTurnResult(session.id, 'turn-4'),
+      ),
+      'final answer 中文',
+    );
     const tail = await decoding('tail page', ONE_BIG_TURN_BUDGET, () =>
       read.readDurablePage(session.id, { direction: 'older', maxBytes: 1024, maxMessages: 1 }),
     );

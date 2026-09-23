@@ -25,6 +25,7 @@ import {
 } from '@agentclientprotocol/sdk';
 import type { SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
+import type { InteractionPendingSnapshot, InteractionSnapshot } from '@maka/runtime-host/protocol';
 import { whileActive } from './active-promise.js';
 import { AcpToolEventMapper } from './tool-event-mapper.js';
 
@@ -115,6 +116,17 @@ export class AcpSessionEventMapper {
     terminalStatus: 'completed' | 'failed' | 'cancelled' = 'completed',
   ): Promise<void> {
     return this.#enqueue(() => this.#tools.finishTools(turnId, terminalStatus));
+  }
+
+  pendingInteraction(pending: InteractionPendingSnapshot): Promise<void> {
+    return this.#enqueue(() => this.#tools.pendingInteraction(pending));
+  }
+
+  resolvedInteraction(
+    resolved: InteractionSnapshot,
+    pending: InteractionPendingSnapshot,
+  ): Promise<void> {
+    return this.#enqueue(() => this.#tools.resolvedInteraction(resolved, pending));
   }
 
   /** Waits until every notification already accepted by this mapper has settled. */

@@ -123,6 +123,7 @@ const coveredExtensions = new Map([
   ['.py', 'hash'],
   ['.rs', 'block'],
   ['.sh', 'hash'],
+  ['.sql', 'block'],
   ['.swift', 'block'],
   ['.toml', 'hash'],
   ['.ts', 'block'],
@@ -187,8 +188,6 @@ export const exclusionRules = [
       'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
-      'apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
-      'apps/desktop/resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
       'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
       'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
       'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
@@ -253,7 +252,6 @@ export const exclusionRules = [
     matches: (path) =>
       isOneOf(
         'packages/storage/src/__tests__/fixtures/codex-rollout-v0.144.jsonl',
-        'packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite',
         'packages/storage/test-fixtures/workflow-schema-v8.sql',
       )(path) || isUnder('docs/eval', '.csv')(path),
   },
@@ -266,8 +264,8 @@ export const exclusionRules = [
   {
     id: 'binary-files',
     justification:
-      'Binary image and database content. There is no text position in these formats where a header could be added without corrupting the file.',
-    matches: hasExtension('.png', '.sqlite'),
+      'Binary image, video, and database content. There is no text position in these formats where a header could be added without corrupting the file.',
+    matches: hasExtension('.png', '.mp4', '.sqlite'),
   },
   {
     id: 'no-creative-content',

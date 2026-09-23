@@ -24,6 +24,7 @@ import type { InteractionRequest } from '@maka/core/interaction';
 import type { StoredMessage } from '@maka/core/session';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  type InteractionPendingSnapshot,
   type SessionCatalogProjection,
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
@@ -54,6 +55,7 @@ describe('Maka ACP stdio server', () => {
       let root: NonNullable<SessionContinuitySnapshot['rootTurn']> | undefined;
       let first: FakeSubscription | undefined;
       let opens = 0;
+      let pending: InteractionPendingSnapshot | undefined;
       const stops: unknown[] = [];
       const snapshot = (projectionRevision = 1): SessionContinuitySnapshot =>
         continuitySnapshot({
@@ -68,6 +70,7 @@ describe('Maka ACP stdio server', () => {
             return (created = sessionProjection({ id: input.sessionId }));
           if (operation === 'connection.catalog.query') return connectionCatalogPage();
           if (operation === 'session.catalog.query') return { kind: 'session', session: created };
+          if (operation === 'interaction.query') return pending;
           if (operation === 'turn.start') {
             root = {
               sessionId: input.sessionId,
@@ -152,6 +155,15 @@ describe('Maka ACP stdio server', () => {
           assert.equal(opens, 2);
           assert.deepEqual(stops, []);
         } else {
+          pending = {
+            schemaVersion: 1,
+            interactionId: 'question-1',
+            ...root!,
+            revision: 1,
+            status: 'pending',
+            outcome: null,
+            request: unsupportedRequests[scenario],
+          };
           first!.push({
             kind: 'subscription.session_projection',
             hostEpoch: 'host-1',
@@ -160,20 +172,24 @@ describe('Maka ACP stdio server', () => {
             snapshot: {
               ...snapshot(3),
               interactions: {
-                pending: [
-                  {
-                    schemaVersion: 1,
-                    interactionId: 'question-1',
-                    ...root!,
-                    revision: 1,
-                    status: 'pending',
-                    outcome: null,
-                    request: unsupportedRequests[scenario],
-                  },
-                ],
+                pending: [pending],
               },
             },
           });
+          if (
+            scenario === 'permission' ||
+            scenario === 'sandbox_boundary' ||
+            scenario === 'client_capability'
+          ) {
+            const request = () =>
+              (harness.stdoutMessages() as Array<{ id: string; method?: string }>).find(
+                (message) => message.method === 'session/request_permission',
+              );
+            await waitFor(() => Boolean(request()));
+            stdin.write(
+              `${JSON.stringify({ jsonrpc: '2.0', id: request()!.id, error: { code: -32601, message: 'Unsupported client method' } })}\n`,
+            );
+          }
           await waitFor(() => Boolean(response(2)));
           assert.equal(response(2)?.error?.data?.code, 'unsupported_interaction');
           assert.equal(response(2)?.error?.data?.kind, scenario);
@@ -1153,6 +1169,7 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;
+  readonly transcriptWatermark = null;
   readonly subscriptionId: string;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{

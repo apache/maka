@@ -24,7 +24,11 @@ import type {
   ConnectionTestSummary,
 } from '@maka/core/runtime-policy';
 import { parseRequestHeaders } from '@maka/core/runtime-policy';
-import { PROVIDER_REGISTRY, providerFallbackModelIds } from '@maka/core/llm-connections';
+import {
+  PROVIDER_REGISTRY,
+  effectiveBaseUrl,
+  providerFallbackModelIds,
+} from '@maka/core/llm-connections';
 import {
   createConnectionEffectFetchTransport,
   type ConnectionEffectFetchTransport,

@@ -20,9 +20,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SessionSummary, StoredMessage } from '../session.js';
-import { foldForMatch } from '../thread-search.js';
+import { foldForMatch } from '../transcript-search.js';
 import {
   expandRecallPassage,
+  fetchRecallMaterial,
   recallSearchableText,
   runRecall,
   type RecallDeps,
@@ -51,6 +52,30 @@ function session(
 
 function userMessage(id: string, turnId: string, text: string): StoredMessage {
   return { type: 'user', id, turnId, ts: (nextTs += 1000), text } as StoredMessage;
+}
+
+function attachment(name: string, overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'image',
+    name,
+    mimeType: 'image/png',
+    bytes: 2048,
+    ref: {
+      kind: 'session_file',
+      sessionId: 's-shot',
+      relativePath: 'art_01HQ8Z3K4M5N6P7Q8R9S0T1V2W',
+    },
+    ...overrides,
+  };
+}
+
+function userMessageWithFiles(
+  id: string,
+  turnId: string,
+  text: string,
+  attachments: readonly ReturnType<typeof attachment>[],
+): StoredMessage {
+  return { type: 'user', id, turnId, ts: (nextTs += 1000), text, attachments } as StoredMessage;
 }
 
 function assistantMessage(id: string, turnId: string, text: string): StoredMessage {
@@ -721,6 +746,31 @@ test('expansion widens a passage around an anchor recall reported', async () => 
   assert.ok(expanded.ok);
   assert.ok(expanded.passage.messages.length >= passage.messages.length);
   assert.equal(expanded.passage.anchorMessageId, passage.anchorMessageId);
+  // Expansion rebuilds the passage from the same transcript, so the
+  // navigation coordinate has to survive the round trip unchanged: a UI that
+  // recalled a passage and then widened it must land on the same message.
+  assert.equal(expanded.passage.sequence, passage.sequence);
+});
+
+test('a passage reports the anchor index within its own transcript', async () => {
+  const data = mixedCorpus();
+  // `m6` is the ninth entry of `s-pet` in insertion order, which is the order
+  // `readMessages` returns and therefore the sequence the transcript reader
+  // addresses. Matching a term unique to it pins the anchor without relying on
+  // ranking.
+  const result = await runRecall({ terms: ['再查一下浮窗的显示条件'], limit: 1 }, scanDeps(data));
+  assert.ok(result.ok);
+  const passage = result.passages[0];
+  assert.ok(passage, 'a term unique to one message must produce a passage');
+  assert.equal(passage.sessionId, 's-pet');
+  assert.equal(passage.anchorMessageId, 'm6');
+  const transcript = data.messages.get('s-pet') ?? [];
+  const index = transcript.findIndex((message) => message.id === passage.anchorMessageId);
+  assert.equal(
+    passage.sequence,
+    index,
+    'sequence must be the anchor index in the transcript recall read, not a message count',
+  );
 });
 
 test('expansion refuses an anchor inside the active turn', async () => {
@@ -866,6 +916,501 @@ test('the passage budget keeps the nearest context and says when it cut the rest
     narrow.passage.messages.map((message) => message.messageId),
     ['near-before', 'anchor', 'near-after'],
   );
+});
+
+/**
+ * A screenshot pasted under "have a look" leaves no trace in the text, so the
+ * message is unreachable by any term a person would think of. Matching the
+ * file name is what makes the file findable at all.
+ */
+test('a message is reachable by the name of the file it carried', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '你看看', [attachment('pipeline-failure.png')]),
+        assistantMessage('a1', 'ts', '这是 CI 挂了'),
+      ],
+    },
+  ]);
+  for (const deps of [scanDeps(data), candidateDeps(data)]) {
+    const result = await runRecall({ terms: ['pipeline-failure'] }, deps, {
+      activeSessionId: 's-shot',
+    });
+    assert.ok(result.ok);
+    assert.deepEqual(anchorIds(result.passages), ['u1']);
+    const anchor = result.passages[0]?.messages.find((message) => message.isAnchor);
+    // The name is matched, but it comes back as a material rather than as text
+    // the user never typed.
+    assert.equal(anchor?.text, '你看看');
+    assert.deepEqual(anchor?.materials, [
+      {
+        name: 'pipeline-failure.png',
+        kind: 'image',
+        mimeType: 'image/png',
+        bytes: 2048,
+        resource: 'maka://runtime/attachments/art_01HQ8Z3K4M5N6P7Q8R9S0T1V2W',
+      },
+    ]);
+  }
+});
+
+test('a message whose whole content was a file is still a passage', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '', [attachment('bundle-size.png')]),
+        assistantMessage('a1', 'ts', '包体积涨了'),
+      ],
+    },
+  ]);
+  for (const deps of [scanDeps(data), candidateDeps(data)]) {
+    const result = await runRecall({ terms: ['bundle-size'] }, deps, {
+      activeSessionId: 's-shot',
+    });
+    assert.ok(result.ok);
+    assert.deepEqual(anchorIds(result.passages), ['u1']);
+    assert.equal(result.passages[0]?.messages[0]?.text, '');
+  }
+});
+
+/**
+ * `Read` refuses a PDF wherever it is stored, so its address is one the caller
+ * can only fail on — the same reason a material in another Session carries
+ * none. The file stays named and matchable either way.
+ */
+/**
+ * Reachability is a fact about where the material is stored, not about the
+ * passage that mentioned it. A ref pointing elsewhere gets a location even
+ * when the passage itself is local — keying it on the passage would hand out
+ * an address the calling Session can only refuse.
+ */
+test('a foreign ref inside a local passage is named by location, not address', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '转发过来的', [
+          attachment('from-elsewhere.png', {
+            ref: {
+              kind: 'session_file',
+              sessionId: 's-other',
+              relativePath: 'art_01HQ8Z3K4M5N6P7Q8R9S0T1V2X',
+            },
+          }),
+        ]),
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['from-elsewhere'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(result.ok);
+  const material = result.passages[0]?.messages[0]?.materials?.[0];
+  assert.equal(material?.resource, undefined, 'a foreign ref must not carry a local address');
+  assert.equal(material?.sourceSessionId, 's-other');
+  assert.equal(material?.materialId, 'art_01HQ8Z3K4M5N6P7Q8R9S0T1V2X');
+});
+
+/**
+ * A location is a thing to ask for, so it is only worth carrying when asking
+ * could succeed. Retrieval refuses a PDF wherever it is stored.
+ */
+test('a remote PDF is named without a location to ask for', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '看这份', [
+          attachment('contract.pdf', { kind: 'pdf', mimeType: 'application/pdf' }),
+        ]),
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['contract'] }, scanDeps(data), {
+    activeSessionId: 's-other',
+  });
+  assert.ok(result.ok);
+  const material = result.passages[0]?.messages[0]?.materials?.[0];
+  assert.equal(material?.name, 'contract.pdf');
+  assert.equal(material?.resource, undefined);
+  assert.equal(material?.sourceSessionId, undefined);
+  assert.equal(material?.materialId, undefined);
+});
+
+test('a message carrying more files than the cap names the first of them', async () => {
+  const many = Array.from({ length: 12 }, (_, index) => attachment(`shot-${index}.png`));
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [userMessageWithFiles('u1', 'ts', '一堆图', many)],
+    },
+  ]);
+  const result = await runRecall({ terms: ['一堆图'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(result.ok);
+  assert.deepEqual(
+    result.passages[0]?.messages[0]?.materials?.map((material) => material.name),
+    Array.from({ length: 8 }, (_, index) => `shot-${index}.png`),
+  );
+});
+
+test('a material Read cannot decode is named without an address', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '看这份', [
+          attachment('contract.pdf', { kind: 'pdf', mimeType: 'application/pdf' }),
+          attachment('diagram.png'),
+        ]),
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['contract'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(result.ok);
+  const materials = result.passages[0]?.messages[0]?.materials ?? [];
+  assert.deepEqual(
+    materials.map((material) => [material.name, material.resource !== undefined]),
+    [
+      ['contract.pdf', false],
+      ['diagram.png', true],
+    ],
+  );
+});
+
+/**
+ * A passage is built around the message that matched, and the file may be on
+ * one of its neighbours — the screenshot arrives under "have a look" while the
+ * answer beside it is what carries the searchable words.
+ */
+test('a neighbour carries its own materials', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '你看看', [attachment('ci-failure.png')]),
+        assistantMessage('a1', 'ts', '流水线在打包那一步挂了'),
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['流水线'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(result.ok);
+  assert.deepEqual(anchorIds(result.passages), ['a1']);
+  const neighbour = result.passages[0]?.messages.find((message) => message.messageId === 'u1');
+  assert.deepEqual(
+    neighbour?.materials?.map((material) => material.name),
+    ['ci-failure.png'],
+  );
+});
+
+/**
+ * The shape check runs before the cap, so a run of records the current shape
+ * does not describe cannot spend the budget a valid attachment needed.
+ */
+test('malformed attachments do not consume the per-message cap', async () => {
+  const malformed = Array.from({ length: 8 }, () => ({ kind: 'image' }));
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        {
+          type: 'user',
+          id: 'u1',
+          turnId: 'ts',
+          ts: 1,
+          text: '看这个',
+          attachments: [...malformed, attachment('survivor.png')],
+        } as unknown as StoredMessage,
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['看这个'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(result.ok);
+  assert.deepEqual(
+    result.passages[0]?.messages[0]?.materials?.map((material) => material.name),
+    ['survivor.png'],
+  );
+});
+
+/**
+ * The shared predicate rejects what a hand-written one let through: a kind
+ * outside the union, and a byte count that is not a whole number.
+ */
+test('an attachment outside the declared shape is not projected', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '看这些', [
+          attachment('clip.mov', { kind: 'video' }),
+          attachment('half.png', { bytes: 1.5 }),
+          attachment('nan.png', { bytes: Number.NaN }),
+          attachment('real.png'),
+        ]),
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['看这些'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(result.ok);
+  assert.deepEqual(
+    result.passages[0]?.messages[0]?.materials?.map((material) => material.name),
+    ['real.png'],
+  );
+});
+
+/**
+ * An attachment read resolves against the calling Session and refuses one
+ * stored elsewhere, so offering the address across a Session boundary would
+ * invite a call that can only fail.
+ */
+test('a material outside the asking Session is named without an address', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [userMessageWithFiles('u1', 'ts', '看这个', [attachment('trace.png')])],
+    },
+  ]);
+  const elsewhere = await runRecall({ terms: ['trace'] }, scanDeps(data), {
+    activeSessionId: 's-other',
+  });
+  assert.ok(elsewhere.ok);
+  const material = elsewhere.passages[0]?.messages[0]?.materials?.[0];
+  assert.equal(material?.name, 'trace.png');
+  assert.equal(material?.resource, undefined);
+  assert.equal('resource' in (material ?? {}), false);
+
+  const here = await runRecall({ terms: ['trace'] }, scanDeps(data), { activeSessionId: 's-shot' });
+  assert.ok(here.ok);
+  assert.ok(here.passages[0]?.messages[0]?.materials?.[0]?.resource);
+});
+
+test('a material whose ref has no readable address is named without one', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '本地文件', [
+          attachment('notes.md', {
+            kind: 'doc',
+            mimeType: 'text/markdown',
+            ref: { kind: 'external_file', absolutePath: '/tmp/notes.md' },
+          }),
+        ]),
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['notes.md'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(result.ok);
+  assert.equal(result.passages[0]?.messages[0]?.materials?.[0]?.resource, undefined);
+});
+
+test('a malformed attachment is skipped rather than named `undefined`', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        {
+          type: 'user',
+          id: 'u1',
+          turnId: 'ts',
+          ts: 1,
+          text: '看这个',
+          attachments: [{ kind: 'image' }, null, attachment('real.png')],
+        } as unknown as StoredMessage,
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['看这个'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(result.ok);
+  assert.deepEqual(
+    result.passages[0]?.messages[0]?.materials?.map((material) => material.name),
+    ['real.png'],
+  );
+});
+
+test('a credential-shaped file name is redacted on the way out', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '配置截图', [
+          attachment('ghp_0123456789abcdefghij-console.png'),
+        ]),
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['配置截图'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(result.ok);
+  const name = result.passages[0]?.messages[0]?.materials?.[0]?.name ?? '';
+  assert.doesNotMatch(name, /ghp_0123456789abcdefghij/u);
+  assert.match(name, /\[redacted\]/u);
+
+  // And the same term cannot be used to probe for it.
+  const probe = await runRecall({ terms: ['0123456789abcdefghij'] }, scanDeps(data), {
+    activeSessionId: 's-shot',
+  });
+  assert.ok(probe.ok);
+  assert.equal(probe.passages.length, 0);
+});
+
+/**
+ * A material outside the asking Session is named with where it lives, so the
+ * model has something to ask for. Inside the asking Session it is named with
+ * an address instead — asking to fetch what is already here would only copy
+ * it onto itself.
+ */
+test('a material carries an address or a location, never both', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [userMessageWithFiles('u1', 'ts', '看这个', [attachment('trace.png')])],
+    },
+  ]);
+  const here = await runRecall({ terms: ['trace'] }, scanDeps(data), { activeSessionId: 's-shot' });
+  assert.ok(here.ok);
+  const local = here.passages[0]?.messages[0]?.materials?.[0];
+  assert.ok(local?.resource);
+  assert.equal(local?.sourceSessionId, undefined);
+  assert.equal(local?.materialId, undefined);
+
+  const elsewhere = await runRecall({ terms: ['trace'] }, scanDeps(data), {
+    activeSessionId: 's-other',
+  });
+  assert.ok(elsewhere.ok);
+  const remote = elsewhere.passages[0]?.messages[0]?.materials?.[0];
+  assert.equal(remote?.resource, undefined);
+  assert.equal(remote?.sourceSessionId, 's-shot');
+  assert.equal(remote?.materialId, 'art_01HQ8Z3K4M5N6P7Q8R9S0T1V2W');
+});
+
+test('a material with no durable locator is named without one', async () => {
+  const data = corpus([
+    {
+      session: session('s-shot', 'screenshots'),
+      messages: [
+        userMessageWithFiles('u1', 'ts', '本地文件', [
+          attachment('notes.md', {
+            kind: 'doc',
+            mimeType: 'text/markdown',
+            ref: { kind: 'external_file', absolutePath: '/tmp/notes.md' },
+          }),
+        ]),
+      ],
+    },
+  ]);
+  const result = await runRecall({ terms: ['notes.md'] }, scanDeps(data), {
+    activeSessionId: 's-other',
+  });
+  assert.ok(result.ok);
+  const material = result.passages[0]?.messages[0]?.materials?.[0];
+  assert.equal(material?.name, 'notes.md');
+  assert.equal(material?.sourceSessionId, undefined);
+  assert.equal(material?.materialId, undefined);
+});
+
+/**
+ * The Session check is the point of the retrieval tool. Without it a material
+ * id would be enough to read any artifact in the workspace, including from the
+ * Sessions recall itself refuses to surface.
+ */
+test('a material is fetched only from a Session recall can see', async () => {
+  const data = corpus([
+    { session: session('s-shot', 'screenshots'), messages: [userMessage('u1', 'ts', '看这个')] },
+    {
+      session: session('s-fake', 'simulator', { backend: 'fake' } as Partial<SessionSummary>),
+      messages: [userMessage('f1', 'tf', '模拟')],
+    },
+  ]);
+  const asked: string[] = [];
+  const deps = scanDeps(data, {
+    fetchMaterial: async ({ sourceSessionId }) => {
+      asked.push(sourceSessionId);
+      return { ok: true, content: { kind: 'text', text: 'bytes' } };
+    },
+  });
+
+  const allowed = await fetchRecallMaterial({ sessionId: 's-shot', materialId: 'art_1' }, deps, {
+    activeSessionId: 's-active',
+  });
+  assert.ok(allowed.ok);
+  assert.deepEqual(allowed.content, { kind: 'text', text: 'bytes' });
+
+  for (const sessionId of ['s-fake', 's-missing']) {
+    const refused = await fetchRecallMaterial({ sessionId, materialId: 'art_1' }, deps, {
+      activeSessionId: 's-active',
+    });
+    assert.ok(!refused.ok && refused.reason === 'not_found', sessionId);
+  }
+  assert.deepEqual(asked, ['s-shot'], 'only an eligible Session may be fetched from');
+});
+
+test('material retrieval is closed while incognito is active', async () => {
+  const data = corpus([
+    { session: session('s-shot', 'screenshots'), messages: [userMessage('u1', 'ts', '看这个')] },
+  ]);
+  let asked = 0;
+  const result = await fetchRecallMaterial(
+    { sessionId: 's-shot', materialId: 'art_1' },
+    scanDeps(data, {
+      getPrivacyContext: async () => ({ incognitoActive: true }),
+      fetchMaterial: async () => {
+        asked += 1;
+        return { ok: true, content: {} };
+      },
+    }),
+    { activeSessionId: 's-active' },
+  );
+  assert.ok(!result.ok && result.reason === 'incognito_active');
+  assert.equal(asked, 0, 'the store must not be reached at all');
+});
+
+test('a host that cannot fetch materials refuses rather than pretending', async () => {
+  const data = corpus([
+    { session: session('s-shot', 'screenshots'), messages: [userMessage('u1', 'ts', '看这个')] },
+  ]);
+  const result = await fetchRecallMaterial(
+    { sessionId: 's-shot', materialId: 'art_1' },
+    scanDeps(data),
+    { activeSessionId: 's-active' },
+  );
+  assert.ok(!result.ok && result.reason === 'not_found');
+});
+
+test('a malformed material request is refused with a typed reason', async () => {
+  const data = corpus([
+    { session: session('s-shot', 'screenshots'), messages: [userMessage('u1', 'ts', '看这个')] },
+  ]);
+  const deps = scanDeps(data, { fetchMaterial: async () => ({ ok: true, content: {} }) });
+  for (const request of [null, [], 'x', {}, { sessionId: 's-shot' }, { materialId: 'art_1' }]) {
+    const result = await fetchRecallMaterial(request, deps, { activeSessionId: 's-active' });
+    assert.ok(!result.ok && result.reason === 'invalid_query', JSON.stringify(request));
+  }
+  // An unsupported material is the caller's problem to fix, not a missing one.
+  const unsupported = await fetchRecallMaterial(
+    { sessionId: 's-shot', materialId: 'art_1' },
+    scanDeps(data, {
+      fetchMaterial: async () => ({ ok: false, reason: 'unsupported', message: 'PDF' }),
+    }),
+    { activeSessionId: 's-active' },
+  );
+  assert.ok(!unsupported.ok && unsupported.reason === 'invalid_query');
 });
 
 test('a Session the source names but recall did not ask about is not read', async () => {

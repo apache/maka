@@ -35,7 +35,11 @@ import type {
   SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
-import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
+import {
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
+} from "@maka/runtime-host/client";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES,
@@ -50,7 +54,6 @@ import {
 import {
   type PreparedSessionSubscription,
   RuntimeHostSessionSubscriptionOwner,
-  SessionRemovedSubscriptionError,
 } from "./runtime-host-session-subscription-owner.js";
 import {
   type DesktopSequencedTranscriptMessage,
@@ -111,6 +114,7 @@ export interface RuntimeHostSessionObserverDeps {
   emitSubscriptionRecovered?: (sessionId: string) => void;
   recoverConnectionClosed?: boolean;
   transcriptHistoryBytes?: number;
+  transcriptGlobalCacheMaxBytes?: number;
   now?: () => number;
 }
 
@@ -127,6 +131,13 @@ interface ObservedSessionState {
   readonly transcriptConsumers: Map<string, TranscriptConsumer>;
   readonly subscriptionOwner: RuntimeHostSessionSubscriptionOwner;
   pendingTranscriptConsumers: number;
+  /**
+   * The installed replica is not always live: eviction leaves it non-resident,
+   * and a recovery window can leave it closed until activate() installs the
+   * replacement. Readers check `resident`; lifecycle passes (trim/discard)
+   * treat a dead replica as a no-op. It is only ever swapped inside the
+   * owner's staleness check — activation or installReseededReplica.
+   */
   replica?: DesktopTranscriptReplica;
   snapshot?: SessionContinuitySnapshot;
   projector?: RuntimeHostSessionProjector;
@@ -228,6 +239,7 @@ export class RuntimeHostSessionObserver {
   readonly #emitSubscriptionRecovered: (sessionId: string) => void;
   readonly #recoverConnectionClosed: boolean;
   readonly #transcriptHistoryBytes: number;
+  readonly #transcriptGlobalCacheMaxBytes: number;
   readonly #now: () => number;
   #closed = false;
   #transcriptAccessClock = 0;
@@ -252,6 +264,8 @@ export class RuntimeHostSessionObserver {
       deps.emitSubscriptionRecovered ?? (() => undefined);
     this.#recoverConnectionClosed = deps.recoverConnectionClosed ?? false;
     this.#transcriptHistoryBytes = deps.transcriptHistoryBytes ?? DESKTOP_TRANSCRIPT_HISTORY_MAX_BYTES;
+    this.#transcriptGlobalCacheMaxBytes =
+      deps.transcriptGlobalCacheMaxBytes ?? DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES;
     this.#now = deps.now ?? Date.now;
   }
 
@@ -292,7 +306,7 @@ export class RuntimeHostSessionObserver {
     try {
       await Promise.race([state.subscriptionOwner.waitUntilReady(), cancelled]);
       if (!state.replica?.resident) {
-        await Promise.race([state.subscriptionOwner.refresh(), cancelled]);
+        await Promise.race([state.subscriptionOwner.reseedTranscriptReplica(), cancelled]);
       }
       if (this.#pendingTranscriptConsumers.get(consumerId) !== pending) await cancelled;
       replica = state.replica!;
@@ -395,7 +409,7 @@ export class RuntimeHostSessionObserver {
     state.pendingTranscriptConsumers += 1;
     try {
       await state.subscriptionOwner.waitUntilReady();
-      if (!state.replica?.resident) await state.subscriptionOwner.refresh();
+      if (!state.replica?.resident) await state.subscriptionOwner.reseedTranscriptReplica();
       const replica = state.replica;
       if (!replica?.resident) throw new Error('Desktop transcript replica is unavailable');
       const landmark = (await this.#client.listSessionTurnLandmarks?.(sessionId, turnId))
@@ -669,14 +683,37 @@ export class RuntimeHostSessionObserver {
     const subscriptionOwner = new RuntimeHostSessionSubscriptionOwner({
       client: this.#client,
       sessionId,
-      now: this.#now,
       transcriptReplicaOptions: {
         accountPreparationBytes: (deltaBytes) =>
           this.#accountTranscriptPreparation(state, deltaBytes),
         onChange: (replica, change) => {
+          if (state.replica !== replica) return;
           this.#broadcastTranscriptChange(state, replica, change);
           this.#cacheTranscript(replica.snapshot());
         },
+      },
+      // Runs inside the owner's staleness check. The pointer moves after the
+      // only throwing steps, so a throw leaves the state on the evicted
+      // replica and the owner closes the orphan. Everything after the move —
+      // the projector feed, consumer resets, the budget pass — must stay
+      // non-throwing, or the state keeps a pointer to a replica the owner
+      // already closed.
+      installReseededReplica: (replica) => {
+        this.#cacheTranscript(replica.snapshot());
+        replica.adoptResidentAccounting();
+        state.replica = replica;
+        // The projector outlives an evicted replica, so rows that went
+        // durable while it was gone never reached its durable-message map —
+        // feed the reseeded tail the way a publish would, or steering
+        // suppression and admissions stay stale until the next recovery
+        // rebuilds the projector.
+        for (const event of
+          state.projector?.noteDurableTranscriptMessages(replica.messages()) ??
+          []) {
+          this.#broadcast(state.sessionId, event);
+        }
+        this.#resetTranscriptConsumers(state);
+        this.#touchReplica(state, state);
       },
       prepareActivation: (subscription, recovered) =>
         this.#prepareSubscriptionActivation(state, subscription, recovered),
@@ -747,7 +784,7 @@ export class RuntimeHostSessionObserver {
 
   async #acceptFrame(state: ObservedSessionState, frame: SubscriptionFrame): Promise<void> {
     if (frame.kind === 'subscription.transcript_advanced') {
-      await state.replica?.advance(frame.throughSequence);
+      await state.replica?.advance();
       return;
     }
     if (frame.kind === "subscription.runtime_resource_pty_data") {
@@ -857,13 +894,23 @@ export class RuntimeHostSessionObserver {
         const turnId = resolution.state === 'owned'
           ? resolution.turnId : (next.rootTurn ?? previous.rootTurn)?.turnId;
         if (!turnId) continue;
+        // `owned` admits; `cancelled` and the positive `not_admitted` — proof
+        // the Message can never execute — both retract it. Naming the two
+        // retracting states keeps a future addition from silently inheriting
+        // this outcome through the `else`.
+        const outcome = resolution.state === 'owned'
+          ? 'admitted' as const
+          : resolution.state === 'cancelled' || resolution.state === 'not_admitted'
+            ? 'retracted' as const
+            : undefined;
+        if (!outcome) continue;
         this.#broadcast(state.sessionId, {
           type: 'message_admission',
           id: `host-message-resolution:${next.queue.hostEpoch}:${next.queue.queueRevision}:${resolution.messageId}`,
           turnId,
           ts: this.#now(),
           messageId: resolution.messageId,
-          outcome: resolution.state === 'owned' ? 'admitted' : 'retracted',
+          outcome,
         });
       }
     } catch {
@@ -929,6 +976,16 @@ export class RuntimeHostSessionObserver {
     state: ObservedSessionState,
     error: Error,
   ): void {
+    // A recovery that loses the race to a deletion learns it as a
+    // 'subscription.open' not_found — the same terminal shape as an explicit
+    // session_removed, not a generic error.
+    if (
+      error instanceof RuntimeHostOperationError &&
+      error.operation === 'subscription.open' &&
+      error.code === 'not_found'
+    ) {
+      error = new SessionRemovedSubscriptionError(error.message);
+    }
     if (error instanceof SessionRemovedSubscriptionError) {
       this.#emitSessionsChanged("deleted", state.sessionId);
       void this.#closeState(state);
@@ -1004,9 +1061,9 @@ export class RuntimeHostSessionObserver {
         throw new Error('Runtime Host Session observer changed before activation');
       }
       state.snapshot = structuredClone(subscription.snapshot);
-      state.replica = subscription.replica;
       this.#cacheTranscript(subscription.replica.snapshot());
       subscription.replica.adoptResidentAccounting();
+      state.replica = subscription.replica;
       state.projector = projector;
       previousReplica?.close();
       this.#resetTranscriptConsumers(state);
@@ -1483,7 +1540,7 @@ export class RuntimeHostSessionObserver {
 
   #adjustTranscriptDeliveryBytes(consumer: TranscriptConsumer, delta: number): boolean {
     consumer.deliveryBytes += delta;
-    if (delta <= 0 || this.#transcriptResidentBytes() <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES) {
+    if (delta <= 0 || this.#transcriptResidentBytes() <= this.#transcriptGlobalCacheMaxBytes) {
       return true;
     }
     consumer.deliveryBytes -= delta;
@@ -1604,15 +1661,15 @@ export class RuntimeHostSessionObserver {
     }
     replicas.sort((left, right) => left.state.transcriptAccess - right.state.transcriptAccess);
     for (const candidate of replicas) {
-      if (total <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES) break;
+      if (total <= this.#transcriptGlobalCacheMaxBytes) break;
       const before = candidate.replica.residentBytes;
       candidate.replica.trimDurable(
-        Math.max(0, before - (total - DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES)),
+        Math.max(0, before - (total - this.#transcriptGlobalCacheMaxBytes)),
       );
       total -= before - candidate.replica.residentBytes;
     }
     for (const candidate of replicas) {
-      if (total <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES) break;
+      if (total <= this.#transcriptGlobalCacheMaxBytes) break;
       if (
         candidate.state === protectedState ||
         candidate.state.pendingTranscriptConsumers > 0 ||
@@ -1624,7 +1681,7 @@ export class RuntimeHostSessionObserver {
       candidate.replica.discard();
       total -= before;
     }
-    return this.#transcriptResidentBytes() <= DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES;
+    return this.#transcriptResidentBytes() <= this.#transcriptGlobalCacheMaxBytes;
   }
 
   #markTranscriptRead(state: ObservedSessionState, replica: DesktopTranscriptReplica): void {

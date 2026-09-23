@@ -83,56 +83,9 @@ export interface ConnectionOAuthBridge {
   };
 }
 
-/**
- * Browser-assisted Command Code sign-in, as the renderer sees it. The Desktop
- * adapter maps the preload's `commandCodeLogin` onto this; the shapes are kept
- * in step by hand because a module shared with main/preload would enter the
- * renderer's frozen legacy closure.
- */
-export type CommandCodeBrowserLoginFailureReason =
-  | 'denied'
-  | 'timeout'
-  | 'cancelled'
-  | 'superseded'
-  | 'port_unavailable'
-  | 'browser_unavailable';
-
-export interface CommandCodeBrowserLoginCredentials {
-  readonly apiKey: string;
-  readonly userName: string;
-  readonly keyName: string;
-}
-
-export interface CommandCodeBrowserLoginStartInput {
-  readonly baseUrl?: string;
-}
-
-export type CommandCodeBrowserLoginStartResult =
-  | { readonly ok: true; readonly attemptId: string; readonly authUrl: string }
-  | {
-      readonly ok: false;
-      readonly reason: 'port_unavailable' | 'browser_unavailable' | 'superseded';
-    };
-
-export type CommandCodeBrowserLoginResult =
-  | { readonly ok: true; readonly credentials: CommandCodeBrowserLoginCredentials }
-  | { readonly ok: false; readonly reason: CommandCodeBrowserLoginFailureReason };
-
-export interface CommandCodeBrowserLoginBridge {
-  start(input: CommandCodeBrowserLoginStartInput): Promise<CommandCodeBrowserLoginStartResult>;
-  complete(attemptId: string): Promise<CommandCodeBrowserLoginResult>;
-  cancel(attemptId: string): Promise<void>;
-}
-
 export interface ConnectionsBridge {
   /** Host-bound account operations; every adapter and fixture must provide them. */
   readonly oauth: ConnectionOAuthBridge;
-  /**
-   * Browser-assisted Command Code sign-in that fills the key field. Optional:
-   * fixtures and non-Desktop adapters may have no loopback to offer, and the
-   * form then shows only the paste path.
-   */
-  readonly commandCodeBrowserLogin?: CommandCodeBrowserLoginBridge;
   getSnapshot(): Promise<DesktopConnectionSnapshot>;
   setDefault(connection: DesktopConnectionIdentity | null): Promise<void>;
   create(input: CreateConnectionInput): Promise<IdentifiedLlmConnection>;

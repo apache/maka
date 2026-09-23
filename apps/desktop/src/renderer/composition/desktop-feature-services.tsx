@@ -23,6 +23,10 @@ import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub
 import { ConversationServicesProvider } from '../features/conversation';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
+import {
+  ClientPluginRoot,
+  ClientPluginServicesProvider,
+} from '../features/client-plugins/index.js';
 import { ExternalAgentSettingsServicesProvider } from '../features/external-agent-settings/index.js';
 import { createDesktopExternalAgentSettingsServices } from '../platform/desktop/create-external-agent-settings-services.js';
 import { ConnectionSettingsServicesProvider } from '../features/connection-settings';
@@ -36,6 +40,7 @@ import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
 import { OverlaysServicesProvider } from '../features/overlays/index.js';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
+import { createDesktopClientPluginServices } from '../platform/desktop/create-client-plugin-services.js';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
 import { createDesktopModuleHubServices } from '../platform/desktop/create-module-hub-services';
@@ -49,6 +54,10 @@ import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
 import { createDesktopOverlaysServices } from '../platform/desktop/create-overlays-services';
 import { observeReactPerformanceMeasures } from '../platform/desktop/react-performance-measures';
+import {
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../application/contracts/session-catalog/session-catalog-state.js';
 
 if (import.meta.env.DEV) {
   const stopObserving = observeReactPerformanceMeasures();
@@ -57,7 +66,13 @@ if (import.meta.env.DEV) {
 
 export function createDesktopFeatureServices() {
   return {
+    // The session catalog is renderer-owned shared state, not a bridge
+    // service — it is created once with the other app singletons and read
+    // through `useSessionCatalogController` so providers below do not need it
+    // drilled through the shell.
+    sessionCatalog: createSessionCatalogController(),
     appUpdate: createDesktopAppUpdateServices(),
+    clientPlugins: createDesktopClientPluginServices(),
     workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
@@ -80,7 +95,10 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
-    <AppUpdateServicesProvider services={props.services.appUpdate}>
+    <SessionCatalogContext.Provider value={props.services.sessionCatalog}>
+    <ClientPluginServicesProvider services={props.services.clientPlugins}>
+      <ClientPluginRoot>
+        <AppUpdateServicesProvider services={props.services.appUpdate}>
       <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
       <ExternalAgentSettingsServicesProvider services={props.services.externalAgentSettings}>
         <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
@@ -110,6 +128,9 @@ export function DesktopFeatureServicesProvider(props: {
         </RuntimeHostManagementServicesProvider>
       </ExternalAgentSettingsServicesProvider>
       </ConnectionSettingsServicesProvider>
-    </AppUpdateServicesProvider>
+        </AppUpdateServicesProvider>
+      </ClientPluginRoot>
+    </ClientPluginServicesProvider>
+    </SessionCatalogContext.Provider>
   );
 }

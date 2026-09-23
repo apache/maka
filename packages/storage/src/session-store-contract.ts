@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { ExecutorConfiguration } from '@maka/core/executor-catalog';
+
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
@@ -69,6 +71,7 @@ export interface SessionConfigurationMetadataUpdate {
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
     readonly executorId?: string;
+    executorConfig?: ExecutorConfiguration;
     readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
@@ -413,7 +416,12 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void;
   /** Wait until the durable authority is ready for cross-domain transactions. */
   ready(): Promise<void>;
-  /** Atomically create a Session from already-converted Maka raw messages. */
+  /**
+   * Atomically create a Session from already-converted Maka raw messages.
+   * Implementations must finish canonical validation and deterministic catalog
+   * projection before invoking `onCommitStarted`; failures before that callback
+   * have not started durable commit and must not leave a staged Session.
+   */
   createImportedSession(
     input: CreateSessionInput,
     messages: readonly StoredMessage[],

@@ -32,7 +32,10 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
-import type { ExternalSessionLimit } from '@maka/core/external-session';
+import {
+  normalizeExternalSessionQueryText,
+  type ExternalSessionLimit,
+} from '@maka/core/external-session';
 import { CurrentTodoStore, TodoOverlay, renderTodoIndicator } from './pi-tui-todo.js';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { deriveConnectionSlug, type ProviderType } from '@maka/core/llm-connections';
@@ -185,6 +188,8 @@ import {
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
+
+const EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS = 120;
 
 export interface MakaPiTuiInput {
   /** Launcher command used in resume and recovery instructions. */
@@ -567,6 +572,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let connectionIdentityNotice: string | undefined;
   let busy = false;
   let closed = false;
+  const cancelScheduledExternalSearches = new Set<() => void>();
   let currentActivityCompletion: Promise<void> | undefined;
   let permissionResponseInFlightRequestId: string | null = null;
   // Session recap (issue #1055): an in-flight lock shared by manual and
@@ -599,7 +605,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     };
   };
   let userQuestionInFlight = false;
-  let userQuestionOverlay: OverlayHandle | undefined;
+  let userQuestionPrompt: UserQuestionOverlay | undefined;
   let userQuestionProgress:
     | {
         requestId: string;
@@ -1145,6 +1151,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     attention.reset();
     // Stop asking the terminal for focus reports before handing it back.
     terminal.write(DISABLE_FOCUS_REPORTING);
+    for (const cancel of cancelScheduledExternalSearches) cancel();
+    cancelScheduledExternalSearches.clear();
     tui.stop();
   };
 
@@ -2258,9 +2266,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       margin: { bottom: BOTTOM_PICKER_MARGIN_ROWS },
     });
 
-  const closeUserQuestionOverlay = (): void => {
-    userQuestionOverlay?.hide();
-    userQuestionOverlay = undefined;
+  const closeUserQuestionPrompt = (): void => {
+    const prompt = userQuestionPrompt;
+    if (!prompt) return;
+    layout.setBlockingInteraction(undefined);
+    userQuestionPrompt = undefined;
+    if (tui.getFocusedComponent() === prompt) tui.setFocus(editorSurface);
   };
 
   const finishUserQuestion = (requestId: string, answers: Array<string | null>): void => {
@@ -2271,7 +2282,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     userQuestionInFlight = true;
-    closeUserQuestionOverlay();
+    closeUserQuestionPrompt();
     void respond
       .call(input.driver, { requestId, answers })
       .then(() => {
@@ -2299,38 +2310,35 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       finishUserQuestion(request.requestId, progress.answers);
       return;
     }
-    closeUserQuestionOverlay();
+    closeUserQuestionPrompt();
     const advance = (answer: string | null): void => {
       progress.answers[progress.index] = answer;
       progress.index += 1;
       showUserQuestion();
     };
-    userQuestionOverlay = showBottomPicker(
-      new UserQuestionOverlay(tui, {
-        title: question.question,
-        rightLabel: `${progress.index + 1} / ${request.questions.length}`,
-        hint: '↑↓ move · type to answer · Enter select · Esc unanswered · Ctrl+C stop',
-        placeholder: 'Other: type your answer…',
-        options: question.options,
-        // Live budget: terminal.rows changes on resize, so read it per render
-        // rather than at overlay construction.
-        maxRows: () => Math.max(1, terminal.rows - BOTTOM_PICKER_MARGIN_ROWS),
-        onSelectOption: (index) => advance(question.options[index]?.label ?? null),
-        onSubmitText: (value) => advance(value),
-        onSkip: () => advance(null),
-      }),
-    );
+    userQuestionPrompt = new UserQuestionOverlay(tui, {
+      title: question.question,
+      rightLabel: `${progress.index + 1} / ${request.questions.length}`,
+      hint: '↑↓ move · type to answer · Enter select · Esc unanswered · Ctrl+C stop',
+      placeholder: 'Other: type your answer…',
+      options: question.options,
+      onSelectOption: (index) => advance(question.options[index]?.label ?? null),
+      onSubmitText: (value) => advance(value),
+      onSkip: () => advance(null),
+    });
+    layout.setBlockingInteraction(userQuestionPrompt);
+    tui.setFocus(userQuestionPrompt);
   };
 
-  const syncUserQuestionOverlay = (): void => {
+  const syncUserQuestionPrompt = (): void => {
     const request = activeUserQuestionRequest(state);
     if (!request) {
-      closeUserQuestionOverlay();
+      closeUserQuestionPrompt();
       userQuestionProgress = undefined;
       return;
     }
     if (userQuestionInFlight) return;
-    if (userQuestionProgress?.requestId !== request.requestId) {
+    if (userQuestionProgress?.requestId !== request.requestId || !userQuestionPrompt) {
       userQuestionProgress = {
         requestId: request.requestId,
         index: 0,
@@ -2471,7 +2479,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       transcriptOverlay?.hide();
       transcriptOverlay = undefined;
     }
-    syncUserQuestionOverlay();
+    syncUserQuestionPrompt();
     syncFormOverlay();
   };
 
@@ -3110,17 +3118,40 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     let sessions: readonly ExternalSessionCatalogItem[] = [];
     let nextCursor: string | null = null;
     let revision = 0;
+    let normalizedQuery = normalizeExternalSessionQueryText(query);
+    let cancelScheduledSearch: (() => void) | undefined;
+    let pageClosed = false;
     let overlay: OverlayHandle | undefined;
     let search: SessionSearchOverlay | undefined;
     let byValue = new Map<string, ExternalSessionCatalogItem>();
 
-    const closeOverlay = () => overlay?.hide();
+    const dropScheduledSearch = (): boolean => {
+      const hadScheduledSearch = cancelScheduledSearch !== undefined;
+      if (cancelScheduledSearch) cancelScheduledExternalSearches.delete(cancelScheduledSearch);
+      cancelScheduledSearch?.();
+      cancelScheduledSearch = undefined;
+      return hadScheduledSearch;
+    };
+    const resetCatalogPage = (): void => {
+      sessions = [];
+      nextCursor = null;
+      byValue = new Map();
+      render();
+    };
+    const closeOverlay = (): void => {
+      pageClosed = true;
+      dropScheduledSearch();
+      revision += 1;
+      overlay?.hide();
+    };
     const toggleScope = (): void => {
       const alternate = input.externalSessions
         ?.listScopes()
         .find((candidate) => candidate !== scope);
       if (!alternate) return;
+      dropScheduledSearch();
       scope = alternate;
+      resetCatalogPage();
       void load(false);
     };
     const render = (): void => {
@@ -3193,8 +3224,26 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         emptyText: sessions.length === 0 ? copy.externalEmpty : copy.externalUnavailable,
         notice,
         onQuery: (text) => {
+          const nextNormalizedQuery = normalizeExternalSessionQueryText(text);
           query = text;
-          void load(false);
+          if (nextNormalizedQuery === normalizedQuery) return;
+          normalizedQuery = nextNormalizedQuery;
+          dropScheduledSearch();
+          resetCatalogPage();
+          // Retire an older in-flight response immediately. Waiting until the
+          // debounce fires would let it repaint results for the previous query.
+          const requestRevision = ++revision;
+          let cancel: (() => void) | undefined;
+          const handle = setTimeout(() => {
+            if (cancel) cancelScheduledExternalSearches.delete(cancel);
+            cancelScheduledSearch = undefined;
+            if (closed || pageClosed) return;
+            void load(false, undefined, requestRevision);
+          }, EXTERNAL_SESSION_SEARCH_DEBOUNCE_MS);
+          handle.unref();
+          cancel = () => clearTimeout(handle);
+          cancelScheduledSearch = cancel;
+          cancelScheduledExternalSearches.add(cancel);
         },
         onSelect: (item) => {
           if (item.value === 'external:load-more' && nextCursor) {
@@ -3267,8 +3316,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       overlay = showBottomPicker(search);
     };
 
-    const load = async (append: boolean, cursor?: string): Promise<void> => {
-      const requestRevision = ++revision;
+    const load = async (
+      append: boolean,
+      cursor?: string,
+      scheduledRevision?: number,
+    ): Promise<void> => {
+      const requestRevision = scheduledRevision ?? ++revision;
       try {
         const page = await input.externalSessions!.listSessions({
           adapterId,
@@ -3276,12 +3329,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           ...(cursor ? { cursor } : {}),
           ...(query ? { text: query } : {}),
         });
-        if (requestRevision !== revision || closed || turnRunning) return;
+        if (requestRevision !== revision || pageClosed || closed || turnRunning) return;
         sessions = append ? [...sessions, ...page.sessions] : page.sessions;
         nextCursor = page.nextCursor;
         render();
       } catch {
-        if (requestRevision !== revision) return;
+        if (requestRevision !== revision || pageClosed || closed) return;
         state.entries.push({ kind: 'notice', level: 'error', text: copy.externalCatalogFailed });
         requestRender();
       }
@@ -4722,6 +4775,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       else requestTurnInterrupt();
       return { consume: true };
     }
+    // AskUserQuestion is rendered inside the live layout so the transcript is
+    // not covered by a modal overlay. Keep the same input-capture boundary as
+    // the old overlay while the prompt owns focus.
+    if (userQuestionPrompt) return undefined;
     if (tui.hasOverlay()) return undefined;
     if (sideConversation && matchesSideConversationToggle(data)) {
       if (!isKeyRepeat(data)) void toggleSideConversation();

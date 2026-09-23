@@ -19,7 +19,7 @@
 
 import { useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
-import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
+import { expect, fn, spyOn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-review';
@@ -912,7 +912,6 @@ function bridge(options: {
         ...SIDE_CHAT_SESSION,
         permissionMode: mode,
       }),
-      regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
@@ -1358,6 +1357,64 @@ export const BrowserLoaded: Story = {
     expect(canvasElement.querySelector('.maka-browser-backdrop')).toBeNull();
     finishNativeMenu(null);
     await waitFor(() => expect(add).toHaveAttribute('aria-expanded', 'false'));
+
+    // An idle strip samples no geometry; a strip that moves or shrinks in place
+    // is mirrored again; a DOM overlay across it parks the page until it closes.
+    await userEvent.unhover(add);
+    await waitFor(() => expect(document.querySelector(':popover-open:not(:empty)')).toBeNull());
+    const strip = canvasElement.querySelector<HTMLElement>('.maka-browser-strip')!;
+    const measure = spyOn(strip, 'getBoundingClientRect');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(measure).not.toHaveBeenCalled();
+    measure.mockRestore();
+    const before = browserViewport.mock.lastCall![0].rect as { x: number; width: number };
+    strip.style.position = 'relative';
+    strip.style.left = '24px';
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x + 24, width: before.width }));
+    strip.style.removeProperty('position');
+    strip.style.removeProperty('left');
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+    strip.style.width = `${before.width - 40}px`;
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width - 40 }));
+    strip.style.removeProperty('width');
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+    const bounds = strip.getBoundingClientRect();
+    const overlay = document.createElement('div');
+    overlay.popover = 'manual';
+    overlay.textContent = 'menu';
+    Object.assign(overlay.style, { inset: 'auto', margin: '0', left: `${bounds.left + 8}px`, top: `${bounds.top + 8}px`, width: '80px', height: '40px' });
+    document.body.append(overlay);
+    // An open popover that moves, then grows, across the strip with no toggle.
+    for (const across of [{ left: `${bounds.left + 8}px` }, { width: '200px' }]) {
+      Object.assign(overlay.style, { left: `${bounds.left - 120}px`, width: '80px' });
+      overlay.showPopover();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width });
+      Object.assign(overlay.style, across);
+      await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeNull());
+      overlay.hidePopover();
+      await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+    }
+    Object.assign(overlay.style, { left: `${bounds.left + 8}px`, width: '80px' });
+    // Closed by hiding, then by unmounting while still open.
+    for (const close of [() => overlay.hidePopover(), () => overlay.remove()]) {
+      overlay.showPopover();
+      await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeNull());
+      await waitFor(() => expect(canvasElement.querySelector('.maka-browser-backdrop')).not.toBeNull());
+      close();
+      await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+      expect(canvasElement.querySelector('.maka-browser-backdrop')).toBeNull();
+    }
+    // Like the toast viewport: open while empty, then filled with no toggle.
+    overlay.replaceChildren();
+    document.body.append(overlay);
+    overlay.showPopover();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    overlay.textContent = 'toast';
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toBeNull());
+    overlay.replaceChildren();
+    await waitFor(() => expect(browserViewport.mock.lastCall?.[0].rect).toMatchObject({ x: before.x, width: before.width }));
+    overlay.remove();
   },
 };
 

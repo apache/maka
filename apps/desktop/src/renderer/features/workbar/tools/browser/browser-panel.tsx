@@ -32,7 +32,7 @@
  * It mounts only for sessions with a live view (see browser:live), so an
  * ordinary chat reserves no space.
  */
-import { isNativeSurfaceOccluded } from '../../../../application/contracts/native-surface-occlusion.js';
+import { isNativeSurfaceOccluded, watchNativeSurface } from '../../../../application/contracts/native-surface-occlusion.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ICON_SIZE, ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core/browser';
@@ -83,6 +83,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   const editingRef = useRef(false);
   const browserPanelMountedRef = useMountedRef();
   const browserPanelSessionIdRef = useRef(sessionId);
+  // Which session the held `state`/`address` describe — a hidden stretch must
+  // not wipe them, and a session switch while hidden must still reset on show.
+  const stateSessionRef = useRef<string | undefined>(undefined);
 
   browserPanelSessionIdRef.current = sessionId;
 
@@ -90,12 +93,18 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     return browserPanelMountedRef.current && browserPanelSessionIdRef.current === ownerSessionId;
   }, []);
 
-  // Subscribe to this session's state pushes + seed the initial state.
+  // Subscribe to this session's state pushes + seed the current state only
+  // while the panel is shown: hidden pushes are missed on purpose, and the
+  // getState reseed on the way back catches up.
   useEffect(() => {
+    if (hidden) return;
     let alive = true;
-    editingRef.current = false;
-    setState(EMPTY_STATE);
-    setAddress('');
+    if (stateSessionRef.current !== sessionId) {
+      stateSessionRef.current = sessionId;
+      editingRef.current = false;
+      setState(EMPTY_STATE);
+      setAddress('');
+    }
     const apply = (next: BrowserState) => {
       if (!alive) return;
       setState(next);
@@ -112,12 +121,10 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
       alive = false;
       off();
     };
-  }, [browser, sessionId]);
+  }, [browser, sessionId, hidden]);
 
-  // Mirror the strip's on-screen rect to main every animation frame while it is
-  // showable. Position shifts on window resize and sidebar drags even when the
-  // size is unchanged, which a ResizeObserver would miss; a getBoundingClientRect
-  // per frame is negligible and the IPC only fires when the rect changes.
+  // Mirror the strip's on-screen rect to main while it is showable. The IPC
+  // only fires when the rect changes.
   const showView = !hidden && state.hasPage;
   useEffect(() => {
     // Capture the injected capability because this passive cleanup may run
@@ -129,12 +136,11 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     }
     const el = stripRef.current;
     if (!el) return;
-    let raf = 0;
     let last = '';
     let active = true;
     let covered = false;
     let revision = 0;
-    const tick = () => {
+    const sync = () => {
       const r = el.getBoundingClientRect();
       const rect = {
         x: Math.round(r.left),
@@ -158,18 +164,17 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         } else setBackdrop(undefined);
         last = '';
       }
-      if (occluded) { raf = requestAnimationFrame(tick); return; }
+      if (occluded) return;
       const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
       if (key !== last) {
         last = key;
         browser.setViewport({ sessionId, rect });
       }
-      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
+    const surface = watchNativeSurface(el, sync);
     return () => {
       active = false;
-      cancelAnimationFrame(raf);
+      surface.dispose();
       browser.setViewport({ sessionId, rect: null });
     };
   }, [browser, sessionId, showView]);

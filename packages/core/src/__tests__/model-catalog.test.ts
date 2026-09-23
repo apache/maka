@@ -62,6 +62,29 @@ test('catalog transport preserves independent limits and their unmodified defaul
   assert.equal(decoded.defaultInputLimit, 32000);
 });
 
+test('GPT-6 Sol and Luna use GPT labels and expose supported thinking levels', () => {
+  const models = [{ id: 'gpt-6-sol' }, { id: 'gpt-6-luna' }];
+  for (const providerType of ['openai', 'openai-codex'] as const) {
+    const entries = buildModelCatalogEntries({ providerType, models, modelSource: 'fetched' });
+    assert.deepEqual(
+      entries.map(({ id, displayName, thinkingLevels }) => ({ id, displayName, thinkingLevels })),
+      [
+        {
+          id: 'gpt-6-sol',
+          displayName: 'GPT-6 Sol',
+          thinkingLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        },
+        {
+          id: 'gpt-6-luna',
+          displayName: 'GPT-6 Luna',
+          thinkingLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        },
+      ],
+      providerType,
+    );
+  }
+});
+
 test('a live inventory annotates a model it omits and preserves higher-priority failures', () => {
   const input = {
     providerType: 'zai-coding-plan' as const,
@@ -332,31 +355,31 @@ test('catalog provenance follows the projected model facts marker used in produc
 test('fallback provider catalogs include projected facts-backed models', () => {
   const entries = buildConnectionModelCatalogEntries({
     connection: {
-      slug: 'opencode-free-facts',
-      providerType: 'opencode-free',
-      defaultModel: 'custom-free-model',
+      slug: 'ark-facts',
+      providerType: 'volcengine-ark',
+      defaultModel: 'custom-model',
       models: [
         {
-          id: 'custom-free-model',
+          id: 'custom-model',
           contextWindow: 128_000,
         },
       ],
       modelSource: 'fallback',
     },
   });
-  const entry = entries.find((candidate) => candidate.id === 'custom-free-model');
+  const entry = entries.find((candidate) => candidate.id === 'custom-model');
   assert.equal(entry?.contextWindow, 128_000);
 });
 
 test('fallback provider catalogs apply facts to known fallback models', () => {
   const entries = buildConnectionModelCatalogEntries({
     connection: {
-      slug: 'opencode-free-known-facts',
-      providerType: 'opencode-free',
-      defaultModel: 'nemotron-3-ultra-free',
+      slug: 'ark-known-facts',
+      providerType: 'volcengine-ark',
+      defaultModel: 'doubao-seed-2-0-pro-260215',
       models: [
         {
-          id: 'nemotron-3-ultra-free',
+          id: 'doubao-seed-2-0-pro-260215',
           contextWindow: 200_000,
           inputLimit: 200_000,
           capabilities: { chat: true },
@@ -365,7 +388,7 @@ test('fallback provider catalogs apply facts to known fallback models', () => {
       modelSource: 'fallback',
     },
   });
-  const entry = entries.find((candidate) => candidate.id === 'nemotron-3-ultra-free');
+  const entry = entries.find((candidate) => candidate.id === 'doubao-seed-2-0-pro-260215');
   assert.equal(entry?.contextWindow, 200_000);
 });
 

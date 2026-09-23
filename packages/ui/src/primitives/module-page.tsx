@@ -19,42 +19,15 @@
 
 // packages/ui/src/primitives/module-page.tsx
 //
-// The ONE shell every module page (定时任务 / 每日回顾 / …) renders into.
-//
-// Built on Astryx `Layout` rather than a hand-rolled grid, following the
-// `incident-console` page template — the vendor's archetype for exactly this
-// page: dense rows, not cards, with a resizable inspector panel beside them.
-// Layout owns what we used to own by hand: header/content/panel zones,
-// padding collapse between adjacent slots, and scroll containment.
-//
-// `contentWidth` clamps the page into a centred column, the way every other
-// main page in this app is clamped — nothing here runs edge to edge. Astryx
-// applies the same `--layout-content-width` to the header's inner wrapper and
-// to the body row, and both centre inside the full plate width, so the title
-// keeps the rows' left edge. The inspector rides INSIDE that column rather
-// than beside it, which is what keeps the two aligned when it opens.
-//
-// Header shape is the template's, too: title, one quiet supporting line and
-// the actions on one row, then the page's control bar as the header's last
-// row. No lede paragraph, so the page opens straight into its content instead
-// of spending three stacked tiers before the first row.
-//
-// No rules anywhere in the page chrome — not under the header, not beside the
-// inspector. The only lines on the page are the list's own row dividers, which
-// say where a row ends; a header rule and a panel rule would only restate a
-// boundary the layout already draws, and this app separates columns tonally
-// (DESIGN.md, One Working Plane) rather than with hairlines. The inspector's
-// own surface IS that tonal step — see `.maka-module-page .astryx-layout-panel`
-// in module-shell.css. Until it was painted this paragraph described an
-// intention rather than the page: the panel inherited the content column's
-// white, so the columns were separated neither tonally nor by a line, and the
-// inspector read as loose content instead of a region beside the list.
+// The ONE shell every module page (定时任务 / 每日回顾 / …) renders into: a
+// centred column of rows, and one dialog for the selected row's detail. A side
+// panel inside a centred column squeezes the rows every time it opens, so the
+// detail never shares the column.
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { Dialog, DialogHeader, HStack, Heading, StackItem, Text, VStack } from '@astryxdesign/core';
-import { Layout, LayoutContent, LayoutHeader, LayoutPanel } from '@astryxdesign/core/Layout';
-import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable';
-import { useMediaQuery } from '@astryxdesign/core/hooks';
+import { Layout, LayoutContent, LayoutFooter, LayoutHeader } from '@astryxdesign/core/Layout';
+import { useConfirmOpen } from '../toast.js';
 import { cn } from '../utils.js';
 
 /**
@@ -74,34 +47,27 @@ export interface ModulePageProps {
   meta?: ReactNode;
   /** Right-aligned header cluster: the primary action, then any overflow menu. */
   actions?: ReactNode;
-  /**
-   * The page's control bar — module switch on the left, this page's view and
-   * filters on the right. It belongs to the whole page, not to the list, so it
-   * lives in the header above the content/inspector split. Its own bottom
-   * hairline is then the ONE horizontal rule on the page, and the inspector's
-   * vertical divider starts exactly where that rule ends.
-   */
+  /** The page's control bar — module switch on the left, view and filters on the right. */
   toolbar?: ReactNode;
-  /** Page body. Rendered edge-to-edge; the caller owns its own padding. */
+  /**
+   * Page body. LayoutContent keeps its scrollport at the outer edge while
+   * aligning direct children to the same contentWidth lane as the header.
+   */
   children: ReactNode;
-  /**
-   * Inspector content for the selected item. `undefined` hides the panel and
-   * its resize handle entirely — an empty panel is dead width, not a
-   * placeholder. Below the two-column breakpoint the SAME content opens as a
-   * dialog instead, so the actions it carries never become unreachable.
-   */
-  inspector?: ReactNode;
-  /** Accessible name for the inspector panel landmark. */
-  inspectorLabel?: string;
-  /**
-   * Clears the caller's selection. Required for the narrow-window dialog: a
-   * dialog owns a close affordance the side panel does not need, and closing
-   * it must deselect rather than leave a hidden selection behind.
-   */
-  onInspectorDismiss?: () => void;
-  /** localStorage key so a dragged inspector width survives a relaunch. */
-  inspectorAutoSaveId?: string;
+  /** The selected row's detail, shown as a dialog; `undefined` closes it. */
+  detail?: ModulePageDetail;
+  /** Clears the caller's selection when the detail dialog is dismissed. */
+  onDetailDismiss?: () => void;
   className?: string;
+}
+
+export interface ModulePageDetail {
+  /** The item's name, not a generic "详情". */
+  title: string;
+  subtitle?: string;
+  startContent?: ReactNode;
+  content: ReactNode;
+  footer?: ReactNode;
 }
 
 export function ModulePage({
@@ -110,47 +76,43 @@ export function ModulePage({
   actions,
   toolbar,
   children,
-  inspector,
-  inspectorLabel,
-  inspectorAutoSaveId,
-  onInspectorDismiss,
+  detail,
+  onDetailDismiss,
   className,
 }: ModulePageProps) {
-  // The `incident-console` template's own answer to a narrow window: drop the
-  // end panel rather than squeeze two columns into one. Below this width the
-  // rows would have less room than their own content needs.
-  //
-  // Dropping the PANEL cannot mean dropping the inspector: rows are inert by
-  // design — every per-item action lives in the inspector — so a narrow window
-  // that hid it would leave enable/pause, trigger, snooze, edit, duplicate,
-  // clear and delete with no reachable path at all. The app's own floor is
-  // 480px wide (SAFE_MIN_WIDTH), so this is a window a user really has. Narrow
-  // therefore changes the inspector's PLACEMENT, not its existence: the same
-  // content opens as a dialog over the list.
-  const isNarrow = useMediaQuery('(max-width: 1024px)');
-  // Crossing the breakpoint with something selected must not open a modal on
-  // its own: a window resize is not an action on this page, and a dialog that
-  // appears unbidden takes focus and covers the list the reader was in.
-  // Dropping the selection at the crossing keeps the surface honest in both
-  // directions — the placement only ever changes on the user's next click.
-  // The viewport IS the external system here, which is what this Effect syncs.
-  const wasNarrowRef = useRef(isNarrow);
-  useEffect(() => {
-    if (wasNarrowRef.current === isNarrow) return;
-    wasNarrowRef.current = isNarrow;
-    onInspectorDismiss?.();
-  }, [isNarrow, onInspectorDismiss]);
-  // Hooks cannot be conditional, so the region always exists; only the panel
-  // and its handle are conditional on there being something to inspect.
-  // Sized against the clamped column, not the window: the inspector shares
-  // MODULE_PAGE_WIDTH with the rows, so a panel tuned for a full-bleed page
-  // would leave the list too little of it.
-  const inspectorPanel = useResizable({
-    defaultSize: 320,
-    minSize: 280,
-    maxSize: 420,
-    autoSaveId: inspectorAutoSaveId,
-  });
+  // The dialog keeps showing the last detail while it animates closed.
+  const lastDetailRef = useRef(detail);
+  if (detail) lastDetailRef.current = detail;
+  const shownDetail = detail ?? lastDetailRef.current;
+  // A confirm (删除 and the like) replaces the detail rather than stacking on
+  // it; the detail comes back if the confirm is cancelled.
+  const confirmOpen = useConfirmOpen();
+  const open = detail != null && !confirmOpen;
+
+  // Focus is settled here, not left to Astryx: it returns focus to whatever
+  // was focused when the dialog opened, which after the editor or a confirm
+  // hands the detail back is a control of that dialog, gone by then. The row
+  // is recorded in a layout effect, before Astryx's open effect moves focus,
+  // and focus moves a frame later, after the other dialog's close has run.
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (open && active instanceof HTMLElement && !active.closest('dialog')) {
+      openerRef.current = active;
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      // The header title, which Astryx makes the dialog's initial focus.
+      if (open) dialogRef.current?.querySelector<HTMLElement>('[tabindex="-1"]')?.focus();
+      else if (openerRef.current?.isConnected && !document.querySelector('dialog[open]')) openerRef.current.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
+
+  const dismiss = (open: boolean) => {
+    if (!open) onDetailDismiss?.();
+  };
 
   return (
     <Layout
@@ -189,55 +151,30 @@ export function ModulePage({
         </LayoutHeader>
       }
       content={(
-        <LayoutContent padding={0}>
+        <LayoutContent>
           {children}
-          {/* Mounted for the whole narrow session, opened by `isOpen`: Astryx
-              returns focus on the open→closed transition, and a dialog that
-              unmounted instead would drop focus on `body` every dismiss. */}
-          {isNarrow ? (
-            <Dialog
-              isOpen={inspector != null}
-              onOpenChange={(open) => {
-                if (!open) onInspectorDismiss?.();
-              }}
-              // `info`: a detail sheet is not a flow to complete, so every exit
-              // — Escape, backdrop, the close button — should work.
-              purpose="info"
-              width={420}
-            >
+          {/* Stays mounted and opens by `isOpen`: Astryx returns focus to the
+              row on the open→closed transition, which an unmount would skip.
+              Astryx names the dialog from a header present at mount, and this
+              one mounts empty, so the name is passed explicitly. */}
+          <Dialog ref={dialogRef} isOpen={open} onOpenChange={dismiss} purpose="info" width={560} aria-label={shownDetail?.title}>
+            {shownDetail ? (
               <Layout
-                header={<DialogHeader title={inspectorLabel ?? title} onOpenChange={(open) => {
-                  if (!open) onInspectorDismiss?.();
-                }} />}
-                content={<LayoutContent>{inspector}</LayoutContent>}
+                header={(
+                  <DialogHeader
+                    title={shownDetail.title}
+                    subtitle={shownDetail.subtitle}
+                    startContent={shownDetail.startContent}
+                    onOpenChange={dismiss}
+                  />
+                )}
+                content={<LayoutContent>{shownDetail.content}</LayoutContent>}
+                footer={shownDetail.footer ? <LayoutFooter>{shownDetail.footer}</LayoutFooter> : undefined}
               />
-            </Dialog>
-          ) : null}
+            ) : null}
+          </Dialog>
         </LayoutContent>
       )}
-      end={
-        inspector != null && !isNarrow ? (
-          <>
-            {/* No divider, and no grip at rest either (`isAlwaysVisible`
-                defaults to true): the panel's own edge is already the
-                boundary, and a standing rule or a standing pill would be a
-                second one drawn on top of it. Both appear on hover/focus,
-                which is what the vendor's own `incident-console` does. */}
-            <ResizeHandle
-              direction="horizontal"
-              isReversed
-              isAlwaysVisible={false}
-              resizable={inspectorPanel.props}
-            />
-            {/* `role` is what makes `label` an accessible name: Astryx passes
-                both straight to the div, and `aria-label` on a roleless div
-                names nothing. */}
-            <LayoutPanel role="complementary" resizable={inspectorPanel.props} label={inspectorLabel} padding={5}>
-              {inspector}
-            </LayoutPanel>
-          </>
-        ) : undefined
-      }
     />
   );
 }

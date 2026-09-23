@@ -214,6 +214,28 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
+  test('GPT-6 Sol and Luna send selected reasoning effort on API and Codex paths', () => {
+    for (const modelId of ['gpt-6-sol', 'gpt-6-luna']) {
+      assert.deepEqual(buildProviderOptions(conn('openai'), modelId, 'max'), {
+        openai: {
+          store: false,
+          reasoningSummary: 'auto',
+          reasoningEffort: 'max',
+          parallelToolCalls: true,
+        },
+      });
+      assert.deepEqual(buildProviderOptions(conn('openai-codex'), modelId, 'max'), {
+        openai: {
+          store: false,
+          textVerbosity: 'medium',
+          reasoningSummary: 'auto',
+          reasoningEffort: 'max',
+          parallelToolCalls: true,
+        },
+      });
+    }
+  });
+
   test('openai-codex (gpt-5.5) preserves store:false / textVerbosity and merges reasoningEffort', () => {
     assert.deepEqual(buildProviderOptions(conn('openai-codex'), 'gpt-5.5'), {
       openai: {
@@ -1186,4 +1208,39 @@ test('Copilot Messages preserves bearer auth without the generic Anthropic beta 
       assert.equal(headers.get('x-api-key'), null);
     }
   }
+});
+
+describe('buildProviderOptions: Command Code thinking level', () => {
+  // The Provider API exposes no reasoning metadata, so these levels come from
+  // the static table in model-metadata.ts, ported from the reference CLI
+  // effort map. The switcher only appears when the table declares the model.
+  test('selectable efforts surface for the models the table accepts them on', () => {
+    assert.deepEqual(
+      [...thinkingVariantsForModel('commandcode', 'claude-fable-5-1')],
+      ['low', 'medium', 'high', 'xhigh', 'max'],
+    );
+    assert.deepEqual(
+      [...thinkingVariantsForModel('commandcode', 'moonshotai/Kimi-K3')],
+      ['low', 'high', 'max'],
+    );
+    assert.deepEqual(
+      [...thinkingVariantsForModel('commandcode', 'xai/grok-4.6')],
+      ['low', 'medium', 'high', 'xhigh'],
+    );
+  });
+
+  test('models that reason automatically offer no selector', () => {
+    // Tencent Hy3/Hy4 with no levels and the GLM-5.x-Fast siblings think with
+    // a depth the provider chooses, so the table must stay silent and the
+    // picker must stay hidden.
+    for (const modelId of ['tencent/hy3-paid', 'zai-org/GLM-5.2-Fast', 'zai-org/GLM-5']) {
+      assert.deepEqual([...thinkingVariantsForModel('commandcode', modelId)], []);
+      assert.deepEqual(buildProviderOptions(conn('commandcode'), modelId, 'high'), {});
+    }
+  });
+
+  test('an unknown model exposes nothing and sends nothing', () => {
+    assert.deepEqual([...thinkingVariantsForModel('commandcode', 'not-a-model')], []);
+    assert.deepEqual(buildProviderOptions(conn('commandcode'), 'not-a-model', 'high'), {});
+  });
 });

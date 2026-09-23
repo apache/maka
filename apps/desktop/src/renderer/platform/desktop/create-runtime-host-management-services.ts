@@ -25,7 +25,7 @@ import {
 
 export type DesktopRuntimeHostManagementBridge = Pick<
   MakaBridge,
-  'runtimeHostManagement' | 'runtimeHostPeerMesh' | 'runtimeHostProfiles'
+  'runtimeHostManagement' | 'runtimeHostPeerMesh' | 'runtimeHostProfiles' | 'runtimeHostHandoff'
 >;
 
 export function createDesktopRuntimeHostManagementServices(
@@ -78,6 +78,12 @@ export function createDesktopRuntimeHostManagementServices(
         bridge.runtimeHostProfiles.resolvePairingRecovery(profileId).then(() => undefined),
       discard: (profileId) =>
         bridge.runtimeHostProfiles.discardPairing(profileId).then(() => undefined),
+    },
+    handoff: {
+      current: () => bridge.runtimeHostHandoff.current(),
+      subscribe: (handler) => bridge.runtimeHostHandoff.subscribe(handler),
+      decide: (revision, action) => bridge.runtimeHostHandoff.decide(revision, action),
+      copyText: (value) => navigator.clipboard.writeText(value),
     },
   };
 }

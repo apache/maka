@@ -199,6 +199,78 @@ it('renders multiline display math outside code for both supported delimiters', 
   }
 });
 
+it('renders display math inside blockquotes and list items', () => {
+  for (const text of ['> \\[ x + 1 \\]', '- \\[ x + 1 \\]']) {
+    const markup = renderToStaticMarkup(createElement(MarkdownBody, { text }));
+    assert.match(markup, /class="maka-math maka-math-display"/);
+    assert.match(markup, /class="katex-display"/);
+    assert.doesNotMatch(markup, /\\\[/);
+  }
+});
+
+it('promotes a mid-paragraph $$…$$ span to display math', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'Before $$x + 1$$ after',
+  }));
+
+  assert.match(markup, /Before/);
+  assert.match(markup, /after/);
+  assert.match(markup, /class="maka-math maka-math-display"/);
+  assert.doesNotMatch(markup, /\$\$/);
+});
+
+it('keeps `$` inside link destinations literal while prose stays dollar-escaped', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: '[priced](https://example.com/?$from$=$to$) and $z$ here',
+    }),
+  }));
+
+  assert.match(markup, /href="https:\/\/example\.com\/\?\$from\$=\$to\$"/);
+  assert.match(markup, /and \$z\$ here/);
+  assert.doesNotMatch(markup, /class="maka-math/);
+});
+
+it('renders inline math glued to digits and formulas holding escaped dollars', () => {
+  for (const text of ['v2\\(x + 1\\)3 done', 'cost \\(a \\$ b\\) end']) {
+    const markup = renderToStaticMarkup(createElement(MarkdownBody, { text }));
+    assert.match(markup, /class="maka-math maka-math-inline"/);
+    assert.doesNotMatch(markup, /\\\(|\\\)/);
+  }
+});
+
+it('leaves no zero-width separators around inline math with benign neighbors', () => {
+  for (const text of [
+    'the value \\(x\\) is fine',
+    'ends with \\(x\\)',
+  ]) {
+    const markup = renderToStaticMarkup(createElement(MarkdownBody, { text }));
+    assert.match(markup, /class="maka-math maka-math-inline"/);
+    assert.doesNotMatch(markup, /\u200B/, text);
+  }
+});
+
+it('keeps adjacent inline formulas parseable through a separator', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'compare \\(x\\)\\(y\\) here',
+  }));
+  assert.equal(
+    (markup.match(/class="maka-math maka-math-inline"/g) ?? []).length,
+    2,
+  );
+});
+
+it('keeps display math inside a table cell without splitting the row', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: '| a | b |\n| --- | --- |\n| \\(x + 1\\) | \\[y + 2\\] |',
+  }));
+
+  assert.match(markup, /<table/);
+  assert.equal((markup.match(/class="maka-math maka-math-inline"/g) ?? []).length, 2);
+  assert.doesNotMatch(markup, /\\\(|\\\]|\\\[/);
+});
+
 it('keeps display math intact across Markdown-looking block boundaries', () => {
   const bodies = [
     ['x + 1', '', 'y + 2'],

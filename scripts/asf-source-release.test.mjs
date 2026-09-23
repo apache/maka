@@ -243,6 +243,22 @@ describe('ASF source release verification', () => {
     }
   });
 
+  test('rejects inventoried SQLite databases even with a text extension', async () => {
+    const fixture = createFixtureCandidate({
+      'docs/code-origin-audit.md':
+        '### Source archive non-text inventory\n\n- `fixtures/database.sql`: historical fixture.\n',
+      'fixtures/database.sql': Buffer.from('SQLite format 3\0'),
+    });
+    try {
+      await assert.rejects(
+        () => verifySourceCandidate({ archivePath: fixture.archivePath }),
+        /SQLite database.*fixtures\/database\.sql.*textual SQL fixture/,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('accepts an inventoried source image', async () => {
     const fixture = createFixtureCandidate({
       'docs/code-origin-audit.md':
@@ -461,9 +477,16 @@ describe('ASF source release verification', () => {
       writeFileSync(join(repositoryRoot, 'untracked.txt'), 'must not be released\n');
       mkdirSync(join(repositoryRoot, '.claude'));
       mkdirSync(join(repositoryRoot, '.maka-shots'));
+      mkdirSync(join(repositoryRoot, 'scripts/plugins/codex-app-server-executor'), {
+        recursive: true,
+      });
       writeFileSync(join(repositoryRoot, '.claude/launch.json'), '{}\n');
       writeFileSync(join(repositoryRoot, '.maka-shots/review.png'), 'review evidence\n');
       writeFileSync(join(repositoryRoot, 'maka-proposal-zh-review.txt'), 'working notes\n');
+      writeFileSync(
+        join(repositoryRoot, 'scripts/plugins/codex-app-server-executor/index.mjs'),
+        'export {};\n',
+      );
       mkdirSync(join(repositoryRoot, 'packages/eval/harbor/deepseek-harness-toolchain'), {
         recursive: true,
       });
@@ -580,6 +603,7 @@ describe('ASF source release verification', () => {
       });
       assert.doesNotMatch(entries, /untracked\.txt/);
       assert.doesNotMatch(entries, /\.claude|\.maka-shots|maka-proposal-zh-review/);
+      assert.doesNotMatch(entries, /scripts\/plugins\/codex-app-server-executor/);
       assert.doesNotMatch(entries, /deepseek-harness-toolchain\/package(?:-lock)?\.json/);
       assert.match(entries, /deepseek-harness-toolchain\/patch-subprocess-local\.mjs/);
       assert.match(entries, /deepseek-harness-profile\/cordis\.yml/);

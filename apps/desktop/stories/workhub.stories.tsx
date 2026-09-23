@@ -30,12 +30,24 @@ import { desktopSessionKey } from '../src/shared/runtime-host-identity.js';
 // Real host: a persistent WebContentsView mounts WorkHubRoot once and moves between windows.
 const sessionId = desktopSessionKey({ hostId: 'story-host', sessionId: 'maka_workhub_coordination' });
 const targetId = desktopSessionKey({ hostId: 'story-host', sessionId: 'payments' });
-const writes = { panel: fn(), answer: fn(), model: fn(), upload: fn(), open: fn(), question: fn(), form: fn() };
+const writes = { panel: fn(), answer: fn(), model: fn(), defaults: fn(), upload: fn(), open: fn(), question: fn(), form: fn() };
 const choices = ['model-a', 'model-b'].map((model, index) => ({
   connectionId: 'connection-test', connectionSlug: 'test', connectionName: 'Test', providerType: 'openai' as const,
   providerLabel: 'OpenAI', model, label: model, contextWindow: 100_000, isDefault: index === 0, thinkingLevels: ['low', 'high'] as ThinkingLevel[],
 }));
-function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false): WorkHubServices {
+const repairChoices = [
+  ['coding-plan', 'Coding Plan', 'qwen3.8-32b', 'Qwen 3.8 32B'],
+  ['deepseek', 'DeepSeek', 'deepseek-v4-pro', 'DeepSeek V4 Pro'],
+  ['anthropic', 'Anthropic', 'claude-sonnet-4.5', 'Claude Sonnet 4.5'],
+  ['openai', 'OpenAI', 'gpt-5.4', 'GPT-5.4'],
+  ['google', 'Google', 'gemini-3-pro', 'Gemini 3 Pro'],
+  ['moonshot', 'Moonshot', 'kimi-k2.5', 'Kimi K2.5'],
+].map(([connectionSlug, connectionName, model, label], index) => ({
+  connectionId: `connection-${connectionSlug}`, connectionSlug, connectionName,
+  providerType: 'openai' as const, providerLabel: connectionName, model, label,
+  contextWindow: 100_000, isDefault: index === 0, thinkingLevels: [] as ThinkingLevel[],
+}));
+function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false, repairModel = false): WorkHubServices {
   let failures = failFirst ? 1 : 0;
   let session: SessionSummary & { revision: number } = {
     id: sessionId, name: 'WorkHub', revision: 1, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
@@ -73,6 +85,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
   let updateExecution: Parameters<WorkHubServices['observe']>[4];
   let questionPending = question;
   let pendingForm: import('@maka/core/events').FormRequestEvent | undefined;
+  let newWorkDefaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'> = {};
   const publishExecution = () => updateExecution?.({ type: 'host_execution', available: true, rootTurn: pendingForm ? { sessionId, turnId: pendingForm.turnId, runId: 'selection-run', status: 'waiting_for_user' } : questionPending ? { sessionId, turnId: 'question-turn', runId: 'question-run', status: 'waiting_for_user' } : null });
   const publish = () => { publishExecution(); updateTranscript?.({ messages, hasOlder: false, ready: true }); };
   return {
@@ -92,12 +105,13 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
     enqueueMessage: async () => 'admitted',
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
-    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right' } }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right', togglePosition: 'edge' } }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, openSettings: async () => {}, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
     bindBrowserSession: () => {},
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
     getSession: async () => session,
-    listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => choices,
+    listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => repairModel ? repairChoices : choices,
+    setDefaultModel: async () => {},
     delegationFeedback: async (references) => references.map(({ id }) => ({
       id,
       state: coloredHistory && id === 'link-1' ? 'waiting_for_user' as const : coloredHistory && id === 'link-2' ? 'running' as const : 'completed' as const,
@@ -129,11 +143,16 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     },
     answer: async (id, input) => {
       writes.answer(id, input);
-      if (selectTarget) {
+      if (selectTarget || repairModel) {
         pendingForm = { type: 'form_request', id: `form-${input.turnId}`, requestId: `selection-${input.turnId}`, turnId: input.turnId,
-          ts: 5, toolUseId: 'select-and-delegate', message: '选择要继续的工作', requester: { name: 'WorkHub' },
-          fields: [{ kind: 'single_select', name: 'target', label: '工作 / 工作区', required: true,
-            options: [{ value: 'candidate-0', label: '支付回调幂等性 / maka' }, { value: 'candidate-1', label: '发布检查清单 / desktop' }] }] };
+          ts: 5, toolUseId: repairModel ? 'repair-target-model' : 'select-and-delegate',
+          message: repairModel
+            ? '任务“支付回调幂等性”使用的模型“qwen3.8-27b-sglang”已不可用。请选择替代模型以继续。'
+            : '选择要继续的工作', requester: { name: 'WorkHub' },
+          fields: [repairModel
+            ? { kind: 'string', name: 'targetModel', label: '替代模型', required: true, presentation: 'model_picker', minLength: 1 }
+            : { kind: 'single_select', name: 'target', label: '工作 / 工作区', required: true,
+                options: [{ value: 'candidate-0', label: '支付回调幂等性 / maka' }, { value: 'candidate-1', label: '发布检查清单 / desktop' }] }] };
         messages = [...messages, { type: 'user', id: input.turnId, turnId: input.turnId, ts: 4, text: input.text }];
         interactionUpdate?.({ sessionId, interactions: [pendingForm] });
         publish(); return { kind: 'admitted', turnId: input.turnId };
@@ -145,6 +164,11 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     configureModel: async (id, input) => {
       writes.model(id, input); session = { ...session, revision: session.revision + 1, model: input.modelTarget.model, thinkingLevel: input.thinkingLevel ?? undefined }; updateSessions?.();
       return { kind: 'committed', session: { ...session, workspace: { target: { kind: 'host_path', path: '/projects/maka' }, hostCwd: '/projects/maka' }, createdAt: 0, activityAt: 0, labelsTruncated: false, llmConnectionId: 'connection-test', collaborationMode: 'agent', orchestrationMode: 'default' } };
+    },
+    getNewWorkDefaults: async () => newWorkDefaults,
+    setNewWorkDefaults: async (id, defaults) => {
+      writes.defaults(id, defaults);
+      newWorkDefaults = defaults;
     },
     observe: (_id, _event, _error, _phase, execution) => { updateExecution = execution; publishExecution(); return () => { updateExecution = undefined; }; },
     openTranscript: async (_id, handler) => { updateTranscript = handler; publish(); return { observationChanged: () => {}, loadEarlier: async () => {}, close: async () => { updateTranscript = undefined; } }; },
@@ -159,10 +183,10 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
 
   };
 }
-function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false }: { failFirst?: boolean; history?: boolean | 'usage'; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean }) {
+function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false, repairModel = false }: { failFirst?: boolean; history?: boolean | 'usage'; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean; repairModel?: boolean }) {
   const [progressHeight, setProgressHeight] = useState(112);
   const [services] = useState(() => {
-    const services = makeServices(failFirst, history, colors, selectTarget, question, progress);
+    const services = makeServices(failFirst, history, colors, selectTarget, question, progress, repairModel);
     // Storybook has no BrowserWindow: honor the production renderer's native
     // height request and use the native progress card's 360px width.
     if (progress) services.presentation.resizeProgress = async (_request, height) => { setProgressHeight(height); };
@@ -186,8 +210,7 @@ export const FullConversationAndWorkIdentity: Story = {
     expect(canvasElement.querySelector('.workhub-result-card')).toBeNull();
     await userEvent.click(canvasElement.querySelector('.workhub-turn-label') as HTMLElement);
     await waitFor(() => expect(writes.open).toHaveBeenCalledWith(targetId));
-    const navigation = canvasElement.querySelector('.workhub-navigation-item') as HTMLElement;
-    await userEvent.hover(navigation);
+    await userEvent.hover(canvasElement.querySelector('.maka-user-message .workhub-message-rail') as HTMLElement);
     await waitFor(() => expect(canvasElement.querySelector('.workhub-turn-label')).toHaveAttribute('data-work-highlighted', 'true'));
   },
 };
@@ -198,7 +221,7 @@ export const UsageInspector: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText(/接下来会核对并发回调的处理结果/);
-    const conversation = canvasElement.querySelector('.workhub-conversation-shell')!;
+    const conversation = canvasElement.querySelector('[data-chat-scroll-container]')!;
     const editor = canvasElement.querySelector('[contenteditable="true"]')!;
     await userEvent.click(editor);
     await userEvent.type(editor, '再检查一下并发回调。');
@@ -221,7 +244,9 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvas.getByRole('button', { name: '打开用量追踪' }).textContent).toContain('1%'));
     await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
     await userEvent.click(page.getByRole('option', { name: /model-b/ }));
-    await waitFor(() => expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ expectedRevision: 1, modelTarget: expect.objectContaining({ model: 'model-b' }) })));
+    await waitFor(() => expect(writes.defaults).toHaveBeenCalledWith(sessionId, {
+      model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-b' },
+    }));
     await userEvent.click(canvas.getByRole('button', { name: '添加上下文' }));
     await userEvent.click(page.getByRole('menuitem', { name: /添加文件/ }));
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
@@ -242,11 +267,16 @@ export const ThinkingLevelPicker: Story = {
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
     await userEvent.click(page.getByRole('option', { name: /^高$/ }));
     await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 高' })).toBeEnabled());
-    await expect(writes.model).toHaveBeenCalledWith(sessionId, expect.objectContaining({ thinkingLevel: 'high' }));
+    await expect(writes.defaults).toHaveBeenCalledWith(sessionId, {
+      model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-a' },
+      thinkingLevel: 'high',
+    });
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 高' }));
     await userEvent.click(page.getByRole('option', { name: /^默认$/ }));
     await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
-    await expect(writes.model).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ expectedRevision: 2, thinkingLevel: null }));
+    await expect(writes.defaults).toHaveBeenLastCalledWith(sessionId, {
+      model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-a' },
+    });
     await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
     await expect(page.getByRole('option', { name: /^默认$/ })).toHaveAttribute('aria-selected', 'true');
   },
@@ -257,6 +287,7 @@ export const ProgressModelPicker: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvasElement.querySelector('.workHubLive')).toHaveAttribute('data-progress', 'true'));
+    expect(canvas.queryByRole('combobox', { name: /思考级别/ })).toBeNull();
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
     await userEvent.click(editor);
     await userEvent.type(editor, 'Keep this draft readable while choosing a model.');
@@ -294,6 +325,7 @@ export const ComposerRetainsFailedAttachment: Story = {
   },
 };
 
+// Real path: Appearance → disable the titlebar Workbar toggle → dock WorkHub.
 // The docked renderer reserves distinct targets for prompt navigation and the
 // Workbar edge. Measure those targets rather than a platform scrollbar width.
 async function expectPromptRailClearance(canvasElement: HTMLElement) {
@@ -314,7 +346,7 @@ async function expectPromptRailClearance(canvasElement: HTMLElement) {
       const hit = tick.getBoundingClientRect();
       expect(tick.contains(document.elementFromPoint(hit.x + hit.width / 2, hit.y + hit.height / 2))).toBe(true);
     }
-    const body = canvasElement.querySelector('.workhub-body')!;
+    const body = canvasElement.querySelector('.workHubHistory')!;
     expect(body.scrollWidth - body.clientWidth).toBeLessThanOrEqual(1);
   });
   // At full desktop width, WorkHub must reach the same shared reading measure
@@ -347,12 +379,16 @@ export const ColoredWorkHistory: Story = {
     expect(turns[1]!.querySelector('.workhub-turn-label')).toHaveTextContent('desktop / 发布检查清单');
     expect(canvasElement.querySelector('[data-transcript-turn-id="unlinked-turn"]')).not.toHaveAttribute('data-turn-accent');
     for (const [index, turn] of turns.entries()) {
-      expect(turn.querySelectorAll('.workhub-turn-label')).toHaveLength(2);
+      expect(turn.querySelectorAll('.workhub-turn-label')).toHaveLength(1);
+      expect(turn.querySelector('.maka-assistant-answer .workhub-turn-label')).toBeNull();
       const status = turn.querySelector('.maka-user-message .workhub-delegation-status')!;
       await waitFor(() => expect(status).toHaveTextContent(['已完成', '等待用户', '进行中'][index]!));
       expect(turn.querySelector('.maka-assistant-answer .workhub-delegation-status')).toBeNull();
       expect(canvasElement.querySelector('.workhub-result-card')).toBeNull();
-      expect(getComputedStyle(turn.querySelector('.workhub-turn-label span')!).fontSize).toBe('11px');
+      const label = getComputedStyle(turn.querySelector('.workhub-turn-label span')!);
+      const time = getComputedStyle(turn.querySelector('.maka-user-message .maka-message-meta')!);
+      expect(label.fontSize).toBe(time.fontSize);
+      expect(label.color).toBe(time.color);
       const prompt = getComputedStyle(turn.querySelector('.maka-user-message')!);
       const answer = getComputedStyle(turn.querySelector('.maka-assistant-answer')!);
       expect(prompt.borderRightWidth).toBe('4px');
@@ -377,8 +413,7 @@ export const ColoredWorkHistory: Story = {
     const label = turns[0]!.querySelector<HTMLElement>('.workhub-turn-label')!;
     await userEvent.hover(label);
     await waitFor(() => expect(turns[2]!.querySelector('.workhub-turn-label')).toHaveAttribute('data-work-highlighted', 'true'));
-    const dark = canvasElement.ownerDocument.documentElement.classList.contains('dark');
-    await waitFor(() => expect(getComputedStyle(label).color).toMatch(dark ? /^okl(?:ch|ab)\(0\.85 / : /^okl(?:ch|ab)\(0\.48 /));
+    await waitFor(() => expect(turns[2]!.querySelector('.maka-user-message .workhub-message-rail')).toHaveAttribute('data-work-highlighted', 'true'));
     await userEvent.click(label);
     expect(writes.open).toHaveBeenCalledWith(targetId);
     await userEvent.unhover(label);
@@ -396,6 +431,23 @@ export const TargetSelection: Story = {
     await waitFor(() => expect(canvasElement.querySelector('.maka-form-interaction-prompt')).toBeInTheDocument());
     expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
     expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
+  },
+};
+
+// Real path: a selected target's saved model disappeared, so WorkHub asks before changing that Session and delegating.
+export const TargetModelRepair: Story = {
+  render: () => <Surface repairModel />,
+  play: async ({ canvasElement }) => {
+    const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
+    await userEvent.click(editor);
+    await userEvent.type(editor, '继续支付回调幂等性，补充重复投递测试点。');
+    await userEvent.keyboard('{Enter}');
+    const prompt = await within(canvasElement).findByText(/qwen3\.8-27b-sglang.*已不可用/);
+    expect(prompt).toBeVisible();
+    await userEvent.click(within(canvasElement).getByRole('button', { name: '替代模型' }));
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByRole('listbox', { name: '替代模型' })).toBeVisible());
+    await waitFor(() => expect(page.getByRole('option', { name: /Qwen 3.8 32B/ })).toBeVisible());
   },
 };
 
@@ -495,30 +547,12 @@ export const FilterWorkConversations: Story = {
     expect(writes.open).not.toHaveBeenCalled();
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
-    const rail = canvasElement.querySelectorAll('.workhub-navigation-item')[1] as HTMLElement;
-    await userEvent.click(rail);
-    await waitFor(() => expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。'));
-    expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4);
-    expect(writes.open).not.toHaveBeenCalled();
-    await userEvent.click(rail);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(1));
-    expect(canvas.getByText('请检查发布检查清单。')).toBeInTheDocument();
-    expect(writes.open).not.toHaveBeenCalled();
-    await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     const answerRail = canvasElement.querySelector('.maka-assistant-answer .workhub-message-rail') as HTMLElement;
     answerRail.focus();
     expect(answerRail).toHaveFocus();
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvas.getByRole('button', { name: '显示全部对话' }));
-    await userEvent.click(rail);
-    await waitFor(() => expect(canvasElement.querySelector('[data-search-highlight="true"]')).toHaveTextContent('请检查发布检查清单。'));
-    expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4);
-    (rail.querySelector('button') as HTMLButtonElement).focus();
-    await userEvent.keyboard('{Enter}');
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(1));
-    await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     expect(writes.open).not.toHaveBeenCalled();
   },
@@ -533,7 +567,7 @@ function PagedWorkConversation() {
     { type: 'user', id: 'discussion', turnId: 'discussion-turn', ts: 3, text: '先讨论一下整体计划。' },
   ];
   return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider>
-    <WorkHubHighlightContext.Provider value={{ sessionId: undefined, highlight: () => {}, navigateWork: () => {}, selectedWork, selectWork, toggleWork: (work) => selectWork((current) => current?.sessionId === work.sessionId ? undefined : work) }}>
+    <WorkHubHighlightContext.Provider value={{ sessionId: undefined, highlight: () => {}, selectedWork, selectWork, toggleWork: (work) => selectWork((current) => current?.sessionId === work.sessionId ? undefined : work) }}>
       <ChatSurfaceLayout composer={null}><div className="workhub-surface"><WorkHubConversation messages={messages} onOpenWork={() => {}} onNew={() => {}} scrollBehavior="auto"
         activeSession={{ id: sessionId, name: 'WorkHub', isFlagged: false, isArchived: false, labels: [], hasUnread: false, status: 'active', runningTurnIds: [], backend: 'ai-sdk', llmConnectionId: 'connection-test', llmConnectionSlug: 'test', connectionLocked: false, model: 'model-a', permissionMode: 'ask' }}
         hasEarlierHistory={!loaded} onLoadEarlierHistory={() => setLoaded(true)}
@@ -577,21 +611,11 @@ export const WorkFilterHoverAndToggle: Story = {
     expect(getComputedStyle(stripe()).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     expect(stripe().getBoundingClientRect().width).toBe(originalWidth);
     expect(canvasElement.querySelector('.maka-assistant-answer .workhub-message-rail')).toHaveAttribute('data-work-highlighted', 'true');
-    expect(canvasElement.querySelector('.workhub-navigation-item')).toHaveAttribute('data-work-highlighted', 'true');
     await userEvent.unhover(stripe());
     await waitFor(() => expect(color()).toBe(original));
     await userEvent.click(stripe());
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
     await userEvent.click(canvasElement.querySelector('.maka-assistant-answer .workhub-message-rail') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
-    await userEvent.click(stripe());
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
-    await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
-    await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
-    await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
-    await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(2));
-    await userEvent.click(canvasElement.querySelector('.workhub-navigation-item') as HTMLElement);
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-turn[data-turn-id]')).toHaveLength(4));
     expect(writes.open).not.toHaveBeenCalled();
     expect(canvasElement.querySelector('[data-turn-source-count]')).toBe(transcriptElement);

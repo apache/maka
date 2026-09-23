@@ -65,6 +65,7 @@ import {
   type ResponseFrame,
 } from './operations.js';
 import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
+import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export * from './access-authority.js';
 export * from './agent-graph.js';
@@ -96,12 +97,53 @@ export * from './session-todo.js';
 export * from './workspace.js';
 export * from './workhub-coordination.js';
 export * from './websocket-path.js';
+export { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 161 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 183 as const;
+// 183: Jev policy snapshots, set_jev mutation and credential locator require matching peers.
+// 182: Executor catalogs expose structured model families and thinking variant IDs.
+// 181: Canonical executor models and retained provider stop reasons after cancellation.
+// 180: Reject contradictory executor configuration and legacy model targets.
+// 179: Generic executor discovery and confirmed per-Session configuration.
+// 178: WorkHub result turns carry a Host-owned workhub_result origin. Older
+// Clients reject that origin and cannot render the result notification.
+// 177: External Session import input may carry an optional Host-resolved
+// workspace target. Epoch-176 peers reject the unknown `workspace` key.
+// 176: Session-scoped capability publication and MCP admission require compatible
+// Client and Host builds; older peers do not enforce their isolation contract.
+// 175: WorkHub coordinator model configuration again accepts only native
+// explicit targets. Epoch-174 peers may send an executor target it must reject.
+// 174: WorkHub new-Work defaults may select an executor-specific model and
+// thinking level. Epoch-173 peers reject these fields on strict action shapes.
+// 173: Plugin executor Sessions may select an executor-specific model at
+// creation and configuration time, and propagate its reasoning effort.
+// 172: Usage screen requests and results accept fractional timestamps in the
+// persisted domain. Older peers reject these otherwise valid wire values.
+// 171: Removed the `connection.usage.read` operation along with the Command
+// Code GO provider it served. A peer older than this epoch may still advertise
+// or submit that operation, which this Host no longer answers.
+// 169: The message execution query reports an identity the Host can prove was
+// never admitted as a positive `not_admitted` resolution instead of omitting
+// it, so silence stops meaning both "not admitted" and "cannot say yet".
+// Epoch-168 peers reject the new state as an invalid frame.
+// 167: Removed the turn.regenerate operation. Older peers can no longer
+// safely interoperate because they may submit or advertise that operation.
+// 166: Connection usage reads add an operation, an accepted availability reason
+// (`unauthorized`), a report field (`partiallyUnauthorized`), and a bounded
+// window list. Peers older than this epoch take the added operation for an
+// unknown key and reject the new reason and field.
+// 165: WorkHub coordination resolve adds a model_required error code. Older
+// peers reject the new operation outcome rather than misdiagnosing prose.
+// 164: Client Plugin bundles, desktop-ui composition, generation-fenced Host
+// Remote calls, and pull streams are projected through strict Host contracts.
+// 163: Session reference quotes carry strict capture and truncation provenance.
+// Epoch-162 peers reject the added QuoteRef fields.
+// 162: Runtime Resource control and stop replies drop the unused resource
+// snapshot; start replies allow compact state. Older peers require snapshots.
 // 161: Session transcript reads return the whole transcript under a byte budget,
 // and every page says whether it stops between two Turns. The windowed read's
 // range edges are gone, and the Turn landmark query takes a Turn to look up, so
@@ -423,7 +465,6 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 161 as const;
 // one transport message; narrower domains retain their own encoded limits.
 export const RUNTIME_HOST_MAX_MESSAGE_BYTES = 768 * 1024;
 export const RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS = 64;
-export const INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID = 'maka.interactive' as const;
 
 declare const encodedProtocolMessageBrand: unique symbol;
 

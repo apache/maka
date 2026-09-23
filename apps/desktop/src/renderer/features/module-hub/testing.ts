@@ -32,6 +32,17 @@ export {
 } from "./ui/module-hub-provider.js";
 export { startModuleHubLifecycle } from "./controller/module-hub-lifecycle.js";
 export { resolveModuleHubHostRoute } from "./controller/module-hub-route.js";
+export { useMcpController } from "./controller/use-mcp-controller.js";
+export { McpPage } from "./ui/mcp-page.js";
+export { formatCommandLine, parseCommandLine } from "./model/mcp-command-line.js";
+export { validateMcpEditorDraft } from "./model/mcp-editor-validation.js";
+export {
+  createEmptyMcpDraft,
+  mcpConfigFromDraft,
+  mcpDraftProtocolPreference,
+  mcpDraftFromConfig,
+  mcpWriteFailureMessage,
+} from "./model/mcp-page-model.js";
 export {
   useModuleHubController,
   type ModuleHubHostModel,
@@ -75,6 +86,7 @@ export function createFakeModuleHubHostModel(
     selectModule: () => undefined,
     skills: {
       skills: [],
+      skillLocations: [],
       managedSkillSources: [],
       bundledSkillCatalog: [],
       onRefreshSkills: async () => undefined,
@@ -131,12 +143,28 @@ export function createFakeModuleHubServices(
   overrides: Partial<ModuleHubServices> = {},
 ): ModuleHubServices {
   return {
+    mcp: {
+      getConfig: async () => ({ version: 3, mcpServers: {} }),
+      listStatuses: async () => [],
+      add: async () => notConfigured("mcp.add"),
+      update: async () => notConfigured("mcp.update"),
+      setEnabled: async () => notConfigured("mcp.setEnabled"),
+      importConfig: async () => notConfigured("mcp.importConfig"),
+      remove: async () => notConfigured("mcp.remove"),
+      test: async () => notConfigured("mcp.test"),
+      login: async () => notConfigured("mcp.login"),
+      logout: async () => notConfigured("mcp.logout"),
+      cancelLogin: async () => false,
+      subscribeChanges: noopSubscription,
+    },
+
     runtimeHosts: {
       getDefault: async () => ({ profileId: "local", hostId: "local" }),
       subscribeChanges: noopSubscription,
     },
     skills: {
       list: async () => [],
+      listLocations: async () => ({ contextIds: {}, locations: [] }),
       listManagedSources: async () => [],
       listBundledCatalog: async () => [],
       importManagedSource: async () =>
@@ -149,6 +177,7 @@ export function createFakeModuleHubServices(
       setPinned: async () => notConfigured("skills.setPinned"),
       delete: async () => notConfigured("skills.delete"),
       open: async () => notConfigured("skills.open"),
+      openLocation: async () => notConfigured("skills.openLocation"),
     },
     scheduledTasks: {
       list: async () => [],
