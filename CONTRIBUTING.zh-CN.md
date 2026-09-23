@@ -63,7 +63,7 @@ npm run cli:dev      # TUI；`npm run cli:dev -- run "…"` 非交互地跑一�
 npm test             # 全部 workspace，或：npm --workspace @maka/core run test:dist
 ```
 
-只有依赖都已构建好时，单独构建某个 workspace 才会成功——拿不准就从根目录构建。测试跑的是 `dist/` 里的编译产物，`test:dist` 覆盖的是最近一次构建的结果，跑之前先重新构建。根目录的 `npm test` 会把两步都做掉。
+只有依赖都已构建好时，单独构建某个 workspace 才会成功——拿不准就从根目录构建。测试跑的是 `dist/` 里的编译产物，`test:dist` 覆盖的是最近一次构建的结果，跑之前先重新构建。根目录的 `npm test` 会把两步都做掉。如果拉取代码或切换分支后，`npm run build` 报告编译测试已无对应源码，请运行 `npm run rebuild`，清理旧产物和增量编译状态。
 
 推送前先在本地对齐 CI：
 
