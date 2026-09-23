@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isExecutorConfiguration } from '@maka/core/executor-catalog';
 import { randomUUID } from 'node:crypto';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
@@ -73,6 +74,7 @@ export interface DesktopHostSessionSummary extends SessionCatalogSummary {
 
 export interface RuntimeHostSessionCatalogIpcDeps {
   client: RuntimeHostSessionCatalogClient;
+  queryExecutors?: (input: import('@maka/runtime-host/protocol').PluginExecutorQueryInput) => Promise<import('@maka/runtime-host/protocol').PluginExecutorQueryResult>;
   /** Observer state supplements the Host catalog without falling back to the durable header. */
   runningTurnIds: (sessionId: string) => readonly string[];
   resolveCreateProject: (
@@ -114,6 +116,13 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
+  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string) => {
+    if (typeof cwd !== 'string' || !cwd) throw new Error('Executor discovery requires a workspace');
+    return (await deps.queryExecutors?.({ kind: 'catalog', cwd }))?.items ?? [];
+  });
+  handleReconnectableRead(ipcMain, 'sessions:executorState', async (_event, sessionId: string) =>
+    (await deps.queryExecutors?.({ kind: 'conversation', sessionId }))?.items ?? [],
+  );
   handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: unknown) =>
     listSessions(normalizeSessionListFilter(filter)),
   );
@@ -232,6 +241,10 @@ export function registerRuntimeHostSessionCatalogIpc(
       );
     },
   );
+  ipcMain.handle('sessions:setExecutorModelConfiguration', async (_event, sessionId: string, config: unknown) => {
+    if (!isExecutorConfiguration(config)) throw new Error('Invalid executor configuration');
+    return updateConfiguration(deps, sessionId, { executorConfig: config }, 'updated');
+  });
   ipcMain.handle('sessions:setThinkingLevel', async (_event, sessionId: string, level: unknown) => {
     if (level !== undefined && level !== null && !isThinkingLevel(level)) {
       throw new Error(`Invalid thinking level: ${String(level)}`);
@@ -421,6 +434,7 @@ export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInpu
     ...(executorId
       ? {
           executorId,
+          ...(input?.executorConfig ? { executorConfig: input.executorConfig } : {}),
           ...(normalizeOptionalString(input?.model, 'executor model')
             ? { executorModel: normalizeOptionalString(input?.model, 'executor model') }
             : {}),

@@ -61,6 +61,7 @@ import { VStack } from '@astryxdesign/core/Stack';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
+import { RunningIndicator } from './running-indicator.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
 import {
   type SessionMoveTarget,
@@ -879,7 +880,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   ).label;
   // What the row communicates without text and the dot does NOT already say,
   // inside the button so it lands in the accessible name. `signals[0]` is
-  // skipped because `StatusDot` carries it; the rest of the list, the worktree
+  // skipped because the dot slot carries it; the rest of the list, the worktree
   // attribute, and the timestamp reached assistive tech nowhere else — the
   // timestamp renders `aria-hidden` and swaps out for the ⋯ menu, and worktree
   // is an attribute of the row rather than a signal, so it never competes for
@@ -898,6 +899,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
     props.picked && (!props.active || props.bulkCount > 1) ? copy.pickedAriaLabel : undefined,
     props.worktree ? copy.worktreeAriaLabel : undefined,
     props.meta,
+    props.session.executorId,
     props.session.lastMessageAt
       ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
       : undefined,
@@ -962,11 +964,16 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         // rail instead of a mark that drifts with each title's length.
         icon={
           <span className="maka-session-row-signal">
-            {signal ? (
+            {signal?.running ? (
+              <RunningIndicator
+                label={signal.label}
+                tooltip={signal.tooltip}
+                data-session-status={props.session.status}
+              />
+            ) : signal ? (
               <StatusDot
                 variant={signal.variant}
                 label={signal.label}
-                isPulsing={signal.isPulsing}
                 tooltip={signal.tooltip}
                 data-session-status={props.session.status}
               />
@@ -1010,6 +1017,14 @@ const SessionNavRow = memo(function SessionNavRow(props: {
             {props.meta ? (
               <span className="maka-session-row-host-badge" title={props.meta}>
                 <Badge variant="neutral" label={props.meta} />
+              </span>
+            ) : null}
+            {props.session.executorId ? (
+              <span
+                className="maka-session-row-executor-badge"
+                title={props.session.executorId}
+              >
+                <Badge variant="neutral" label={props.session.executorId} />
               </span>
             ) : null}
             <span className="maka-session-row-time">
@@ -1101,6 +1116,7 @@ function SessionHoverCardDescription(props: {
     props.status,
     session.lastMessagePreview || copy.noMessages,
     session.model,
+    session.executorId,
     permission,
     props.projectName,
     session.lastMessageAt
@@ -1137,6 +1153,12 @@ function SessionHoverCardContent(props: {
         <span>{props.status}</span>
         <span aria-hidden="true">·</span>
         <span>{session.model}</span>
+        {session.executorId ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{session.executorId}</span>
+          </>
+        ) : null}
         <span aria-hidden="true">·</span>
         <span>{permission}</span>
       </span>
@@ -1569,7 +1591,7 @@ function SessionItemActions(props: {
 interface SessionRowSignal {
   variant: StatusDotVariant;
   label: string;
-  isPulsing?: boolean;
+  running?: boolean;
   tooltip?: string;
 }
 
@@ -1609,7 +1631,7 @@ function sessionRowSignals(
     signals.push({
       variant: dotForStatus('active'),
       label: copy.respondingAriaLabel,
-      isPulsing: true,
+      running: true,
       tooltip: copy.respondingTitle,
     });
   }
@@ -1624,7 +1646,7 @@ function sessionRowSignals(
       variant,
       label,
       // Persisted `running` is a fallback only when live state is unknown.
-      isPulsing: session.status === 'running',
+      running: session.status === 'running',
       tooltip: blockedDetail ? `${label} · ${blockedDetail}` : label,
     });
   }

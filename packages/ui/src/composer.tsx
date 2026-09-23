@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { executorCopy, ExecutorModelPicker, type ExecutorModelPickerProps } from './executor-model-picker.js';
 import {
   forwardRef,
   useEffect,
@@ -406,6 +407,7 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
+    executorPicker?: Omit<ExecutorModelPickerProps, 'children' | 'presentation' | 'isReadOnly'>;
     /** Model-picker surface; 'wheel' is the collapsed WorkHub's inline picker, and any non-popover surface drops the thinking picker to a bottom sheet. */
     pickerPresentation?: 'popover' | 'bottom-sheet' | 'wheel';
     /** Distinguishes the active Session model from defaults applied only to newly created WorkHub Sessions. */
@@ -907,6 +909,8 @@ export const Composer = forwardRef<
   });
   // PR-UI-15: locale-aware copy for placeholder + toolbar states.
   const locale = useUiLocale();
+  const [executorModelPending, setExecutorModelPending] = useState(false);
+  const executorNativeDisabledReason = props.executorPicker?.selection ? executorCopy(locale).nativeOperations : undefined;
   const copy = getConversationCopy(locale).composer;
   const mentionCopy = getConversationCopy(locale).mentions;
 
@@ -1406,6 +1410,7 @@ export const Composer = forwardRef<
     if (
       props.disabled
       || props.sendBlocked
+      || executorModelPending
       || sendPendingRef.current
       || importActionOwnerRef.current?.pending
     ) return;
@@ -1607,6 +1612,7 @@ export const Composer = forwardRef<
   const sendDisabled =
     props.disabled ||
     props.sendBlocked ||
+    executorModelPending ||
     sendPending ||
     importActionBusy ||
     (!text.trim() && !hasStagedContext) ||
@@ -1712,7 +1718,7 @@ export const Composer = forwardRef<
     },
   ];
   /** A host that passes no handler cannot be in a mode this control can leave. */
-  const planModeActive = props.onPlanModeChange !== undefined && props.planModeActive === true;
+  const planModeActive = !executorNativeDisabledReason && props.onPlanModeChange !== undefined && props.planModeActive === true;
   // Deliberately NOT disabled while the host commits a toggle. The host
   // already drops re-entrant toggles itself, so a disable during its short
   // IPC round trip carries no protection — it only dims the row (and the
@@ -1720,12 +1726,12 @@ export const Composer = forwardRef<
   // in the very menu the user is looking at.
   const planModeDisabled =
     props.disabled === true
-    || Boolean(props.planModeDisabledReason);
+    || Boolean((executorNativeDisabledReason ?? props.planModeDisabledReason));
   const orchestrationMode: OrchestrationMode =
-    props.onOrchestrationModeChange ? props.orchestrationMode ?? 'default' : 'default';
+    !executorNativeDisabledReason && props.onOrchestrationModeChange ? props.orchestrationMode ?? 'default' : 'default';
   const orchestrationModeDisabled =
     props.disabled === true
-    || Boolean(props.orchestrationModeDisabledReason);
+    || Boolean((executorNativeDisabledReason ?? props.orchestrationModeDisabledReason));
   /**
    * The marks at the tail of the footer's left controls are the resting
    * readout for whatever is on, plus one nearby way out each; the menu stays
@@ -1754,7 +1760,7 @@ export const Composer = forwardRef<
         id: 'plan',
         icon: <ListTodo size={ICON_SIZE.control} aria-hidden="true" />,
         label: copy.planModeLabel,
-        tooltip: props.planModeDisabledReason ?? copy.planModeOnTitle,
+        tooltip: (executorNativeDisabledReason ?? props.planModeDisabledReason) ?? copy.planModeOnTitle,
         isDisabled: planModeDisabled,
         onDeactivate: () => { void props.onPlanModeChange?.(false); },
       }]
@@ -1765,7 +1771,7 @@ export const Composer = forwardRef<
         id: option.id,
         icon: option.icon,
         label: option.label,
-        tooltip: props.orchestrationModeDisabledReason ?? option.onTitle,
+        tooltip: (executorNativeDisabledReason ?? props.orchestrationModeDisabledReason) ?? option.onTitle,
         isDisabled: orchestrationModeDisabled,
         onDeactivate: () => { void props.onOrchestrationModeChange?.('default'); },
       })),
@@ -1801,6 +1807,14 @@ export const Composer = forwardRef<
   );
   const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
   const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes);
+  const onNativeModelChange = async (
+    target: Parameters<NonNullable<typeof props.onModelChange>>[0],
+  ) => {
+    await props.executorPicker?.onSelect(undefined);
+    await (props.activeSession
+      ? props.onModelChange?.(target)
+      : props.onPickNewChatModel?.(target));
+  };
   const renderNativeThinkingControl = (): ReactNode =>
     props.activeSession ? (
       <ThinkingLevelSelector
@@ -2216,12 +2230,12 @@ export const Composer = forwardRef<
                         isDisabled={
                           props.disabled
                           || props.goalActive === true
-                          || Boolean(props.goalDisabledReason)
+                          || Boolean((executorNativeDisabledReason ?? props.goalDisabledReason))
                         }
                         description={
                           props.goalActive === true
                             ? copy.goalAlreadySet
-                            : props.goalDisabledReason
+                            : (executorNativeDisabledReason ?? props.goalDisabledReason)
                         }
                         onClick={() => {
                           void props.onSetGoal?.();
@@ -2236,6 +2250,7 @@ export const Composer = forwardRef<
                             label={copy.planModeLabel}
                             icon={<ListTodo size={ICON_SIZE.control} aria-hidden="true" />}
                             value={planModeActive}
+                            description={executorNativeDisabledReason}
                             isDisabled={planModeDisabled}
                             onChange={(next) => {
                               void props.onPlanModeChange?.(next);
@@ -2244,7 +2259,7 @@ export const Composer = forwardRef<
                               <SelectionMark state="checked" size="sm" />
                             ) : undefined}
                             aria-description={
-                              props.planModeDisabledReason
+                              (executorNativeDisabledReason ?? props.planModeDisabledReason)
                               ?? (planModeActive ? copy.disablePlanMode : copy.enablePlanMode)
                             }
                           />
@@ -2279,10 +2294,11 @@ export const Composer = forwardRef<
                                 label={option.label}
                                 icon={option.icon}
                                 isDisabled={orchestrationModeDisabled}
+                                description={executorNativeDisabledReason}
                                 endContent={orchestrationMode === option.id ? (
                                   <SelectionMark state="checked" size="sm" />
                                 ) : undefined}
-                                aria-description={props.orchestrationModeDisabledReason}
+                                aria-description={(executorNativeDisabledReason ?? props.orchestrationModeDisabledReason)}
                               />
                             ))}
                           </DropdownMenuRadioGroup>
@@ -2301,9 +2317,9 @@ export const Composer = forwardRef<
                   }}
                   disabled={
                     props.disabled
-                    || Boolean(props.permissionModeDisabledReason)
+                    || Boolean((executorNativeDisabledReason ?? props.permissionModeDisabledReason))
                   }
-                  disabledReason={props.permissionModeDisabledReason}
+                  disabledReason={(executorNativeDisabledReason ?? props.permissionModeDisabledReason)}
                 />
               ) : null}
               {/* Model + thinking sit left after permission (adjacent pair), not
@@ -2314,83 +2330,95 @@ export const Composer = forwardRef<
                   starts or ends. */}
               <div className="maka-model-selection-controls">
                 <MakaClientSessionScope sessionId={props.activeSession?.id}>
-                  <MakaClientSlotOutlet
-                    name="conversation.composer.model-selection"
-                    owner={{
-                      disabled: props.disabled === true,
-                      streaming: props.streaming === true,
-                      hasSession: props.activeSession !== undefined,
-                      presentation: props.pickerPresentation,
-                      isReadOnly: props.pickersReadOnly,
-                      purpose: props.modelSelectionPurpose,
-                      modelChoices: props.modelChoices ?? [],
-                      activeModel: props.activeModel,
-                      activeModelLabel: props.activeModelLabel,
-                      activeModelConnectionId: props.activeModelConnectionId,
-                      activeModelConnectionSlug: props.activeModelConnectionSlug,
-                      activeProviderType: props.activeProviderType,
-                      renderProviderMark: props.renderProviderMark,
-                      newChatModel: props.newChatModel,
-                      executorTarget: props.executorTarget,
-                      onNativeModelChange: props.activeSession
-                        ? props.onModelChange
-                        : props.onPickNewChatModel,
-                      renderNativeThinkingControl,
-                      onExecutorTargetChange: props.onExecutorTargetChange,
-                    }}
-                    options={{
-                      fallback: (
-                        <>
-                {props.activeSession ? (
-                  <ChatModelSwitcher
+                  <ExecutorModelPickerBoundary
+                    picker={props.executorPicker}
                     presentation={props.pickerPresentation}
                     isReadOnly={props.pickersReadOnly}
-                    activeSession={props.activeSession}
-                    activeModelConnectionId={props.activeModelConnectionId}
-                    activeModelConnectionSlug={props.activeModelConnectionSlug}
-                    activeModel={props.activeModel}
-                    activeModelLabel={props.activeModelLabel}
-                    currentProviderType={props.activeProviderType}
-                    choices={props.modelChoices ?? []}
-                    hasConversationHistory={props.modelSwitchHasHistory}
-                    availability={modelSwitchAvailability}
-                    disabledReason={modelSwitcherDisabledReason}
-                    openNonce={modelPickerNonce}
-                    hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
+                    nativeLabel={modelChipLabel}
                     renderProviderMark={props.renderProviderMark}
-                    onChange={props.onModelChange}
-                  />
-                ) : props.onPickNewChatModel && (props.modelChoices?.length ?? 0) > 0 ? (
-                  <NewChatModelPicker
-                    label={modelChipLabel}
-                    presentation={props.pickerPresentation}
-                    isReadOnly={props.pickersReadOnly}
-                    choices={props.modelChoices ?? []}
-                    currentValue={
-                      props.newChatModel
-                        ? exactModelChoiceValue(
-                            props.newChatModel.llmConnectionId,
-                            props.newChatModel.llmConnectionSlug,
-                            props.newChatModel.model,
-                          )
-                        : undefined
-                    }
-                    currentProviderType={props.newChatProviderType}
-                    renderProviderMark={props.renderProviderMark}
-                    onPick={props.onPickNewChatModel}
-                  />
-                ) : (
-                  <ModelChipStatic
-                    label={modelChipLabel}
-                    onOpenSettings={props.onOpenModelSettings}
-                    showUnavailableStatus={props.showStaticModelUnavailableStatus}
-                  />
-                )}
-                {renderNativeThinkingControl()}
-                        </>
-                      ),
-                    }}
-                  />
+                    nativeThinkingControl={!props.executorTarget ? renderNativeThinkingControl() : null}
+                    scopeKey={props.activeSession?.id ?? activeDraftKey()}
+                    onPendingChange={setExecutorModelPending}
+                  >
+                    <MakaClientSlotOutlet
+                      name="conversation.composer.model-selection"
+                      owner={{
+                        disabled: props.disabled === true,
+                        streaming: props.streaming === true,
+                        hasSession: props.activeSession !== undefined,
+                        presentation: props.pickerPresentation,
+                        isReadOnly: props.pickersReadOnly,
+                        purpose: props.modelSelectionPurpose,
+                        modelChoices: props.modelChoices ?? [],
+                        activeModel: props.activeModel,
+                        activeModelLabel: props.activeModelLabel,
+                        activeModelConnectionId: props.activeModelConnectionId,
+                        activeModelConnectionSlug: props.activeModelConnectionSlug,
+                        activeProviderType: props.activeProviderType,
+                        renderProviderMark: props.renderProviderMark,
+                        newChatModel: props.newChatModel,
+                        executorTarget: props.executorTarget,
+                        onNativeModelChange,
+                        // The shared executor panel owns model browsing only; native
+                        // thinking stays mounted beside its trigger in the footer.
+                        renderNativeThinkingControl: props.executorPicker ? () => null : renderNativeThinkingControl,
+                        onExecutorTargetChange: props.onExecutorTargetChange,
+                      }}
+                      options={{
+                        fallback: (
+                          <>
+                            {props.activeSession ? (
+                              <ChatModelSwitcher
+                                presentation={props.pickerPresentation}
+                                isReadOnly={props.pickersReadOnly}
+                                activeSession={props.activeSession}
+                                activeModelConnectionId={props.activeModelConnectionId}
+                                activeModelConnectionSlug={props.activeModelConnectionSlug}
+                                activeModel={props.activeModel}
+                                activeModelLabel={props.activeModelLabel}
+                                currentProviderType={props.activeProviderType}
+                                choices={props.modelChoices ?? []}
+                                hasConversationHistory={props.modelSwitchHasHistory}
+                                availability={modelSwitchAvailability}
+                                disabledReason={modelSwitcherDisabledReason}
+                                openNonce={modelPickerNonce}
+                                hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
+                                renderProviderMark={props.renderProviderMark}
+                                onChange={props.onModelChange ? onNativeModelChange : undefined}
+                              />
+                            ) : props.onPickNewChatModel &&
+                              (props.modelChoices?.length ?? 0) > 0 ? (
+                              <NewChatModelPicker
+                                label={modelChipLabel}
+                                presentation={props.pickerPresentation}
+                                isReadOnly={props.pickersReadOnly}
+                                choices={props.modelChoices ?? []}
+                                currentValue={
+                                  props.newChatModel && !props.executorPicker?.selection
+                                    ? exactModelChoiceValue(
+                                        props.newChatModel.llmConnectionId,
+                                        props.newChatModel.llmConnectionSlug,
+                                        props.newChatModel.model,
+                                      )
+                                    : undefined
+                                }
+                                currentProviderType={props.newChatProviderType}
+                                renderProviderMark={props.renderProviderMark}
+                                onPick={onNativeModelChange}
+                              />
+                            ) : (
+                              <ModelChipStatic
+                                label={modelChipLabel}
+                                onOpenSettings={props.onOpenModelSettings}
+                                showUnavailableStatus={props.showStaticModelUnavailableStatus}
+                              />
+                            )}
+                            {!props.executorPicker && renderNativeThinkingControl()}
+                          </>
+                        ),
+                      }}
+                    />
+                  </ExecutorModelPickerBoundary>
                 </MakaClientSessionScope>
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
               </div>
@@ -2548,3 +2576,30 @@ function ContextUsageAction(props: {
 }
 
 export type ComposerProps = ComponentProps<typeof Composer>;
+
+function ExecutorModelPickerBoundary(props: {
+  picker?: ComposerProps['executorPicker'];
+  presentation?: ExecutorModelPickerProps['presentation'];
+  isReadOnly?: boolean;
+  nativeLabel?: string;
+  renderProviderMark?: ComposerProps['renderProviderMark'];
+  nativeThinkingControl?: ReactNode;
+  scopeKey?: string;
+  onPendingChange?(pending: boolean): void;
+  children: ReactNode;
+}) {
+  return props.picker ? (
+    <ExecutorModelPicker
+      key={props.scopeKey}
+      {...props.picker}
+      presentation={props.presentation}
+      isReadOnly={props.isReadOnly}
+      nativeLabel={props.nativeLabel}
+      renderProviderMark={props.renderProviderMark}
+      nativeThinkingControl={props.nativeThinkingControl}
+      onPendingChange={props.onPendingChange}
+    >
+      {props.children}
+    </ExecutorModelPicker>
+  ) : props.children;
+}

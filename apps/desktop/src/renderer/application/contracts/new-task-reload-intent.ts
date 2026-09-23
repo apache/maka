@@ -35,11 +35,7 @@ function rendererSessionStorage(): SessionStorageLike | undefined {
   }
 }
 
-/**
- * A renderer-reload lease for the explicit empty new-task surface.
- * sessionStorage survives HMR/navigation reloads but not a new application
- * window, so ordinary cold-start history restoration remains unchanged.
- */
+/** Renderer-reload lease shared by Task Entry and the conversation draft. */
 export function hasNewTaskReloadIntent(
   storage: SessionStorageLike | undefined = rendererSessionStorage(),
 ): boolean {
@@ -73,8 +69,6 @@ export function readNewTaskReloadIntent(
   try {
     const raw = storage?.getItem(NEW_TASK_RELOAD_INTENT_KEY);
     if (!raw) return undefined;
-    // The original marker shipped as the literal `1`. Keep reloads made by
-    // that version fail-soft while treating the marker as surface state only.
     if (raw === '1') return { draft: '' };
     const parsed = JSON.parse(raw) as Partial<NewTaskReloadIntent>;
     if (typeof parsed.draft !== 'string') return undefined;
@@ -95,9 +89,8 @@ export function writeNewTaskReloadDraft(
   try {
     const intent = readNewTaskReloadIntent(storage);
     if (!intent) return;
-    const persistedKey = draftKey === UNRESOLVED_NEW_TASK_DRAFT_KEY
-      ? intent.draftKey ?? draftKey
-      : draftKey;
+    const persistedKey =
+      draftKey === UNRESOLVED_NEW_TASK_DRAFT_KEY ? (intent.draftKey ?? draftKey) : draftKey;
     storage?.setItem(
       NEW_TASK_RELOAD_INTENT_KEY,
       JSON.stringify({ draft, draftKey: persistedKey }),

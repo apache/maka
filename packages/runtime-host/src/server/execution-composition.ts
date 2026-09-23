@@ -216,6 +216,10 @@ import {
 } from './project-directory-authority.js';
 import { HostProjectCatalogCoordinator } from './project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from './project-membership-gate.js';
+import {
+  HostBuiltinExternalAgentPluginCoordinator,
+  withBuiltinExternalAgentCatalog,
+} from './builtin-external-agent-plugins.js';
 import { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';
 import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
@@ -397,9 +401,30 @@ export async function createExecutionRuntimeHostComposition(
       executors: pluginExecutors,
       clientBridge: pluginClientBridge,
     });
-    const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
+    const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(
+      pluginPlatform,
+      async (input) => {
+        if (input.kind === 'conversation') {
+          const header = await stores.sessionStore.readHeaderSnapshot(input.sessionId);
+          if (!header.executorId) return [];
+          return pluginExecutors.catalog({
+            sessionId: input.sessionId,
+            executorId: header.executorId,
+            cwd: header.cwd,
+            ...(header.executorConfig ? { configuration: header.executorConfig } : {}),
+          });
+        }
+        const catalog = await pluginExecutors.catalog({ cwd: input.cwd });
+        return withBuiltinExternalAgentCatalog(catalog);
+      },
+    );
     const openedProjectCatalog = storage.projectCatalog;
     const runtimePolicyStores = storage.runtimePolicy;
+    const builtinExternalAgentPlugins = new HostBuiltinExternalAgentPluginCoordinator({
+      platform: pluginPlatform,
+      controlDirectory: context.owner.controlDirectory,
+      readPolicy: () => runtimePolicyStores.runtimePolicy.getSnapshot(),
+    });
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
     const openedScheduledTaskStore = storage.scheduledTasks;
     const openedPlanStore = storage.plan;
@@ -877,8 +902,32 @@ export async function createExecutionRuntimeHostComposition(
     const rootPort: HostMessageRootPort = {
       readLatestRootTurnLineage: (identity) =>
         requireRootCoordinator(rootCoordinator).readLatestRootTurnLineage(identity),
-      readSessionHeader: (sessionId) =>
-        requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
+      readSessionHeader: async (sessionId) => {
+        const projected =
+          await requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId);
+        if (!projected || projected.unavailableReason) return projected;
+        const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+        if (!header.executorId) return projected;
+        const [entry] = await pluginExecutors.catalog({
+          sessionId,
+          executorId: header.executorId,
+          cwd: header.cwd,
+          ...(header.executorConfig ? { configuration: header.executorConfig } : {}),
+        });
+        return {
+          ...projected,
+          idleOnly: true,
+          supportsAttachments: entry?.supportsAttachments ?? false,
+          ...(entry?.readiness === 'ready'
+            ? {}
+            : {
+                unavailableReason:
+                  entry?.readiness === 'history_only'
+                    ? 'External conversation is history-only. Start a new task.'
+                    : 'Executor is unavailable. Check External Agents settings.',
+              }),
+        };
+      },
       readRootState: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readRootState(sessionId),
       claimStopFence: (input, commitQueueFence, admission) =>
@@ -1150,6 +1199,9 @@ export async function createExecutionRuntimeHostComposition(
                 : { model: factoryContext.header.model }),
               ...(factoryContext.header.thinkingLevel
                 ? { thinkingLevel: factoryContext.header.thinkingLevel }
+                : {}),
+              ...(factoryContext.header.executorConfig
+                ? { configuration: factoryContext.header.executorConfig }
                 : {}),
               ...(factoryContext.systemPrompt ? { instructions: factoryContext.systemPrompt } : {}),
               binding,
@@ -2037,6 +2089,7 @@ export async function createExecutionRuntimeHostComposition(
     });
     async function applyRuntimePolicyMutationEffects(): Promise<void> {
       try {
+        await builtinExternalAgentPlugins.reconcile();
         await requireMemory(memory).refreshAfterPolicyMutation();
       } catch (error) {
         context.requestDrain();
@@ -2059,8 +2112,33 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       workspaceResolver,
       requestDrain: context.requestDrain,
-      assertExecutorAvailable: (sessionId, executorId) => {
+      configureExecutor: async (header, configuration) => {
+        if (!header.executorId) throw new Error('Session has no executor');
+        await pluginExecutors.configureConversation(header.id, header.executorId, {
+          conversationKey: header.id,
+          cwd: header.cwd,
+          configuration,
+        });
+      },
+      retireExecutor: (sessionId) => pluginExecutors.retireConversation(sessionId),
+      assertExecutorAvailable: async (sessionId, executorId, configuration, cwd) => {
         pluginExecutors.identity(sessionId, executorId);
+        const [entry] = await pluginExecutors.catalog({
+          cwd,
+          executorId,
+          discoverySessionId: sessionId,
+        });
+        if (!entry || entry.readiness !== 'ready') throw new Error('Executor is not ready');
+        // Catalog-managed executors pin their confirmed configuration on every create path.
+        // Providers without model discovery retain main's executor-specific model contract.
+        if (entry.supportsModelChange || entry.models.length > 0) {
+          if (
+            configuration?.model &&
+            !entry.models.some((model) => model.id === configuration.model)
+          )
+            throw new Error('Executor model is unavailable');
+          return configuration ?? {};
+        }
       },
       ...(context.sessionAccessAuthority
         ? { sessionAccessAuthority: context.sessionAccessAuthority }
@@ -2570,7 +2648,14 @@ export async function createExecutionRuntimeHostComposition(
       sessionEffects: sessionEffectCoordinator,
       graph: requireGraphCoordinator(graphCoordinator),
       graphWake: requireGraphSupervisorWake(graphSupervisorWake),
-      manager,
+      manager: {
+        finalizeChildWorkspacePatches: (sessionId) =>
+          requireSessionManager(manager).finalizeChildWorkspacePatches(sessionId),
+        disposeSessionBackend: async (sessionId) => {
+          await requireSessionManager(manager).disposeSessionBackend(sessionId);
+          await pluginExecutors.retireConversation(sessionId);
+        },
+      },
       capabilities: clientCapabilities,
       continuity: continuityCoordinator,
       artifacts: openedArtifactStore,
@@ -2649,6 +2734,10 @@ export async function createExecutionRuntimeHostComposition(
         releaseConnection: [
           (connectionId) => pluginPlatformCoordinator.releaseConnection(connectionId),
         ],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'builtin-external-agent-plugins',
+        recovery: { state: () => builtinExternalAgentPlugins.recover() },
       }),
       createRuntimeHostDomainModule({
         id: 'memory',

@@ -408,6 +408,18 @@
   min-width: 100px;
   max-width: min(220px, 28vw);
 }
+/* External model names share this row with an executor selector. Size the
+   trigger to its label and let the pair wrap instead of squeezing the model
+   into the native model + thinking pair's width budget. */
+.maka-composer-left-controls .maka-model-selection-controls:has(.maka-external-model-selector) {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+.maka-composer-left-controls .maka-external-model-selector {
+  width: max-content;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
 .maka-composer-model-chip-text {
   min-width: 0;
   overflow: hidden;

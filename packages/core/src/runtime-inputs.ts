@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { ExecutorConfiguration } from './executor-catalog.js';
+
 /**
  * Inputs to runtime APIs (create session, send message, list/filter).
  */
@@ -55,6 +57,7 @@ export interface CreateSessionInput {
   name?: string;
   /** Named plugin executor. When present, model fields are retained only as display placeholders. */
   executorId?: string;
+  executorConfig?: ExecutorConfiguration;
   /** Immutable Connection entity identity. Omitted only while copying legacy state. */
   llmConnectionId?: string;
   llmConnectionSlug: string;

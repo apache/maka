@@ -93,7 +93,6 @@ import * as TaskEntry from './features/task-entry';
 import type { TaskEntryShellProjection } from './features/task-entry';
 import * as Overlays from './features/overlays/index.js';
 import type { OverlaysShellProjection } from './features/overlays/index.js';
-import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
@@ -179,6 +178,8 @@ import {
   desktopSlashCommandPresentation,
   useActiveExecutionBoundary,
   useComposerAttachments,
+  useNewTaskChoice,
+  useShellChatModel,
 } from './features/conversation/index.js';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import {
@@ -188,7 +189,6 @@ import {
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
-import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellResume } from './use-shell-resume';
 
@@ -723,14 +723,15 @@ function AppShellContent({
     activeConnectionLabel,
     activeModel,
     activeModelLabel,
-    activeThinkingLevels,
-    activeThinkingLevel,
+    executor,
+    composerModelProps,
     newChatModel,
     newChatExecutionTarget,
     newChatModelLabel,
     newChatProviderType,
     newChatThinkingLevels,
     newChatThinkingLevel,
+    pendingNewChatThinkingLevel,
     newChatExecutionThinkingLevel,
     composerSupportsVision,
     setPendingNewChatModel,
@@ -745,6 +746,8 @@ function AppShellContent({
     sessionSendOutcome: activeSessionSendOutcome,
     defaultConnection,
     newTaskKey: currentNewTaskDraftKey,
+    executorTarget: taskEntry.selectors.target,
+    executorCwd: activeSession?.cwd ?? taskEntry.selectors.projectPath,
     activationCandidate: modelSettingsOwnsComposerHost
       ? onboardingActivationCandidate
       : undefined,
@@ -1372,7 +1375,9 @@ function AppShellContent({
     showModelSetupToast,
     toastApi,
     newChatModel: newChatExecutionTarget ?? null,
-    pendingNewChatThinkingLevel: newChatExecutionThinkingLevel ?? null,
+    pendingNewChatThinkingLevel: executorTarget ? newChatExecutionThinkingLevel ?? null : pendingNewChatThinkingLevel,
+    executorSelection: executor.selection,
+    executorEntry: executor.entry,
     newChatPermissionChoice: newTaskPermissionChoice,
     clearNewChatPermissionChoice: clearNewTaskPermissionChoice,
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
@@ -2410,28 +2415,21 @@ function AppShellContent({
                   onPasteAsQuote={canStageComposerContext ? onAddQuote : undefined}
                   onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
                   onAttachFilePaths={contextPickEnabled ? attachFilePaths : undefined}
-                  modelLabel={activeModelLabel ?? newChatModelLabel}
+                  {...Conversation.executorComposerProps(executor, {activeId, turnActive, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: () => openSettingsSection('external-agents'), onNewTask: openNewTaskSurface})}
                   activeSession={activeSessionForView}
                   {...{ executorTarget, onExecutorTargetChange }}
-                  activeModelConnectionId={activeSessionForModelControls?.llmConnectionId}
-                  activeModelConnectionSlug={activeSessionForModelControls?.llmConnectionSlug}
-                  activeModel={activeModel}
-                  activeModelLabel={activeModelLabel}
-                  activeProviderType={activeConnection?.providerType}
                   latestRequestUsageTokens={selectLatestRequestUsage(messages, activeModel, activeSessionForModelControls)}
                   onOpenContextUsage={() => commands.toggleTool('inspector')}
                   LiveContextUsageProbe={LiveContextUsageProbe}
                   contextUsageSessionId={ownerActiveId}
-                  modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
-                  hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}
                   renderProviderMark={(type) => <ProviderBrandMark type={type} />}
                   onModelChange={(input) => activeId ? void setSessionModel(activeId, input) : undefined}
-                  {...{ modelSwitchAvailability, activeThinkingLevels, activeThinkingLevel }}
+                  modelSwitchAvailability={modelSwitchAvailability}
                   onThinkingLevelChange={(level) => {
                     if (activeId) void setSessionThinkingLevel(activeId, level ?? null);
                   }}
-                  {...{ newChatModel, newChatProviderType, newChatThinkingLevels, newChatThinkingLevel }}
+                  {...composerModelProps}
                   onPickNewChatModel={(input) => {
                     setPendingNewChatModel(input);
                     if (modelSettingsOwnsComposerHost) saveComposerDefaults({ model: input });
@@ -2440,11 +2438,9 @@ function AppShellContent({
                   onOpenModelSettings={modelSettingsOwnsComposerHost
                     ? () => openSettingsSection('models')
                     : undefined}
-                  noModelConnection={!activeId && connections.length === 0}
                   noModelHint={!modelSettingsOwnsComposerHost && composerProfileName
                     ? shellCopy.configureModelsOnHost(composerProfileName)
                     : undefined}
-                  sendBlocked={taskSubmissionHardBlocked}
                   permissionMode={activePermissionMode}
                   // Every "cannot change this mid-turn" gate reads `turnActive`,
                   // the same witness Stop reads. Reading the persisted status
