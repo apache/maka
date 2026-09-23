@@ -30,20 +30,6 @@
   overflow-wrap: anywhere;
 }
 
-.maka-mcp-tool-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1-5);
-}
-
-.maka-mcp-tool-list code {
-  font: var(--maka-text-code);
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-control);
-  background: var(--muted);
-  color: var(--muted-foreground);
-}
-
 .maka-mcp-stderr {
   font: var(--maka-text-code);
   max-height: 132px;
@@ -51,8 +37,8 @@
   padding: var(--space-3);
   overflow: auto;
   border-radius: var(--radius-control);
-  background: var(--color-error-muted);
-  color: var(--destructive-text);
+  background: var(--muted);
+  color: var(--muted-foreground);
   white-space: pre-wrap;
 }
 

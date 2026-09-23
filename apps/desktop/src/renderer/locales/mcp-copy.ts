@@ -44,7 +44,7 @@ export type McpCopy = {
   };
   detail: {
     label: string; enabled: string; transport: string;
-    protocolLabel: string; stderr: string; needsAuthDetail: string;
+    protocolLabel: string; stderr: string; tools: string;
     negotiatedProtocol(era: 'legacy' | 'modern', revision: string): string;
     inspectorOpened(id: string): string;
   };
@@ -104,8 +104,7 @@ const MCP_COPY = {
     },
     detail: {
       label: '连接详情', enabled: '启用', transport: '传输方式',
-      protocolLabel: 'MCP 协议', stderr: '错误输出',
-      needsAuthDetail: '登录后才能使用它提供的工具。',
+      protocolLabel: 'MCP 协议', stderr: '错误输出', tools: '工具',
       negotiatedProtocol: (era, revision) => `${era === 'modern' ? '现代' : '传统'} · ${revision}`,
       inspectorOpened: (id) => `已打开 ${id} 的详情`,
     },
@@ -168,8 +167,7 @@ const MCP_COPY = {
     },
     detail: {
       label: '連線詳情', enabled: '啟用', transport: '傳輸方式',
-      protocolLabel: 'MCP 協議', stderr: '錯誤輸出',
-      needsAuthDetail: '登入後才能使用它提供的工具。',
+      protocolLabel: 'MCP 協議', stderr: '錯誤輸出', tools: '工具',
       negotiatedProtocol: (era, revision) => `${era === 'modern' ? '現代' : '傳統'} · ${revision}`,
       inspectorOpened: (id) => `已開啟 ${id} 的詳情`,
     },
@@ -232,8 +230,7 @@ const MCP_COPY = {
     },
     detail: {
       label: 'Connection details', enabled: 'Enabled', transport: 'Transport',
-      protocolLabel: 'MCP protocol', stderr: 'Error output',
-      needsAuthDetail: 'Log in to use the tools it provides.',
+      protocolLabel: 'MCP protocol', stderr: 'Error output', tools: 'Tools',
       negotiatedProtocol: (era, revision) => `${era === 'modern' ? 'Modern' : 'Legacy'} · ${revision}`,
       inspectorOpened: (id) => `${id} details opened`,
     },

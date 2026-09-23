@@ -27,7 +27,6 @@ import type {
 } from '@maka/core/mcp';
 import { isMcpStdioConfig } from '@maka/core/mcp';
 import {
-  Banner,
   Button,
   Collapsible,
   Divider,
@@ -113,8 +112,6 @@ const MCP_SUGGESTIONS: readonly McpSuggestion[] = [
   { id: 'mcp-docs', url: 'https://modelcontextprotocol.io/mcp', mark: { mask: new URL('../../../assets/provider-brands/mcp.svg', import.meta.url).href } },
 ];
 
-// Below this many connections the whole list fits on screen, and a search
-// field would only be one more control to read past.
 const SEARCH_MIN_CONNECTIONS = 8;
 
 export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
@@ -509,12 +506,18 @@ function McpMark(props: { server: McpServerConfig } | { suggestion: McpSuggestio
 
 // The dot is decoration beside the same words, so only the words are read.
 function McpStatusLabel(props: { state: McpStatusPresentation }) {
+  const { status, label } = props.state;
+  const dot = status === 'attention' || status === 'error' ? dotForStatus(status)
+    : status === 'active' ? 'neutral'
+    : null;
   return (
     <HStack gap={2} vAlign="center" wrap="nowrap">
-      <span aria-hidden="true" className="maka-mcp-status-dot">
-        <StatusDot variant={dotForStatus(props.state.status)} label={props.state.label} isPulsing={props.state.status === 'active'} />
-      </span>
-      <Text type="supporting" color="secondary">{props.state.label}</Text>
+      {dot ? (
+        <span aria-hidden="true" className="maka-mcp-status-dot">
+          <StatusDot variant={dot} label={label} isPulsing={status === 'active'} />
+        </span>
+      ) : null}
+      <Text type="supporting" color="secondary">{label}</Text>
     </HStack>
   );
 }
@@ -540,26 +543,14 @@ function McpServerInspector(props: {
   const loginActive = status?.authorizationPending || props.busy === `login:${serverId}`;
   const disabled = props.busy !== null || loginActive;
   return (
-    <VStack className="maka-mcp-inspector" gap={5}>
-      <HStack gap={3} vAlign="center">
-        <McpMark server={server} />
-        <StackItem size="fill">
-          <VStack gap={0}>
-            <Heading level={2}>{serverId}</Heading>
-            <McpStatusLabel state={state} />
-          </VStack>
-        </StackItem>
-      </HStack>
-
-      {loginActive ? (
-        <Banner status="info" title={copy.row.loginPending}
-          endContent={<Button size="sm" variant="secondary" onClick={props.onCancelLogin} label={copy.row.cancelLogin} />} />
-      ) : status?.state === 'needs-auth' ? (
-        <Banner status="warning" title={copy.row.needsAuth} description={copy.detail.needsAuthDetail}
-          endContent={<Button size="sm" variant="primary" isDisabled={disabled} onClick={props.onLogin} label={copy.row.login} />} />
-      ) : status?.error ? (
-        <Banner status="error" title={state.label} description={status.error} />
-      ) : null}
+    <VStack className="maka-mcp-inspector" gap={4}>
+      <VStack gap={2}>
+        <McpStatusLabel state={state} />
+        <Heading level={2}>{serverId}</Heading>
+        {loginActive || status?.error ? (
+          <Text type="supporting" color="secondary">{loginActive ? copy.row.loginPending : status?.error}</Text>
+        ) : null}
+      </VStack>
 
       <Switch
         value={server.enabled !== false}
@@ -567,6 +558,29 @@ function McpServerInspector(props: {
         isDisabled={disabled}
         label={copy.detail.enabled}
       />
+
+      <HStack gap={2} wrap="wrap">
+        {loginActive ? (
+          <Button size="sm" variant="secondary" onClick={props.onCancelLogin} label={copy.row.cancelLogin} />
+        ) : (
+          <>
+            {status?.state === 'needs-auth' ? (
+              <Button size="sm" variant="primary" isDisabled={disabled} onClick={props.onLogin} label={copy.row.login} />
+            ) : null}
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={props.onTest}
+              isDisabled={disabled}
+              isLoading={props.busy === `test:${serverId}`}
+              label={copy.row.test}
+            />
+            {status?.authenticated ? (
+              <Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogout} label={copy.row.logout} />
+            ) : null}
+          </>
+        )}
+      </HStack>
 
       <Divider />
 
@@ -585,32 +599,33 @@ function McpServerInspector(props: {
       </MetadataList>
 
       {status?.tools.length ? (
-        <VStack gap={2}>
-          <Text type="label" size="sm">{copy.row.tools(status.tools.length)}</Text>
-          <div className="maka-mcp-tool-list">{status.tools.map((tool) => <code key={tool.name}>{tool.name}</code>)}</div>
-        </VStack>
+        <>
+          <Divider />
+          <VStack gap={2}>
+            <Text type="label" color="secondary">{copy.detail.tools}</Text>
+            <List density="compact" hasDividers>
+              {status.tools.map((tool) => (
+                <ListItem key={tool.name} label={tool.name} description={tool.description} />
+              ))}
+            </List>
+          </VStack>
+        </>
       ) : null}
+
       {status?.stderrTail?.length ? (
-        <Collapsible trigger={copy.detail.stderr}>
-          <pre className="maka-mcp-stderr">{status.stderrTail.join('\n')}</pre>
-        </Collapsible>
+        <>
+          <Divider />
+          <VStack gap={2}>
+            <Text type="label" color="secondary">{copy.detail.stderr}</Text>
+            <pre className="maka-mcp-stderr">{status.stderrTail.join('\n')}</pre>
+          </VStack>
+        </>
       ) : null}
 
       <Divider />
 
       <HStack gap={2} wrap="wrap">
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={props.onTest}
-          isDisabled={disabled}
-          isLoading={props.busy === `test:${serverId}`}
-          label={copy.row.test}
-        />
         <Button size="sm" variant="secondary" onClick={props.onEdit} isDisabled={disabled} label={copy.row.edit} />
-        {status?.authenticated ? (
-          <Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogout} label={copy.row.logout} />
-        ) : null}
         <StackItem size="fill" />
         <Button size="sm" variant="destructive" onClick={props.onRemove} isDisabled={disabled} label={copy.row.delete} />
       </HStack>

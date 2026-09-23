@@ -576,8 +576,8 @@ const editorMcpStatus: McpServerStatus = {
   updatedAt: NOW,
 };
 
-function mcpTools(serverId: string, names: string[]): McpServerStatus['tools'] {
-  return names.map((name) => ({ serverId, name, inputSchema: {} }));
+function mcpTools(serverId: string, tools: Record<string, string>): McpServerStatus['tools'] {
+  return Object.entries(tools).map(([name, description]) => ({ serverId, name, description, inputSchema: {} }));
 }
 
 const configuredMcpStatuses: McpServerStatus[] = [
@@ -588,7 +588,13 @@ const configuredMcpStatuses: McpServerStatus[] = [
     negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },
     authenticated: true,
     toolCount: 5,
-    tools: mcpTools('notion', ['notion-search', 'notion-fetch', 'notion-create-pages', 'notion-update-page', 'notion-get-comments']),
+    tools: mcpTools('notion', {
+      'notion-search': 'Search pages and databases in the workspace',
+      'notion-fetch': 'Read a page or database by URL',
+      'notion-create-pages': 'Create one or more pages',
+      'notion-update-page': 'Update page properties or content',
+      'notion-get-comments': 'List comments on a page',
+    }),
     updatedAt: NOW,
   },
   {
@@ -597,7 +603,10 @@ const configuredMcpStatuses: McpServerStatus[] = [
     transport: 'stdio',
     negotiatedProtocol: { era: 'legacy', revision: '2025-06-18' },
     toolCount: 2,
-    tools: mcpTools('filesystem', ['read_file', 'list_directory']),
+    tools: mcpTools('filesystem', {
+      read_file: 'Read a file inside the allowed directories',
+      list_directory: 'List the entries of a directory',
+    }),
     updatedAt: NOW,
   },
   {
@@ -640,7 +649,7 @@ const manyMcpStatuses: McpServerStatus[] = Object.keys(manyMcpConfig.mcpServers)
   state: 'connected',
   transport: 'streamable-http',
   toolCount: 3,
-  tools: mcpTools(serverId, ['search', 'read', 'write'].map((verb) => `${serverId}_${verb}`)),
+  tools: mcpTools(serverId, Object.fromEntries(['search', 'read', 'write'].map((verb) => [`${serverId}_${verb}`, `${verb} ${serverId}`]))),
   updatedAt: NOW,
 }));
 
@@ -1391,7 +1400,6 @@ export const ExtensionsMcpConnectionFailed: Story = {
     );
     row.click();
     await waitForStoryText(canvasElement, '连接超时，请检查服务器地址或网络代理。');
-    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '错误输出')).click();
     await waitForStoryText(canvasElement, 'request timed out after 30s');
   },
 };
