@@ -23,6 +23,7 @@ import type {
   ToolCommitResult,
   SessionRuntimeEventEntry,
   ToolOperationRecord,
+  UnsettledToolOperationRecord,
   ImmutableRuntimePrefixProofReadBudget,
 } from './runtime-event-store-contract.js';
 export type {
@@ -31,6 +32,7 @@ export type {
   ToolCommitResult,
   SessionRuntimeEventEntry,
   ToolOperationRecord,
+  UnsettledToolOperationRecord,
   ImmutableRuntimePrefixProofReadBudget,
 } from './runtime-event-store-contract.js';
 
@@ -75,16 +77,18 @@ import {
   type ContinuationClaimResult,
   type ContinuationClaimStateV1,
   type RuntimeContinuationAuthorityStore,
+  type RuntimeInvocationRecoveryInventoryEntry,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
   type RuntimeWorkspaceVersionAuthorityStore,
 } from '@maka/core/runtime-event-store';
-import type {
-  RuntimeInvocationPageCursor,
-  RuntimeInvocationPageInput,
-  RuntimeInvocationPageResult,
-  RuntimeInvocationRecord,
-  RuntimeInvocationSearchResult,
+import {
+  mayBeTranscriptLedgerInvocationId,
+  type RuntimeInvocationPageCursor,
+  type RuntimeInvocationPageInput,
+  type RuntimeInvocationPageResult,
+  type RuntimeInvocationRecord,
+  type RuntimeInvocationSearchResult,
 } from '@maka/core/runtime-invocation';
 import type { ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
 import { stableJsonStringify } from '@maka/core/tool-args-identity';
@@ -105,10 +109,13 @@ import {
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
   scanToolLedger,
+  referencedToolOperationIds,
+  ToolLedgerReducer,
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
   validateGenericToolLedgerAppend,
-  validateToolLedgerTransition,
+  validateIncrementalToolLedgerTransition,
+  type ToolLedgerTransitionKind,
 } from '@maka/core/tool-ledger-scanner';
 import {
   buildImmutableRuntimePrefix,
@@ -148,6 +155,7 @@ import {
 import type {
   ConversationCopyRuntimeEventBatch,
   ImmutableSteeringMessageProof,
+  RecoveryMessageEventQuery,
   RuntimeEventScanBudget,
   RuntimeEventScanResult,
 } from './agent-run-store.js';
@@ -182,6 +190,24 @@ export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
+const RECOVERY_MESSAGE_QUERY_BATCH_SIZE = 400;
+const TOOL_LEDGER_CACHE_EVENT_OVERHEAD_BYTES = 1024;
+const DEFAULT_TOOL_LEDGER_CACHE_BUDGET: ToolLedgerCacheBudget = {
+  maxEntries: 32,
+  maxEstimatedBytes: 16 * 1024 * 1024,
+  maxSingleEntryEstimatedBytes: 8 * 1024 * 1024,
+};
+const IMMUTABLE_STEERING_SQL_PREDICATE = `
+  event_kind = 'text'
+  AND CASE
+    WHEN json_valid(payload_json)
+    THEN json_extract(payload_json, '$.partial')
+  END = 0
+  AND CASE
+    WHEN json_valid(payload_json)
+    THEN json_extract(payload_json, '$.content.steering')
+  END = 1
+`;
 
 function assertRuntimeEventScanBudget(budget: RuntimeEventScanBudget): void {
   for (const [name, value] of Object.entries(budget)) {
@@ -206,6 +232,23 @@ function requireRuntimeEventScanCount(value: unknown): number {
     throw new Error('Invalid RuntimeEvent scan measurement');
   }
   return value as number;
+}
+
+function normalizeToolLedgerCacheBudget(
+  override: Partial<ToolLedgerCacheBudget> | undefined,
+): ToolLedgerCacheBudget {
+  const budget = { ...DEFAULT_TOOL_LEDGER_CACHE_BUDGET, ...override };
+  for (const [name, value] of Object.entries(budget)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`Invalid tool ledger cache ${name}`);
+    }
+  }
+  return budget;
+}
+
+function estimateToolLedgerCacheBytes(storedPayloadBytes: number, eventCount: number): number {
+  const estimate = storedPayloadBytes * 2 + eventCount * TOOL_LEDGER_CACHE_EVENT_OVERHEAD_BYTES;
+  return Number.isSafeInteger(estimate) ? estimate : Number.MAX_SAFE_INTEGER;
 }
 
 const require = createRequire(import.meta.url);
@@ -250,6 +293,8 @@ export interface SqliteRuntimeStoreOptions {
   readOnly?: boolean;
   /** @internal Repository connection supplied by the operational DB owner. */
   databaseLease?: OperationalStateDatabaseLease;
+  /** @internal Test and benchmark override; production uses the fixed default budget. */
+  toolLedgerCacheBudget?: Partial<ToolLedgerCacheBudget>;
 }
 
 export interface RuntimeEventBatchImportResult {
@@ -296,7 +341,23 @@ export class SqliteRuntimeStore
   readonly workspaceVersionAuthorityCapability = WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
   private readonly db: DatabaseSync;
   private readonly databaseLease?: OperationalStateDatabaseLease;
-  private toolLedgerHealth: ToolLedgerHealth | undefined;
+  private readonly toolLedgerCacheBudget: ToolLedgerCacheBudget;
+  private readonly toolLedgerCache = new Map<string, ToolLedgerCacheEntry>();
+  private toolLedgerCacheEstimatedBytes = 0;
+  private toolLedgerCacheEventCount = 0;
+  private readonly toolLedgerCacheMetrics: ToolLedgerCacheMetrics = {
+    hits: 0,
+    misses: 0,
+    budgetEvictions: 0,
+    terminalEvictions: 0,
+    transientEntries: 0,
+  };
+  private readonly uncommittedToolLedgerStates = new Map<
+    ToolLedgerReducer,
+    UncommittedToolLedgerState
+  >();
+  private toolLedgerCacheVersion: string | undefined;
+  private localCommittedWriteRevision = 0;
   private closed = false;
   private readonly uncommittedEventSessions = new Set<string>();
   private readonly eventCommitListeners = new Set<(sessionId: string) => void>();
@@ -305,6 +366,7 @@ export class SqliteRuntimeStore
     path: string,
     private readonly options: SqliteRuntimeStoreOptions = {},
   ) {
+    this.toolLedgerCacheBudget = normalizeToolLedgerCacheBudget(options.toolLedgerCacheBudget);
     if (options.readOnly && options.databaseLease) {
       throw new Error('Operational state database leases cannot be opened read-only');
     }
@@ -318,7 +380,6 @@ export class SqliteRuntimeStore
       registerRecallFoldFunction(this.db);
       if (!options.readOnly) {
         this.registerWorkspaceBaselineAuthorityWriter();
-        this.refreshToolLedgerHealth();
       }
       return;
     }
@@ -345,7 +406,6 @@ export class SqliteRuntimeStore
       registerRecallFoldFunction(this.db);
       if (!options.readOnly) {
         this.registerWorkspaceBaselineAuthorityWriter();
-        this.refreshToolLedgerHealth();
       }
     } catch (error) {
       this.db.close();
@@ -375,6 +435,8 @@ export class SqliteRuntimeStore
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.clearToolLedgerCache();
+    this.uncommittedToolLedgerStates.clear();
     if (this.databaseLease) this.databaseLease.close();
     else this.db.close();
   }
@@ -437,6 +499,7 @@ export class SqliteRuntimeStore
       ) {
         throw new Error('Terminal RuntimeEvent must be the immutable ledger tail');
       }
+      this.invalidateToolLedgerCacheForInvocation(canonicalEvent.invocationId);
       return;
     }
     const existingTerminal = existing.find(isTerminalRuntimeEvent);
@@ -610,6 +673,220 @@ export class SqliteRuntimeStore
         this.completeInvocationRecordSync(row),
       ),
     );
+  }
+
+  async listInvocationRecoveryInventory(
+    sessionIds: readonly string[],
+  ): Promise<RuntimeInvocationRecoveryInventoryEntry[]> {
+    const selectedSessionIds = [...new Set(sessionIds)];
+    for (const sessionId of selectedSessionIds) {
+      assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    }
+    if (selectedSessionIds.length === 0) return [];
+    const selectedJson = JSON.stringify(selectedSessionIds);
+    return this.readTransaction(() => {
+      const eventRows = this.db
+        .prepare(`
+          WITH selected(session_id) AS (SELECT value FROM json_each(?))
+          SELECT
+            opening.rowid AS opening_rowid,
+            opening.session_id AS session_id,
+            opening.invocation_id AS invocation_id,
+            1 AS from_events,
+            NULL AS run_id,
+            NULL AS turn_id,
+            NULL AS opened_at,
+            (
+              SELECT terminal.rowid
+              FROM runtime_events AS terminal INDEXED BY runtime_events_terminal
+              WHERE terminal.invocation_id = opening.invocation_id
+                AND ${TERMINAL_RUNTIME_EVENT_SQL.replaceAll('payload_json', 'terminal.payload_json')}
+              ORDER BY terminal.event_seq
+              LIMIT 1
+            ) AS terminal_rowid
+          FROM selected
+          JOIN runtime_events AS opening INDEXED BY runtime_events_by_session_kind
+            ON opening.session_id = selected.session_id
+            AND opening.event_kind = 'invocation_opened'
+        `)
+        .all(selectedJson) as unknown as RuntimeInvocationRecoveryInventoryRow[];
+      const legacyRows = this.db
+        .prepare(`
+          WITH selected(session_id) AS (SELECT value FROM json_each(?))
+          SELECT
+            NULL AS opening_rowid,
+            legacy.session_id AS session_id,
+            legacy.invocation_id AS invocation_id,
+            legacy.run_id AS run_id,
+            legacy.turn_id AS turn_id,
+            legacy.opened_at AS opened_at,
+            0 AS from_events,
+            (
+              SELECT terminal.rowid
+              FROM runtime_events AS terminal INDEXED BY runtime_events_terminal
+              WHERE terminal.invocation_id = legacy.invocation_id
+                AND ${TERMINAL_RUNTIME_EVENT_SQL.replaceAll('payload_json', 'terminal.payload_json')}
+              ORDER BY terminal.event_seq
+              LIMIT 1
+            ) AS terminal_rowid
+          FROM selected
+          JOIN runtime_legacy_invocation_openings AS legacy
+            ON legacy.session_id = selected.session_id
+          WHERE NOT EXISTS (
+              SELECT 1 FROM runtime_events AS opening
+              WHERE opening.invocation_id = legacy.invocation_id
+                AND opening.event_kind = 'invocation_opened'
+            )
+        `)
+        .all(selectedJson) as unknown as RuntimeInvocationRecoveryInventoryRow[];
+      const handoffRows = this.db
+        .prepare(`
+          WITH selected(session_id) AS (SELECT value FROM json_each(?))
+          SELECT
+            terminal.rowid AS terminal_rowid,
+            terminal.event_id AS event_id,
+            terminal.session_id AS session_id,
+            terminal.invocation_id AS invocation_id,
+            terminal.run_id AS run_id,
+            terminal.turn_id AS turn_id,
+            terminal.payload_json AS payload_json
+          FROM selected
+          JOIN runtime_events AS terminal INDEXED BY runtime_events_by_session_kind
+            ON terminal.session_id = selected.session_id
+            AND terminal.event_kind = 'invocation_end'
+          WHERE CASE
+            WHEN json_valid(terminal.payload_json)
+            THEN json_type(terminal.payload_json, '$.actions.handoffPause')
+          END IS NOT NULL
+        `)
+        .all(selectedJson) as unknown as RuntimeHandoffTerminalStorageRow[];
+      const handoffByRowId = new Map(handoffRows.map((row) => [row.terminal_rowid, row]));
+      const eventIdentity = this.db.prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, committed_at
+        FROM runtime_events
+        WHERE rowid = ?
+      `);
+      const eventCandidate = this.db.prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, committed_at, payload_json
+        FROM runtime_events
+        WHERE rowid = ?
+      `);
+      const legacyCandidate = this.db.prepare(`
+        SELECT opening_json
+        FROM runtime_legacy_invocation_openings
+        WHERE invocation_id = ?
+      `);
+      return [...eventRows, ...legacyRows]
+        .sort(
+          (a, b) =>
+            a.session_id.localeCompare(b.session_id) ||
+            a.invocation_id.localeCompare(b.invocation_id),
+        )
+        .map((row): RuntimeInvocationRecoveryInventoryEntry => {
+          const base = { sessionId: row.session_id, invocationId: row.invocation_id };
+          const handoff =
+            row.terminal_rowid === null ? undefined : handoffByRowId.get(row.terminal_rowid);
+          const needsCandidate = row.terminal_rowid === null || handoff !== undefined;
+          const needsIdentity =
+            needsCandidate || mayBeTranscriptLedgerInvocationId(row.invocation_id);
+          if (!needsIdentity) return base;
+
+          let identity: NonNullable<RuntimeInvocationRecoveryInventoryEntry['identity']>;
+          let openingJson: string | undefined;
+          let openingEventId: string | undefined;
+          if (row.from_events === 1) {
+            if (row.opening_rowid === null) {
+              throw new Error(`Runtime invocation opening row is missing: ${row.invocation_id}`);
+            }
+            const detail = (needsCandidate ? eventCandidate : eventIdentity).get(
+              row.opening_rowid,
+            ) as unknown as RuntimeInvocationRecoveryOpeningRow | undefined;
+            if (
+              !detail ||
+              detail.session_id !== row.session_id ||
+              detail.invocation_id !== row.invocation_id
+            ) {
+              throw new Error(`Runtime invocation opening identity changed: ${row.invocation_id}`);
+            }
+            identity = {
+              sessionId: detail.session_id,
+              invocationId: detail.invocation_id,
+              runId: detail.run_id,
+              turnId: detail.turn_id,
+              openedAt: detail.committed_at,
+            };
+            openingEventId = detail.event_id;
+            openingJson = detail.payload_json;
+          } else {
+            if (row.run_id === null || row.turn_id === null || row.opened_at === null) {
+              throw new Error(
+                `Legacy invocation opening identity is incomplete: ${row.invocation_id}`,
+              );
+            }
+            identity = {
+              sessionId: row.session_id,
+              invocationId: row.invocation_id,
+              runId: row.run_id,
+              turnId: row.turn_id,
+              openedAt: row.opened_at,
+            };
+            if (needsCandidate) {
+              openingJson = (
+                legacyCandidate.get(row.invocation_id) as { opening_json?: unknown } | undefined
+              )?.opening_json as string | undefined;
+            }
+          }
+          if (!needsCandidate) return { ...base, identity };
+          if (typeof openingJson !== 'string') {
+            throw new Error(`Runtime invocation opening payload is missing: ${row.invocation_id}`);
+          }
+
+          let opening: RuntimeInvocationRecord['opening'];
+          if (row.from_events === 1) {
+            const event = decodeRuntimeEventStorageRow({
+              event_id: openingEventId ?? '',
+              session_id: identity.sessionId,
+              invocation_id: identity.invocationId,
+              run_id: identity.runId,
+              turn_id: identity.turnId,
+              payload_json: openingJson,
+            });
+            const decoded = runtimeEventInvocationOpening(event);
+            if (!decoded) {
+              throw new Error(
+                `RuntimeEvent ${event.id} is indexed as an opening fact but is not one`,
+              );
+            }
+            opening = decoded;
+          } else {
+            opening = decodeRuntimeInvocationOpened(JSON.parse(openingJson));
+          }
+
+          let terminalEvent: RuntimeEvent | undefined;
+          if (handoff) {
+            if (
+              handoff.session_id !== identity.sessionId ||
+              handoff.invocation_id !== identity.invocationId ||
+              handoff.run_id !== identity.runId ||
+              handoff.turn_id !== identity.turnId
+            ) {
+              throw new Error(`Runtime handoff terminal identity changed: ${row.invocation_id}`);
+            }
+            terminalEvent = decodeRuntimeEventStorageRow(handoff);
+            if (!isTerminalRuntimeEvent(terminalEvent)) {
+              throw new Error(`Runtime handoff fact is not terminal: ${terminalEvent.id}`);
+            }
+          }
+          return {
+            ...base,
+            candidate: {
+              ...identity,
+              opening,
+              ...(terminalEvent ? { terminalEvent } : {}),
+            },
+          };
+        });
+    });
   }
 
   async readRunInvocation(
@@ -1397,6 +1674,53 @@ export class SqliteRuntimeStore
     return row ? this.decodeContinuationClaimStateRow(row) : undefined;
   }
 
+  async listUnsettledContinuationClaimsForRecovery(
+    sessionIds: readonly string[],
+  ): Promise<ContinuationClaimStateV1[]> {
+    const selectedSessionIds = [...new Set(sessionIds)];
+    for (const sessionId of selectedSessionIds) {
+      assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    }
+    if (selectedSessionIds.length === 0) return [];
+    const rows = this.db
+      .prepare(`
+        WITH selected(session_id) AS (SELECT value FROM json_each(?))
+        SELECT
+          claim.claim_id,
+          claim.source_session_id,
+          claim.source_invocation_id,
+          claim.source_run_id,
+          claim.source_turn_id,
+          claim.source_event_high_water,
+          claim.source_prefix_digest,
+          claim.boundary_digest,
+          claim.boundary_json,
+          claim.provider_projection_version,
+          claim.provider_replay_digest,
+          claim.target_session_id,
+          claim.target_invocation_id,
+          claim.target_run_id,
+          claim.target_turn_id,
+          claim.target_opening_json,
+          claim.claimed_at,
+          claim.start_event_id,
+          claim.start_kind,
+          claim.protocol_version
+        FROM selected
+        JOIN runtime_continuation_claims AS claim
+          ON claim.target_session_id = selected.session_id
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM runtime_events AS terminal INDEXED BY runtime_events_terminal
+          WHERE terminal.invocation_id = claim.target_invocation_id
+            AND ${TERMINAL_RUNTIME_EVENT_SQL.replaceAll('payload_json', 'terminal.payload_json')}
+        )
+        ORDER BY claim.claimed_at ASC, claim.claim_id ASC
+      `)
+      .all(JSON.stringify(selectedSessionIds)) as unknown as ContinuationClaimStorageRow[];
+    return rows.map((row) => this.decodeContinuationClaimStateRow(row));
+  }
+
   async listContinuationClaimsForRecovery(sessionId: string): Promise<ContinuationClaimStateV1[]> {
     const rows = this.db
       .prepare(`
@@ -1493,27 +1817,136 @@ export class SqliteRuntimeStore
   ): Promise<ImmutableSteeringMessageProof | undefined> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
     assertRuntimeStorageSafeId(messageId, 'Invalid message id');
-    const matches = this.readImmutableSessionRuntimeEvents(sessionId).filter(
-      (event) => immutableSteeringMessageId(event) === messageId,
-    );
+    const matches = this.readImmutableSteeringMessageEvents(sessionId, messageId);
     if (matches.length > 1) {
       throw new Error(`Immutable steering message identity conflict: ${messageId}`);
     }
     return matches[0] ? Object.freeze({ event: matches[0] }) : undefined;
   }
 
-  async repairImmutableSteeringMessageProofsForRecovery(sessionId: string): Promise<void> {
-    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    const messages = new Map<string, RuntimeEvent>();
-    for (const event of this.readImmutableSessionRuntimeEvents(sessionId)) {
-      const messageId = immutableSteeringMessageId(event);
-      if (!messageId) continue;
-      const existing = messages.get(messageId);
-      if (existing && !isDeepStrictEqual(existing, event)) {
-        throw new Error(`Immutable steering message identity conflict: ${messageId}`);
+  async readRecoveryMessageEvents(
+    input: RecoveryMessageEventQuery,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>> {
+    assertRuntimeStorageSafeId(input.sessionId, 'Invalid session id');
+    assertEvidenceReadBudget(input.budget);
+    const turnIds = distinctSafeRuntimeIds(input.turnIds, 'Invalid recovery Turn id');
+    const eventIds = distinctSafeRuntimeIds(input.eventIds, 'Invalid recovery event id');
+    const selectedEventIds = new Set<string>();
+    const measuredRows: Array<{ event_id: string; stored_bytes?: unknown }> = [];
+
+    const measureEventsById = (ids: readonly string[]): boolean => {
+      for (const batch of batches(ids, RECOVERY_MESSAGE_QUERY_BATCH_SIZE)) {
+        const placeholders = batch.map(() => '?').join(', ');
+        const rows = this.db
+          .prepare(`
+            SELECT event_id, session_id,
+                   length(CAST(payload_json AS BLOB)) AS stored_bytes
+              FROM runtime_events
+             WHERE event_id IN (${placeholders})
+          `)
+          .all(...batch) as Array<{
+          event_id?: unknown;
+          session_id?: unknown;
+          stored_bytes?: unknown;
+        }>;
+        for (const row of rows) {
+          if (typeof row.event_id !== 'string' || typeof row.session_id !== 'string') {
+            throw new Error('Invalid recovery RuntimeEvent measurement row');
+          }
+          if (row.session_id !== input.sessionId || selectedEventIds.has(row.event_id)) continue;
+          selectedEventIds.add(row.event_id);
+          measuredRows.push({ event_id: row.event_id, stored_bytes: row.stored_bytes });
+          if (measuredRows.length > input.budget.maxRecords) return false;
+        }
       }
-      messages.set(messageId, event);
+      return true;
+    };
+
+    if (!measureEventsById(eventIds)) return { status: 'limit_exceeded' };
+
+    const additionalTurnEventIds = new Set<string>();
+    for (const batch of batches(turnIds, RECOVERY_MESSAGE_QUERY_BATCH_SIZE)) {
+      const placeholders = batch.map(() => '?').join(', ');
+      const rows = this.db
+        .prepare(`
+          SELECT event_id
+            FROM runtime_events
+           WHERE session_id = ?
+             AND turn_id IN (${placeholders})
+             AND event_kind = 'text'
+             AND CASE
+               WHEN json_valid(payload_json)
+               THEN json_extract(payload_json, '$.partial')
+             END = 0
+             AND CASE
+               WHEN json_valid(payload_json)
+               THEN json_extract(payload_json, '$.role')
+             END = 'user'
+             AND coalesce(CASE
+               WHEN json_valid(payload_json)
+               THEN json_extract(payload_json, '$.content.steering')
+             END, 0) = 0
+           LIMIT ?
+        `)
+        .all(input.sessionId, ...batch, input.budget.maxRecords + 1) as Array<{
+        event_id?: unknown;
+      }>;
+      for (const row of rows) {
+        if (typeof row.event_id !== 'string') {
+          throw new Error('Invalid recovery RuntimeEvent identity row');
+        }
+        if (!selectedEventIds.has(row.event_id)) additionalTurnEventIds.add(row.event_id);
+        if (selectedEventIds.size + additionalTurnEventIds.size > input.budget.maxRecords) {
+          return { status: 'limit_exceeded' };
+        }
+      }
     }
+
+    if (!measureEventsById([...additionalTurnEventIds])) return { status: 'limit_exceeded' };
+    const measurement = measureEvidenceRows(
+      measuredRows,
+      input.budget,
+      'Invalid recovery RuntimeEvent evidence measurement row',
+    );
+    if (!measurement) return { status: 'limit_exceeded' };
+
+    const storedBytesById = new Map(
+      measuredRows.map((row) => [row.event_id, requireRuntimeEventScanCount(row.stored_bytes)]),
+    );
+    const events = new Map<string, RuntimeEvent>();
+    for (const batch of batches([...selectedEventIds], RECOVERY_MESSAGE_QUERY_BATCH_SIZE)) {
+      const placeholders = batch.map(() => '?').join(', ');
+      const rows = this.db
+        .prepare(`
+          SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json,
+                 length(CAST(payload_json AS BLOB)) AS stored_bytes
+            FROM runtime_events
+           WHERE event_id IN (${placeholders})
+        `)
+        .all(...batch) as unknown as Array<RuntimeEventStorageRow & { stored_bytes: number }>;
+      for (const row of rows) {
+        const event = decodeRuntimeEventStorageRow(row);
+        if (event.sessionId !== input.sessionId) continue;
+        if (storedBytesById.get(event.id) !== requireRuntimeEventScanCount(row.stored_bytes)) {
+          throw new Error('Recovery RuntimeEvent evidence changed while reading');
+        }
+        events.set(event.id, event);
+      }
+    }
+    if (events.size !== selectedEventIds.size) {
+      throw new Error('Recovery RuntimeEvent evidence changed while reading');
+    }
+
+    return {
+      status: 'complete',
+      records: [...events.values()].sort(
+        (left, right) =>
+          left.ts - right.ts ||
+          left.runId.localeCompare(right.runId) ||
+          left.id.localeCompare(right.id),
+      ),
+      ...measurement,
+    };
   }
 
   /**
@@ -3063,27 +3496,43 @@ export class SqliteRuntimeStore
     return this.readToolOperationSync(operationId);
   }
 
-  async listUnsettledToolOperations(sessionId?: string): Promise<ToolOperationRecord[]> {
+  async listUnsettledToolOperations(
+    sessionIds?: string | readonly string[],
+  ): Promise<UnsettledToolOperationRecord[]> {
+    const selectedSessionIds =
+      sessionIds === undefined
+        ? undefined
+        : [...new Set(typeof sessionIds === 'string' ? [sessionIds] : sessionIds)];
+    if (selectedSessionIds?.length === 0) return [];
     const query = `
-      SELECT operation_id, invocation_id, run_id, turn_id, provider_tool_call_id,
-        tool_name, canonical_args_hash, recovery_mode, current_state,
-        call_event_id, dispatch_event_id, result_event_id, version
+      SELECT call_event.session_id,
+        tool_operations.operation_id, tool_operations.invocation_id,
+        tool_operations.run_id, tool_operations.turn_id,
+        tool_operations.provider_tool_call_id, tool_operations.tool_name,
+        tool_operations.canonical_args_hash, tool_operations.recovery_mode,
+        tool_operations.current_state, tool_operations.call_event_id,
+        tool_operations.dispatch_event_id, tool_operations.result_event_id,
+        tool_operations.version
       FROM tool_operations
-      WHERE current_state = 'prepared'
-        AND result_event_id IS NULL
-        AND dispatch_event_id IS NOT NULL
+      JOIN runtime_events AS call_event
+        ON call_event.event_id = tool_operations.call_event_id
+      WHERE tool_operations.current_state = 'prepared'
+        AND tool_operations.result_event_id IS NULL
+        AND tool_operations.dispatch_event_id IS NOT NULL
         ${
-          sessionId === undefined
+          selectedSessionIds === undefined
             ? ''
-            : 'AND call_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)'
+            : 'AND call_event.session_id IN (SELECT value FROM json_each(?))'
         }
-      ORDER BY invocation_id ASC, operation_id ASC
+      ORDER BY tool_operations.invocation_id ASC, tool_operations.operation_id ASC
     `;
     const statement = this.db.prepare(query);
-    const rows = (sessionId === undefined
+    const rows = (selectedSessionIds === undefined
       ? statement.all()
-      : statement.all(sessionId)) as unknown as ToolOperationRow[];
-    return rows.map(toolOperationFromRow);
+      : statement.all(
+          JSON.stringify(selectedSessionIds),
+        )) as unknown as UnsettledToolOperationRow[];
+    return rows.map((row) => ({ sessionId: row.session_id, ...toolOperationFromRow(row) }));
   }
 
   async readToolJournal(operationId: string): Promise<ToolJournalEventRecord[]> {
@@ -3100,6 +3549,7 @@ export class SqliteRuntimeStore
     return rows.map(toolJournalRecordFromRow);
   }
 
+  /** Explicit full-workspace integrity audit and disposable projection rebuild. */
   async rebuildToolProjectionsFromRuntimeEvents(): Promise<ToolProjectionRebuildResult> {
     return this.transaction(() => this.rebuildToolProjectionsFromRuntimeEventsSync());
   }
@@ -3469,7 +3919,15 @@ export class SqliteRuntimeStore
   }
 
   private transaction<T>(operation: () => T): T {
-    if (this.databaseLease) return this.databaseLease.transaction('write', operation);
+    if (this.databaseLease) {
+      const nested = this.db.isTransaction;
+      return this.databaseLease.transaction('write', () => {
+        // A sibling lease may have changed the shared transaction view since
+        // this store last used its reconstructible cache.
+        if (nested) this.clearToolLedgerCache();
+        return operation();
+      });
+    }
     this.db.exec('BEGIN IMMEDIATE');
     let result: T;
     try {
@@ -3481,10 +3939,17 @@ export class SqliteRuntimeStore
       } catch {
         // Preserve the protocol failure that caused rollback.
       }
+      // Reducers may have loaded rows written earlier in this transaction as
+      // their immutable base. Bump the local view even on rollback so the next
+      // admission discards that phantom base before retrying.
+      this.localCommittedWriteRevision += 1;
       this.settleEventCommits(false);
+      this.settleToolLedgerStates(false);
       throw error;
     }
+    this.localCommittedWriteRevision += 1;
     this.settleEventCommits(true);
+    this.settleToolLedgerStates(true);
     return result;
   }
 
@@ -3733,65 +4198,315 @@ export class SqliteRuntimeStore
 
   private assertToolLedgerTransition(
     candidateEvents: readonly RuntimeEvent[],
-    expectedTransition: Parameters<typeof validateToolLedgerTransition>[0]['expectedTransition'],
+    expectedTransition: ToolLedgerTransitionKind,
   ): void {
-    this.assertWorkspaceToolLedgerHealthy();
-    // Tool-call identity is scoped by invocation. Reading unrelated invocations here turns
-    // concurrent subagents into repeated whole-workspace scans without strengthening the
-    // transition check; event and operation uniqueness remain enforced by SQLite keys.
-    const rows: RuntimeEventStorageRow[] = [];
-    const invocationIds = [...new Set(candidateEvents.map((event) => event.invocationId))].sort();
+    const canonicalEncodings = candidateEvents.map(encodeCanonicalRuntimeEvent);
+    const canonicalEvents = canonicalEncodings.map(({ event }) => event);
+    const entry = this.toolLedgerCacheEntry(canonicalEvents);
+    const appendedEncodings = canonicalEncodings.filter(
+      ({ event }) => entry.reducer.event(event.id) === undefined,
+    );
+    const validation = validateIncrementalToolLedgerTransition({
+      reducer: entry.reducer,
+      candidateEvents: canonicalEvents,
+      expectedTransition,
+    });
+    if (!validation.ok) {
+      if (validation.source === 'existing') {
+        throw new ToolLedgerCorruptionError(validation.code, validation.eventId);
+      }
+      throw new ToolLedgerRejectionError(validation.code, validation.eventId);
+    }
+    if (validation.appendedEvents === 0) return;
+    this.noteToolLedgerState(
+      entry,
+      validation.checkpoint,
+      canonicalEvents.map((event) => event.invocationId),
+      {
+        eventCount: validation.appendedEvents,
+        estimatedBytes: estimateToolLedgerCacheBytes(
+          appendedEncodings.reduce(
+            (bytes, encoding) => bytes + Buffer.byteLength(encoding.json, 'utf8'),
+            0,
+          ),
+          validation.appendedEvents,
+        ),
+      },
+    );
+  }
+
+  private toolLedgerCacheEntry(candidateEvents: readonly RuntimeEvent[]): ToolLedgerCacheEntry {
+    const currentVersion = this.currentToolLedgerCacheVersion();
+    if (this.toolLedgerCacheVersion !== currentVersion) this.refreshToolLedgerCacheVersion();
+
+    const directInvocationIds = new Set(candidateEvents.map((event) => event.invocationId));
+    const directOperationIds = referencedToolOperationIds(candidateEvents);
+    for (const invocationId of this.toolLedgerOperationInvocations(directOperationIds)) {
+      directInvocationIds.add(invocationId);
+    }
+
+    for (const [key, entry] of this.toolLedgerCache) {
+      if (
+        entry.seedInvocationIds.size === directInvocationIds.size &&
+        [...directInvocationIds].every((invocationId) => entry.seedInvocationIds.has(invocationId))
+      ) {
+        this.toolLedgerCacheMetrics.hits += 1;
+        this.touchToolLedgerCacheEntry(key, entry);
+        return entry;
+      }
+    }
+    this.toolLedgerCacheMetrics.misses += 1;
+
+    const invocationIds = new Set(directInvocationIds);
+    const operationIds = new Set(directOperationIds);
+    const resolvedOperationIds = new Set<string>();
+    const loadedInvocationIds = new Set<string>();
+    const scopedEvents: Array<{ event: RuntimeEvent; eventSeq: number }> = [];
+    let storedPayloadBytes = 0;
     const readInvocation = this.db.prepare(`
-      SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+      SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq, payload_json,
+             length(CAST(payload_json AS BLOB)) AS stored_bytes
       FROM runtime_events
       WHERE invocation_id = ?
       ORDER BY event_seq ASC, event_id ASC
     `);
-    for (const invocationId of invocationIds) {
-      rows.push(...(readInvocation.all(invocationId) as unknown as RuntimeEventStorageRow[]));
+
+    while (true) {
+      const pendingOperationIds = [...operationIds].filter(
+        (operationId) => !resolvedOperationIds.has(operationId),
+      );
+      if (pendingOperationIds.length > 0) {
+        for (const operationId of pendingOperationIds) resolvedOperationIds.add(operationId);
+        for (const invocationId of this.toolLedgerOperationInvocations(pendingOperationIds)) {
+          invocationIds.add(invocationId);
+        }
+      }
+
+      const pendingInvocationIds = [...invocationIds]
+        .filter((invocationId) => !loadedInvocationIds.has(invocationId))
+        .sort();
+      if (pendingInvocationIds.length === 0 && pendingOperationIds.length === 0) break;
+      for (const invocationId of pendingInvocationIds) {
+        loadedInvocationIds.add(invocationId);
+        const rows = readInvocation.all(
+          invocationId,
+        ) as unknown as ToolLedgerRuntimeEventStorageRow[];
+        for (const row of rows) {
+          storedPayloadBytes += requireRuntimeEventScanCount(row.stored_bytes);
+          const event = decodeRuntimeEventStorageRow(row);
+          scopedEvents.push({ event, eventSeq: row.event_seq });
+          if (event.refs?.parentOperationId) operationIds.add(event.refs.parentOperationId);
+        }
+      }
     }
-    const validation = validateToolLedgerTransition({
-      existingEvents: rows.map(decodeRuntimeEventStorageRow),
-      candidateEvents: candidateEvents.map(canonicalizeRuntimeEventForStorage),
-      expectedTransition,
+
+    const sortedSeedInvocationIds = [...directInvocationIds].sort();
+    const sortedInvocationIds = [...invocationIds].sort();
+    const key = JSON.stringify([sortedSeedInvocationIds, sortedInvocationIds]);
+    const existing = this.toolLedgerCache.get(key);
+    if (existing) {
+      this.touchToolLedgerCacheEntry(key, existing);
+      return existing;
+    }
+    scopedEvents.sort(
+      (left, right) =>
+        left.event.invocationId.localeCompare(right.event.invocationId) ||
+        left.eventSeq - right.eventSeq ||
+        left.event.id.localeCompare(right.event.id),
+    );
+    const entry: ToolLedgerCacheEntry = {
+      reducer: new ToolLedgerReducer(scopedEvents.map(({ event }) => event)),
+      seedInvocationIds: new Set(sortedSeedInvocationIds),
+      invocationIds: new Set(sortedInvocationIds),
+      eventCount: scopedEvents.length,
+      estimatedBytes: estimateToolLedgerCacheBytes(storedPayloadBytes, scopedEvents.length),
+    };
+    if (this.toolLedgerEntryExceedsAdmissionBudget(entry)) {
+      this.toolLedgerCacheMetrics.transientEntries += 1;
+      return entry;
+    }
+    this.retainToolLedgerCacheEntry(key, entry);
+    this.trimToolLedgerCache();
+    return entry;
+  }
+
+  private toolLedgerOperationInvocations(operationIds: Iterable<string>): Set<string> {
+    const ids = [...new Set(operationIds)].sort();
+    if (ids.length === 0) return new Set();
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(`
+        SELECT DISTINCT invocation_id
+        FROM runtime_events
+        WHERE event_kind = 'tool_dispatch'
+          AND CASE
+            WHEN json_valid(payload_json)
+              THEN json_extract(payload_json, '$.actions.toolDispatch.operationId')
+          END IN (${placeholders})
+      `)
+      .all(...ids) as Array<{ invocation_id: string }>;
+    return new Set(rows.map((row) => row.invocation_id));
+  }
+
+  private noteToolLedgerState(
+    entry: ToolLedgerCacheEntry,
+    checkpoint: number,
+    invocationIds: readonly string[],
+    delta: Pick<ToolLedgerCacheEntry, 'estimatedBytes' | 'eventCount'>,
+  ): void {
+    const reducer = entry.reducer;
+    const existing = this.uncommittedToolLedgerStates.get(reducer);
+    if (existing) {
+      for (const invocationId of invocationIds) existing.changedInvocationIds.add(invocationId);
+      this.adjustToolLedgerCacheEntry(entry, delta);
+      return;
+    }
+    if (this.uncommittedToolLedgerStates.size === 0 && this.databaseLease) {
+      this.databaseLease.onTransactionSettled((committed) =>
+        this.settleToolLedgerStates(committed),
+      );
+    }
+    this.uncommittedToolLedgerStates.set(reducer, {
+      checkpoint,
+      changedInvocationIds: new Set(invocationIds),
+      entry,
+      estimatedBytesBefore: entry.estimatedBytes,
+      eventCountBefore: entry.eventCount,
     });
-    if (!validation.ok) {
-      throw new ToolLedgerRejectionError(validation.code, validation.eventId);
+    this.adjustToolLedgerCacheEntry(entry, delta);
+  }
+
+  private settleToolLedgerStates(committed: boolean): void {
+    const states = [...this.uncommittedToolLedgerStates.entries()];
+    this.uncommittedToolLedgerStates.clear();
+    if (states.length === 0) return;
+    if (!committed) {
+      for (const [reducer, state] of states.reverse()) {
+        reducer.rollback(state.checkpoint);
+        this.restoreToolLedgerCacheEntry(state);
+      }
+      this.trimToolLedgerCache();
+      return;
+    }
+
+    const retained = new Set(states.map(([reducer]) => reducer));
+    const changedInvocationIds = new Set(
+      states.flatMap(([, state]) => [...state.changedInvocationIds]),
+    );
+    for (const [key, entry] of this.toolLedgerCache) {
+      if (retained.has(entry.reducer)) continue;
+      if ([...entry.invocationIds].some((id) => changedInvocationIds.has(id))) {
+        this.deleteToolLedgerCacheEntry(key);
+      }
+    }
+    for (const [reducer, state] of states) reducer.commit(state.checkpoint);
+    this.toolLedgerCacheVersion = this.currentToolLedgerCacheVersion();
+    this.trimToolLedgerCache();
+  }
+
+  private refreshToolLedgerCacheVersion(): void {
+    if (this.uncommittedToolLedgerStates.size > 0) {
+      throw new Error('Cannot invalidate tool ledger state during an open write transaction');
+    }
+    this.clearToolLedgerCache();
+    this.toolLedgerCacheVersion = this.currentToolLedgerCacheVersion();
+  }
+
+  private retainToolLedgerCacheEntry(key: string, entry: ToolLedgerCacheEntry): void {
+    entry.cacheKey = key;
+    this.toolLedgerCache.set(key, entry);
+    this.toolLedgerCacheEstimatedBytes += entry.estimatedBytes;
+    this.toolLedgerCacheEventCount += entry.eventCount;
+  }
+
+  private touchToolLedgerCacheEntry(key: string, entry: ToolLedgerCacheEntry): void {
+    this.toolLedgerCache.delete(key);
+    this.toolLedgerCache.set(key, entry);
+  }
+
+  private adjustToolLedgerCacheEntry(
+    entry: ToolLedgerCacheEntry,
+    delta: Pick<ToolLedgerCacheEntry, 'estimatedBytes' | 'eventCount'>,
+  ): void {
+    entry.estimatedBytes += delta.estimatedBytes;
+    entry.eventCount += delta.eventCount;
+    if (entry.cacheKey && this.toolLedgerCache.get(entry.cacheKey) === entry) {
+      this.toolLedgerCacheEstimatedBytes += delta.estimatedBytes;
+      this.toolLedgerCacheEventCount += delta.eventCount;
     }
   }
 
-  private assertWorkspaceToolLedgerHealthy(): void {
-    const dataVersion = this.runtimeDataVersion();
-    if (!this.toolLedgerHealth || this.toolLedgerHealth.dataVersion !== dataVersion) {
-      this.refreshToolLedgerHealth();
+  private restoreToolLedgerCacheEntry(state: UncommittedToolLedgerState): void {
+    const entry = state.entry;
+    if (entry.cacheKey && this.toolLedgerCache.get(entry.cacheKey) === entry) {
+      this.toolLedgerCacheEstimatedBytes += state.estimatedBytesBefore - entry.estimatedBytes;
+      this.toolLedgerCacheEventCount += state.eventCountBefore - entry.eventCount;
     }
-    const health = this.toolLedgerHealth!;
-    if (health.decodeFailure) throw health.decodeFailure.error;
-    if (health.issue) {
-      // Pre-existing damage, not a bad candidate. Note the reach of "refused":
-      // this gate is only ever consulted for tool-bearing events, so a damaged
-      // ledger refuses tool facts and takes everything else. Callers that treat
-      // this as "the store is gone" are overreading it — see the note on the
-      // latch in `AgentRun.enqueueRuntimeEventStore`.
-      throw new ToolLedgerCorruptionError(health.issue.code, health.issue.eventId);
+    entry.estimatedBytes = state.estimatedBytesBefore;
+    entry.eventCount = state.eventCountBefore;
+  }
+
+  private deleteToolLedgerCacheEntry(key: string, reason?: 'budget' | 'terminal'): void {
+    const entry = this.toolLedgerCache.get(key);
+    if (!entry) return;
+    this.toolLedgerCache.delete(key);
+    if (entry.cacheKey === key) entry.cacheKey = undefined;
+    this.toolLedgerCacheEstimatedBytes -= entry.estimatedBytes;
+    this.toolLedgerCacheEventCount -= entry.eventCount;
+    if (reason === 'budget') this.toolLedgerCacheMetrics.budgetEvictions += 1;
+    if (reason === 'terminal') this.toolLedgerCacheMetrics.terminalEvictions += 1;
+  }
+
+  private clearToolLedgerCache(): void {
+    for (const entry of this.toolLedgerCache.values()) entry.cacheKey = undefined;
+    this.toolLedgerCache.clear();
+    this.toolLedgerCacheEstimatedBytes = 0;
+    this.toolLedgerCacheEventCount = 0;
+  }
+
+  private invalidateToolLedgerCacheForInvocation(invocationId: string): void {
+    for (const [key, entry] of this.toolLedgerCache) {
+      if (entry.invocationIds.has(invocationId)) {
+        this.deleteToolLedgerCacheEntry(key, 'terminal');
+      }
     }
   }
 
-  private refreshToolLedgerHealth(): void {
-    const dataVersion = this.runtimeDataVersion();
-    try {
-      const rows = this.db
-        .prepare(`
-          SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-          FROM runtime_events
-          ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
-        `)
-        .all() as unknown as RuntimeEventStorageRow[];
-      const scan = scanToolLedger(rows.map(decodeRuntimeEventStorageRow));
-      this.toolLedgerHealth = { dataVersion, issue: scan.issues[0] };
-    } catch (error) {
-      this.toolLedgerHealth = { dataVersion, decodeFailure: { error } };
+  private toolLedgerEntryExceedsAdmissionBudget(entry: ToolLedgerCacheEntry): boolean {
+    return entry.estimatedBytes > this.toolLedgerCacheBudget.maxSingleEntryEstimatedBytes;
+  }
+
+  private toolLedgerCacheExceedsBudget(): boolean {
+    return (
+      this.toolLedgerCache.size > this.toolLedgerCacheBudget.maxEntries ||
+      this.toolLedgerCacheEstimatedBytes > this.toolLedgerCacheBudget.maxEstimatedBytes
+    );
+  }
+
+  private trimToolLedgerCache(): void {
+    for (;;) {
+      let victim: string | undefined;
+      for (const [key, entry] of this.toolLedgerCache) {
+        if (this.uncommittedToolLedgerStates.has(entry.reducer)) continue;
+        if (this.toolLedgerEntryExceedsAdmissionBudget(entry)) {
+          victim = key;
+          break;
+        }
+      }
+      if (!victim && this.toolLedgerCacheExceedsBudget()) {
+        victim = [...this.toolLedgerCache].find(
+          ([, entry]) => !this.uncommittedToolLedgerStates.has(entry.reducer),
+        )?.[0];
+      }
+      if (!victim) return;
+      this.deleteToolLedgerCacheEntry(victim, 'budget');
     }
+  }
+
+  private currentToolLedgerCacheVersion(): string {
+    return `${this.runtimeDataVersion()}:${
+      this.databaseLease?.writeViewRevision() ?? this.localCommittedWriteRevision
+    }`;
   }
 
   private runtimeDataVersion(): number {
@@ -4022,24 +4737,29 @@ export class SqliteRuntimeStore
   private assertImmutableSteeringMessageIdentity(event: RuntimeEvent): void {
     const messageId = immutableSteeringMessageId(event);
     if (!messageId) return;
-    const matches = this.readImmutableSessionRuntimeEvents(event.sessionId).filter(
-      (candidate) => immutableSteeringMessageId(candidate) === messageId,
-    );
+    const matches = this.readImmutableSteeringMessageEvents(event.sessionId, messageId);
     if (matches.some((candidate) => !isDeepStrictEqual(candidate, event))) {
       throw new Error(`Immutable steering message identity conflict: ${messageId}`);
     }
   }
 
-  private readImmutableSessionRuntimeEvents(sessionId: string): RuntimeEvent[] {
+  private readImmutableSteeringMessageEvents(sessionId: string, messageId: string): RuntimeEvent[] {
     const rows = this.db
       .prepare(`
-      SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-      FROM runtime_events
-      WHERE session_id = ?
-      ORDER BY committed_at ASC, event_id ASC
-    `)
-      .all(sessionId) as unknown as RuntimeEventStorageRow[];
-    return rows.map(decodeRuntimeEventStorageRow);
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+          FROM runtime_events
+         WHERE session_id = ?
+           AND ${IMMUTABLE_STEERING_SQL_PREDICATE}
+           AND CASE
+             WHEN json_valid(payload_json)
+             THEN json_extract(payload_json, '$.refs.providerEventId')
+           END = ?
+         ORDER BY committed_at ASC, event_id ASC
+      `)
+      .all(sessionId, messageId) as unknown as RuntimeEventStorageRow[];
+    return rows
+      .map(decodeRuntimeEventStorageRow)
+      .filter((event) => immutableSteeringMessageId(event) === messageId);
   }
 
   private insertRuntimeEvent(
@@ -4066,6 +4786,9 @@ export class SqliteRuntimeStore
         throw new Error(
           `RuntimeEvent ${canonicalEvent.id} already exists outside this tool transaction`,
         );
+      }
+      if (isTerminalRuntimeEvent(canonicalEvent)) {
+        this.invalidateToolLedgerCacheForInvocation(canonicalEvent.invocationId);
       }
       return this.runtimeEventSeq(canonicalEvent.id);
     }
@@ -4117,6 +4840,9 @@ export class SqliteRuntimeStore
     );
     this.noteEventCommit(canonicalEvent.sessionId);
     this.deleteCompletedPartialSnapshot(canonicalEvent);
+    if (isTerminalRuntimeEvent(canonicalEvent)) {
+      this.invalidateToolLedgerCacheForInvocation(canonicalEvent.invocationId);
+    }
     return next;
   }
 
@@ -4282,10 +5008,35 @@ export class SqliteRuntimeStore
   }
 }
 
-interface ToolLedgerHealth {
-  dataVersion: number;
-  issue?: ReturnType<typeof scanToolLedger>['issues'][number];
-  decodeFailure?: { error: unknown };
+interface ToolLedgerCacheEntry {
+  reducer: ToolLedgerReducer;
+  seedInvocationIds: ReadonlySet<string>;
+  invocationIds: ReadonlySet<string>;
+  estimatedBytes: number;
+  eventCount: number;
+  cacheKey?: string;
+}
+
+interface UncommittedToolLedgerState {
+  checkpoint: number;
+  changedInvocationIds: Set<string>;
+  entry: ToolLedgerCacheEntry;
+  estimatedBytesBefore: number;
+  eventCountBefore: number;
+}
+
+interface ToolLedgerCacheBudget {
+  maxEntries: number;
+  maxEstimatedBytes: number;
+  maxSingleEntryEstimatedBytes: number;
+}
+
+interface ToolLedgerCacheMetrics {
+  hits: number;
+  misses: number;
+  budgetEvictions: number;
+  terminalEvictions: number;
+  transientEntries: number;
 }
 
 interface ToolOperationRow {
@@ -4302,6 +5053,10 @@ interface ToolOperationRow {
   dispatch_event_id: string | null;
   result_event_id: string | null;
   version: number;
+}
+
+interface UnsettledToolOperationRow extends ToolOperationRow {
+  session_id: string;
 }
 
 interface ToolJournalRow {
@@ -4492,6 +5247,21 @@ function assertRuntimeStorageSafeId(value: string, message: string): void {
   if (!isRuntimeStorageSafeId(value)) throw new Error(message);
 }
 
+function distinctSafeRuntimeIds(values: readonly string[], message: string): string[] {
+  const result = new Set<string>();
+  for (const value of values) {
+    assertRuntimeStorageSafeId(value, message);
+    result.add(value);
+  }
+  return [...result];
+}
+
+function* batches<T>(values: readonly T[], size: number): Iterable<readonly T[]> {
+  for (let offset = 0; offset < values.length; offset += size) {
+    yield values.slice(offset, offset + size);
+  }
+}
+
 function assertInvocationSearchLimit(limit: number): void {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
     throw new RangeError('Runtime invocation search limit must be an integer between 1 and 256');
@@ -4505,6 +5275,31 @@ interface RuntimeEventStorageRow {
   run_id: string;
   turn_id: string;
   payload_json: string;
+}
+
+interface RuntimeInvocationRecoveryInventoryRow {
+  opening_rowid: number | null;
+  session_id: string;
+  invocation_id: string;
+  run_id: string | null;
+  turn_id: string | null;
+  opened_at: number | null;
+  from_events: number;
+  terminal_rowid: number | null;
+}
+
+interface RuntimeInvocationRecoveryOpeningRow {
+  event_id: string;
+  session_id: string;
+  invocation_id: string;
+  run_id: string;
+  turn_id: string;
+  committed_at: number;
+  payload_json?: string;
+}
+
+interface RuntimeHandoffTerminalStorageRow extends RuntimeEventStorageRow {
+  terminal_rowid: number;
 }
 
 interface ManagedMutationReservationProjectionRow {
@@ -4816,6 +5611,10 @@ function compareWorkspaceHeadRow(
 
 interface RuntimeEventPrefixStorageRow extends RuntimeEventStorageRow {
   event_seq: number;
+}
+
+interface ToolLedgerRuntimeEventStorageRow extends RuntimeEventPrefixStorageRow {
+  stored_bytes: number;
 }
 
 type RuntimeEventPrefixProofStorageRow = Omit<RuntimeEventPrefixStorageRow, 'payload_json'> & {

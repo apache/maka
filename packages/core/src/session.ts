@@ -1054,6 +1054,8 @@ interface WorkHubCoordinationMessageEnvelope {
  */
 export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMessageEnvelope {
   kind: 'delegation_assigned';
+  /** New delegations opt into Host-owned asynchronous result delivery. */
+  returnResults?: true;
   delegationId: string;
   targetTurnId: string;
   targetMessageId: string;
@@ -1402,6 +1404,7 @@ const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
     [
       'attachments',
       'targetAttachments',
+      'returnResults',
       'create',
       'steered',
       'replacesActionId',
@@ -1821,6 +1824,7 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.targetMessageId === 'string' &&
     typeof message.targetSessionName === 'string' &&
     message.targetSessionName.trim().length > 0 &&
+    (message.returnResults === undefined || message.returnResults === true) &&
     (message.steered === undefined || message.steered === true) &&
     ((message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION &&
       message.replacesActionId === undefined &&

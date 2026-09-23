@@ -21,6 +21,7 @@ import { useState, type Dispatch, type SetStateAction } from 'react';
 import {
   DEFAULT_TERMINAL_FONT_SIZE,
   DEFAULT_UI_FONT_SIZE,
+  type WorkbarTogglePosition,
   type ThemePalette,
   type ThemePreference,
 } from '@maka/core/settings';
@@ -59,8 +60,13 @@ export function useShellAppearance({
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
-  const [themePref, setThemePref] = useState<ThemePreference>('auto');
-  const [themePalette, setThemePalette] = useState<ThemePalette>('default');
+  const [appearance, setAppearance] = useState<{
+    theme: ThemePreference;
+    palette: ThemePalette;
+    workbarTogglePosition: WorkbarTogglePosition;
+  }>({ theme: 'auto', palette: 'default', workbarTogglePosition: 'edge' });
+  const setThemePref = (theme: SetStateAction<ThemePreference>) => setAppearance((current) => ({ ...current, theme: typeof theme === 'function' ? theme(current.theme) : theme }));
+  const setThemePalette = (palette: ThemePalette) => setAppearance((current) => ({ ...current, palette }));
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
   const [userLabel, setUserLabel] = useState<string>('');
   const [appearanceHydrated, setAppearanceHydrated] = useState(false);
@@ -90,8 +96,7 @@ export function useShellAppearance({
         localePreference,
         (preference) => setUiLocalePreference(preference),
       );
-      setThemePref(pref);
-      setThemePalette(palette);
+      setAppearance({ theme: pref, palette, workbarTogglePosition: next.appearance.workbarTogglePosition ?? 'edge' });
       applyTheme(pref);
       applyThemePalette(palette);
       // Font appearance has no app-shell state of its own: theme.ts holds the
@@ -121,9 +126,10 @@ export function useShellAppearance({
   }
 
   return {
-    themePref,
+    workbarTogglePosition: appearance.workbarTogglePosition,
+    themePref: appearance.theme,
     setThemePref,
-    themePalette,
+    themePalette: appearance.palette,
     setThemePalette,
     uiLocaleUpdateGate,
     appearanceHydrated,

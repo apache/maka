@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
@@ -35,6 +36,11 @@ export type ConversationSession = Pick<
   | 'shared'
 >;
 
+export interface ConversationHostChange {
+  readonly hostId?: string;
+  readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
+}
+
 export interface ConversationNewTaskTarget {
   readonly profileId: string;
   readonly hostId: string;
@@ -51,6 +57,10 @@ export interface ConversationServices extends Pick<
 > {
   readonly sessions: {
     readSnapshot(sessionId: string, options?: { readonly maxChars?: number }): Promise<SessionSnapshot>;
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
+  };
+  readonly runtimeHosts: {
+    subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;
   };
   readonly skills: {
     listInvocable(sessionId?: string): Promise<InvocableSkillEntry[]>;

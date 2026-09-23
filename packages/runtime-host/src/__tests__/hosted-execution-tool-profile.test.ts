@@ -183,11 +183,19 @@ test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct
     control,
     tasks,
     makeTool('AskUserQuestion'),
+    makeTool('WorkHubResult'),
   ];
   const projected = projectHostedExecutionTools(tools, 'workhub-coordination-v2');
   assert.deepEqual(
     projected.map(({ name }) => name),
-    [control.name, tasks.name, ...browserTools.map(({ name }) => name), 'Read', 'AskUserQuestion'],
+    [
+      control.name,
+      tasks.name,
+      ...browserTools.map(({ name }) => name),
+      'Read',
+      'AskUserQuestion',
+      'WorkHubResult',
+    ],
   );
   const read = projected.find(({ name }) => name === 'Read')!;
   const context = {

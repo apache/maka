@@ -17,18 +17,11 @@
  * under the License.
  */
 
-import { Button } from '@astryxdesign/core/Button';
-import { useUiLocale } from '@maka/ui';
-import { getShellCopy } from '../../../locales/shell-copy.js';
+export class RuntimeHostProcessTerminationRequiredError extends Error {
+  readonly code = 'process_termination_required';
 
-export function WorkHubReturnButton({ visible, onReturn }: { visible: boolean; onReturn(): void }) {
-  const locale = useUiLocale();
-  return visible ? (
-    <Button
-      className="maka-return-workhub"
-      label={getShellCopy(locale).navigation.backToWorkHub}
-      variant="secondary"
-      onClick={onReturn}
-    />
-  ) : null;
+  constructor(readonly shutdownGraceMs: number) {
+    super(`Runtime Host did not shut down within ${shutdownGraceMs} ms`);
+    this.name = 'RuntimeHostProcessTerminationRequiredError';
+  }
 }

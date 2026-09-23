@@ -26,10 +26,8 @@ import {
   type RuntimeHostManagedLaunchClaim,
   type RuntimeHostManagedProcessLaunch,
 } from '../operator/managed-deployment.js';
-import type { RuntimeHostCompositionSource } from './host-composition.js';
-import { RuntimeHostKernel } from './host-kernel.js';
-import { openRuntimeHostAccessAuthority } from './access-authority.js';
-import { startRuntimeHostAuthenticatedListenerSet } from './listener-set.js';
+import type { RuntimeHostCompositionSource } from './host-composition-source.js';
+import type { RuntimeHostKernel } from './host-kernel.js';
 
 export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
@@ -65,6 +63,10 @@ export async function startInteractiveRuntimeHostCandidate(
   createComposition: InteractiveRuntimeHostCompositionFactory,
   dependencies: InteractiveRuntimeHostCandidateDependencies = {},
 ): Promise<InteractiveRuntimeHostCandidateResult> {
+  const kernelModule = import('./host-kernel.js').then(
+    (module) => ({ kind: 'loaded' as const, module }),
+    (error: unknown) => ({ kind: 'failed' as const, error }),
+  );
   const capability = await resolveExistingStorageRoot({
     path: options.rootPath,
     kind: 'interactive',
@@ -83,9 +85,14 @@ export async function startInteractiveRuntimeHostCandidate(
   const { owner, managedConfig } = ownership;
   try {
     const composition = await createComposition(managedConfig);
+    const loadedKernel = await kernelModule;
+    if (loadedKernel.kind === 'failed') throw loadedKernel.error;
+    const { RuntimeHostKernel } = loadedKernel.module;
     const websocket = managedConfig?.listeners.websocket;
     const accessAuthority = websocket
-      ? await openRuntimeHostAccessAuthority(owner.controlDirectory)
+      ? await import('./access-authority.js').then(({ openRuntimeHostAccessAuthority }) =>
+          openRuntimeHostAccessAuthority(owner.controlDirectory),
+        )
       : undefined;
     const host = await RuntimeHostKernel.start({
       owner,
@@ -101,10 +108,14 @@ export async function startInteractiveRuntimeHostCandidate(
       ...(accessAuthority ? { accessAuthority } : {}),
       ...(websocket && accessAuthority
         ? {
-            listenerSetFactory: (input) =>
-              startRuntimeHostAuthenticatedListenerSet(input, {
+            listenerSetFactory: async (input) => {
+              const { startRuntimeHostAuthenticatedListenerSet } = await import(
+                './listener-set.js'
+              );
+              return startRuntimeHostAuthenticatedListenerSet(input, {
                 websocket: { ...websocket, accessAuthority },
-              }),
+              });
+            },
           }
         : {}),
     });
