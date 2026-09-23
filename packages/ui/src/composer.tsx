@@ -32,6 +32,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import type { ContextUsageReading } from './context-usage-reading.js';
 import type { LucideIcon } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import { isAppleShortcutPlatform } from './utils.js';
@@ -471,14 +472,8 @@ export const Composer = forwardRef<
     noModelHint?: string;
     /** Read-only usage indicator for the active model's latest request. */
     contextUsage?: {
-      usageTokens?: number;
+      reading: ContextUsageReading;
       declaredContextWindow?: number;
-      /**
-       * The window the usage number was metered against, frozen at call time.
-       * When present it outranks the metadata window, so a live reading keeps
-       * its numerator and denominator from the same request.
-       */
-      meteredContextWindow?: number;
       metadataContextWindow?: number;
       /** Open the Host-owned trace surface for this readout. */
       onOpen(): void;
@@ -2507,13 +2502,15 @@ export const Composer = forwardRef<
 });
 
 function ContextUsageAction(props: {
-  usageTokens?: number;
+  reading: ContextUsageReading;
   declaredContextWindow?: number;
-  meteredContextWindow?: number;
   metadataContextWindow?: number;
   onOpen(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
+  const { reading } = props;
+  const usageTokens = reading.kind === 'measured' ? reading.tokens : undefined;
+  const meteredWindow = reading.kind === 'measured' ? reading.meteredWindow : undefined;
   // A window from any source is enough to show a share, and the order is a
   // claim about which window the number was earned against: the user's
   // declaration first — it is the user's intent, and the only one that arms
@@ -2522,17 +2519,18 @@ function ContextUsageAction(props: {
   // same request, and only then the model's reported metadata. With no window
   // at all the usage stands on its own.
   const window =
-    props.declaredContextWindow ?? props.meteredContextWindow ?? props.metadataContextWindow;
-  const label =
-    props.usageTokens !== undefined && window !== undefined && window > 0
-      ? `${Math.round((props.usageTokens / window) * 100)}%`
+    props.declaredContextWindow ?? meteredWindow ?? props.metadataContextWindow;
+  // Without a current measurement, keep the usage entry label.
+  const label = usageTokens !== undefined && window !== undefined && window > 0
+      ? `${Math.round((usageTokens / window) * 100)}%`
       : copy.systemNotes.contextUsageLabel;
-  const tooltip =
-    props.usageTokens === undefined
+  const tooltip = reading.kind === 'stale'
+    ? copy.systemNotes.contextUsageCompacted
+    : usageTokens === undefined
       ? copy.systemNotes.contextUsageUnavailable
       : window !== undefined && window > 0
-        ? copy.systemNotes.contextUsageShare(props.usageTokens, window)
-        : copy.systemNotes.contextUsageNoWindow(props.usageTokens);
+        ? copy.systemNotes.contextUsageShare(usageTokens, window)
+        : copy.systemNotes.contextUsageNoWindow(usageTokens);
   return (
     <UiButton
       variant="ghost"

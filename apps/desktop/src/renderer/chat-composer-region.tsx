@@ -30,7 +30,13 @@ import {
   UserQuestionPrompt,
 } from '@maka/ui';
 import type { ComposerHandle } from '@maka/ui';
-export { selectLatestRequestUsage } from './application/contracts/session-inspector/latest-request-usage.js';
+import {
+  resolveContextUsage,
+  selectLatestRequestUsage,
+  type LatestRequestUsage,
+} from './application/contracts/session-inspector/latest-request-usage.js';
+export { selectLatestRequestUsage };
+import type { LiveContextUsage } from './application/contracts/session-inspector/live-context-usage.js';
 import { useComposerMentionsContext } from './composer-mentions.js';
 import {
   readNewTaskReloadDraft,
@@ -122,14 +128,14 @@ interface ChatComposerRegionProps
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
   /**
    * Tokens the provider counted for the session's latest request on the active
-   * route, or nothing when that cannot be established. Resolved by the owner,
-   * which knows the transcript range and the route; this control never derives
-   * it from the rendered slice. This is the per-turn anchor: it moves when a
-   * turn's usage record lands. `LiveContextUsageProbe` overlays the
-   * per-settled-request snapshot (#4717) whenever that snapshot can vouch for
-   * the same route, and this value is the fallback when it cannot.
+   * route, or nothing when that cannot be established, or a compaction
+   * boundary that superseded it. Resolved by the owner, which knows the
+   * transcript range and the route; this control never derives it from the
+   * rendered slice. `LiveContextUsageProbe` overlays the per-settled-request
+   * snapshot (#4717) whenever that snapshot is the newer answer to the same
+   * question, and this value is the fallback when it is not.
    */
-  latestRequestUsageTokens?: number;
+  latestRequestUsage?: LatestRequestUsage;
   onOpenContextUsage(): void;
   /**
    * The live overlay for the gauge (#4717), injected rather than imported:
@@ -149,7 +155,7 @@ interface ChatComposerRegionProps
      * ceiling.
      */
     children: (
-      usage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
+      usage: LiveContextUsage | undefined,
     ) => ReactNode;
   }>;
   directoryComposerProps: Pick<
@@ -175,7 +181,7 @@ export function ChatComposerRegion({
   respondToUserForm,
   stop,
   boundaryUnreadableNotice,
-  latestRequestUsageTokens,
+  latestRequestUsage,
   onOpenContextUsage,
   LiveContextUsageProbe,
   directoryComposerProps,
@@ -195,14 +201,6 @@ export function ChatComposerRegion({
           choice.connectionId === composerRest.activeModelConnectionId &&
           choice.model === composerRest.activeModel,
       )
-    : undefined;
-  const contextUsage = activeId
-    ? {
-        usageTokens: latestRequestUsageTokens,
-        declaredContextWindow: activeModelChoice?.declaredContextWindow,
-        metadataContextWindow: activeModelChoice?.contextWindow,
-        onOpen: onOpenContextUsage,
-      }
     : undefined;
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
   useLayoutEffect(() => {
@@ -265,47 +263,55 @@ export function ChatComposerRegion({
   // — when mounted — can feed it the per-settled-request snapshot (#4717), and
   // the anchor prop remains the reading it falls back to.
   const renderComposer = (
-    liveContextUsage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
-  ) => (
-    <ComposerGoalProjectionConsumer>
-      {(goalProjection) => (
-        <Composer
-          ref={composerRef}
-          {...composerRest}
-          contextUsage={contextUsage && liveContextUsage
-            ? {
-                ...contextUsage,
-                usageTokens: liveContextUsage.usageTokens,
-                meteredContextWindow: liveContextUsage.contextWindow,
-              }
-            : contextUsage}
-          // AppShell carries staged attachments into both queued and steering
-          // follow-ups. Other Composer hosts remain gated by default because a
-          // text-only running-turn submission would leave attachments behind.
-          allowAttachmentImportWhileStreaming
-          mentionSkills={mentions?.mentionSkills}
-          mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
-          mentionSkillsLoading={mentions?.mentionSkillsLoading}
-          onSearchMentionFiles={mentions?.searchMentionFiles}
-          sessionReferences={mentions?.sessionReferences}
-          onPickSessionReference={mentions?.onPickSessionReference}
-          pendingSessionReferences={mentions?.pendingSessionReferences}
-          onRemovePendingSessionReference={mentions?.onRemovePendingSessionReference}
-          waitForSessionReference={mentions?.waitForSessionReference}
-          {...directoryComposerProps}
-          onPickDirectory={
-            directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
-          }
-          hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
-          draftKey={activeId ?? newTaskDraftKey}
-          draftPersistence={newTaskDraftPersistence}
-          stopPending={activeId ? stopPendingBySession[activeId] === true : false}
-          goalActive={goalProjection.goalActive}
-          onSetGoal={goalProjection.onSetGoal}
-        />
-      )}
-    </ComposerGoalProjectionConsumer>
-  );
+    liveContextUsage: LiveContextUsage | undefined,
+  ) => {
+    // One question, two answers, and a fold can make the finer one stale: the
+    // snapshot wins when it landed after the boundary, and the boundary wins
+    // when it did not.
+    const reading = resolveContextUsage({ latestRequestUsage, live: liveContextUsage });
+    const contextUsage = activeId
+      ? {
+          reading,
+          declaredContextWindow: activeModelChoice?.declaredContextWindow,
+          metadataContextWindow: activeModelChoice?.contextWindow,
+          onOpen: onOpenContextUsage,
+        }
+      : undefined;
+    return (
+      <ComposerGoalProjectionConsumer>
+        {(goalProjection) => (
+          <Composer
+            ref={composerRef}
+            {...composerRest}
+            contextUsage={contextUsage}
+            // AppShell carries staged attachments into both queued and steering
+            // follow-ups. Other Composer hosts remain gated by default because a
+            // text-only running-turn submission would leave attachments behind.
+            allowAttachmentImportWhileStreaming
+            mentionSkills={mentions?.mentionSkills}
+            mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
+            mentionSkillsLoading={mentions?.mentionSkillsLoading}
+            onSearchMentionFiles={mentions?.searchMentionFiles}
+            sessionReferences={mentions?.sessionReferences}
+            onPickSessionReference={mentions?.onPickSessionReference}
+            pendingSessionReferences={mentions?.pendingSessionReferences}
+            onRemovePendingSessionReference={mentions?.onRemovePendingSessionReference}
+            waitForSessionReference={mentions?.waitForSessionReference}
+            {...directoryComposerProps}
+            onPickDirectory={
+              directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
+            }
+            hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
+            draftKey={activeId ?? newTaskDraftKey}
+            draftPersistence={newTaskDraftPersistence}
+            stopPending={activeId ? stopPendingBySession[activeId] === true : false}
+            goalActive={goalProjection.goalActive}
+            onSetGoal={goalProjection.onSetGoal}
+          />
+        )}
+      </ComposerGoalProjectionConsumer>
+    );
+  };
 
   return (
     <>

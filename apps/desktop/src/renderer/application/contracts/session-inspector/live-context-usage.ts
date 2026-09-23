@@ -44,6 +44,14 @@ export interface LiveContextUsage {
   readonly usageTokens: number;
   /** The window the request was metered against, frozen at call time. */
   readonly contextWindow?: number;
+  /**
+   * When that request settled, on the Host's clock — the same clock the
+   * session's own transcript rows carry, so a reader can tell whether this
+   * snapshot predates a compaction boundary it already knows about. Without
+   * it, a snapshot that a fold has replaced is indistinguishable from one
+   * taken after it.
+   */
+  readonly completedAt?: number;
 }
 
 /**
@@ -56,6 +64,10 @@ export interface LiveContextUsage {
  * numerator by the same row's denominator exactly as the inspector's bar
  * does — a window from the live catalog could disagree with the metered
  * request, while a user-declared override still wins by design.
+ *
+ * The settlement time rides along for the same reason the window does: it
+ * belongs to this request alone, and a reader comparing this reading against a
+ * compaction boundary has no other row to get it from.
  */
 export function liveContextUsageFromDiagnostics(
   diagnostics: ContextDiagnosticsResult | undefined,
@@ -75,6 +87,7 @@ export function liveContextUsageFromDiagnostics(
     ...(diagnostics.contextWindow !== undefined
       ? { contextWindow: diagnostics.contextWindow }
       : {}),
+    completedAt: diagnostics.completedAt,
   };
 }
 

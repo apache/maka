@@ -37,6 +37,17 @@
 
 ### Fixed
 
+- The composer's context gauge now says so instead of holding the pre-compaction
+  figure after a fold. A compaction replaces the prompt the last measured request
+  described, and no provider has tokenized the replacement yet, so the newest real
+  count is stale rather than current — showing it read as a live measurement of
+  what the session was about to send. The gauge walks the transcript backwards and
+  whichever fact comes first decides: a `context_compacted` note newer than every
+  measurement renders `?` with a tooltip saying why, and a measurement newer than
+  the note stands. The live per-settled-request snapshot still wins when it landed
+  after the boundary, so a mid-turn fold recovers as soon as the next step settles
+  rather than waiting for the turn to end. A failed-open fold is not a boundary:
+  that request went out with its full raw history.
 - Fixed a renderer crash dialog reporting React error #185 ("Maximum update depth
   exceeded") coming from the composer's prompt-history inline completion (#4117): the
   offer engine the 0.1.11 composer fed could flip-flop its announcement state on

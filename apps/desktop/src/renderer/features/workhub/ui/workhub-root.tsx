@@ -22,7 +22,10 @@ import { ChatSurfaceLayout, UserQuestionPrompt, MakaWordmark, useUiLocale, type 
 import { Button, IconButton } from '@astryxdesign/core';
 import { ChevronDown, PictureInPicture2, Undo2, X } from '@maka/ui/icons';
 import { useLiveContextUsage } from '../../../application/contracts/session-inspector/use-live-context-usage.js';
-import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
+import {
+  resolveContextUsage,
+  selectLatestRequestUsage,
+} from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { WorkHubProgressCard } from './workhub-progress-card.js';
 import { WorkHubComposer } from './workhub-composer.js';
 import { WorkHubConversation } from './workhub-conversation.js';
@@ -98,10 +101,19 @@ export function WorkHubRoot() {
   );
   const thinkingLevels = newWorkModelChoice?.thinkingLevels ?? [];
   const liveContextUsage = useLiveContextUsage({ inspector: services.inspector, sessionId: controller.sessionId, model: session?.model, providerType: coordinationModelChoice?.providerType });
+  const contextUsageReading = useMemo(
+    () =>
+      resolveContextUsage({
+        latestRequestUsage: selectLatestRequestUsage(transcript.messages, session?.model, session),
+        live: liveContextUsage,
+      }),
+    [transcript.messages, session, liveContextUsage],
+  );
   const thinkingLevel = controller.newWorkDefaults.thinkingLevel &&
     thinkingLevels.includes(controller.newWorkDefaults.thinkingLevel)
     ? controller.newWorkDefaults.thinkingLevel
     : undefined;
+
   const locale = useUiLocale();
   const t = workHubLiveCopy[locale];
   const shortcutLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘⇧K' : 'Ctrl+Shift+K';
@@ -401,9 +413,8 @@ export function WorkHubRoot() {
                 : undefined}
               modelSwitchAvailability={controller.configuringModel ? { available: false, pending: true, reason: 'pending' } : undefined}
               contextUsage={session ? {
-                usageTokens: liveContextUsage?.usageTokens ?? selectLatestRequestUsage(transcript.messages, session.model, session),
+                reading: contextUsageReading,
                 declaredContextWindow: coordinationModelChoice?.declaredContextWindow,
-                meteredContextWindow: liveContextUsage?.contextWindow,
                 metadataContextWindow: coordinationModelChoice?.contextWindow,
                 onOpen: () => call(services.presentation.openUsage()),
               } : undefined}

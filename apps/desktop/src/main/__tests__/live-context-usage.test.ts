@@ -83,6 +83,7 @@ function scriptedQuery() {
 describe('liveContextUsageFromDiagnostics', () => {
   it('maps a matching snapshot onto the gauge, window included', () => {
     assert.deepEqual(liveContextUsageFromDiagnostics(available(), ROUTE), {
+      completedAt: 1,
       usageTokens: 79_436,
       contextWindow: 128_000,
     });
@@ -113,7 +114,7 @@ describe('liveContextUsageFromDiagnostics', () => {
   it('stands alone without a window', () => {
     assert.deepEqual(
       liveContextUsageFromDiagnostics(available({ contextWindow: undefined }), ROUTE),
-      { usageTokens: 79_436 },
+      { completedAt: 1, usageTokens: 79_436 },
     );
   });
 });
@@ -136,7 +137,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     // The leading `undefined` is the aim itself: whatever stood on screen
     // before cannot answer for this target, so it clears before the read.
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { completedAt: 1, usageTokens: 79_436, contextWindow: 128_000 }]);
     tracker.dispose();
   });
 
@@ -182,12 +183,12 @@ describe('createLiveContextUsageTracker', () => {
     assert.equal(query.pending.length, 1);
     timer.fire();
     assert.equal(query.pending.length, 2);
-    query.pending[1]!.resolve(available({ inputTokens: 52_000 }));
+    query.pending[1]!.resolve(available({ inputTokens: 52_000, completedAt: 2 }));
     await Promise.resolve();
     assert.deepEqual(seen, [
       undefined,
-      { usageTokens: 40_000, contextWindow: 128_000 },
-      { usageTokens: 52_000, contextWindow: 128_000 },
+      { completedAt: 1, usageTokens: 40_000, contextWindow: 128_000 },
+      { completedAt: 2, usageTokens: 52_000, contextWindow: 128_000 },
     ]);
     tracker.dispose();
   });
@@ -231,7 +232,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     query.pending[0]!.resolve(available({ inputTokens: 10_000 }));
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined, { usageTokens: 60_000, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { completedAt: 1, usageTokens: 60_000, contextWindow: 128_000 }]);
     tracker.dispose();
   });
 
@@ -281,7 +282,7 @@ describe('createLiveContextUsageTracker', () => {
     query.pending[1]!.reject(new Error('host not ready'));
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { completedAt: 1, usageTokens: 79_436, contextWindow: 128_000 }]);
     tracker.dispose();
   });
 
@@ -303,14 +304,14 @@ describe('createLiveContextUsageTracker', () => {
     // Switching sessions makes the standing number unanswerable: it must
     // leave the screen BEFORE the new target's first read lands…
     tracker.setTarget({ sessionId: 's2', route: ROUTE });
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }, undefined]);
+    assert.deepEqual(seen, [undefined, { completedAt: 1, usageTokens: 79_436, contextWindow: 128_000 }, undefined]);
 
     // …and a rejected first read on the new target keeps it cleared, rather
     // than pinning the previous session's number in place indefinitely.
     query.pending[1]!.reject(new Error('host not ready'));
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }, undefined]);
+    assert.deepEqual(seen, [undefined, { completedAt: 1, usageTokens: 79_436, contextWindow: 128_000 }, undefined]);
     tracker.dispose();
   });
 
@@ -337,7 +338,7 @@ describe('createLiveContextUsageTracker', () => {
     query.pending[1]!.reject(new Error('host not ready'));
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { completedAt: 1, usageTokens: 79_436, contextWindow: 128_000 }]);
     tracker.dispose();
   });
 
@@ -382,7 +383,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     // Aiming, then leaving s1 clears its (never-landed) reading, then s2's
     // lands; the stale s1 read resolving late must not overwrite it.
-    assert.deepEqual(seen, [undefined, undefined, { usageTokens: 5_000, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, undefined, { completedAt: 1, usageTokens: 5_000, contextWindow: 128_000 }]);
     tracker.dispose();
   });
 
@@ -408,7 +409,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     assert.deepEqual(seen, [
       undefined,
-      { usageTokens: 79_436, contextWindow: 128_000 },
+      { completedAt: 1, usageTokens: 79_436, contextWindow: 128_000 },
       undefined,
       undefined,
     ]);
