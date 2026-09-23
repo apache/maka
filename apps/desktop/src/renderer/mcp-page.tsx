@@ -667,15 +667,17 @@ function McpEditorDialog(props: {
   onImport(event: React.FormEvent): void;
 }) {
   const editing = props.state.mode === 'manual' && Boolean(props.state.editingId);
-  const stdioNeedsAdvanced =
-    props.state.mode === 'manual' &&
-    props.state.draft.kind === 'stdio' &&
-    mcpDraftProtocolPreference(props.state.draft) !== 'legacy';
-  const [stdioAdvancedOpen, setStdioAdvancedOpen] = useState(stdioNeedsAdvanced);
+  const draft = props.state.mode === 'manual' ? props.state.draft : null;
+  const hasAdvancedSettings = Boolean(draft && (
+    draft.kind === 'stdio'
+      ? draft.env.trim() || draft.cwd.trim() || mcpDraftProtocolPreference(draft) !== 'auto'
+      : draft.transport !== 'auto' || draft.headers.trim() || draft.oauth || mcpDraftProtocolPreference(draft) !== 'auto'
+  ));
+  const [advancedOpen, setAdvancedOpen] = useState(hasAdvancedSettings);
 
   useEffect(() => {
-    if (stdioNeedsAdvanced) setStdioAdvancedOpen(true);
-  }, [stdioNeedsAdvanced]);
+    if (hasAdvancedSettings) setAdvancedOpen(true);
+  }, [hasAdvancedSettings]);
 
   const updateDraft = <K extends keyof McpEditorDraft>(key: K, value: McpEditorDraft[K]) => {
     if (props.state.mode !== 'manual') return;
@@ -757,44 +759,30 @@ function McpEditorDialog(props: {
                   <TextInput hasAutoFocus={editing} label={props.copy.editor.url} value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
                 )}
               </div>
-              {props.state.draft.kind === 'stdio' ? (
-                <>
-                  <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
-                  <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
-                  <Collapsible
-                    trigger={stdioAdvancedOpen ? props.copy.editor.collapseAdvanced : props.copy.editor.expandAdvanced}
-                    isOpen={stdioAdvancedOpen}
-                    onOpenChange={setStdioAdvancedOpen}
-                  >
-                    <div className="maka-mcp-advanced-fields">
-                      <Selector
-                        value={mcpDraftProtocolPreference(props.state.draft)}
-                        options={[
-                          { value: 'legacy', label: props.copy.editor.protocolLegacy },
-                          { value: 'auto', label: props.copy.editor.protocolAuto },
-                          { value: '2026-07-28', label: props.copy.editor.protocolModern },
-                        ]}
-                        onChange={(value) => updateDraft('protocol', value as McpProtocolPreference)}
-                        label={props.copy.editor.protocolLabel}
-                        description={props.copy.editor.stdioProtocolHelp}
-                        width="100%"
-                      />
-                    </div>
-                  </Collapsible>
-                </>
-              ) : (
-                <>
-                  <Selector
-                    value={props.state.draft.transport}
-                    options={[
-                      { value: 'auto', label: props.copy.editor.transportAuto },
-                      { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
-                      { value: 'sse', label: props.copy.editor.transportLegacySse },
-                    ]}
-                    onChange={(value) => updateDraft('transport', value as McpEditorDraft['transport'])}
-                    label={props.copy.editor.transportLabel}
-                    width="100%"
-                  />
+              <Collapsible
+                trigger={advancedOpen ? props.copy.editor.collapseAdvanced : props.copy.editor.expandAdvanced}
+                isOpen={advancedOpen}
+                onOpenChange={setAdvancedOpen}
+              >
+                <VStack gap={3} className="maka-mcp-advanced-fields">
+                  {props.state.draft.kind === 'stdio' ? (
+                    <>
+                      <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
+                      <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
+                    </>
+                  ) : (
+                    <Selector
+                      value={props.state.draft.transport}
+                      options={[
+                        { value: 'auto', label: props.copy.editor.transportAuto },
+                        { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
+                        { value: 'sse', label: props.copy.editor.transportLegacySse },
+                      ]}
+                      onChange={(value) => updateDraft('transport', value as McpEditorDraft['transport'])}
+                      label={props.copy.editor.transportLabel}
+                      width="100%"
+                    />
+                  )}
                   <Selector
                     value={mcpDraftProtocolPreference(props.state.draft)}
                     options={[
@@ -804,25 +792,31 @@ function McpEditorDialog(props: {
                     ]}
                     onChange={(value) => updateDraft('protocol', value as McpProtocolPreference)}
                     label={props.copy.editor.protocolLabel}
-                    description={props.state.draft.transport === 'sse'
-                      ? props.copy.editor.sseProtocolHelp
-                      : props.copy.editor.protocolHelp}
-                    isDisabled={props.state.draft.transport === 'sse'}
+                    description={props.state.draft.kind === 'stdio'
+                      ? props.copy.editor.stdioProtocolHelp
+                      : props.state.draft.transport === 'sse'
+                        ? props.copy.editor.sseProtocolHelp
+                        : props.copy.editor.protocolHelp}
+                    isDisabled={props.state.draft.kind === 'remote' && props.state.draft.transport === 'sse'}
                     width="100%"
                   />
-                  <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
-                  <Collapsible trigger={props.copy.editor.oauth} defaultIsOpen={Boolean(props.state.draft.oauth)}>
-                    <VStack gap={3} className="maka-mcp-advanced-fields">
-                      <Text type="supporting" color="secondary">{props.copy.editor.oauthHelp}</Text>
-                      <TextInput label={props.copy.editor.clientId} value={props.state.draft.oauth?.clientId ?? ''} onChange={(value) => updateOAuth('clientId', value || undefined)} />
-                      <TextInput label={props.copy.editor.issuer} value={props.state.draft.oauth?.issuer ?? ''} onChange={(value) => updateOAuth('issuer', value || undefined)} placeholder="https://auth.example.com" status={props.errors.oauthIssuer ? { type: 'error', message: props.errors.oauthIssuer === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
-                      <TextInput type="password" label={props.copy.editor.clientSecret} value={props.state.draft.oauth?.clientSecret ?? ''} onChange={(value) => updateOAuth('clientSecret', value || undefined)} />
-                      <TextInput label={props.copy.editor.scopes} value={props.state.draft.oauth?.scopes?.join(' ') ?? ''} onChange={(value) => updateOAuth('scopes', value.trim() ? value.split(/\s+/u) : undefined)} />
-                      <TextInput label={props.copy.editor.callbackPort} value={props.state.draft.oauth?.callbackPort?.toString() ?? ''} onChange={(value) => updateOAuth('callbackPort', value ? Number(value) : undefined)} />
-                    </VStack>
-                  </Collapsible>
-                </>
-              )}
+                  {props.state.draft.kind === 'remote' && (
+                    <>
+                      <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
+                      <Collapsible trigger={props.copy.editor.oauth} defaultIsOpen={Boolean(props.state.draft.oauth)}>
+                        <VStack gap={3} className="maka-mcp-advanced-fields">
+                          <Text type="supporting" color="secondary">{props.copy.editor.oauthHelp}</Text>
+                          <TextInput label={props.copy.editor.clientId} value={props.state.draft.oauth?.clientId ?? ''} onChange={(value) => updateOAuth('clientId', value || undefined)} />
+                          <TextInput label={props.copy.editor.issuer} value={props.state.draft.oauth?.issuer ?? ''} onChange={(value) => updateOAuth('issuer', value || undefined)} placeholder="https://auth.example.com" status={props.errors.oauthIssuer ? { type: 'error', message: props.errors.oauthIssuer === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
+                          <TextInput type="password" label={props.copy.editor.clientSecret} value={props.state.draft.oauth?.clientSecret ?? ''} onChange={(value) => updateOAuth('clientSecret', value || undefined)} />
+                          <TextInput label={props.copy.editor.scopes} value={props.state.draft.oauth?.scopes?.join(' ') ?? ''} onChange={(value) => updateOAuth('scopes', value.trim() ? value.split(/\s+/u) : undefined)} />
+                          <TextInput label={props.copy.editor.callbackPort} value={props.state.draft.oauth?.callbackPort?.toString() ?? ''} onChange={(value) => updateOAuth('callbackPort', value ? Number(value) : undefined)} />
+                        </VStack>
+                      </Collapsible>
+                    </>
+                  )}
+                </VStack>
+              </Collapsible>
             </div>
             {/* Same as the JSON form: submit semantics are the reason Enter in
                 a field saves, so isLoading carries the busy state here. */}

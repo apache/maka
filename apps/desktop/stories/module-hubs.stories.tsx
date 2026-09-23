@@ -1061,6 +1061,23 @@ export const ExtensionsMcpMarketplace: Story = {
   },
 };
 
+// Real path: sidebar → 扩展 → MCP → 添加 MCP, before choosing optional settings.
+export const ExtensionsMcpAdd: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, 'filesystem');
+    (await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '添加 MCP' && !button.disabled)).click();
+    const fields = await waitForStorySelector<HTMLElement>(canvasElement.ownerDocument.body, '.maka-mcp-primary-fields');
+    const inputs = fields.querySelectorAll<HTMLInputElement>('input');
+    if (inputs.length !== 2) throw new Error('New MCP needs only its name and connection endpoint');
+    const optionalFields = canvasElement.ownerDocument.querySelector('.maka-mcp-advanced-fields');
+    if (!optionalFields || optionalFields.getClientRects().length !== 0) {
+      throw new Error('Optional MCP settings must start collapsed');
+    }
+  },
+};
+
 // Real path: sidebar → 扩展 → MCP, with connected and disabled servers.
 export const ExtensionsMcpConfigured: Story = {
   decorators: [withConfiguredMcpBridge],
@@ -1112,6 +1129,10 @@ export const ExtensionsMcpEditor: Story = {
     const [id, endpoint] = [...inputs].map((input) => input.getBoundingClientRect());
     if (!id || !endpoint || Math.abs(id.left - endpoint.left) > 1 || Math.abs(id.width - endpoint.width) > 1 || endpoint.top < id.bottom) {
       throw new Error('MCP fields must use one aligned column');
+    }
+    const environment = canvasElement.ownerDocument.querySelector('.maka-mcp-advanced-fields');
+    if (!environment || environment.getClientRects().length === 0) {
+      throw new Error('Existing MCP credentials must be visible when editing');
     }
   },
 };
