@@ -121,6 +121,46 @@ test('busy WorkHub retains result for the next idle admission', async () => {
   await c.reconcile();
   assert.equal(f.contents.length, 1);
 });
+test('two ready results enter WorkHub as separate turns when it can admit only one at a time', async () => {
+  const f = fixture();
+  const first = { ...assignment, actionId: 'action-a', delegationId: 'delegation-a' };
+  const second = {
+    ...assignment,
+    actionId: 'action-b',
+    delegationId: 'delegation-b',
+    targetSessionId: 'target-b',
+    targetSessionName: 'Report B',
+    targetTurnId: 'target-turn-b',
+  };
+  f.ports.listAssignments = async () => [first, second];
+  f.ports.inspect = async (current) => ({
+    ...observation,
+    turnId: current.targetTurnId,
+    runId: `run-${current.delegationId}`,
+    result: `Completed ${current.targetSessionName}`,
+  });
+  const delivered: string[] = [];
+  const labels: string[] = [];
+  let busy = false;
+  f.ports.deliver = async (origin, prepare) => {
+    if (busy) return 'pending';
+    const content = await prepare({} as SessionAdmissionLease);
+    if (!content) return 'obsolete';
+    delivered.push(origin.eventId);
+    labels.push(content.displayText ?? '');
+    busy = true;
+    return 'delivered';
+  };
+  const coordinator = new HostWorkHubResultCoordinator(f.ports);
+  await coordinator.reconcile();
+  assert.equal(delivered.length, 1);
+  busy = false;
+  await coordinator.reconcile();
+  await coordinator.reconcile();
+  assert.equal(delivered.length, 2);
+  assert.notEqual(delivered[0], delivered[1]);
+  assert.deepEqual(labels, ['Build report', 'Report B']);
+});
 test('reconstruction after restart uses durable admission receipts', async () => {
   const f = fixture();
   await new HostWorkHubResultCoordinator(f.ports).reconcile();
