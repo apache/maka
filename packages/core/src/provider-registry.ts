@@ -309,8 +309,8 @@ if (!fireworks.api) throw new Error('models.dev Fireworks AI provider facts are 
 const fireworksModelIds = toolCallingModelIds(
   'Fireworks AI',
   GENERATED_MODELS_DEV_METADATA['fireworks-ai'],
-  ['accounts/fireworks/models/kimi-k2p6'],
-);
+  ['accounts/fireworks/models/kimi-k3'],
+).filter((id) => GENERATED_MODELS_DEV_METADATA['fireworks-ai'][id]?.lifecycle !== 'deprecated');
 const tencentTokenHub = GENERATED_MODELS_DEV_PROVIDER_FACTS['tencent-tokenhub'];
 if (tencentTokenHub.id !== 'tencent-tokenhub') {
   throw new Error(
@@ -871,13 +871,7 @@ const providerRegistry = {
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
     authKind: 'api_key',
-    fallbackModels: [
-      'deepseek-v4-flash',
-      'deepseek-v4-flash-vision-exp',
-      'deepseek-v4-pro',
-      'deepseek-reasoner',
-      'deepseek-chat',
-    ],
+    fallbackModels: ['deepseek-flash', 'deepseek-v4-pro'],
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
