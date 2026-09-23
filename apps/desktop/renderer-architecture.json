@@ -84,7 +84,6 @@
     "src/renderer/locales/shell-remaining-copy.ts",
     "src/renderer/locales/task-readiness-copy.ts",
     "src/renderer/locales/work-board-error-copy.ts",
-    "src/renderer/locales/workhub-copy.ts",
     "src/renderer/main.tsx",
     "src/renderer/mcp-brand-contrast.ts",
     "src/renderer/mcp-brand-marks.tsx",
@@ -96,7 +95,6 @@
     "src/renderer/model-catalog-choices.ts",
     "src/renderer/model-connection-errors.ts",
     "src/renderer/nav-selection.ts",
-    "src/renderer/new-task-reload-intent.ts",
     "src/renderer/onboarding-hero-copy.ts",
     "src/renderer/onboarding-hero.tsx",
     "src/renderer/onboarding-provider-types.ts",
@@ -110,7 +108,6 @@
     "src/renderer/session-collaboration-dialog.tsx",
     "src/renderer/session-copy-attempt.ts",
     "src/renderer/session-error-presentation.ts",
-    "src/renderer/session-health-notice.ts",
     "src/renderer/session-read-state.ts",
     "src/renderer/session-status-presentation.ts",
     "src/renderer/session-workspace-actions.ts",
@@ -193,7 +190,6 @@
     "src/renderer/settings/use-optimistic-settings-draft.ts",
     "src/renderer/settings/web-search-settings-page.tsx",
     "src/renderer/settled-message-merge.ts",
-    "src/renderer/shell-chat-model-selection.ts",
     "src/renderer/shell-run-update-state.ts",
     "src/renderer/side-chat-command.ts",
     "src/renderer/skill-invocation-feedback.ts",
@@ -202,16 +198,13 @@
     "src/renderer/titlebar-dim-color.ts",
     "src/renderer/titlebar-modal-sync.ts",
     "src/renderer/turn-footer-actions.ts",
-    "src/renderer/use-active-execution-boundary.ts",
     "src/renderer/use-app-shell-composer-quotes.ts",
     "src/renderer/use-app-shell-session-list.ts",
     "src/renderer/use-app-shell-session-ui-reads.ts",
     "src/renderer/use-app-shell-session-workspace.ts",
-    "src/renderer/use-new-task-choice.ts",
     "src/renderer/use-onboarding-snapshot.ts",
     "src/renderer/use-project-context.ts",
     "src/renderer/use-shell-appearance.ts",
-    "src/renderer/use-shell-chat-model.ts",
     "src/renderer/use-shell-connections.ts",
     "src/renderer/use-shell-live-turn.ts",
     "src/renderer/use-shell-memory-pill.ts",
@@ -235,7 +228,6 @@
     "src/renderer/features/module-hub/ui/module-hub-host.tsx -> src/renderer/mcp-page",
     "src/renderer/features/session-navigation/model/session-list-layout.ts -> src/renderer/browser-storage",
     "src/renderer/features/session-navigation/model/session-rail-layout-store.ts -> src/renderer/browser-storage",
-    "src/renderer/features/task-entry/model/task-entry-selection.ts -> src/renderer/new-task-reload-intent",
     "src/renderer/features/task-entry/ui/task-entry-host.tsx -> src/renderer/remote-project-directory-dialog",
     "src/renderer/features/workbar/controller/use-workbar-controller.ts -> src/renderer/browser-storage",
     "src/renderer/features/workbar/controller/use-workbar-controller.ts -> src/renderer/side-chat-command",
@@ -327,10 +319,10 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3590
+        "nonTriviaTokens": 3575
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
-        "importDeclarations": 4,
+        "importDeclarations": 1,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
@@ -340,14 +332,13 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./features/workbar": 1,
           "./locales/shell-copy": 1,
-          "@astryxdesign/core/Icon": 1,
-          "@astryxdesign/core/Tooltip": 1,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1
+          "./shell/window-titlebar": 1,
+          "@maka/ui": 1
         },
-        "importSpecifiers": 7,
-        "nonTriviaTokens": 408
+        "importSpecifiers": 1,
+        "nonTriviaTokens": 122
       },
       "src/renderer/app-shell-command-actions.ts": {
         "importDeclarations": 5,
@@ -681,7 +672,7 @@
         "nonTriviaTokens": 1243
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 62,
+        "importDeclarations": 59,
         "bridgePaths": {
           "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
@@ -803,15 +794,12 @@
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
           "./shell/frame-style": 1,
-          "./use-active-execution-boundary": 1,
           "./use-app-shell-composer-quotes": 1,
           "./use-app-shell-session-ui-reads": 1,
           "./use-app-shell-session-workspace": 1,
-          "./use-new-task-choice": 1,
           "./use-onboarding-snapshot": 1,
           "./use-project-context": 1,
           "./use-shell-appearance": 1,
-          "./use-shell-chat-model": 1,
           "./use-shell-connections": 1,
           "./use-shell-live-turn": 1,
           "./use-shell-memory-pill": 1,
@@ -830,8 +818,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 98,
-        "nonTriviaTokens": 12729
+        "importSpecifiers": 95,
+        "nonTriviaTokens": 12681
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -894,7 +882,7 @@
         "nonTriviaTokens": 135
       },
       "src/renderer/use-app-shell-session-workspace.ts": {
-        "importDeclarations": 5,
+        "importDeclarations": 4,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
@@ -908,16 +896,16 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./application/contracts/new-task-reload-intent.js": 1,
           "./application/contracts/session-catalog/session-catalog-state.js": 1,
           "./application/contracts/session-catalog/use-external-store-selector.js": 1,
           "./bootstrap-selection-lease.js": 1,
           "./features/conversation/index.js": 1,
-          "./new-task-reload-intent.js": 1,
           "./session-workspace-actions.js": 1,
           "./use-app-shell-session-list.js": 1,
           "react": 1
         },
-        "importSpecifiers": 5,
+        "importSpecifiers": 4,
         "nonTriviaTokens": 459
       }
     },
@@ -1061,9 +1049,9 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./application/contracts/new-task-reload-intent.js": 1,
           "./application/contracts/session-inspector/latest-request-usage.js": 1,
           "./composer-mentions.js": 1,
-          "./new-task-reload-intent.js": 1,
           "@maka/ui": 1,
           "react": 1
         }
@@ -1636,15 +1624,6 @@
           "@maka/core/ui-locale": 1
         }
       },
-      "src/renderer/locales/workhub-copy.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
       "src/renderer/mcp-brand-contrast.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -1794,17 +1773,6 @@
         "dependencyPaths": {
           "./browser-storage.js": 1
         }
-      },
-      "src/renderer/new-task-reload-intent.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "sessionStorage": 2
-        },
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
       },
       "src/renderer/onboarding-hero-copy.ts": {
         "bridgePaths": {},
@@ -2019,17 +1987,6 @@
           "./locales/conversation-copy.js": 1
         }
       },
-      "src/renderer/session-health-notice.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/conversation-copy.js": 1
-        }
-      },
       "src/renderer/session-read-state.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -2062,8 +2019,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./application/contracts/transient-message-projection.js": 1,
-          "./new-task-reload-intent.js": 1
+          "./application/contracts/new-task-reload-intent.js": 1,
+          "./application/contracts/transient-message-projection.js": 1
         }
       },
       "src/renderer/session-workspace-errors.ts": {
@@ -3738,15 +3695,6 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
-      "src/renderer/shell-chat-model-selection.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
       "src/renderer/shell-run-update-state.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -3847,41 +3795,6 @@
           "./locales/conversation-copy.js": 1
         }
       },
-      "src/renderer/use-active-execution-boundary.ts": {
-        "bridgePaths": {
-          "window.maka.sessions.readExecutionBoundary": 1
-        },
-        "environmentCapabilities": {
-          "clearTimeout": 1,
-          "setTimeout": 1
-        },
-        "hookCalls": {
-          "useEffect": 2,
-          "useRef": 1,
-          "useState": 3
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "react": 1
-        }
-      },
-      "src/renderer/use-new-task-choice.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 1,
-          "useState": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./new-task-reload-intent.js": 1,
-          "react": 1
-        }
-      },
       "src/renderer/use-onboarding-snapshot.ts": {
         "bridgePaths": {
           "window.maka.connections.subscribeEvents": 1,
@@ -3940,7 +3853,7 @@
         },
         "environmentCapabilities": {},
         "hookCalls": {
-          "useState": 5
+          "useState": 4
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -3950,23 +3863,6 @@
           "./settings/ui-locale-update-gate": 1,
           "./theme": 1,
           "@maka/core/settings": 1,
-          "react": 1
-        }
-      },
-      "src/renderer/use-shell-chat-model.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useNewTaskChoice": 2
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/conversation-copy.js": 1,
-          "./session-health-notice.js": 1,
-          "./shell-chat-model-selection.js": 1,
-          "./use-new-task-choice.js": 1,
           "react": 1
         }
       },

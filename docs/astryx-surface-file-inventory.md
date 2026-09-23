@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.2` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 291 files — blocker 0, reimplementation 0, polish 4, aligned 287.
+**Totals:** 294 files — blocker 0, reimplementation 0, polish 4, aligned 290.
 
 ## Exclusions (explicit)
 
@@ -28,7 +28,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | Path | Role | Astryx used | Gap / note | Severity |
 |------|------|-------------|------------|----------|
 | `apps/desktop/src/renderer/agent-graph-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, IconButton, Selector, Spinner | aligned — uses Astryx (Banner, Button, EmptyState, IconButton, Selector, Spinner) | aligned |
-| `apps/desktop/src/renderer/app-shell-chrome-actions.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
+| `apps/desktop/src/renderer/app-shell-chrome-actions.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/app-shell-detail-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/app-shell-overlays.tsx` | shell-chrome-or-panel | Spinner | aligned — uses Astryx (Spinner) | aligned |
 | `apps/desktop/src/renderer/app-shell.tsx` | shell-chrome-or-panel | AppShell | aligned — uses Astryx (AppShell) | aligned |
@@ -121,14 +121,13 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx` | shell-chrome-or-panel | Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, Text, VStack | aligned — uses Astryx (Button, CheckboxInput, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx` | shell-chrome-or-panel | Card, ResizeHandle, Spinner | aligned — uses Astryx (Card, ResizeHandle, Spinner) | aligned |
 | `apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx` | shell-chrome-or-panel | Badge, Button, Card, Heading, Icon, Kbd, List, ListItem, Section, Spinner, Tab, TabList | aligned — uses Astryx (Badge, Button, Card, Heading, Icon, Kbd, List, ListItem) | aligned |
+| `apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/control-overlay.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/cursor.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/main-navigation.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/features/workhub/ui/return-button.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-composer.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-conversation.tsx` | other | Button, Link, Text | aligned — uses Astryx (Button, Link, Text) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-dock.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
-| `apps/desktop/src/renderer/features/workhub/ui/workhub-navigation-rail.tsx` | other | Button, List, ListItem, StatusDot | aligned — uses Astryx (Button, List, ListItem, StatusDot) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-progress-card.tsx` | other | IconButton | aligned — uses Astryx (IconButton) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx` | other | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
 | `apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -189,6 +188,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/tasks-settings-page.tsx` | settings-page | Button, EmptyState, HStack, List, ListItem, MoreMenu, StackItem, TextInput | aligned — uses Astryx (Button, EmptyState, HStack, List, ListItem, MoreMenu, StackItem, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/usage-settings-page.tsx` | settings-page | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/web-search-settings-page.tsx` | settings-page | Banner, Button, EmptyState, Link, Selector, StatusDot, Switch, TextInput | aligned — uses Astryx (Banner, Button, EmptyState, Link, Selector, StatusDot, Switch, TextInput) | aligned |
+| `apps/desktop/src/renderer/shell/window-titlebar.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
 | `apps/desktop/src/renderer/styles.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/agent-graph.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/astryx-mount.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -270,6 +270,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, ChatComposerDrawer, ChatComposerInput, DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, IconButton, Lightbox, Token, Tooltip | aligned — uses Astryx (Button, ChatComposer, ChatComposerDrawer, ChatComposerInput, DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuDivider, DropdownMenuItem) | aligned |
 | `packages/ui/src/daily-review-panel.tsx` | module-hub | Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem, SegmentedControl, SegmentedControlItem, Skeleton, StackItem, Text, Toolbar, VStack | aligned — uses Astryx (Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem) | aligned |
 | `packages/ui/src/directory-reference-chip.tsx` | ui-composition | Token, Tooltip | aligned — uses Astryx (Token, Tooltip) | aligned |
+| `packages/ui/src/executor-model-picker.tsx` | ui-composition | Button, Popover | aligned — uses Astryx (Button, Popover) | aligned |
 | `packages/ui/src/form-interaction-prompt.tsx` | ui-composition | Button, CheckboxInput, RadioList, RadioListItem, Selector, Text, TextInput | aligned — uses Astryx (Button, CheckboxInput, RadioList, RadioListItem, Selector, Text, TextInput) | aligned |
 | `packages/ui/src/icons.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/inline-reference.tsx` | ui-composition | ChatTokenizedText | aligned — uses Astryx (ChatTokenizedText) | aligned |
@@ -281,6 +282,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/markdown.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/mermaid-diagram.tsx` | ui-composition | Button, CodeBlock, Collapsible, Dialog, IconButton, Toolbar | aligned — uses Astryx (Button, CodeBlock, Collapsible, Dialog, IconButton, Toolbar) | aligned |
 | `packages/ui/src/model-picker-internals.tsx` | ui-composition | SelectorOption | aligned — uses Astryx (SelectorOption) | aligned |
+| `packages/ui/src/model-picker-panel.tsx` | shell-chrome-or-panel | Button, TextInput | aligned — uses Astryx (Button, TextInput) | aligned |
 | `packages/ui/src/model-picker.tsx` | ui-composition | Selector | aligned — uses Astryx (Selector) | aligned |
 | `packages/ui/src/model-wheel-picker.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/module-hub-selector.tsx` | ui-composition | Tab, TabList | aligned — uses Astryx (Tab, TabList) | aligned |
@@ -294,6 +296,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/prompt-anchor-rail.tsx` | ui-composition | Button, HoverCard | aligned — uses Astryx (Button, HoverCard) | aligned |
 | `packages/ui/src/quote-ref-chip.tsx` | ui-composition | Button, IconButton | aligned — uses Astryx (Button, IconButton) | aligned |
 | `packages/ui/src/relative-time.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `packages/ui/src/running-indicator.tsx` | ui-composition | Spinner, Tooltip | aligned — uses Astryx (Spinner, Tooltip) | aligned |
 | `packages/ui/src/sandbox-boundary-prompt.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/scheduled-task-form-dialog.tsx` | module-hub | Button, DateTimeInput, Dialog, DialogHeader, DropdownMenu, DropdownMenuItem, FormLayout, HStack, Layout, LayoutContent, LayoutFooter, Selector, Text, TextArea, TextInput | aligned — uses Astryx (Button, DateTimeInput, Dialog, DialogHeader, DropdownMenu, DropdownMenuItem, FormLayout, HStack) | aligned |
 | `packages/ui/src/scheduled-task-inspector.tsx` | module-hub | Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem, StackItem, StatusDot, Switch, Text, VStack | aligned — uses Astryx (Button, Divider, HStack, Heading, List, ListItem, MetadataList, MetadataListItem) | aligned |

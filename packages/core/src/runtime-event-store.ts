@@ -18,7 +18,11 @@
  */
 
 import type { RuntimeEvent } from './runtime-event.js';
-import type { RuntimeInvocationRecord } from './runtime-invocation.js';
+import { runtimeHandoffPause } from './runtime-handoff.js';
+import {
+  mayBeTranscriptLedgerInvocationId,
+  type RuntimeInvocationRecord,
+} from './runtime-invocation.js';
 import type {
   ContinuationClaimV1,
   ImmutableRuntimePrefixV1,
@@ -40,6 +44,48 @@ export interface RuntimeRecoveryBundleCommit {
   reconcileRuntimeEvent: RuntimeEvent;
   outcomeRuntimeEvent?: RuntimeEvent;
   decisionRuntimeEvent: RuntimeEvent;
+}
+
+export interface RuntimeInvocationRecoveryInventoryEntry {
+  readonly sessionId: string;
+  readonly invocationId: string;
+  /**
+   * Settled invocations normally need no further fields. Identity is retained
+   * only when the persisted id could belong to transcript conversion and the
+   * runtime must apply its exact deterministic-id check.
+   */
+  readonly identity?: Pick<
+    RuntimeInvocationRecord,
+    'sessionId' | 'invocationId' | 'runId' | 'turnId' | 'openedAt'
+  >;
+  /** Present only when recovery must inspect this invocation's full evidence. */
+  readonly candidate?: RuntimeInvocationRecord;
+}
+
+export function runtimeInvocationRecoveryInventoryFromInvocations(
+  invocations: readonly RuntimeInvocationRecord[],
+): RuntimeInvocationRecoveryInventoryEntry[] {
+  return invocations.map((invocation) => {
+    const base = {
+      sessionId: invocation.sessionId,
+      invocationId: invocation.invocationId,
+    };
+    if (!invocation.terminalEvent || runtimeHandoffPause(invocation.terminalEvent)) {
+      return { ...base, candidate: invocation };
+    }
+    return mayBeTranscriptLedgerInvocationId(invocation.invocationId)
+      ? {
+          ...base,
+          identity: {
+            sessionId: invocation.sessionId,
+            invocationId: invocation.invocationId,
+            runId: invocation.runId,
+            turnId: invocation.turnId,
+            openedAt: invocation.openedAt,
+          },
+        }
+      : base;
+  });
 }
 
 /**
@@ -93,6 +139,15 @@ export interface RuntimeEventStore {
    * still the terminal event.
    */
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  /**
+   * Narrow startup inventory. Every opening contributes a minimal existence
+   * marker. Full identity is retained only for transcript-namespace ambiguity;
+   * opening and terminal payloads are decoded only for unfinished invocations
+   * and durable handoff pauses that recovery must inspect.
+   */
+  listInvocationRecoveryInventory?(
+    sessionIds: readonly string[],
+  ): Promise<RuntimeInvocationRecoveryInventoryEntry[]>;
   /**
    * One invocation by run id, absent when no opening fact names it. A store
    * that indexes openings answers this in one read; stores without the fast
@@ -229,6 +284,10 @@ export interface RuntimeContinuationAuthorityStore extends RuntimeEventStore {
   readContinuationClaimStateByBoundary(
     boundaryDigest: RuntimeBoundaryDigest,
   ): Promise<ContinuationClaimStateV1 | undefined>;
+  /** Unsettled claim targets among the selected Sessions, for restart recovery. */
+  listUnsettledContinuationClaimsForRecovery?(
+    sessionIds: readonly string[],
+  ): Promise<ContinuationClaimStateV1[]>;
   listContinuationClaimsForRecovery(sessionId: string): Promise<ContinuationClaimStateV1[]>;
   commitContinuationStart(input: {
     claim: ContinuationClaimV1;

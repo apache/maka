@@ -25,15 +25,15 @@
  * helpers, so they form a clean seam. `index.ts` does not re-export them (they
  * are internal to the `@maka/ui` Composer surface).
  *
- * Both are ghost-trigger Astryx Selectors — the same searchable single-select
- * list the settings pages use, so every model picker in the product shares one
- * interaction. The one exception is the collapsed WorkHub window, which keeps
- * the inline wheel (`presentation="wheel"`) it was built for.
+ * Inside the unified executor panel, both render the shared searchable model
+ * list directly. Standalone surfaces retain their Astryx Selector, and the
+ * collapsed WorkHub window retains its wheel (`presentation="wheel"`).
  */
 
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useContext, useCallback, useEffect, useMemo, useState } from 'react';
 import { Button as UiButton } from '@astryxdesign/core';
 import { Selector, SelectorOption, type SelectorOptionData } from '@astryxdesign/core/Selector';
+import { ModelPickerPanel, ModelPickerPanelContext, type ModelPickerPanelOption } from './model-picker-panel.js';
 import { ModelWheelPicker, type ModelWheelOption } from './model-wheel-picker.js';
 import { ICON_SIZE, AlertTriangle, Settings, X } from './icons.js';
 import {
@@ -45,6 +45,7 @@ import {
 import {
   buildModelPickerOptions,
   providerMarkIcon,
+  renderChatModelPickerOption,
   renderModelPickerOption,
   renderModelPickerValue,
 } from './model-picker-internals.js';
@@ -80,6 +81,25 @@ function wheelOptions(
   );
 }
 
+function panelOptions(
+  groups: readonly ModelMenuGroup[],
+  renderProviderMark?: (type: ProviderType) => ReactNode,
+): ModelPickerPanelOption[] {
+  return groups.flatMap((group) => group.choices.map((choice) => ({
+    value: exactChoiceValue(choice),
+    label: choice.label,
+    detail: choice.model,
+    description: [choice.description, choice.knowledgeCutoff].filter(Boolean).join(' ') || undefined,
+    group: group.heading,
+    icon: providerMarkIcon(group.providerType, renderProviderMark),
+  })));
+}
+
+/** Keep the native icon/name row identical to main; metadata remains searchable. */
+function renderNativePanelOption(option: ModelPickerPanelOption): ReactNode {
+  return renderModelPickerOption({ value: option.value, label: option.label, icon: option.icon });
+}
+
 /**
  * Standalone thinking-level picker — the same ghost Selector as the model
  * switcher beside it, minus the search (a handful of levels never needs it).
@@ -88,6 +108,8 @@ function wheelOptions(
  */
 export function ThinkingLevelSelector(props: {
   levels: readonly ThinkingLevel[];
+  includeDefault?: boolean;
+  confirmedOnly?: boolean;
   current?: ThinkingLevel;
   /** Same surface as the model picker; compact windows that cannot fit an anchored popup use 'bottom-sheet'. */
   presentation?: 'popover' | 'bottom-sheet';
@@ -102,33 +124,33 @@ export function ThinkingLevelSelector(props: {
   const hasVariants = props.levels.length > 0 && Boolean(props.onChange);
   const options = useMemo(
     () => [
-      { value: DEFAULT_THINKING_LEVEL, label: copy.defaultLevel },
+      ...(props.includeDefault === false ? [] : [{ value: DEFAULT_THINKING_LEVEL, label: copy.defaultLevel }]),
       ...props.levels.map((level) => ({ value: level, label: copy.level[level] })),
     ],
-    [copy.defaultLevel, copy.level, props.levels],
+    [copy.defaultLevel, copy.level, props.levels, props.includeDefault],
   );
 
-  const currentValue = props.current ?? DEFAULT_THINKING_LEVEL;
+  const currentValue = props.current ?? (props.includeDefault === false ? '' : DEFAULT_THINKING_LEVEL);
   const selection = usePendingSelection(currentValue, (value) =>
     props.onChange?.(value === DEFAULT_THINKING_LEVEL ? undefined : (value as ThinkingLevel)),
   );
 
   if (!hasVariants) return null;
 
-  const currentLabel = options.find((option) => option.value === currentValue)?.label ?? copy.defaultLevel;
+  const currentLabel = options.find((option) => option.value === currentValue)?.label ?? (props.includeDefault === false ? copy.chooseThinkingLevel : copy.defaultLevel);
 
   return (
     <Selector
       label={`${copy.thinkingLevel}: ${currentLabel}`}
       isLabelHidden
       options={options}
-      value={selection.value}
+      value={props.confirmedOnly ? currentValue : selection.value}
       variant="ghost"
       size="sm"
       placement="above"
       presentation={props.presentation}
       isReadOnly={props.isReadOnly}
-      isDisabled={props.disabled}
+      isDisabled={props.disabled || (props.confirmedOnly && selection.value !== currentValue)}
       disabledMessage={props.disabledReason}
       placeholder={currentLabel}
       className="maka-thinking-level-selector"
@@ -169,6 +191,7 @@ export function ChatModelSwitcher(props: {
     model: string;
   }): void | Promise<void>;
 }) {
+  const panel = useContext(ModelPickerPanelContext);
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
   const searchPlaceholder = getSharedUiCopy(locale).modelPicker.searchPlaceholder;
@@ -235,7 +258,7 @@ export function ChatModelSwitcher(props: {
     option.value === SWITCH_WARNING_VALUE
       ? (
         <SelectorOption
-          className="modelPickerOption modelPickerSwitchNotice"
+          className="modelPickerOption modelPickerChatOption modelPickerSwitchNotice"
           icon={<AlertTriangle className="modelPickerSwitchNoticeGlyph" size={ICON_SIZE.control} aria-hidden="true" />}
           // A node, not a string: Item ellipsizes string labels to one line,
           // and this is a sentence to read, not an id to recognise.
@@ -244,7 +267,7 @@ export function ChatModelSwitcher(props: {
           endContent={<X size={ICON_SIZE.control} aria-hidden="true" />}
         />
       )
-      : renderModelPickerOption(option)
+      : renderChatModelPickerOption(option)
   ), []);
 
   // Selecting any option closes the Selector, the notice included, and the
@@ -296,6 +319,30 @@ export function ChatModelSwitcher(props: {
     if (props.presentation !== 'wheel') setWheelOpen(false);
   }, [props.presentation]);
   useEffect(() => setWheelOpen(false), [props.activeSession.id]);
+  if (panel) {
+    const rows = panelOptions(grouped, props.renderProviderMark);
+    if (!currentKnownChoice && currentValue && !props.hideUnavailableCurrentOption) {
+      rows.unshift({
+        value: currentValue,
+        label: displayLabel,
+        icon: providerMarkIcon(props.currentProviderType, props.renderProviderMark),
+        disabled: true,
+      });
+    }
+    return (
+      <>
+        {noticeShown ? <UiButton label={copy.switchWarning} tooltip={copy.switchWarningDismiss} variant="ghost" size="sm" onClick={acknowledgeNotice} /> : null}
+        <ModelPickerPanel
+          options={rows}
+          renderOption={renderNativePanelOption}
+          value={selection.value}
+          disabled={disabled || props.isReadOnly}
+          disabledReason={props.disabledReason}
+          onSelect={async (value) => { await selection.onChange(value); panel.onSelected(); }}
+        />
+      </>
+    );
+  }
   if (props.presentation === 'wheel') {
     const wheelList = wheelOptions(grouped);
     if (!currentKnownChoice && currentValue && !props.hideUnavailableCurrentOption) {
@@ -336,6 +383,8 @@ export function ChatModelSwitcher(props: {
       options={options}
       value={selection.value}
       hasSearch
+      emptyText={<span className="modelPickerChatOption">{getSharedUiCopy(locale).modelPicker.empty}</span>}
+      emptySearchText={<span className="modelPickerChatOption">{getSharedUiCopy(locale).modelPicker.noResults}</span>}
       searchPlaceholder={searchPlaceholder}
       variant="ghost"
       size="sm"
@@ -377,6 +426,7 @@ export function NewChatModelPicker(props: {
     model: string;
   }): void | Promise<void>;
 }) {
+  const panel = useContext(ModelPickerPanelContext);
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
   const searchPlaceholder = getSharedUiCopy(locale).modelPicker.searchPlaceholder;
@@ -413,6 +463,22 @@ export function NewChatModelPicker(props: {
       model: choice.model,
     }));
   };
+  if (panel) {
+    return (
+      <ModelPickerPanel
+        options={panelOptions(grouped, props.renderProviderMark)}
+        renderOption={renderNativePanelOption}
+        value={currentValue}
+        disabled={props.isReadOnly}
+        onSelect={async (value) => {
+          try {
+            await pick(value);
+            panel.onSelected();
+          } catch { /* The action owner reports the failure; keep the list open for retry. */ }
+        }}
+      />
+    );
+  }
   if (props.presentation === 'wheel') {
     const wheelList = wheelOptions(grouped);
     if (!currentKnownChoice && currentValue) {
@@ -438,6 +504,8 @@ export function NewChatModelPicker(props: {
       options={options}
       value={currentValue}
       hasSearch
+      emptyText={<span className="modelPickerChatOption">{getSharedUiCopy(locale).modelPicker.empty}</span>}
+      emptySearchText={<span className="modelPickerChatOption">{getSharedUiCopy(locale).modelPicker.noResults}</span>}
       searchPlaceholder={searchPlaceholder}
       variant="ghost"
       size="sm"
@@ -447,7 +515,7 @@ export function NewChatModelPicker(props: {
       placeholder={props.label}
       className="maka-new-chat-model-selector"
       onChange={pick}
-      renderOption={renderModelPickerOption}
+      renderOption={renderChatModelPickerOption}
       renderValue={renderModelPickerValue}
     />
   );

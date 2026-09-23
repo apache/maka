@@ -105,10 +105,10 @@ function TailVisibleLabel({ text }: { text: string }) {
  * `modelPickerOption` hook that scopes the popup's width cap in
  * model-switcher.css, and the start-ellipsizing label above.
  */
-export function renderModelPickerOption(option: SelectorOptionData): ReactNode {
+export function renderModelPickerOption(option: SelectorOptionData, className = 'modelPickerOption'): ReactNode {
   return (
     <SelectorOption
-      className="modelPickerOption"
+      className={className}
       icon={option.icon}
       label={<TailVisibleLabel text={option.label ?? option.value} />}
       description={option.description}
@@ -121,4 +121,9 @@ export function renderModelPickerValue(option: SelectorOptionData): ReactNode {
   return (
     <SelectorOption icon={option.icon} label={<TailVisibleLabel text={option.label ?? option.value} />} />
   );
+}
+
+/** Shared chat row marker keeps native and external model panels the same size. */
+export function renderChatModelPickerOption(option: SelectorOptionData): ReactNode {
+  return renderModelPickerOption(option, 'modelPickerOption modelPickerChatOption');
 }

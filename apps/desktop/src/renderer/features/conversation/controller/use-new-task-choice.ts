@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './new-task-reload-intent.js';
+import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from '../../../application/contracts/new-task-reload-intent.js';
 
 export function useNewTaskChoice<T>(
   targetKey: string,

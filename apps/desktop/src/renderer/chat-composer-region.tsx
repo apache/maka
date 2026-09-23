@@ -37,7 +37,7 @@ import {
   readNewTaskReloadIntent,
   UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
-} from './new-task-reload-intent.js';
+} from './application/contracts/new-task-reload-intent.js';
 
 const newTaskDraftPersistence = {
   read(key: string | undefined): string | undefined {

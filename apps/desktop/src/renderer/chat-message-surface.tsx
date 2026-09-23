@@ -29,7 +29,7 @@ import {
 } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
-import type { SessionHealthNoticeView } from './use-shell-chat-model';
+import type { SessionHealthNoticeView } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';

@@ -71,3 +71,7 @@ export interface ToolOperationRecord {
   resultEventId?: string;
   version: number;
 }
+
+export interface UnsettledToolOperationRecord extends ToolOperationRecord {
+  sessionId: string;
+}

@@ -241,6 +241,8 @@
   gap: var(--space-2);
 }
 .maka-subagent-session-label { width: 100%; min-width: 0; }
+/* Dot and spinner differ in width; a fixed box keeps every name on one x. */
+.maka-subagent-session-signal { display: flex; width: 1rem; height: 1rem; flex: none; align-items: center; justify-content: center; }
 .maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
 .maka-subagent-session-end { color: var(--muted-foreground); }
 .maka-turn-processing {

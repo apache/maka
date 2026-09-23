@@ -3700,6 +3700,95 @@ describe('SessionManager child-session runtime primitive', () => {
     });
   }
 
+  test('startup recovery reads Runtime handoff evidence only for a domain-owned active Plan', async () => {
+    const store = new MemorySessionStore();
+    const runtimeEventStore = new MemoryAgentRunStore();
+    const originalListInvocations =
+      runtimeEventStore.listSessionInvocations.bind(runtimeEventStore);
+    let planStateReads = 0;
+    const invocationReads: string[] = [];
+    const planInterrupts: string[] = [];
+    let activePlanSessionId = '';
+    runtimeEventStore.listSessionInvocations = async (sessionId: string) => {
+      invocationReads.push(sessionId);
+      return originalListInvocations(sessionId);
+    };
+    const manager = new SessionManager({
+      store,
+      runtimeEventStore,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(400),
+      planStore: {
+        readState: async (sessionId: string) => {
+          planStateReads += 1;
+          return sessionId === activePlanSessionId
+            ? { ...emptyPlanSessionState(sessionId), activeExecutionId: 'active-plan-execution' }
+            : emptyPlanSessionState(sessionId);
+        },
+        interruptActiveExecution: async (sessionId: string) => {
+          planInterrupts.push(sessionId);
+          return {
+            event: {} as PlanEvent,
+            state: emptyPlanSessionState(sessionId),
+          };
+        },
+      } as unknown as PlanStore,
+    });
+    await manager.createSession(makeInput());
+    activePlanSessionId = (await manager.createSession(makeInput())).id;
+
+    assert.deepStrictEqual(await manager.recoverInterruptedSessions(), [activePlanSessionId]);
+    assert.strictEqual(planStateReads, 2);
+    assert.deepStrictEqual(invocationReads, [activePlanSessionId]);
+    assert.deepStrictEqual(planInterrupts, [activePlanSessionId]);
+  });
+
+  test('startup recovery reads Plan evidence only for inventory candidates', async () => {
+    const store = new MemorySessionStore();
+    const runtimeEventStore = new MemoryAgentRunStore();
+    const originalListInvocations =
+      runtimeEventStore.listSessionInvocations.bind(runtimeEventStore);
+    const planStateReads: string[] = [];
+    const invocationReads: string[] = [];
+    const planInterrupts: string[] = [];
+    let activePlanSessionId = '';
+    runtimeEventStore.listSessionInvocations = async (sessionId: string) => {
+      invocationReads.push(sessionId);
+      return originalListInvocations(sessionId);
+    };
+    const manager = new SessionManager({
+      store,
+      runtimeEventStore,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(400),
+      planStore: {
+        listPlanRecoverySessionIds: async () => [activePlanSessionId],
+        readState: async (sessionId: string) => {
+          planStateReads.push(sessionId);
+          return sessionId === activePlanSessionId
+            ? { ...emptyPlanSessionState(sessionId), activeExecutionId: 'active-plan-execution' }
+            : emptyPlanSessionState(sessionId);
+        },
+        interruptActiveExecution: async (sessionId: string) => {
+          planInterrupts.push(sessionId);
+          return {
+            event: {} as PlanEvent,
+            state: emptyPlanSessionState(sessionId),
+          };
+        },
+      } as unknown as PlanStore,
+    });
+    await manager.createSession(makeInput());
+    activePlanSessionId = (await manager.createSession(makeInput())).id;
+
+    assert.deepStrictEqual(await manager.recoverInterruptedSessions(), [activePlanSessionId]);
+    assert.deepStrictEqual(planStateReads, [activePlanSessionId]);
+    assert.deepStrictEqual(invocationReads, [activePlanSessionId]);
+    assert.deepStrictEqual(planInterrupts, [activePlanSessionId]);
+  });
+
   test('startup recovery repairs an interrupted child inline run only in the child session', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();

@@ -375,7 +375,7 @@ function CopyButton(props: {
  */
 export const TurnView = memo(function TurnView(props: {
   turn: TurnViewModel;
-  /** Optional identity repeated beside each prompt and answer in this turn. */
+  /** Optional identity shown once above the turn's root prompt. */
   messageHeader?: ReactNode;
   /** Optional accessible action on each message edge. */
   messageRail?: ReactNode;
@@ -557,6 +557,15 @@ export const TurnView = memo(function TurnView(props: {
           <span>{copy.goalContinued}</span>
         </Marker>
       )}
+      {turn.user?.hostOrigin?.kind === 'workhub_result' && (
+        <ChatSystemMessage
+          className="maka-chat-system-message"
+          icon={<GitBranch size={ICON_SIZE.meta} aria-hidden="true" />}
+          aria-label={`${copy.workHubResultReceived} · ${turn.user.text}`}
+        >
+          {copy.workHubResultReceived} · {turn.user.text}
+        </ChatSystemMessage>
+      )}
       {turn.user?.hostOrigin?.kind === 'agent_graph' && (
         <Marker
           variant="host-origin"
@@ -570,7 +579,7 @@ export const TurnView = memo(function TurnView(props: {
       {props.transientMessages?.map((message) => (
         <TransientUserMessage key={message.id} message={message} />
       ))}
-      {turn.user && (
+      {turn.user && turn.user.hostOrigin?.kind !== 'workhub_result' && (
         <LocalizedChatMessage
           accessibleLabel={
             turn.user.hostOrigin?.kind === 'legacy_automation'
@@ -651,7 +660,6 @@ export const TurnView = memo(function TurnView(props: {
               className="maka-chat-message maka-user-message maka-steering-message"
             >
               {props.messageRail}
-              {props.messageHeader}
               <UserMessageBody
                 messageId={message.id}
                 text={message.text}
@@ -711,7 +719,6 @@ export const TurnView = memo(function TurnView(props: {
             >
             <div className="maka-assistant-answer-content">
               {props.messageRail}
-              {props.messageHeader}
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.

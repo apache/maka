@@ -7,6 +7,7 @@
   "sideEffects": false,
   "private": true,
   "exports": {
+    "./executor-catalog": "./dist/executor-catalog.js",
     "./executor-id": "./dist/executor-id.js",
     "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./model-projection-transition": "./dist/model-projection-transition.js",
@@ -30,6 +31,7 @@
     "./provider-retry-countdown": "./dist/provider-retry-countdown.js",
     "./interaction": "./dist/interaction.js",
     "./session": "./dist/session.js",
+    "./turn-origin": "./dist/turn-origin.js",
     "./session-reference": "./dist/session-reference.js",
     "./session-revisions": "./dist/session-revisions.js",
     "./collaboration": "./dist/collaboration.js",

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { useExecutorSelection } from './use-executor-selection.js';
+import type { ComposerProps } from '@maka/ui';
 import { useMemo } from 'react';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type {
@@ -35,16 +37,16 @@ import {
   pickNewChatModel,
   type NewChatModel,
   type NewChatModelCandidate,
-} from './shell-chat-model-selection.js';
+} from '../model/shell-chat-model-selection.js';
 import {
   deriveSessionHealthNotice,
   type SessionHealthNoticeTarget,
-} from './session-health-notice.js';
-import type { ComposerDefaults } from './composer-defaults.js';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+} from '../model/session-health-notice.js';
+type ComposerDefaults = { model: NewChatModelCandidate | null };
+import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { useNewTaskChoice } from './use-new-task-choice.js';
 
-export type { NewChatModel } from './shell-chat-model-selection.js';
+export type { NewChatModel } from '../model/shell-chat-model-selection.js';
 export type NewChatExecutionTarget = NewChatModel | { executorId: string; model: string };
 
 export function resolveNewChatExecutionThinkingLevel(
@@ -82,6 +84,8 @@ export function useShellChatModel(options: {
   sessionSendOutcome: SessionSendProjection | undefined;
   defaultConnection: string | null;
   newTaskKey: string;
+  executorTarget?: import('../ports.js').ConversationNewTaskTarget;
+  executorCwd?: string;
   activationCandidate?: NewChatModelCandidate;
   activeSession: SessionSummary | undefined;
   sessionHealthSession: SessionSummary | undefined;
@@ -94,6 +98,8 @@ export function useShellChatModel(options: {
   refreshModelChoices(): void | Promise<void>;
   setSessionExecutor?(sessionId: string, target: MakaClientExecutorTarget): Promise<boolean>;
 }): {
+  executor: ReturnType<typeof useExecutorSelection>;
+  composerModelProps: Pick<ComposerProps, 'modelLabel' | 'activeModelConnectionId' | 'activeModelConnectionSlug' | 'activeModel' | 'activeModelLabel' | 'activeProviderType' | 'modelChoices' | 'hideUnavailableCurrentModel' | 'activeThinkingLevels' | 'activeThinkingLevel' | 'newChatModel' | 'newChatProviderType' | 'newChatThinkingLevels' | 'newChatThinkingLevel'>;
   chatModelChoices: ChatModelChoice[];
   activeConnection: IdentifiedLlmConnection | undefined;
   activeConnectionLabel: string | undefined;
@@ -118,6 +124,7 @@ export function useShellChatModel(options: {
   onExecutorTargetChange: (target: MakaClientExecutorTarget) => Promise<void>;
   sessionHealthNotice: SessionHealthNoticeView | undefined;
 } {
+  const executor = useExecutorSelection({ key: options.newTaskKey, target: options.executorTarget, cwd: options.executorCwd, session: options.activeSession });
   const {
     uiLocale,
     connections,
@@ -337,6 +344,21 @@ export function useShellChatModel(options: {
   ]);
 
   return {
+    executor: { ...executor, select: async (next) => {
+      if (!activeSession && pendingExecutorTarget) setPendingExecutionChoice(null);
+      await executor.select(next);
+    } },
+    composerModelProps: {
+      modelLabel: activeModelLabel ?? newChatModelLabel,
+      activeModelConnectionId: options.activeSession?.llmConnectionId,
+      activeModelConnectionSlug: options.activeSession?.llmConnectionSlug,
+      activeModel, activeModelLabel, activeProviderType: activeConnection?.providerType,
+      modelChoices: chatModelChoices,
+      hideUnavailableCurrentModel: sessionHealthNotice?.onClickTarget === 'model_picker',
+      activeThinkingLevels, activeThinkingLevel,
+      newChatModel, newChatProviderType: connections.find((connection) => connection.slug === newChatModel?.llmConnectionSlug)?.providerType,
+      newChatThinkingLevels, newChatThinkingLevel,
+    },
     chatModelChoices,
     activeConnection,
     activeConnectionLabel,
@@ -369,6 +391,7 @@ export function useShellChatModel(options: {
       if (activeSession) {
         await options.setSessionExecutor?.(activeSession.id, target);
       } else {
+        await executor.select(undefined);
         setPendingExecutionChoice(target);
         setPendingNewChatThinkingLevel(target.thinkingLevel ?? null);
       }

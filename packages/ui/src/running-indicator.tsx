@@ -17,18 +17,26 @@
  * under the License.
  */
 
-import { Button } from '@astryxdesign/core/Button';
-import { useUiLocale } from '@maka/ui';
-import { getShellCopy } from '../../../locales/shell-copy.js';
+import type { HTMLAttributes } from 'react';
+import { Spinner } from '@astryxdesign/core/Spinner';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 
-export function WorkHubReturnButton({ visible, onReturn }: { visible: boolean; onReturn(): void }) {
-  const locale = useUiLocale();
-  return visible ? (
-    <Button
-      className="maka-return-workhub"
-      label={getShellCopy(locale).navigation.backToWorkHub}
-      variant="secondary"
-      onClick={onReturn}
-    />
-  ) : null;
+/**
+ * The status-dot slot's "work is in progress" state.
+ *
+ * The label is text, not the Spinner's `role="status"`: a list of running rows
+ * would otherwise be a list of live regions.
+ */
+export function RunningIndicator({
+  label,
+  tooltip,
+  ...rest
+}: { label: string; tooltip?: string } & HTMLAttributes<HTMLSpanElement>) {
+  const indicator = (
+    <span {...rest} className="maka-running-indicator">
+      <Spinner size="sm" aria-hidden="true" />
+      <span className="maka-visually-hidden">{label}</span>
+    </span>
+  );
+  return tooltip ? <Tooltip content={tooltip}>{indicator}</Tooltip> : indicator;
 }

@@ -21,18 +21,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { WorkHubAnchorSession } from "../../renderer/features/workhub/index.js";
 import {
-  deriveWorkHubAnchors,
-  matchesWorkHubFilter,
-  MAX_WORKHUB_ANCHORS,
-  WorkHubNavigationRail,
   workHubLinkedWork,
   workHubTurnResultPreview,
 } from "../../renderer/features/workhub/index.js";
 import { ChatSurfaceLayout, LocaleProvider } from '@maka/ui';
 import { WorkHubConversation, WorkHubDelegationStatus } from '../../renderer/features/workhub/testing.js';
-import { getWorkHubRailCopy } from "../../renderer/locales/workhub-copy.js";
 import { renderTranscriptMarkup } from './transcript-test-dom.js';
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 
@@ -85,108 +79,6 @@ test('delegated result previews select the exact Turn and stay character-bounded
   assert.equal(preview?.endsWith('…'), true);
   assert.doesNotMatch(preview ?? '', /wrong result/u);
 });
-
-function session(
-  sessionId: string,
-  state: WorkHubAnchorSession["state"],
-  updatedAt: number,
-  archived = false,
-): WorkHubAnchorSession {
-  return {
-    target: { sessionId },
-    projectName: "Maka",
-    sessionName: sessionId,
-    archived,
-    state,
-    updatedAt,
-  };
-}
-
-const sessions = [
-  session("recent", "active", 100),
-  session("focus", "running", 10),
-  session("delegated", "waiting_for_user", 20),
-  session("blocked", "blocked", 90),
-  session("stopped", "aborted", 80),
-  session("archived", "active", 110, true),
-];
-
-test("anchors prioritize focus and delegation before recent Session facts", () => {
-  const before = structuredClone(sessions);
-  const anchors = deriveWorkHubAnchors({
-    sessions,
-    focusSessionId: "focus",
-    delegatedSessionIds: ["delegated", "focus", "missing"],
-    filter: "all",
-  });
-  assert.deepEqual(sessions, before);
-  assert.deepEqual(anchors.map((value) => value.target.sessionId),
-    ["focus", "delegated", "archived", "recent", "blocked", "stopped"]);
-  assert.deepEqual(deriveWorkHubAnchors({ sessions, delegatedSessionIds: ["delegated"], filter: "all" })[0], sessions[2]);
-});
-
-test("filters are derived from Session state and archive facts only", () => {
-  assert.deepEqual(
-    sessions
-      .filter((value) => matchesWorkHubFilter(value, "active"))
-      .map((value) => value.target.sessionId),
-    ["recent", "focus"],
-  );
-  assert.deepEqual(
-    sessions
-      .filter((value) => matchesWorkHubFilter(value, "attention"))
-      .map((value) => value.target.sessionId),
-    ["delegated", "blocked"],
-  );
-  assert.deepEqual(
-    sessions
-      .filter((value) => matchesWorkHubFilter(value, "stopped"))
-      .map((value) => value.target.sessionId),
-    ["stopped", "archived"],
-  );
-});
-
-test("anchor projection is deduplicated and hard-bounded", () => {
-  const many = Array.from({ length: 20 }, (_, index) =>
-    session(`session-${index}`, "active", index),
-  );
-  const anchors = deriveWorkHubAnchors({
-    sessions: [...many, many[0]!, many[4]!],
-    delegatedSessionIds: [...many, many[0]!].map((value) => value.target.sessionId),
-    filter: "all",
-  });
-  assert.equal(anchors.length, MAX_WORKHUB_ANCHORS);
-  assert.equal(
-    new Set(anchors.map((value) => value.target.sessionId)).size,
-    anchors.length,
-  );
-});
-
-test("rail copy distinguishes bounded anchors from all matching work", () => {
-  const many = Array.from({ length: 20 }, (_, index) =>
-    session(`session-${index}`, "active", index),
-  );
-  const markup = renderToStaticMarkup(createElement(WorkHubNavigationRail, {
-    locale: "en",
-    sessions: many,
-    delegatedSessionIds: [],
-    copy: getWorkHubRailCopy("en"),
-  }));
-
-  assert.match(markup, /8\/20 anchors · 20 total/u);
-  assert.equal(markup.match(/<li[ >]/gu)?.length, 8);
-});
-
-
-test("focus display is derived from the selected Session ID, not delegation priority", () => {
-  const markup = renderToStaticMarkup(createElement(WorkHubNavigationRail, {
-    locale: "en", sessions, focusSessionId: "focus", delegatedSessionIds: ["delegated"],
-    copy: getWorkHubRailCopy("en"),
-  }));
-  assert.equal(markup.match(/aria-current="page"/gu)?.length, 1);
-  assert.equal(markup.match(/Focused · Running/gu)?.length, 1);
-});
-
 
 test('a shared coordination turn keeps every Work label without assigning one Work color to the whole turn', async () => {
   const markup = await renderTranscriptMarkup(createElement(LocaleProvider, { locale: 'en', children: null },
