@@ -3,6 +3,10 @@ Cua Driver 0.28.2 is an optional native Computer Use component bundled in Maka's
 Cua Driver source: https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust
 Top-level license: MIT (see LICENSE in this directory).
 
-The Cua Driver executable includes UniFFI 0.31.0 components licensed under MPL-2.0: uniffi, uniffi_bindgen, uniffi_core, uniffi_internal_macros, uniffi_macros, uniffi_meta, uniffi_pipeline, and uniffi_udl. These are included in binary form only. See MPL-2.0.txt in this directory. Their source is available at https://github.com/mozilla/uniffi-rs/tree/v0.31.0.
+The pinned macOS Cargo dependency graph contains UniFFI 0.31.0 components licensed under MPL-2.0: uniffi, uniffi_bindgen, uniffi_core, uniffi_internal_macros, uniffi_macros, uniffi_meta, uniffi_pipeline, and uniffi_udl. The executable includes at least UniFFI runtime code in binary form. See MPL-2.0.txt in this directory. Their source is available at https://github.com/mozilla/uniffi-rs/tree/v0.31.0.
 
-The Apache Software Foundation's Category B terms apply to MPL-2.0 components. The source release does not contain the Cua Driver executable or UniFFI source.
+The executable embeds the Inter font, Copyright 2020 The Inter Project Authors, under SIL Open Font License 1.1. See Inter-OFL.txt in this directory and https://github.com/rsms/inter.
+
+The pinned Cargo graph also contains webpki-roots 1.0.7 with derived Common CA Database data under CDLA-Permissive-2.0. See CDLA-Permissive-2.0.txt in this directory and https://github.com/rustls/webpki-roots.
+
+The Apache Software Foundation's Category B terms apply to MPL-2.0 and SIL Open Font License 1.1 components. The source release does not contain the Cua Driver executable, UniFFI source, or Inter font binary. The full conservative Cargo inventory and audit limits are in docs/computer-use-provenance.md of the source tree.

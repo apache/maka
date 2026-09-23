@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-11
+last_verified: 2026-09-23
 owners:
   - maka-backend
 ---
@@ -67,7 +67,11 @@ to travel with it.
 
 Maka's macOS Computer Use executor is the [Cua Driver 0.28.2 CLI](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.28.2). `scripts/computer-use.mjs prepare` downloads the fixed universal release archive and verifies its archive digest, CLI digest, version, and Developer ID signature before staging the executable. `apps/desktop/bundled-tools.json` pins the same CLI digest for runtime verification. The CLI runs as a private child of Maka; users do not install a separate Cua service or expose Cua MCP tools to the agent.
 
-The Cua repository's root license is MIT, but its macOS CLI dependency graph includes UniFFI crates under MPL-2.0. Under [ASF's Category B policy](https://www.apache.org/legal/resolved.html#category-b), MPL code may be included in a binary convenience package when prominently labelled, but not in an ASF source release. The source for the MPL components and the exact CLI build is available from the pinned Cua release. The binary package must include Cua's MIT notice, the MPL notice, and a complete dependency attribution review before release. The source archive does not include the downloaded CLI.
+The Cua repository's root license is MIT, but that does not license every component of its macOS CLI. At the pinned release tag `fc188250b4ca8549b8e61f937fdb1fb560770e86` with Cargo.lock SHA-256 `fe2ece2843bd07ebdcdab67a44b34c89868a4c6e96fd326c80fd3b9aa0ba9a39`, the locked macOS Cargo graph reachable from `cua-driver` contains 356 packages for x86_64 and 354 for arm64, counting normal and build dependencies. The [full inventory](./computer-use-cua-driver-dependencies.tsv) records each package, version, declared license, target, and source. It was derived using `cargo metadata --locked --filter-platform <target> --manifest-path libs/cua-driver/rust/Cargo.toml` and walking normal/build edges from `cua-driver`. This is a conservative source dependency closure, not an attested bill of materials for the published executable: build-only/proc-macro crates need not be linked and the upstream release does not provide a source-to-binary attestation.
+
+The graph contains eight UniFFI 0.31.0 crates licensed MPL-2.0, including runtime crate `uniffi_core`; the executable embeds an upstream `Inter.ttf` font whose bytes match the source file exactly and whose license is SIL-OFL-1.1. [ASF Category B](https://www.apache.org/legal/resolved.html#category-b) allows those works in a properly labelled binary convenience package, not in a source release. The graph also contains `webpki-roots` 1.0.7, reached through `cua-driver → ureq → webpki-roots`, with CCADB-derived root data under CDLA-Permissive-2.0. [ASF Legal LEGAL-732](https://issues.apache.org/jira/browse/LEGAL-732) classified CDLA-Permissive-2.0 as Category A on 2026-09-09. The binary package stages the Cua MIT, UniFFI MPL, Inter OFL, and CDLA license texts with a notice. The source archive does not include the downloaded CLI or embedded font binary.
+
+This audit does not authorize release yet. The published binary is pinned by upstream archive and executable SHA-256 and signed by Cua AI Inc, but there is no reproducible-build proof or upstream SBOM establishing the exact linked set. Thirty-five external crates in the conservative graph have no root-level license file in their published crate directory; their declared metadata and upstream license/copyright locations still need a per-crate attribution review. Before setting `distributionReady` to `true`, finish and package the remaining applicable license and copyright notices, resolve the exact build provenance with upstream or an equivalent verifiable build, and review the resulting binary package against ASF policy. The release gate remains false until then.
 
 The retired `maka-cu` Swift executor was a fork of MIT-licensed `iFurySt/open-codex-computer-use` (§2). Its implementation and protocol tests were removed when Cua Driver became the selected backend; the history below records the provenance of earlier work rather than claiming that the current backend implements it.
 

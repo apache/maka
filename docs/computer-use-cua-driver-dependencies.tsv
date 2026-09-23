@@ -1,0 +1,357 @@
+crate	version	SPDX_or_root_license	macOS_targets	source
+adler2	2.0.1	0BSD OR MIT OR Apache-2.0	aarch64,x86_64	https://github.com/oyvindln/adler2
+aead	0.6.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/traits
+ahash	0.8.12	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/tkaitchuck/ahash
+aho-corasick	1.1.4	Unlicense OR MIT	aarch64,x86_64	https://github.com/BurntSushi/aho-corasick
+allocator-api2	0.2.21	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/zakarumych/allocator-api2
+anstream	1.0.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-cli/anstyle.git
+anstyle	1.0.14	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-cli/anstyle.git
+anstyle-parse	1.0.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-cli/anstyle.git
+anstyle-query	1.1.5	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-cli/anstyle.git
+anyhow	1.0.102	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/anyhow
+apple-cf	0.9.3	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/doom-fish/apple-cf-rs
+apple-metal	0.6.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/doom-fish/apple-metal-rs
+arrayref	0.3.9	BSD-2-Clause	aarch64,x86_64	https://github.com/droundy/arrayref
+arrayvec	0.7.6	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/bluss/arrayvec
+askama	0.14.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/askama-rs/askama
+askama_derive	0.14.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/askama-rs/askama
+askama_parser	0.14.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/askama-rs/askama
+async-compat	0.2.5	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/smol-rs/async-compat
+async-trait	0.1.89	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/async-trait
+autocfg	1.5.0	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/cuviper/autocfg
+base64	0.22.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/marshallpierce/rust-base64
+basic-toml	0.1.10	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/basic-toml
+bit-set	0.8.0	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/contain-rs/bit-set
+bit-vec	0.8.0	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/contain-rs/bit-vec
+bitflags	2.11.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/bitflags/bitflags
+block-buffer	0.10.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/utils
+block-buffer	0.12.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/utils
+block2	0.5.1	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+block2	0.6.2	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+borrow-or-share	0.2.4	MIT-0	aarch64,x86_64	https://github.com/yescallop/borrow-or-share
+bstr	1.13.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/BurntSushi/bstr
+bytecount	0.6.9	Apache-2.0/MIT	aarch64,x86_64	https://github.com/llogiq/bytecount
+bytemuck	1.25.0	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/Lokathor/bytemuck
+byteorder	1.5.0	Unlicense OR MIT	aarch64,x86_64	https://github.com/BurntSushi/byteorder
+byteorder-lite	0.1.0	Unlicense OR MIT	aarch64,x86_64	https://github.com/image-rs/byteorder-lite
+bytes	1.11.1	MIT	aarch64,x86_64	https://github.com/tokio-rs/bytes
+camino	1.2.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/camino-rs/camino
+cargo-platform	0.1.9	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/cargo
+cargo_metadata	0.19.2	MIT	aarch64,x86_64	https://github.com/oli-obk/cargo_metadata
+cc	1.2.62	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/cc-rs
+cfg-if	1.0.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/cfg-if
+chacha20	0.10.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/stream-ciphers
+chacha20poly1305	0.11.0	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/RustCrypto/AEADs
+chrono	0.4.45	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/chronotope/chrono
+chrono-tz	0.10.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/chronotope/chrono-tz
+ciborium	0.2.2	Apache-2.0	aarch64,x86_64	https://github.com/enarx/ciborium
+ciborium-io	0.2.2	Apache-2.0	aarch64,x86_64	https://github.com/enarx/ciborium
+ciborium-ll	0.2.2	Apache-2.0	aarch64,x86_64	https://github.com/enarx/ciborium
+cipher	0.5.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/traits
+clap	4.6.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/clap-rs/clap
+clap_builder	4.6.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/clap-rs/clap
+clap_derive	4.6.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/clap-rs/clap
+clap_lex	1.1.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/clap-rs/clap
+clipboard-rs	0.3.5	MIT	aarch64,x86_64	https://github.com/ChurchTao/clipboard-rs
+cmov	0.5.4	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/RustCrypto/utils
+cobs	0.3.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/jamesmunns/cobs.rs
+colorchoice	1.0.5	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-cli/anstyle.git
+cookie	0.18.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/SergioBenitez/cookie-rs
+cookie_store	0.22.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/pfernie/cookie_store
+core-foundation	0.10.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/servo/core-foundation-rs
+core-foundation-sys	0.8.7	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/servo/core-foundation-rs
+core-graphics	0.24.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/servo/core-foundation-rs
+core-graphics-types	0.2.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/servo/core-foundation-rs
+coset	0.4.2	Apache-2.0	aarch64,x86_64	https://github.com/google/coset
+cpufeatures	0.2.17	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/utils
+cpufeatures	0.3.0	MIT OR Apache-2.0	x86_64	https://github.com/RustCrypto/utils
+crc32fast	1.5.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/srijs/rust-crc32fast
+crossbeam-queue	0.3.12	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/crossbeam-rs/crossbeam
+crossbeam-utils	0.8.21	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/crossbeam-rs/crossbeam
+crypto-common	0.1.7	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/traits
+crypto-common	0.2.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/traits
+ctutils	0.4.2	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/RustCrypto/utils
+cua-driver	0.28.2	MIT (Cua repository LICENSE; crate metadata absent)	aarch64,x86_64	https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust
+cua-driver-contract	0.28.2	MIT (Cua repository LICENSE; crate metadata absent)	aarch64,x86_64	https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust
+cua-driver-core	0.28.2	MIT (Cua repository LICENSE; crate metadata absent)	aarch64,x86_64	https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust
+cua-driver-sdk	0.28.2	MIT	aarch64,x86_64	https://github.com/trycua/cua
+cursor-overlay	0.28.2	MIT (Cua repository LICENSE; crate metadata absent)	aarch64,x86_64	https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust
+data-encoding	2.11.0	MIT	aarch64,x86_64	https://github.com/ia0/data-encoding
+deranged	0.5.8	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/jhpratt/deranged
+digest	0.10.7	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/traits
+dispatch2	0.3.1	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+displaydoc	0.2.5	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/yaahc/displaydoc
+document-features	0.2.12	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/slint-ui/document-features
+doom-fish-utils	0.3.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/doom-fish/doom-fish-utils
+dyn-clone	1.0.20	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/dyn-clone
+email_address	0.2.9	MIT	aarch64,x86_64	https://github.com/johnstonskj/rust-email_address.git
+embedded-io	0.4.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/embassy-rs/embedded-io
+embedded-io	0.6.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-embedded/embedded-hal
+equivalent	1.0.2	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/indexmap-rs/equivalent
+errno	0.3.14	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/lambda-fairy/rust-errno
+fancy-regex	0.18.0	MIT	aarch64,x86_64	https://github.com/fancy-regex/fancy-regex
+fastrand	2.4.1	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/smol-rs/fastrand
+fax	0.2.7	MIT	aarch64,x86_64	https://github.com/pdf-rs/fax
+fdeflate	0.3.7	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/image-rs/fdeflate
+filetime	0.2.29	MIT/Apache-2.0	aarch64,x86_64	https://github.com/alexcrichton/filetime
+find-msvc-tools	0.1.9	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/cc-rs
+flate2	1.1.9	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/flate2-rs
+fluent-uri	0.4.1	MIT	aarch64,x86_64	https://github.com/yescallop/fluent-uri-rs
+foldhash	0.2.0	Zlib	aarch64,x86_64	https://github.com/orlp/foldhash
+fontdue	0.9.3	MIT OR Apache-2.0 OR Zlib	aarch64,x86_64	https://github.com/mooman219/fontdue
+foreign-types	0.5.0	MIT/Apache-2.0	aarch64,x86_64	https://github.com/sfackler/foreign-types
+foreign-types-macros	0.2.3	MIT/Apache-2.0	aarch64,x86_64	https://github.com/sfackler/foreign-types
+foreign-types-shared	0.3.1	MIT/Apache-2.0	aarch64,x86_64	https://github.com/sfackler/foreign-types
+form_urlencoded	1.2.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/servo/rust-url
+fraction	0.15.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dnsl48/fraction.git
+fs-err	2.11.0	MIT/Apache-2.0	aarch64,x86_64	https://github.com/andrewhickman/fs-err
+fs2	0.4.3	MIT/Apache-2.0	aarch64,x86_64	https://github.com/danburkert/fs2-rs
+futures-core	0.3.32	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/futures-rs
+futures-io	0.3.32	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/futures-rs
+futures-macro	0.3.32	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/futures-rs
+futures-sink	0.3.32	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/futures-rs
+futures-task	0.3.32	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/futures-rs
+futures-util	0.3.32	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/futures-rs
+generic-array	0.14.7	MIT	aarch64,x86_64	https://github.com/fizyk20/generic-array.git
+getrandom	0.2.17	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-random/getrandom
+getrandom	0.3.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-random/getrandom
+getrandom	0.4.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-random/getrandom
+glob	0.3.3	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/glob
+globset	0.4.19	Unlicense OR MIT	aarch64,x86_64	https://github.com/BurntSushi/ripgrep/tree/master/crates/globset
+goblin	0.8.2	MIT	aarch64,x86_64	https://github.com/m4b/goblin
+half	2.7.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/VoidStarKat/half-rs
+hash32	0.2.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/japaric/hash32
+hashbrown	0.16.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/hashbrown
+hashbrown	0.17.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/hashbrown
+heapless	0.7.17	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/japaric/heapless
+heck	0.5.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/withoutboats/heck
+hkdf	0.12.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/KDFs/
+hmac	0.12.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/MACs
+http	1.4.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/hyperium/http
+httparse	1.10.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/seanmonstar/httparse
+hybrid-array	0.4.14	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/hybrid-array
+iana-time-zone	0.1.65	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/strawlab/iana-time-zone
+icu_collections	2.2.0	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+icu_locale_core	2.2.0	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+icu_normalizer	2.2.0	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+icu_normalizer_data	2.2.0	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+icu_properties	2.2.0	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+icu_properties_data	2.2.0	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+icu_provider	2.2.0	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+idna	1.1.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/servo/rust-url/
+idna_adapter	1.2.2	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/hsivonen/idna_adapter
+image	0.25.10	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/image-rs/image
+indexmap	2.14.0	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/indexmap-rs/indexmap
+inout	0.2.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/utils
+ipnet	2.12.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/krisprice/ipnet
+is_terminal_polyfill	1.70.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/polyfill-rs/is_terminal_polyfill
+itoa	1.0.18	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/itoa
+jobserver	0.1.35	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/jobserver-rs
+jsonschema	0.46.10	MIT	aarch64,x86_64	https://github.com/Stranger6667/jsonschema
+jsonschema-regex	0.46.10	MIT	aarch64,x86_64	https://github.com/Stranger6667/jsonschema
+lazy_static	1.5.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang-nursery/lazy-static.rs
+libc	0.2.186	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/libc
+litemap	0.8.2	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+litrs	1.0.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/LukasKalbertodt/litrs
+lock_api	0.4.14	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/Amanieu/parking_lot
+log	0.4.29	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/log
+lru	0.18.1	MIT	aarch64,x86_64	https://github.com/jeromefroe/lru-rs.git
+matchers	0.2.0	MIT	aarch64,x86_64	https://github.com/hawkw/matchers
+memchr	2.8.0	Unlicense OR MIT	aarch64,x86_64	https://github.com/BurntSushi/memchr
+micromap	0.3.0	MIT	aarch64,x86_64	https://github.com/yegor256/micromap
+minimal-lexical	0.2.1	MIT/Apache-2.0	aarch64,x86_64	https://github.com/Alexhuszagh/minimal-lexical
+miniz_oxide	0.8.9	MIT OR Zlib OR Apache-2.0	aarch64,x86_64	https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
+mio	1.2.0	MIT	aarch64,x86_64	https://github.com/tokio-rs/mio
+moxcms	0.8.1	BSD-3-Clause OR Apache-2.0	aarch64,x86_64	https://github.com/awxkee/moxcms.git
+msvc_spectre_libs	0.1.3	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/microsoft/rust_msvc_spectre_libs
+native-tls	0.2.18	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-native-tls/rust-native-tls
+nom	7.1.3	MIT	aarch64,x86_64	https://github.com/Geal/nom
+nu-ansi-term	0.50.3	MIT	aarch64,x86_64	https://github.com/nushell/nu-ansi-term
+num	0.4.3	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-num/num
+num-bigint	0.4.8	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-num/num-bigint
+num-cmp	0.1.0	MIT/Apache-2.0	aarch64,x86_64	https://github.com/lifthrasiir/num-cmp
+num-complex	0.4.6	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-num/num-complex
+num-conv	0.2.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/jhpratt/num-conv
+num-integer	0.1.46	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-num/num-integer
+num-iter	0.1.46	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-num/num-iter
+num-rational	0.4.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-num/num-rational
+num-traits	0.2.19	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-num/num-traits
+objc-sys	0.3.5	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2	0.5.2	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2	0.6.4	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-app-kit	0.2.2	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-app-kit	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-cloud-kit	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-core-data	0.2.2	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-core-data	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-core-foundation	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-core-graphics	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-core-image	0.2.2	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-core-image	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-core-text	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-core-video	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-encode	4.1.0	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-foundation	0.2.2	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-foundation	0.3.2	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-io-surface	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-metal	0.2.2	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-quartz-core	0.2.2	MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+objc2-quartz-core	0.3.2	Zlib OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/madsmtm/objc2
+once_cell	1.21.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/matklad/once_cell
+outref	0.5.2	MIT	aarch64,x86_64	https://github.com/Nugine/outref
+parking_lot	0.12.5	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/Amanieu/parking_lot
+parking_lot_core	0.9.12	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/Amanieu/parking_lot
+percent-encoding	2.3.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/servo/rust-url/
+phf	0.12.1	MIT	aarch64,x86_64	https://github.com/rust-phf/rust-phf
+phf_shared	0.12.1	MIT	aarch64,x86_64	https://github.com/rust-phf/rust-phf
+pin-project-lite	0.2.17	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/taiki-e/pin-project-lite
+pip-preview	0.28.2	MIT (Cua repository LICENSE; crate metadata absent)	aarch64,x86_64	https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust
+pkg-config	0.3.33	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/pkg-config-rs
+plain	0.2.3	MIT/Apache-2.0	aarch64,x86_64	https://github.com/randomites/plain
+platform-macos	0.28.2	MIT (Cua repository LICENSE; crate metadata absent)	aarch64,x86_64	https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust
+png	0.18.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/image-rs/image-png
+poly1305	0.9.1	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/RustCrypto/universal-hashes
+postcard	1.1.3	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/jamesmunns/postcard
+potential_utf	0.1.5	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+powerfmt	0.2.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/jhpratt/powerfmt
+ppv-lite86	0.2.21	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/cryptocorrosion/cryptocorrosion
+proc-macro2	1.0.106	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/proc-macro2
+pxfm	0.1.29	BSD-3-Clause OR Apache-2.0	aarch64,x86_64	https://github.com/awxkee/pxfm
+quick-error	2.0.1	MIT/Apache-2.0	aarch64,x86_64	http://github.com/tailhook/quick-error
+quote	1.0.45	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/quote
+rand	0.10.2	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-random/rand
+rand	0.8.6	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-random/rand
+rand_chacha	0.3.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-random/rand
+rand_core	0.10.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-random/rand_core
+rand_core	0.6.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-random/rand
+ref-cast	1.0.25	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/ref-cast
+ref-cast-impl	1.0.25	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/ref-cast
+referencing	0.46.10	MIT	aarch64,x86_64	https://github.com/Stranger6667/jsonschema
+regex	1.12.3	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/regex
+regex-automata	0.4.14	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/regex
+regex-syntax	0.8.10	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/regex
+regorus	0.10.1	MIT AND Apache-2.0 AND BSD-3-Clause	aarch64,x86_64	https://github.com/microsoft/regorus
+ring	0.17.14	Apache-2.0 AND ISC	aarch64,x86_64	https://github.com/briansmith/ring
+rustc-hash	2.1.3	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/rust-lang/rustc-hash
+rustc_version	0.4.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/djc/rustc-version-rs
+rustix	1.1.4	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/bytecodealliance/rustix
+rustls	0.23.40	Apache-2.0 OR ISC OR MIT	aarch64,x86_64	https://github.com/rustls/rustls
+rustls-pki-types	1.14.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rustls/pki-types
+rustls-webpki	0.103.13	ISC	aarch64,x86_64	https://github.com/rustls/webpki
+ryu	1.0.23	Apache-2.0 OR BSL-1.0	aarch64,x86_64	https://github.com/dtolnay/ryu
+schemars	1.2.1	MIT	aarch64,x86_64	https://github.com/GREsau/schemars
+schemars_derive	1.2.1	MIT	aarch64,x86_64	https://github.com/GREsau/schemars
+scopeguard	1.2.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/bluss/scopeguard
+screencapturekit	8.0.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/doom-fish/screencapturekit-rs
+scroll	0.12.0	MIT	aarch64,x86_64	https://github.com/m4b/scroll
+scroll_derive	0.12.1	MIT	aarch64,x86_64	https://github.com/m4b/scroll
+security-framework	3.7.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/kornelski/rust-security-framework
+security-framework-sys	2.17.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/kornelski/rust-security-framework
+semver	1.0.28	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/semver
+serde	1.0.228	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/serde-rs/serde
+serde_core	1.0.228	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/serde-rs/serde
+serde_derive	1.0.228	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/serde-rs/serde
+serde_derive_internals	0.29.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/serde-rs/serde
+serde_json	1.0.149	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/serde-rs/json
+serde_spanned	1.1.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/toml-rs/toml
+serde_yaml	0.9.34+deprecated	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/serde-yaml
+serde_yaml_ng	0.10.0	MIT	aarch64,x86_64	https://github.com/acatton/serde-yaml-ng
+sha1	0.10.6	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/hashes
+sha2	0.10.9	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/hashes
+sharded-slab	0.1.7	MIT	aarch64,x86_64	https://github.com/hawkw/sharded-slab
+shlex	1.3.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/comex/rust-shlex
+signal-hook-registry	1.4.8	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/vorner/signal-hook
+simd-adler32	0.3.9	MIT	aarch64,x86_64	https://github.com/mcountryman/simd-adler32
+siphasher	1.0.2	MIT/Apache-2.0	aarch64,x86_64	https://github.com/jedisct1/rust-siphash
+slab	0.4.12	MIT	aarch64,x86_64	https://github.com/tokio-rs/slab
+smallvec	1.15.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/servo/rust-smallvec
+smawk	0.3.3	MIT	aarch64,x86_64	https://github.com/mgeisler/smawk
+socket2	0.6.3	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/rust-lang/socket2
+spin	0.10.1	MIT	aarch64,x86_64	https://github.com/mvdnes/spin-rs.git
+spin	0.9.9	MIT	x86_64	https://github.com/mvdnes/spin-rs.git
+stable_deref_trait	1.2.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/storyyeller/stable_deref_trait
+static_assertions	1.1.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/nvzqz/static-assertions-rs
+strict-num	0.1.1	MIT	aarch64,x86_64	https://github.com/RazrFalcon/strict-num
+strsim	0.11.1	MIT	aarch64,x86_64	https://github.com/rapidfuzz/strsim-rs
+subtle	2.6.1	BSD-3-Clause	aarch64,x86_64	https://github.com/dalek-cryptography/subtle
+syn	2.0.117	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/syn
+synstructure	0.13.2	MIT	aarch64,x86_64	https://github.com/mystor/synstructure
+tar	0.4.46	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/composefs/tar-rs
+tempfile	3.27.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/Stebalien/tempfile
+textwrap	0.16.2	MIT	aarch64,x86_64	https://github.com/mgeisler/textwrap
+thiserror	1.0.69	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/thiserror
+thiserror	2.0.18	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/thiserror
+thiserror-impl	1.0.69	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/thiserror
+thiserror-impl	2.0.18	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/dtolnay/thiserror
+thread_local	1.1.9	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/Amanieu/thread_local-rs
+tiff	0.11.3	MIT	aarch64,x86_64	https://github.com/image-rs/image-tiff
+time	0.3.47	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/time-rs/time
+time-core	0.1.8	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/time-rs/time
+time-macros	0.2.27	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/time-rs/time
+tiny-skia	0.11.4	BSD-3-Clause	aarch64,x86_64	https://github.com/RazrFalcon/tiny-skia
+tiny-skia-path	0.11.4	BSD-3-Clause	aarch64,x86_64	https://github.com/RazrFalcon/tiny-skia/tree/master/path
+tinystr	0.8.3	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+tokio	1.52.1	MIT	aarch64,x86_64	https://github.com/tokio-rs/tokio
+tokio-macros	2.7.0	MIT	aarch64,x86_64	https://github.com/tokio-rs/tokio
+tokio-native-tls	0.3.1	MIT	aarch64,x86_64	https://github.com/tokio-rs/tls
+tokio-tungstenite	0.24.0	MIT	aarch64,x86_64	https://github.com/snapview/tokio-tungstenite
+toml	0.9.12+spec-1.1.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/toml-rs/toml
+toml_datetime	0.7.5+spec-1.1.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/toml-rs/toml
+toml_parser	1.1.2+spec-1.1.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/toml-rs/toml
+toml_writer	1.1.2+spec-1.1.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/toml-rs/toml
+tracing	0.1.44	MIT	aarch64,x86_64	https://github.com/tokio-rs/tracing
+tracing-attributes	0.1.31	MIT	aarch64,x86_64	https://github.com/tokio-rs/tracing
+tracing-core	0.1.36	MIT	aarch64,x86_64	https://github.com/tokio-rs/tracing
+tracing-log	0.2.0	MIT	aarch64,x86_64	https://github.com/tokio-rs/tracing
+tracing-subscriber	0.3.23	MIT	aarch64,x86_64	https://github.com/tokio-rs/tracing
+ttf-parser	0.21.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RazrFalcon/ttf-parser
+tungstenite	0.24.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/snapview/tungstenite-rs
+typenum	1.20.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/paholg/typenum
+unicode-general-category	1.1.0	Apache-2.0	aarch64,x86_64	https://github.com/yeslogic/unicode-general-category
+unicode-ident	1.0.24	(MIT OR Apache-2.0) AND Unicode-3.0	aarch64,x86_64	https://github.com/dtolnay/unicode-ident
+uniffi	0.31.0	MPL-2.0	aarch64,x86_64	https://github.com/mozilla/uniffi-rs
+uniffi_bindgen	0.31.0	MPL-2.0	aarch64,x86_64	https://github.com/mozilla/uniffi-rs
+uniffi_core	0.31.0	MPL-2.0	aarch64,x86_64	https://github.com/mozilla/uniffi-rs
+uniffi_internal_macros	0.31.0	MPL-2.0	aarch64,x86_64	https://github.com/mozilla/uniffi-rs
+uniffi_macros	0.31.0	MPL-2.0	aarch64,x86_64	https://github.com/mozilla/uniffi-rs
+uniffi_meta	0.31.0	MPL-2.0	aarch64,x86_64	https://github.com/mozilla/uniffi-rs
+uniffi_pipeline	0.31.0	MPL-2.0	aarch64,x86_64	https://github.com/mozilla/uniffi-rs
+uniffi_udl	0.31.0	MPL-2.0	aarch64,x86_64	https://github.com/mozilla/uniffi-rs
+universal-hash	0.6.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/RustCrypto/traits
+unsafe-libyaml	0.2.11	MIT	aarch64,x86_64	https://github.com/dtolnay/unsafe-libyaml
+untrusted	0.9.0	ISC	aarch64,x86_64	https://github.com/briansmith/untrusted
+ureq	3.3.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/algesten/ureq
+ureq-proto	0.6.0	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/algesten/ureq-proto
+url	2.5.8	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/servo/rust-url
+utf-8	0.7.6	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/SimonSapin/rust-utf8
+utf8-zero	0.8.1	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/algesten/utf8-zero
+utf8_iter	1.0.4	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/hsivonen/utf8_iter
+utf8parse	0.2.2	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/alacritty/vte
+uuid	1.23.1	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/uuid-rs/uuid
+uuid-simd	0.8.0	MIT	aarch64,x86_64	https://github.com/Nugine/simd
+version_check	0.9.5	MIT/Apache-2.0	aarch64,x86_64	https://github.com/SergioBenitez/version_check
+vsimd	0.8.0	MIT	aarch64,x86_64	https://github.com/Nugine/simd
+webpki-roots	1.0.7	CDLA-Permissive-2.0	aarch64,x86_64	https://github.com/rustls/webpki-roots
+weedle2	5.0.0	MIT	aarch64,x86_64	https://github.com/mozilla/uniffi-rs
+weezl	0.1.12	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/image-rs/weezl
+winnow	0.7.15	MIT	aarch64,x86_64	https://github.com/winnow-rs/winnow
+winnow	1.0.3	MIT	aarch64,x86_64	https://github.com/winnow-rs/winnow
+writeable	0.6.3	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+yoke	0.8.2	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+yoke-derive	0.8.2	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+zerocopy	0.8.48	BSD-2-Clause OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/google/zerocopy
+zerocopy-derive	0.8.48	BSD-2-Clause OR Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/google/zerocopy
+zerofrom	0.1.8	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+zerofrom-derive	0.1.7	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+zeroize	1.8.2	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/RustCrypto/utils
+zeroize_derive	1.5.0	Apache-2.0 OR MIT	aarch64,x86_64	https://github.com/RustCrypto/utils
+zerotrie	0.2.4	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+zerovec	0.11.6	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+zerovec-derive	0.11.3	Unicode-3.0	aarch64,x86_64	https://github.com/unicode-org/icu4x
+zlib-rs	0.6.6	Zlib	aarch64,x86_64	https://github.com/trifectatechfoundation/zlib-rs
+zmij	1.0.21	MIT	aarch64,x86_64	https://github.com/dtolnay/zmij
+zstd	0.13.3	MIT	aarch64,x86_64	https://github.com/gyscos/zstd-rs
+zstd-safe	7.2.4	MIT OR Apache-2.0	aarch64,x86_64	https://github.com/gyscos/zstd-rs
+zstd-sys	2.0.16+zstd.1.5.7	MIT/Apache-2.0	aarch64,x86_64	https://github.com/gyscos/zstd-rs
+zune-core	0.5.1	MIT OR Apache-2.0 OR Zlib	aarch64,x86_64	https://github.com/etemesi254/zune-image
+zune-jpeg	0.5.15	MIT OR Apache-2.0 OR Zlib	aarch64,x86_64	https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg
