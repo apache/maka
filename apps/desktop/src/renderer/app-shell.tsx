@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
+import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
 import {
   useCallback,
@@ -2347,10 +2347,6 @@ function AppShellContent({
                       />
                     ) : null}
                     {!sharedSessionActive && sessionsSelected ? <PlanExecutionPanel planMode={planMode} /> : null}
-                    <WorkHubReturnButton
-                      visible={workHubEnabled && Boolean(activeId) && !onboardingComposerHidden}
-                      onReturn={openWorkHub}
-                    />
                     {sharedSessionActive && activeId ? (
                       <SessionCollaboration.SessionTurnRequestComposer
                         sessionId={activeId}

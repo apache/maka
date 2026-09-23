@@ -830,7 +830,7 @@
           "react": 1
         },
         "importSpecifiers": 98,
-        "nonTriviaTokens": 12728
+        "nonTriviaTokens": 12703
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
