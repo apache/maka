@@ -439,18 +439,33 @@ class SqliteSessionStore implements SessionAuthorityStore {
     delegationId: string,
     actionId?: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined> {
-    const first = await this.readWorkHubCoordinationMessage(
+    if (!actionId) {
+      const terminal = await this.readWorkHubCoordinationMessage(
+        `whzt_${workHubIdentitySuffix(delegationId)}`,
+      );
+      if (
+        terminal?.type === 'workhub_coordination' &&
+        terminal.kind === 'delegation_stop_resolved' &&
+        terminal.outcome !== 'not_owned'
+      )
+        return terminal;
+    }
+    const scoped = actionId
+      ? await this.readWorkHubCoordinationMessage(
+          `whz_${workHubIdentitySuffix(JSON.stringify([delegationId, actionId]))}`,
+        )
+      : undefined;
+    const primary = await this.readWorkHubCoordinationMessage(
       `whz_${workHubIdentitySuffix(delegationId)}`,
     );
     const message =
-      actionId &&
-      first?.type === 'workhub_coordination' &&
-      first.kind === 'delegation_stop_resolved' &&
-      first.actionId !== actionId
-        ? await this.readWorkHubCoordinationMessage(
-            `whz_${workHubIdentitySuffix(JSON.stringify([delegationId, actionId]))}`,
-          )
-        : first;
+      scoped ??
+      (actionId &&
+      primary?.type === 'workhub_coordination' &&
+      primary.kind === 'delegation_stop_resolved' &&
+      primary.actionId !== actionId
+        ? undefined
+        : primary);
     return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
       ? message
       : undefined;

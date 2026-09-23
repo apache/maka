@@ -665,6 +665,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
         const nextRevision = state.revision + 1;
         const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
+        this.#invalidateSettledChoiceTranscript(state, canonical);
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
@@ -1308,7 +1309,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       );
   }
 
-  #closeSubscriber(subscriber: Subscriber, reason: 'slow_consumer' | 'access_revoked'): void {
+  #closeSubscriber(
+    subscriber: Subscriber,
+    reason: 'slow_consumer' | 'access_revoked' | 'transcript_changed',
+  ): void {
     if (subscriber.phase !== 'open') return;
     subscriber.phase = 'closing';
     const inFlight = subscriber.pumping ? subscriber.queue[0] : undefined;
@@ -1698,6 +1702,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       }
       const nextRevision = state.revision + 1;
       const value = createSessionContinuitySnapshot(canonical, nextRevision);
+      this.#invalidateSettledChoiceTranscript(state, canonical);
       state.canonical = canonical;
       state.revision = nextRevision;
       return { changed, state, value };
@@ -1709,10 +1714,32 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     };
   }
 
+  #invalidateSettledChoiceTranscript(
+    state: SessionProjectionState,
+    next: CanonicalSessionProjection,
+  ): void {
+    const pending = new Set(next.interactions.pending.map((item) => item.interactionId));
+    if (
+      !state.canonical.interactions.pending.some(
+        (item) =>
+          (item.request.kind === 'form' || item.request.kind === 'question') &&
+          !pending.has(item.interactionId),
+      )
+    )
+      return;
+    // Outcomes can settle after their owner's last event. Their historical rows
+    // then lie behind an already-consumed cursor: advancing the event high water
+    // cannot deliver them. Close explicitly so observers rebuild their bounded tail.
+    for (const subscriber of state.subscribers.values()) {
+      if (subscriber.transcript) this.#closeSubscriber(subscriber, 'transcript_changed');
+    }
+  }
+
   #publishCanonical(state: SessionProjectionState, canonical: CanonicalSessionProjection): void {
     if (isDeepStrictEqual(state.canonical, canonical)) return;
     const nextRevision = state.revision + 1;
     const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
+    this.#invalidateSettledChoiceTranscript(state, canonical);
     state.canonical = immutableClone(canonical);
     state.revision = nextRevision;
     this.#broadcastProjection(state, snapshot);

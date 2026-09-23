@@ -1368,6 +1368,24 @@ test('replays Host form choices and cancellations without model-authored form ev
         content: { kind: 'text', text: 'Done.' },
       }),
     );
+    await seedInvocation(stores.runtimeEventStore, {
+      sessionId: session.id,
+      runId: 'run-2',
+      turnId: 'turn-1',
+      openedAt: 8,
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'run-2', {
+      ...runtimeEvent(session.id, {
+        id: 'continued',
+        ts: 9,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'Continued.' },
+      }),
+      runId: 'run-2',
+      invocationId: 'run-2',
+      turnId: 'turn-1',
+    });
     const read = createSessionTranscriptReader({
       stores,
       canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },

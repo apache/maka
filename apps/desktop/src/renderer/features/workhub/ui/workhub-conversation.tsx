@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import type { CSSProperties } from 'react';
 
 import { useContext, useMemo, type ComponentProps } from 'react';
 import { ChatView, useUiLocale } from '@maka/ui';

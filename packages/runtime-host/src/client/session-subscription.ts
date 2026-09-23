@@ -43,6 +43,7 @@ export type RuntimeHostSubscriptionFailureReason =
   | 'correlation_changed'
   | 'projection_revision_invalid'
   | 'slow_consumer'
+  | 'transcript_changed'
   | 'connection_closed';
 
 export class RuntimeHostSubscriptionError extends Error {
@@ -61,6 +62,12 @@ export class SessionRemovedSubscriptionError extends Error {
 }
 
 export function subscriptionClosedError(reason: SubscriptionClosedFrame['reason']): Error {
+  if (reason === 'transcript_changed') {
+    return new RuntimeHostSubscriptionError(
+      'transcript_changed',
+      'Settled choice history requires a fresh transcript',
+    );
+  }
   if (reason === 'session_removed') {
     return new SessionRemovedSubscriptionError(
       'Runtime Host Session was removed while it was observed',

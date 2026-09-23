@@ -103,7 +103,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 186 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 187 as const;
+// 187: transcript_changed closes a subscription for automatic bounded-tail reseeding.
 // 186: Settled form/question history adds form_interaction transcript messages.
 // 185: Add the bounded next-prompt suggestion operation.
 // 184: the unified `custom` provider type and its defaultApiProtocol require matching peers.

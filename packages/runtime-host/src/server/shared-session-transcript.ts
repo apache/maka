@@ -67,7 +67,8 @@ export function projectSharedSessionTranscriptMessage(
       };
     }
     case 'form_interaction':
-      return message;
+      // Choice requests and answers are private decision evidence.
+      return null;
     case 'assistant':
       return {
         type: message.type,

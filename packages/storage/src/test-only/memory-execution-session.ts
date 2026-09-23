@@ -923,14 +923,27 @@ export function createMemorySessionStore(
       }),
     readWorkHubStopResolution: async (id, actionId) =>
       read((s) => {
-        const first = hubMessage(s, 'whz_' + suffix(id));
+        if (!actionId) {
+          const terminal = hubMessage(s, 'whzt_' + suffix(id));
+          if (
+            terminal?.type === 'workhub_coordination' &&
+            terminal.kind === 'delegation_stop_resolved' &&
+            terminal.outcome !== 'not_owned'
+          )
+            return terminal;
+        }
+        const scoped = actionId
+          ? hubMessage(s, 'whz_' + suffix(JSON.stringify([id, actionId])))
+          : undefined;
+        const primary = hubMessage(s, 'whz_' + suffix(id));
         const m =
-          actionId &&
-          first?.type === 'workhub_coordination' &&
-          first.kind === 'delegation_stop_resolved' &&
-          first.actionId !== actionId
-            ? hubMessage(s, 'whz_' + suffix(JSON.stringify([id, actionId])))
-            : first;
+          scoped ??
+          (actionId &&
+          primary?.type === 'workhub_coordination' &&
+          primary.kind === 'delegation_stop_resolved' &&
+          primary.actionId !== actionId
+            ? undefined
+            : primary);
         return m?.type === 'workhub_coordination' && m.kind === 'delegation_stop_resolved'
           ? m
           : undefined;
@@ -958,7 +971,9 @@ export function createMemorySessionStore(
                 !memoryRootSourceReceipt(s, m.targetSessionId, m.targetMessageId))
             )
               return false;
-            const resolution = hubMessage(s, 'whz_' + suffix(m.delegationId));
+            const resolution =
+              hubMessage(s, 'whzt_' + suffix(m.delegationId)) ??
+              hubMessage(s, 'whz_' + suffix(m.delegationId));
             if (
               !includeStopped &&
               resolution?.type === 'workhub_coordination' &&

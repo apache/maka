@@ -808,6 +808,7 @@ export class RuntimeHostSessionChannel {
       (error.reason === 'connection_closed' ||
         error.reason === 'sequence_gap' ||
         error.reason === 'projection_revision_invalid' ||
+        error.reason === 'transcript_changed' ||
         error.reason === 'slow_consumer')
     );
   }
@@ -828,10 +829,10 @@ export class RuntimeHostSessionChannel {
       return;
     }
     if (frame.kind === 'subscription.closed') {
-      if (frame.reason === 'slow_consumer') {
+      if (frame.reason === 'slow_consumer' || frame.reason === 'transcript_changed') {
         throw new RuntimeHostSubscriptionError(
-          'slow_consumer',
-          'Runtime Host Session subscription consumer fell behind',
+          frame.reason,
+          'Runtime Host Session transcript requires a fresh subscription',
         );
       }
       this.#fail(new Error(`Runtime Host Session subscription closed: ${frame.reason}`));

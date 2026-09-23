@@ -2290,10 +2290,9 @@ export class SqliteSessionMetadataStore {
         ) {
           continue;
         }
-        const stopResolution = this.readMessageByIdSync(
-          WORKHUB_COORDINATION_SESSION_ID,
-          `whz_${terminalSuffix}`,
-        );
+        const stopResolution =
+          this.readMessageByIdSync(WORKHUB_COORDINATION_SESSION_ID, `whzt_${terminalSuffix}`) ??
+          this.readMessageByIdSync(WORKHUB_COORDINATION_SESSION_ID, `whz_${terminalSuffix}`);
         if (
           !includeStopped &&
           stopResolution?.type === 'workhub_coordination' &&

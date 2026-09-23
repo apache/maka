@@ -188,6 +188,7 @@ function createDurableLedgerTranscriptReader(input: {
     for (const record of interactions) {
       const { request, outcome } = record;
       if (
+        request.runId !== turn.invocation.runId ||
         (request.request.kind !== 'form' && request.request.kind !== 'question') ||
         !outcome ||
         (outcome.outcome.kind !== 'form_answer' &&

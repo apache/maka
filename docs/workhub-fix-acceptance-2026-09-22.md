@@ -56,3 +56,17 @@ Only the API plan-lite file and its observer heartbeat changed. Original plans, 
 - F04 is not closed: replies can still turn an instruction such as “do not change the original plan” into an unverified assertion that the file was not changed, or infer an older Turn's end from Session availability. Replies also remain too verbose and expose internal identifiers.
 - Safe-boundary resume remains disabled by default. Successful resume has automated coverage; its native success UI was not exercised in this run.
 - The latest eight turns are targeted acceptance, not a rerun of attachments, floating drafts, forced termination or every ambiguous multi-target case.
+
+
+## Correctness review follow-up — 2026-09-23
+
+Rebased onto main `c7d205a42`. Combined protocol epoch is 184, including the new `transcript_changed` subscription close reason.
+
+- Multi-invocation reproduction returned 22 choice rows instead of 11 before the fix. Projection now emits a settled choice only under its owning run.
+- A consumed transcript is explicitly invalidated when a pending form/question settles. Desktop and CLI recover by opening a fresh subscription; the bounded bootstrap includes late history even when RuntimeEvent high water did not move. This intentionally reseeds instead of pretending an old sequence is newly appended.
+- Concurrent stop reproduction previously failed one action. Slot selection now happens inside the same admission lane as persistence; both request identities survive.
+- Per-action resolution receipts remain immutable. A delegation-level terminal receipt is appended atomically with its scoped receipt. If the original primary recorded not_owned, a separate terminal identity upgrades aggregate knowledge without replacing historical evidence. Tests cover normal concurrency, a lost first resolution, and not_owned followed by a successful stop.
+- Removed an unreachable stop branch and made the gate fixture respect action-scoped reads.
+- Shared transcripts omit full choice requests and answers as private decision evidence; owner transcripts retain them.
+
+Validation: 387 affected core/storage/Host/UI/Desktop tests passed, plus both CLI subscription-recovery variants. Test build, Desktop typecheck, renderer build, strict renderer architecture comparison, changed-file Biome checks, protocol epoch guard, and surface inventory checks passed. No new native-model acceptance run is claimed for this review follow-up. F04 wording limitations remain outside these deterministic fixes.

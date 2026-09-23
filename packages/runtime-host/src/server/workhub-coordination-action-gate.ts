@@ -397,14 +397,6 @@ export class WorkHubCoordinationActionGate {
       await this.#claimAction(input.actionId, 'stop', stopFingerprint, source.delegationId);
       const existing = await this.#effects.readStopRequest(source.delegationId, input.actionId);
       if (existing) {
-        if (existing.actionId !== input.actionId) {
-          // `not_owned` deliberately leaves the delegation active, so the user
-          // can and will try again with a fresh request. That later attempt has
-          // its own identity and must converge on the immutable non-destructive
-          // outcome instead of colliding with the first attempt's stop claim.
-          const resolved = await this.#effects.readStopResolution(source.delegationId);
-          if (resolved?.outcome === 'not_owned') return stopResult(resolved);
-        }
         assertStopReplay(existing, input, source, stopFingerprint);
         return this.#stop(existing, source);
       }
