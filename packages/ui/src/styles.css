@@ -302,6 +302,9 @@
      must reach the sequence's padding edge, so it cannot be clipped here. */
   overflow-y: clip;
 }
+/* Astryx ChatReasoning and ChatToolCalls bring their own top margin, which
+   would stack on the gap. */
+.maka-processing-body > * { margin-block-start: 0; }
 .maka-processing-body > :first-child { margin-top: var(--space-2); }
 /* Match Astryx ChatToolCalls' grid disclosure motion. The native details
    content remains rendered through exit, without a second open state or timer.
