@@ -7,7 +7,7 @@ This file records notices for third-party source assets vendored into the Maka d
 
 - Repository: https://github.com/lobehub/lobe-icons
 - Package: `@lobehub/icons-static-svg` version `1.91.0`
-- License: MIT
+- Upstream source license: MIT. This records LobeHub's distribution terms, not authorization from each brand owner to use its mark.
 - Covered vendored files:
   - `apps/desktop/src/renderer/assets/provider-brands/antigravity.svg`
     - Upstream commit: `32f4083f7a20b67ecdc7b29c0af031ada5a29c52`
@@ -109,7 +109,7 @@ This file records notices for third-party source assets vendored into the Maka d
     - Upstream path: `packages/static-svg/icons/opencode.svg`
     - SHA-256: `7cfa6e9d6726f7c9fa26c7d9aef0dfec52d20a137380454340f30f12ccbfd302`
 
-The OpenCode name and logo remain trademarks of their owner and are used here only to identify the provider. The MIT license above covers the vendored Lobe Icons SVG source, not any trademark rights.
+The brand names and logos above remain trademarks of their respective owners and are used here to identify providers. LobeHub's MIT license does not grant trademark rights or establish permission from those owners.
 
 MIT License
 
@@ -168,18 +168,19 @@ SOFTWARE.
 ## Simple Icons brand marks
 
 - Repository: https://github.com/simple-icons/simple-icons
-- License: CC0-1.0
+- Collection license: CC0-1.0. Simple Icons states that this does not establish the license of every included icon; check each icon's metadata and brand terms.
 - Covered source assets, by how the path data reaches the build:
   - Vendored from `simple-icons` version `15.22.0` as pinned path constants
     (upstream later removed some of these marks, so the pins stay at the
     version they were copied from):
     - `packages/ui/src/bot-brand-logo.tsx`: Telegram, Discord, WeChat, QQ and Slack paths
   - Imported at build time from the installed `simple-icons` package, so the
-    bundled version is the one package-lock.json pins; that copy is licensed
-    through the generated `licenses/npm/THIRD_PARTY_NOTICES.txt`:
+    bundled version is the one package-lock.json pins; the package-level CC0
+    notice is in `licenses/npm/THIRD_PARTY_NOTICES.txt`:
     - `apps/desktop/src/renderer/settings/provider-brand-marks.tsx`: MiniMax path
+- MiniMax's entry in the pinned Simple Icons package declares a custom license: https://github.com/simple-icons/simple-icons/pull/13982#issuecomment-3531627803. The brand owner confirms conformity with its design guidelines while retaining its intellectual property rights.
 - Full license text: packaged as `licenses/renderer/SIMPLE_ICONS_LICENSE.md`.
-- Trademark boundary: CC0 does not grant trademark rights. The marks are used only to identify the corresponding services.
+- Trademark boundary: the collection's CC0 license does not grant rights to the individual brands' marks. The marks are used only to identify the corresponding services.
 
 ## TDesign Icons WeCom mark
 
