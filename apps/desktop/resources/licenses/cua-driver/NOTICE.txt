@@ -1,0 +1,8 @@
+Cua Driver 0.28.2 is an optional native Computer Use component bundled in Maka's macOS binary convenience packages.
+
+Cua Driver source: https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust
+Top-level license: MIT (see LICENSE in this directory).
+
+The Cua Driver executable includes UniFFI 0.31.0 components licensed under MPL-2.0: uniffi, uniffi_bindgen, uniffi_core, uniffi_internal_macros, uniffi_macros, uniffi_meta, uniffi_pipeline, and uniffi_udl. These are included in binary form only. See MPL-2.0.txt in this directory. Their source is available at https://github.com/mozilla/uniffi-rs/tree/v0.31.0.
+
+The Apache Software Foundation's Category B terms apply to MPL-2.0 components. The source release does not contain the Cua Driver executable or UniFFI source.

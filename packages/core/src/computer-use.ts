@@ -79,6 +79,7 @@ export const COMPUTER_USE_ERROR_CODES = [
    * try again, so a model that reads one code for both loses its next move.
    */
   'dispatch_refused',
+  'foreground_required',
 ] as const;
 
 export type ComputerUseErrorCode = (typeof COMPUTER_USE_ERROR_CODES)[number];
@@ -248,8 +249,8 @@ export function isCuMutatingAction(action: string): action is CuToolActionType {
 
 export type CuAction =
   | { type: 'screenshot' }
-  | { type: 'type'; text: string }
-  | { type: 'key'; text: string }
+  | { type: 'type'; text: string; deliveryMode?: 'background' | 'foreground' }
+  | { type: 'key'; text: string; deliveryMode?: 'background' | 'foreground' }
   | { type: 'wait'; durationMs: number };
 
 export const COMPUTER_USE_FRAME_SOURCE_KINDS = ['live-capture'] as const;
@@ -268,6 +269,7 @@ export const COMPUTER_USE_DISPATCH_TIERS = [
   'ax',
   'semantic-background',
   'coordinate-background',
+  'foreground',
 ] as const;
 
 export type ComputerUseDispatchTier = (typeof COMPUTER_USE_DISPATCH_TIERS)[number];

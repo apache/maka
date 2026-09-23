@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@maka/core": "0.1.0",
-    "@maka/runtime": "0.1.0"
+    "@maka/runtime": "0.1.0",
+    "@modelcontextprotocol/client": "2.0.0"
   }
 }
