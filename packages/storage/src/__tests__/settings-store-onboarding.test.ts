@@ -340,6 +340,7 @@ describe('SettingsStore.get file recovery', () => {
 
       assert.equal(settings.schemaVersion, 1);
       assert.match(raw, /"schemaVersion": 1/);
+      assert.deepEqual(await readdir(workspaceRoot), ['settings.json']);
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }

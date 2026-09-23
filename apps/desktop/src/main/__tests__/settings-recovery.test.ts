@@ -40,106 +40,153 @@ const event: CorruptSettingsRecovery = {
 };
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function harness(options: { e2e?: boolean; supported?: boolean; throws?: 'support' | 'create' | 'show' } = {}) {
+function harness(options: {
+  e2e?: boolean;
+  supported?: boolean;
+  throws?: 'support' | 'show';
+  holdNotice?: boolean;
+} = {}) {
   const notices: { title: string; body: string }[] = [];
+  const appNotices: { title: string; message: string; detail: string }[] = [];
   const logs: string[] = [];
   const failures: (() => void)[] = [];
+  const dismissals: (() => void)[] = [];
   let supports = 0;
+  let available = false;
+  let failNotice = false;
   const reporter = createSettingsRecoveryReporter({
     e2e: options.e2e ?? false,
     locale: () => 'en',
     log: (message) => { logs.push(message); },
+    showNotice: async (copy) => {
+      if (!available) return false;
+      if (failNotice) throw new Error('secret dialog detail');
+      appNotices.push(copy);
+      if (options.holdNotice) await new Promise<void>((resolve) => { dismissals.push(resolve); });
+      return true;
+    },
     notifications: {
       isSupported() {
         supports += 1;
         if (options.throws === 'support') throw new Error('unsupported');
         return options.supported ?? true;
       },
-      create(copy, failed) {
-        if (options.throws === 'create') throw new Error('create failed');
+      show(copy, failed) {
         failures.push(failed);
-        return { show() {
-          if (options.throws === 'show') throw new Error('show failed');
-          notices.push(copy);
-        } };
+        if (options.throws === 'show') throw new Error('show failed');
+        notices.push(copy);
       },
     },
   });
-  return { reporter, notices, logs, failures, supports: () => supports };
+  return {
+    reporter, notices, appNotices, logs, failures, dismissals,
+    supports: () => supports,
+    setAvailable: () => { available = true; reporter.onWindowReady(); },
+    failNotice: (value: boolean) => { failNotice = value; },
+  };
 }
 
-test('localized recovery copy names the backup, privacy review and uncertain outcome', () => {
+test('localized recovery guidance names full paths, reset scope, privacy review and uncertain outcome', () => {
   for (const locale of UI_LOCALES) {
     const recovered = settingsRecoveryCopy(event, locale);
     const unknown = settingsRecoveryCopy({ ...event, outcome: 'commit-unknown' }, locale);
-    assert.ok(recovered.body.includes(event.backupPath));
-    assert.ok(unknown.body.includes(event.backupPath));
+    for (const copy of [recovered, unknown]) {
+      assert.ok(copy.detail.includes(event.settingsPath));
+      assert.ok(copy.detail.includes(event.backupPath));
+      assert.ok(copy.body.indexOf(event.backupPath) < copy.body.indexOf('\n'));
+      assert.match(copy.detail, /Incognito|隐身|無痕/u);
+      assert.match(copy.detail, /bot configuration|机器人配置|機器人設定/u);
+      assert.match(copy.detail, /onboarding|首次使用/u);
+      assert.doesNotMatch(copy.detail, /now off|已关闭|已關閉/u);
+    }
     assert.notEqual(recovered.title, unknown.title);
-    assert.match(recovered.body, /Incognito|隐身|無痕/u);
-    assert.doesNotMatch(recovered.body + unknown.body, /now off|已关闭|已關閉/u);
-    assert.match(unknown.body, /unconfirmed|未确认|未確認/u);
-    const failed = settingsRecoveryCopy({ ...event, outcome: 'commit-unknown' }, locale, true);
-    assert.match(failed.body, /unconfirmed|未确认|未確認/u);
-    assert.match(failed.body, /Restart|重启|重新啟動/u);
+    assert.match(unknown.message + unknown.detail, /unconfirmed|未确认|未確認/u);
+    assert.match(unknown.message + unknown.detail, /Restart|重启|重新啟動/u);
   }
 });
 
-test('early recovery is logged and reported immediately, then reread when effects become ready', async () => {
-  const h = harness();
-  let refreshes = 0;
-  h.reporter.onRecovery(event);
-  assert.equal(h.notices.length, 1);
-  assert.ok(h.logs[0].includes(event.backupPath));
-  assert.equal(refreshes, 0);
-  const effects = { refresh: async (notify: boolean) => { assert.equal(notify, true); refreshes += 1; return true; } };
-  h.reporter.setEffects(effects);
-  await turn();
-  assert.equal(refreshes, 1);
-  h.reporter.setEffects(effects);
-  await turn();
-  assert.equal(refreshes, 1);
-});
-
-for (const options of [{ e2e: true }, { supported: false }]) {
-  test('notification suppression does not suppress recovery diagnostics or effects', async () => {
+for (const options of [{ supported: false }, { e2e: true }, { throws: 'show' as const }]) {
+  test(`startup recovery survives unavailable native notifications (${JSON.stringify(options)})`, async () => {
     const h = harness(options);
-    let refreshed = false;
-    h.reporter.setEffects({ refresh: async () => { refreshed = true; return false; } });
     h.reporter.onRecovery(event);
     await turn();
+    assert.equal(h.appNotices.length, 0);
+    assert.ok(h.logs[0].includes(event.backupPath));
+    h.setAvailable();
+    await turn();
+    assert.equal(h.appNotices.length, 1);
+    assert.ok(h.appNotices[0].detail.includes(event.backupPath));
+    h.reporter.onWindowReady();
+    await turn();
+    assert.equal(h.appNotices.length, 1);
     assert.equal(h.notices.length, 0);
-    assert.equal(refreshed, true);
-    assert.ok(h.logs.some((line) => line.includes(event.backupPath)));
-    if (options.e2e) assert.equal(h.supports(), 0);
+    if ('e2e' in options) assert.equal(h.supports(), 0);
   });
 }
 
-for (const phase of ['support', 'create', 'show'] as const) {
-  test(`notification ${phase} failure is isolated`, async () => {
+for (const phase of ['support', 'show'] as const) {
+  test(`notification ${phase} failure cannot suppress the app notice`, async () => {
     const h = harness({ throws: phase });
+    h.setAvailable();
     h.reporter.onRecovery(event);
     await turn();
+    assert.equal(h.appNotices.length, 1);
     assert.ok(h.logs.some((line) => line.includes('notification failed')));
   });
 }
 
-test('asynchronous native notification failure is logged without throwing', () => {
+test('asynchronous native notification failure retains one app notice and never creates a second banner', async () => {
   const h = harness();
+  h.setAvailable();
   h.reporter.onRecovery(event);
   assert.doesNotThrow(() => h.failures[0]());
+  await turn();
+  assert.equal(h.notices.length, 1);
+  assert.equal(h.appNotices.length, 1);
   assert.ok(h.logs.some((line) => line.includes('notification failed')));
 });
 
-test('refresh failure keeps the publication warning and does not leak the failing effect error', async () => {
+test('a failed app dialog remains pending for the next usable window without leaking the error', async () => {
   const h = harness();
-  h.reporter.setEffects({ refresh: async () => { throw new Error('secret effect detail'); } });
+  h.failNotice(true);
+  h.setAvailable();
   h.reporter.onRecovery({ ...event, outcome: 'commit-unknown' });
   await turn();
-  assert.equal(h.notices.length, 2);
-  assert.match(h.notices[1].body, /unconfirmed/u);
-  assert.match(h.notices[1].body, /Restart/u);
-  assert.equal(JSON.stringify(h).includes('secret effect detail'), false);
-  assert.ok(h.logs.some((line) => line.includes('refresh failed')));
+  assert.equal(h.appNotices.length, 0);
+  assert.ok(h.logs.some((line) => line.includes('app notice failed')));
+  assert.equal(h.logs.join('').includes('secret dialog detail'), false);
+  h.failNotice(false);
+  h.reporter.onWindowReady();
+  await turn();
+  assert.equal(h.appNotices.length, 1);
+  assert.match(h.appNotices[0].message + h.appNotices[0].detail, /unconfirmed/u);
+  assert.equal(h.notices.length, 1);
+});
+
+test('multiple recoveries wait for dismissal and repeated window events do not repeat notices', async () => {
+  const h = harness({ holdNotice: true });
+  h.setAvailable();
+  h.reporter.onRecovery(event);
+  h.reporter.onRecovery({ ...event, backupPath: `${event.backupPath}-second`, outcome: 'commit-unknown' });
+  await turn();
+  assert.equal(h.appNotices.length, 1);
+  h.reporter.onWindowReady();
+  await turn();
+  assert.equal(h.appNotices.length, 1);
+  h.dismissals[0]();
+  await turn();
+  assert.equal(h.appNotices.length, 2);
+  assert.match(h.appNotices[1].message + h.appNotices[1].detail, /unconfirmed/u);
+  h.dismissals[1]();
+  await turn();
+  h.reporter.onWindowReady();
+  await turn();
+  assert.equal(h.appNotices.length, 2);
+  // Reusing a complete backup on a later corruption is still a new reset.
+  h.reporter.onRecovery(event);
+  await turn();
+  assert.equal(h.appNotices.length, 3);
+  h.dismissals[2]();
 });
 
 async function realStore(t: TestContext) {
@@ -163,7 +210,7 @@ async function realStore(t: TestContext) {
     applyBotSettings: async (value) => { bots.push(value); },
     applyAppIcon: async () => {},
     observeLocale: (settings) => { observed.push(settings.personalization.uiLocale); },
-    emitExternalChanged: () => { changes += 1; },
+    emitExternalChanged: () => { changes += 1; return true; },
   });
   return { root, path: join(root, 'settings.json'), h, store, effects, observed, bots, keepAwake, changes: () => changes };
 }
@@ -173,25 +220,23 @@ for (const notifyRenderer of [false, true]) {
     const { path, h, effects, observed, bots, keepAwake, changes, store } = await realStore(t);
     await store.update({ personalization: { uiLocale: 'zh-CN' }, system: { keepSystemAwake: true } });
     await effects.refresh(false);
-    h.reporter.setEffects(effects);
-    await writeFile(path, '{"secret":"never print this"');
+    await writeFile(path, 'sk-live-SECRET');
     await effects.refresh(notifyRenderer);
     await turn();
-    await effects.refresh(true); // Barrier behind the callback's queued refresh.
-    assert.deepEqual(observed, ['zh-CN', 'auto', 'auto', 'auto']);
+    await effects.refresh(true); // The existing file watcher rereads after a silent theme refresh.
+    assert.deepEqual(observed, ['zh-CN', 'auto', 'auto']);
     assert.deepEqual(keepAwake, [true, false]);
     assert.equal(bots.length, 1); // Bots did not change, so effects deduplicate them.
     assert.equal(changes(), 1);
     assert.equal(h.notices.length, 1);
-    assert.equal(h.logs.join('').includes('never print this'), false);
+    assert.equal(h.logs.join('').includes('sk-live-SECRET'), false);
   });
 }
 
-test('recovery before effects initialization refreshes the latest file including a subsequent mutation', async (t) => {
+test('startup effects read the latest file including a mutation after recovery', async (t) => {
   const { path, h, effects, store, observed } = await realStore(t);
   await writeFile(path, '');
   await store.update({ personalization: { uiLocale: 'zh-TW' } });
-  h.reporter.setEffects(effects);
   await turn();
   await effects.refresh(true);
   assert.ok(observed.every((locale) => locale === 'zh-TW'));
@@ -204,7 +249,6 @@ test('published reset failure is independently reported and consumers reread wit
   const { root, path, h, effects, store, observed } = await realStore(t);
   await store.update({ personalization: { uiLocale: 'zh-CN' } });
   await effects.refresh(false);
-  h.reporter.setEffects(effects);
   await writeFile(path, '{bad');
   const originalOpen = fs.open;
   let directoryCount = 0;

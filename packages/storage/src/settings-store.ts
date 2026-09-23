@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { constants, type BigIntStats } from 'node:fs';
+import { lstat, mkdir, open, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { OnboardingMilestone, OnboardingMilestoneId } from '@maka/core/onboarding';
@@ -46,12 +47,15 @@ export class SettingsRecoveryError extends Error {
   readonly backupPath?: string;
   /** A file this attempt created but could not finish or remove. */
   readonly incompleteBackupPath?: string;
+  /** Complete bytes retained after a failed directory durability fence. */
+  readonly unsyncedBackupPath?: string;
 
   constructor(options: {
     settingsPath: string;
     phase: 'backup' | 'reset';
     backupPath?: string;
     incompleteBackupPath?: string;
+    unsyncedBackupPath?: string;
     cause: unknown;
   }) {
     const detail = options.backupPath
@@ -63,6 +67,9 @@ export class SettingsRecoveryError extends Error {
         (options.incompleteBackupPath
           ? ` An incomplete backup may remain at ${options.incompleteBackupPath}.`
           : '') +
+        (options.unsyncedBackupPath
+          ? ` Complete backup bytes remain at ${options.unsyncedBackupPath}, but directory synchronization is unconfirmed.`
+          : '') +
         ' Close the app and check file access and disk space before retrying.',
       { cause: options.cause },
     );
@@ -71,6 +78,7 @@ export class SettingsRecoveryError extends Error {
     this.phase = options.phase;
     this.backupPath = options.backupPath;
     this.incompleteBackupPath = options.incompleteBackupPath;
+    this.unsyncedBackupPath = options.unsyncedBackupPath;
   }
 }
 
@@ -171,7 +179,7 @@ class FileSettingsStore implements SettingsStore {
 
     let persisted: unknown;
     try {
-      persisted = JSON.parse(bytes.toString('utf8'));
+      persisted = parseSettings(bytes, this.settingsPath);
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
       // Never attach the parse error: its message can quote stored secrets.
@@ -185,11 +193,19 @@ class FileSettingsStore implements SettingsStore {
   }
 
   private async recoverCorruptSettings(bytes: Buffer): Promise<AppSettings> {
+    const snapshot = await readSettingsSnapshot(this.settingsPath);
+    if (!snapshot.bytes.equals(bytes)) return this.readRepairedSettings();
     const backupPath = await this.backupCorruptSettings(bytes);
     const settings = createDefaultSettings();
     try {
-      await this.write(settings);
+      await this.write(settings, async () => {
+        const current = await readSettingsSnapshot(this.settingsPath);
+        if (!sameSnapshot(snapshot.stat, current.stat) || !current.bytes.equals(bytes)) {
+          throw new SettingsChangedError(this.settingsPath);
+        }
+      });
     } catch (error) {
+      if (error instanceof SettingsChangedError) return this.readRepairedSettings();
       if (error instanceof AtomicFileWriteCommitUnknownError) {
         this.reportRecovery(backupPath, 'commit-unknown');
         throw new SettingsRecoveryCommitUnknownError(this.settingsPath, backupPath, error);
@@ -205,37 +221,82 @@ class FileSettingsStore implements SettingsStore {
     return settings;
   }
 
+  private async readRepairedSettings(): Promise<AppSettings> {
+    // One reread, never a recursive recovery: a removed or still-corrupt file
+    // must not enter the first-run ENOENT path or trigger repeated backups.
+    const { bytes } = await readSettingsSnapshot(this.settingsPath);
+    let persisted: unknown;
+    try {
+      persisted = parseSettings(bytes, this.settingsPath);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      throw new SettingsChangedError(this.settingsPath);
+    }
+    return normalizeSettings(persisted);
+  }
+
   /** An exclusive byte-for-byte backup, completed before replacing settings.
    * Keeping the source in place avoids turning a failed recovery into ENOENT.
+   * Preserve unusable candidates (including interrupted writes) and try the
+   * next suffix. Repeated resets reuse the first complete, private backup.
    * This has the same platform fsync limits as the shared atomic writer. */
   private async backupCorruptSettings(bytes: Buffer): Promise<string> {
-    const backupPath = `${this.settingsPath}.corrupt-${Date.now()}-${randomUUID()}`;
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    const backupBase = `${this.settingsPath}.corrupt-${digest}`;
+    let backupPath = backupBase;
     let created = false;
+    let createdStat: BigIntStats | undefined;
+    let complete = false;
     try {
-      const handle = await open(backupPath, 'wx', 0o600);
-      created = true;
-      try {
-        await handle.writeFile(bytes);
-        if (process.platform !== 'win32') await handle.chmod(0o600);
-        await handle.sync();
-        await handle.close();
-      } catch (error) {
-        await handle.close().catch(() => {});
-        throw error;
+      let handle;
+      for (let attempt = 0; ; attempt += 1) {
+        backupPath = attempt === 0 ? backupBase : `${backupBase}-${attempt}`;
+        try {
+          handle = await open(backupPath, 'wx', 0o600);
+          created = true;
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          if (await verifyAndSyncBackup(backupPath, bytes)) break;
+        }
       }
+      if (handle) {
+        try {
+          createdStat = await handle.stat({ bigint: true });
+          await handle.writeFile(bytes);
+          if (process.platform !== 'win32') await handle.chmod(0o600);
+          await handle.sync();
+          await handle.close();
+        } catch (error) {
+          await handle.close().catch(() => {});
+          throw error;
+        }
+      }
+      complete = true;
       await syncDirectory(dirname(this.settingsPath));
       return backupPath;
     } catch (error) {
       let incompleteBackupPath: string | undefined;
-      if (created) {
-        await rm(backupPath, { force: true }).catch(() => {
-          incompleteBackupPath = backupPath;
-        });
+      if (created && !complete) {
+        try {
+          const current = await lstat(backupPath, { bigint: true });
+          // The content-derived name is predictable. Never remove a different
+          // entry another process installed after our exclusive creation.
+          if (createdStat && current.dev === createdStat.dev && current.ino === createdStat.ino) {
+            await rm(backupPath, { force: true });
+          } else {
+            incompleteBackupPath = backupPath;
+          }
+        } catch (cleanupError) {
+          if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT')
+            incompleteBackupPath = backupPath;
+        }
       }
       throw new SettingsRecoveryError({
         settingsPath: this.settingsPath,
         phase: 'backup',
         incompleteBackupPath,
+        unsyncedBackupPath: complete ? backupPath : undefined,
         cause: error,
       });
     }
@@ -338,13 +399,14 @@ class FileSettingsStore implements SettingsStore {
     return result;
   }
 
-  private async write(settings: AppSettings): Promise<void> {
+  private async write(settings: AppSettings, beforePublish?: () => Promise<void>): Promise<void> {
     // SettingsStore does not own the workspace directory's permission policy:
     // sibling stores such as MCP config may independently harden the same root.
     // Keep both directory creation and the historical umask-derived file mode.
     await mkdir(dirname(this.settingsPath), { recursive: true });
     await writeAtomicFile(this.settingsPath, JSON.stringify(settings, null, 2) + '\n', {
       fileMode: 0o666 & ~process.umask(),
+      beforePublish,
     });
   }
 
@@ -352,6 +414,96 @@ class FileSettingsStore implements SettingsStore {
     const next = this.queue.then(operation, operation);
     this.queue = next.catch(() => {});
     return next;
+  }
+}
+
+class SettingsChangedError extends Error {
+  constructor(path: string) {
+    super(
+      `Settings at ${path} changed during recovery. The current file was not replaced. Finish editing the file and retry.`,
+    );
+    this.name = 'SettingsChangedError';
+  }
+}
+
+function parseSettings(bytes: Buffer, path: string): unknown {
+  if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff)) {
+    throw new Error(
+      `Settings at ${path} use UTF-16 encoding. Save the file as UTF-8 and retry. The file was not replaced.`,
+    );
+  }
+  return JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/u, ''));
+}
+
+function sameSnapshot(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    left.isFile() &&
+    right.isFile() &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function readFlags(readWrite = false): number {
+  const access = readWrite ? constants.O_RDWR : constants.O_RDONLY;
+  return process.platform === 'win32'
+    ? access
+    : access | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+}
+
+async function readSettingsSnapshot(path: string): Promise<{ bytes: Buffer; stat: BigIntStats }> {
+  const initial = await lstat(path, { bigint: true });
+  if (!initial.isFile()) {
+    throw new Error(
+      `Cannot automatically recover settings at ${path}: the path is not a regular file. Repair the file or its symbolic-link target manually.`,
+    );
+  }
+  const handle = await open(path, readFlags());
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!sameSnapshot(initial, opened)) throw new SettingsChangedError(path);
+    const bytes = await handle.readFile();
+    const final = await handle.stat({ bigint: true });
+    const current = await lstat(path, { bigint: true });
+    if (
+      !sameSnapshot(opened, final) ||
+      !sameSnapshot(final, current) ||
+      BigInt(bytes.length) !== final.size
+    ) {
+      throw new SettingsChangedError(path);
+    }
+    return { bytes, stat: final };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** An unusable candidate is left intact. Actual I/O failures still abort recovery. */
+async function verifyAndSyncBackup(path: string, bytes: Buffer): Promise<boolean> {
+  const initial = await lstat(path, { bigint: true });
+  if (
+    !initial.isFile() ||
+    initial.size !== BigInt(bytes.length) ||
+    initial.nlink !== 1n ||
+    (process.platform !== 'win32' &&
+      ((initial.mode & 0o777n) !== 0o600n || initial.uid !== BigInt(process.geteuid!())))
+  ) {
+    return false;
+  }
+  const handle = await open(path, readFlags(true));
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!sameSnapshot(initial, opened) || !(await handle.readFile()).equals(bytes)) return false;
+    const final = await handle.stat({ bigint: true });
+    const current = await lstat(path, { bigint: true });
+    if (!sameSnapshot(opened, final) || !sameSnapshot(final, current)) return false;
+    await handle.sync();
+    return true;
+  } finally {
+    await handle.close();
   }
 }
 

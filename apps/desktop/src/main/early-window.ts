@@ -58,6 +58,7 @@ import {
   showMessageBoxWithDiagnostics,
 } from "./native-diagnostic-dialog.js";
 import { resolveShellEnv } from "./shell-env.js";
+import { showNativeNotification } from "./native-notification.js";
 import { createSettingsRecoveryReporter } from "./settings-recovery.js";
 import { isIsolatedE2e, revealMode } from "./startup-context.js";
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
@@ -176,16 +177,31 @@ if (!resolvedLocalStorageRoot) {
   throw new Error("Desktop storage root resolution did not complete");
 }
 export const startupLocalStorageRoot = resolvedLocalStorageRoot;
+let allowStandaloneRecoveryNotice = false;
 export const settingsRecovery = createSettingsRecoveryReporter({
   e2e: isIsolatedE2e,
   locale: () => resolveSystemUiLocale(app.getPreferredSystemLanguages()),
   notifications: {
     isSupported: () => Notification.isSupported(),
-    create: (copy, failed) => {
-      const notification = new Notification(copy);
-      notification.on('failed', failed);
-      return notification;
-    },
+    show: (copy, failed) => showNativeNotification(copy, () => {
+      void quitCoordinator.focusOrCreateWindow();
+    }, failed),
+  },
+  showNotice: async (copy) => {
+    const window = mainWindowController.browserWindow();
+    const usableWindow = window && (isIsolatedE2e || (window.isVisible() && !window.isMinimized()));
+    if (!usableWindow && !allowStandaloneRecoveryNotice) return false;
+    await showDesktopMessageBox({
+      type: "warning",
+      title: copy.title,
+      message: copy.message,
+      detail: copy.detail,
+      buttons: [copy.acknowledge],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    return true;
   },
   log: (message) => console.warn(message),
 });
@@ -229,9 +245,15 @@ export const mainWindowController = createMainWindowController({
   onWindowConstructed: () => {
     // `ready-to-show` is the first painted frame — the point after which the
     // Runtime Host module graph may evaluate without starving the paint.
-    mainWindowController
-      .browserWindow()
-      ?.once('ready-to-show', resolveFirstWindowConstructed);
+    allowStandaloneRecoveryNotice = false;
+    const window = mainWindowController.browserWindow();
+    window?.once('ready-to-show', () => {
+      resolveFirstWindowConstructed();
+      settingsRecovery.onWindowReady();
+    });
+    // A recovery can happen while the app window is closed or minimized.
+    window?.on('show', settingsRecovery.onWindowReady);
+    window?.on('restore', settingsRecovery.onWindowReady);
   },
   onClose: () => mainWindowDelegates.onMainWindowClose(),
   onClosed: () => mainWindowDelegates.onMainWindowClosed(),
@@ -277,8 +299,14 @@ export const quitCoordinator = createAppQuitCoordinator({
   },
   onCleanupError: (error) =>
     console.error("[runtime-host] shutdown failed:", error),
-  onWindowCreationError: (error) =>
-    console.error("[window] creation failed:", error),
+  onWindowCreationError: (error) => {
+    console.error("[window] creation failed:", error);
+    // A published reset can throw commit-unknown during the window's first
+    // settings read. Preserve that failure and present its guidance even when
+    // there is no main window to parent the dialog; never replay the operation.
+    allowStandaloneRecoveryNotice = true;
+    settingsRecovery.onWindowReady();
+  },
   resumeQuit: () => app.quit(),
 });
 app.on("before-quit", quitCoordinator.handleBeforeQuit);
@@ -287,6 +315,7 @@ app.on("before-quit", quitCoordinator.handleBeforeQuit);
 // commit could race ahead of target wiring and leave the window hidden.
 ipcMain.handle("window:notifyRendererReady", (event): void => {
   mainWindowController.notifyRendererReady(event.sender, event.senderFrame);
+  if (mainWindowController.isMainRenderer(event.sender)) settingsRecovery.onWindowReady();
 });
 // The renderer's invoke gate: it resolves when the Runtime Host boot module's
 // registration pass has run, so a renderer call that lands while the heavy
