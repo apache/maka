@@ -1833,16 +1833,33 @@ export const TitlebarParentReturn: Story = {
 
 // Real path: a long auto-generated session name, sidebar collapsed so the
 // identity sits closest to the conversation column. It must truncate itself
-// rather than push the workbar toggle off the strip.
+// rather than push the workbar toggle off the strip. Tripled so the name stays
+// clipped at the smoke runner's default 1280px viewport, not just narrow ones.
 export const TitlebarIdentityTruncated: Story = {
   render: () => (
     <ComposedShell
       sidebarCollapsed
       session={{
-        name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证',
+        name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证'.repeat(3),
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const full = 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证'.repeat(3);
+    const page = within(canvasElement.ownerDocument.body);
+    const rename = canvasElement.querySelector<HTMLElement>('.maka-titlebar-identity__segment--session')!.closest('button')!;
+    expect(rename.getAttribute('aria-label')).toBe(`${full} — 重命名任务`);
+    // Truncated name: hovering reveals exactly the hidden text. The tooltip
+    // must never grow a “ — 重命名任务” tail onto it.
+    await userEvent.hover(rename);
+    await waitFor(() => expect(page.getByRole('tooltip', { name: full })).toBeVisible());
+    // The “...” button's accessible name carries the task it acts on; its
+    // tooltip must not echo the name displayed beside it.
+    const menuButton = canvasElement.querySelector<HTMLElement>('[aria-label$="任务操作"]')!;
+    expect(menuButton.getAttribute('aria-label')).toBe(`${full} — 任务操作`);
+    await userEvent.hover(menuButton);
+    await waitFor(() => expect(page.getByRole('tooltip', { name: '任务操作' })).toBeVisible());
+  },
 };
 
 // Real path: 开启 Plan Mode from the ＋ menu. The mode is session-scoped — it

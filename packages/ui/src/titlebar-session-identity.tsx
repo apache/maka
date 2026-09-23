@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { IconButton } from '@astryxdesign/core/IconButton';
@@ -36,6 +36,34 @@ export interface TitlebarProject {
 export interface TitlebarParentSession {
   name: string;
   onOpen(): void;
+}
+
+/**
+ * Whether an ellipsis-clipped label is actually cut off. Astryx Button wraps
+ * children in an internal label span, so the measurement must happen on the
+ * text node itself (same recipe as quote-ref-chip). The ellipsis styles live
+ * in the app shell (`maka-titlebar-identity__segment--session`).
+ */
+function isNameClipped(el: HTMLElement | null): boolean {
+  return !!el && el.scrollWidth > el.clientWidth + 1;
+}
+
+/**
+ * Track clipping across resize/layout changes so the tooltip appears exactly
+ * when the visible name is truncated — and never repeats a fully visible one.
+ */
+function useNameClipped(sessionName: string) {
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const [clipped, setClipped] = useState(false);
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    setClipped(isNameClipped(el));
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => setClipped(isNameClipped(el)));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [sessionName]);
+  return { measureRef, clipped };
 }
 
 export function TitlebarSessionIdentity(props: {
@@ -66,6 +94,11 @@ export function TitlebarSessionIdentity(props: {
   }, [renaming]);
 
   const path = props.project?.path;
+  const { measureRef, clipped } = useNameClipped(props.sessionName);
+  // Show the full name only when ellipsis cut it off; repeating a fully
+  // visible title adds nothing. Rename affordance lives in the accessible
+  // label and the "..." menu, not in a run-on tooltip sentence.
+  const nameTooltip = clipped ? props.sessionName : undefined;
   const copyPhase = path ? clipboard.phaseFor(path) : null;
   const copyLabel = copyPhase === 'pending' ? copy.messages.copying
     : copyPhase === 'failed' ? copy.messages.copyFailed
@@ -128,7 +161,7 @@ export function TitlebarSessionIdentity(props: {
           onCancel={() => endRename(true)}
         />
       ) : props.readOnly ? (
-        <span className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={props.sessionName}>
+        <span className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={nameTooltip}>
           {props.sessionName}
         </span>
       ) : (
@@ -136,19 +169,19 @@ export function TitlebarSessionIdentity(props: {
           ref={nameRef}
           className="maka-titlebar-identity__name"
           label={`${props.sessionName} — ${copy.sessions.renameAriaLabel}`}
-          tooltip={`${props.sessionName} — ${copy.sessions.renameAriaLabel}`}
+          tooltip={nameTooltip}
           variant="ghost"
           size="sm"
           onClick={() => setRenaming(true)}
         >
-          <span className="maka-titlebar-identity__segment--session">{props.sessionName}</span>
+          <span ref={measureRef} className="maka-titlebar-identity__segment--session">{props.sessionName}</span>
         </Button>
       )}
       {!props.readOnly || props.action || (props.parentSession && props.project) ? (
         <span className="maka-titlebar-identity__action">
           <DropdownMenu
             className="maka-titlebar-menu"
-            button={{ label: `${props.sessionName} — ${copy.chat.taskActions}`, tooltip: `${props.sessionName} — ${copy.chat.taskActions}`, icon: <MoreHorizontal size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
+            button={{ label: `${props.sessionName} — ${copy.chat.taskActions}`, tooltip: copy.chat.taskActions, icon: <MoreHorizontal size={14} />, isIconOnly: true, variant: 'ghost', size: 'sm' }}
             hasChevron={false}
             alignment="end"
             isMenuOpen={actionsMenuOpen}
