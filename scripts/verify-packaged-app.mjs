@@ -1040,6 +1040,8 @@ export async function assertPackagedResources(
           join('bin', 'cua-driver'),
           join('licenses', 'cua-driver', 'LICENSE'),
           join('licenses', 'cua-driver', 'MPL-2.0.txt'),
+          join('licenses', 'cua-driver', 'Inter-OFL.txt'),
+          join('licenses', 'cua-driver', 'CDLA-Permissive-2.0.txt'),
           join('licenses', 'cua-driver', 'NOTICE.txt'),
         ]
       : []),

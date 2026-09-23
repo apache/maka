@@ -119,6 +119,8 @@ const baseDesktopBuilderConfig = {
           { from: 'resources/bin/cua-driver', to: 'bin/cua-driver' },
           { from: 'resources/licenses/cua-driver/LICENSE', to: 'licenses/cua-driver/LICENSE' },
           { from: 'resources/licenses/cua-driver/MPL-2.0.txt', to: 'licenses/cua-driver/MPL-2.0.txt' },
+          { from: 'resources/licenses/cua-driver/Inter-OFL.txt', to: 'licenses/cua-driver/Inter-OFL.txt' },
+          { from: 'resources/licenses/cua-driver/CDLA-Permissive-2.0.txt', to: 'licenses/cua-driver/CDLA-Permissive-2.0.txt' },
           { from: 'resources/licenses/cua-driver/NOTICE.txt', to: 'licenses/cua-driver/NOTICE.txt' },
         ]
       : []),
