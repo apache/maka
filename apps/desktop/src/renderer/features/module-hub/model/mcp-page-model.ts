@@ -134,13 +134,25 @@ function parseMap(value: string, copy: McpCopy): Record<string, string> {
       .map((line, index) => {
         const separator = line.indexOf('=');
         if (separator <= 0) throw new Error(copy.errors.mapLine(index + 1));
-        return [line.slice(0, separator).trim(), line.slice(separator + 1)];
+        return [line.slice(0, separator).trim(), parseMapValue(line.slice(separator + 1))];
       }),
   );
 }
 
+function parseMapValue(raw: string): string {
+  if (!raw.startsWith('"')) return raw;
+  try {
+    const value: unknown = JSON.parse(raw);
+    return typeof value === 'string' ? value : raw;
+  } catch {
+    return raw;
+  }
+}
+
+// One entry per line, so a value holding a line break, or one that would
+// read back as a quoted string, is written as a JSON string.
 function formatMap(value?: Record<string, string>): string {
   return Object.entries(value ?? {})
-    .map(([key, item]) => `${key}=${item}`)
+    .map(([key, item]) => `${key}=${/[\r\n]/u.test(item) || item.startsWith('"') ? JSON.stringify(item) : item}`)
     .join('\n');
 }

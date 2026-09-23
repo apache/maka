@@ -200,3 +200,15 @@ test('a stdio config round-trips through the command-line field', () => {
   const saved = mcpConfigFromDraft(mcpDraftFromConfig('local', stored), copy);
   assert.deepEqual(saved, { ...stored, protocol: 'legacy' });
 });
+
+test('an untouched environment reads back unchanged, whatever its values hold', () => {
+  const env = {
+    PRIVATE_KEY: '-----BEGIN KEY-----\nSECOND=third\r\n-----END KEY-----',
+    WITH_EQUALS: 'a=b',
+    QUOTED: '"kept"',
+    PLAIN: 'secret',
+  };
+  const saved = mcpConfigFromDraft(mcpDraftFromConfig('local', { command: 'node', env }), copy);
+  assert.ok(isMcpStdioConfig(saved));
+  assert.deepEqual(saved.env, env);
+});
