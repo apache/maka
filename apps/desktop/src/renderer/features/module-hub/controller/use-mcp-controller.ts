@@ -25,9 +25,9 @@ import {
   type McpConfigUpdateResult,
   type McpServerConfig,
   type McpServerStatus,
+  type OpencliChromeStatus,
 } from '@maka/core/mcp';
 import { useMountedRef } from '@maka/ui';
-import type { OpencliChromeStatus } from '../../../../shared/opencli-chrome.js';
 import { useModuleHubServices } from '../services-context.js';
 import type { ModuleHubRuntimeHostRef } from '../ports.js';
 import { isDefaultRuntimeHostCurrent, runOnDefaultRuntimeHost } from './default-runtime-host.js';

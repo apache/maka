@@ -25,8 +25,8 @@ import { promisify } from 'node:util';
 import { EXTENSION_ID, EXTENSION_STORE_URL } from 'opencli-mcp/dist/src/host/extension.js';
 import { nativeHostDirs, runningProfileDirs } from 'opencli-mcp/dist/src/host/registration.js';
 import { hostHealth, readHostState } from 'opencli-mcp/dist/src/host/state.js';
+import type { OpencliChromeStatus } from '@maka/core/mcp';
 import { NATIVE_HOST_NAME } from 'opencli-mcp/dist/src/protocol.js';
-import type { OpencliChromeStatus } from '../shared/opencli-chrome.js';
 
 export interface OpencliChrome {
   status(): Promise<OpencliChromeStatus>;

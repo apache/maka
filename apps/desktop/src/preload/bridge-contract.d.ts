@@ -240,7 +240,6 @@ export type { DesktopSessionSummary } from '../shared/desktop-session-projection
 export type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
 import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
-import type { OpencliChromeStatus } from '../shared/opencli-chrome.js';
 import type { DesktopExternalSessionCatalogItem } from './external-session-catalog.js';
 import type { DesktopDiagnosticInput } from './diagnostics-contract.js';
 import type { Result } from '@maka/core/result';
@@ -253,6 +252,7 @@ import type {
   McpServerConfig,
   McpServerStatus,
   McpTestResult,
+  OpencliChromeStatus,
 } from '@maka/core/mcp';
 import type {
   AgentGraphClientSnapshot,

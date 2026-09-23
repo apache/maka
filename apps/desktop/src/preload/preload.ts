@@ -91,7 +91,6 @@ import type {
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
-import type { OpencliChromeStatus } from '../shared/opencli-chrome.js';
 import {
   projectDesktopExternalSessionCatalogItem,
   type DesktopExternalSessionCatalogItem,
@@ -243,6 +242,7 @@ import type {
   McpServerConfig,
   McpServerStatus,
   McpTestResult,
+  OpencliChromeStatus,
 } from '@maka/core/mcp';
 import type { AttachmentRef, InlineReference, QuoteRef } from '@maka/core/events';
 import type { OnboardingMilestoneId } from '@maka/core/onboarding';

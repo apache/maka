@@ -351,6 +351,15 @@ export interface McpTestResult {
   latencyMs: number;
 }
 
+export interface OpencliChromeStatus {
+  /** The stdio command of the opencli-mcp server; a configured server with
+   * this command is the Chrome connection. */
+  command: string;
+  /** The extension is running in Chrome and reached the host. Without it the
+   * server still starts, but only public site commands work. */
+  connected: boolean;
+}
+
 export function isMcpStdioConfig(config: McpServerConfig): config is McpStdioServerConfig {
   return 'command' in config;
 }

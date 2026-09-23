@@ -17,8 +17,7 @@
  * under the License.
  */
 
-import type { McpConfigFile, McpServerStatus, McpServerConfig, McpConfigAddResult, McpConfigImportResult, McpConfigUpdateResult, McpTestResult } from '@maka/core/mcp';
-import type { OpencliChromeStatus } from '../../../shared/opencli-chrome.js';
+import type { McpConfigFile, McpServerStatus, McpServerConfig, McpConfigAddResult, McpConfigImportResult, McpConfigUpdateResult, McpTestResult, OpencliChromeStatus } from '@maka/core/mcp';
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
