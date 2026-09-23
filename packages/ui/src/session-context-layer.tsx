@@ -37,6 +37,7 @@ import { getConversationCopy } from './conversation-copy.js';
 import { ICON_SIZE, Pause, Play } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { dotForStatus } from './status-vocabulary.js';
+import { RunningIndicator } from './running-indicator.js';
 
 export interface SessionContextBranch {
   parentSessionId: string;
@@ -153,17 +154,14 @@ export function SessionContextLayer(props: {
       key: 'goal',
       element: (
         <div className="maka-session-context__goal">
-          <StatusDot
-            variant={dotForStatus(paused ? 'attention' : 'active')}
-            label={
-              paused
-                ? copy.goalPausedAriaLabel
-                : waiting
-                  ? copy.goalWaitingAriaLabel
-                  : copy.goalRunningAriaLabel
-            }
-            isPulsing={!paused && !waiting}
-          />
+          {paused || waiting ? (
+            <StatusDot
+              variant={dotForStatus(paused ? 'attention' : 'active')}
+              label={paused ? copy.goalPausedAriaLabel : copy.goalWaitingAriaLabel}
+            />
+          ) : (
+            <RunningIndicator label={copy.goalRunningAriaLabel} />
+          )}
           <Text type="supporting" hasTabularNumbers>
             {goalText}
           </Text>

@@ -61,6 +61,7 @@ import { VStack } from '@astryxdesign/core/Stack';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
+import { RunningIndicator } from './running-indicator.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
 import {
   type SessionMoveTarget,
@@ -879,7 +880,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   ).label;
   // What the row communicates without text and the dot does NOT already say,
   // inside the button so it lands in the accessible name. `signals[0]` is
-  // skipped because `StatusDot` carries it; the rest of the list, the worktree
+  // skipped because the dot slot carries it; the rest of the list, the worktree
   // attribute, and the timestamp reached assistive tech nowhere else — the
   // timestamp renders `aria-hidden` and swaps out for the ⋯ menu, and worktree
   // is an attribute of the row rather than a signal, so it never competes for
@@ -962,11 +963,16 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         // rail instead of a mark that drifts with each title's length.
         icon={
           <span className="maka-session-row-signal">
-            {signal ? (
+            {signal?.running ? (
+              <RunningIndicator
+                label={signal.label}
+                tooltip={signal.tooltip}
+                data-session-status={props.session.status}
+              />
+            ) : signal ? (
               <StatusDot
                 variant={signal.variant}
                 label={signal.label}
-                isPulsing={signal.isPulsing}
                 tooltip={signal.tooltip}
                 data-session-status={props.session.status}
               />
@@ -1569,7 +1575,7 @@ function SessionItemActions(props: {
 interface SessionRowSignal {
   variant: StatusDotVariant;
   label: string;
-  isPulsing?: boolean;
+  running?: boolean;
   tooltip?: string;
 }
 
@@ -1609,7 +1615,7 @@ function sessionRowSignals(
     signals.push({
       variant: dotForStatus('active'),
       label: copy.respondingAriaLabel,
-      isPulsing: true,
+      running: true,
       tooltip: copy.respondingTitle,
     });
   }
@@ -1624,7 +1630,7 @@ function sessionRowSignals(
       variant,
       label,
       // Persisted `running` is a fallback only when live state is unknown.
-      isPulsing: session.status === 'running',
+      running: session.status === 'running',
       tooltip: blockedDetail ? `${label} · ${blockedDetail}` : label,
     });
   }
