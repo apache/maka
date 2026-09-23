@@ -509,7 +509,7 @@ function copyReleaseDocuments() {
     ? '> **Developer snapshot:** This Nightly is not an Apache release and is not intended for production use. Its version is bound to one exact `apache/maka` commit.\n\n'
     : '';
   const nightlyNoticeZhCn = nightlyVersion
-    ? '> **开发快照：**此 Nightly 不是 Apache Release，不用于生产环境；其版本只对应一个精确的 `apache/maka` commit。\n\n'
+    ? '> **开发快照**：此 Nightly 不是 Apache Release，不用于生产环境；其版本只对应一个精确的 `apache/maka` commit。\n\n'
     : '';
   writeFileSync(
     join(stageRoot, 'README.md'),

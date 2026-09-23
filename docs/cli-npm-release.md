@@ -249,7 +249,6 @@ npmjs.com.
 Inspect the public tags after approval:
 
 ```sh
-version=0.1.0
 npm view maka-agent dist-tags --json --registry https://registry.npmjs.org/
 ```
 
