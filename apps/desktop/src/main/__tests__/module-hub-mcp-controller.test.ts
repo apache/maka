@@ -54,6 +54,38 @@ test('MCP create rejects an occupied ID and refreshes committed config after a f
   assert.equal(controller.busy, null);
 });
 
+test('MCP holds an action until its refreshed config lands', async () => {
+  const { root } = installReactRenderer();
+  const defaults = createFakeModuleHubServices();
+  const added = deferred<void>();
+  let refresh: ReturnType<typeof deferred<McpConfigFile>> | undefined;
+  let adds = 0;
+  const services = createFakeModuleHubServices({ mcp: {
+    ...defaults.mcp,
+    getConfig: async () => refresh ? refresh.promise : createDefaultMcpConfig(),
+    add: async () => {
+      adds++;
+      refresh = deferred<McpConfigFile>();
+      added.resolve();
+      return { status: 'added', config: createDefaultMcpConfig() };
+    },
+  } });
+  let controller!: ReturnType<typeof useMcpController>;
+  function Probe() { controller = useMcpController(); return null; }
+  await act(async () => root.render(createElement(ModuleHubServicesProvider, { services }, createElement(Probe))));
+  let first!: Promise<unknown>;
+  await act(async () => { first = controller.save('notion', { url: 'https://mcp.notion.com/mcp' }, true); await added.promise; });
+  assert.equal(controller.busy, 'save');
+  await act(async () => assert.equal(await controller.save('notion', { url: 'https://mcp.notion.com/mcp' }, true), undefined));
+  assert.equal(adds, 1);
+  await act(async () => {
+    refresh?.resolve({ ...createDefaultMcpConfig(), mcpServers: { notion: { url: 'https://mcp.notion.com/mcp' } } });
+    await first;
+  });
+  assert.equal(controller.busy, null);
+  assert.deepEqual(Object.keys(controller.config.mcpServers), ['notion']);
+});
+
 test('MCP login can be cancelled on its original Host and never writes a late result into another Host', async () => {
   const { root } = installReactRenderer();
   const defaults = createFakeModuleHubServices();

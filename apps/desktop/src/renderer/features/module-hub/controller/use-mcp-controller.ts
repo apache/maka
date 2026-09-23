@@ -89,11 +89,10 @@ export function useMcpController() {
     } catch (failure) {
       if (mounted.current && !current.cancelled) setError(failure);
     } finally {
+      // Held until the refreshed config lands, so nothing acts on the old one.
+      if (mounted.current) await reload();
       operation.current = null;
-      if (mounted.current) {
-        setBusy(null);
-        await reload();
-      }
+      if (mounted.current) setBusy(null);
     }
     return undefined;
   }
