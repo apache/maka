@@ -24,8 +24,14 @@ import type {
 } from '@maka/core/mcp';
 import { isMcpStdioConfig, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import type { McpCopy } from '../../../locales/mcp-copy.js';
-import { isMcpConfigFileFailure, type McpIpcResult } from '../../../../shared/mcp-ipc.js';
+import type { McpConfigFileFailure, McpIpcResult } from '../../../../shared/mcp-ipc.js';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
+
+function isMcpConfigFileFailure(value: unknown): value is McpConfigFileFailure {
+  return typeof value === 'object' && value !== null &&
+    'kind' in value && value.kind === 'invalid-mcp-config-file' &&
+    'path' in value && typeof value.path === 'string';
+}
 
 class McpConfigFileError extends Error {
   constructor(readonly path: string) {

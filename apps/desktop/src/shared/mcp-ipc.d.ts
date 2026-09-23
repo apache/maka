@@ -17,8 +17,8 @@
  * under the License.
  */
 
-/** MCP config failures travel as data across both Electron IPC and the
- * context bridge, which do not preserve custom Error properties. Successful
+/** Type-only wire contract. MCP config failures travel as data across Electron
+ * IPC and the context bridge, which do not preserve custom Error properties. Successful
  * values keep their existing shape; pasted JSON validation is a separate
  * McpConfigImportResult, not a persisted-file failure. */
 export interface McpConfigFileFailure {
@@ -27,9 +27,3 @@ export interface McpConfigFileFailure {
 }
 
 export type McpIpcResult<T> = T | McpConfigFileFailure;
-
-export function isMcpConfigFileFailure(value: unknown): value is McpConfigFileFailure {
-  return typeof value === 'object' && value !== null &&
-    'kind' in value && value.kind === 'invalid-mcp-config-file' &&
-    'path' in value && typeof value.path === 'string';
-}
