@@ -78,28 +78,17 @@
 }
 
 
-.maka-mcp-editor-choice {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: var(--border-width-hairline) solid var(--border);
-  background: var(--muted);
-}
-
-.maka-mcp-choice-icon {
-  margin-inline-start: var(--space-1);
-  /* The icon shares Item's startContent flex slot with the 24px radio circle.
-     That slot defaults to align-items: stretch, which top-aligns a definite-height
-     child, leaving the 14px icon riding above the radio dot and the centered label.
-     Center it so all three sit on the same axis. */
-  align-self: center;
-}
-
 .maka-mcp-manual-form,
 .maka-mcp-json-form {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 0;
   overflow: hidden;
+}
+
+.maka-mcp-json-form {
+  grid-template-rows: minmax(0, 1fr) auto auto;
 }
 
 .maka-mcp-form-fields {
@@ -133,6 +122,7 @@
   font: var(--maka-text-supporting);
   margin: 0;
   padding-inline: var(--space-4);
+  padding-block: var(--space-2) var(--space-3);
   color: var(--muted-foreground);
 }
 

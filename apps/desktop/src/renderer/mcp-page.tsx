@@ -56,8 +56,6 @@ import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import {
   ModulePage,
-  RadioList,
-  RadioListItem,
   Selector,
   TextArea,
   useMountedRef,
@@ -71,12 +69,10 @@ import {
 import {
   ICON_SIZE,
   FileCode,
-  Globe,
   Plug,
   Plus,
   RefreshCcw,
   Search,
-  Terminal,
 } from '@maka/ui/icons';
 import { getMcpCatalog, catalogEntryMatches } from './mcp-catalog';
 import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
@@ -708,41 +704,23 @@ function McpEditorDialog(props: {
             startContent={props.state.mode === 'json' ? <FileCode size={ICON_SIZE.chrome} /> : <Plug size={ICON_SIZE.chrome} />}
             title={props.state.mode === 'json' ? props.copy.editor.importTitle : editing ? props.copy.editor.editTitle(props.state.draft.id) : props.copy.editor.addTitle}
             subtitle={props.state.mode === 'json' ? props.copy.editor.importSubtitle : props.copy.editor.manualSubtitle}
+            endContent={!editing ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                label={props.state.mode === 'json' ? props.copy.editor.manual : props.copy.editor.pasteJson}
+                onClick={() => props.onChange(
+                  props.state.mode === 'json'
+                    ? { mode: 'manual', draft: createEmptyMcpDraft(), editingId: null }
+                    : { mode: 'json', source: exampleJson() },
+                )}
+              />
+            ) : undefined}
             onOpenChange={props.onOpenChange}
           />
         }
         content={
           <LayoutContent padding={0} isScrollable={false}>
-        {!editing && (
-          <RadioList
-            className="maka-mcp-editor-choice"
-            label={props.copy.editor.modeAria}
-            value={props.state.mode}
-            orientation="horizontal"
-            onChange={(mode) => {
-              props.onChange(
-                mode === 'json'
-                  ? { mode: 'json', source: exampleJson() }
-                  : {
-                      mode: 'manual',
-                      draft: createEmptyMcpDraft(),
-                      editingId: null,
-                    },
-              );
-            }}
-          >
-            <RadioListItem
-              value="manual"
-              label={props.copy.editor.manual}
-              startContent={<Terminal size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
-            />
-            <RadioListItem
-              value="json"
-              label={props.copy.editor.pasteJson}
-              startContent={<FileCode size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
-            />
-          </RadioList>
-        )}
         {props.state.mode === 'json' ? (
           <form className="maka-mcp-json-form" onSubmit={props.onImport}>
             <div className="maka-mcp-json-field">
@@ -758,25 +736,17 @@ function McpEditorDialog(props: {
           </form>
         ) : (
           <form className="maka-mcp-manual-form" onSubmit={props.onSave}>
-            <RadioList
-              className="maka-mcp-editor-choice"
-              label={props.copy.editor.transportAria}
-              value={props.state.draft.kind}
-              orientation="horizontal"
-              onChange={(kind) => updateDraft('kind', kind as McpEditorDraft['kind'])}
-            >
-              <RadioListItem
-                value="stdio"
-                label={props.copy.editor.localStdio}
-                startContent={<Terminal size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
-              />
-              <RadioListItem
-                value="remote"
-                label={props.copy.editor.remoteUrl}
-                startContent={<Globe size={ICON_SIZE.control} className="maka-mcp-choice-icon" aria-hidden="true" />}
-              />
-            </RadioList>
             <div className="maka-mcp-form-fields">
+              <Selector
+                value={props.state.draft.kind}
+                options={[
+                  { value: 'stdio', label: props.copy.editor.localStdio },
+                  { value: 'remote', label: props.copy.editor.remoteUrl },
+                ]}
+                onChange={(kind) => updateDraft('kind', kind as McpEditorDraft['kind'])}
+                label={props.copy.editor.transportAria}
+                width="100%"
+              />
               <div className="maka-mcp-primary-fields">
                 <TextInput hasAutoFocus={!editing} label={props.copy.editor.serverId} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.errors.id === 'exists' ? props.copy.editor.idExists : props.copy.editor.required } : undefined} />
                 {props.state.draft.kind === 'stdio' ? (

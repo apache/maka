@@ -56,7 +56,7 @@ export type McpCopy = {
   };
   editor: {
     importTitle: string; editTitle(id: string): string; addTitle: string; importSubtitle: string; manualSubtitle: string;
-    modeAria: string; manual: string; pasteJson: string; jsonConfig: string; jsonHelp: string; cancel: string;
+    manual: string; pasteJson: string; jsonConfig: string; jsonHelp: string; cancel: string;
     importConnect: string; transportAria: string; localStdio: string; remoteUrl: string;
     serverId: string; command: string; commandPlaceholder: string; commandHelp: string;
     workingDirectory: string; workingDirectoryPlaceholder: string; environment: string; environmentHelp: string;
@@ -112,7 +112,7 @@ const MCP_COPY = {
     editor: {
       idExists: '此 ID 已存在，请使用其他名称。', oauth: 'OAuth 设置', oauthHelp: '通常自动发现。使用预注册客户端时，必须填写其所属授权服务器的 issuer。', issuer: 'OAuth issuer', clientId: '客户端 ID', clientSecret: '客户端密钥', scopes: '权限范围（空格分隔）', callbackPort: '回调端口（可选）',
       importTitle: '通过 JSON 导入', editTitle: (id) => `编辑 ${id}`, addTitle: '添加 MCP', importSubtitle: '粘贴 mcpServers 配置，同名 server 会被更新。',
-      manualSubtitle: '配置保存在当前工作区的 mcp.json。', modeAria: 'MCP 添加方式', manual: '手动配置', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
+      manualSubtitle: '配置保存在当前工作区的 mcp.json。', manual: '手动配置', pasteJson: '粘贴 JSON', jsonConfig: 'JSON 配置',
       jsonHelp: '支持完整 mcpServers 配置或直接的 server map。未在本次导入中出现的已有 MCP 会保留。', cancel: '取消', importConnect: '导入并连接',
       transportAria: '连接方式', localStdio: '本地 stdio', remoteUrl: '远程 URL',
       serverId: '服务器 ID', command: '命令',
@@ -170,7 +170,7 @@ const MCP_COPY = {
     editor: {
       idExists: '此 ID 已存在，請使用其他名稱。', oauth: 'OAuth 設定', oauthHelp: '通常自動探索。使用預註冊用戶端時，必須填寫所屬授權伺服器的 issuer。', issuer: 'OAuth issuer', clientId: '用戶端 ID', clientSecret: '用戶端密鑰', scopes: '權限範圍（空格分隔）', callbackPort: '回呼連接埠（選填）',
       importTitle: '透過 JSON 匯入', editTitle: (id) => `編輯 ${id}`, addTitle: '新增 MCP', importSubtitle: '貼上 mcpServers 設定，同名 server 會被更新。',
-      manualSubtitle: '設定儲存在目前工作區的 mcp.json。', modeAria: 'MCP 新增方式', manual: '手動設定', pasteJson: '貼上 JSON', jsonConfig: 'JSON 設定',
+      manualSubtitle: '設定儲存在目前工作區的 mcp.json。', manual: '手動設定', pasteJson: '貼上 JSON', jsonConfig: 'JSON 設定',
       jsonHelp: '支援完整 mcpServers 設定或直接的 server map。未在本次匯入中出現的已有 MCP 會保留。', cancel: '取消', importConnect: '匯入並連線',
       transportAria: '連線方式', localStdio: '本地 stdio', remoteUrl: '遠端 URL',
       serverId: '伺服器 ID', command: '命令',
@@ -228,7 +228,7 @@ const MCP_COPY = {
     editor: {
       idExists: 'This ID already exists. Choose another name.', oauth: 'OAuth settings', oauthHelp: 'Usually discovered automatically. Pre-registered clients must specify their authorization server issuer.', issuer: 'OAuth issuer', clientId: 'Client ID', clientSecret: 'Client secret', scopes: 'Scopes (space separated)', callbackPort: 'Callback port (optional)',
       importTitle: 'Import from JSON', editTitle: (id) => `Edit ${id}`, addTitle: 'Add MCP', importSubtitle: 'Paste an mcpServers configuration; servers with matching names will be updated.',
-      manualSubtitle: 'Configuration is saved in mcp.json for the current workspace.', modeAria: 'MCP add method', manual: 'Manual configuration', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
+      manualSubtitle: 'Configuration is saved in mcp.json for the current workspace.', manual: 'Manual configuration', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
       jsonHelp: 'Supports a complete mcpServers configuration or a server map. Existing MCP servers omitted from this import are preserved.', cancel: 'Cancel', importConnect: 'Import and connect',
       transportAria: 'Connection method', localStdio: 'Local stdio', remoteUrl: 'Remote URL',
       serverId: 'Server ID', command: 'Command',
