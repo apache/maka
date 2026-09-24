@@ -48,11 +48,14 @@ export function upgradeLegacyCustomProvider<T>(item: T): T {
 const HOSTED_SEARCH_MODEL = 'deepseek-v4-flash';
 
 function keepInferredHostedSearch<T extends object>(row: T): T {
-  const enabled = Reflect.get(row, 'enabledModelIds');
+  const models: unknown = Reflect.get(row, 'models');
+  const enabled: unknown = Reflect.get(row, 'enabledModelIds');
   if (
-    !Array.isArray(Reflect.get(row, 'models')) ||
-    !Array.isArray(enabled) ||
-    !enabled.includes(HOSTED_SEARCH_MODEL)
+    !Array.isArray(models) ||
+    !(
+      models.some((model) => model?.id === HOSTED_SEARCH_MODEL) ||
+      (Array.isArray(enabled) && enabled.includes(HOSTED_SEARCH_MODEL))
+    )
   ) {
     return row;
   }

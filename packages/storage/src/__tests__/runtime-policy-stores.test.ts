@@ -815,8 +815,11 @@ describe('runtime policy stores', () => {
               ? {}
               : { baseUrl: 'https://relay.example/v1' }),
             enabled: true,
-            enabledModelIds: ['relay-model', 'deepseek-v4-flash'],
-            models: [],
+            // Listed but disabled: enabling it later must still get hosted search.
+            enabledModelIds: ['relay-model'],
+            models: [{ id: 'deepseek-v4-flash' }],
+            modelSource: 'fetched',
+            modelsFetchedAt: 1,
             modelOverrides: { 'relay-model': { contextWindow: 64_000 } },
           })),
         })}\n`,
