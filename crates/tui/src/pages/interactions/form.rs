@@ -18,17 +18,14 @@
  */
 
 mod view;
+pub(super) use view::VALUE;
 
 use super::Command;
-use crate::{
-    app::{Action, Hit},
-    editor::Editor,
-};
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crate::editor::Editor;
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use maka_protocol::capability::form::{
     FormField, FormFieldSpec, FormRequester, FormResult, FormValue,
 };
-use ratatui::layout::Position;
 use std::collections::BTreeMap;
 
 struct Draft {
@@ -42,10 +39,6 @@ pub struct Form {
     fields: Vec<FormField>,
     drafts: Vec<Draft>,
     current: usize,
-    pub focus: Command,
-    scroll: usize,
-    max_scroll: usize,
-    reveal: bool,
 }
 impl Form {
     pub fn new(message: String, requester: FormRequester, fields: Vec<FormField>) -> Self {
@@ -102,15 +95,7 @@ impl Form {
             fields,
             drafts,
             current: 0,
-            focus: Command::Close,
-            scroll: 0,
-            max_scroll: 0,
-            reveal: false,
         }
-    }
-    pub fn reset_focus(&mut self) {
-        self.focus = Command::Close;
-        self.invalidate_geometry();
     }
     pub fn invalidate_geometry(&mut self) {
         for draft in &mut self.drafts {
@@ -241,8 +226,6 @@ impl Form {
         if !self.accepts(command) {
             return;
         }
-        self.focus = command;
-        self.reveal = true;
         let editable = self.editable();
         let Some(draft) = self.drafts.get_mut(self.current) else {
             return;
@@ -251,9 +234,7 @@ impl Form {
         match command {
             Command::Field(index) => {
                 self.current = index;
-                self.scroll = 0;
                 self.invalidate_geometry();
-                self.focus = Command::Close;
             }
             Command::Option(index) => {
                 draft.value = match &self.fields[self.current].spec {
@@ -299,109 +280,54 @@ impl Form {
             _ => {}
         }
     }
-    pub fn input(&mut self, event: Event, hits: &[Hit]) -> (bool, Option<Command>) {
-        match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key.code == KeyCode::Esc {
-                    return (true, Some(Command::Close));
-                }
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                    return (true, Some(Command::FormSubmit));
-                }
-                if matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
-                    || self.focus != Command::FreeText
-                        && matches!(key.code, KeyCode::Up | KeyCode::Down)
-                {
-                    let controls = self.controls();
-                    let index = controls
-                        .iter()
-                        .position(|command| *command == self.focus)
-                        .unwrap_or(0);
-                    let back = matches!(key.code, KeyCode::BackTab | KeyCode::Up)
-                        || key.modifiers.contains(KeyModifiers::SHIFT);
-                    self.focus = controls[if back {
-                        (index + controls.len() - 1) % controls.len()
-                    } else {
-                        (index + 1) % controls.len()
-                    }];
-                    self.reveal = true;
-                    return (true, None);
-                }
-                if self.focus == Command::FreeText {
-                    let draft = &mut self.drafts[self.current];
-                    let before = draft.editor.text().to_owned();
-                    let dirty = draft.editor.key(key);
-                    if draft.editor.text() != before {
-                        draft.present = true;
-                    }
-                    return (dirty, None);
-                }
-                match key.code {
-                    KeyCode::Enter | KeyCode::Char(' ') => (true, Some(self.focus)),
-                    KeyCode::PageUp | KeyCode::PageDown => {
-                        self.scroll = if key.code == KeyCode::PageUp {
-                            self.scroll.saturating_sub(10)
-                        } else {
-                            (self.scroll + 10).min(self.max_scroll)
-                        };
-                        self.reveal = false;
-                        (true, None)
-                    }
-                    _ => (false, None),
-                }
+    /// The value field's keys and pastes: writing sets the value.
+    pub fn edit(&mut self, event: &Event) -> Option<bool> {
+        if !self.editable() {
+            return None;
+        }
+        let draft = &mut self.drafts[self.current];
+        let before = draft.editor.text().to_owned();
+        let dirty = match event {
+            Event::Key(key)
+                if key.kind != KeyEventKind::Release
+                    && !matches!(
+                        key.code,
+                        KeyCode::Esc
+                            | KeyCode::Tab
+                            | KeyCode::BackTab
+                            | KeyCode::Up
+                            | KeyCode::Down
+                    )
+                    && !(key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('q' | 's'))) =>
+            {
+                draft.editor.key(*key)
             }
-            Event::Paste(text) if self.focus == Command::FreeText => {
-                let draft = &mut self.drafts[self.current];
-                let before = draft.editor.text().to_owned();
-                let dirty = draft.editor.insert(&text);
-                if draft.editor.text() != before {
-                    draft.present = true;
-                }
-                (dirty, None)
-            }
-            Event::Mouse(mouse) => {
-                let editable = self.editable();
-                if editable
-                    && let Some(draft) = self.drafts.get_mut(self.current)
-                    && (draft
-                        .editor
-                        .contains(Position::new(mouse.column, mouse.row))
-                        || draft.editor.dragging())
-                    && draft.editor.mouse(mouse)
-                {
-                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                        self.focus = Command::FreeText;
-                        draft.present = true;
-                    }
-                    return (true, None);
-                }
-                match mouse.kind {
-                    MouseEventKind::Down(MouseButton::Left) => (
-                        true,
-                        hits.iter()
-                            .rev()
-                            .find(|hit| hit.area.contains(Position::new(mouse.column, mouse.row)))
-                            .and_then(|hit| {
-                                if let Action::Interaction(command) = hit.action {
-                                    Some(command)
-                                } else {
-                                    None
-                                }
-                            }),
-                    ),
-                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                        self.scroll = if mouse.kind == MouseEventKind::ScrollUp {
-                            self.scroll.saturating_sub(3)
-                        } else {
-                            (self.scroll + 3).min(self.max_scroll)
-                        };
-                        self.reveal = false;
-                        (true, None)
-                    }
-                    _ => (false, None),
-                }
-            }
-            _ => (false, None),
+            Event::Paste(text) => draft.editor.insert(text),
+            _ => return None,
+        };
+        if draft.editor.text() != before {
+            draft.present = true;
+        }
+        Some(dirty)
+    }
+
+    /// The value field, when the current field is written rather than chosen.
+    pub fn editor(&mut self) -> Option<&mut Editor> {
+        self.editable()
+            .then(|| &mut self.drafts[self.current].editor)
+    }
+
+    /// The field shown, of those in the form.
+    #[cfg(test)]
+    pub(super) fn position(&self) -> usize {
+        self.current
+    }
+
+    /// A press in the value field includes the value.
+    pub fn choose_text(&mut self) {
+        if let Some(draft) = self.drafts.get_mut(self.current) {
+            draft.present = true;
         }
     }
 }
@@ -413,8 +339,9 @@ mod tests {
         tests::{draw, fixture},
     };
     use super::*;
+    use crate::app::Action;
     use crate::{Locale, LocalePreference, app::App};
-    use crossterm::event::{KeyEvent, MouseEvent};
+    use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
     use maka_protocol::{capability::form::decode_form_input, interaction};
     use serde_json::{Value, json};
 
@@ -439,11 +366,11 @@ mod tests {
     fn edit(form: &mut Form, index: usize, text: &str) {
         form.current = index;
         form.apply(Command::FreeText);
-        form.input(
-            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
-            &[],
-        );
-        form.input(Event::Paste(text.into()), &[]);
+        form.edit(&Event::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        form.edit(&Event::Paste(text.into()));
     }
     #[test]
     fn canonical_field_validation_preserves_defaults_omission_empty_and_wire_option_values() {
@@ -496,7 +423,7 @@ mod tests {
         let before = form.drafts[0].editor.text().to_owned();
         form.current = 0;
         form.apply(Command::FreeText);
-        form.input(Event::Paste("🦀".repeat(513)), &[]);
+        form.edit(&Event::Paste("🦀".repeat(513)));
         assert_eq!(form.drafts[0].editor.text(), before);
         form.apply(Command::Omit);
         assert!(form.result().is_none());
@@ -530,27 +457,9 @@ mod tests {
     }
     fn click(app: &mut App, command: Command) {
         draw(app, 100, 30);
-        let rect = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::Interaction(command))
-            .unwrap()
-            .area;
-        let (_, action) = app.input(Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x,
-            row: rect.y,
-            modifiers: KeyModifiers::NONE,
-        }));
-        if let Some(Action::Interaction(command)) = action {
+        if let Some(Action::Interaction(command)) = super::super::tests::press(app, command) {
             assert!(app.interaction_request(command).is_none());
         }
-        app.input(Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: rect.x,
-            row: rect.y,
-            modifiers: KeyModifiers::NONE,
-        }));
     }
     #[test]
     fn form_mouse_keyboard_resize_later_and_uncertain_submission_keep_one_original_draft() {
@@ -624,15 +533,16 @@ mod tests {
                     .current = index;
                 for (width, height) in [(1, 1), (29, 9), (30, 10), (80, 24), (120, 40)] {
                     let text = draw(&mut app, width, height);
-                    if width >= 30 && height >= 10 {
+                    // Too small for a sheet, it only says so.
+                    if width >= 80 {
                         let lines: Vec<_> = text.lines().collect();
                         let top = lines
                             .iter()
-                            .position(|line| line.contains('┌'))
+                            .position(|line| line.contains('╭'))
                             .unwrap_or_else(|| {
                                 panic!("{locale:?}, field {index}, {width}x{height}:\n{text}")
                             });
-                        let bottom = lines.iter().position(|line| line.contains('└')).unwrap();
+                        let bottom = lines.iter().position(|line| line.contains('╰')).unwrap();
                         assert!(
                             top.abs_diff(usize::from(height) - bottom - 1) <= 1,
                             "natural-height review must remain centered after field/locale/size changes"

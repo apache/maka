@@ -22,13 +22,13 @@ mod form;
 mod question;
 mod summary;
 mod view;
-use crate::app::{Action, App, ConnectionState};
+use crate::app::{App, ConnectionState};
 use maka_client::RequestFailure;
 use maka_protocol::interaction::{
     self, InteractionAnswer, InteractionRequest, InteractionSnapshot,
 };
 use serde_json::json;
-pub use view::draw;
+pub(crate) use view::{draw_field, sheet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -95,9 +95,6 @@ pub struct Review {
     state: State,
     outcome: Option<InteractionSnapshot>,
     error: Option<String>,
-    selected: usize,
-    scroll: usize,
-    max_scroll: usize,
     details: bool,
     questions: Option<question::Questions>,
     form: Option<form::Form>,
@@ -140,14 +137,12 @@ impl Review {
     }
     fn set(&mut self, state: State) {
         self.state = state;
-        self.selected = 0;
         self.details = false;
-        self.scroll = 0;
         if let Some(questions) = &mut self.questions {
-            questions.reset_focus();
+            questions.invalidate_geometry();
         }
         if let Some(form) = &mut self.form {
-            form.reset_focus();
+            form.invalidate_geometry();
         }
     }
 }
@@ -155,8 +150,13 @@ impl Review {
 pub struct Interactions {
     review: Option<Review>,
     pub visible: bool,
+    /// The sheet is on screen; its owner's shortcuts need it.
+    rendered: bool,
 }
 impl Interactions {
+    pub(crate) fn presented(&mut self, shown: bool) {
+        self.rendered = shown;
+    }
     pub fn invalidate_geometry(&mut self) {
         if let Some(form) = self.review.as_mut().and_then(|review| review.form.as_mut()) {
             form.invalidate_geometry();
@@ -253,9 +253,6 @@ impl App {
                     state: State::Ready,
                     outcome: None,
                     error: None,
-                    selected: 0,
-                    scroll: 0,
-                    max_scroll: 0,
                     details: false,
                     questions,
                     form,
@@ -337,13 +334,10 @@ impl App {
         let review = self.interactions.review.as_mut()?;
         if command == Command::Close {
             self.interactions.visible = false;
-            self.hits.clear();
             return None;
         }
         if command == Command::Details {
             review.details = !review.details;
-            review.scroll = 0;
-            self.hits.clear();
             return None;
         }
         if command == Command::Check {
@@ -430,113 +424,12 @@ impl App {
         }
         self.sync_interaction();
     }
-    pub fn interaction_input(&mut self, event: crossterm::event::Event) -> (bool, Option<Action>) {
-        use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
-        let Some(review) = &mut self.interactions.review else {
-            return (false, None);
-        };
-        let commands = review.commands();
-        if review.state == State::Ready
-            && let Some(form) = &mut review.form
-        {
-            let (dirty, command) = form.input(event, &self.hits);
-            return (
-                dirty,
-                command
-                    .map(Action::Interaction)
-                    .and_then(|action| self.apply(action)),
-            );
-        }
-        if review.state == State::Ready
-            && let Some(questions) = &mut review.questions
-        {
-            let (dirty, command) = questions.input(event, &self.hits);
-            return (
-                dirty,
-                command
-                    .map(Action::Interaction)
-                    .and_then(|action| self.apply(action)),
-            );
-        }
-        let action = match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Esc => Some(Command::Close),
-                KeyCode::Tab | KeyCode::Right => {
-                    review.selected = (review.selected + 1) % commands.len();
-                    None
-                }
-                KeyCode::BackTab | KeyCode::Left => {
-                    review.selected = (review.selected + commands.len() - 1) % commands.len();
-                    None
-                }
-                KeyCode::Up => {
-                    review.scroll = review.scroll.saturating_sub(1);
-                    None
-                }
-                KeyCode::Down => {
-                    review.scroll = (review.scroll + 1).min(review.max_scroll);
-                    None
-                }
-                KeyCode::PageUp => {
-                    review.scroll = review.scroll.saturating_sub(10);
-                    None
-                }
-                KeyCode::PageDown => {
-                    review.scroll = (review.scroll + 10).min(review.max_scroll);
-                    None
-                }
-                KeyCode::Home => {
-                    review.scroll = 0;
-                    None
-                }
-                KeyCode::End => {
-                    review.scroll = review.max_scroll;
-                    None
-                }
-                KeyCode::Enter => commands.get(review.selected).copied(),
-                _ => return (false, None),
-            },
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) => self
-                    .hits
-                    .iter()
-                    .rev()
-                    .find(|hit| {
-                        hit.area
-                            .contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                    })
-                    .and_then(|hit| {
-                        if let Action::Interaction(command) = hit.action {
-                            Some(command)
-                        } else {
-                            None
-                        }
-                    }),
-                MouseEventKind::ScrollUp => {
-                    review.scroll = review.scroll.saturating_sub(3);
-                    None
-                }
-                MouseEventKind::ScrollDown => {
-                    review.scroll = (review.scroll + 3).min(review.max_scroll);
-                    None
-                }
-                _ => return (false, None),
-            },
-            _ => return (false, None),
-        };
-        (
-            true,
-            action
-                .map(Action::Interaction)
-                .and_then(|action| self.apply(action)),
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Locale, LocalePreference, i18n::I18n, navigation::Route};
+    use crate::{Locale, LocalePreference, app::Action, i18n::I18n, navigation::Route};
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -598,20 +491,61 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
     }
+    /// Where a command's control sits in the review sheet.
+    pub(super) fn path(app: &App, command: Command) -> String {
+        let form = app
+            .interactions
+            .review
+            .as_ref()
+            .and_then(|review| review.form.as_ref());
+        match command {
+            Command::Close => "footer/close".into(),
+            Command::Details => "footer/details".into(),
+            Command::Check | Command::Submit | Command::FormSubmit => "footer/primary".into(),
+            Command::Deny => "decisions/deny".into(),
+            Command::Once => "decisions/once".into(),
+            Command::Turn => "decisions/turn".into(),
+            Command::Session => "decisions/session".into(),
+            Command::Question(index) => format!("tabs/{index}"),
+            Command::Option(index) if form.is_some() => {
+                format!("entry/choices/rows/option-{index}")
+            }
+            Command::Option(index) => format!("question/choices/rows/option-{index}"),
+            Command::Skip => "question/choices/rows/skip".into(),
+            Command::Empty => "entry/choices/rows/empty".into(),
+            Command::Omit => "entry/choices/rows/omit".into(),
+            Command::FreeText if form.is_some() => "entry/value/input".into(),
+            Command::FreeText => "question/answer/input".into(),
+            Command::Field(index) if form.is_some_and(|form| index < form.position()) => {
+                "about/pager/previous".into()
+            }
+            Command::Field(_) => "about/pager/next".into(),
+            Command::FormDecline => "outcome/responses/decline".into(),
+            Command::FormCancel => "outcome/responses/cancel".into(),
+        }
+    }
+    /// A press and release on a command's control, as drawn.
+    pub(super) fn press(app: &mut App, command: Command) -> Option<Action> {
+        let area = app.layer.rect(&path(app, command)).unwrap();
+        let mut action = None;
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            action = app
+                .input(Event::Mouse(MouseEvent {
+                    kind,
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }))
+                .1
+                .or(action);
+        }
+        action
+    }
     fn click(app: &mut App, command: Command) -> Option<Action> {
-        let area = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::Interaction(command))
-            .unwrap()
-            .area;
-        app.input(Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: area.x,
-            row: area.y,
-            modifiers: KeyModifiers::NONE,
-        }))
-        .1
+        press(app, command)
     }
     #[test]
     fn review_is_modal_defaults_to_later_and_mouse_and_keys_preserve_exact_permission_scope() {
@@ -619,11 +553,6 @@ mod tests {
         app.apply(Action::OpenInteraction);
         let text = draw(&mut app, 100, 30);
         assert!(text.contains("Write 中文🦀 file"), "{text}");
-        assert!(
-            app.hits
-                .iter()
-                .all(|hit| matches!(hit.action, Action::Interaction(_)))
-        );
         app.input(Event::Paste("must not leak".into()));
         assert_eq!(app.drafts["a"].text(), "keep draft");
         let action = app.input(key(KeyCode::Enter)).1.unwrap();
@@ -640,18 +569,8 @@ mod tests {
             draw(&mut app, 100, 30);
             let selected = click(&mut app, command).unwrap();
             assert_eq!(selected, Action::Interaction(command));
-            let count = app
-                .interactions
-                .review
-                .as_ref()
-                .unwrap()
-                .commands()
-                .iter()
-                .position(|item| *item == command)
-                .unwrap();
-            for _ in 0..count {
-                app.input(key(KeyCode::Tab));
-            }
+            // The keyboard reaches the same decision.
+            app.layer.focus_path(&path(&app, command));
             assert_eq!(app.input(key(KeyCode::Enter)).1, Some(selected));
             let (ticket, answer) = app.interaction_request(command).unwrap();
             assert!(

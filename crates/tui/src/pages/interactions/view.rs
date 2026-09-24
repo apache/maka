@@ -17,104 +17,174 @@
  * under the License.
  */
 
-use super::{Command, State, summary};
+use super::{Command, State, form::VALUE, question::ANSWER, summary};
 use crate::{
-    app::{Action, App, Hit},
-    pages::chat::layout,
-    view::safe,
+    app::{Action, App},
+    ui::{Node, On, Role, Sheet, Size, Tone},
 };
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use maka_protocol::interaction::InteractionOutcome;
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::Style,
-    widgets::{Block, Paragraph},
-};
+use ratatui::Frame;
 
-pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
-    app.hits.clear();
-    let Some(review) = &mut app.interactions.review else {
-        return;
+fn action(command: Command) -> Action {
+    Action::Interaction(command)
+}
+
+/// Reviewing a pinned Host request: what it asks (permissions, a client
+/// capability, questions or a form), what has happened to it, and the
+/// decisions it allows. Every state opens on Later, which leaves the
+/// request pending; nothing is decided by Enter alone.
+pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
+    if !app.interactions.visible {
+        return None;
+    }
+    let review = app.interactions.review.as_ref()?;
+    let enabled = |command: Command| app.interaction_enabled(command);
+    let (width, height) = app.frame_size.unwrap_or((80, 24));
+    let ready = review.state == State::Ready;
+    let questions = review.questions.as_ref().filter(|_| ready);
+    let form = review.form.as_ref().filter(|_| ready);
+    let mode = if questions.is_some() {
+        "questions"
+    } else if form.is_some() {
+        "form"
+    } else if review.details {
+        "details"
+    } else {
+        "summary"
     };
-    let width = area.width.saturating_sub(2).min(100);
-    let mut buttons = vec![];
-    let (mut x, mut y) = (0u16, 0u16);
-    for command in review.commands() {
-        let label = app
-            .i18n
-            .text(if command == Command::Details && review.details {
+    let mut sheet = Sheet::new(
+        format!(
+            "interaction:{}:{:?}:{mode}",
+            review.ticket.snapshot.interaction_id(),
+            review.state
+        ),
+        app.i18n.text("interaction-title"),
+    );
+    let status = if let Some(questions) = questions {
+        for node in questions.nodes(&app.i18n, app.chrome.ascii, (width, height), enabled) {
+            sheet = sheet.body(node);
+        }
+        questions
+            .error()
+            .map(|key| app.i18n.text(key))
+            .unwrap_or_else(|| {
+                app.i18n.format(
+                    "question-progress",
+                    &[
+                        ("value", &questions.answered().to_string()),
+                        ("count", &questions.len().to_string()),
+                    ],
+                )
+            })
+    } else if let Some(form) = form {
+        for node in form.nodes(&app.i18n, app.chrome.ascii, (width, height), enabled) {
+            sheet = sheet.body(node);
+        }
+        form.status(&app.i18n)
+    } else {
+        // The Host's words, one node per line; the kernel neutralizes them.
+        let lines = summary::text(review, &app.i18n)
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                Node::text(index.to_string(), vec![(line.to_owned(), Tone::Normal)])
+            })
+            .collect();
+        sheet = sheet.body(
+            Node::scroll("summary", Node::column("lines", lines))
+                .on(On::Scroll)
+                .size(Size::Upto(height.saturating_sub(14).max(3))),
+        );
+        app.i18n.text(state(review))
+    };
+    let status = Node::text("status", vec![(status, Tone::Warning)]);
+    let commands = review.commands();
+    // A permission's decisions, from refusing to the widest grant.
+    let decisions: Vec<_> = [
+        ("deny", Command::Deny, Role::Normal),
+        ("once", Command::Once, Role::Normal),
+        ("turn", Command::Turn, Role::Normal),
+        ("session", Command::Session, Role::Caution),
+    ]
+    .into_iter()
+    .filter(|(_, command, _)| commands.contains(command))
+    .map(|(key, command, role)| {
+        Node::button(key, app.i18n.text(command.label()), role)
+            .size(Size::Fixed(1))
+            .on(On::Activate(action(command)))
+            .enabled(enabled(command))
+    })
+    .collect();
+    if form.is_some() {
+        // The other answers a form allows sit under what it would send.
+        let respond = |key: &'static str, command: Command| {
+            Node::button(key, app.i18n.text(command.label()), Role::Normal)
+                .on(On::Activate(action(command)))
+                .enabled(enabled(command))
+        };
+        sheet = sheet.body(Node::column(
+            "outcome",
+            vec![
+                status,
+                Node::row(
+                    "responses",
+                    vec![
+                        respond("decline", Command::FormDecline),
+                        respond("cancel", Command::FormCancel),
+                    ],
+                )
+                .gap(2),
+            ],
+        ));
+    } else {
+        sheet = sheet.body(status);
+    }
+    if !decisions.is_empty() {
+        sheet = sheet.body(Node::column("decisions", decisions));
+    }
+    if commands.contains(&Command::Details) {
+        sheet = sheet.aside(
+            "details",
+            app.i18n.text(if review.details {
                 "interaction-hide-details"
             } else {
-                command.label()
-            });
-        let cells = (unicode_width::UnicodeWidthStr::width(label.as_str()) + 2)
-            .min(usize::from(width.saturating_sub(2))) as u16;
-        if x + cells > width.saturating_sub(2) {
-            x = 0;
-            y += 1;
-        }
-        buttons.push((command, label, Rect::new(x, y, cells, 1)));
-        x += cells;
+                Command::Details.label()
+            }),
+            action(Command::Details),
+            enabled(Command::Details),
+        );
     }
-    let button_rows = y + 1;
-    let editing_questions = review.state == State::Ready && review.questions.is_some();
-    let editing_form = review.state == State::Ready && review.form.is_some();
-    let content = (!editing_questions && !editing_form)
-        .then(|| layout::plain(&summary::text(review, &app.i18n), width.saturating_sub(2)));
-    let height = area.height.saturating_sub(2);
-    let height = if review.state == State::Ready
-        && let Some(questions) = &mut review.questions
-    {
-        questions
-            .preferred_height(width.saturating_sub(2), &app.i18n, app.chrome.ascii)
-            .max(8)
-            .min(height)
-    } else if review.state == State::Ready
-        && let Some(form) = &mut review.form
-    {
-        form.preferred_height(
-            width.saturating_sub(2),
-            &app.i18n,
-            app.chrome.ascii,
-            button_rows,
-        )
-        .max(8)
-        .min(height)
+    sheet = sheet.button(
+        "close",
+        app.i18n.text(Command::Close.label()),
+        Role::Normal,
+        action(Command::Close),
+        true,
+    );
+    let primary = if commands.contains(&Command::Check) {
+        Some(Command::Check)
+    } else if questions.is_some() {
+        Some(Command::Submit)
+    } else if form.is_some() {
+        Some(Command::FormSubmit)
     } else {
-        content
-            .as_ref()
-            .and_then(|content| content.as_ref().ok())
-            .map(|layout| {
-                layout
-                    .lines
-                    .len()
-                    .saturating_add(4 + usize::from(button_rows))
-            })
-            .unwrap_or(8)
-            .max(8)
-            .min(usize::from(height)) as u16
+        None
     };
-    let popup = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    app.modal_area = Some(popup);
-    crate::view::clear_overlay(frame, popup);
-    let block = Block::bordered()
-        .title(app.i18n.text("interaction-title"))
-        .style(base)
-        .border_style(Style::default().fg(app.theme.colors().warning));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-    let body = Rect::new(
-        inner.x,
-        inner.y,
-        inner.width,
-        inner.height.saturating_sub(button_rows + 2),
-    );
-    let state = match review.state {
+    if let Some(command) = primary {
+        sheet = sheet.button(
+            "primary",
+            app.i18n.text(command.label()),
+            Role::Primary,
+            action(command),
+            enabled(command),
+        );
+    }
+    Some(sheet.focus("close"))
+}
+
+fn state(review: &super::Review) -> &'static str {
+    match review.state {
         State::Ready => "interaction-ready",
         State::Sending => "interaction-sending",
         State::Unknown => "interaction-unknown",
@@ -128,115 +198,96 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
             Some(InteractionOutcome::Closure { .. }) => "interaction-closed",
             _ => "interaction-resolved",
         },
-    };
-    if editing_questions {
-        app.hits.extend(review.questions.as_mut().unwrap().draw(
-            frame,
-            body,
-            &app.i18n,
-            app.chrome.ascii,
-            app.theme.colors(),
-        ));
-    } else if editing_form {
-        app.hits.extend(review.form.as_mut().unwrap().draw(
-            frame,
-            body,
-            &app.i18n,
-            app.chrome.ascii,
-            app.theme.colors(),
-        ));
-    } else {
-        match content.expect("non-editing review has display content") {
-            Ok(layout) => {
-                review.max_scroll = layout.lines.len().saturating_sub(usize::from(body.height));
-                review.scroll = review.scroll.min(review.max_scroll);
-                for (row, line) in layout
-                    .lines
-                    .into_iter()
-                    .skip(review.scroll)
-                    .take(usize::from(body.height))
-                    .enumerate()
-                {
-                    frame.render_widget(
-                        Paragraph::new(line.line),
-                        Rect::new(body.x, body.y + row as u16, body.width, 1),
-                    );
-                }
-            }
-            Err(error) => frame.render_widget(Paragraph::new(safe(error)), body),
-        }
     }
-    let status = if editing_questions {
-        let questions = review.questions.as_ref().unwrap();
-        questions
-            .error()
-            .map(|key| app.i18n.text(key))
-            .unwrap_or_else(|| {
-                app.i18n.format(
-                    "question-progress",
-                    &[
-                        ("value", &questions.answered().to_string()),
-                        ("count", &questions.len().to_string()),
-                    ],
-                )
-            })
-    } else if editing_form {
-        review.form.as_ref().unwrap().status(&app.i18n)
-    } else {
-        app.i18n.text(state)
+}
+
+/// Paints the free-text answer or the written form value over the sheet.
+pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
+    let focused = app.layer.focused_path().map(str::to_owned);
+    let answer = app.layer.slot(ANSWER).filter(|rect| !rect.is_empty());
+    let value = app.layer.slot(VALUE).filter(|rect| !rect.is_empty());
+    let colors = app.theme.colors();
+    let (custom, input) = (
+        app.i18n.text("question-custom"),
+        app.i18n.text("form-input"),
+    );
+    let Some(review) = app.interactions.review.as_mut() else {
+        return;
     };
-    let status_y = body.bottom();
-    frame.render_widget(
-        Paragraph::new(status).style(Style::default().fg(app.theme.colors().warning)),
-        Rect::new(inner.x, status_y, inner.width, 1).intersection(inner),
-    );
-    frame.render_widget(
-        Paragraph::new(app.i18n.text(if editing_form {
-            "form-help"
-        } else if editing_questions {
-            "question-help"
-        } else {
-            "interaction-help"
-        }))
-        .style(Style::default().fg(app.theme.colors().subtle)),
-        Rect::new(inner.x, status_y + 1, inner.width, 1).intersection(inner),
-    );
-    for (index, (command, label, mut rect)) in buttons.into_iter().enumerate() {
-        rect.x += inner.x;
-        rect.y += status_y + 2;
-        rect = rect.intersection(inner);
-        let enabled = (matches!(command, Command::Close | Command::Details)
-            || matches!(&app.connection, crate::app::ConnectionState::Connected {root_id,..} if *root_id == review.ticket.root))
-            && (command != Command::Submit
-                || review
-                    .questions
-                    .as_ref()
-                    .is_some_and(|questions| questions.answers().is_some()))
-            && (command != Command::FormSubmit
-                || review
-                    .form
-                    .as_ref()
-                    .is_some_and(|form| form.result().is_some()));
-        let focused = if editing_questions {
-            review.questions.as_ref().unwrap().focus == command
-        } else if editing_form {
-            review.form.as_ref().unwrap().focus == command
-        } else {
-            index == review.selected
-        };
-        let style = if !enabled {
-            Style::default().fg(app.theme.colors().subtle)
-        } else if focused {
-            app.theme.colors().selected()
-        } else {
-            Style::default().fg(app.theme.colors().accent)
-        };
-        frame.render_widget(Paragraph::new(format!(" {label} ")).style(style), rect);
-        if enabled && !rect.is_empty() {
-            app.hits.push(Hit {
-                area: rect,
-                action: Action::Interaction(command),
-            });
+    let ready = review.state == State::Ready;
+    if let Some(questions) = &mut review.questions {
+        let here = focused.as_deref() == Some(&format!("{ANSWER}/input"));
+        questions.draw(frame, answer.filter(|_| ready), here, &custom, colors);
+    }
+    if let Some(form) = &mut review.form {
+        let here = focused.as_deref() == Some(&format!("{VALUE}/input"));
+        form.draw(frame, value.filter(|_| ready), here, &input, colors);
+    }
+}
+
+impl App {
+    /// The answer and value fields' keys, pastes and pointer, and Ctrl+S to
+    /// submit, taken before the sheet while it is on screen.
+    pub(crate) fn interaction_sheet_input(
+        &mut self,
+        event: &Event,
+    ) -> Option<(bool, Option<Action>)> {
+        if !self.interactions.rendered {
+            return None;
         }
+        let focused = self.layer.focused_path().map(str::to_owned);
+        let review = self.interactions.review.as_mut()?;
+        if review.state != State::Ready {
+            return None;
+        }
+        if let Event::Key(key) = event
+            && key.kind != KeyEventKind::Release
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('s')
+        {
+            let command = if review.questions.is_some() {
+                Command::Submit
+            } else if review.form.is_some() {
+                Command::FormSubmit
+            } else {
+                return None;
+            };
+            return Some((true, self.apply(action(command))));
+        }
+        let in_answer = focused.as_deref() == Some(&format!("{ANSWER}/input"));
+        let in_value = focused.as_deref() == Some(&format!("{VALUE}/input"));
+        let press =
+            matches!(event, Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)));
+        if let Some(questions) = &mut review.questions {
+            if let Event::Mouse(mouse) = event {
+                if !questions.editor().takes(mouse) {
+                    return None;
+                }
+                let changed = questions.editor().mouse(*mouse);
+                if press {
+                    questions.choose_text();
+                    self.layer.focus(ANSWER);
+                }
+                return Some((changed || press, None));
+            }
+            return in_answer
+                .then(|| questions.edit(event))
+                .flatten()
+                .map(|dirty| (dirty, None));
+        }
+        let form = review.form.as_mut()?;
+        if let Event::Mouse(mouse) = event {
+            let editor = form.editor().filter(|editor| editor.takes(mouse))?;
+            let changed = editor.mouse(*mouse);
+            if press {
+                form.choose_text();
+                self.layer.focus(VALUE);
+            }
+            return Some((changed || press, None));
+        }
+        in_value
+            .then(|| form.edit(event))
+            .flatten()
+            .map(|dirty| (dirty, None))
     }
 }

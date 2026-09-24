@@ -118,6 +118,7 @@ impl App {
             Overlay::Onboarding => crate::pages::onboarding::sheet(self),
             Overlay::Attachments => crate::pages::attachments::sheet(self),
             Overlay::Revision => crate::pages::revision::sheet(self),
+            Overlay::Interactions => crate::pages::interactions::sheet(self),
             _ => None,
         }
     }
@@ -148,6 +149,7 @@ impl App {
             }
             Overlay::Attachments => self.attachments.presented(shown),
             Overlay::Revision => self.revision.presented(shown),
+            Overlay::Interactions => self.interactions.presented(shown),
             _ => {}
         }
     }
@@ -196,8 +198,8 @@ impl App {
             | Overlay::Theme
             | Overlay::Onboarding
             | Overlay::Attachments
-            | Overlay::Revision => unreachable!("presented as sheets"),
-            Overlay::Interactions => self.interactions_overlay_input(event),
+            | Overlay::Revision
+            | Overlay::Interactions => unreachable!("presented as sheets"),
             Overlay::Palette => self.palette_input(event),
         }
     }
@@ -222,6 +224,7 @@ impl App {
             Overlay::Onboarding => self.onboarding_sheet_input(&event),
             Overlay::Attachments => self.attachment_sheet_input(&event),
             Overlay::Revision => self.revision_sheet_input(&event),
+            Overlay::Interactions => self.interaction_sheet_input(&event),
             _ => None,
         };
         if let Some(outcome) = owned {
@@ -248,31 +251,6 @@ impl App {
         }
         let action = outcome.message.and_then(|action| self.apply(action));
         (outcome.redraw || action.is_some(), action)
-    }
-
-    fn interactions_overlay_input(&mut self, event: Event) -> (bool, Option<Action>) {
-        if let Event::Key(key) = &event
-            && key.kind != KeyEventKind::Release
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Char('q')
-        {
-            return (true, Some(Action::Quit));
-        }
-        // A minimized/too-small terminal shows only a size warning, not the
-        // choices. Never activate an invisible approval with a retained focus.
-        if !self
-            .frame_size
-            .is_some_and(|(width, height)| width >= 30 && height >= 10)
-        {
-            if let Event::Key(key) = &event
-                && key.kind != KeyEventKind::Release
-                && key.code == KeyCode::Esc
-            {
-                return (true, Overlay::Interactions.dismiss());
-            }
-            return (false, None);
-        }
-        self.interaction_input(event)
     }
 }
 
@@ -308,6 +286,7 @@ pub(crate) fn draw(
             Overlay::Onboarding => pages::onboarding::draw_field(frame, app),
             Overlay::Attachments => pages::attachments::draw_field(frame, app),
             Overlay::Revision => pages::revision::draw_field(frame, app),
+            Overlay::Interactions => pages::interactions::draw_field(frame, app),
             _ => {}
         }
         app.layer.repaint_chooser(frame, context);
@@ -339,8 +318,8 @@ pub(crate) fn draw(
         | Overlay::Theme
         | Overlay::Onboarding
         | Overlay::Attachments
-        | Overlay::Revision => unreachable!("presented as sheets"),
-        Overlay::Interactions => pages::interactions::draw(frame, app, area, base),
+        | Overlay::Revision
+        | Overlay::Interactions => unreachable!("presented as sheets"),
         Overlay::Palette => pages::commands::draw(frame, app, area, base),
     }
 }

@@ -19,20 +19,17 @@
 
 use super::Command;
 use crate::{
-    app::{Action, Hit},
+    app::Action,
     editor::Editor,
     i18n::I18n,
-    pages::chat::layout,
+    ui::{Node, On, Role, Size, Tone},
+    view::safe,
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use maka_protocol::interaction::InteractionQuestion;
-use ratatui::{
-    Frame,
-    layout::{Constraint, Layout, Position, Rect},
-    style::Style,
-    text::Line,
-    widgets::Paragraph,
-};
+
+/// The free-text answer field, by its path in the sheet.
+pub(super) const ANSWER: &str = "question/answer";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answer {
@@ -49,10 +46,6 @@ pub struct Questions {
     questions: Vec<InteractionQuestion>,
     drafts: Vec<Draft>,
     current: usize,
-    pub focus: Command,
-    scroll: usize,
-    max_scroll: usize,
-    reveal: bool,
 }
 impl Questions {
     pub fn new(questions: Vec<InteractionQuestion>) -> Self {
@@ -66,30 +59,20 @@ impl Questions {
                 .collect(),
             questions,
             current: 0,
-            focus: Command::Close,
-            scroll: 0,
-            max_scroll: 0,
-            reveal: false,
         }
-    }
-    pub fn reset_focus(&mut self) {
-        self.focus = Command::Close;
-        self.invalidate_geometry();
     }
     pub fn invalidate_geometry(&mut self) {
         for draft in &mut self.drafts {
             draft.editor.invalidate_geometry();
         }
     }
-    fn controls(&self) -> Vec<Command> {
-        let mut controls = vec![Command::Close];
-        controls.extend((0..self.questions.len()).map(Command::Question));
-        controls.extend((0..self.questions[self.current].options.len()).map(Command::Option));
-        controls.extend([Command::FreeText, Command::Skip, Command::Submit]);
-        controls
-    }
     pub fn accepts(&self, command: Command) -> bool {
-        self.controls().contains(&command)
+        match command {
+            Command::Close | Command::FreeText | Command::Skip | Command::Submit => true,
+            Command::Question(index) => index < self.questions.len(),
+            Command::Option(index) => index < self.questions[self.current].options.len(),
+            _ => false,
+        }
     }
     fn answer(&self, index: usize) -> Option<Option<String>> {
         match self.drafts[index].answer {
@@ -124,12 +107,9 @@ impl Questions {
         if !self.accepts(command) {
             return;
         }
-        self.focus = command;
-        self.reveal = true;
         match command {
             Command::Question(index) => {
                 self.current = index;
-                self.scroll = 0;
                 self.invalidate_geometry();
             }
             Command::Option(index) => self.drafts[self.current].answer = Answer::Option(index),
@@ -138,328 +118,191 @@ impl Questions {
             _ => {}
         }
     }
-    pub fn input(&mut self, event: Event, hits: &[Hit]) -> (bool, Option<Command>) {
-        match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key.code == KeyCode::Esc {
-                    return (true, Some(Command::Close));
-                }
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                    return (true, Some(Command::Submit));
-                }
-                let backwards =
-                    key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT);
-                if matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
-                    || self.focus != Command::FreeText
-                        && matches!(key.code, KeyCode::Up | KeyCode::Down)
-                {
-                    let controls = self.controls();
-                    let index = controls
-                        .iter()
-                        .position(|command| *command == self.focus)
-                        .unwrap_or(0);
-                    let backwards = backwards || key.code == KeyCode::Up;
-                    self.focus = controls[if backwards {
-                        (index + controls.len() - 1) % controls.len()
-                    } else {
-                        (index + 1) % controls.len()
-                    }];
-                    self.reveal = true;
-                    return (true, None);
-                }
-                if self.focus == Command::FreeText {
-                    let draft = &mut self.drafts[self.current];
-                    let before = draft.editor.text().to_owned();
-                    let dirty = draft.editor.key(key);
-                    if draft.editor.text() != before {
-                        draft.answer = Answer::Text;
-                    }
-                    return (dirty, None);
-                }
-                match key.code {
-                    KeyCode::Enter | KeyCode::Char(' ') => (true, Some(self.focus)),
-                    KeyCode::PageUp => {
-                        self.scroll = self.scroll.saturating_sub(10);
-                        self.reveal = false;
-                        (true, None)
-                    }
-                    KeyCode::PageDown => {
-                        self.scroll = (self.scroll + 10).min(self.max_scroll);
-                        self.reveal = false;
-                        (true, None)
-                    }
-                    KeyCode::Home => {
-                        self.scroll = 0;
-                        self.reveal = false;
-                        (true, None)
-                    }
-                    KeyCode::End => {
-                        self.scroll = self.max_scroll;
-                        self.reveal = false;
-                        (true, None)
-                    }
-                    _ => (false, None),
-                }
+
+    /// The free-text field's keys and pastes: writing chooses it as the answer.
+    pub fn edit(&mut self, event: &Event) -> Option<bool> {
+        let draft = &mut self.drafts[self.current];
+        let before = draft.editor.text().to_owned();
+        let dirty = match event {
+            Event::Key(key)
+                if key.kind != KeyEventKind::Release
+                    && !matches!(
+                        key.code,
+                        KeyCode::Esc
+                            | KeyCode::Tab
+                            | KeyCode::BackTab
+                            | KeyCode::Up
+                            | KeyCode::Down
+                    )
+                    && !(key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('q' | 's'))) =>
+            {
+                draft.editor.key(*key)
             }
-            Event::Paste(text) if self.focus == Command::FreeText => {
-                let draft = &mut self.drafts[self.current];
-                let before = draft.editor.text().to_owned();
-                let dirty = draft.editor.insert(&text);
-                if draft.editor.text() != before {
-                    draft.answer = Answer::Text;
-                }
-                (dirty, None)
-            }
-            Event::Mouse(mouse) => {
-                let draft = &mut self.drafts[self.current];
-                if (draft
-                    .editor
-                    .contains(Position::new(mouse.column, mouse.row))
-                    || draft.editor.dragging())
-                    && draft.editor.mouse(mouse)
-                {
-                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                        self.focus = Command::FreeText;
-                        draft.answer = Answer::Text;
-                    }
-                    return (true, None);
-                }
-                match mouse.kind {
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        let command = hits
-                            .iter()
-                            .rev()
-                            .find(|hit| hit.area.contains(Position::new(mouse.column, mouse.row)))
-                            .and_then(|hit| {
-                                if let Action::Interaction(command) = hit.action {
-                                    Some(command)
-                                } else {
-                                    None
-                                }
-                            });
-                        (true, command)
-                    }
-                    MouseEventKind::ScrollUp => {
-                        self.scroll = self.scroll.saturating_sub(3);
-                        self.reveal = false;
-                        (true, None)
-                    }
-                    MouseEventKind::ScrollDown => {
-                        self.scroll = (self.scroll + 3).min(self.max_scroll);
-                        self.reveal = false;
-                        (true, None)
-                    }
-                    _ => (false, None),
-                }
-            }
-            _ => (false, None),
-        }
-    }
-    fn lines(
-        &self,
-        width: u16,
-        i18n: &I18n,
-        ascii: bool,
-        colors: crate::theme::Palette,
-    ) -> Vec<(Line<'static>, Option<Command>)> {
-        let mut lines: Vec<(Line<'static>, Option<Command>)> = vec![];
-        let mut append = |text: String, command: Option<Command>, style: Style| {
-            // The protocol bounds questions/options. Layout still enforces its own capacity.
-            match layout::plain(&text, width) {
-                Ok(layout) => lines.extend(
-                    layout
-                        .lines
-                        .into_iter()
-                        .map(|line| (line.line.style(style), command)),
-                ),
-                Err(error) => lines.push((Line::raw(error), None)),
-            }
+            Event::Paste(text) => draft.editor.insert(text),
+            _ => return None,
         };
-        append(
-            self.questions[self.current].question.clone(),
-            None,
-            Style::default(),
-        );
-        append(String::new(), None, Style::default());
-        for (index, option) in self.questions[self.current].options.iter().enumerate() {
-            let chosen = self.drafts[self.current].answer == Answer::Option(index);
-            let mark = if chosen {
-                if ascii { "(*)" } else { "●" }
-            } else if ascii {
-                "( )"
-            } else {
-                "○"
-            };
-            let command = Command::Option(index);
-            let style = if self.focus == command {
-                colors.selected()
-            } else {
-                Style::default().fg(colors.accent)
-            };
-            let mut text = format!("{mark} {}", option.label);
-            if let Some(description) = &option.description {
-                text.push_str(&format!("\n  {description}"));
-            }
-            append(text, Some(command), style);
-            append(String::new(), None, Style::default());
+        if draft.editor.text() != before {
+            draft.answer = Answer::Text;
         }
-        let skipped = self.drafts[self.current].answer == Answer::Skip;
-        append(
-            format!(
-                "{} {}",
-                if skipped { "[x]" } else { "[ ]" },
-                i18n.text("question-skip")
-            ),
-            Some(Command::Skip),
-            if self.focus == Command::Skip {
-                colors.selected()
-            } else {
-                Style::default().fg(colors.accent)
-            },
-        );
-        lines
+        Some(dirty)
     }
-    pub fn preferred_height(&mut self, width: u16, i18n: &I18n, ascii: bool) -> u16 {
-        let rows = self
-            .lines(width, i18n, ascii, crate::theme::Palette::default())
-            .len();
-        let editor = self.drafts[self.current]
-            .editor
-            .preferred_height(width.saturating_sub(3), 3);
-        // Border (2), question tabs (1), status/help/buttons (3), editor, content.
-        rows.saturating_add(6 + usize::from(editor))
-            .min(usize::from(u16::MAX)) as u16
+
+    pub fn editor(&mut self) -> &mut Editor {
+        &mut self.drafts[self.current].editor
     }
-    pub fn draw(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
+
+    /// A press in the field writes the answer there.
+    pub fn choose_text(&mut self) {
+        self.drafts[self.current].answer = Answer::Text;
+    }
+
+    /// The question tabs, the current question with its choices, and the
+    /// free-text answer row.
+    pub(super) fn nodes(
+        &self,
         i18n: &I18n,
         ascii: bool,
-        colors: crate::theme::Palette,
-    ) -> Vec<Hit> {
-        let mut hits = vec![];
-        let entry_height = self.drafts[self.current].editor.preferred_height(
-            area.width.saturating_sub(3),
-            area.height.saturating_sub(2).clamp(1, 3),
-        );
-        let parts = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(entry_height),
-        ])
-        .split(area);
-        for index in 0..self.questions.len() {
-            let mark = match self.answer(index) {
-                None => {
-                    if ascii {
-                        "?"
-                    } else {
-                        "○"
+        (width, height): (u16, u16),
+        enabled: impl Fn(Command) -> bool,
+    ) -> Vec<Node<Action>> {
+        let action = Action::Interaction;
+        let tabs = (0..self.questions.len())
+            .map(|index| {
+                let mark = match self.answer(index) {
+                    None => {
+                        if ascii {
+                            "?"
+                        } else {
+                            "○"
+                        }
                     }
-                }
-                Some(None) => "-",
-                Some(Some(_)) => {
-                    if ascii {
-                        "*"
-                    } else {
-                        "✓"
+                    Some(None) => "-",
+                    Some(Some(_)) => {
+                        if ascii {
+                            "*"
+                        } else {
+                            "✓"
+                        }
                     }
-                }
+                };
+                let command = Command::Question(index);
+                Node::button(
+                    index.to_string(),
+                    format!("{} {mark}", index + 1),
+                    Role::Normal,
+                )
+                .on(On::Activate(action(command)))
+                .enabled(enabled(command))
+                .current(index == self.current)
+            })
+            .collect();
+        let question = &self.questions[self.current];
+        let draft = &self.drafts[self.current];
+        let mut choices = vec![Node::text(
+            "question",
+            vec![(safe(&question.question), Tone::Normal)],
+        )];
+        for (index, option) in question.options.iter().enumerate() {
+            let chosen = draft.answer == Answer::Option(index);
+            let mark = match (chosen, ascii) {
+                (true, false) => "●",
+                (false, false) => "○",
+                (true, true) => "(*)",
+                (false, true) => "( )",
             };
-            let rect =
-                Rect::new(parts[0].x + index as u16 * 6, parts[0].y, 6, 1).intersection(parts[0]);
+            let mut lines = vec![Node::text(
+                "label",
+                vec![(format!("{mark} {}", safe(&option.label)), Tone::Accent)],
+            )];
+            if let Some(description) = &option.description {
+                lines.push(Node::text(
+                    "description",
+                    vec![(format!("  {}", safe(description)), Tone::Subtle)],
+                ));
+            }
+            let command = Command::Option(index);
+            choices.push(
+                Node::column(format!("option-{index}"), lines)
+                    .on(On::Activate(action(command)))
+                    .enabled(enabled(command))
+                    .current(chosen),
+            );
+        }
+        let skipped = draft.answer == Answer::Skip;
+        choices.push(
+            Node::text(
+                "skip",
+                vec![(
+                    format!(
+                        "{} {}",
+                        if skipped { "[x]" } else { "[ ]" },
+                        i18n.text("question-skip")
+                    ),
+                    Tone::Accent,
+                )],
+            )
+            .on(On::Activate(action(Command::Skip)))
+            .enabled(enabled(Command::Skip))
+            .current(skipped),
+        );
+        let written = draft.answer == Answer::Text;
+        let prefix = match (written, ascii) {
+            (true, false) => "●› ",
+            (false, false) => "○› ",
+            (true, true) => "*> ",
+            (false, true) => " > ",
+        };
+        let rows = draft
+            .editor
+            .rows(crate::ui::content_width(width).saturating_sub(3))
+            .clamp(1, 3);
+        // The written answer is the last choice, right under the others.
+        vec![
+            Node::row("tabs", tabs).gap(1),
+            Node::column(
+                "question",
+                vec![
+                    Node::scroll("choices", Node::column("rows", choices).gap(1))
+                        .size(Size::Upto(height.saturating_sub(16).max(4))),
+                    Node::row(
+                        "answer",
+                        vec![
+                            Node::text("prefix", vec![(prefix.into(), Tone::Accent)])
+                                .size(Size::Fixed(3)),
+                            Node::slot("input", rows)
+                                .on(On::Activate(action(Command::FreeText)))
+                                .enabled(enabled(Command::FreeText))
+                                .size(Size::Fill),
+                        ],
+                    ),
+                ],
+            ),
+        ]
+    }
+
+    /// Paints the free-text answer into its row, with a prompt while empty.
+    pub(super) fn draw(
+        &mut self,
+        frame: &mut ratatui::Frame<'_>,
+        rect: Option<ratatui::layout::Rect>,
+        focused: bool,
+        prompt: &str,
+        colors: crate::theme::Palette,
+    ) {
+        let editor = &mut self.drafts[self.current].editor;
+        let Some(rect) = rect else {
+            editor.invalidate_geometry();
+            return;
+        };
+        editor.draw(frame, rect, focused, colors);
+        if editor.text().is_empty() && !focused {
             frame.render_widget(
-                Paragraph::new(format!(
-                    "{}{} {}{}",
-                    if index == self.current { "[" } else { " " },
-                    index + 1,
-                    mark,
-                    if index == self.current { "]" } else { " " }
-                ))
-                .style(if self.focus == Command::Question(index) {
-                    colors.selected()
-                } else {
-                    Style::default().fg(colors.accent)
-                }),
+                ratatui::widgets::Paragraph::new(prompt)
+                    .style(ratatui::style::Style::default().fg(colors.subtle)),
                 rect,
             );
-            if !rect.is_empty() {
-                hits.push(Hit {
-                    area: rect,
-                    action: Action::Interaction(Command::Question(index)),
-                });
-            }
         }
-        let lines = self.lines(parts[1].width, i18n, ascii, colors);
-        self.max_scroll = lines.len().saturating_sub(usize::from(parts[1].height));
-        if self.reveal {
-            if let Some(index) = lines
-                .iter()
-                .position(|(_, command)| *command == Some(self.focus))
-            {
-                if index < self.scroll {
-                    self.scroll = index;
-                } else if index >= self.scroll + usize::from(parts[1].height) {
-                    self.scroll = (index + 1).saturating_sub(usize::from(parts[1].height));
-                }
-            }
-            self.reveal = false;
-        }
-        self.scroll = self.scroll.min(self.max_scroll);
-        for (row, (line, command)) in lines
-            .into_iter()
-            .skip(self.scroll)
-            .take(usize::from(parts[1].height))
-            .enumerate()
-        {
-            let rect = Rect::new(parts[1].x, parts[1].y + row as u16, parts[1].width, 1);
-            frame.render_widget(Paragraph::new(line), rect);
-            if let Some(command) = command {
-                hits.push(Hit {
-                    area: rect,
-                    action: Action::Interaction(command),
-                });
-            }
-        }
-        let entry = parts[2];
-        let focused = self.focus == Command::FreeText;
-        let chosen = self.drafts[self.current].answer == Answer::Text;
-        let prefix = if chosen {
-            if ascii { "*> " } else { "●› " }
-        } else if ascii {
-            " > "
-        } else {
-            "○› "
-        };
-        frame.render_widget(
-            Paragraph::new(prefix).style(Style::default().fg(colors.accent)),
-            entry,
-        );
-        let text_area = Rect::new(
-            entry.x + 3,
-            entry.y,
-            entry.width.saturating_sub(3),
-            entry.height,
-        )
-        .intersection(entry);
-        self.drafts[self.current]
-            .editor
-            .draw(frame, text_area, focused, colors);
-        if self.drafts[self.current].editor.text().is_empty() {
-            frame.render_widget(
-                Paragraph::new(i18n.text("question-custom"))
-                    .style(Style::default().fg(colors.subtle)),
-                text_area,
-            );
-        }
-        if !entry.is_empty() {
-            hits.push(Hit {
-                area: entry,
-                action: Action::Interaction(Command::FreeText),
-            });
-        }
-        hits
     }
 }
 
@@ -470,8 +313,9 @@ mod tests {
         tests::{draw, fixture},
     };
     use super::*;
+    use crate::app::Action;
     use crate::{Locale, LocalePreference, app::App};
-    use crossterm::event::{KeyEvent, MouseEvent};
+    use crossterm::event::KeyEvent;
     use maka_client::{ClientError, RequestFailure};
     use maka_protocol::interaction::{self, InteractionAnswer};
     use serde_json::json;
@@ -490,27 +334,9 @@ mod tests {
     }
     fn click(app: &mut App, command: Command) {
         draw(app, 100, 30);
-        let rect = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::Interaction(command))
-            .unwrap()
-            .area;
-        let (_, action) = app.input(Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x,
-            row: rect.y,
-            modifiers: KeyModifiers::NONE,
-        }));
-        if let Some(Action::Interaction(command)) = action {
+        if let Some(Action::Interaction(command)) = super::super::tests::press(app, command) {
             assert!(app.interaction_request(command).is_none());
         }
-        app.input(Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: rect.x,
-            row: rect.y,
-            modifiers: KeyModifiers::NONE,
-        }));
     }
     fn questions(app: &App) -> &Questions {
         app.interactions
@@ -537,9 +363,9 @@ mod tests {
         let text = draw(&mut app, 100, 30);
         assert!(text.contains("Pick a destination") && text.contains("First choice"));
         let lines: Vec<_> = text.lines().collect();
-        let top = lines.iter().position(|line| line.contains('┌')).unwrap();
-        let bottom = lines.iter().position(|line| line.contains('└')).unwrap();
-        assert!(bottom - top < 20, "short questions retain natural height");
+        let top = lines.iter().position(|line| line.contains('╭')).unwrap();
+        let bottom = lines.iter().position(|line| line.contains('╰')).unwrap();
+        assert!(bottom - top < 24, "short questions retain natural height");
         assert!(
             top.abs_diff(29 - bottom) <= 1,
             "question review is centered"
@@ -583,14 +409,12 @@ mod tests {
         assert_eq!(questions(&app).answer(1), Some(Some(before.clone())));
         click(&mut app, Command::Question(2));
         // Keyboard activation uses the same action as a mouse choice.
-        for _ in 0..12 {
-            if questions(&app).focus == Command::Skip {
-                break;
-            }
-            key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        }
         draw(&mut app, 100, 30);
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.layer
+            .focus_path(&super::super::tests::path(&app, Command::Skip));
+        if let Some((_, answer)) = key(&mut app, KeyCode::Enter, KeyModifiers::NONE) {
+            panic!("choosing is not answering: {answer:?}");
+        }
         assert_eq!(
             questions(&app).answers(),
             Some(vec![Some("Beta".into()), Some(before.clone()), None])

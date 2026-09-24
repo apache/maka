@@ -18,72 +18,108 @@
  */
 
 use super::*;
-use crate::{i18n::I18n, pages::chat::layout};
+use crate::{
+    app::Action,
+    i18n::I18n,
+    ui::{Node, On, Role, Size, Tone},
+    view::safe,
+};
 use maka_protocol::capability::form::FormFormat;
-use ratatui::{Frame, layout::Rect, style::Style, text::Line, widgets::Paragraph};
 
-type Row = (Line<'static>, Option<Command>);
+/// The written value's field, a row of the sheet.
+pub(in crate::pages::interactions) const VALUE: &str = "entry/value";
+
 impl Form {
-    fn lines(
+    /// What is asked and by whom, the field pager, the current field's
+    /// label, description and constraints, then its value: a field to
+    /// write, or choices, with Set empty value and Leave unset.
+    pub(in crate::pages::interactions) fn nodes(
         &self,
-        width: u16,
         i18n: &I18n,
         ascii: bool,
-        colors: crate::theme::Palette,
-    ) -> Vec<Row> {
-        let mut rows = vec![];
-        let mut append = |text: String, command: Option<Command>| {
-            let style = if command.is_some_and(|command| command == self.focus) {
-                colors.selected()
-            } else if command.is_some() {
-                Style::default().fg(colors.accent)
-            } else {
-                Style::default()
-            };
-            if let Ok(layout) = layout::plain(&text, width) {
-                rows.extend(
-                    layout
-                        .lines
-                        .into_iter()
-                        .map(|line| (line.line.style(style), command)),
-                );
+        (width, height): (u16, u16),
+        enabled: impl Fn(Command) -> bool,
+    ) -> Vec<Node<Action>> {
+        let action = Action::Interaction;
+        let mut about = vec![
+            Node::text("message", vec![(safe(&self.message), Tone::Normal)]),
+            Node::text(
+                "requester",
+                vec![(
+                    i18n.format(
+                        "form-requester",
+                        &[
+                            ("name", &safe(&self.requester.name)),
+                            (
+                                "source",
+                                &safe(self.requester.source.as_deref().unwrap_or("")),
+                            ),
+                        ],
+                    ),
+                    Tone::Subtle,
+                )],
+            ),
+        ];
+        let Some(field) = self.fields.get(self.current) else {
+            return vec![Node::column("about", about)];
+        };
+        let page = |key: &'static str, label: &str, command: Option<Command>| {
+            let node = Node::button(key, i18n.text(label), Role::Normal);
+            match command {
+                Some(command) => node
+                    .on(On::Activate(action(command)))
+                    .enabled(enabled(command)),
+                None => node.on(On::Activate(action(Command::Close))).enabled(false),
             }
         };
-        append(self.message.clone(), None);
-        append(
-            i18n.format(
-                "form-requester",
-                &[
-                    ("name", &self.requester.name),
-                    ("source", self.requester.source.as_deref().unwrap_or("")),
+        about.push(
+            Node::row(
+                "pager",
+                vec![
+                    page(
+                        "previous",
+                        "form-previous",
+                        self.current.checked_sub(1).map(Command::Field),
+                    ),
+                    Node::text(
+                        "position",
+                        vec![(
+                            format!(
+                                "{} · {} {}",
+                                i18n.format(
+                                    "form-position",
+                                    &[
+                                        ("index", &(self.current + 1).to_string()),
+                                        ("count", &self.fields.len().to_string())
+                                    ]
+                                ),
+                                safe(&field.label),
+                                i18n.text(if field.required {
+                                    "form-required-label"
+                                } else {
+                                    "form-optional-label"
+                                })
+                            ),
+                            Tone::Normal,
+                        )],
+                    )
+                    .clip()
+                    .size(Size::Fill),
+                    page(
+                        "next",
+                        "form-next",
+                        (self.current + 1 < self.fields.len())
+                            .then_some(Command::Field(self.current + 1)),
+                    ),
                 ],
-            ),
-            None,
-        );
-        let Some(field) = self.fields.get(self.current) else {
-            return rows;
-        };
-        append(
-            format!(
-                "{} · {} {}",
-                i18n.format(
-                    "form-position",
-                    &[
-                        ("index", &(self.current + 1).to_string()),
-                        ("count", &self.fields.len().to_string())
-                    ]
-                ),
-                field.label,
-                i18n.text(if field.required {
-                    "form-required-label"
-                } else {
-                    "form-optional-label"
-                })
-            ),
-            None,
+            )
+            .gap(1),
         );
         if let Some(description) = &field.description {
-            append(description.clone(), None);
+            about.push(Node::text(
+                "description",
+                vec![(safe(description), Tone::Subtle)],
+            ));
         }
         let constraints = match &field.spec {
             FormFieldSpec::String {
@@ -157,8 +193,25 @@ impl Form {
                 ],
             ),
         };
-        append(constraints, None);
+        about.push(Node::text("constraints", vec![(constraints, Tone::Subtle)]));
         let draft = &self.drafts[self.current];
+        let mut entry = vec![];
+        if self.editable() {
+            let rows = draft
+                .editor
+                .rows(crate::ui::content_width(width))
+                .clamp(1, 3);
+            entry.push(Node::row(
+                "value",
+                vec![
+                    Node::slot("input", rows)
+                        .on(On::Activate(action(Command::FreeText)))
+                        .enabled(enabled(Command::FreeText))
+                        .size(Size::Fill),
+                ],
+            ));
+        }
+        let mut choices = vec![];
         for index in 0..self.options() {
             let (label, chosen) = match &field.spec {
                 FormFieldSpec::Boolean { .. } => (
@@ -170,17 +223,18 @@ impl Form {
                     draft.value == Some(FormValue::Boolean(index == 0)),
                 ),
                 FormFieldSpec::SingleSelect { options, .. } => (
-                    options[index].label.clone(),
+                    safe(&options[index].label),
                     draft.value == Some(FormValue::String(options[index].value.clone())),
                 ),
                 FormFieldSpec::MultiSelect { options, .. } => (
-                    options[index].label.clone(),
-                    matches!(&draft.value,Some(FormValue::Strings(values)) if values.contains(&options[index].value)),
+                    safe(&options[index].label),
+                    matches!(&draft.value, Some(FormValue::Strings(values)) if values.contains(&options[index].value)),
                 ),
                 _ => unreachable!(),
             };
             let multi = matches!(field.spec, FormFieldSpec::MultiSelect { .. });
-            let mark = match (chosen && draft.present, multi, ascii) {
+            let chosen = chosen && draft.present;
+            let mark = match (chosen, multi, ascii) {
                 (true, true, _) => "[x]",
                 (false, true, _) => "[ ]",
                 (true, false, true) => "(*)",
@@ -188,160 +242,72 @@ impl Form {
                 (true, false, false) => "●",
                 (false, false, false) => "○",
             };
-            append(format!("{mark} {label}"), Some(Command::Option(index)));
+            let command = Command::Option(index);
+            choices.push(
+                Node::text(
+                    format!("option-{index}"),
+                    vec![(format!("{mark} {label}"), Tone::Accent)],
+                )
+                .on(On::Activate(action(command)))
+                .enabled(enabled(command))
+                .current(chosen),
+            );
         }
-        for command in [Command::Empty, Command::Omit] {
+        for (key, command) in [("empty", Command::Empty), ("omit", Command::Omit)] {
             if self.accepts(command) {
                 let chosen = command == Command::Omit && !draft.present;
-                append(
-                    format!(
-                        "{} {}",
-                        if chosen { "[x]" } else { "[ ]" },
-                        i18n.text(command.label())
-                    ),
-                    Some(command),
+                choices.push(
+                    Node::text(
+                        key,
+                        vec![(
+                            format!(
+                                "{} {}",
+                                if chosen { "[x]" } else { "[ ]" },
+                                i18n.text(command.label())
+                            ),
+                            Tone::Accent,
+                        )],
+                    )
+                    .on(On::Activate(action(command)))
+                    .enabled(enabled(command))
+                    .current(chosen),
                 );
             }
         }
-        rows
-    }
-    fn entry_height(&mut self, width: u16, maximum: u16) -> u16 {
-        if self.editable() {
-            self.drafts[self.current]
-                .editor
-                .preferred_height(width, maximum.max(1))
-        } else {
-            0
+        if !choices.is_empty() {
+            entry.push(
+                Node::scroll("choices", Node::column("rows", choices))
+                    .size(Size::Upto(height.saturating_sub(18).max(3))),
+            );
         }
+        // Who asks and which field, then the field's value and choices.
+        vec![Node::column("about", about), Node::column("entry", entry)]
     }
-    pub fn preferred_height(
+
+    /// Paints the written value into its row, with a prompt while empty.
+    pub(in crate::pages::interactions) fn draw(
         &mut self,
-        width: u16,
-        i18n: &I18n,
-        ascii: bool,
-        button_rows: u16,
-    ) -> u16 {
-        let rows = self
-            .lines(width, i18n, ascii, crate::theme::Palette::default())
-            .len();
-        // Borders, navigation, status/help and the actual wrapped footer.
-        rows.saturating_add(5 + usize::from(button_rows) + usize::from(self.entry_height(width, 3)))
-            .min(usize::from(u16::MAX)) as u16
-    }
-    pub fn draw(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        i18n: &I18n,
-        ascii: bool,
+        frame: &mut ratatui::Frame<'_>,
+        rect: Option<ratatui::layout::Rect>,
+        focused: bool,
+        prompt: &str,
         colors: crate::theme::Palette,
-    ) -> Vec<Hit> {
-        let mut hits = vec![];
-        if area.is_empty() {
-            self.invalidate_geometry();
-            return hits;
-        }
-        let mut x = area.x;
-        for (command, key) in [
-            (
-                self.current.checked_sub(1).map(Command::Field),
-                "form-previous",
-            ),
-            (
-                (self.current + 1 < self.fields.len()).then_some(Command::Field(self.current + 1)),
-                "form-next",
-            ),
-        ] {
-            let Some(command) = command else {
-                continue;
-            };
-            let label = format!(" {} ", i18n.text(key));
-            let width = unicode_width::UnicodeWidthStr::width(label.as_str())
-                .min(usize::from(area.right().saturating_sub(x))) as u16;
-            let rect = Rect::new(x, area.y, width, 1);
+    ) {
+        let editable = self.editable();
+        let Some(draft) = self.drafts.get_mut(self.current) else {
+            return;
+        };
+        let Some(rect) = rect.filter(|_| editable) else {
+            draft.editor.invalidate_geometry();
+            return;
+        };
+        draft.editor.draw(frame, rect, focused, colors);
+        if draft.editor.text().is_empty() && !focused {
             frame.render_widget(
-                Paragraph::new(label).style(if self.focus == command {
-                    colors.selected()
-                } else {
-                    Style::default().fg(colors.accent)
-                }),
+                ratatui::widgets::Paragraph::new(prompt)
+                    .style(ratatui::style::Style::default().fg(colors.subtle)),
                 rect,
             );
-            if !rect.is_empty() {
-                hits.push(Hit {
-                    area: rect,
-                    action: Action::Interaction(command),
-                });
-            }
-            x = x.saturating_add(width);
         }
-        let entry_height = self
-            .entry_height(area.width, area.height.saturating_sub(2).min(3))
-            .min(area.height.saturating_sub(1));
-        let body = Rect::new(
-            area.x,
-            area.y + 1,
-            area.width,
-            area.height.saturating_sub(1 + entry_height),
-        );
-        let rows = self.lines(body.width, i18n, ascii, colors);
-        self.max_scroll = rows.len().saturating_sub(usize::from(body.height));
-        if self.reveal {
-            if let Some(index) = rows
-                .iter()
-                .position(|(_, command)| *command == Some(self.focus))
-            {
-                if index < self.scroll {
-                    self.scroll = index;
-                } else if index >= self.scroll + usize::from(body.height) {
-                    self.scroll = (index + 1).saturating_sub(usize::from(body.height));
-                }
-            }
-            self.reveal = false;
-        }
-        self.scroll = self.scroll.min(self.max_scroll);
-        for (index, (line, command)) in rows
-            .into_iter()
-            .skip(self.scroll)
-            .take(usize::from(body.height))
-            .enumerate()
-        {
-            let rect = Rect::new(body.x, body.y + index as u16, body.width, 1);
-            frame.render_widget(Paragraph::new(line), rect);
-            if let Some(command) = command {
-                hits.push(Hit {
-                    area: rect,
-                    action: Action::Interaction(command),
-                });
-            }
-        }
-        if entry_height > 0 {
-            let entry = Rect::new(
-                area.x,
-                area.bottom() - entry_height,
-                area.width,
-                entry_height,
-            );
-            let draft = &mut self.drafts[self.current];
-            draft
-                .editor
-                .draw(frame, entry, self.focus == Command::FreeText, colors);
-            if draft.editor.text().is_empty() {
-                frame.render_widget(
-                    Paragraph::new(i18n.text(if draft.present {
-                        "form-empty-value"
-                    } else {
-                        "form-input"
-                    }))
-                    .style(Style::default().fg(colors.subtle)),
-                    entry,
-                );
-            }
-            hits.push(Hit {
-                area: entry,
-                action: Action::Interaction(Command::FreeText),
-            });
-        }
-        hits
     }
 }
