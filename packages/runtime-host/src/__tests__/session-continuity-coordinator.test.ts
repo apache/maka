@@ -1483,6 +1483,53 @@ test('a steering message cannot overtake the prefix a subscriber is still being 
   coordinator.close();
 });
 
+test('events held behind an unpaid prefix spend the slow-consumer budget', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  for (let index = 0; index < 24; index += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+      ...textEvent(index),
+      text: `${index}:${'x'.repeat(8 * 1024)}`,
+    });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-held-budget', sink);
+  const opened = await open(coordinator, 'connection-held-budget');
+  connection.activate(opened.subscriptionId);
+
+  for (let seq = 0; seq < 40; seq += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+      type: 'tool_output_delta',
+      id: `output-${seq}`,
+      turnId: 'turn-1',
+      ts: seq,
+      sessionId: SESSION_ID,
+      toolCallId: 'tool-1',
+      toolUseId: 'tool-1',
+      seq,
+      stream: 'stdout',
+      chunk: 'z'.repeat(8 * 1024),
+      redacted: false,
+      createdAt: seq,
+    });
+  }
+  sink.release();
+  await waitFor(() => sink.frames.some((frame) => frame.kind === 'subscription.closed'));
+
+  // Evicted while the sink was still stuck on its first frame, not after the
+  // whole prefix and the held events had been drained into the queue.
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.closed' ? `closed:${frame.reason}` : frame.kind,
+    ),
+    ['subscription.session_delta', 'closed:slow_consumer'],
+  );
+  coordinator.close();
+});
+
 // #5365: the Turn ending does not unsay what the Host already streamed. The
 // terminal publication used to drop every unpaid backlog, so a subscriber was
 // left holding a truncated answer that the client then reported as complete.
