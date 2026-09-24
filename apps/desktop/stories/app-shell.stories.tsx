@@ -1790,17 +1790,14 @@ export const TitlebarProjectFeedbackNarrow: Story = {
       expect(writeText).toHaveBeenLastCalledWith('/workspace/maka-agent');
       await userEvent.keyboard('{Escape}');
       expect(document.activeElement).toBe(page.getByRole('button', { name: '项目信息' }));
-      // Swap the chip for the rename input and back without renaming: the
-      // measurement must rebind to the freshly rendered span (it was the
-      // observed one only before the swap), otherwise his hover would still
-      // read a tooltip bound to a dead layout.
+      // Swap the chip for the rename input and back without renaming, then
+      // hover: the measurement must have rebound to the freshly rendered
+      // span, not the node observed before the swap.
       await userEvent.click(page.getByRole('button', { name: '检查项目菜单 — 重命名任务' }));
       const renameInput = await page.findByRole('textbox', { name: '重命名任务' });
       expect(renameInput).toHaveValue('检查项目菜单');
       await userEvent.keyboard('{Escape}');
       await waitFor(() => expect(document.activeElement).toBe(page.getByRole('button', { name: '检查项目菜单 — 重命名任务' })));
-      // The chip is fully visible here, so the hover reveals the rename
-      // affordance — the one thing the surface does not show.
       const renameChip = page.getByRole('button', { name: '检查项目菜单 — 重命名任务' });
       await userEvent.hover(renameChip);
       await waitFor(() => expect(page.getByRole('tooltip', { name: '重命名任务' })).toBeVisible());
@@ -1863,12 +1860,8 @@ export const TitlebarIdentityTruncated: Story = {
     const page = within(canvasElement.ownerDocument.body);
     const rename = canvasElement.querySelector<HTMLElement>('.maka-titlebar-identity__segment--session')!.closest('button')!;
     expect(rename.getAttribute('aria-label')).toBe(`${full} — 重命名任务`);
-    // Truncated name: hovering reveals exactly the hidden text. The tooltip
-    // must never grow a “ — 重命名任务” tail onto it.
     await userEvent.hover(rename);
     await waitFor(() => expect(page.getByRole('tooltip', { name: full })).toBeVisible());
-    // The “...” button's accessible name carries the task it acts on; its
-    // tooltip must not echo the name displayed beside it.
     const menuButton = canvasElement.querySelector<HTMLElement>('[aria-label$="任务操作"]')!;
     expect(menuButton.getAttribute('aria-label')).toBe(`${full} — 任务操作`);
     await userEvent.hover(menuButton);

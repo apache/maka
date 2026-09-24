@@ -38,23 +38,15 @@ export interface TitlebarParentSession {
   onOpen(): void;
 }
 
-/**
- * Whether an ellipsis-clipped label is actually cut off. Astryx Button wraps
- * children in an internal label span, so the measurement must happen on the
- * text node itself (same recipe as quote-ref-chip). The ellipsis styles live
- * in the app shell (`maka-titlebar-identity__segment--session`).
- */
+/** Astryx Button wraps children in an internal label span, so the ellipsis
+ * measurement must happen on the text node itself; the ellipsis CSS lives in
+ * the app shell (`maka-titlebar-identity__segment--session`). */
 function isNameClipped(el: HTMLElement | null): boolean {
   return !!el && el.scrollWidth > el.clientWidth + 1;
 }
 
-/**
- * Track clipping across resize/layout changes so the tooltip appears exactly
- * when the visible name is truncated — and never repeats a fully visible one.
- * The observed node is whichever span the current branch rendered; renaming
- * swaps the span for an input and back, so the render phase must rebind on
- * every such swap (`inactive`), not only when the name text changes.
- */
+/** Re-measure on every branch swap of the measured span, not just name
+ * changes: entering/leaving rename replaces the span and strands the observer. */
 function useNameClipped(sessionName: string, inactive: boolean) {
   const measureRef = useRef<HTMLSpanElement>(null);
   const [clipped, setClipped] = useState(false);
@@ -98,9 +90,8 @@ export function TitlebarSessionIdentity(props: {
 
   const path = props.project?.path;
   const { measureRef, clipped } = useNameClipped(props.sessionName, renaming);
-  // One control, two kinds of hidden information: with the name truncated,
-  // what the reader cannot see is the full text; fully visible, the missing
-  // piece is the click affordance — rename. Never the name only.
+  // Two kinds of hidden information: truncated → the full unseen text;
+  // visible → the rename affordance the surface never advertises.
   const nameTooltip = clipped ? props.sessionName : copy.sessions.renameAriaLabel;
   const copyPhase = path ? clipboard.phaseFor(path) : null;
   const copyLabel = copyPhase === 'pending' ? copy.messages.copying
