@@ -18,7 +18,7 @@
  */
 
 mod view;
-pub use view::draw;
+pub(crate) use view::sheet;
 
 use crate::{
     app::{Action, App, ConnectionState},
@@ -119,7 +119,6 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Reque
 pub struct State {
     pub visible: bool,
     rendered: bool,
-    focus: usize,
     target: Option<Target>,
     plan: Option<TurnResumePlan>,
     saved: Option<Checkpoint>,
@@ -145,6 +144,10 @@ impl State {
     }
     pub fn invalidate_geometry(&mut self) {
         self.rendered = false;
+    }
+    /// The sheet reports whether it is on screen; its commands need it.
+    pub(crate) fn presented(&mut self, shown: bool) {
+        self.rendered = shown;
     }
 }
 impl App {
@@ -173,6 +176,14 @@ impl App {
             .unwrap_or_default()
     }
     pub fn resume_enabled(&self, command: &Command) -> bool {
+        let idle = self.resume.pending.is_none() && self.resume.requested.is_none();
+        self.resume_offered(command)
+            && (idle || matches!(command, Command::Open(_) | Command::Reopen | Command::Close))
+    }
+    /// Whether the dialog offers `command`, before a request in flight is
+    /// considered: its button (and the focus on it) stays while the Host is
+    /// asked, and pressing it then does nothing.
+    fn resume_offered(&self, command: &Command) -> bool {
         let state = &self.resume;
         let connected = matches!((&self.connection, &state.target),
             (ConnectionState::Connected { root_id, epoch }, Some(target)) if *root_id == target.root && *epoch == target.epoch);
@@ -182,13 +193,10 @@ impl App {
             Command::Reopen => !state.visible && state.saved.as_ref().is_some_and(|saved|
                 matches!(&self.connection, ConnectionState::Connected { root_id, .. } if *root_id == saved.root)),
             Command::Close => state.visible,
-            Command::Query => state.visible && state.rendered && connected && state.pending.is_none()
-                && state.requested.is_none() && state.saved.is_none(),
-            Command::Start => state.visible && state.rendered && connected && state.pending.is_none()
-                && state.requested.is_none() && state.saved.is_none()
+            Command::Query => state.visible && state.rendered && connected && state.saved.is_none(),
+            Command::Start => state.visible && state.rendered && connected && state.saved.is_none()
                 && matches!(state.plan, Some(TurnResumePlan::Ready { .. })),
-            Command::Retry => state.visible && state.rendered && connected && state.pending.is_none()
-                && state.requested.is_none() && state.saved.is_some(),
+            Command::Retry => state.visible && state.rendered && connected && state.saved.is_some(),
         }
     }
     pub fn resume_action(&mut self, command: Command) -> Option<Action> {
@@ -201,7 +209,6 @@ impl App {
                 state.target = Some(target);
                 state.visible = true;
                 state.rendered = false;
-                state.focus = 0;
                 state.plan = None;
                 state.error = None;
                 state.requested = Some(Work::Query);
@@ -218,7 +225,6 @@ impl App {
                 });
                 state.visible = true;
                 state.rendered = false;
-                state.focus = 0;
                 state.plan = None;
                 state.error = Some(self.i18n.text("resume-unresolved"));
             }
@@ -440,7 +446,7 @@ mod tests {
     fn parked_plan_and_small_terminal_never_start_a_turn() {
         let mut app = app();
         ready(&mut app);
-        let (handled, action) = app.resume_input(crossterm::event::Event::Key(
+        let (handled, action) = app.input(crossterm::event::Event::Key(
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Enter,
                 crossterm::event::KeyModifiers::NONE,
@@ -464,8 +470,15 @@ mod tests {
         draw(&mut app, 30, 8);
         assert!(!app.resume_enabled(&Command::Start));
         draw(&mut app, 100, 35);
+        app.layer.focus_path("footer/check");
         app.apply(Action::Resume(Command::Query));
         let query = app.resume_request().unwrap();
+        draw(&mut app, 100, 35);
+        assert_eq!(
+            app.layer.focused_path(),
+            Some("footer/check"),
+            "asking keeps the focus"
+        );
         app.resume_completed(
             query,
             Ok(Output::Plan(TurnResumePlan::Parked {
