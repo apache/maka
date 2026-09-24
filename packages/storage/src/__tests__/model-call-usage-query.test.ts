@@ -182,6 +182,29 @@ describe('Usage answers over the canonical ledger', () => {
     );
   });
 
+  test('filters by call kind, so a Session can read its main loop alone', async () => {
+    await withProjectedAttempts(
+      [
+        attempt({ attemptId: 'main-1', callKind: 'main', inputTokens: 1000 }),
+        attempt({ attemptId: 'main-2', callKind: 'main', inputTokens: 1000 }),
+        attempt({ attemptId: 'title', callKind: 'session_title', inputTokens: 1000 }),
+      ],
+      async (ledger) => {
+        const requests = (query: Parameters<typeof ledger.summary>[0]) =>
+          ledger.summary(query, NOW).projection.totalRequests;
+        assert.equal(requests({ range: 'all' }), 3);
+        assert.equal(requests({ range: 'all', callKinds: ['main'] }), 2);
+        assert.equal(requests({ range: 'all', callKinds: ['session_title'] }), 1);
+        assert.equal(requests({ range: 'all', callKinds: ['main', 'session_title'] }), 3);
+        assert.equal(
+          requests({ range: 'all', callKinds: [] }),
+          0,
+          'an empty allowlist addresses nothing rather than everything',
+        );
+      },
+    );
+  });
+
   test('interrupted counts as aborted, not as an error', async () => {
     // Collapsing a cut-short call into `error` would inflate the error rate
     // with user cancellations.
