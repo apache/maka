@@ -64,11 +64,16 @@ test('right workbar visibility belongs to each Session and survives reload', asy
     .getByRole('list', { name: '打开工具' })
     .getByRole('button', { name: /变更.*查看当前 Git 工作区变化/ })
     .click();
-  await page.getByRole('button', { name: '打开用量追踪' }).click();
+  const usageAction = page.locator('.maka-context-usage-action');
+  await expect(usageAction).toBeHidden();
+  await page.getByRole('button', { name: '收起侧边栏' }).click();
+  await expect(usageAction).toBeVisible();
+  await usageAction.click();
   await expect(page.locator(
     '.maka-session-workbar-panel[data-overlay][data-placement="right"] [data-maka-contract="session-inspector"]',
   )).toBeVisible();
   await expect(panel).toBeVisible();
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
   await first.sidebar.getByRole('button', { name: '新任务', exact: true }).click();
   const second = await createSession(page, 'second workbar owner');
   await expect(panel).toBeHidden();

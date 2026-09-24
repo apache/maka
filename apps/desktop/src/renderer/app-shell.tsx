@@ -995,7 +995,12 @@ function AppShellContent({
   );
   const activePermissionMode = activeId
     ? sessionSettingIntent.overlays.permissionMode[activeId]
+      // Keep the access control's display value while the authoritative
+      // boundary read for the newly selected Session is in flight. The
+      // control is disabled below until that read settles, but removing its
+      // callback here would unmount the icon and make the footer reflow.
       ?? activeBoundarySurface.permissionMode
+      ?? activeSessionForView?.permissionMode
     : activeBoundarySurface.permissionMode;
   const planMode = usePlanModeState(ownerActiveId ? activeHostSession : undefined);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
@@ -2320,7 +2325,7 @@ function AppShellContent({
               <WorkHubMainNavigation workbarReady={workHubActive && Boolean(workbar.host.activeId)}
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRight}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
-              <WorkHubDock workbarTogglePosition={workbarTogglePosition} workbarCollapsed={selectors.rightCollapsed} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
+              <WorkHubDock workbar={workbar.host} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
@@ -2449,21 +2454,17 @@ function AppShellContent({
                   // mode change to land before the run registers and alter the
                   // execution config of the turn already sent.
                   permissionModeDisabledReason={
-                    activeStreamingLive
-                      ? shellCopy.permissionModeStreaming
-                      : activeId && turnActive
-                        ? shellCopy.permissionModeRunning
-                        : activeId && activeSessionForView?.status === 'waiting_for_user'
-                          ? shellCopy.permissionModeWaiting
-                          : undefined
+                    !activeBoundarySurface.permissionMode
+                      ? boundaryUnreadableNotice?.detail ?? shellCopy.modeChangeLoading
+                      : modeChangeDisabledReason
                   }
-                  onPermissionModeChange={
-                    activeBoundarySurface.localInteractionAvailable
-                      ? async mode => {
-                          await setPermissionMode(mode)
-                        }
-                      : undefined
-                  }
+                  // Keep this callback defined while the boundary read is
+                  // pending. Composer uses its presence to mount the access
+                  // control; the disabled reason above and this guard still
+                  // fail closed until the authoritative surface is ready.
+                  onPermissionModeChange={mode => {
+                    if (activeBoundarySurface.localInteractionAvailable) void setPermissionMode(mode);
+                  }}
                   planModeActive={activePlanMode}
                   // No pending-keyed disable while a toggle commits: the
                   // pending registries already swallow re-entrant toggles, and

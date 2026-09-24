@@ -315,6 +315,113 @@ test('the recovery handle opens the existing exact account-and-model picker', as
   }
 });
 
+test('keeps the model trigger mounted and interactive across sessions', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    HTMLBRElement: globalThis.HTMLBRElement,
+    Node: globalThis.Node,
+    matchMedia: globalThis.matchMedia,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () =>
+    new Proxy(
+      { direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '' },
+      { get: (target, key) => (key in target ? target[key as keyof typeof target] : '') },
+    ) as unknown as CSSStyleDeclaration;
+  window.matchMedia = () =>
+    ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
+  window.scrollTo = () => {};
+  window.scrollBy = () => {};
+  window.getSelection = () =>
+    ({
+      rangeCount: 0,
+      isCollapsed: true,
+      anchorNode: null,
+      focusNode: null,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt: () => {
+        throw new Error('no range');
+      },
+    }) as unknown as Selection;
+  document.createRange = () =>
+    ({
+      selectNodeContents() {},
+      collapse() {},
+      cloneRange() {
+        return this;
+      },
+    }) as unknown as Range;
+  Object.assign(window.HTMLElement.prototype, {
+    showModal(this: HTMLElement) { this.setAttribute('open', ''); },
+    show(this: HTMLElement) { this.setAttribute('open', ''); },
+    close(this: HTMLElement) { this.removeAttribute('open'); },
+  });
+  Object.assign(globalThis, {
+    document,
+    window,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    HTMLBRElement: window.HTMLBRElement,
+    Node: window.Node,
+    matchMedia: window.matchMedia,
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame() {},
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const choice: ChatModelChoice = {
+    connectionId: 'connection-openrouter',
+    connectionSlug: 'openrouter',
+    connectionName: 'OpenRouter',
+    providerType: 'openrouter',
+    providerLabel: 'OpenRouter',
+    model: 'openai/gpt-5',
+    label: 'GPT-5',
+    isDefault: true,
+    thinkingLevels: [],
+  };
+  const render = (sessionId: string) => root.render(
+    <LocaleProvider locale="en">
+      <Composer
+        activeSession={{ id: sessionId, llmConnectionSlug: 'openrouter', model: choice.model } as SessionSummary}
+        modelChoices={[choice]}
+        onModelChange={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  try {
+    await act(() => render('session-a'));
+    const triggerBefore = container.querySelector<HTMLElement>('.maka-model-switcher-trigger');
+    assert.ok(triggerBefore);
+
+    await act(() => render('session-b'));
+    const triggerAfter = container.querySelector<HTMLElement>('.maka-model-switcher-trigger');
+    assert.equal(triggerAfter, triggerBefore, 'session changes must preserve the model trigger DOM');
+    assert.equal(
+      triggerAfter?.querySelector<HTMLElement>('[aria-expanded]')?.getAttribute('aria-readonly'),
+      null,
+      'session changes must not create a transient read-only trigger',
+    );
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
+});
+
 test('the thinking picker survives levels arriving after mount', async () => {
   // Thinking levels resolve asynchronously; a picker that mounts variantless
   // must not change its hook count when they land.

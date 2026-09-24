@@ -32,6 +32,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
+import type { SessionSummary } from '@maka/core/session';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -86,6 +87,28 @@ test('a running composer keeps Send alone — no mode switch in the send slot', 
   assert.deepEqual(sendSlotControls(markup), ['aria-label="Stop"']);
   assert.doesNotMatch(markup, /Follow-up behavior/);
   assert.doesNotMatch(markup, /SegmentedControl/);
+});
+
+test('a pending Session boundary keeps the access control mounted and disabled', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        activeSession={{
+          id: 'session-pending-boundary',
+          llmConnectionSlug: '',
+          model: '',
+          permissionMode: 'ask',
+        } as SessionSummary}
+        permissionMode="ask"
+        permissionModeDisabledReason="Loading the Session access boundary."
+        onPermissionModeChange={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  assert.match(markup, /class="permissionModeIcon"/);
+  assert.match(markup, /aria-label="Permission mode: Auto"[^>]*aria-disabled="true"/);
 });
 
 // Pins the #5003 opt-in contract, not a #4815 regression: base already passed

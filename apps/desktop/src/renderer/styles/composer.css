@@ -38,6 +38,18 @@
 .maka-composer-astryx {
   width: min(var(--maka-reading-measure), 100%);
   max-width: var(--maka-reading-measure);
+  container: maka-composer / inline-size;
+}
+
+/* A narrow conversation column cannot keep both text selectors and the
+   persistent footer actions readable. The model selector remains the primary
+   choice; thinking level is available again as soon as the Composer card has
+   room for the full control. Container sizing matters here because a desktop
+   viewport can stay wide while a right workbar squeezes this card. */
+@container maka-composer (max-width: 480px) {
+  .maka-composer-astryx .maka-model-selection-controls .maka-context-usage-action {
+    display: none;
+  }
 }
 
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
@@ -272,6 +284,9 @@
 .maka-composer-left-controls {
   display: flex;
   align-items: center;
+  /* Text controls shrink; icon actions and the send slot retain their size. */
+  flex: 1 1 0;
+  min-width: 0;
   /* PR-REFERENCE-PIXEL-8 (WAWQAQ msg `f79de85f` round 8): reference implementation's
      bundle uses gap values centered on 4-8px (extracted from
      `globals-UfMzAdiO.css` — 4px is the most common gap, 12px never
@@ -280,19 +295,55 @@
      individual controls separable while pulling them into one
      coherent toolbar group. */
   gap: var(--space-1-5);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
-/* Shrinkable so the `flex-wrap: wrap` above can actually engage. At
-   `flex: 0 0 auto` this box sizes to max-content, which means it never has a
-   width to wrap inside — it just overflows, and the overflow runs under the
-   send button and past the card's right edge. That stayed invisible while the
-   row held four controls; the project picker adds to it and a 480px window has
-   nowhere to put the overflow. `min-width: 0` because the default
-   `auto` floor would keep the same overflow for a long model name. */
-.maka-composer-left-controls {
+/* Give the leading slot only the space left after the fixed trailing actions
+   and send slots. The class is owned by Maka so this does not depend on
+   Astryx's footer wrapper structure. */
+.maka-composer-footer-leading {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Astryx owns the footer-left wrapper around footerActions. Its default
+   min-content floor otherwise lets the leading controls push the fixed send
+   slot outside the Composer card. The Maka-owned slot marker is the stable
+   boundary here; keep the wrapper shrinkable on every Composer surface. */
+.maka-composer-astryx
+  div:has(> .maka-composer-footer-leading) {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.maka-composer-footer-trailing {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.maka-composer-footer-trailing > * {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Astryx's sendActions slot is already the right-hand footer group. */
+.maka-composer-send-slot {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--_button-radius);
+  background: var(--background-elevated);
+  flex: 0 0 auto;
+}
+
+/* Disabled Astryx buttons use opacity on the whole button. Give the send
+   slot its own opaque composer-colored backing so content that overflows the
+   left slot cannot show through the translucent button. */
+.maka-composer-send-slot {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--_button-radius);
+  background: var(--background-elevated);
 }
 
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */
@@ -300,6 +351,15 @@
 .maka-composer-left-controls .maka-composer-plus-menu {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
+}
+
+/* Boundary reads briefly disable the permission action on every session
+   switch. Keep the quiet toolbar icon visually stable while Astryx continues
+   to enforce aria-disabled, block activation, and expose the reason tooltip. */
+.maka-composer-left-controls .permissionModeIcon [aria-disabled='true'],
+.maka-composer-left-controls .permissionModeIcon button:disabled {
+  opacity: 1;
 }
 
 /* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
@@ -400,13 +460,44 @@
 }
 /* Model + thinking pair lives in left-controls (after permission), not send. */
 .maka-composer-left-controls .maka-model-selection-controls {
+  flex: 1 1 0;
   min-width: 0;
-  max-width: min(420px, 52vw);
+  max-width: 100%;
+}
+/* Selector's className belongs to the trigger INSIDE its Field. The Field
+   is the model group's flex item, so its automatic content minimum must be
+   released here for the label to yield space to usage, branch, and send. */
+.maka-composer-left-controls .maka-model-selection-controls .astryx-field:has(.maka-model-switcher-trigger, .maka-new-chat-model-selector) {
+  /* Hug the model label when space is available, but release that width
+     before the adjacent thinking and usage controls when the footer narrows. */
+  flex: 0 1 auto;
+  min-width: 0;
+  width: max-content;
+  max-width: 220px;
 }
 .maka-composer-left-controls .maka-model-switcher-trigger,
 .maka-composer-left-controls .maka-new-chat-model-selector {
-  min-width: 100px;
-  max-width: min(220px, 28vw);
+  min-width: 0;
+  max-width: 100%;
+}
+.maka-composer-left-controls .maka-model-selection-controls .astryx-field:has(.maka-thinking-level-selector) {
+  /* Keep the thinking control readable when Plan/Swarm marks consume the
+     toolbar. The model field is the compressible text control beside it. */
+  flex: 0 1 auto;
+  min-width: 0;
+  width: max-content;
+  max-width: min(180px, 100%);
+}
+.maka-composer-left-controls .maka-thinking-level-selector > button {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+/* Keep the model family and version visible in the closed Composer picker. */
+.maka-composer-left-controls .maka-model-switcher-trigger .modelPickerOptionLabel,
+.maka-composer-left-controls .maka-new-chat-model-selector .modelPickerOptionLabel {
+  direction: ltr;
 }
 /* External model names share this row with an executor selector. Size the
    trigger to its label and let the pair wrap instead of squeezing the model

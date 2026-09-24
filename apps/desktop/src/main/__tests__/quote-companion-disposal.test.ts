@@ -29,6 +29,7 @@ import {
   abandonPendingCompanionCopy,
   cleanupCompanionCopy,
   createFakeWorkbarServices,
+  dismissCompanionCopy,
   ensureCompanionFork,
   performCompanionTurn,
   type PerformCompanionTurnDeps,
@@ -88,6 +89,36 @@ afterEach(async () => {
 });
 
 describe('quote companion disposal fencing', () => {
+  it('waits for an interrupted fork to become idle before removing it', async () => {
+    const defaults = createFakeWorkbarServices();
+    const running = session('running-side-conversation');
+    running.runningTurnIds = ['turn-1'];
+    let listCount = 0;
+    const cleaned: string[] = [];
+    const sideChat = {
+      ...defaults.sideChat,
+      listSessions: async () => {
+        listCount += 1;
+        return listCount < 2 ? [running] : [{ ...running, runningTurnIds: [] }];
+      },
+      cleanupSessionCopy: async (sessionId: string) => {
+        cleaned.push(sessionId);
+      },
+    };
+
+    assert.equal(
+      await dismissCompanionCopy(
+        sideChat,
+        sourceSession.id,
+        panelId,
+        running.id,
+      ),
+      true,
+    );
+    assert.deepEqual(cleaned, [running.id]);
+    assert.ok(listCount >= 2);
+  });
+
   it('creates a WorkHub companion from an empty boundary without reading coordination turns', async () => {
     const defaults = createFakeWorkbarServices();
     const coordinationSession = session(

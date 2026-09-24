@@ -209,6 +209,28 @@ export async function dismissCompanionCopy(
   companionSessionId: string,
 ): Promise<boolean> {
   await api.stop(companionSessionId).catch(() => undefined);
+
+  // The stop IPC acknowledges the interrupt request before the Host publishes
+  // the terminal Turn projection. Removing the copy during that window is
+  // rejected as session_busy, so wait for the authoritative live-run list
+  // before attempting retirement.
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const session = await api
+      .listSessions()
+      .then((sessions) => sessions.find((candidate) => candidate.id === companionSessionId))
+      .catch(() => undefined);
+    if (!session || session.runningTurnIds?.length === 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  if (await cleanupCompanionCopy(api, sourceSessionId, panelId, companionSessionId)) {
+    return true;
+  }
+
+  // A catalog update and the retirement admission can still cross by one
+  // event-loop turn. Give that transient busy result one final retry; durable
+  // cleanup recovery remains responsible for persistent failures.
+  await new Promise((resolve) => setTimeout(resolve, 50));
   return cleanupCompanionCopy(api, sourceSessionId, panelId, companionSessionId);
 }
 

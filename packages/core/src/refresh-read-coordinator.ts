@@ -41,6 +41,7 @@ export interface RefreshReadCoordinator {
 export function createRefreshReadCoordinator<T>(input: {
   read: () => Promise<T>;
   apply: (result: T) => void;
+  onReadFailure?: () => void;
   delayMs: number;
   schedule: (callback: () => void, delayMs: number) => CancelScheduledRefresh;
 }): RefreshReadCoordinator {
@@ -60,7 +61,10 @@ export function createRefreshReadCoordinator<T>(input: {
         if (readRevision !== revision) return;
         input.apply(result);
       },
-      () => {},
+      () => {
+        if (readRevision !== revision) return;
+        input.onReadFailure?.();
+      },
     );
   };
 

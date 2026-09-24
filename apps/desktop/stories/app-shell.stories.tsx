@@ -3494,7 +3494,14 @@ const workbarLayoutWithOneFace: WorkbarLayoutState = reduceWorkbarLayout(
   { type: 'open', placement: 'right', tab: { id: 'workbar:files', kind: 'files' } },
 );
 
-function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; workbarWidth?: number; withConversation?: boolean; togglePosition?: 'titlebar' | 'edge' } = {}) {
+function WorkbarInShell(props: {
+  longTitle?: boolean;
+  onShare?: () => void;
+  workbarWidth?: number;
+  withConversation?: boolean;
+  togglePosition?: 'titlebar' | 'edge';
+  composer?: Partial<ComposerProps>;
+} = {}) {
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const resizable = useResizable({
     defaultSize: props.workbarWidth ?? layout.rightWidth,
@@ -3517,7 +3524,13 @@ function WorkbarInShell(props: { longTitle?: boolean; onShare?: () => void; work
           detailChildren={
             <div className="maka-detail-with-artifacts">
               <div className="mainColumn">
-                {props.withConversation && <ChatSurfaceLayout composer={<Composer {...baseComposerProps} activeSession={activeSession} />}>
+                {props.withConversation && <ChatSurfaceLayout composer={(
+                  <Composer
+                    {...baseComposerProps}
+                    activeSession={activeSession}
+                    {...props.composer}
+                  />
+                )}>
                   <ChatView {...baseChatProps} messages={promptRailMessages} />
                 </ChatSurfaceLayout>}
               </div>
@@ -3756,13 +3769,14 @@ export const WorkbarTitlebarRestore: Story = {
 };
 
 const narrowWorkbarShare = fn();
+const narrowWorkbarWidth = 600;
 
 export const NarrowWorkbarClearsTitlebarReserve: Story = {
   render: () => (
     <WorkbarInShell
       longTitle
       onShare={narrowWorkbarShare}
-      workbarWidth={600}
+      workbarWidth={narrowWorkbarWidth}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -3803,10 +3817,9 @@ export const NarrowWorkbarClearsTitlebarReserve: Story = {
         titlebar.getBoundingClientRect().left,
       ),
     );
-    expect(workbar.getBoundingClientRect().width).toBeCloseTo(
-      detail.getBoundingClientRect().width,
-      0,
-    );
+    // The right Workbar keeps its configured width even when the narrow detail
+    // column has less room; titlebar clearance is asserted independently below.
+    expect(workbar.getBoundingClientRect().width).toBeCloseTo(narrowWorkbarWidth, 0);
     expect(share.getBoundingClientRect().right).toBeLessThanOrEqual(
       titlebar.getBoundingClientRect().right,
     );
@@ -3814,6 +3827,73 @@ export const NarrowWorkbarClearsTitlebarReserve: Story = {
     await userEvent.click(share);
     await userEvent.click(await within(canvasElement.ownerDocument.body).findByRole('menuitem', { name: '分享任务' }));
     expect(narrowWorkbarShare).toHaveBeenCalledOnce();
+  },
+};
+
+// Real path: a session with the right workbar open while the conversation
+// column is narrow enough for a long model label to exercise the composer's
+// footer shrink contract. Model and thinking controls remain available while
+// the lower-priority usage action is hidden.
+export const NarrowComposerFooter: Story = {
+  parameters: {
+    viewport: {
+      options: {
+        composerNarrow: {
+          name: 'Maka desktop with a narrow conversation column',
+          styles: { width: '1200px', height: '800px' },
+          type: 'desktop' as const,
+        },
+      },
+    },
+  },
+  globals: { viewport: { value: 'composerNarrow', isRotated: false } },
+  render: () => (
+    <WorkbarInShell
+      withConversation
+      workbarWidth={600}
+      composer={{
+        activeModelLabel: 'provider/very-long-model-name-that-must-stay-inside-the-card',
+        planModeActive: true,
+        orchestrationMode: 'swarm',
+        contextUsage: {
+          usageTokens: 100_000,
+          declaredContextWindow: 100_000,
+          onOpen: noop,
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const mainColumn = canvasElement.querySelector<HTMLElement>('.maka-detail-with-artifacts > .mainColumn');
+    const card = mainColumn?.querySelector<HTMLElement>('.maka-composer-astryx');
+    if (!mainColumn || !card) throw new Error('the narrow conversation composer is missing');
+
+    const leftControls = card.querySelector<HTMLElement>('.maka-composer-left-controls');
+    if (!leftControls) throw new Error('composer footer controls are missing');
+    expect(getComputedStyle(leftControls).flexWrap).toBe('nowrap');
+
+    const send = within(card).getByRole('button', { name: '发送' });
+    const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
+    const thinkingField = card.querySelector<HTMLElement>(
+      '.maka-model-selection-controls .astryx-field:has(.maka-thinking-level-selector)',
+    );
+    if (!thinkingField) throw new Error('thinking level field is missing');
+    await waitFor(() => {
+      const cardBox = card.getBoundingClientRect();
+      const sendBox = send.getBoundingClientRect();
+      expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(sendBox.right).toBeLessThanOrEqual(cardBox.right + 1);
+      expect(contextGauge).toBeNull();
+      expect(getComputedStyle(thinkingField).display).not.toBe('none');
+      const thinkingBox = thinkingField.getBoundingClientRect();
+      expect(thinkingBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(thinkingBox.right).toBeLessThanOrEqual(sendBox.left + 1);
+      // The remaining controls must stay inside their flex slot rather than
+      // painting over the fixed send slot when the window narrows.
+      const controlsBox = leftControls.getBoundingClientRect();
+      expect(leftControls.scrollWidth).toBeLessThanOrEqual(leftControls.clientWidth + 1);
+      expect(controlsBox.right).toBeLessThanOrEqual(sendBox.left + 1);
+    });
   },
 };
 

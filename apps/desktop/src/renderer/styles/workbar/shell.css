@@ -32,11 +32,10 @@
     "main right-handle right"
     "bottom-handle right-handle right"
     "bottom right-handle right";
-  grid-template-columns: minmax(0, 1fr) 0 auto;
+  grid-template-columns: minmax(var(--maka-conversation-min-width), 1fr) 0 auto;
   grid-template-rows: minmax(0, 1fr) 0 auto;
   flex: 1 1 auto;
   height: auto;
-  min-width: 0;
   min-height: 0;
 }
 

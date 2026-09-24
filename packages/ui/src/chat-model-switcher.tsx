@@ -175,9 +175,9 @@ export function ChatModelSwitcher(props: {
   /**
    * Selector has no controlled open prop, so recovery bumps this instead: the
    * remount keyed on it opens the panel via `isDefaultOpen`, an entirely
-   * documented surface. The key combines the Session id, this recovery nonce,
-   * and the notice acknowledgement nonce. The Composer resets recovery on
-   * Session changes so the new Session lands closed.
+   * documented surface. The key combines this recovery nonce and the notice
+   * acknowledgement nonce; the Selector itself stays mounted across Session
+   * changes so the trigger does not flicker or lose focus.
    */
   openNonce?: number;
   /** Force any open surface closed while an interaction prompt occludes the composer. */
@@ -377,7 +377,7 @@ export function ChatModelSwitcher(props: {
 
   return (
     <Selector
-      key={`${props.activeSession.id}:${props.openNonce ?? 0}:${reopen.nonce}`}
+      key={`${props.openNonce ?? 0}:${reopen.nonce}`}
       label={`${copy.switchAriaLabel}: ${displayLabel}`}
       isLabelHidden
       options={options}

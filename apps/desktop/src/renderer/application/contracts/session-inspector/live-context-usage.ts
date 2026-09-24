@@ -136,6 +136,7 @@ export function createLiveContextUsageTracker(input: {
   schedule: (callback: () => void, delayMs: number) => unknown;
   cancel: (handle: unknown) => void;
   onChange: (usage: LiveContextUsage | undefined) => void;
+  onReadFailure?: () => void;
 }): LiveContextUsageTracker {
   let target: LiveContextUsageTarget | undefined;
   const coordinator = createRefreshReadCoordinator({
@@ -145,6 +146,7 @@ export function createLiveContextUsageTracker(input: {
       if (!diagnostics || !target) return;
       input.onChange(liveContextUsageFromDiagnostics(diagnostics, target.route));
     },
+    onReadFailure: input.onReadFailure,
     delayMs: input.delayMs,
     schedule: (callback, delayMs) => {
       const handle = input.schedule(callback, delayMs);

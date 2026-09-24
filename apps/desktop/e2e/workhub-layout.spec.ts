@@ -60,6 +60,37 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       return conversation.left >= 0 && conversation.right <= innerWidth + 1;
     })).toBe(true);
   }
+  const shellFloor = await page.locator('.maka-shell-astryx').evaluate((element) =>
+    Math.round(parseFloat(getComputedStyle(element).minWidth)));
+  const desktopConversationFloor = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  const workhubConversationFloor = await workhub.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  expect(workhubConversationFloor).toBe(desktopConversationFloor);
+  await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+    getComputedStyle(element).minWidth)).toBe(desktopConversationFloor);
+  const dockLeft = await page.locator('.workHubDock').evaluate((element) =>
+    Math.round(element.getBoundingClientRect().left));
+  let frozenDockWidth: number | undefined;
+  for (const width of [shellFloor - 10, shellFloor - 40]) {
+    const contentWidth = await mainWindow.evaluate((window, nextWidth) => {
+      window.setBounds({ width: nextWidth });
+      return window.getContentSize()[0];
+    }, width);
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBe(contentWidth);
+    expect(contentWidth).toBeLessThan(shellFloor);
+    const dockWidth = await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width));
+    expect(await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(dockLeft);
+    frozenDockWidth ??= dockWidth;
+    expect(dockWidth).toBe(frozenDockWidth);
+    await expect.poll(() => workhub.evaluate(() => innerWidth)).toBeLessThan(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width))).toBe(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(0);
+  }
   const restoredContentWidth = await mainWindow.evaluate((window, bounds) => {
     window.setBounds(bounds);
     return window.getContentSize()[0];
@@ -215,19 +246,6 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
   await workhub.getByRole('button', { name: /打开用量追踪|Open usage trace/ }).click();
   await expect(page.getByRole('button', { name: /展开任务工作栏|Expand task workbar/ })).toBeVisible();
-  const thinking = workhub.getByRole('combobox', { name: /思考级别|Thinking level/ });
-  await expect(thinking).toBeEnabled();
-  await thinking.click();
-  const thinkingSheet = workhub.getByRole('dialog');
-  await expect(thinkingSheet).toBeVisible();
-  await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-thinking-levels.png') });
-  await expect.poll(() => thinkingSheet.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    return rect.top >= 0 && rect.bottom <= innerHeight;
-  })).toBe(true);
-  await thinkingSheet.getByRole('option', { name: /^(高|High)$/ }).click();
-  await expect(thinking).toContainText(/高|High/);
-  await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-composer-controls.png') });
   const compactHeight = await workhub.evaluate(() => innerHeight);
   const screenLayout = async () => {
     const origin = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getContentBounds());
