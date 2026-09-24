@@ -88,8 +88,6 @@ type ProviderRuntimeAdapterDefinition =
   | { kind: 'openai-codex'; responses: ProviderResponsesContract }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
   | { kind: 'cohere' }
-  /** The Command Code CLI's `/alpha/generate` wire, used by the GO plan. */
-  | { kind: 'commandcode-cli' }
   | OpenAiCompatibleRuntimeAdapter;
 
 export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
@@ -311,8 +309,8 @@ if (!fireworks.api) throw new Error('models.dev Fireworks AI provider facts are 
 const fireworksModelIds = toolCallingModelIds(
   'Fireworks AI',
   GENERATED_MODELS_DEV_METADATA['fireworks-ai'],
-  ['accounts/fireworks/models/kimi-k2p6'],
-);
+  ['accounts/fireworks/models/kimi-k3'],
+).filter((id) => GENERATED_MODELS_DEV_METADATA['fireworks-ai'][id]?.lifecycle !== 'deprecated');
 const tencentTokenHub = GENERATED_MODELS_DEV_PROVIDER_FACTS['tencent-tokenhub'];
 if (tencentTokenHub.id !== 'tencent-tokenhub') {
   throw new Error(
@@ -873,18 +871,11 @@ const providerRegistry = {
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
     authKind: 'api_key',
-    fallbackModels: [
-      'deepseek-v4-flash',
-      'deepseek-v4-flash-vision-exp',
-      'deepseek-v4-pro',
-      'deepseek-reasoner',
-      'deepseek-chat',
-    ],
+    fallbackModels: ['deepseek-flash', 'deepseek-v4-pro'],
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      applyPatchProtocol: 'codex-v4a-freeform',
       responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     },
     modelDiscovery: { kind: 'protocol' },
@@ -1491,20 +1482,26 @@ const providerRegistry = {
     signupUrl: 'https://commandcode.ai/docs/plans/goat',
     catalogOrder: 41.5,
   },
+  // Retired rather than removed: an existing connection must stay identifiable
+  // and must answer `provider_retired` at readiness. Removing the entry would
+  // leave it *unknown*, which `isConnectionReady` does not reject, so a send
+  // would be admitted and only fail deep in model construction. Its transport
+  // presented the official CLI's identity to a private endpoint, which is why
+  // nothing can send through it any more.
   'commandcode-go': {
     label: 'Command Code GO',
-    // The API root, not `/provider/v1`: generation posts to `/alpha/generate`
-    // and discovery reads `/provider/v1/models`, both under it.
     baseUrl: 'https://api.commandcode.ai',
     authKind: 'api_key',
     fallbackModels: [],
-    status: 'ready',
-    runtimeAdapter: { kind: 'commandcode-cli' },
-    modelDiscovery: { kind: 'protocol', path: 'provider/v1/models' },
+    status: 'phase3-experimental',
+    runtimeAdapter: { kind: 'unavailable' },
+    retired: true,
+    modelDiscovery: {
+      kind: 'fallback',
+      reason: 'The GO plan was reached through the official CLI\u2019s private transport.',
+    },
     category: 'overseas',
     catalogGroup: 'plans',
-    signupUrl: 'https://commandcode.ai/docs/plans/go',
-    catalogOrder: 41.6,
   },
   'cloudflare-workers-ai': {
     label: cloudflareWorkersAi.name,

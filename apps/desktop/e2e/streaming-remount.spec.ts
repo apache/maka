@@ -45,10 +45,10 @@ function sessionRow(sidebar: Locator, sessionId: string): Locator {
 }
 
 async function steerActiveTurn(composer: Locator, text: string): Promise<void> {
-  // Mid-turn steering is Shift+Enter: the one Send stays Send, and the shifted
+  // Mid-turn steering is Cmd/Ctrl+Enter: Send stays Send, and the modified
   // submit hands the draft to the active Turn once.
   await composer.fill(text);
-  await composer.press('Shift+Enter');
+  await composer.press('ControlOrMeta+Enter');
 }
 
 test('ordinary Enter queues on an already-running Session before observation recovers', async ({ window: page }) => {
@@ -287,15 +287,17 @@ test('returning to a live conversation settles output accumulated while away', a
     let stopped = false;
     const sample = () => {
       if (stopped) return;
-      const bubble = document.querySelector<HTMLElement>('.maka-bubble-streaming');
+      // The steer ends the waiting message; its acknowledgement streams in the last bubble.
+      const bubbles = [...document.querySelectorAll<HTMLElement>('.maka-bubble-streaming')];
+      const bubble = bubbles.at(-1);
       if (bubble) {
         const text = bubble.textContent ?? '';
         if (observed.texts.at(-1) !== text) observed.texts.push(text);
         observed.maxActiveAnimations = Math.max(
           observed.maxActiveAnimations,
-          bubble
+          ...bubbles.map((element) => element
             .getAnimations({ subtree: true })
-            .filter((animation) => animation.playState !== 'finished').length,
+            .filter((animation) => animation.playState !== 'finished').length),
         );
       }
       window.requestAnimationFrame(sample);
@@ -311,10 +313,9 @@ test('returning to a live conversation settles output accumulated while away', a
     window.requestAnimationFrame(sample);
   });
   await sessionRow(sidebar, originalSessionId!).click();
-  await liveBubble.waitFor({ state: 'attached' });
-  await expect(liveBubble).toContainText(backgroundSteering);
+  await expect(liveBubble.filter({ hasText: backgroundSteering })).toHaveCount(1);
 
-  expect((await liveBubble.textContent())?.split(accumulatedOutput)).toHaveLength(2);
+  expect((await page.getByRole('log').textContent())?.split(accumulatedOutput)).toHaveLength(2);
   // Playwright's toContainText is a DOM check. Stop on the next animation
   // frame so the already-queued sample() records that settled paint first.
   const backgroundRestoreObserved = await page.evaluate(

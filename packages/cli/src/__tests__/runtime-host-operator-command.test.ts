@@ -492,6 +492,7 @@ describe('Runtime Host operator commands', () => {
         'peer.mesh.rename',
         'peer.mesh.transit.set',
         'plugin.composition.apply',
+        'plugin.executor.query',
         'plugin.package.export',
         'plugin.package.install',
         'plugin.package.reload',

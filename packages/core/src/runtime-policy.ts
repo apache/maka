@@ -128,6 +128,8 @@ export interface RevisionConflict {
 }
 
 export interface RuntimePolicy {
+  /** Optional for compatibility with existing policies; missing means disabled. */
+  readonly jev?: { readonly enabled: boolean };
   readonly networkProxy: {
     readonly enabled: boolean;
     readonly protocol: ProxyProtocol;
@@ -181,6 +183,7 @@ export interface AgentRuntimeSettingsPatch {
 }
 
 export type RuntimePolicyMutation =
+  | { readonly kind: 'set_jev'; readonly value: { readonly enabled: boolean } }
   | { readonly kind: 'set_network_proxy'; readonly value: RuntimePolicy['networkProxy'] }
   | { readonly kind: 'set_personalization'; readonly value: RuntimePolicy['personalization'] }
   | { readonly kind: 'set_memory'; readonly value: RuntimePolicy['memory'] }
@@ -397,6 +400,7 @@ export type ConnectionCatalogMutationResult =
   | ConnectionCatalogConflict;
 
 export type CredentialLocator =
+  | { readonly scope: 'jev'; readonly kind: 'api_key' }
   | {
       readonly scope: 'connection';
       readonly connectionId: EntityId;

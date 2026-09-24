@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { ExecutorConfiguration } from '@maka/core/executor-catalog';
+
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
@@ -69,6 +71,7 @@ export interface SessionConfigurationMetadataUpdate {
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
     readonly executorId?: string;
+    executorConfig?: ExecutorConfiguration;
     readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;

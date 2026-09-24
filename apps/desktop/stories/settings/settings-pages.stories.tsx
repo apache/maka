@@ -2596,6 +2596,15 @@ export const Appearance: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByRole('heading', { name: 'App icon' });
+    const workbarToggle = await canvas.findByRole('switch', { name: 'Show Workbar toggle in titlebar' });
+    expect(workbarToggle).not.toBeChecked();
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('titlebar');
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).not.toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('edge');
+
     for (const name of ['Azure', 'Classic']) {
       const input = await canvas.findByRole('checkbox', { name });
       const card = input.parentElement;
@@ -2695,9 +2704,14 @@ export const UsageRetainedCapacityFailure: Story = {
     const details = canvas.queryByRole('button', {name: copy.showDetails});
     if (details) await userEvent.click(details);
     await canvas.findByRole('button', {name: /next page|下一页|下一頁/i});
+    await expect(await canvas.findByText('420')).toBeVisible();
+    const retainedRow = /^重构使用统计页请求日志的任务列，改为显示会话名称并处理超长标题的截断$/;
+    await expect(await canvas.findByText(retainedRow)).toBeVisible();
     await userEvent.type(await canvas.findByRole('textbox', {name: copy.filterAria}), 'new-filter');
     await expect(await canvas.findByText(new RegExp(copy.capacityBody))).toBeVisible();
     await expect(await canvas.findByText(new RegExp(copy.retainedBody))).toBeVisible();
+    await expect(await canvas.findByText('420')).toBeVisible();
+    await expect(await canvas.findByText(retainedRow)).toBeVisible();
     await expect(await canvas.findByRole('button', {name: /next page|下一页|下一頁/i})).toBeDisabled();
   },
 };

@@ -65,6 +65,9 @@ import {
   Tooltip,
   VStack,
 } from '@astryxdesign/core';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { ProviderType } from '@maka/core/llm-connections';
+import { ModelWheelPicker } from './model-wheel-picker.js';
 
 /** Stable owner props for a frame-wide overlay contribution. */
 export interface MakaClientShellOverlayProps {}
@@ -104,6 +107,49 @@ export interface MakaClientComposerToolbarProps {
   readonly disabled: boolean;
   readonly streaming: boolean;
   readonly hasSession: boolean;
+  readonly executorTarget?: MakaClientExecutorTarget;
+  readonly onExecutorTargetChange?: (target: MakaClientExecutorTarget) => void | Promise<void>;
+}
+
+/** Stable owner props for replacing the Composer's complete model-selection pair. */
+export interface MakaClientComposerModelSelectionProps {
+  readonly disabled: boolean;
+  readonly streaming: boolean;
+  readonly hasSession: boolean;
+  readonly presentation?: 'popover' | 'bottom-sheet' | 'wheel';
+  readonly isReadOnly?: boolean;
+  readonly purpose?: 'session' | 'new-work-default';
+  readonly modelChoices: readonly ChatModelChoice[];
+  readonly activeModel?: string;
+  readonly activeModelLabel?: string;
+  readonly activeModelConnectionId?: string;
+  readonly activeModelConnectionSlug?: string;
+  readonly activeProviderType?: ProviderType;
+  readonly renderProviderMark?: (type: ProviderType) => ReactNode;
+  readonly newChatModel?: {
+    readonly llmConnectionId: string;
+    readonly llmConnectionSlug: string;
+    readonly model: string;
+  };
+  readonly executorTarget?: MakaClientExecutorTarget;
+  readonly onNativeModelChange?: (target: {
+    readonly llmConnectionId: string;
+    readonly llmConnectionSlug: string;
+    readonly model: string;
+  }) => void | Promise<void>;
+  /**
+   * Renders the Maka-owned thinking control for the selected native model.
+   * A contribution replacing the complete model-selection pair must use this
+   * instead of copying native model capability and mutation semantics.
+   */
+  readonly renderNativeThinkingControl: () => ReactNode;
+  readonly onExecutorTargetChange?: (target: MakaClientExecutorTarget) => void | Promise<void>;
+}
+
+export interface MakaClientExecutorTarget {
+  readonly executorId: string;
+  readonly model?: string;
+  readonly thinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
 }
 
 /** Stable owner props for a keyed Tool detail renderer. */
@@ -155,6 +201,11 @@ export interface MakaClientSlotMap {
     kind: 'list';
     scope: 'session-maybe';
     owner: MakaClientComposerToolbarProps;
+  };
+  'conversation.composer.model-selection': {
+    kind: 'chain';
+    scope: 'session-maybe';
+    owner: MakaClientComposerModelSelectionProps;
   };
   'conversation.tool.detail': {
     kind: 'keyed';
@@ -396,6 +447,7 @@ export const MAKA_CLIENT_NATIVE_SLOT_SPECS = Object.freeze({
   'conversation.header.actions': { kind: 'list', scope: 'session' },
   'conversation.turn.footer': { kind: 'list', scope: 'session' },
   'conversation.composer.toolbar': { kind: 'list', scope: 'session-maybe' },
+  'conversation.composer.model-selection': { kind: 'chain', scope: 'session-maybe' },
   'conversation.tool.detail': { kind: 'keyed', scope: 'session' },
 } as const satisfies Readonly<Record<string, MakaClientSlotSpec>>);
 
@@ -955,6 +1007,7 @@ export {
   LayoutFooter,
   LayoutHeader,
   LayoutPanel,
+  ModelWheelPicker,
   NumberInput,
   RadioList,
   RadioListItem,
@@ -1001,6 +1054,7 @@ export const MakaClientPluginSdkModule = Object.freeze({
   LayoutFooter,
   LayoutHeader,
   LayoutPanel,
+  ModelWheelPicker,
   MakaClientSlotFragment: Fragment,
   MakaClientSlotOutlet,
   NumberInput,

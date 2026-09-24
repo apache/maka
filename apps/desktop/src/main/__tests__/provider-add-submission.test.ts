@@ -26,7 +26,6 @@ import {
   initialOnboardingModelIds,
   shouldShowManagedOnboardingOutcomeUnknown,
   stableOnboardingModels,
-  providerRequiresAcknowledgement,
   validateAddProviderDraft,
   type AddProviderDraft,
   type AddProviderField,
@@ -128,42 +127,9 @@ test('no provider type demands a model id at creation', () => {
         apiKey: 'sk-test',
         baseUrl: 'https://example.com/v1',
         cloudflareAccountId: 'account-id',
-        // The rule under test is about the model id, so every other gate is
-        // satisfied here — including the acknowledgement a provider may ask
-        // for, which has its own test below.
-        acknowledged: true,
       }),
     );
     assert.equal(issue, null, `${providerType} refused a draft with no model id`);
-  }
-});
-
-/**
- * Command Code GO reaches the wire the official CLI uses and presents that
- * CLI's identity rather than Maka's. That is stated on the form, and the
- * statement is only worth making if the user has to answer it.
- */
-test('a provider that states its transport is not added until the user answers', () => {
-  const providerType: ProviderType = 'commandcode-go';
-  assert.equal(providerRequiresAcknowledgement(providerType), true);
-  assert.deepEqual(validateAddProviderDraft(draft({ providerType, slug: 'cc-go' })), {
-    field: 'form',
-    reason: 'acknowledgement',
-  });
-  assert.equal(
-    validateAddProviderDraft(draft({ providerType, slug: 'cc-go', acknowledged: true })),
-    null,
-  );
-});
-
-test('no other provider asks for an acknowledgement', () => {
-  for (const providerType of Object.keys(PROVIDER_REGISTRY) as ProviderType[]) {
-    if (providerType === 'commandcode-go') continue;
-    assert.equal(
-      providerRequiresAcknowledgement(providerType),
-      false,
-      `${providerType} unexpectedly asks for an acknowledgement`,
-    );
   }
 });
 

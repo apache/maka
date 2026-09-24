@@ -1809,6 +1809,7 @@ function createCoordinator(
 ): HostClientCapabilityCoordinator {
   return new HostClientCapabilityCoordinator({
     ...admission,
+    isSessionRetired: async () => false,
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged,
   });
@@ -2077,7 +2078,7 @@ test('Host services never fail over to a different Session owner', async () => {
   assert.equal(
     (
       await coordinator.handlers['client.capability.replace'](
-        { registrationId: 'owner-without-service', offers: [], services: [] },
+        replacementInput('owner-without-service', 'placeholder'),
         connectionContext('connection-a'),
       )
     ).ok,

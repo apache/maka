@@ -95,6 +95,7 @@ export {
   type ConversationCopyRuntimeEventBatch,
   type RuntimeEventScanBudget,
   type RuntimeEventScanResult,
+  type RecoveryMessageEventQuery,
   type DurableRuntimeEventStore,
   rootTurnAdmissionRecordFits,
   normalizeRootTurnAdmissionPayload,

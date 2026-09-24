@@ -21,7 +21,6 @@ import { useMemo, useState, type ComponentProps, type ReactNode } from 'react';
 import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
 import { type OnboardingState } from '@maka/core/onboarding';
 import { type SettingsSection } from '@maka/core/settings';
-import { Skeleton } from '@astryxdesign/core';
 import {
   ChatView,
   ChatViewGoalProjectionConsumer,
@@ -30,7 +29,7 @@ import {
 } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
 import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
-import type { SessionHealthNoticeView } from './use-shell-chat-model';
+import type { SessionHealthNoticeView } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
@@ -78,7 +77,6 @@ interface ChatMessageSurfaceProps extends Omit<
   onTaskReadinessAction?: () => void;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
-  isOnboardingLoading: boolean;
   onOpenSettings: (section?: SettingsSection) => void;
   onOpenConnectionDetail: (connectionSlug: string) => void;
   onAddProvider: (providerType: ProviderType) => void;
@@ -110,7 +108,6 @@ export function ChatMessageSurface({
   onTaskReadinessAction,
   showOnboardingHero,
   onboardingState,
-  isOnboardingLoading,
   onOpenSettings,
   onOpenConnectionDetail,
   onAddProvider,
@@ -196,20 +193,6 @@ export function ChatMessageSurface({
           onSkip={onSkip}
         />
       </div>
-    ) : isOnboardingLoading ? (
-      // Blocks EmptyChatHero from flashing while the first snapshot resolves.
-      // Astryx Skeleton bars (DESIGN.md §10) in the ready card's own frame —
-      // the hand-drawn static ::before/::after bars this replaces never pulsed,
-      // so the first screen a new user saw read as frozen.
-      (<div
-        className="maka-onboarding-loading"
-        role="status"
-        aria-busy="true"
-        aria-label={copy.loading}
-      >
-        <Skeleton width="52%" height={16} radius="rounded" index={0} />
-        <Skeleton width="78%" height={12} radius="rounded" index={1} />
-      </div>)
     ) : undefined;
 
   return (

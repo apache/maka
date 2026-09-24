@@ -591,6 +591,10 @@ export class ShellRunProcessManager
     return records.map(shellRunUpdate);
   }
 
+  listRecoverySessionIds(): Promise<string[] | undefined> {
+    return this.input.store.listShellRunRecoverySessionIds?.() ?? Promise.resolve(undefined);
+  }
+
   async getSessionUpdate(sessionId: string, ref: string): Promise<ShellRunUpdate | undefined> {
     const target = parseShellRunResourceRef(ref);
     if (!target) return undefined;

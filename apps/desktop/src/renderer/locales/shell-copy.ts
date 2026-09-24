@@ -149,7 +149,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
 type ShellCopy = {
   navigation: {
     settings: string;
-    backToWorkHub: string;
   };
   actions: {
     retry: string;
@@ -751,7 +750,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
 
 const SHELL_COPY_BY_LOCALE = {
   'zh-CN': {
-    navigation: { settings: '设置', backToWorkHub: '返回 WorkHub' },
+    navigation: { settings: '设置' },
     actions: { retry: '重试' },
     paths: {
       workspace: '工作区文件夹',
@@ -1148,7 +1147,8 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer 输入',
           rows: [
-            { keys: ['Enter'], description: '发送消息' },
+            { keys: ['Enter'], description: '发送消息（运行中加入下一轮队列）' },
+            { keys: ['⌘', 'Enter'], description: '模型运行中调整方向（Steer）' },
             { keys: ['Shift', 'Enter'], description: '插入换行' },
             { keys: ['Alt', 'Enter'], description: '插入换行（备用）' },
           ],
@@ -1276,7 +1276,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   'zh-TW': {
-    navigation: { settings: '設定', backToWorkHub: '返回 WorkHub' },
+    navigation: { settings: '設定' },
     actions: { retry: '重試' },
     paths: {
       workspace: '工作區資料夾',
@@ -1673,7 +1673,8 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer 輸入',
           rows: [
-            { keys: ['Enter'], description: '傳送訊息' },
+            { keys: ['Enter'], description: '傳送訊息（執行中加入下一輪佇列）' },
+            { keys: ['⌘', 'Enter'], description: '模型執行中調整方向（Steer）' },
             { keys: ['Shift', 'Enter'], description: '插入換行' },
             { keys: ['Alt', 'Enter'], description: '插入換行（備用）' },
           ],
@@ -1801,7 +1802,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   en: {
-    navigation: { settings: 'Settings', backToWorkHub: 'Back to WorkHub' },
+    navigation: { settings: 'Settings' },
     actions: { retry: 'Retry' },
     paths: {
       workspace: 'workspace',
@@ -2210,7 +2211,8 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer',
           rows: [
-            { keys: ['Enter'], description: 'Send the message' },
+            { keys: ['Enter'], description: 'Send the message (queue next turn while running)' },
+            { keys: ['⌘', 'Enter'], description: 'Steer the running turn' },
             { keys: ['Shift', 'Enter'], description: 'Insert a line break' },
             {
               keys: ['Alt', 'Enter'],

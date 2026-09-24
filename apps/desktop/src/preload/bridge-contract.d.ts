@@ -251,6 +251,7 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigUpdateResult,
   McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
@@ -269,10 +270,16 @@ import type { OpenSkillLocationOptions, OpenSkillLocationResult, SkillLocationsS
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
 import type {
+  HostHandoffPresentation,
+  HostHandoffView,
   RemoteRuntimeHostProfile,
   RuntimeHostProfile,
   RuntimeHostProfileAccess,
 } from '@maka/runtime-host/client';
+export interface DesktopHostHandoffPayload {
+  readonly view: HostHandoffView;
+  readonly presentation: HostHandoffPresentation;
+}
 /**
  * A recall query as the Search modal issues it, and the envelope it accepts.
  *
@@ -324,6 +331,18 @@ export interface OnboardingSnapshot {
   chatModelChoices: import('@maka/core/chat-model-choice').ChatModelChoice[];
   sessionSendOutcomes: Record<string, import('@maka/core/session-send-projection').SessionSendProjection>;
 }
+
+export type DesktopOnboardingSessionUpdate =
+  | { kind: 'resync' }
+  | {
+      kind: 'delta';
+      sessionId: string;
+      outcome: import('@maka/core/session-send-projection').SessionSendProjection | null;
+      defaultHost?: {
+        state: OnboardingState;
+        milestones: OnboardingMilestone[];
+      };
+    };
 
 export interface DesktopTaskSubmissionReadinessRequest {
   connectionSlug?: string;
@@ -460,35 +479,6 @@ export type DesktopOAuthAuthorizationStartResult =
 export type DesktopOAuthAuthorizationResult =
   | { readonly ok: true; readonly connection: DesktopOAuthConnectionIdentity }
   | Exclude<SubscriptionActionResult, { readonly ok: true }>;
-
-/**
- * Browser-assisted Command Code sign-in. Desktop-local, not Host-scoped: the
- * Studio page posts the minted key to a loopback port beside the browser, and
- * the key then travels through the ordinary `connections` path like a pasted
- * one. Mirrored by `features/connection-settings/ports.ts` on the renderer side.
- */
-export type DesktopCommandCodeLoginFailureReason =
-  | 'denied'
-  | 'timeout'
-  | 'cancelled'
-  | 'superseded'
-  | 'port_unavailable'
-  | 'browser_unavailable';
-export interface DesktopCommandCodeLoginStartInput {
-  readonly baseUrl?: string;
-}
-export type DesktopCommandCodeLoginStartResult =
-  | { readonly ok: true; readonly attemptId: string; readonly authUrl: string }
-  | {
-      readonly ok: false;
-      readonly reason: 'port_unavailable' | 'browser_unavailable' | 'superseded';
-    };
-export type DesktopCommandCodeLoginResult =
-  | {
-      readonly ok: true;
-      readonly credentials: { readonly apiKey: string; readonly userName: string; readonly keyName: string };
-    }
-  | { readonly ok: false; readonly reason: DesktopCommandCodeLoginFailureReason };
 
 export type DesktopNewTaskHostRef = DesktopRuntimeHostRef;
 
@@ -941,6 +931,14 @@ export interface MakaBridge {
     ): () => void;
   };
 
+  runtimeHostHandoff: {
+    current(): Promise<DesktopHostHandoffPayload | null>;
+    decide(revision: string, action: string): Promise<void>;
+    subscribe(
+      handler: (payload: DesktopHostHandoffPayload | null) => void,
+    ): () => void;
+  };
+
   localRuntimeHostRemoteAccess: {
     getSnapshot(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
     enable(input: {
@@ -1032,6 +1030,7 @@ export interface MakaBridge {
   };
 
   newTasks: {
+    getExecutors(target: DesktopNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     getCatalog(): Promise<DesktopNewTaskCatalog>;
     subscribeChanges(handler: () => void): () => void;
     addProject(host: DesktopNewTaskHostRef, name?: string): Promise<
@@ -1162,11 +1161,15 @@ export interface MakaBridge {
     prepareAttachments(coordinationSessionId: string, items: RendererIngestInput[]): Promise<WorkHubPrepareAttachmentsResult>;
     answer(coordinationSessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
     configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
+    getNewWorkDefaults(coordinationSessionId: string): Promise<Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>>;
+    setNewWorkDefaults(coordinationSessionId: string, defaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>): Promise<void>;
     /** Resolve the active Runtime Host's stable coordination conversation. */
     resolveCoordinationSession(): Promise<string | { readonly kind: 'model_required' }>;
 
   };
   sessions: {
+    setExecutorModelConfiguration(sessionId: string, config: import('@maka/core/executor-catalog').ExecutorConfiguration): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    getExecutorState(sessionId: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
     get(sessionId: string): Promise<DesktopSessionSummary | null>;
     listWithCoverage(): Promise<{
@@ -1404,6 +1407,11 @@ export interface MakaBridge {
       model: string;
       thinkingLevel: ThinkingLevel | null;
     }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
+    setExecutorConfiguration(sessionId: string, input: {
+      executorId: string;
+      model?: string;
+      thinkingLevel: ThinkingLevel | null;
+    }): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * `requireArchived` holds the caller's premise through the deletion: a task
@@ -1577,8 +1585,6 @@ export interface MakaBridge {
     test(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
     fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
     hasSecret(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean>;
-    /** Read-only account usage for a connection, Host-fetched. */
-    usage(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/runtime-host/protocol').ConnectionUsageReadResult>;
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
       connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity,
@@ -1594,10 +1600,11 @@ export interface MakaBridge {
     /** Adds a new server; a taken id comes back as `{ status: 'exists' }`
      * instead of an error, so the dialog can put it on the id field. */
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;
-    upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    /** Saves an edit made against `basis`, the server as last shown; one
+     * changed or removed elsewhere since comes back `stale`. */
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
     remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult>;
     login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
     /** Ends an in-flight login round; resolves false when none is active. */
@@ -1660,6 +1667,7 @@ export interface MakaBridge {
   };
   onboarding: {
     getSnapshot(): Promise<OnboardingSnapshot>;
+    getSessionUpdate(sessionId: string): Promise<DesktopOnboardingSessionUpdate | null>;
     setMilestone(
       id: OnboardingMilestoneId,
       status: 'completed' | 'skipped',
@@ -1777,12 +1785,6 @@ export interface MakaBridge {
     getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
     logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
-  };
-  /** Desktop-local browser sign-in for Command Code; see `DesktopCommandCodeLoginResult`. */
-  commandCodeLogin: {
-    start(input: DesktopCommandCodeLoginStartInput): Promise<DesktopCommandCodeLoginStartResult>;
-    complete(attemptId: string): Promise<DesktopCommandCodeLoginResult>;
-    cancel(attemptId: string): Promise<void>;
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;

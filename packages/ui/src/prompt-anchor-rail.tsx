@@ -109,6 +109,28 @@ export function mergePromptAnchorRailTurns<Turn extends PromptAnchorRailTurn>(
   return older.length === 0 ? loadedTurns : [...older, ...loadedTurns];
 }
 
+/** Keeps each previous entry that still reads the same, and the previous list when none moved. */
+export function reusePromptAnchorRailTurns(
+  previous: readonly PromptAnchorRailTurn[],
+  next: readonly PromptAnchorRailTurn[],
+): readonly PromptAnchorRailTurn[] {
+  const previousById = new Map(previous.map((turn) => [turn.turnId, turn]));
+  let moved = previous.length !== next.length;
+  const kept = next.map((turn, index) => {
+    const prior = previousById.get(turn.turnId);
+    const entry = prior && shallowEqual(prior, turn) ? prior : turn;
+    if (entry !== previous[index]) moved = true;
+    return entry;
+  });
+  return moved ? kept : previous;
+}
+
+function shallowEqual(left: object, right: object): boolean {
+  const leftKeys = Object.keys(left);
+  return leftKeys.length === Object.keys(right).length
+    && leftKeys.every((key) => Object.is(left[key as keyof typeof left], right[key as keyof typeof right]));
+}
+
 export interface PromptAnchorRailProps {
   /** Presentation-only hover/focus linkage; never navigates the transcript. */
   onHighlightTurn?: (turn: PromptAnchorRailTurn | undefined) => void;
@@ -259,10 +281,15 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     return observeActivePromptRailVisibility(rail);
   }, [orderedTurnIds, host]);
 
+  // Callers pass a fresh highlight handler on every render; ticks get a stable
+  // one so a streaming delta does not re-render all of them.
+  const onHighlightTurnRef = useRef(onHighlightTurn);
+  onHighlightTurnRef.current = onHighlightTurn;
+  const highlightTurn = useCallback((turn: PromptAnchorRailTurn | undefined) => onHighlightTurnRef.current?.(turn), []);
   const hoverTurn = useCallback((turn: PromptAnchorRailTurn, index: number) => {
     setHoveredIndex(index);
-    onHighlightTurn?.(turn);
-  }, [onHighlightTurn]);
+    highlightTurn(turn);
+  }, [highlightTurn]);
 
   // A rail is only useful once there are a few prompts to jump between.
   if (railTurns.length < 3 || !host) return null;
@@ -283,7 +310,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         className="maka-prompt-rail"
         aria-label={copy.promptRailAriaLabel}
         ref={railRef}
-        onPointerLeave={() => { setHoveredIndex(null); onHighlightTurn?.(undefined); }}
+        onPointerLeave={() => { setHoveredIndex(null); highlightTurn(undefined); }}
       >
         {railTurns.map((turn, index) => {
           const isActive = turn.turnId === activeRailTurnId;
@@ -301,7 +328,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
               scale={scale}
               onNavigate={onNavigateTurn}
               onHover={hoverTurn}
-              onHighlight={onHighlightTurn}
+              onHighlight={highlightTurn}
             />
           );
         })}

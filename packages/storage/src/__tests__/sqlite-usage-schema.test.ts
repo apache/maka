@@ -110,6 +110,17 @@ test('usage migration backfills Session identity for existing ledger rows', () =
         )
         .get(),
     );
+    database.exec('CREATE INDEX usage_llm_calls_session_id ON usage_llm_calls(session_id)');
+    migrateSqliteUsageDatabase(database);
+    assert.equal(
+      database
+        .prepare(
+          "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'usage_llm_calls_session_id'",
+        )
+        .get(),
+      undefined,
+      'upgraded stores drop the redundant Session-only index',
+    );
   } finally {
     database.close();
   }
@@ -259,7 +270,7 @@ test('the ledger refuses a row that would make a total dishonest', () => {
   }
 });
 
-test('Usage title revision triggers migrate existing metadata and roll back with title changes', () => {
+test('Usage title revision ignores unrelated metadata and covers every activity source', () => {
   const database = new DatabaseSync(':memory:');
   try {
     // A pre-existing metadata table, as installed before the Usage migration.
@@ -271,19 +282,49 @@ test('Usage title revision triggers migrate existing metadata and roll back with
     const revision = () =>
       database.prepare('SELECT revision FROM usage_screen_revision').get()!.revision;
     const before = revision();
+
     database.exec("UPDATE session_metadata SET is_flagged = 1 WHERE session_id = 'session'");
-    assert.equal(revision(), before);
+    database.exec("UPDATE session_metadata SET name = 'Unused' WHERE session_id = 'session'");
+    for (let index = 0; index < 100; index++) {
+      database
+        .prepare('INSERT INTO session_metadata VALUES (?, ?, 0)')
+        .run(`unused-${index}`, `Unused ${index}`);
+    }
+    database.exec("DELETE FROM session_metadata WHERE session_id LIKE 'unused-%'");
+    assert.equal(
+      revision(),
+      before,
+      'metadata without Usage activity creates no invalidation churn',
+    );
+
+    database
+      .prepare('INSERT INTO usage_llm_calls VALUES (?, ?, ?, ?, ?)')
+      .run('legacy-key', 'legacy', 1, '{"sessionId":"session"}', 'session');
+    const withLegacy = revision();
     database.exec('BEGIN');
     database.exec("UPDATE session_metadata SET name = 'Rolled back' WHERE session_id = 'session'");
-    assert.notEqual(revision(), before);
+    assert.notEqual(revision(), withLegacy);
     database.exec('ROLLBACK');
-    assert.equal(revision(), before);
-    database.exec("UPDATE session_metadata SET name = 'After' WHERE session_id = 'session'");
-    const renamed = revision();
-    assert.notEqual(renamed, before);
+    assert.equal(revision(), withLegacy);
+    database.exec("UPDATE session_metadata SET name = 'Legacy' WHERE session_id = 'session'");
+    assert.notEqual(revision(), withLegacy);
+
+    database.exec('DELETE FROM usage_llm_calls');
+    database
+      .prepare('INSERT INTO usage_tool_invocations VALUES (?, ?, ?, ?)')
+      .run('tool-key', 'tool', 2, '{"sessionId":"session"}');
+    const withTool = revision();
+    database.exec("UPDATE session_metadata SET name = 'Tool' WHERE session_id = 'session'");
+    assert.notEqual(revision(), withTool);
+
+    database.exec('DELETE FROM usage_tool_invocations');
+    database.exec(
+      "INSERT INTO usage_model_call_attempts(attempt_id, completed_at, session_id) VALUES ('attempt', 3, 'session')",
+    );
+    const withCanonical = revision();
     database.exec("DELETE FROM session_metadata WHERE session_id = 'session'");
     const deleted = revision();
-    assert.notEqual(deleted, renamed);
+    assert.notEqual(deleted, withCanonical);
     database.exec("INSERT INTO session_metadata VALUES ('session', 'Restored', 0)");
     assert.notEqual(revision(), deleted);
   } finally {

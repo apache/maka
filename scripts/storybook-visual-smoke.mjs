@@ -41,12 +41,12 @@ const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
   'product-accessibility-runtime-surfaces--remote-project-directory',
   'product-accessibility-runtime-surfaces--runtime-host-ssh-terminal',
   'product-module-hubs--extensions-mcp-editor',
-  'product-module-hubs--extensions-mcp-inspector',
+  'product-module-hubs--extensions-mcp-detail',
   'product-module-hubs--extensions-mcp-narrow',
   'product-module-hubs--extensions-skills-narrow',
   'product-module-hubs--scheduled-daily-review-report',
   'product-module-hubs--scheduled-tasks-narrow',
-  'product-module-hubs--scheduled-tasks-inspector',
+  'product-module-hubs--scheduled-tasks-detail',
   'product-onboarding--narrow-window',
   'product-settings-pages--memory-populated',
   'product-settings-pages--permission-center-diagnostics-expanded',
@@ -65,6 +65,8 @@ const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
 // Dark mode currently changes only paint tokens, with no dark-only DOM, layout,
 // or renderer branches; expand this set if that invariant changes.
 const DARK_THEME_SENTINEL_STORY_IDS = new Set([
+  'product-module-hubs--extensions-mcp-editor',
+  'product-module-hubs--extensions-mcp-editor-narrow',
   'design-system-palette-matrix--all-palettes',
   'product-accessibility-dialogs--rename-conversation',
   'product-markdown--rich-assistant-answer',
@@ -80,7 +82,7 @@ const FORCED_COLORS_STORY_IDS = new Set([
 
 // This is a catalog render and accessibility-tree health check.
 // Story `play` functions do run: many stories reach their named final state
-// only by opening an inspector, dialog, selector, or disclosure. The smoke
+// only by opening a dialog, selector, or disclosure. The smoke
 // waits for Storybook's completion event before reading the AX tree.
 
 function describeBrowserValue(value) {

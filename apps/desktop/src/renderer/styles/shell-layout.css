@@ -24,19 +24,11 @@
   height: 100dvh;
   width: 100%;
   padding: 0;
-  /* PR-APPFRAME-FILL-0: `#root` (index.html) is `display:flex;
-     align-items:center; justify-content:center` so the preload
-     skeleton (`.maka-preload`, rendered before React mounts) sits
-     centered. Once React mounts, `.appFrame` is that flex container's
-     only child, and without an explicit main-axis size a flex item
-     shrinks to its content width and gets centered — so on the
-     first-run hero (onboarding content is narrower than the window) the whole
-     app frame floated mid-window with large left/right gutters, while
-     long-message sessions filled the width. Pin `width:100%` so the
-     frame always spans the window regardless of inner content's
-     max-content. The preload centering is unaffected (it's the only
-     child at that point and still centers). */
-  /* The backplate under the preload skeleton and behind the shell before it
+  /* PR-APPFRAME-FILL-0: pin `width:100%` so the frame always spans the
+     window regardless of inner content's max-content — without it, narrow
+     surfaces like the first-run hero can leave the frame short of the
+     window's width. */
+  /* The backplate under the preload surface and behind the shell before it
      mounts. AppShell paints both columns over this, so it is not a shell
      surface — it is what the window shows when there is no shell yet. */
   background: var(--surface-canvas);
@@ -323,6 +315,13 @@
   );
 }
 
+/* Native window dragging consumes clicks before the DOM can dismiss a menu
+   or blur the rename input. Return the blank titlebar to ordinary hit testing
+   only for the duration of that interaction. */
+.maka-window-titlebar:has(.maka-titlebar-identity[data-interacting]) {
+  -webkit-app-region: no-drag;
+}
+
 .appFrame:has(.maka-workbar-resize-handle[data-resizing]) .maka-window-titlebar {
   transition: none;
 }
@@ -356,6 +355,14 @@ dialog:modal {
   color: var(--muted-foreground);
 }
 
+.maka-workspace-top-actions {
+  grid-column: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  -webkit-app-region: no-drag;
+}
+
 /* The title hugs its controls; the remaining track stays draggable. */
 .maka-titlebar-identity {
   grid-column: 2;
@@ -382,6 +389,9 @@ dialog:modal {
 }
 
 .maka-titlebar-identity__segment--session {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -443,7 +453,7 @@ dialog:modal {
 }
 
 /* Titlebar chrome glyph ink is set where the glyph is: `ChromeIcon`
-   (app-shell-chrome-actions.tsx) renders Astryx Icon with `color="secondary"`,
+   (shell/window-titlebar.tsx) renders Astryx Icon with `color="secondary"`,
    and Icon puts `color: var(--color-icon-secondary)` on the svg ITSELF. A
    button-level rule cannot reach past that — a child's own `color` always beats
    an inherited one — so the ghost variant's primary text never applied to these

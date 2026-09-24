@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isExecutorConfiguration } from '@maka/core/executor-catalog';
 import { randomUUID } from 'node:crypto';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
@@ -73,6 +74,7 @@ export interface DesktopHostSessionSummary extends SessionCatalogSummary {
 
 export interface RuntimeHostSessionCatalogIpcDeps {
   client: RuntimeHostSessionCatalogClient;
+  queryExecutors?: (input: import('@maka/runtime-host/protocol').PluginExecutorQueryInput) => Promise<import('@maka/runtime-host/protocol').PluginExecutorQueryResult>;
   /** Observer state supplements the Host catalog without falling back to the durable header. */
   runningTurnIds: (sessionId: string) => readonly string[];
   resolveCreateProject: (
@@ -114,6 +116,13 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
+  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string) => {
+    if (typeof cwd !== 'string' || !cwd) throw new Error('Executor discovery requires a workspace');
+    return (await deps.queryExecutors?.({ kind: 'catalog', cwd }))?.items ?? [];
+  });
+  handleReconnectableRead(ipcMain, 'sessions:executorState', async (_event, sessionId: string) =>
+    (await deps.queryExecutors?.({ kind: 'conversation', sessionId }))?.items ?? [],
+  );
   handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: unknown) =>
     listSessions(normalizeSessionListFilter(filter)),
   );
@@ -213,6 +222,29 @@ export function registerRuntimeHostSessionCatalogIpc(
       return updateConfiguration(deps, sessionId, { modelTarget, thinkingLevel }, 'updated');
     },
   );
+  ipcMain.handle(
+    'sessions:setExecutorConfiguration',
+    async (_event, sessionId: string, input: unknown) => {
+      if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+        throw new Error('Invalid executor configuration');
+      }
+      const record = input as Record<string, unknown>;
+      const executorId = normalizeOptionalString(record.executorId, 'executor id');
+      if (!executorId) throw new Error('Executor id is required');
+      const model = normalizeOptionalString(record.model, 'executor model');
+      const thinkingLevel = normalizeRequiredThinkingLevel(input);
+      return updateConfiguration(
+        deps,
+        sessionId,
+        { executorTarget: { executorId, ...(model ? { model } : {}) }, thinkingLevel },
+        'updated',
+      );
+    },
+  );
+  ipcMain.handle('sessions:setExecutorModelConfiguration', async (_event, sessionId: string, config: unknown) => {
+    if (!isExecutorConfiguration(config)) throw new Error('Invalid executor configuration');
+    return updateConfiguration(deps, sessionId, { executorConfig: config }, 'updated');
+  });
   ipcMain.handle('sessions:setThinkingLevel', async (_event, sessionId: string, level: unknown) => {
     if (level !== undefined && level !== null && !isThinkingLevel(level)) {
       throw new Error(`Invalid thinking level: ${String(level)}`);
@@ -391,20 +423,23 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
 export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInput | undefined, sessionId: string, workspace: WorkspaceTarget): SessionCreateInput {
   const request = resolveCreateSessionRequest(input);
   const executorId = normalizeOptionalString(input?.executorId, 'executor id');
-  if (
-    executorId &&
-    (input?.llmConnectionId !== undefined ||
-      input?.llmConnectionSlug !== undefined ||
-      input?.model !== undefined)
-  ) {
-    throw new Error('Plugin executor selection cannot include a model target');
+  if (executorId && (input?.llmConnectionId !== undefined || input?.llmConnectionSlug !== undefined)) {
+    throw new Error('Plugin executor selection cannot include a model connection');
   }
   return {
     sessionId, workspace,
     ...(request.mode === undefined ? {} : { mode: request.mode }),
     name: request.name,
     ...(request.labels === undefined ? {} : { labels: request.labels }),
-    ...(executorId ? { executorId } : { modelTarget: normalizeModelTarget(input) }),
+    ...(executorId
+      ? {
+          executorId,
+          ...(input?.executorConfig ? { executorConfig: input.executorConfig } : {}),
+          ...(normalizeOptionalString(input?.model, 'executor model')
+            ? { executorModel: normalizeOptionalString(input?.model, 'executor model') }
+            : {}),
+        }
+      : { modelTarget: normalizeModelTarget(input) }),
     ...normalizeCreateThinkingLevel(input?.thinkingLevel),
     ...(request.mode !== undefined || request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
     collaborationMode: request.collaborationMode,

@@ -20,7 +20,7 @@
 import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { StoredMessage, SessionSummary } from '@maka/core/session';
+import type { StoredMessage, SessionSummary, WorkHubCreateDefaults } from '@maka/core/session';
 import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 import type { SessionEvent, AttachmentRef, MessageQueuePlacement } from '@maka/core/events';
 import type { OperationInput, OperationOutput } from '@maka/runtime-host/protocol';
@@ -79,6 +79,11 @@ export interface WorkHubServices extends WorkHubWorkspaceServices {
     sessionId: string,
     input: OperationInput<'workhub.coordination.configureModel'>,
   ): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
+  getNewWorkDefaults(sessionId: string): Promise<Omit<WorkHubCreateDefaults, 'permissionMode'>>;
+  setNewWorkDefaults(
+    sessionId: string,
+    defaults: Omit<WorkHubCreateDefaults, 'permissionMode'>,
+  ): Promise<void>;
   observe(
     sessionId: string,
     handler: (event: SessionEvent) => void,

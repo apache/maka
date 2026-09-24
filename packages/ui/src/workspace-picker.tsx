@@ -28,6 +28,8 @@ import { NewProjectDialog } from './new-project-dialog.js';
 
 export interface WorkspacePickerGroup {
   id: string;
+  /** Runtime Host identity for session-scoped recovery actions. */
+  hostId?: string;
   label: string;
   status?: string;
   disabled?: boolean;
@@ -50,6 +52,11 @@ export interface WorkspacePickerModel {
   hostBadge?: string;
   branch?: string | null;
   pending?: boolean;
+  /** Keep the picker mounted when it is repairing an existing Session. */
+  showForActiveSession?: boolean;
+  /** Optional controlled open state used by an external recovery action. */
+  isMenuOpen?: boolean;
+  onOpenChange?(isOpen: boolean): void;
   selectedGroupId?: string;
   groups: readonly WorkspacePickerGroup[];
   retry?: { label: string; onClick(): void };
@@ -71,6 +78,8 @@ export function WorkspacePicker({ workspacePicker: picker }: {
     <DropdownMenu
       placement="above"
       hasChevron={false}
+      isMenuOpen={picker.isMenuOpen}
+      onOpenChange={picker.onOpenChange}
       className="maka-composer-quiet-menu"
       button={{
         label: picker.label ?? copy.choose,

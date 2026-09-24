@@ -32,19 +32,28 @@ import {
 } from 'react';
 import { useMountedRef, useToast } from '@maka/ui';
 import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
-import type { UsageRange, UsageStats, UsageScreenQuery } from '@maka/core/settings';
+import type {
+  UsageRange,
+  UsageStats,
+  UsageScreenFailure,
+  UsageScreenQuery,
+} from '@maka/core/settings';
 import type { UsageServices } from './ports.js';
 import type { PricingEditorDraft } from './pricing-view-model.js';
 
 interface UsageSnapshot {
   readonly installation: number;
-  readonly range: UsageRange;
   readonly value: UsageStats | null;
 }
 export interface UsageScopeHandle {
   fenceTarget(): void;
 }
 type Filters = Pick<UsageScreenQuery, 'search' | 'status'>;
+type CapacityFailure = Extract<UsageScreenFailure, { kind: 'screen_response_too_large' }>;
+export interface UsagePagingProgress {
+  readonly loadedRecords: number;
+  readonly targetRecords: number;
+}
 interface UsageScopeValue {
   readonly services: UsageServices;
   readonly snapshot: UsageSnapshot | null;
@@ -55,7 +64,9 @@ interface UsageScopeValue {
   readonly setPricingEditor: Dispatch<SetStateAction<PricingEditorDraft | null>>;
   readonly state: 'ready' | 'loading' | 'stale' | 'error';
   readonly error: string | null;
+  readonly failure: CapacityFailure | null;
   readonly paging: boolean;
+  readonly pagingProgress: UsagePagingProgress | null;
   reload(range: UsageRange, filters?: Filters, preserveRange?: boolean): Promise<void>;
   loadMore(minimumRecords?: number): Promise<boolean>;
 }
@@ -81,7 +92,9 @@ export const UsageFeatureScope = forwardRef<
   const renderedTargetKeyRef = useRef(props.targetKey);
   const [state, setState] = useState<UsageScopeValue['state']>('ready');
   const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<CapacityFailure | null>(null);
   const [paging, setPaging] = useState(false);
+  const [pagingProgress, setPagingProgress] = useState<UsagePagingProgress | null>(null);
   const [renderedTargetKey, setRenderedTargetKey] = useState(props.targetKey);
   const ticketRef = useRef(0);
   const blockedRef = useRef(false);
@@ -100,7 +113,9 @@ export const UsageFeatureScope = forwardRef<
     setSnapshot(null);
     setState('ready');
     setError(null);
+    setFailure(null);
     setPaging(false);
+    setPagingProgress(null);
   };
   if (targetKey !== renderedTargetKey) {
     setRenderedTargetKey(targetKey);
@@ -120,7 +135,9 @@ export const UsageFeatureScope = forwardRef<
       pagingRef.current = false;
       setState('loading');
       setError(null);
+      setFailure(null);
       setPaging(false);
+      setPagingProgress(null);
       const query: UsageScreenQuery = {
         range:
           preserveRange && resolvedRef.current?.range === range
@@ -135,10 +152,10 @@ export const UsageFeatureScope = forwardRef<
         if (!mountedRef.current || ticket !== ticketRef.current) return;
         if (value && 'kind' in value) {
           setState('error');
-          setError(value.kind);
+          setFailure(value);
           return;
         }
-        setSnapshot({ range, value, installation: ticket });
+        setSnapshot({ value, installation: ticket });
         setState('ready');
         blockedRef.current = false;
       } catch (error) {
@@ -166,8 +183,10 @@ export const UsageFeatureScope = forwardRef<
       )
         return false;
       const ticket = ticketRef.current;
+      const targetRecords = Math.max(minimumRecords, current.logs.length + 1);
       pagingRef.current = true;
       setPaging(true);
+      setPagingProgress({ loadedRecords: current.logs.length, targetRecords });
       try {
         const logs = [...current.logs];
         let nextCursor: string | null = navigation.nextCursor;
@@ -188,7 +207,7 @@ export const UsageFeatureScope = forwardRef<
           if (result.kind === 'screen_response_too_large') {
             blockedRef.current = true;
             setState('error');
-            setError(result.kind);
+            setFailure(result);
             return false;
           }
           if (
@@ -200,6 +219,7 @@ export const UsageFeatureScope = forwardRef<
             throw new Error('Invalid Usage continuation');
           logs.push(...result.page.logs);
           nextCursor = result.page.nextCursor;
+          setPagingProgress({ loadedRecords: logs.length, targetRecords });
         } while (nextCursor && logs.length < minimumRecords);
         setSnapshot({
           ...snapshot,
@@ -220,6 +240,7 @@ export const UsageFeatureScope = forwardRef<
         if (mountedRef.current && ticket === ticketRef.current) {
           pagingRef.current = false;
           setPaging(false);
+          setPagingProgress(null);
         }
       }
     },
@@ -233,8 +254,35 @@ export const UsageFeatureScope = forwardRef<
     },
   }));
   const value = useMemo<UsageScopeValue>(
-    () => ({ services, snapshot, targetKey, state, error, paging, reload, loadMore, isCurrentTarget, pricingEditor, setPricingEditor }),
-    [services, snapshot, targetKey, state, error, paging, reload, loadMore, isCurrentTarget, pricingEditor],
+    () => ({
+      services,
+      snapshot,
+      targetKey,
+      state,
+      error,
+      failure,
+      paging,
+      pagingProgress,
+      reload,
+      loadMore,
+      isCurrentTarget,
+      pricingEditor,
+      setPricingEditor,
+    }),
+    [
+      services,
+      snapshot,
+      targetKey,
+      state,
+      error,
+      failure,
+      paging,
+      pagingProgress,
+      reload,
+      loadMore,
+      isCurrentTarget,
+      pricingEditor,
+    ],
   );
   return <UsageScopeContext.Provider value={value}>{props.children}</UsageScopeContext.Provider>;
 });
@@ -257,7 +305,6 @@ export function useUsageStats(_range: UsageRange) {
   return {
     ...scope,
     stats: snapshot?.value ?? null,
-    displayedRange: snapshot?.range,
     screenVersion: snapshot?.installation ?? 0,
   };
 }

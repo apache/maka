@@ -63,11 +63,7 @@
     },
     "side-chat-followups.spec.ts": {
       "tests": 1,
-      "electron": "queue mutations and successive Side Chat Turns cross renderer/preload/main/Host; native dragging must pass the main-window drop guard and Host reconnect must restore the live fork without remounting it"
-    },
-    "skill-draft-lifecycle.spec.ts": {
-      "tests": 2,
-      "electron": "revision retry and cancel are Host-owned draft transitions across a parent and a child Session"
+      "electron": "native queue dragging must pass the main-window drop guard, queued follow-ups drain in order across real Host turn handoffs, and closing the Desktop transport while an external client drives the fork exercises observation reseed without remount"
     },
     "slash-command-compact.spec.ts": {
       "tests": 1,
@@ -85,9 +81,9 @@
       "tests": 1,
       "electron": "the same WebContentsView and unsent draft survive reparenting between native main and floating windows, shared appearance changes and the explicit return-from-picture-in-picture button"
     },
-    "workhub-return-rail.spec.ts": {
-      "tests": 2,
-      "electron": "WorkHub lives in a separate native WebContentsView: open a Session and return through the shell while retaining the same WorkHub draft; a Host-backed pending question survives renderer reload and native detach/dock with its selection and focus"
+    "workhub-pending-question.spec.ts": {
+      "tests": 1,
+      "electron": "a Host-backed pending question survives renderer reload and native detach/dock with its selection and focus"
     },
     "zh-tw-locale.spec.ts": {
       "tests": 1,

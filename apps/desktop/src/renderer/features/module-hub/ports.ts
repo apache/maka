@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { McpConfigFile, McpServerStatus, McpServerConfig, McpConfigAddResult, McpConfigImportResult, McpConfigUpdateResult, McpTestResult } from '@maka/core/mcp';
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
@@ -248,7 +249,23 @@ export interface ModuleHubClipboardService {
 }
 
 /** Environment capabilities owned by the Module Hub feature slice. */
+export interface ModuleHubMcpService {
+  getConfig(host: ModuleHubRuntimeHostRef): Promise<McpConfigFile>;
+  listStatuses(host: ModuleHubRuntimeHostRef): Promise<McpServerStatus[]>;
+  add(id: string, config: McpServerConfig, host: ModuleHubRuntimeHostRef): Promise<McpConfigAddResult>;
+  update(id: string, config: McpServerConfig, basis: McpServerConfig, host: ModuleHubRuntimeHostRef): Promise<McpConfigUpdateResult>;
+  setEnabled(id: string, enabled: boolean, host: ModuleHubRuntimeHostRef): Promise<McpConfigUpdateResult>;
+  importConfig(source: string, host: ModuleHubRuntimeHostRef): Promise<McpConfigImportResult>;
+  remove(id: string, host: ModuleHubRuntimeHostRef): Promise<McpConfigFile>;
+  test(id: string, host: ModuleHubRuntimeHostRef): Promise<McpTestResult>;
+  login(id: string, host: ModuleHubRuntimeHostRef): Promise<McpServerStatus>;
+  cancelLogin(id: string, host: ModuleHubRuntimeHostRef): Promise<boolean>;
+  logout(id: string, host: ModuleHubRuntimeHostRef): Promise<McpServerStatus>;
+  subscribeChanges(handler: () => void): ModuleHubUnsubscribe;
+}
+
 export interface ModuleHubServices {
+  mcp: ModuleHubMcpService;
   runtimeHosts: ModuleHubRuntimeHostsService;
   skills: ModuleHubSkillsService;
   scheduledTasks: ModuleHubScheduledTasksService;

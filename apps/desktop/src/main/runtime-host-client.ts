@@ -74,6 +74,7 @@ import {
   type ExternalSessionCatalogQueryResult,
   type ExternalSessionImportResult,
   type ExternalSessionSourceQueryResult,
+  type WorkspaceTarget,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type InteractionAnswerInput,
@@ -152,7 +153,6 @@ import {
   type TurnMessageSubmitInput,
   type TurnMessageSubmitResult,
   type WorkspaceProjection,
-  type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 import type {
   DesktopPricingMutationInput,
@@ -507,12 +507,6 @@ export class DesktopRuntimeHostClient {
       connectionId,
       modelId: modelId ?? null,
     });
-  }
-
-  readConnectionUsage(
-    connectionId: string,
-  ): Promise<OperationOutput<"connection.usage.read">> {
-    return this.request("connection.usage.read", { connectionId });
   }
 
   verifyConnectionOnboarding(
@@ -1037,6 +1031,7 @@ export class DesktopRuntimeHostClient {
   async importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
+    readonly workspace?: WorkspaceTarget;
   }): Promise<ExternalSessionImportResult<SessionCatalogProjection>> {
     const result = await this.request("external-session.import", input);
     return result.kind === 'imported'

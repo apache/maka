@@ -199,6 +199,42 @@ test('executor rich events require an explicitly declared capability', async () 
   await root.fiber.dispose();
 });
 
+test('executor permission choices cross the service boundary with validation', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  plugin(root, 'profile', 'provider', 1).executors.register({
+    id: 'remote',
+    execute: async (_request, context) => {
+      const result = await context.requestPermission({
+        toolCallId: 'external-tool',
+        title: 'Allow external edit?',
+        options: [
+          { optionId: 'allow', name: 'Allow' },
+          { optionId: 'deny', name: 'Deny' },
+        ],
+      });
+      return { status: 'completed', text: result.outcome };
+    },
+  });
+
+  const result = await service.execute('remote', request('session-a'), {
+    onPermissionRequest: async (permission) => {
+      assert.equal(Object.isFrozen(permission), true);
+      assert.equal(Object.isFrozen(permission.options), true);
+      return { outcome: 'selected', optionId: 'allow' };
+    },
+  });
+  assert.deepEqual(result, { status: 'completed', text: 'selected' });
+  await assert.rejects(
+    () =>
+      service.execute('remote', request('session-a'), {
+        onPermissionRequest: async () => ({ outcome: 'selected', optionId: 'unknown' }),
+      }),
+    /permission result is invalid/u,
+  );
+  await root.fiber.dispose();
+});
+
 function plugin(
   root: Context,
   rootId: 'profile' | `session:${string}`,
@@ -232,3 +268,170 @@ async function executeText(service: PluginExecutorService): Promise<string> {
   assert.equal(result.status, 'completed');
   return result.text;
 }
+
+test('cancellation drains final updates and preserves timeout interruption', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const owner = plugin(root, 'profile', 'provider', 1);
+  const abort = new AbortController();
+  owner.executors.register({
+    id: 'remote',
+    execute: async (_request, context) => {
+      context.emit({ type: 'output_delta', text: 'before' });
+      abort.abort(new Error('user_stop'));
+      context.emit({ type: 'output_delta', text: 'after cancel' });
+      return { status: 'cancelled', reason: 'timeout', providerStopReason: 'max_tokens' };
+    },
+  });
+  const events: string[] = [];
+  const result = await service.execute('remote', request('session-a'), {
+    signal: abort.signal,
+    onEvent: (event) => {
+      if (event.type === 'output_delta') events.push(event.text);
+    },
+  });
+  assert.deepEqual(events, ['before', 'after cancel']);
+  assert.deepEqual(result, {
+    status: 'cancelled',
+    source: 'caller',
+    reason: 'timeout',
+    providerStopReason: 'max_tokens',
+  });
+  await root.fiber.dispose();
+});
+
+test('catalog inspection stays process-free and model configuration is isolated per conversation', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  let discoveries = 0,
+    inspections = 0,
+    configured = 0,
+    retired = '';
+  let release!: () => void;
+  const catalog = {
+    id: 'remote',
+    displayName: 'Remote',
+    readiness: 'ready' as const,
+    models: [{ id: 'm', name: 'M' }],
+    supportsAttachments: false,
+    supportsModelChange: true,
+  };
+  plugin(root, 'profile', 'provider', 1).executors.register({
+    id: 'remote',
+    discover: async () => {
+      discoveries++;
+      return catalog;
+    },
+    inspectConversation: async () => {
+      inspections++;
+      return { ...catalog, readiness: 'history_only' };
+    },
+    configureConversation: async () => {
+      configured++;
+    },
+    disposeConversation: async (key) => {
+      retired = key;
+    },
+    execute: async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { status: 'completed', text: '' };
+    },
+  });
+  await service.catalog({ cwd: '/workspace' });
+  const [state] = await service.catalog({
+    cwd: '/workspace',
+    sessionId: 'session-a',
+    executorId: 'remote',
+  });
+  assert.equal(state?.readiness, 'history_only');
+  assert.equal(discoveries, 1);
+  assert.equal(inspections, 1);
+  const execution = service.execute('remote', request('session-a'));
+  await service.configureConversation('session-b', 'remote', {
+    conversationKey: 'session-b',
+    cwd: '/workspace',
+    configuration: { model: 'm' },
+  });
+  assert.equal(configured, 1);
+  await assert.rejects(
+    service.configureConversation('session-a', 'remote', {
+      conversationKey: 'session-a',
+      cwd: '/workspace',
+      configuration: { model: 'm' },
+    }),
+    /busy/,
+  );
+  release();
+  await execution;
+  await service.retireConversation('session-a');
+  assert.equal(retired, 'session-a');
+  await root.fiber.dispose();
+});
+
+test('catalog discovery uses session visibility without inspecting a conversation', async () => {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const calls: string[] = [];
+  const register = (rootId: 'profile' | `session:${string}`, id: string, model: string) => {
+    const catalog = {
+      id,
+      displayName: id,
+      readiness: 'ready' as const,
+      models: [{ id: model, name: model }],
+      supportsAttachments: false,
+      supportsModelChange: true,
+    };
+    plugin(root, rootId, `${id}-${model}`, 1).executors.register({
+      id,
+      discover: async () => {
+        calls.push(`discover:${model}`);
+        return catalog;
+      },
+      inspectConversation: async () => {
+        calls.push(`inspect:${model}`);
+        return { ...catalog, readiness: 'history_only' };
+      },
+      execute: async () => ({ status: 'completed', text: '' }),
+    });
+  };
+  register('profile', 'shared', 'profile-model');
+  register('session:session-a', 'shared', 'session-model');
+  register('session:session-a', 'private', 'private-model');
+  try {
+    for (const [executorId, model] of [
+      ['shared', 'session-model'],
+      ['private', 'private-model'],
+    ] as const) {
+      const [entry] = await service.catalog({
+        cwd: '/workspace',
+        discoverySessionId: 'session-a',
+        executorId,
+      });
+      assert.equal(entry?.readiness, 'ready');
+      assert.deepEqual(
+        entry.models.map((model) => model.id),
+        [model],
+      );
+    }
+    assert.deepEqual(calls, ['discover:session-model', 'discover:private-model']);
+    const [hidden] = await service.catalog({
+      cwd: '/workspace',
+      discoverySessionId: 'session-b',
+      executorId: 'private',
+    });
+    assert.equal(hidden?.readiness, 'unavailable');
+    const [profile] = await service.catalog({ cwd: '/workspace', executorId: 'shared' });
+    assert.equal(profile?.models[0]?.id, 'profile-model');
+    const [inspection] = await service.catalog({
+      cwd: '/workspace',
+      sessionId: 'session-a',
+      executorId: 'shared',
+    });
+    assert.equal(inspection?.readiness, 'history_only');
+    assert.equal(calls.at(-1), 'inspect:session-model');
+  } finally {
+    await root.fiber.dispose();
+  }
+});

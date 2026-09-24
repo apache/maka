@@ -25,7 +25,7 @@ import type {
   HostHandoffView,
 } from './host-handoff.js';
 
-type HostHandoffReason = HostHandoffView['reason'];
+type HostHandoffReason = Extract<HostHandoffView, { state: 'attention' }>['reason'];
 
 interface HostHandoffCopy {
   titles: Record<HostHandoffReason, string>;
@@ -250,17 +250,38 @@ const COPY = {
   },
 } satisfies UiCatalog<HostHandoffCopy>;
 
-/** Shared consequence-oriented copy, not a second lifecycle policy. */
-export function formatHostHandoff(
-  view: HostHandoffView,
-  locale: UiLocale,
-): {
+export interface HostHandoffPresentation {
   title: string;
   description: string;
   detail: string;
   actions: readonly { action: HostHandoffAction; label: string }[];
-} {
+}
+
+/** Shared consequence-oriented copy, not a second lifecycle policy. */
+export function formatHostHandoff(
+  view: HostHandoffView,
+  locale: UiLocale,
+): HostHandoffPresentation {
   const copy = COPY[locale];
+  const labels: Record<HostHandoffAction, string> = {
+    cancel: copy.labels.cancel,
+    retry: view.manualRecheck ? copy.labels.recheck : copy.labels.retry,
+    replace: copy.labels.replace,
+    interrupt: view.manualRecheck
+      ? copy.labels.interruptRecheck
+      : view.operation === 'repair'
+        ? copy.labels.interruptRepair
+        : copy.labels.interrupt,
+  };
+  const actions = view.actions.map((action) => ({ action, label: labels[action] }));
+  if (view.state === 'progress') {
+    return {
+      title: copy.progressTitle,
+      description: copy.phases[view.phase],
+      detail: copy.progressDetail,
+      actions,
+    };
+  }
   let title = copy.titles[view.reason];
   let description = copy.descriptions(view.target.name)[view.reason];
   if (view.recoveryBlocker && view.reason === 'operator_required') {
@@ -290,25 +311,12 @@ export function formatHostHandoff(
       ? copy.waiting.natural
       : copy.waiting.blocked;
   const repairNotice = view.operation === 'repair' ? copy.repairNotice : '';
-  const labels: Record<HostHandoffAction, string> = {
-    cancel: copy.labels.cancel,
-    retry: view.manualRecheck ? copy.labels.recheck : copy.labels.retry,
-    replace: copy.labels.replace,
-    interrupt: view.manualRecheck
-      ? copy.labels.interruptRecheck
-      : view.operation === 'repair'
-        ? copy.labels.interruptRepair
-        : copy.labels.interrupt,
-  };
   return {
-    title: view.state === 'progress' ? copy.progressTitle : title,
-    description: view.state === 'progress' ? copy.phases[view.phase ?? 'checking'] : description,
-    detail:
-      view.state === 'progress'
-        ? copy.progressDetail
-        : [packageChange, facts, backgroundFacts, waiting, repairNotice, view.operatorStep]
-            .filter(Boolean)
-            .join('\n'),
-    actions: view.actions.map((action) => ({ action, label: labels[action] })),
+    title,
+    description,
+    detail: [packageChange, facts, backgroundFacts, waiting, repairNotice, view.operatorStep]
+      .filter(Boolean)
+      .join('\n'),
+    actions,
   };
 }
