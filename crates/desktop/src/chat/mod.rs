@@ -107,7 +107,10 @@ pub struct Chat {
     open_turns: HashSet<String>,
     /// Groups and calls the reader opened or closed, overriding the default.
     toggled: HashMap<String, bool>,
-    hovered_turn: Option<String>,
+    /// The turn under the pointer, and the row that reported it. Only that
+    /// row's leave clears it: moving between rows of one turn delivers the
+    /// next row's enter before this row's leave.
+    hovered: Option<(String, SharedString)>,
     sent: Option<String>,
     anchor: Option<Anchor>,
     end_space: Pixels,
@@ -195,7 +198,7 @@ impl Chat {
             copied,
             open_turns: HashSet::new(),
             toggled: HashMap::new(),
-            hovered_turn: None,
+            hovered: None,
             sent: None,
             anchor: None,
             end_space: px(0.),
@@ -600,6 +603,10 @@ impl Chat {
             self.list.bounds_for_item(last),
         ) {
             self.end_space = (viewport - (bottom.bottom() - top.top())).max(px(0.));
+        }
+        // Dragging the scrollbar is a user scroll, like the wheel.
+        if self.list.is_scrollbar_dragging() {
+            anchor.pinning = false;
         }
         if !anchor.pinning {
             return;

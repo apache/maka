@@ -97,7 +97,7 @@ impl Chat {
             _ => 8.,
         };
         let shell = div()
-            .id(key)
+            .id(key.clone())
             .w_full()
             .flex()
             .justify_center()
@@ -112,11 +112,15 @@ impl Chat {
                 shell
                     .on_hover(move |hovered, _, cx| {
                         let _ = chat.update(cx, |chat, cx| {
-                            let next = hovered.then(|| turn.clone());
-                            if (*hovered || chat.hovered_turn.as_deref() == Some(turn.as_str()))
-                                && chat.hovered_turn != next
-                            {
-                                chat.hovered_turn = next;
+                            let next = if *hovered {
+                                Some((turn.clone(), key.clone()))
+                            } else if chat.hovered.as_ref().is_some_and(|(_, row)| *row == key) {
+                                None
+                            } else {
+                                return;
+                            };
+                            if chat.hovered != next {
+                                chat.hovered = next;
                                 cx.notify();
                             }
                         });
@@ -507,7 +511,10 @@ impl Chat {
 
     fn footer(&self, turn: &str, this: &Entity<Chat>, theme: &Theme, cx: &App) -> AnyElement {
         let entries = &self.transcript.entries;
-        let visible = self.hovered_turn.as_deref() == Some(turn);
+        let visible = self
+            .hovered
+            .as_ref()
+            .is_some_and(|(hovered, _)| hovered == turn);
         // The answer is the trailing text of the turn; work before it is not copied.
         let mut answer: Vec<&str> = Vec::new();
         for entry in entries.iter().filter(|entry| entry.turn() == turn) {
@@ -722,13 +729,22 @@ impl Render for Chat {
         };
         self.now = self.elapsed.map(|_| now);
         self.place(window);
-        if let Some(at_end) = self.list.is_scrolled_to_end() {
-            let scrollable = self.list.max_offset_for_scrollbar().y > px(0.5);
-            self.jump = scrollable
-                && !at_end
-                && !self.list.is_following_tail()
-                && !self.anchor.as_ref().is_some_and(|anchor| anchor.pinning);
-        }
+        // Unmeasured rows elsewhere in a long history do not matter; only the
+        // last row decides whether the end is in view, and while it is
+        // unknown the button keeps its state.
+        let at_end = self
+            .keys
+            .len()
+            .checked_sub(1)
+            .and_then(|last| self.list.bounds_for_item(last))
+            .map(|last| {
+                last.bottom() + px(22.) + self.end_space
+                    <= self.list.viewport_bounds().bottom() + px(1.)
+            });
+        let settled = self.list.max_offset_for_scrollbar().y > px(0.5)
+            && !self.list.is_following_tail()
+            && !self.anchor.as_ref().is_some_and(|anchor| anchor.pinning);
+        self.jump = settled && at_end.map_or(self.jump, |at_end| !at_end);
 
         let this = cx.entity();
         let scrollbar = self
