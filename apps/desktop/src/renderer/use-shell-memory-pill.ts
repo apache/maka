@@ -21,7 +21,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
   defaultRuntimeHostDiagnosticTarget,
-  isDefaultRuntimeHostReady,
+  isDefaultRuntimeHostConnecting,
   runOnDefaultRuntimeHost,
 } from './platform/desktop/default-runtime-host-operation.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -79,14 +79,9 @@ export function useShellMemoryPill({
       setMemoryActive(next.agentReadEnabled && next.status === 'ok' && next.content.trim().length > 0);
     } catch (error) {
       if (refreshSequence.current !== sequence) return;
-      // With no active Session the read goes through the default Host — when
-      // it is simply not ready yet the ready transition re-runs this refresh.
-      if (
-        !sessionId &&
-        !(await isDefaultRuntimeHostReady())
-      ) {
-        return;
-      }
+      // With no active Session the read goes through the default Host — while
+      // it is still connecting the ready transition re-runs this refresh.
+      if (!sessionId && (await isDefaultRuntimeHostConnecting())) return;
       if (refreshSequence.current !== sequence) return;
       toastApi.error(
         failureContext === 'load' ? copy.memoryLoadErrorTitle : copy.memoryRefreshErrorTitle,

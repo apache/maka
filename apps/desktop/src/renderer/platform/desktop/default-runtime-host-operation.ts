@@ -47,10 +47,11 @@ export async function runOnDefaultRuntimeHost<T>(
   }
 }
 
-export async function isDefaultRuntimeHostReady(): Promise<boolean> {
+export async function isDefaultRuntimeHostConnecting(): Promise<boolean> {
   try {
     const snapshot = await window.maka.runtimeHostProfiles.getSnapshot();
-    return snapshot.entries.find((entry) => entry.isDefault)?.readiness === 'ready';
+    const readiness = snapshot.entries.find((entry) => entry.isDefault)?.readiness;
+    return readiness === 'connecting' || readiness === 'reconnecting';
   } catch {
     return false;
   }

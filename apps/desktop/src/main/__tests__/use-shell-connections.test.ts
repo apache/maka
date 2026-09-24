@@ -206,6 +206,84 @@ test('a default read that fails while the default Host is still connecting stays
   assert.deepEqual(toasts, []);
 });
 
+test('a default read failure still toasts when the Host readiness cannot be read', async () => {
+  const { root } = installReactRenderer();
+  const toasts: unknown[] = [];
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: {
+      getSnapshot: async () => {
+        throw new Error('connection read failed');
+      },
+    },
+    runtimeHostProfiles: {
+      getDefaultHost: async () => ({ profileId: 'profile-default', hostId: 'host-default' }),
+      getSnapshot: async () => {
+        throw new Error('profile catalog read failed');
+      },
+    },
+  };
+
+  function Probe() {
+    useShellConnections({
+      toastApi: { error: (title) => { toasts.push(title); } },
+      uiLocale: 'en',
+      target: { kind: 'default' },
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe));
+  });
+
+  assert.equal(toasts.length, 1);
+});
+
+test('a default failure superseded while its readiness check is in flight does not toast', async () => {
+  const { root } = installReactRenderer();
+  const toasts: unknown[] = [];
+  const firstRead = deferred<DesktopConnectionSnapshot>();
+  const readiness = deferred<unknown>();
+  let reads = 0;
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: {
+      getSnapshot: () => (++reads === 1 ? firstRead.promise : Promise.resolve(snapshot('ready'))),
+    },
+    runtimeHostProfiles: {
+      getDefaultHost: async () => ({ profileId: 'profile-default', hostId: 'host-default' }),
+      getSnapshot: () => readiness.promise,
+    },
+  };
+  let current!: ReturnType<typeof useShellConnections>;
+
+  function Probe() {
+    current = useShellConnections({
+      toastApi: { error: (title) => { toasts.push(title); } },
+      uiLocale: 'en',
+      target: { kind: 'default' },
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe));
+  });
+  await act(async () => {
+    firstRead.reject(new Error('Runtime Host target did not become ready in time'));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await current.refreshConnections();
+  });
+  await act(async () => {
+    readiness.resolve({ entries: [{ isDefault: true, readiness: 'ready' }] });
+    await readiness.promise;
+  });
+
+  assert.equal(current.snapshot.defaultConnection, 'ready');
+  assert.deepEqual(toasts, []);
+});
+
 test('keeps serving the last ready snapshot while a refresh is in flight (#4611)', async () => {
   const { root } = installReactRenderer();
   const sessionId = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });
