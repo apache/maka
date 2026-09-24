@@ -178,6 +178,92 @@ describe('responses wire contract', () => {
     );
   });
 
+  test('keeps the runtime tool_search name in a Code Mode catalog nested inside exec', async () => {
+    const connection = conn('openai-codex', 'codex-subscription');
+    connection.defaultModel = 'gpt-5.6-sol';
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json({
+        id: 'response-code-mode-tool-search',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const adapter = new ModelAdapter({
+      connection,
+      apiKey: 'test-token',
+      modelId: connection.defaultModel,
+      modelFactory: (input) =>
+        getAIModel({
+          connection,
+          apiKey: input.apiKey,
+          modelId: connection.defaultModel,
+          fetch,
+        }),
+      newId: () => 'test-id',
+      now: () => 0,
+    });
+    // exec binds nested tools as `tools.<runtime name>`; the provider never
+    // sees tool_search as a function here, so its reserved-name alias must not
+    // leak into the catalog or into exec's returned text.
+    const result = await adapter.startStream({
+      model: adapter.resolveModel(),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'exec-call',
+              toolName: 'exec',
+              input: { code: 'return await tools.tool_search({ query: "ScheduledTask" })' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'exec-call',
+              toolName: 'exec',
+              output: { type: 'text', value: 'tool_search activated ScheduledTask' },
+            },
+          ],
+        },
+      ],
+      tools: {
+        exec: {
+          description: 'Run JavaScript that calls Maka tools',
+          inputSchema: z.object({ code: z.string() }),
+        },
+      },
+      activeTools: ['exec'],
+      system: 'Code Mode: After tool_search, use the refreshed catalog. {"tool_search":{}}',
+      onStreamActivity: () => {},
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+    for await (const _event of result.events) void _event;
+    const input = requestBodies[0]?.input as Array<Record<string, unknown>>;
+    assert.equal(
+      input?.find((item) => item.role === 'developer')?.content,
+      'Code Mode: After tool_search, use the refreshed catalog. {"tool_search":{}}',
+    );
+    assert.equal(
+      input?.find((item) => item.type === 'function_call_output')?.output,
+      'tool_search activated ScheduledTask',
+    );
+    const tools = requestBodies[0]?.tools as Array<{ name?: string }>;
+    assert.deepEqual(
+      tools.map((tool) => tool.name),
+      ['exec'],
+    );
+  });
+
   test('routes only Qwen3.8 Max through Token Plan Responses', () => {
     for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
       assert.equal(
