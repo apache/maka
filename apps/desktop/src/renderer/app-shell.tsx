@@ -992,11 +992,9 @@ function AppShellContent({
     activeId,
     activeExecutionBoundary,
     newSessionPermissionMode,
+    activeId ? sessionSettingIntent.overlays.permissionMode[activeId] : undefined,
   );
-  const activePermissionMode = activeId
-    ? sessionSettingIntent.overlays.permissionMode[activeId]
-      ?? activeBoundarySurface.permissionMode
-    : activeBoundarySurface.permissionMode;
+  const activePermissionMode = activeBoundarySurface.permissionMode;
   const planMode = usePlanModeState(ownerActiveId ? activeHostSession : undefined);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
