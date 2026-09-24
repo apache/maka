@@ -77,7 +77,7 @@ npm run typecheck
 
 测试使用真实 main 的 Context/Fiber、PluginPlatform、包加载器、Agent/Tool/Prompt 服务、Client Runtime、Slots、Remote；新增端到端用例再用受控模型驱动真实 AiSdkBackend 和插件工具，验证结束钩子拦截及 `MatterSettle`。另有 opt-in 真实 Flash 跨应用交付场景 `scripts/live.ts`，使用 main 的真实 AiSdkBackend，业务 API 为本地模拟。密钥只从 `MAKA_SCENARIO_API_KEY` 读取，不写入插件或报告。`npm run prepare:test` 会从当前 Maka checkout 生成本地测试产物。
 
-当前 main 提供 `sidebar.footer` 与 `shell.overlay` 插件槽，因此入口仍位于侧边栏底部；精确插入 Workhub 上方需要宿主提供相应导航槽，本插件没有修改 Maka 或使用 DOM 搬动入口。
+Maka 提供 `sidebar.navigation` 与 `shell.overlay` 插件槽；「长任务」通过原生导航项插在新任务和 WorkHub 之间，浮卡由 overlay 槽渲染。插件不修改 Maka 内部 DOM。
 
 ## 当前边界
 

@@ -66,7 +66,7 @@ await build({
 const data=${JSON.stringify(data)};const slots=[];
 window.__MakaModuleLoader__={load(pkg){pkg.factory(()=>React).apply({style(css){const el=document.createElement('style');el.textContent=css;document.head.append(el)},slots:{register(meta,Component){slots.push({meta,Component})}},remote:{async call(){return data},async *stream(){yield data}}});}};
 ${await readFile('src/client.js', 'utf8')}
-for(const {meta,Component} of slots){const el=document.createElement('div');document.getElementById(meta.name==='sidebar.footer'?'entry':'overlay').append(el);createRoot(el).render(React.createElement(Component));}
+for(const {meta,Component} of slots){const el=document.createElement('div');document.getElementById(meta.name==='sidebar.navigation'?'entry':'overlay').append(el);createRoot(el).render(React.createElement(Component));}
 `,
     resolveDir: process.cwd(),
     loader: 'js',

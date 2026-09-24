@@ -22,6 +22,7 @@ window.__MakaModuleLoader__.load({
   factory(require) {
     const React = require('react'),
       h = React.createElement;
+    const { SideNavItem } = require('@maka/ui/client-plugin');
     return {
       apply(ctx) {
         let opened = false;
@@ -157,7 +158,9 @@ window.__MakaModuleLoader__.load({
                     const pending = prior.filter(
                       (item) =>
                         item.optimistic &&
-                        !items.some((saved) => saved.role === item.role && saved.text === item.text),
+                        !items.some(
+                          (saved) => saved.role === item.role && saved.text === item.text,
+                        ),
                     );
                     return [...items, ...pending];
                   });
@@ -167,7 +170,11 @@ window.__MakaModuleLoader__.load({
             };
             void refresh();
             const off = ctx.events.on('session.event', { sessionId: chatSessionId }, (value) => {
-              if (['text_complete', 'message_admission', 'complete', 'abort'].includes(value.event.type))
+              if (
+                ['text_complete', 'message_admission', 'complete', 'abort'].includes(
+                  value.event.type,
+                )
+              )
                 void refresh();
             });
             return () => {
@@ -188,7 +195,10 @@ window.__MakaModuleLoader__.load({
             try {
               let sessionId = chatSessionId;
               if (!sessionId) {
-                const created = await sessions.create({ name: text.slice(0, 48), labels: ['proactive-matters'] });
+                const created = await sessions.create({
+                  name: text.slice(0, 48),
+                  labels: ['proactive-matters'],
+                });
                 sessionId = created.id;
                 await ctx.remote.call('matters.authorize-session', { sessionId });
                 setChatSessionId(sessionId);
@@ -200,7 +210,10 @@ window.__MakaModuleLoader__.load({
               });
               if (!result.ok) throw new Error(result.reason || 'send failed');
               if (draftRef.current) draftRef.current.value = '';
-              setMessages((prior) => [...prior, { role: 'user', text, turnId: result.turnId, ts: Date.now(), optimistic: true }]);
+              setMessages((prior) => [
+                ...prior,
+                { role: 'user', text, turnId: result.turnId, ts: Date.now(), optimistic: true },
+              ]);
             } catch {
               setError('发送失败，请重试。');
             } finally {
@@ -233,24 +246,38 @@ window.__MakaModuleLoader__.load({
               m
                 ? h(
                     'button',
-                    { className: 'mt-back', onClick: () => { setChatSessionId(null); setMessages([]); if (draftRef.current) draftRef.current.value = ''; } },
+                    {
+                      className: 'mt-back',
+                      onClick: () => {
+                        setChatSessionId(null);
+                        setMessages([]);
+                        if (draftRef.current) draftRef.current.value = '';
+                      },
+                    },
                     icon('back'),
                     '返回列表',
                   )
                 : chatSessionId
                   ? h(
                       'button',
-                      { className: 'mt-back', onClick: () => { setChatSessionId(null); setMessages([]); if (draftRef.current) draftRef.current.value = ''; } },
+                      {
+                        className: 'mt-back',
+                        onClick: () => {
+                          setChatSessionId(null);
+                          setMessages([]);
+                          if (draftRef.current) draftRef.current.value = '';
+                        },
+                      },
                       icon('back'),
                       '返回列表',
                     )
-                : h(
-                    'div',
-                    { className: 'mt-heading' },
-                    icon('clock'),
-                    h('h2', {}, '长任务'),
-                    h('span', { className: 'mt-count' }, matters.length),
-                  ),
+                  : h(
+                      'div',
+                      { className: 'mt-heading' },
+                      icon('clock'),
+                      h('h2', {}, '长任务'),
+                      h('span', { className: 'mt-count' }, matters.length),
+                    ),
               h(
                 'button',
                 { className: 'mt-close', 'aria-label': '收起长任务', onClick: toggle },
@@ -267,74 +294,79 @@ window.__MakaModuleLoader__.load({
                   { className: 'mt-detail' },
                   !m && h('p', { className: 'mt-notice' }, '正在开始跟进…'),
                   m &&
-                  h(
-                    'div',
-                    { className: 'mt-detail-title' },
-                    h('h2', {}, m.title),
                     h(
-                      'span',
-                      { className: 'mt-status', 'data-status': m.status },
-                      h('i', {}),
-                      labels[m.status],
+                      'div',
+                      { className: 'mt-detail-title' },
+                      h('h2', {}, m.title),
+                      h(
+                        'span',
+                        { className: 'mt-status', 'data-status': m.status },
+                        h('i', {}),
+                        labels[m.status],
+                      ),
                     ),
-                  ),
-                  m && block(
-                    '当前进展',
-                    m.lastUpdate ||
-                      handoff?.reason ||
-                      (m.status === 'active'
-                        ? '正在处理这件事，完成本轮后会更新进展。'
-                        : '还没有新的进展。'),
-                  ),
+                  m &&
+                    block(
+                      '当前进展',
+                      m.lastUpdate ||
+                        handoff?.reason ||
+                        (m.status === 'active'
+                          ? '正在处理这件事，完成本轮后会更新进展。'
+                          : '还没有新的进展。'),
+                    ),
                   m && block('已经做了什么', handoff?.summary || '还没有已提交的执行记录。'),
                   m &&
-                  h(
-                    'section',
-                    { className: 'mt-section' },
-                    h('h3', {}, '接下来'),
-                    ended
-                      ? h(
-                          'p',
-                          {},
-                          m.status === 'completed'
-                            ? '任务已完成，不再安排检查。'
-                            : '跟进已结束，不再安排检查。',
-                        )
-                      : m.status === 'paused'
-                        ? h('p', {}, '任务已暂停，暂不执行后续安排。')
-                        : h(
-                            'div',
-                            { className: 'mt-next' },
-                            h(
+                    h(
+                      'section',
+                      { className: 'mt-section' },
+                      h('h3', {}, '接下来'),
+                      ended
+                        ? h(
+                            'p',
+                            {},
+                            m.status === 'completed'
+                              ? '任务已完成，不再安排检查。'
+                              : '跟进已结束，不再安排检查。',
+                          )
+                        : m.status === 'paused'
+                          ? h('p', {}, '任务已暂停，暂不执行后续安排。')
+                          : h(
                               'div',
-                              { className: 'mt-time' },
-                              icon('clock'),
-                              m.status === 'active'
-                                ? '本轮正在执行'
-                                : Number.isFinite(nextAt(m))
-                                  ? time(nextAt(m))
-                                  : '尚未登记下次检查',
-                            ),
-                            h(
-                              'p',
-                              {},
-                              plain(
-                                handoff?.next ||
-                                  (m.status === 'active'
-                                    ? '根据本轮结果决定后续安排。'
-                                    : '届时重新检查最新情况。'),
+                              { className: 'mt-next' },
+                              h(
+                                'div',
+                                { className: 'mt-time' },
+                                icon('clock'),
+                                m.status === 'active'
+                                  ? '本轮正在执行'
+                                  : Number.isFinite(nextAt(m))
+                                    ? time(nextAt(m))
+                                    : '尚未登记下次检查',
                               ),
+                              h(
+                                'p',
+                                {},
+                                plain(
+                                  handoff?.next ||
+                                    (m.status === 'active'
+                                      ? '根据本轮结果决定后续安排。'
+                                      : '届时重新检查最新情况。'),
+                                ),
+                              ),
+                              handoff?.next && h('small', {}, '后续安排会根据最新情况调整'),
                             ),
-                            handoff?.next && h('small', {}, '后续安排会根据最新情况调整'),
-                          ),
-                  ),
+                    ),
                   h(
                     'section',
                     { className: 'mt-conversation', 'aria-label': '长任务对话' },
                     ...messages.map((item, index) =>
                       h(
                         'div',
-                        { key: item.turnId + ':' + index, className: 'mt-message', 'data-role': item.role },
+                        {
+                          key: item.turnId + ':' + index,
+                          className: 'mt-message',
+                          'data-role': item.role,
+                        },
                         h('span', {}, item.role === 'user' ? '你' : 'Maka'),
                         h('p', {}, item.text),
                       ),
@@ -359,7 +391,11 @@ window.__MakaModuleLoader__.load({
                       {
                         key: item.id,
                         className: 'mt-row',
-                        onClick: () => { setChatSessionId(item.sessionId); setMessages([]); if (draftRef.current) draftRef.current.value = ''; },
+                        onClick: () => {
+                          setChatSessionId(item.sessionId);
+                          setMessages([]);
+                          if (draftRef.current) draftRef.current.value = '';
+                        },
                         'aria-label': '查看任务：' + item.title,
                       },
                       h('i', { className: 'mt-dot', 'data-status': item.status }),
@@ -373,27 +409,35 @@ window.__MakaModuleLoader__.load({
                     ),
                   ),
                 ),
-            !ended && h(
-              'form',
-              {
-                className: 'mt-compose',
-                onSubmit: (event) => { event.preventDefault(); void send(); },
-              },
-              h('textarea', {
-                ref: draftRef,
-                onKeyDown: (event) => {
-                  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) {
+            !ended &&
+              h(
+                'form',
+                {
+                  className: 'mt-compose',
+                  onSubmit: (event) => {
                     event.preventDefault();
                     void send();
-                  }
+                  },
                 },
-                placeholder: chatSessionId ? '补充这件事的新情况…' : '交代一件需要持续跟进的事…',
-                'aria-label': chatSessionId ? '继续长任务对话' : '新建长任务',
-                rows: 3,
-                disabled: sending,
-              }),
-              h('button', { type: 'submit', disabled: sending }, sending ? '发送中…' : '发送'),
-            ),
+                h('textarea', {
+                  ref: draftRef,
+                  onKeyDown: (event) => {
+                    if (
+                      event.key === 'Enter' &&
+                      !event.shiftKey &&
+                      !event.nativeEvent?.isComposing
+                    ) {
+                      event.preventDefault();
+                      void send();
+                    }
+                  },
+                  placeholder: chatSessionId ? '补充这件事的新情况…' : '交代一件需要持续跟进的事…',
+                  'aria-label': chatSessionId ? '继续长任务对话' : '新建长任务',
+                  rows: 3,
+                  disabled: sending,
+                }),
+                h('button', { type: 'submit', disabled: sending }, sending ? '发送中…' : '发送'),
+              ),
           );
         }
         ctx.style(`
@@ -401,8 +445,9 @@ window.__MakaModuleLoader__.load({
 .mt-card *{box-sizing:border-box}.mt-card button,.mt-launch{font:inherit;color:inherit;cursor:pointer}.mt-card button{background:none;border:0;padding:0}.mt-card button:focus-visible,.mt-launch:focus-visible{outline:2px solid #6a8a79;outline-offset:4px;border-radius:6px}.mt-header,.mt-heading{display:flex;align-items:center}.mt-header{justify-content:space-between;margin-bottom:10px;min-height:24px}.mt-heading{gap:9px;color:color-mix(in srgb,currentColor 65%,transparent)}.mt-heading h2{font-size:14px;font-weight:600;margin:0}.mt-count{margin-left:2px;font-size:12px;opacity:.55}.mt-close{display:flex;align-items:center;justify-content:center;width:24px;height:24px;opacity:.4}.mt-close:hover{opacity:1}.mt-row{display:flex;align-items:center;gap:12px;width:100%;text-align:left;min-height:82px!important;border-bottom:1px solid color-mix(in srgb,currentColor 7%,transparent)!important}.mt-row:last-child{border-bottom:0!important}.mt-row:hover .mt-row-copy strong{color:#527965}.mt-row-copy{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0;padding:15px 0}.mt-row-copy strong{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mt-row-copy>span{font-size:12px;opacity:.5}.mt-chevron{display:flex;opacity:.28}.mt-dot,.mt-status i{display:inline-block;width:6px;height:6px;flex-shrink:0;border-radius:50%;background:#aaa}.mt-dot[data-status=active],.mt-status[data-status=active] i{background:#648f76;box-shadow:0 0 0 4px #648f7610}.mt-dot[data-status=waiting],.mt-status[data-status=waiting] i{background:#b09b78}.mt-back{display:flex;align-items:center;gap:6px;font-size:12px!important;opacity:.6}.mt-detail-title{padding:18px 0 20px;border-bottom:1px solid color-mix(in srgb,currentColor 8%,transparent)}.mt-detail-title h2{font-size:18px;line-height:1.5;font-weight:550;margin:0 0 10px;overflow-wrap:anywhere}.mt-status{display:flex;align-items:center;gap:8px;font-size:12px;opacity:.65}.mt-section{margin:22px 0}.mt-section h3{font-size:11px;font-weight:500;opacity:.45;margin:0 0 8px;letter-spacing:.5px}.mt-section p{font-size:13px;line-height:1.85;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.mt-time{display:flex;align-items:center;gap:7px;color:#527965;font-size:13px;font-weight:500;margin-bottom:8px}.mt-next small{display:block;margin-top:10px;font-size:11px;opacity:.4}.mt-footnote{font-size:10px;opacity:.35;padding:6px 0 2px}.mt-notice{font-size:12px;opacity:.6}.mt-empty{padding:20px 0 24px}.mt-empty p{margin:0 0 8px}.mt-empty span{font-size:12px;opacity:.5}.mt-conversation{border-top:1px solid color-mix(in srgb,currentColor 8%,transparent);padding-top:8px}.mt-message{margin:12px 0}.mt-message>span{font-size:11px;opacity:.45}.mt-message p{margin:3px 0;white-space:pre-wrap;overflow-wrap:anywhere}.mt-compose{display:flex;flex-direction:column;gap:8px;border-top:1px solid color-mix(in srgb,currentColor 8%,transparent);padding-top:14px}.mt-compose textarea{width:100%;resize:vertical;min-height:72px;padding:10px 12px;border:1px solid color-mix(in srgb,currentColor 13%,transparent);border-radius:12px;background:transparent;color:inherit;font:inherit}.mt-compose button{align-self:flex-end;padding:6px 14px;border-radius:8px;background:#648f76;color:white}.mt-compose button:disabled{opacity:.5;cursor:default}.mt-launch{display:flex;align-items:center;gap:8px;background:none;border:0;padding:8px 12px;border-radius:8px;font-size:13px}.mt-launch:hover{background:#8881}@media(max-width:600px){.mt-card{right:16px;top:64px;max-height:calc(100dvh - 80px)}}
       `);
         ctx.slots.register(
-          { name: 'sidebar.footer', id: 'proactive-matters-open', order: 50 },
-          () => h('button', { className: 'mt-launch', onClick: toggle }, icon('clock'), '长任务'),
+          { name: 'sidebar.navigation', id: 'proactive-matters-open', order: 50 },
+          () =>
+            h(SideNavItem, { label: '长任务', icon: icon('clock'), size: 'md', onClick: toggle }),
         );
         ctx.slots.register(
           { name: 'shell.overlay', id: 'proactive-matters-panel', order: 50 },

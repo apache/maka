@@ -28,6 +28,7 @@ import {
   ClientPluginRuntime,
   MakaClientRoot,
   MakaClientRootOutlet,
+  MakaClientPluginSdkModule,
   MakaClientSlotOutlet,
 } from '../.artifacts/ui-api.mjs';
 import { fixture, sleep, until } from './platform-helper.js';
@@ -48,6 +49,19 @@ test('long-task panel shows progress and creates an isolated follow-up conversat
       writable: true,
       configurable: true,
     });
+  Object.defineProperty(window, 'matchMedia', {
+    value: () => ({
+      matches: false,
+      media: '(min-width: 1px)',
+      onchange: null,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => false,
+    }),
+    configurable: true,
+  });
   const root = new MakaClientRoot();
   const sent: Array<{ sessionId: string; text: string }> = [];
   (window as any).maka = {
@@ -91,7 +105,7 @@ test('long-task panel shows progress and creates an isolated follow-up conversat
     runtime = new ClientPluginRuntime({
       root,
       document: window.document,
-      staticModules: { react: React },
+      staticModules: { react: React, '@maka/ui/client-plugin': MakaClientPluginSdkModule },
       loadBundle: async () =>
         runInNewContext(bundle, {
           window: Object.assign(window, { __MakaModuleLoader__: runtime.loader }),
@@ -130,8 +144,8 @@ test('long-task panel shows progress and creates an isolated follow-up conversat
           MakaClientRootOutlet,
           { root },
           React.createElement(MakaClientSlotOutlet, {
-            name: 'sidebar.footer',
-            owner: {},
+            name: 'sidebar.navigation',
+            owner: { collapsed: false },
           }),
           React.createElement(MakaClientSlotOutlet, {
             name: 'shell.overlay',
@@ -181,7 +195,10 @@ test('long-task panel shows progress and creates an isolated follow-up conversat
     await click('返回列表');
     const input = window.document.querySelector('textarea')!;
     await React.act(async () => {
-      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '明天检查评审状态');
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        input,
+        '明天检查评审状态',
+      );
       input.dispatchEvent(new window.Event('input', { bubbles: true }));
       await sleep(20);
     });
@@ -191,13 +208,26 @@ test('long-task panel shows progress and creates an isolated follow-up conversat
       await sleep(60);
     });
     assert.deepEqual(sent, [{ sessionId: 'dialog-session', text: '明天检查评审状态' }]);
-    const pending = f.tools.resolve('dialog-session', []).tools.find((t: any) => t.name === 'MatterStart');
+    const pending = f.tools
+      .resolve('dialog-session', [])
+      .tools.find((t: any) => t.name === 'MatterStart');
     assert.ok(pending);
     // Only a session authorized by the dialog may enroll; ordinary conversations stay ordinary.
-    await assert.rejects(() => pending.impl({ title: '普通聊天', request: '持续跟进' }, {
-      sessionId: 'ordinary-session', turnId: 'ordinary-turn', toolCallId: 'ordinary-call',
-      cwd: f.root, abortSignal: new AbortController().signal, permissionMode: 'default',
-    }), /long-task dialog/);
+    await assert.rejects(
+      () =>
+        pending.impl(
+          { title: '普通聊天', request: '持续跟进' },
+          {
+            sessionId: 'ordinary-session',
+            turnId: 'ordinary-turn',
+            toolCallId: 'ordinary-call',
+            cwd: f.root,
+            abortSignal: new AbortController().signal,
+            permissionMode: 'default',
+          },
+        ),
+      /long-task dialog/,
+    );
     // Stale generation fences are checked by the real Host, not mocked by the Client.
     const descriptor = snapshot.entries[0];
     await assert.rejects(() =>

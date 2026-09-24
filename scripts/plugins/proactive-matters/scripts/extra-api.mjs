@@ -23,7 +23,7 @@ import { alias, source } from './main-api.mjs';
 const kind = process.argv[2] ?? 'ui';
 const content =
   kind === 'ui'
-    ? `export {ClientPluginRuntime,MakaClientRoot,MakaClientRootOutlet} from ${JSON.stringify(join(source, 'packages/ui/src/client-plugin-runtime.tsx'))}; export {MakaClientSlotOutlet} from ${JSON.stringify(join(source, 'packages/ui/src/client-plugin-slots.tsx'))};`
+    ? `export {ClientPluginRuntime,MakaClientRoot,MakaClientRootOutlet} from ${JSON.stringify(join(source, 'packages/ui/src/client-plugin-runtime.tsx'))}; export {MakaClientSlotOutlet,MakaClientPluginSdkModule} from ${JSON.stringify(join(source, 'packages/ui/src/client-plugin-slots.tsx'))};`
     : `export {createTestAiSdkBackend} from ${JSON.stringify(join(source, 'packages/runtime/src/__tests__/execution-boundary-test-helpers.ts'))};
 export {getAIModel} from ${JSON.stringify(join(source, 'packages/runtime/src/model-factory.ts'))};
 export {createSessionEventMapMemory,mapSessionEventToRuntimeEvent} from ${JSON.stringify(join(source, 'packages/runtime/src/session-event-runtime-mapper.ts'))};`;

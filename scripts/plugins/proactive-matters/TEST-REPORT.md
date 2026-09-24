@@ -69,7 +69,7 @@
 
 更新后的 26 项测试全部通过，类型检查通过。Client 集成测试现在覆盖展开、返回、收起、只读性与真实 Remote Stream 刷新；先前记录的面板暂停按钮测试已被替换。后台暂停接口及其测试保留。
 
-使用实际组件在 Chrome 渲染列表和详情，并检查 1160px、390px 窗口。截图使用明确标记的示例数据与聊天背景，不是实际 Maka 桌面截图；新简短摘要协议没有重新调用付费模型验证。入口因主干可用槽限制仍位于 sidebar.footer，尚未移到 Workhub 上方。Maka 源码未修改。
+使用实际组件在 Chrome 渲染列表和详情，并检查 1160px、390px 窗口。截图使用明确标记的示例数据与聊天背景，不是实际 Maka 桌面截图；新简短摘要协议没有重新调用付费模型验证。入口后续通过 `sidebar.navigation` 宿主插槽放在新任务与 WorkHub 之间，宿主布局只提供通用扩展槽，任务入口与浮窗仍由插件渲染。
 
 截图：`.artifacts/preview/task-list.png`、`task-detail.png`。可用 `node scripts/preview.mjs` 重新生成独立组件预览 HTML。
 
