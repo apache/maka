@@ -158,7 +158,6 @@ export class FakeBackend implements AgentBackend {
     // completed one), echoing every message as a `steering_message` so the
     // ledger/transcript render the interjection, and acknowledging it in the
     // next step like a real model.
-    const steered: string[] = [];
     // Lease accounting (backend-types contract): settlement is per LEASE,
     // never per batch. A lease is acked only after its OWN echoed event has
     // been received by the consumer — the fake has no durable ledger, so
@@ -180,24 +179,21 @@ export class FakeBackend implements AgentBackend {
       const leases = (await input.pullSteering?.()) ?? [];
       if (leases.length === 0) return [];
       outstanding.push(...leases.map((lease) => lease.id));
-      return leases.map((lease) => {
-        steered.push(lease.content.text);
-        return {
-          leaseId: lease.id,
-          text: lease.content.text,
-          event: {
-            type: 'steering_message',
-            id: randomUUID(),
-            turnId,
-            ts: Date.now(),
-            messageId: lease.messageId,
-            content: lease.content,
-            ...(lease.submittedContentDigest
-              ? { submittedContentDigest: lease.submittedContentDigest }
-              : {}),
-          } satisfies SessionEvent,
-        };
-      });
+      return leases.map((lease) => ({
+        leaseId: lease.id,
+        text: lease.content.text,
+        event: {
+          type: 'steering_message',
+          id: randomUUID(),
+          turnId,
+          ts: Date.now(),
+          messageId: lease.messageId,
+          content: lease.content,
+          ...(lease.submittedContentDigest
+            ? { submittedContentDigest: lease.submittedContentDigest }
+            : {}),
+        } satisfies SessionEvent,
+      }));
     };
 
     try {
@@ -206,33 +202,52 @@ export class FakeBackend implements AgentBackend {
         const waitingPrefix = rewriteTarget
           ? 'prefix sk-123456789012345'
           : 'Fake backend waiting for the test to stop the Turn.';
+        let waitingMessageId = messageId;
         let waitingText = waitingPrefix;
         yield {
           type: 'text_delta',
           id: randomUUID(),
           turnId,
           ts: Date.now(),
-          messageId,
+          messageId: waitingMessageId,
           text: waitingText,
         };
         while (!this.stopped) {
           const pending = await drainSteering();
+          if (pending.length > 0 && !rewriteTarget) {
+            yield {
+              type: 'text_complete',
+              id: randomUUID(),
+              turnId,
+              ts: Date.now(),
+              messageId: waitingMessageId,
+              text: waitingText,
+            };
+          }
           for (const { leaseId, event } of pending) {
             yield event;
             settleOutstanding(leaseId);
           }
           if (pending.length > 0) {
-            const nextText = rewriteTarget
-              ? `${waitingPrefix}6 NEW streamed after the remount`
-              : `${waitingPrefix}\n\nAcknowledged steering: ${steered.join(' | ')}`;
-            const delta = nextText.slice(waitingText.length);
-            waitingText = nextText;
+            let delta: string;
+            if (rewriteTarget) {
+              // Unlike the real Runtime, this continues the same message after
+              // a steer: streaming-remount needs one secret split across a
+              // remount inside one bubble, and steering is its only trigger.
+              const nextText = `${waitingPrefix}6 NEW streamed after the remount`;
+              delta = nextText.slice(waitingText.length);
+              waitingText = nextText;
+            } else {
+              waitingMessageId = randomUUID();
+              waitingText = `Acknowledged steering: ${pending.map(({ text }) => text).join(' | ')}`;
+              delta = waitingText;
+            }
             yield {
               type: 'text_delta',
               id: randomUUID(),
               turnId,
               ts: Date.now(),
-              messageId,
+              messageId: waitingMessageId,
               text: delta,
             };
           }
