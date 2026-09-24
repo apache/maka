@@ -116,13 +116,6 @@ impl Sidebar {
         cx.notify();
     }
 
-    pub fn insert(&mut self, session: SessionCatalogProjection, cx: &mut Context<Self>) {
-        let mut sessions = std::mem::take(&mut self.sessions);
-        sessions.retain(|known| known.id != session.id);
-        sessions.push(session);
-        self.set_sessions(sessions, cx);
-    }
-
     pub fn select(&mut self, session: Option<String>, cx: &mut Context<Self>) {
         self.selected = session;
         cx.notify();

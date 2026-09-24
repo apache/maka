@@ -52,6 +52,7 @@ use rows::{Entry, Row, Transcript};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -87,6 +88,9 @@ struct Anchor {
 pub struct Chat {
     client: Client,
     session: String,
+    /// The folder a new session will be created in by its first send. Until
+    /// then the Host has no such session, so nothing empty gets listed.
+    draft: Option<PathBuf>,
     subscription: Option<String>,
     error: Option<SharedString>,
     rows: BTreeMap<u64, Value>,
@@ -145,6 +149,7 @@ impl Chat {
     pub fn new(
         client: Client,
         session: String,
+        draft: Option<PathBuf>,
         copied: Entity<Copied>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -191,6 +196,7 @@ impl Chat {
         let mut this = Self {
             client,
             session,
+            draft,
             subscription: None,
             error: None,
             rows: BTreeMap::new(),
@@ -232,12 +238,18 @@ impl Chat {
             now: None,
             _subscriptions: vec![submit, redraw],
         };
-        this.open(cx);
+        if this.draft.is_none() {
+            this.open(cx);
+        }
         this
     }
 
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    pub fn draft(&self) -> Option<&Path> {
+        self.draft.as_deref()
     }
 
     pub fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -766,7 +778,7 @@ impl Chat {
         if matches!(
             self.delivery,
             Some(Delivery::Sending | Delivery::Unknown { .. })
-        ) || self.subscription.is_none()
+        ) || (self.subscription.is_none() && self.draft.is_none())
         {
             return;
         }
@@ -794,10 +806,52 @@ impl Chat {
             turn_orchestration: None,
         };
         self.sent = Some(message_id);
-        let sending = cx
-            .global::<Host>()
-            .spawn(async move { client.submit_message(input).await });
+        let creating = self.draft.clone().map(|folder| {
+            let client = client.clone();
+            let session = self.session.clone();
+            cx.global::<Host>().spawn(async move {
+                let input =
+                    maka_protocol::session::decode_session_create_input(&serde_json::json!({
+                        "sessionId": session,
+                        "name": "新会话",
+                        "workspace": {"kind": "host_path", "path": folder},
+                        "modelTarget": {"kind": "default"}
+                    }))
+                    .map_err(|error| error.to_string())?;
+                client
+                    .create_session(input)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+        });
         cx.spawn(async move |this, cx| {
+            if let Some(creating) = creating {
+                let created = creating.await.and_then(|result| result);
+                let created = this.update(cx, |this, cx| match created {
+                    Ok(()) => {
+                        this.draft = None;
+                        this.open(cx);
+                        true
+                    }
+                    Err(error) => {
+                        this.delivery =
+                            Some(Delivery::Failed(format!("无法创建会话：{error}").into()));
+                        this.sent = None;
+                        cx.notify();
+                        false
+                    }
+                });
+                if !matches!(created, Ok(true)) {
+                    return;
+                }
+            }
+            let Ok(sending) = this.update(cx, |_, cx| {
+                cx.global::<Host>()
+                    .spawn(async move { client.submit_message(input).await })
+            }) else {
+                return;
+            };
             let result = sending.await;
             let _ = this.update(cx, |this, cx| {
                 this.delivery = match result {

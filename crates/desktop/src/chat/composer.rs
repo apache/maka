@@ -44,8 +44,8 @@ impl Chat {
         let running = self.running().is_some();
         let sending = matches!(self.delivery, Some(Delivery::Sending));
         let draft = !self.composer.read(cx).value().trim().is_empty();
-        let blocked =
-            self.subscription.is_none() || matches!(self.delivery, Some(Delivery::Unknown { .. }));
+        let blocked = (self.subscription.is_none() && self.draft.is_none())
+            || matches!(self.delivery, Some(Delivery::Unknown { .. }));
         let this = cx.weak_entity();
         let (path, filled, tip) = if running {
             (

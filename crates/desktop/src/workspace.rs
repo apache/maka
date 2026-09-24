@@ -35,7 +35,6 @@ use gpui_kit::{
 };
 use maka_client::{Client, Notification};
 use maka_protocol::session::{SessionCatalogQueryInput, SessionCatalogQueryResult};
-use serde_json::json;
 use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
 use tokio::sync::mpsc;
 
@@ -196,14 +195,21 @@ impl Workspace {
         .detach();
     }
 
+    /// Starts a draft; the Host creates the session on its first send.
     fn create_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(client) = self.client() else {
+        if self.client().is_none() {
             return;
-        };
+        }
+        if let Some(chat) = &self.chat
+            && chat.read(cx).draft().is_some()
+        {
+            chat.update(cx, |chat, cx| chat.focus_composer(window, cx));
+            return;
+        }
         // A new session continues in the project at hand; the launch
         // directory is `/` when the app starts from Finder.
         let open = self.chat.as_ref().map(|chat| chat.read(cx).session());
-        let Some(workspace) = self
+        let Some(folder) = self
             .sidebar
             .read(cx)
             .folder(open)
@@ -212,37 +218,20 @@ impl Workspace {
         else {
             return;
         };
-        let creating = cx.global::<Host>().spawn(async move {
-            let input = maka_protocol::session::decode_session_create_input(&json!({
-                "sessionId": uuid::Uuid::new_v4().to_string(),
-                "name": "新会话",
-                "workspace": {"kind": "host_path", "path": workspace},
-                "modelTarget": {"kind": "default"}
-            }))
-            .map_err(|error| error.to_string())?;
-            client
-                .create_session(input)
-                .await
-                .map_err(|error| error.to_string())
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let result = creating.await.and_then(|result| result);
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(session) => {
-                    let id = session.id.clone();
-                    this.sidebar
-                        .update(cx, |sidebar, cx| sidebar.insert(session, cx));
-                    this.open(id, window, cx);
-                }
-                Err(error) => this
-                    .sidebar
-                    .update(cx, |sidebar, cx| sidebar.set_error(Some(error.into()), cx)),
-            });
-        })
-        .detach();
+        self.show(uuid::Uuid::new_v4().to_string(), Some(folder), window, cx);
     }
 
     fn open(&mut self, session: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.show(session, None, window, cx);
+    }
+
+    fn show(
+        &mut self,
+        session: String,
+        draft: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(client) = self.client() else {
             return;
         };
@@ -259,7 +248,7 @@ impl Workspace {
             chat.update(cx, |chat, cx| chat.close(cx));
         }
         let copied = self.copied.clone();
-        let chat = cx.new(|cx| Chat::new(client, session, copied, window, cx));
+        let chat = cx.new(|cx| Chat::new(client, session, draft, copied, window, cx));
         chat.update(cx, |chat, cx| chat.focus_composer(window, cx));
         self.chat = Some(chat);
         cx.notify();
@@ -270,7 +259,13 @@ impl Workspace {
         let title = self
             .chat
             .as_ref()
-            .and_then(|chat| self.sidebar.read(cx).name(chat.read(cx).session()))
+            .and_then(|chat| {
+                let chat = chat.read(cx);
+                self.sidebar
+                    .read(cx)
+                    .name(chat.session())
+                    .or_else(|| chat.draft().map(|_| "新会话".into()))
+            })
             .unwrap_or_default();
         drag_region()
             .h(px(sidebar::TITLEBAR))
