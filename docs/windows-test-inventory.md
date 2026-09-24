@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 37 |
+| portable-candidate | 38 |
 | platform-contract | 38 |
 
-Total Windows-excluded declarations: **102**
+Total Windows-excluded declarations: **103**
 
 ## Inventory
 
@@ -30,6 +30,7 @@ Total Windows-excluded declarations: **102**
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP update reconciles the reread authority including an intervening writer without replaying its mutation | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP published write explicitly reports out-of-sync when reconciliation ${phase} fails | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/opencli-chrome.test.ts` launchers run the entry in Node mode with the mode each caller needs | `process.platform === 'win32'` |
+| portable-candidate | `apps/desktop/src/main/__tests__/opencli-chrome.test.ts` Windows opens the store page in installed Chrome, not the default browser | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/project-context-root.test.ts` rejects a session cwd without read and traversal access | `process.platform === 'win32' ? 'POSIX permissions are required to make the session cwd inaccessible' : process.getuid?.() === 0` |
 | platform-contract | `apps/desktop/src/main/__tests__/runtime-host-skills-ipc-main.test.ts` reports create_failed without opening when a Skill directory parent is not writable | `process.platform === 'win32' ? 'POSIX permissions are required to make the Skill directory parent read-only' : process.getuid?.() === 0` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` imports the login PATH without importing application control variables | `process.platform === 'win32'` |
