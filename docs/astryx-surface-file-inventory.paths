@@ -30,6 +30,7 @@ apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx
 apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx
 apps/desktop/src/renderer/features/connection-settings/provider-capability-editor.tsx
+apps/desktop/src/renderer/features/connection-settings/provider-endpoint-field.tsx
 apps/desktop/src/renderer/features/connection-settings/services-context.tsx
 apps/desktop/src/renderer/features/conversation/controller/live-turn-reconciler.tsx
 apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx

@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.2` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 295 files — blocker 0, reimplementation 0, polish 4, aligned 291.
+**Totals:** 296 files — blocker 0, reimplementation 0, polish 4, aligned 292.
 
 ## Exclusions (explicit)
 
@@ -60,6 +60,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx` | dialog-overlay | VStack | aligned — uses Astryx (VStack) | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput) | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/provider-capability-editor.tsx` | other | DropdownMenu, DropdownMenuCheckboxItem, Field, FormLayout, Selector, TextInput | aligned — uses Astryx (DropdownMenu, DropdownMenuCheckboxItem, Field, FormLayout, Selector, TextInput) | aligned |
+| `apps/desktop/src/renderer/features/connection-settings/provider-endpoint-field.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/conversation/controller/live-turn-reconciler.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/conversation/controller/session-local-messages.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
