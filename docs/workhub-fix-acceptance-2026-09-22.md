@@ -78,3 +78,7 @@ Rebased onto `276faf1c9`. Preserved main's Jev compatibility boundary (183), mov
 The handoff integration test twice timed out waiting for an automatic result from a stopped delegation. Stop retires that delegation from result delivery, so the test now verifies its existing control receipts and target Turn state without waiting for retired notifications. No production behavior was changed for this test correction.
 
 Validation: `npm run build:test`, Desktop typecheck, strict renderer architecture comparison, protocol guard, surface inventory and changed-file Biome checks passed. All 390 affected tests and both CLI recovery tests passed. Native acceptance was not repeated.
+
+## Latest main and protocol version follow-up — 2026-09-24
+
+Rebased onto `f1f259b67`. Main now uses epoch 184 for unified custom providers and 185 for next-prompt suggestions. This PR's interaction history and transcript invalidation boundaries are therefore 186 and 187. Root package version remains `0.2.0`, matching main. Regenerated surface inventory covers 297 files.
