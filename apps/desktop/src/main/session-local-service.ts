@@ -336,6 +336,7 @@ export class DesktopSessionLocalService {
     const client = target.client;
     const revision = this.store.revision;
     const invalidationVersion = connection.invalidationVersion;
+    let freshnessRevoked = false;
     const task = abortable(() => client.listSessions(), connection.controller.signal)
       .then((sessions) => {
         if (!this.#currentCatalogConnection(target, connection)) return;
@@ -350,7 +351,13 @@ export class DesktopSessionLocalService {
         if (!this.#currentCatalogConnection(target, connection)) return;
         if (error instanceof RuntimeHostOperationError && error.code === 'unauthorized')
           this.purge(target, true);
-        else this.deps.onError(error);
+        else {
+          // A failed refresh cannot keep old execution activity authoritative.
+          // Notify only on the live-to-cached transition so repeated failures
+          // cannot drive a renderer notification/retry loop.
+          freshnessRevoked = this.#catalogFresh.delete(target.partition);
+          this.deps.onError(error);
+        }
       })
       .finally(() => {
         if (this.#catalogTasks.get(target.partition) === task)
@@ -363,8 +370,8 @@ export class DesktopSessionLocalService {
           return;
         }
         if (
-          !this.#catalogFresh.has(target.partition) &&
-          this.store.revision !== revision
+          freshnessRevoked ||
+          (!this.#catalogFresh.has(target.partition) && this.store.revision !== revision)
         )
           this.deps.changed(target.scope);
       });
