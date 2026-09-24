@@ -93,6 +93,9 @@ pub struct Chat {
     through: Option<u64>,
     wanted: Option<u64>,
     paging: bool,
+    /// Where the history before the loaded rows continues, if it does.
+    older: Option<(Option<u64>, String)>,
+    paging_older: bool,
     live: Vec<(SessionAssistantStreamIdentity, LiveText)>,
     snapshot: Option<SessionObservationSnapshot>,
     transcript: Transcript,
@@ -148,10 +151,13 @@ impl Chat {
         list.set_follow_mode(FollowMode::Tail);
         let weak = cx.weak_entity();
         list.set_scroll_handler(move |event, _, cx| {
-            if !event.is_scrolled {
-                return;
-            }
             let _ = weak.update(cx, |chat, cx| {
+                if event.visible_range.start == 0 {
+                    chat.fetch_older(cx);
+                }
+                if !event.is_scrolled {
+                    return;
+                }
                 if let Some(anchor) = &mut chat.anchor
                     && anchor.pinning
                 {
@@ -189,6 +195,8 @@ impl Chat {
             through: None,
             wanted: None,
             paging: false,
+            older: None,
+            paging_older: false,
             live: Vec::new(),
             snapshot: None,
             transcript: Transcript::default(),
@@ -270,6 +278,7 @@ impl Chat {
             let _ = this.update(cx, |this, cx| match result {
                 Ok((opened, batch)) => {
                     this.snapshot = Some(opened.snapshot);
+                    this.older = older_cursor(&batch);
                     this.install(batch);
                     this.through = this.wanted;
                     this.rebuild(cx);
@@ -456,6 +465,58 @@ impl Chat {
                     }
                     Err(error) => {
                         this.error = Some(error.into());
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Loads the page before the oldest loaded row. Rows are keyed by
+    /// sequence, so they fall into place; the list keeps its scroll because
+    /// the new rows are spliced in above what is on screen.
+    pub(super) fn fetch_older(&mut self, cx: &mut Context<Self>) {
+        let (Some(subscription), Some((through, cursor))) =
+            (self.subscription.clone(), self.older.clone())
+        else {
+            return;
+        };
+        if self.paging_older {
+            return;
+        }
+        self.paging_older = true;
+        let client = self.client.clone();
+        let fetching = cx.global::<Host>().spawn(async move {
+            let page = client
+                .transcript_page(SessionTranscriptPageInput {
+                    subscription_id: subscription.clone(),
+                    direction: SessionTranscriptPageDirection::Older,
+                    through_sequence: through,
+                    cursor: Some(cursor),
+                    anchor_sequence: None,
+                    max_bytes: PAGE_BYTES,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            client
+                .complete_transcript_page(&subscription, page)
+                .await
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = fetching.await.and_then(|result| result);
+            let _ = this.update(cx, |this, cx| {
+                this.paging_older = false;
+                match result {
+                    Ok(batch) => {
+                        this.older = older_cursor(&batch);
+                        this.install(batch);
+                        this.rebuild(cx);
+                    }
+                    Err(error) => {
+                        this.older = None;
+                        this.error = Some(format!("无法加载更早的消息：{error}").into());
                         cx.notify();
                     }
                 }
@@ -810,4 +871,9 @@ impl Chat {
             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
         }
     }
+}
+
+fn older_cursor(batch: &TranscriptBatch) -> Option<(Option<u64>, String)> {
+    let cursor = batch.next_cursor.clone()?;
+    Some((batch.through_sequence, cursor))
 }

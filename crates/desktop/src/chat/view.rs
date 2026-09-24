@@ -759,6 +759,11 @@ impl Render for Chat {
             && !self.list.is_following_tail()
             && !self.anchor.as_ref().is_some_and(|anchor| anchor.pinning);
         self.jump = settled && at_end.map_or(self.jump, |at_end| !at_end);
+        // A tail that does not fill the viewport never scrolls, so the
+        // scroll handler would never ask for what came before it.
+        if !self.keys.is_empty() && self.list.max_offset_for_scrollbar().y <= px(0.5) {
+            self.fetch_older(cx);
+        }
 
         let this = cx.entity();
         let scrollbar = self
