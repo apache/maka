@@ -9,7 +9,7 @@
     "test": "node --import tsx --test test/*.test.ts",
     "pack:extension": "node scripts/pack.mjs",
     "typecheck": "tsc --noEmit",
-    "prepare:test": "node scripts/main-api.mjs && node scripts/extra-api.mjs ui",
+    "prepare:test": "node scripts/prepare-test-metadata.mjs && node scripts/main-api.mjs && node scripts/extra-api.mjs ui && node scripts/extra-api.mjs live",
     "verify": "npm run build && npm run prepare:test && npm run pack:extension && npm test && npm run typecheck"
   },
   "dependencies": {

@@ -75,7 +75,7 @@ npm run typecheck
 
 构建测试用宿主代码需要 Maka 的依赖已安装；也可用 `MAKA_NODE_MODULES=/absolute/path/node_modules` 指向已有依赖目录。插件发布包自身不需要这些测试依赖。
 
-测试使用真实 main 的 Context/Fiber、PluginPlatform、包加载器、Agent/Tool/Prompt 服务、Client Runtime、Slots、Remote；自动化业务执行测试的 Agent driver 是受控替身。另有 opt-in 真实 Flash 跨应用交付场景 `scripts/live.ts`，使用 main 的真实 AiSdkBackend，业务 API 为本地模拟。密钥只从 `MAKA_SCENARIO_API_KEY` 读取，不写入插件或报告。真实场景需要先生成 main 对应的模型元数据到 `.artifacts` 并构建 `scripts/extra-api.mjs live`。
+测试使用真实 main 的 Context/Fiber、PluginPlatform、包加载器、Agent/Tool/Prompt 服务、Client Runtime、Slots、Remote；新增端到端用例再用受控模型驱动真实 AiSdkBackend 和插件工具，验证结束钩子拦截及 `MatterSettle`。另有 opt-in 真实 Flash 跨应用交付场景 `scripts/live.ts`，使用 main 的真实 AiSdkBackend，业务 API 为本地模拟。密钥只从 `MAKA_SCENARIO_API_KEY` 读取，不写入插件或报告。`npm run prepare:test` 会从当前 Maka checkout 生成本地测试产物。
 
 当前 main 提供 `sidebar.footer` 与 `shell.overlay` 插件槽，因此入口仍位于侧边栏底部；精确插入 Workhub 上方需要宿主提供相应导航槽，本插件没有修改 Maka 或使用 DOM 搬动入口。
 

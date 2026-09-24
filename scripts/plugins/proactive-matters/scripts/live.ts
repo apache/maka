@@ -126,7 +126,10 @@ async function run(text: string, turnId: string) {
         log('runtime-error', { message: redact(event.message) });
       }
       if (event.type === 'tool_result' && event.isError)
-        log('tool-error', { text: String(event.content).slice(0, 800) });
+        log('tool-error', {
+          tool: event.toolName,
+          text: JSON.stringify(event.content).slice(0, 800),
+        });
       if (event.type === 'token_usage') report.usage.push(event);
       const mapped = mapSessionEventToRuntimeEvent(
         event,
@@ -147,6 +150,7 @@ async function run(text: string, turnId: string) {
 }
 try {
   f = await platformFixture({ root, driver, timeout: 120000 });
+  await f.remote('matters.authorize-session', { sessionId: 'session-1' });
   backend = createTestAiSdkBackend({
     sessionId: 'session-1',
     header,
@@ -162,6 +166,7 @@ try {
     now: Date.now,
     maxSteps: 32,
     tools: [...f.tools.resolve('session-1', []).tools, ...buildHandoffTools(world)],
+    beforeTurnFinish: (turn: any) => f.turns.evaluate(turn),
     loadTurnRuntimeEvents: async (id: string) => ledger.filter((e) => e.turnId === id),
     systemPrompt: async (c: any) =>
       f.systemPrompt.assemble(
@@ -217,6 +222,9 @@ try {
     if (m?.status === 'paused') {
       throw Error('Matter paused: ' + m.lastError);
     }
+    const latestTurn = report.turns.at(-1);
+    if (latestTurn?.endedAt && !m)
+      throw Error('Agent turn ended without enrolling a follow-up; inspect its tool errors.');
   }
   await current;
   report.final = await f.remote('matters.list');

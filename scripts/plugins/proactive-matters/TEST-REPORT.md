@@ -97,3 +97,7 @@ Host 不再向普通 session 注入持续跟进启动提示；`MatterStart` 校�
 Maka runtime 增加通用 `ctx.turns.beforeFinish` 插件接口。在模型自然结束、仍可继续同一个 turn 时调用；插件可放行，或返回一条仅用于下一步的反馈。持续跟进插件用它要求当前 activation 在退出前调用 `MatterSettle`，业务规则仍留在插件内。`wait` 必须同时带具体等待条件和未来检查时间；去掉连续 `continue` 五轮上限，保留事项总轮次和单轮超时。
 
 插件构建、发布包导入、类型检查和 30 项测试通过；AiSdkBackend 的 242 项测试通过，其中新增用例确认结束检查拒绝后在同一 turn 再次调用模型，最终只产生一次完成事件。Maka runtime 与 runtime-host 类型检查通过。此前的付费 Flash 场景没有为本次改动重跑；宿主模型步数或执行时限耗尽时，结束检查不会强行超出上限，未 settle 的 activation 会暂停。
+
+随后新增插件 + Maka 模型循环端到端用例：由真实 PluginPlatform 安装插件并授权长任务 session，受控模型先尝试自然结束，结束钩子拒绝后在同一 turn 调用真实 `MatterSettle`，第三次模型响应才结束；最终事项为 waiting，激活正常收尾，完成事件恰好一次。完整插件验证共 31 项全部通过。
+
+另用 Flash 启动原跨应用模拟场景。首次运行暴露场景漏掉浮窗 session 授权的问题，已补齐后重跑；模型成功注册事项并提交 wait，但它选择的复查时刻晚于六分钟测试窗口，因此我停止了场景，未计为完整 Flash 成功。该轮还观察到模型将互斥的 `MatterRead` 与 `MatterStart` 放在同一批工具调用中，runtime拒绝后模型重试；这说明真实模型行为仍需继续验证，不能用受控模型测试替代。
