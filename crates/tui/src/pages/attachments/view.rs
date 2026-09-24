@@ -18,51 +18,26 @@
  */
 
 use super::*;
-use crate::app::Hit;
-use crate::view::{button, safe};
+use crate::{
+    app::Hit,
+    ui::{Node, On, Role, Sheet, Size, Tone},
+    view::safe,
+};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{
     Frame,
-    layout::{Alignment, Margin, Rect},
+    layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
-    },
+    widgets::Paragraph,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-fn controls(app: &App) -> Vec<Command> {
-    let dialog = app.attachments.dialog.as_ref().unwrap();
-    if dialog.browse {
-        let mut commands = vec![Command::Close, Command::Directory, Command::Skills];
-        if !app
-            .attachment_files(&dialog.session, dialog.input.as_deref())
-            .is_empty()
-        {
-            commands.push(Command::Open);
-        }
-        commands
-    } else {
-        let mut commands = vec![
-            Command::Close,
-            Command::Browse,
-            Command::Directory,
-            Command::Skills,
-        ];
-        if app.attachment_enabled(&Command::Retry) {
-            commands.push(Command::Retry);
-        }
-        if !app
-            .attachment_files(&dialog.session, dialog.input.as_deref())
-            .is_empty()
-        {
-            commands.push(Command::Remove);
-        }
-        commands
-    }
-}
+/// The path field of the file browser.
+pub(super) const PATH: &str = "path";
+const ROWS: &str = "list/rows";
+
 pub fn size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
@@ -72,168 +47,18 @@ pub fn size(bytes: u64) -> String {
         format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
-impl App {
-    pub fn attachment_input(&mut self, event: Event) -> (bool, Option<Action>) {
-        let buttons = controls(self);
-        let attachment_count = {
-            let dialog = self.attachments.dialog.as_ref().unwrap();
-            self.attachment_files(&dialog.session, dialog.input.as_deref())
-                .len()
-        };
-        let state = &mut self.attachments;
-        let dialog = state.dialog.as_mut().unwrap();
-        let count = if dialog.browse {
-            dialog.entries.len()
-        } else {
-            attachment_count
-        };
-        let last = count.saturating_sub(1);
-        let capacity = dialog.list.map_or(1, |a| {
-            usize::from(a.height / if dialog.browse { 2 } else { 3 }).max(1)
-        });
-        let mut command = None;
-        match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return (true, Some(Action::Quit));
-                }
-                KeyCode::Esc => command = Some(Command::Close),
-                _ if !dialog.rendered => return (false, None),
-                KeyCode::Tab | KeyCode::BackTab => {
-                    let first = usize::from(!dialog.browse);
-                    let slots = buttons.len() + 2 - first;
-                    dialog.focus = if key.code == KeyCode::Tab {
-                        first + (dialog.focus.saturating_sub(first) + 1) % slots
-                    } else {
-                        first + (dialog.focus.saturating_sub(first) + slots - 1) % slots
-                    };
-                }
-                KeyCode::Enter if dialog.focus == 0 => command = Some(Command::EnterPath),
-                KeyCode::Enter if dialog.focus >= 2 => {
-                    command = buttons.get(dialog.focus - 2).cloned()
-                }
-                _ if dialog.focus == 0 => {
-                    dialog.path.key(key);
-                }
-                KeyCode::Up => {
-                    dialog.selected = dialog.selected.saturating_sub(1);
-                    dialog.focus = 1;
-                }
-                KeyCode::Down => {
-                    dialog.selected = (dialog.selected + 1).min(last);
-                    dialog.focus = 1;
-                }
-                KeyCode::PageUp => dialog.selected = dialog.selected.saturating_sub(capacity),
-                KeyCode::PageDown => dialog.selected = (dialog.selected + capacity).min(last),
-                KeyCode::Home => dialog.selected = 0,
-                KeyCode::End => dialog.selected = last,
-                KeyCode::Enter if dialog.browse => command = Some(Command::Pick(dialog.selected)),
-                KeyCode::Backspace if dialog.browse => command = Some(Command::Parent),
-                KeyCode::Delete if !dialog.browse => command = Some(Command::Remove),
-                KeyCode::Char('r') if !dialog.browse => command = Some(Command::Retry),
-                KeyCode::Char('d') | KeyCode::Enter if !dialog.browse => {
-                    command = Some(Command::Details)
-                }
-                _ => {}
-            },
-            Event::Paste(text) if dialog.rendered && dialog.focus == 0 => {
-                dialog.path.insert(&text.replace(['\n', '\r'], ""));
-            }
-            Event::Mouse(mouse) if dialog.rendered => {
-                let point = (mouse.column, mouse.row).into();
-                if dialog.browse && (dialog.path.contains(point) || dialog.path.dragging()) {
-                    dialog.focus = 0;
-                    dialog.path.mouse(mouse);
-                } else if let Some(area) = dialog.list {
-                    let in_list = area.contains(point);
-                    match mouse.kind {
-                        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp if in_list => {
-                            dialog.focus = 1;
-                            dialog.selected = if mouse.kind == MouseEventKind::ScrollDown {
-                                (dialog.selected + 2).min(last)
-                            } else {
-                                dialog.selected.saturating_sub(2)
-                            };
-                        }
-                        MouseEventKind::Down(MouseButton::Left)
-                            if in_list && mouse.column == area.right() - 1 && count > capacity =>
-                        {
-                            dialog.dragging = true;
-                        }
-                        MouseEventKind::Drag(MouseButton::Left) if dialog.dragging => {}
-                        MouseEventKind::Up(MouseButton::Left) if dialog.dragging => {
-                            dialog.dragging = false;
-                        }
-                        MouseEventKind::Down(MouseButton::Left) => {
-                            command = self
-                                .hits
-                                .iter()
-                                .rev()
-                                .find(|hit| hit.area.contains(point))
-                                .and_then(|hit| {
-                                    if let Action::Attachment(command) = &hit.action {
-                                        Some(command.clone())
-                                    } else {
-                                        None
-                                    }
-                                });
-                        }
-                        _ => {}
-                    }
-                    if dialog.dragging {
-                        dialog.top = usize::from(
-                            mouse
-                                .row
-                                .saturating_sub(area.y)
-                                .min(area.height.saturating_sub(1)),
-                        ) * count.saturating_sub(capacity)
-                            / usize::from(area.height.saturating_sub(1).max(1));
-                        dialog.selected = dialog.top;
-                        dialog.focus = 1;
-                    }
-                }
-            }
-            _ => return (false, None),
-        }
-        (
-            true,
-            command.and_then(|command| self.apply(Action::Attachment(command))),
-        )
-    }
+
+fn action(command: Command) -> Action {
+    Action::Attachment(command)
 }
 
-pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
-    let width = area.width.saturating_sub(2).min(82);
-    let dialog = app.attachments.dialog.as_ref().unwrap();
-    let desired = if dialog.browse {
-        dialog.entries.len().clamp(1, 8) as u16 * 2 + 10
-    } else {
-        app.attachment_files(&dialog.session, dialog.input.as_deref())
-            .len()
-            .max(1) as u16
-            * 3
-            + 8
-    };
-    let height = area.height.saturating_sub(2).min(desired);
-    if width < 28 || height < 9 {
-        crate::view::clear_overlay(frame, area);
-        frame.render_widget(
-            Paragraph::new(app.i18n.text("terminal-small")).wrap(Wrap { trim: false }),
-            area.inner(Margin::new(1, 1)),
-        );
-        return;
-    }
-    app.hits.clear();
-    let popup = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    app.modal_area = Some(popup);
-    let browse = app.attachments.dialog.as_ref().unwrap().browse;
-    let dialog = app.attachments.dialog.as_ref().unwrap();
-    let mut title = app.i18n.text(if browse {
+/// A message's files: the list with each file's upload state, actions on
+/// the selected one, and the local file browser as a second step. Host
+/// directories and Skills, the other things a message can carry, sit at
+/// the bottom left when there is room.
+pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
+    let dialog = app.attachments.dialog.as_ref()?;
+    let mut title = app.i18n.text(if dialog.browse {
         "attachments-local-files"
     } else {
         "attachments-title"
@@ -248,92 +73,75 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
             app.i18n.text("revision-input")
         );
     }
-    let block = Block::bordered()
-        .title(title)
-        .title_alignment(Alignment::Center)
-        .border_type(if app.chrome.ascii {
-            BorderType::Plain
-        } else {
-            BorderType::Rounded
-        })
-        .border_style(Style::default().fg(app.theme.colors().accent))
-        .style(base);
-    let inner = block.inner(popup).inner(Margin::new(1, 0));
-    crate::view::clear_overlay(frame, popup);
-    frame.render_widget(block, popup);
-    let colors = app.theme.colors();
-    let dialog = app.attachments.dialog.as_ref().unwrap();
-    let items = app
-        .attachment_files(&dialog.session, dialog.input.as_deref())
-        .to_vec();
-    let state = &mut app.attachments;
-    let dialog = state.dialog.as_mut().unwrap();
-    dialog.rendered = true;
-    let mut top = inner.y;
-    if browse {
-        let path = Rect::new(inner.x + 3, top, inner.width.saturating_sub(6), 1);
-        dialog.path.draw(frame, path, dialog.focus == 0, colors);
-        app.hits.push(Hit {
-            area: path,
-            action: Action::Attachment(Command::Path),
-        });
-        top += 2;
-    }
-    let footer = inner.bottom().saturating_sub(3);
-    let list = Rect::new(inner.x, top, inner.width, footer.saturating_sub(top + 2));
-    dialog.list = Some(list);
-    let stride = if browse { 2 } else { 3 };
-    let capacity = usize::from(list.height / stride).max(1);
-    let count = if browse {
-        dialog.entries.len()
-    } else {
-        items.len()
-    };
-    dialog.selected = dialog.selected.min(count.saturating_sub(1));
-    if dialog.selected < dialog.top {
-        dialog.top = dialog.selected;
-    }
-    if dialog.selected >= dialog.top + capacity {
-        dialog.top = dialog.selected + 1 - capacity;
-    }
-    dialog.top = dialog.top.min(count.saturating_sub(capacity));
-    let selected = dialog.selected;
-    let start = dialog.top;
-    let focus = dialog.focus;
-    let problem = dialog.problem.as_ref().map(Failure::key);
-    let truncated = dialog.truncated;
-    let show_details = dialog.details;
-    for (position, index) in (start..count).take(capacity).enumerate() {
-        let row = Rect::new(
-            list.x,
-            list.y + position as u16 * stride,
-            list.width.saturating_sub(1),
-            stride.min(list.height.saturating_sub(position as u16 * stride)),
+    let items = app.attachment_files(&dialog.session, dialog.input.as_deref());
+    let height = app.frame_size.map_or(24, |(_, height)| height);
+    let width = crate::ui::content_width(app.frame_size.map_or(80, |(width, _)| width));
+    let key = format!(
+        "attachments:{}:{}",
+        dialog.session,
+        dialog.input.as_deref().unwrap_or("")
+    );
+    let mut sheet = if dialog.browse {
+        let loading = dialog.requested || app.attachments.browser_pending.is_some();
+        let sheet = Sheet::new(
+            format!(
+                "{key}:browse:{}:{loading}",
+                dialog.directory.to_string_lossy()
+            ),
+            title,
         );
-        if row.height == 0 {
-            continue;
+        browse(app, dialog, sheet, height)
+    } else {
+        list(
+            app,
+            dialog,
+            items,
+            Sheet::new(format!("{key}:list"), title),
+            height,
+        )
+    };
+    let enabled = |command: &Command| app.attachment_enabled(command);
+    let mut asides = vec![];
+    if dialog.browse && !items.is_empty() {
+        asides.push(("attachments", "attachments-title", Command::Open));
+        sheet = sheet.back(action(Command::Open));
+    }
+    asides.push(("directories", "references-title", Command::Directory));
+    asides.push(("skills", "skills-title", Command::Skills));
+    let close = app.i18n.text("attachments-close");
+    // The other sources are also on the composer; below this width they
+    // make way for the sheet's own controls.
+    let room = asides
+        .iter()
+        .map(|(_, label, _)| app.i18n.text(label).width() as u16 + 6)
+        .sum::<u16>()
+        + close.width() as u16
+        + 4;
+    for (index, (key, label, command)) in asides.into_iter().enumerate() {
+        if room <= width || (index == 0 && command == Command::Open) {
+            sheet = sheet.aside(
+                key,
+                app.i18n.text(label),
+                action(command.clone()),
+                enabled(&command),
+            );
         }
-        let (title, subtitle, warning) = if browse {
-            let entry = &dialog.entries[index];
-            (
-                format!(
-                    "{} {}",
-                    if entry.directory {
-                        if app.chrome.ascii { ">" } else { "▸" }
-                    } else {
-                        "·"
-                    },
-                    safe(&entry.path.file_name().unwrap_or_default().to_string_lossy())
-                ),
-                if entry.directory {
-                    String::new()
-                } else {
-                    size(entry.bytes)
-                },
-                false,
-            )
-        } else {
-            let item = &items[index];
+    }
+    Some(sheet.button("close", close, Role::Normal, action(Command::Close), true))
+}
+
+fn list(
+    app: &App,
+    dialog: &Dialog,
+    items: &[Saved],
+    sheet: Sheet<Action>,
+    height: u16,
+) -> Sheet<Action> {
+    let state = &app.attachments;
+    let mut rows: Vec<_> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
             let (key, progress) = if item.attachment.is_some() {
                 ("attachments-ready", None)
             } else if let Some(active) = state.active.as_ref().filter(|a| a.ticket.id == item.id) {
@@ -367,147 +175,242 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
                     None => size(m.bytes),
                 })
                 .unwrap_or_default();
-            (
-                safe(name),
-                format!(
-                    "{}{}{}",
-                    app.i18n.text(key),
-                    if amount.is_empty() { "" } else { " · " },
-                    amount
-                ),
-                state.errors.contains_key(&item.id),
+            let status = format!(
+                "  {}{}{amount}",
+                app.i18n.text(key),
+                if amount.is_empty() { "" } else { " · " },
+            );
+            let tone = if state.errors.contains_key(&item.id) {
+                Tone::Error
+            } else {
+                Tone::Subtle
+            };
+            Node::column(
+                index.to_string(),
+                vec![
+                    Node::text("name", vec![(safe(name), Tone::Normal)]).clip(),
+                    Node::text("status", vec![(status, tone)]).clip(),
+                ],
             )
-        };
-        let selected_row = index == selected;
-        let style = Style::default()
-            .fg(if selected_row {
-                colors.accent
-            } else {
-                colors.foreground
-            })
-            .bg(if selected_row {
-                colors.selection
-            } else {
-                colors.background
-            });
-        frame.render_widget(
-            Paragraph::new(title).style(style),
-            Rect::new(row.x, row.y, row.width, 1),
-        );
-        if row.height > 1 {
-            frame.render_widget(
-                Paragraph::new(subtitle).style(Style::default().fg(if warning {
-                    colors.error
-                } else {
-                    colors.subtle
-                })),
-                Rect::new(row.x + 2, row.y + 1, row.width.saturating_sub(2), 1),
-            );
-        }
-        app.hits.push(Hit {
-            area: row,
-            action: Action::Attachment(if browse {
-                Command::Pick(index)
-            } else {
-                Command::Select(index)
-            }),
-        });
-    }
-    if count > capacity {
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .thumb_style(Style::default().fg(colors.subtle)),
-            list,
-            &mut ScrollbarState::new(count.saturating_sub(capacity) + 1).position(start),
-        );
-    }
-    let note = if let Some(problem) = problem {
-        app.i18n.text(problem)
-    } else if browse && truncated {
-        app.i18n.text("attachments-truncated")
-    } else if !browse {
-        items
-            .get(selected)
-            .map(|item| {
-                if show_details {
-                    state
-                        .errors
-                        .get(&item.id)
-                        .and_then(Failure::detail)
-                        .map(safe)
-                        .unwrap_or_else(|| safe(&item.path.to_string_lossy()))
-                } else {
-                    safe(&item.path.to_string_lossy())
-                }
-            })
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    frame.render_widget(
-        Paragraph::new(note).style(Style::default().fg(if problem.is_some() {
-            colors.error
-        } else {
-            colors.subtle
-        })),
-        Rect::new(inner.x, footer.saturating_sub(1), inner.width, 1),
-    );
-    if !browse
-        && items.get(selected).is_some_and(|item| {
-            state
-                .errors
-                .get(&item.id)
-                .and_then(Failure::detail)
-                .is_some()
+            .on(On::Activate(action(Command::Select(index))))
+            .current(index == dialog.selected)
+            .follow_focus()
         })
-    {
-        app.hits.push(Hit {
-            area: Rect::new(inner.x, footer.saturating_sub(1), inner.width, 1),
-            action: Action::Attachment(Command::Details),
-        });
+        .collect();
+    // Adding is the list's last row, where a reader looks for it.
+    let add = Command::Browse;
+    rows.push(
+        Node::text(
+            "add",
+            vec![(
+                format!(
+                    "{} {}",
+                    app.chrome.symbol("+", "+"),
+                    app.i18n.text(add.label())
+                ),
+                Tone::Accent,
+            )],
+        )
+        .on(On::Activate(action(add.clone())))
+        .enabled(app.attachment_enabled(&add)),
+    );
+    let mut sheet = sheet.body(
+        Node::scroll("list", Node::column("rows", rows))
+            .size(Size::Upto(height.saturating_sub(14).max(4))),
+    );
+    let selected = items.get(dialog.selected);
+    let detail = selected.and_then(|item| state.errors.get(&item.id).and_then(Failure::detail));
+    let note = match (&dialog.problem, selected) {
+        (Some(problem), _) => Some((app.i18n.text(problem.key()), Tone::Error)),
+        (None, Some(item)) => Some((
+            match detail.filter(|_| dialog.details) {
+                Some(detail) => safe(detail),
+                None => safe(&item.path.to_string_lossy()),
+            },
+            Tone::Subtle,
+        )),
+        (None, None) => None,
+    };
+    if let Some((note, tone)) = note {
+        sheet = sheet.body(Node::text("note", vec![(note, tone)]));
     }
-    // Release dialog borrows before buttons query the current action guards.
-    if browse {
-        button(
-            frame,
-            app,
-            Rect::new(inner.x, inner.y, 3, 1),
-            " ↑ ",
-            Action::Attachment(Command::Parent),
-            false,
-        );
-        button(
-            frame,
-            app,
-            Rect::new(inner.right() - 3, inner.y, 3, 1),
-            " → ",
-            Action::Attachment(Command::EnterPath),
-            false,
-        );
-    }
-    let buttons = controls(app);
-    let columns = if inner.width < 46 { 2 } else { 4 };
-    for (row, group) in buttons.chunks(columns).enumerate() {
-        let labels: Vec<_> = group.iter().map(|c| app.i18n.text(c.label())).collect();
-        let total: u16 = labels.iter().map(|s| s.width() as u16 + 2).sum::<u16>()
-            + group.len().saturating_sub(1) as u16 * 2;
-        let mut x = inner.x + inner.width.saturating_sub(total) / 2;
-        for (col, (command, label)) in group.iter().zip(labels).enumerate() {
-            let width = (label.width() as u16 + 2).min(inner.right().saturating_sub(x));
-            button(
-                frame,
-                app,
-                Rect::new(x, footer + row as u16 * 2, width, 1),
-                &label,
-                Action::Attachment(command.clone()),
-                focus == 2 + row * columns + col,
+    // What can be done to the selected file.
+    let mut actions = vec![];
+    for (key, command) in [("retry", Command::Retry), ("remove", Command::Remove)] {
+        if app.attachment_enabled(&command) {
+            actions.push(
+                Node::button(key, app.i18n.text(command.label()), Role::Normal)
+                    .on(On::Activate(action(command))),
             );
-            x += width + 2;
         }
+    }
+    if detail.is_some() {
+        actions.push(
+            Node::button(
+                "details",
+                app.i18n.text(Command::Details.label()),
+                Role::Normal,
+            )
+            .on(On::Activate(action(Command::Details)))
+            .current(dialog.details),
+        );
+    }
+    if !actions.is_empty() {
+        sheet = sheet.body(Node::row("actions", actions).gap(2));
+    }
+    sheet.focus_node(if items.is_empty() {
+        format!("{ROWS}/add")
+    } else {
+        format!("{ROWS}/{}", dialog.selected)
+    })
+}
+
+fn browse(app: &App, dialog: &Dialog, sheet: Sheet<Action>, height: u16) -> Sheet<Action> {
+    let tool = |key: &'static str, glyph: (&'static str, &'static str), command: Command| {
+        Node::button(
+            key,
+            app.chrome.symbol(glyph.0, glyph.1).to_owned(),
+            Role::Normal,
+        )
+        .on(On::Activate(action(command.clone())))
+        .enabled(app.attachment_enabled(&command))
+    };
+    let mut sheet = sheet.body(
+        Node::row(
+            PATH,
+            vec![
+                tool("parent", ("↑", "^"), Command::Parent),
+                Node::slot("input", 1)
+                    .on(On::Activate(action(Command::EnterPath)))
+                    .enabled(app.attachment_enabled(&Command::Path))
+                    .size(Size::Fill),
+                tool("enter", ("→", ">"), Command::EnterPath),
+            ],
+        )
+        .gap(1),
+    );
+    let pick = |index: usize| Command::Pick(index);
+    let rows: Vec<_> = dialog
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let name = safe(&entry.path.file_name().unwrap_or_default().to_string_lossy());
+            let (glyph, detail) = if entry.directory {
+                (app.chrome.symbol("▸", ">"), String::new())
+            } else {
+                ("·", size(entry.bytes))
+            };
+            Node::row(
+                index.to_string(),
+                vec![
+                    Node::text("name", vec![(format!("{glyph} {name}"), Tone::Normal)])
+                        .clip()
+                        .size(Size::Fill),
+                    Node::text("size", vec![(detail, Tone::Subtle)]),
+                ],
+            )
+            .gap(2)
+            .on(On::Activate(action(pick(index))))
+            .enabled(app.attachment_enabled(&pick(index)))
+        })
+        .collect();
+    let empty = rows.is_empty();
+    if !empty {
+        sheet = sheet.body(
+            Node::scroll("list", Node::column("rows", rows))
+                .size(Size::Upto(height.saturating_sub(14).max(4))),
+        );
+    }
+    if let Some(problem) = &dialog.problem {
+        sheet = sheet.text("note", &app.i18n.text(problem.key()), Tone::Error);
+    } else if dialog.truncated {
+        sheet = sheet.text(
+            "note",
+            &app.i18n.text("attachments-truncated"),
+            Tone::Subtle,
+        );
+    }
+    if empty {
+        sheet.focus_node(format!("{PATH}/input"))
+    } else {
+        sheet.focus_node(format!("{ROWS}/0"))
     }
 }
+
+/// Paints the browser's path field over the drawn sheet.
+pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
+    let rect = app.layer.slot(PATH).filter(|rect| !rect.is_empty());
+    let focused = app.layer.focused(PATH);
+    let colors = app.theme.colors();
+    let Some(dialog) = app.attachments.dialog.as_mut() else {
+        return;
+    };
+    match rect.filter(|_| dialog.browse) {
+        Some(rect) => dialog.path.draw(frame, rect, focused, colors),
+        None => dialog.path.invalidate_geometry(),
+    }
+}
+
+impl App {
+    /// The path field's keys, pastes and pointer, and the list's shortcuts
+    /// (Delete removes, R resumes, D shows details, Backspace goes up),
+    /// taken before the sheet.
+    pub(crate) fn attachment_sheet_input(
+        &mut self,
+        event: &Event,
+    ) -> Option<(bool, Option<Action>)> {
+        let focused = self.layer.focused(PATH);
+        let editable = self.attachment_enabled(&Command::Path);
+        let dialog = self.attachments.dialog.as_mut()?;
+        let command = match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if focused {
+                    if !editable
+                        || matches!(
+                            key.code,
+                            KeyCode::Esc
+                                | KeyCode::Tab
+                                | KeyCode::BackTab
+                                | KeyCode::Enter
+                                | KeyCode::Up
+                                | KeyCode::Down
+                        )
+                        || (key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('q'))
+                    {
+                        return None;
+                    }
+                    return Some((dialog.path.key(*key), None));
+                }
+                if !key.modifiers.is_empty() {
+                    return None;
+                }
+                match key.code {
+                    KeyCode::Backspace if dialog.browse => Command::Parent,
+                    KeyCode::Delete if !dialog.browse => Command::Remove,
+                    KeyCode::Char('r') if !dialog.browse => Command::Retry,
+                    KeyCode::Char('d') if !dialog.browse => Command::Details,
+                    _ => return None,
+                }
+            }
+            Event::Paste(text) if focused && editable => {
+                return Some((dialog.path.insert(&text.replace(['\n', '\r'], "")), None));
+            }
+            Event::Mouse(mouse) if dialog.browse && editable && dialog.path.takes(mouse) => {
+                let changed = dialog.path.mouse(*mouse);
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    self.layer.focus(PATH);
+                    return Some((true, None));
+                }
+                return Some((changed, None));
+            }
+            _ => return None,
+        };
+        Some((true, self.apply(action(command))))
+    }
+}
+
 pub fn chips(frame: &mut Frame<'_>, app: &mut App, area: Rect, session: &str) {
     if area.is_empty() {
         return;

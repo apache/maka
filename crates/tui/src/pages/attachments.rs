@@ -33,8 +33,9 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
+pub use view::chips;
 pub(crate) use view::size;
-pub use view::{chips, draw};
+pub(crate) use view::{draw_field, sheet};
 
 pub const LIMIT: usize = 8;
 
@@ -173,12 +174,10 @@ pub struct Dialog {
     truncated: bool,
     requested: bool,
     generation: u64,
+    /// The listed file that Resume, Remove and Details act on; it follows
+    /// the list's focus.
     selected: usize,
-    top: usize,
-    focus: usize,
     rendered: bool,
-    list: Option<ratatui::layout::Rect>,
-    dragging: bool,
     problem: Option<Failure>,
     details: bool,
 }
@@ -246,8 +245,13 @@ impl State {
     pub fn begin_frame(&mut self) {
         if let Some(dialog) = &mut self.dialog {
             dialog.rendered = false;
-            dialog.list = None;
             dialog.path.invalidate_geometry();
+        }
+    }
+    /// The sheet reports whether it is on screen; its commands need it.
+    pub(crate) fn presented(&mut self, shown: bool) {
+        if let Some(dialog) = &mut self.dialog {
+            dialog.rendered = shown;
         }
     }
     fn status(&self, item: &Saved) -> (&'static str, Option<u64>) {
@@ -350,11 +354,7 @@ impl App {
             requested: true,
             generation: self.attachments.generation,
             selected: 0,
-            top: 0,
-            focus: 1,
             rendered: false,
-            list: None,
-            dragging: false,
             problem: None,
             details: false,
         });
@@ -448,7 +448,6 @@ impl App {
         }
         if command == Command::Close {
             self.attachments.dialog = None;
-            self.hits.clear();
             return None;
         }
         if self.attachments.dialog.is_none() {
@@ -490,7 +489,6 @@ impl App {
                     }
                 }
             }
-            self.hits.clear();
             return None;
         }
         let dialog = self.attachments.dialog.as_mut()?;
@@ -498,16 +496,14 @@ impl App {
             Command::Open => {
                 dialog.browse = false;
                 dialog.selected = 0;
-                dialog.top = 0;
             }
             Command::Directory | Command::Skills => unreachable!(),
             Command::Browse => {
                 dialog.browse = true;
                 dialog.selected = 0;
-                dialog.top = 0;
                 dialog.requested = true;
             }
-            Command::Path => dialog.focus = 0,
+            Command::Path => self.layer.focus(view::PATH),
             Command::Details => dialog.details = !dialog.details,
             Command::Parent => {
                 if let Some(parent) = dialog.directory.parent() {
@@ -533,14 +529,12 @@ impl App {
                 dialog.requested = true;
             }
             Command::Select(index) => {
-                dialog.focus = 1;
                 dialog.selected = index;
                 dialog.details = false;
             }
             Command::Retry | Command::Remove => unreachable!(),
             Command::Close => {}
         }
-        self.hits.clear();
         None
     }
     pub fn attachment_browse_request(&mut self) -> Option<io::Browse> {
@@ -554,7 +548,6 @@ impl App {
         dialog.requested = false;
         dialog.entries.clear();
         dialog.selected = 0;
-        dialog.top = 0;
         dialog.problem = None;
         dialog.generation += 1;
         let request = io::Browse {
