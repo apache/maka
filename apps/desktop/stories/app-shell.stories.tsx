@@ -537,6 +537,17 @@ export const DefaultLayout: Story = {
     expect(trailingInset).toBeGreaterThanOrEqual(0);
     expect(trailingInset).toBeLessThanOrEqual(16);
     expect(getComputedStyle(actions).columnGap).toBe('4px');
+    // Message metadata mirrors across senders: the prompt's time sits left of
+    // its actions, the answer's time right of its actions.
+    await waitFor(() => expect(canvasElement.querySelector('.maka-turn-footer time')).not.toBeNull());
+    const box = (selector: string) => {
+      const element = canvasElement.querySelector(selector);
+      if (!element) throw new Error(`${selector} did not render`);
+      return element.getBoundingClientRect();
+    };
+    expect(box('.maka-message-meta time').right).toBeLessThanOrEqual(box('.maka-message-meta [data-message-id]').left);
+    expect(box('.maka-turn-footer time').left).toBeGreaterThanOrEqual(box('.maka-turn-footer [data-action="copy"]').right);
+    await expect(canvasElement.querySelector('.maka-turn-footer')).not.toHaveTextContent('claude-sonnet-4-5');
   },
 };
 

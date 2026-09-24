@@ -229,9 +229,6 @@
   padding-block: 0 var(--space-1-5);
 }
 .maka-turn-statusbar-text { font-weight: var(--font-weight-medium); }
-.maka-turn-footer-meta-model {
-  color: var(--muted-foreground);
-}
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
 .maka-subagent-session-label,
