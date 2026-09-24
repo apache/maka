@@ -174,8 +174,8 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
         },
       },
       {
-        providerType: 'openai-responses-compatible',
-        via: 'runtimeAdapter',
+        providerType: 'custom',
+        via: 'protocolAdapters.openai-responses',
         contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
       },
       {

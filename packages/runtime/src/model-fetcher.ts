@@ -160,11 +160,13 @@ async function fetchProviderModelsStrict(
 ): Promise<ModelInfo[]> {
   const configuredBaseUrl = effectiveBaseUrl(connection);
   const baseUrl =
-    configuredBaseUrl && connection.providerType === 'openai-compatible'
-      ? openAiChatBaseUrl(configuredBaseUrl)
-      : configuredBaseUrl && connection.providerType === 'openai-responses-compatible'
+    configuredBaseUrl && connection.providerType === 'custom'
+      ? connection.defaultApiProtocol === 'openai-responses'
         ? openAiResponsesBaseUrl(configuredBaseUrl)
-        : configuredBaseUrl;
+        : connection.defaultApiProtocol !== 'anthropic-messages'
+          ? openAiChatBaseUrl(configuredBaseUrl)
+          : configuredBaseUrl
+      : configuredBaseUrl;
   const definition = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType → no discovery path. Throw a clear error (caught and
   // generalized by the caller) rather than crashing on `.modelDiscovery`.
@@ -209,7 +211,11 @@ async function fetchProviderModelsStrict(
   // The wire is the Runtime adapter's, not a second field beside it. Only four
   // adapter kinds reach here: every other one returned above on its own
   // discovery branch, and both OpenAI-shaped kinds speak the same /models wire.
-  switch (definition.runtimeAdapter.kind) {
+  const listAdapter =
+    (connection.defaultApiProtocol &&
+      definition.protocolAdapters?.[connection.defaultApiProtocol]) ||
+    definition.runtimeAdapter;
+  switch (listAdapter.kind) {
     case 'anthropic': {
       const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
         headers: anthropicModelHeaders(apiKey),

@@ -19,7 +19,7 @@
 
 /** Shared by request previews, connection probes and SDK base URL resolution. */
 export function openAiChatBaseUrl(baseUrl: string): string {
-  return openAiBaseUrl(baseUrl, '/chat/completions');
+  return openAiBaseUrl(baseUrl);
 }
 
 export function openAiChatUrl(baseUrl: string): string {
@@ -27,27 +27,29 @@ export function openAiChatUrl(baseUrl: string): string {
 }
 
 export function openAiResponsesBaseUrl(baseUrl: string): string {
-  return openAiBaseUrl(baseUrl, '/responses');
+  return openAiBaseUrl(baseUrl);
 }
 
 export function openResponsesUrl(baseUrl: string): string {
   return openAiRequestUrl(baseUrl, '/responses');
 }
 
-function openAiBaseUrl(baseUrl: string, endpoint: string): string {
+function openAiBaseUrl(baseUrl: string): string {
   const url = new URL(baseUrl);
   let path = url.pathname.replace(/\/+$/, '');
   // Accept both a base and a full endpoint, including previously duplicated
-  // suffixes. Preserve the gateway's prefix; never assume or insert /v1.
-  while (path.toLowerCase().endsWith(endpoint)) {
-    path = path.slice(0, -endpoint.length).replace(/\/+$/, '');
+  // suffixes. Models on one connection may use either OpenAI protocol.
+  // Preserve the gateway's prefix; never assume or insert /v1.
+  const endpoint = /\/(?:chat\/completions|responses)$/i;
+  while (endpoint.test(path)) {
+    path = path.replace(endpoint, '').replace(/\/+$/, '');
   }
   url.pathname = path;
   return url.toString();
 }
 
 function openAiRequestUrl(baseUrl: string, endpoint: string): string {
-  const url = new URL(openAiBaseUrl(baseUrl, endpoint));
+  const url = new URL(openAiBaseUrl(baseUrl));
   url.pathname = `${url.pathname.replace(/\/+$/, '')}${endpoint}`;
   return url.toString();
 }

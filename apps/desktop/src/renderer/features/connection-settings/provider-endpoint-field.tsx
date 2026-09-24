@@ -18,7 +18,7 @@
  */
 
 import type { ReactNode } from 'react';
-import { isRelayProviderType, type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
+import type { ModelApiProtocol, ProviderType } from '@maka/core/llm-connections';
 import { useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from './settings-provider-copy.js';
 import { openAiChatUrl, openResponsesUrl } from '@maka/core/openai-urls';
@@ -28,11 +28,12 @@ import { redactSecrets } from '@maka/core/display-redaction';
 export function ProviderEndpointField(props: {
   providerType: ProviderType;
   baseUrl: string;
+  apiProtocol?: ModelApiProtocol;
   children(description: string | undefined): ReactNode;
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).shared;
-  const url = providerRequestUrlPreview(props.providerType, props.baseUrl);
-  if (!isRelayProviderType(props.providerType)) return props.children(undefined);
+  const url = providerRequestUrlPreview(props.providerType, props.baseUrl, props.apiProtocol);
+  if (props.providerType !== 'custom') return props.children(undefined);
   const description = url ? `${copy.requestUrlLabel} ${url}` : undefined;
   // Astryx's description is above the input (and hidden with its label).
   // This computed output belongs below it; pass it through aria-description
@@ -45,12 +46,13 @@ export function ProviderEndpointField(props: {
   );
 }
 
-/** Only fixed-protocol relays have one request URL independent of the model. */
+/** Preview the selected protocol when adding, or the default model's protocol when editing. */
 export function providerRequestUrlPreview(
-  providerType: LlmConnection['providerType'],
+  providerType: ProviderType,
   draftBaseUrl: string,
+  apiProtocol: ModelApiProtocol = 'openai-chat',
 ): string | null {
-  if (providerType !== 'openai-compatible' && providerType !== 'openai-responses-compatible') {
+  if (providerType !== 'custom' || apiProtocol === 'anthropic-messages') {
     return null;
   }
   // A draft must be a complete, saveable HTTP(S) address. Do not substitute
@@ -59,7 +61,7 @@ export function providerRequestUrlPreview(
   try {
     const baseUrl = normalizeCatalogConnectionBaseUrl(draftBaseUrl);
     if (!baseUrl) return null;
-    return redactSecrets(providerType === 'openai-compatible'
+    return redactSecrets(apiProtocol === 'openai-chat'
       ? openAiChatUrl(baseUrl)
       : openResponsesUrl(baseUrl));
   } catch {

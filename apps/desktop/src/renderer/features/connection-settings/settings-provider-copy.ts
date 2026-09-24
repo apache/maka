@@ -34,6 +34,7 @@ type WidenCopy<T> = T extends string
     ? (...args: Args) => string
     : { [K in keyof T]: WidenCopy<T[K]> };
 
+
 // Capability-section strings for the connection detail page — the add-provider
 // form deliberately carries no declaration controls (capabilities are edited
 // after the connection exists).
@@ -72,6 +73,11 @@ const zhCapabilitiesCopy = {
   fastModeHelp: '选择更快的服务档位，可能产生额外费用。',
   fastAuto: '自动',
   fastEnabled: 'Fast',
+  apiProtocol: '请求协议',
+  apiProtocolHelp: '此模型使用的接口格式。同一地址同时提供多种协议时，可为单个模型单独选择。',
+  apiProtocolDefaultOption: (protocol: string) => `跟随连接 · ${protocol}`,
+  connectionApiProtocol: '默认请求协议',
+  connectionApiProtocolHelp: '模型未单独选择协议时使用。创建后不可更改，可在每个模型上单独覆盖。',
 };
 
 const zhTwCapabilitiesCopy = {
@@ -109,6 +115,11 @@ const zhTwCapabilitiesCopy = {
   fastModeHelp: '選擇更快的服務檔位，可能產生額外費用。',
   fastAuto: '自動',
   fastEnabled: 'Fast',
+  apiProtocol: '請求協定',
+  apiProtocolHelp: '此模型使用的介面格式。同一位址同時提供多種協定時，可為單一模型單獨選擇。',
+  apiProtocolDefaultOption: (protocol: string) => `跟隨連線 · ${protocol}`,
+  connectionApiProtocol: '預設請求協定',
+  connectionApiProtocolHelp: '模型未單獨選擇協定時使用。建立後不可變更，可在每個模型上單獨覆寫。',
 };
 const enCapabilitiesCopy = {
   capabilities: 'Capabilities',
@@ -146,6 +157,11 @@ const enCapabilitiesCopy = {
   fastModeHelp: 'Use the faster service tier. Additional charges may apply.',
   fastAuto: 'Auto',
   fastEnabled: 'Fast',
+  apiProtocol: 'Request protocol',
+  apiProtocolHelp: 'The API format this model uses. When one address serves several protocols, choose one per model.',
+  apiProtocolDefaultOption: (protocol: string) => `Connection default: ${protocol}`,
+  connectionApiProtocol: 'Default request protocol',
+  connectionApiProtocolHelp: 'Used by models without their own protocol. It cannot be changed after the connection is added; each model can override it.',
 };
 
 const zhCopy = {

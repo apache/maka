@@ -20,6 +20,7 @@
 import {
   PROVIDER_REGISTRY,
   effectiveBaseUrl,
+  type ModelApiProtocol,
   type ModelInfo,
   type ProviderResponsesContract,
   type ProviderRuntimeAdapter,
@@ -31,7 +32,11 @@ import {
   openAiAdapterApiProtocol,
 } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
-import { modelOverride, type ModelOverrides } from '@maka/core/model-thinking';
+import {
+  declaredModelApiProtocol,
+  modelOverride,
+  type ModelOverrides,
+} from '@maka/core/model-thinking';
 import {
   anthropicV1BaseUrl,
   googleV1BetaBaseUrl,
@@ -100,6 +105,7 @@ export interface ModelRuntimeConnection {
   readonly slug?: string;
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
+  readonly defaultApiProtocol?: ModelApiProtocol;
   readonly models?: readonly ModelInfo[];
 }
 
@@ -120,7 +126,7 @@ export function resolveModelRuntime(
       `Unknown provider type "${connection.providerType}"; cannot resolve model runtime.`,
     );
   }
-  const apiProtocol = connection.models?.find((model) => model.id === modelId)?.apiProtocol;
+  const apiProtocol = declaredModelApiProtocol(connection, modelId);
   const baseAdapter = override?.adapter ?? defaults.runtimeAdapter;
   const calls = adapterCalls(baseAdapter);
   const preferred = openAiAdapterApiProtocol(modelId, connection.providerType);
@@ -162,7 +168,7 @@ export function resolveModelRuntime(
     replay.contract.adapter === 'open-responses' &&
     replay.contract.reasoningReplay === 'plaintext-summary'
       ? {
-          responsesProviderOptionsKey: runtimeProviderName(adapter, connection),
+          responsesProviderOptionsKey: connection.providerType,
           responsesReplayProfile: connection.slug ?? connection.providerType,
         }
       : {}),
@@ -198,16 +204,6 @@ function resolveParallelToolCalls(
   // on both Chat Completions and Responses. Compatible providers vary, so
   // they require an explicit model declaration instead of inheriting this.
   return adapter.kind === 'openai' || adapter.kind === 'openai-codex' ? true : undefined;
-}
-
-/** Provider identity used to name SDK instances and key their provider options. */
-export function runtimeProviderName(
-  adapter: ProviderRuntimeAdapter,
-  connection: { readonly providerType: ProviderType; readonly slug?: string },
-): string {
-  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
-    ? (connection.slug ?? connection.providerType)
-    : connection.providerType;
 }
 
 /** Native OpenAI lanes keep mutable continuation state inside ModelAdapter. */

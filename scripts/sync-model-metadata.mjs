@@ -628,7 +628,7 @@ function normalizeRuntimeOverrides(provider, overrides) {
         reasoningReplay: 'none',
       },
     },
-    '@ai-sdk/openai-compatible': { kind: 'openai-compatible', name: 'provider' },
+    '@ai-sdk/openai-compatible': { kind: 'openai-compatible' },
   };
   return Object.fromEntries(
     Object.entries(overrides).map(([modelId, override]) => {

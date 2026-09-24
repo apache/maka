@@ -17,11 +17,17 @@
  * under the License.
  */
 
-import type { ModelDiscoverySource, ModelInfo, ProviderType } from '@maka/core/llm-connections';
+import type {
+  ModelApiProtocol,
+  ModelDiscoverySource,
+  ModelInfo,
+  ProviderType,
+} from '@maka/core/llm-connections';
 
 export interface ConnectionEffectConnection {
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
+  readonly defaultApiProtocol?: ModelApiProtocol;
   readonly defaultModel?: string;
   readonly enabledModelIds?: readonly string[];
   readonly models?: readonly ModelInfo[];

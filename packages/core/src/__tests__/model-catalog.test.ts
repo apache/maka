@@ -50,7 +50,7 @@ function verdict(input: BuildModelCatalogInput) {
 
 test('catalog transport preserves independent limits and their unmodified defaults', () => {
   const [entry] = buildModelCatalogEntries({
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     models: [{ id: 'custom', contextWindow: 64000, inputLimit: 32000 }],
     modelOverrides: { custom: { contextWindow: 200000 } },
   });
@@ -167,7 +167,7 @@ test('an empty output modality list is not evidence against chat', () => {
   // A provider that declared no output modality and a generator bug that
   // dropped them produce the same shape. Blocking on it would be guessing.
   const undeclared = {
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
     defaultModel: 'relay-quiet',
     models: [{ id: 'relay-quiet', modalities: { input: ['text' as const], output: [] } }],
     modelSource: 'fetched' as const,
@@ -179,7 +179,7 @@ test('an explicit chat capability outranks the declared output modality', () => 
   // A provider that says both is contradicting itself, and the direct claim
   // about chat is the more specific one.
   const contradictory = {
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
     defaultModel: 'relay-omni',
     models: [
       {
@@ -202,7 +202,7 @@ test('the catalog and the readiness gate agree that no catalog is a veto', () =>
       connection: {
         slug: 'relay',
         name: 'Relay',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
         defaultModel: 'custom-default',
         enabled: true,
         models: [{ id: 'relay-static-model' }],
@@ -213,7 +213,7 @@ test('the catalog and the readiness gate agree that no catalog is a veto', () =>
       hasSecret: true,
     });
   const catalog = (modelSource: 'fetched' | 'fallback') => ({
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
     defaultModel: 'custom-default',
     models: [{ id: 'relay-static-model' }],
     modelSource,
@@ -517,7 +517,7 @@ test('catalog preserves the image default through overrides and the wire', () =>
     for (const declared of [undefined, false, true]) {
       const [entry] = resolveConnectionModelCatalog({
         slug: 'relay',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
         defaultModel: 'custom-vision',
         modelSource: 'fetched',
         models: [{ id: 'custom-vision', capabilities: { vision: reported } }],

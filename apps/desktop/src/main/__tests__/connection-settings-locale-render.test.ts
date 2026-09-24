@@ -236,7 +236,7 @@ for (const copy of localeCases) {
         fetchModels: async () => { calls.push('fetchModels'); throw new Error('unexpected discovery'); },
       } as unknown as ConnectionsBridge;
       await harness.render(copy.locale, createElement(components.AddProviderForm, {
-        bridge, providerType: 'openai-compatible', existingSlugs: ['taken'],
+        bridge, providerType: 'custom', existingSlugs: ['taken'],
         onCancel: unexpectedCall, onCreated: unexpectedCall,
       }));
       const input = harness.document.querySelector<HTMLInputElement>('input[placeholder="my-provider"]');
@@ -299,6 +299,74 @@ test('zh-TW: expanded Peer Mesh members render localized route states', async ()
     assert.ok(heading);
     assert.equal(heading.nextElementSibling?.textContent, expected[index], states[index]);
   }
+});
+
+test('custom connection creation updates and clears the request URL preview while typing', async () => {
+  const harness = installRenderer();
+  await harness.render('en', createElement(components.AddProviderForm, {
+    bridge: connectionDetailBridge({}),
+    providerType: 'custom', existingSlugs: [],
+    onCancel: unexpectedCall, onCreated: unexpectedCall,
+  }));
+  const input = harness.document.querySelector<HTMLInputElement>('.providerEndpointField input');
+  assert.ok(input, 'missing service URL input');
+  for (const [draft, expected] of [
+    ['https://relay.example/proxy/chat/completions', 'https://relay.example/proxy/chat/completions'],
+    ['https://relay.example/team', 'https://relay.example/team/chat/completions'],
+    ['https://', null],
+    ['', null],
+  ] as const) {
+    await act(async () => {
+      input.value = draft;
+      const key = Object.keys(input).find((candidate) => candidate.startsWith('__reactProps$'));
+      assert.ok(key, 'missing React input props');
+      const props = (input as unknown as Record<string, unknown>)[key] as {
+        onChange(event: { target: HTMLInputElement; defaultPrevented: boolean }): void;
+      };
+      props.onChange({ target: input, defaultPrevented: false });
+    });
+    const preview = harness.document.querySelector('.providerRequestUrlPreview');
+    if (expected) {
+      assert.ok(preview);
+      assert.ok(preview.textContent.endsWith(expected));
+      assert.equal(input.getAttribute('aria-description'), preview.textContent);
+    } else {
+      assert.equal(preview, null);
+      assert.equal(input.getAttribute('aria-description'), null);
+    }
+  }
+});
+
+test('endpoint editing previews the default model protocol override', async () => {
+  const harness = installRenderer();
+  const base = relayConnection();
+  const connection: ProjectedLlmConnection = {
+    ...base,
+    defaultApiProtocol: 'openai-chat',
+    modelOverrides: { [base.defaultModel]: { apiProtocol: 'openai-responses' } },
+  };
+  await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => true }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+  const edit = [...harness.document.querySelectorAll<HTMLButtonElement>('button')].find(
+    (button) => button.getAttribute('aria-label') === 'Edit: Service URL',
+  );
+  assert.ok(edit, 'missing service URL edit action');
+  await act(async () => edit.click());
+  const preview = harness.document.querySelector('.providerRequestUrlPreview');
+  assert.ok(preview);
+  assert.ok(preview.textContent.endsWith('https://relay.example/v1/responses'));
+  assert.equal(
+    harness.document.querySelector('.providerEndpointField input')?.getAttribute('aria-description'),
+    preview.textContent,
+  );
 });
 
 test('credential probing does not flash a page-level loading warning', async () => {
@@ -417,9 +485,10 @@ function relayConnection(): ProjectedLlmConnection {
   const modelId = 'gpt-5.6-sol-joybuilder';
   return {
     connectionId: 'relay-connection',
-    slug: 'openai-responses-compatible-2',
+    slug: 'custom-2',
     name: '自定义中转站（OpenAI Responses）',
-    providerType: 'openai-responses-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-responses',
     baseUrl: 'https://relay.example/v1',
     defaultModel: modelId,
     enabledModelIds: [modelId],

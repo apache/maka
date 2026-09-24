@@ -24,18 +24,19 @@ import { getAIModel } from '../model-factory.js';
 import { runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
 import { runConnectionTestEffect } from '../test-connection.js';
 
-for (const [providerType, path] of [
-  ['openai-compatible', '/chat/completions'],
-  ['openai-responses-compatible', '/responses'],
+for (const [apiProtocol, path] of [
+  ['openai-chat', '/chat/completions'],
+  ['openai-responses', '/responses'],
 ] as const) {
-  test(`${providerType}: full endpoint works for testing, generation and discovery`, async () => {
+  test(`${apiProtocol}: full endpoint works for testing, generation and discovery`, async () => {
     for (const prefix of ['', '/v1', '/gateway/team/api']) {
-      for (const suffix of ['', path, `${path}/`, `${path}${path}`]) {
+      for (const suffix of ['', '/chat/completions', '/responses', `${path}/`, `${path}${path}`]) {
         const base = `https://relay.example${prefix}`;
         const connection: LlmConnection = {
           slug: 'relay',
           name: 'Relay',
-          providerType,
+          providerType: 'custom',
+          defaultApiProtocol: apiProtocol,
           enabled: true,
           baseUrl: `${base}${suffix}`,
           defaultModel: 'relay-model',
@@ -50,7 +51,7 @@ for (const [providerType, path] of [
           return Response.json(
             url.endsWith('/models')
               ? { data: [{ id: 'relay-model' }] }
-              : providerType === 'openai-compatible'
+              : apiProtocol === 'openai-chat'
                 ? {
                     id: 'chat',
                     object: 'chat.completion',
