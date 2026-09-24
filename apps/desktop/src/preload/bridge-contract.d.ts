@@ -328,6 +328,18 @@ export interface OnboardingSnapshot {
   sessionSendOutcomes: Record<string, import('@maka/core/session-send-projection').SessionSendProjection>;
 }
 
+export type DesktopOnboardingSessionUpdate =
+  | { kind: 'resync' }
+  | {
+      kind: 'delta';
+      sessionId: string;
+      outcome: import('@maka/core/session-send-projection').SessionSendProjection | null;
+      defaultHost?: {
+        state: OnboardingState;
+        milestones: OnboardingMilestone[];
+      };
+    };
+
 export interface DesktopTaskSubmissionReadinessRequest {
   connectionSlug?: string;
   model?: string;
@@ -1633,18 +1645,19 @@ export interface MakaBridge {
   };
   notifications: {
     /** Fire-and-forget: report that an agent turn reached a terminal
-     * state. `title` is the session name, `body` the start of the
-     * reply (or error message); main sanitizes + falls back to
-     * generic copy. Main gates on the product toggle + window focus
-     * before raising a native OS notification. */
+     * state or is waiting on the user. `title` is the session name,
+     * `body` the start of the reply, error message, or question; main
+     * sanitizes + falls back to generic copy. Main gates on the product
+     * toggle + window focus before raising a native OS notification. */
     runEnded(payload: {
-      kind: 'completed' | 'errored';
+      kind: 'completed' | 'errored' | 'waiting';
       title?: string;
       body?: string;
     }): Promise<void>;
   };
   onboarding: {
     getSnapshot(): Promise<OnboardingSnapshot>;
+    getSessionUpdate(sessionId: string): Promise<DesktopOnboardingSessionUpdate | null>;
     setMilestone(
       id: OnboardingMilestoneId,
       status: 'completed' | 'skipped',

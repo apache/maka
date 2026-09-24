@@ -694,6 +694,22 @@ export interface ThinkingDeltaEvent extends BaseEvent {
   text: string;
 }
 
+/**
+ * Apply a text/thinking delta to a stream that has consumed `currentEnd`
+ * source characters. Overlap with consumed text is dropped, so replayed and
+ * reseeded deltas are idempotent. A delta that starts past `currentEnd` is a
+ * gap and returns `undefined`; one without `startOffset` appends.
+ */
+export function foldAssistantDelta(
+  currentEnd: number,
+  delta: { readonly startOffset?: number; readonly text: string },
+): { tail: string; endOffset: number } | undefined {
+  const startOffset = delta.startOffset ?? currentEnd;
+  if (startOffset > currentEnd) return undefined;
+  const tail = delta.text.slice(currentEnd - startOffset);
+  return { tail, endOffset: currentEnd + tail.length };
+}
+
 export interface ThinkingCompleteEvent extends BaseEvent {
   type: 'thinking_complete';
   interrupted?: true;

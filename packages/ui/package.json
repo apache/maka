@@ -9,7 +9,6 @@
   "exports": {
     ".": "./dist/index.js",
     "./artifact-preview-registry": "./dist/artifact-preview-registry.js",
-    "./assistant-stream": "./dist/assistant-stream.js",
     "./client-plugin": "./dist/client-plugin-slots.js",
     "./client-plugin-runtime": "./dist/client-plugin-runtime.js",
     "./icons": "./dist/icons.js",

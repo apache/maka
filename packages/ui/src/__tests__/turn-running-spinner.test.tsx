@@ -144,10 +144,28 @@ test('only the latest assistant segment owns live activity after a user instruct
   );
 });
 
-test('shows the outcome in the status row and model facts in the footer for a reply without process entries', () => {
+test('a live turn shows no footer even after a step lands', () => {
+  // Without a recorded turn_state the projection infers `completed` and sets a
+  // duration as soon as an assistant step lands; the live stream still owns it.
   const turn: TurnViewModel = {
-    turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [], notes: [], startedAt: 1,
-    durationMs: 213_000,
+    turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [], notes: [],
+    startedAt: 1_700_000_000_000, durationMs: 64_000,
+    timeline: [{ kind: 'text', messageId: 'step', text: 'intermediate step' }],
+  };
+  const { document } = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <TurnView turn={turn} liveStreaming={{ runningStatus: true }} />
+    </LocaleProvider>,
+  ));
+  assert.equal(document.querySelector('.maka-turn-footer'), null);
+  assert.ok(document.querySelector('.maka-turn-processing'));
+});
+
+test('shows the outcome in the status row and actions then finish time in the footer for a reply without process entries', () => {
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'completed', modelId: 'fixture-model', tools: [], notes: [],
+    startedAt: 1_700_000_000_000, durationMs: 213_000,
+    tokens: { input: 1, output: 1, costUsd: 0.01 },
     timeline: [{ kind: 'text', messageId: 'answer', text: 'the answer' }],
   };
   const { document } = parseHTML(renderToStaticMarkup(
@@ -164,11 +182,11 @@ test('shows the outcome in the status row and model facts in the footer for a re
   // Localized duration (the same wording the copy owns), not the compact
   // `3m 33s` the live counter uses.
   assert.equal(statusbar.textContent, 'Done · Worked for 3m 33s');
-  // The footer keeps only the reference facts: the model name, no state.
+  // The composer owns the model; the footer ends with the finish time.
   const footer = document.querySelector('.maka-turn-footer');
-  assert.match(footer?.textContent ?? '', /fixture-model/);
-  assert.doesNotMatch(footer?.textContent ?? '', /Done|Worked for/);
-  // This turn carries only the placeholder start (the fixture's `startedAt: 1`),
-  // so no finish time is rendered rather than dating it to 1970.
-  assert.equal(footer?.querySelector('time'), null);
+  const copy = footer?.querySelector('[data-action="copy"]');
+  const time = footer?.querySelector('time');
+  assert.ok(copy && time);
+  assert.equal(copy.compareDocumentPosition(time) & 4, 4);
+  assert.doesNotMatch(footer?.textContent ?? '', /fixture-model|\$/);
 });

@@ -48,6 +48,7 @@ import {
 import type {
   MakaBridge,
   OnboardingSnapshot,
+  DesktopOnboardingSessionUpdate,
   DesktopTaskSubmissionReadinessRequest,
   PermissionActionResult,
   PermissionOverlayStartResult,
@@ -304,6 +305,9 @@ let lastDesktopSessionCatalog: RuntimeHostSessionCatalogCoverage = {
   sessions: [],
   completeHostIds: [],
 };
+/** Accepted Owner projections survive a failed read from one unrelated Host. */
+const onboardingOutcomesByScope = new Map<RuntimeHostScopeKey, Map<string, OnboardingSnapshot['sessionSendOutcomes'][string]>>();
+const onboardingOutcomeVersions = new Map<RuntimeHostScopeKey, number>();
 const newTaskChangeListeners = new Set<() => void>();
 let previousMainProcessInterruptionRead: Promise<boolean> | undefined;
 
@@ -352,6 +356,8 @@ ipcRenderer.on(
     ) {
       runtimeHostScopes.delete(previousScopeKey);
       runtimeHostMetadata.delete(previousScopeKey);
+      onboardingOutcomesByScope.delete(previousScopeKey);
+      onboardingOutcomeVersions.delete(previousScopeKey);
       if (change.removed) {
         runtimeHostProfiles.delete(change.profileId);
       }
@@ -462,6 +468,8 @@ async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
       if (authoritativeScopeKeys.has(scopeKey)) continue;
       runtimeHostScopes.delete(scopeKey);
       runtimeHostMetadata.delete(scopeKey);
+      onboardingOutcomesByScope.delete(scopeKey);
+      onboardingOutcomeVersions.delete(scopeKey);
     }
     return readyScopes;
   }
@@ -920,6 +928,9 @@ async function loadDesktopOnboardingSnapshot(): Promise<OnboardingSnapshot> {
         scope.hostId !== defaultScope.hostId || scope.targetEpoch !== defaultScope.targetEpoch,
     ),
   ];
+  const startedVersions = new Map(scopes.map((scope) => [
+    runtimeHostScopeKey(scope), onboardingOutcomeVersions.get(runtimeHostScopeKey(scope)) ?? 0,
+  ]));
   const results = await Promise.allSettled(
     scopes.map(async (scope) => ({
       scope,
@@ -929,6 +940,9 @@ async function loadDesktopOnboardingSnapshot(): Promise<OnboardingSnapshot> {
   const primary = results[0];
   if (!primary || primary.status === 'rejected') {
     throw primary?.reason ?? new Error('Default Runtime Host onboarding is unavailable');
+  }
+  if (runtimeHostScopeKey(await activeRuntimeHostRef()) !== runtimeHostScopeKey(defaultScope)) {
+    throw new Error('Default Runtime Host changed during onboarding read');
   }
   const snapshots = results.flatMap((result) =>
     result.status === 'fulfilled'
@@ -941,6 +955,16 @@ async function loadDesktopOnboardingSnapshot(): Promise<OnboardingSnapshot> {
   const ownerSnapshots = snapshots.filter(
     ({ scope }) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
   );
+  for (const { scope, snapshot } of ownerSnapshots) {
+    const scopeKey = runtimeHostScopeKey(scope);
+    if ((onboardingOutcomeVersions.get(scopeKey) ?? 0) !== startedVersions.get(scopeKey)) {
+      continue;
+    }
+    onboardingOutcomesByScope.set(
+      scopeKey,
+      new Map(Object.entries(snapshot.sessionSendOutcomes)),
+    );
+  }
   const completeHostIds = [...new Set(ownerSnapshots.map(({ scope }) => scope.hostId))];
   catalogSeed.commit({
     sessions: reconcileRuntimeHostSessionCatalog(lastDesktopSessionCatalog.sessions, {
@@ -959,9 +983,50 @@ async function loadDesktopOnboardingSnapshot(): Promise<OnboardingSnapshot> {
     sessions,
     sessionSendOutcomes: Object.assign(
       {},
-      ...snapshots.map(({ scope, snapshot }) =>
-        projectOnboardingSendOutcomes(scope, snapshot.sessionSendOutcomes)),
+      ...[...runtimeHostScopes.values()].flatMap((scope) => {
+        const outcomes = onboardingOutcomesByScope.get(runtimeHostScopeKey(scope));
+        return outcomes && runtimeHostMetadataFor(scope)?.profileAccess === 'owner'
+          ? [projectOnboardingSendOutcomes(scope, Object.fromEntries(outcomes))]
+          : [];
+      }),
     ),
+  };
+}
+
+async function loadDesktopOnboardingSessionUpdate(
+  sessionId: string,
+): Promise<DesktopOnboardingSessionUpdate | null> {
+  let ref: Awaited<ReturnType<typeof runtimeHostSessionRef>>;
+  try {
+    ref = await runtimeHostSessionRef(sessionId);
+  } catch {
+    return { kind: 'resync' };
+  }
+  const { scope, sessionId: hostSessionId } = ref;
+  const metadata = runtimeHostMetadataFor(scope);
+  if (!metadata) return { kind: 'resync' };
+  if (metadata.profileAccess !== 'owner') return null;
+  const update = await invokeWhenReady(
+    'onboarding:getSessionUpdate', scope, hostSessionId,
+  ) as import('../main/onboarding-service.js').OnboardingSessionUpdate;
+  if (update.kind === 'resync') return update;
+  if (runtimeHostMetadataFor(scope)?.profileId !== metadata.profileId) {
+    return { kind: 'resync' };
+  }
+  const outcomes = onboardingOutcomesByScope.get(runtimeHostScopeKey(scope));
+  if (!outcomes) return { kind: 'resync' };
+  if (update.outcome === null) outcomes.delete(hostSessionId);
+  else outcomes.set(hostSessionId, update.outcome);
+  const scopeKey = runtimeHostScopeKey(scope);
+  onboardingOutcomeVersions.set(scopeKey, (onboardingOutcomeVersions.get(scopeKey) ?? 0) + 1);
+  const currentDefault = await activeRuntimeHostRef();
+  return {
+    kind: 'delta',
+    sessionId,
+    outcome: update.outcome,
+    ...(runtimeHostScopeKey(currentDefault) === runtimeHostScopeKey(scope)
+      ? { defaultHost: { state: update.state, milestones: update.milestones } }
+      : {}),
   };
 }
 
@@ -3215,6 +3280,9 @@ const makaBridge = {
     getSnapshot(): Promise<OnboardingSnapshot> {
       return loadDesktopOnboardingSnapshot();
     },
+    getSessionUpdate(sessionId: string): Promise<DesktopOnboardingSessionUpdate | null> {
+      return loadDesktopOnboardingSessionUpdate(sessionId);
+    },
     async setMilestone(
       id: OnboardingMilestoneId,
       status: 'completed' | 'skipped',
@@ -3591,12 +3659,13 @@ const makaBridge = {
   },
   notifications: {
     // Fire-and-forget signal that an agent turn reached a terminal
-    // state. `title` is the session name, `body` the start of the reply
-    // (or the error message); main sanitizes both and falls back to
-    // generic copy when blank. Main gates on the product toggle + window
-    // focus before raising a native OS notification.
+    // state or is waiting on the user. `title` is the session name, `body`
+    // the start of the reply, the error message, or the question; main
+    // sanitizes both and falls back to generic copy when blank. Main gates
+    // on the product toggle + window focus before raising a native OS
+    // notification.
     runEnded(payload: {
-      kind: 'completed' | 'errored';
+      kind: 'completed' | 'errored' | 'waiting';
       title?: string;
       body?: string;
     }): Promise<void> {

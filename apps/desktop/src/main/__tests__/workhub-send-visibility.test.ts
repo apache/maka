@@ -617,10 +617,11 @@ test('WorkHub Host queue owns restored, consumed and retracted rows without tran
   await act(() => project('queued'));
   assert.deepEqual(h.controller.messageQueue.entries, [entry]);
   assert.deepEqual(h.controller.transientMessages, []);
-  await act(() => h.emit({ type: 'steering_message', id: 'consumed', turnId: 'active-turn', ts: 3, messageId: entry.messageId, content: entry.content }));
   await act(() => project('in_flight'));
+  assert.deepEqual(h.controller.messageQueue.entries, [{ ...entry, state: 'in_flight' }], 'a pulled message stays pending until the runtime places it');
+  await act(() => h.emit({ type: 'steering_message', id: 'consumed', turnId: 'active-turn', ts: 3, messageId: entry.messageId, content: entry.content }));
   assert.deepEqual(h.controller.messageQueue.entries, []);
-  assert.deepEqual(h.controller.transientMessages, [], 'an in-flight snapshot cannot resurrect consumed steering');
+  assert.deepEqual(h.controller.transientMessages, []);
   await act(() => project('queued'));
   await act(async () => { await h.controller.deleteQueuedEntry(entry.entryId); });
   await act(() => h.emit({ type: 'queue_update', id: 'removed', turnId: 'active-turn', ts: 4, steering: [], followup: [], steeringEntries: [] }));

@@ -552,9 +552,10 @@ export interface ChatDefaultsSettings {
  */
 export interface NotificationSettings {
   /**
-   * When enabled, the desktop app raises a native notification once an
-   * agent turn finishes (completed or errored) **while its window is not
-   * focused**. Focus + OS-permission gating live in the main process.
+   * When enabled, the desktop app raises a native notification and bounces
+   * the dock once an agent turn finishes (completed or errored) or waits on the user
+   * **while its window is not focused**. Focus + OS-permission gating live
+   * in the main process.
    */
   runComplete: boolean;
 }

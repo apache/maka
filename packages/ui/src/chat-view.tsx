@@ -543,7 +543,7 @@ export function ChatView(props: {
     turns,
   );
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
-  const { highlightedTurnId, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
+  const { highlightedTurnId, placed, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
     scrollRef,
     measureStartMargin,
     virtualizerRef,
@@ -798,7 +798,7 @@ export function ChatView(props: {
                 ? emptyContent
                 : null}
               {loadEarlierHistoryControl}
-              <div key={props.activeSession.id} ref={listRef} className="maka-chat-session-swap">
+              <div ref={listRef} className="maka-chat-session-swap" data-placed={placed || undefined}>
                 <Virtualizer
                   key={measurement.generation}
                   ref={virtualizerRef}

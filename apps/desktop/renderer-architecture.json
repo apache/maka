@@ -585,7 +585,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2687
+        "nonTriviaTokens": 2681
       },
       "src/renderer/app-shell-session-ui-state.ts": {
         "importDeclarations": 0,
@@ -812,7 +812,7 @@
           "react": 1
         },
         "importSpecifiers": 95,
-        "nonTriviaTokens": 12681
+        "nonTriviaTokens": 12663
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 0,
@@ -3687,11 +3687,7 @@
         }
       },
       "src/renderer/use-onboarding-snapshot.ts": {
-        "bridgePaths": {
-          "window.maka.connections.subscribeEvents": 1,
-          "window.maka.onboarding.getSnapshot": 1,
-          "window.maka.sessions.subscribeChanges": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
           "useEffect": 1,
@@ -3703,9 +3699,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./locales/onboarding-copy.js": 1,
-          "@maka/core/onboarding-milestone": 1,
-          "@maka/core/redaction": 1,
+          "./platform/desktop/onboarding-snapshot-bridge.js": 2,
           "@maka/ui": 1,
           "react": 1
         }

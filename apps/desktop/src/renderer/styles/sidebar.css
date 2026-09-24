@@ -256,8 +256,8 @@
  * spacing-6 by default. That inset shifted the whole session button — its
  * hover/selected fill included — 24px right of the project row, so the two
  * fills began on different x. Zero it: session rows sit on the project row's
- * left edge, and the leading status gutter below is the same 1rem as the
- * project folder, so titles still share one x. Pin the value because StyleX
+ * left edge, and the title inset below keeps titles on the project name's x.
+ * Pin the value because StyleX
  * owns the unlayered default. Child combinator only — do not use a descendant
  * selector that would indent deeper nest levels twice if any appear later.
  * DOM: .maka-project-row > SideNavItem root > [role=group] > childrenInner
@@ -265,6 +265,12 @@
 .maka-project-row > div > [role="group"] > div {
   /* !important: StyleX childrenInner paddingInlineStart is unlayered. */
   padding-inline-start: 0 !important;
+}
+
+/* A task has no leading icon, so under a project its title is pushed past the
+   project row's 1rem folder icon and the gap after it. */
+.maka-project-row .maka-session-row > div > .astryx-side-nav-item {
+  padding-inline-start: calc(var(--spacing-2) + 1rem + var(--spacing-2));
 }
 
 /*
@@ -367,9 +373,9 @@
   text-overflow: ellipsis;
 }
 
-/* Fixed trailing column so StatusDot ↔ MoreMenu swaps do not reflow the label
- * (hover used to steal ~28px and shove the title left). Project rows only; task
- * rows use .maka-session-row-time below. */
+/* Fixed trailing column so MoreMenu swaps do not reflow the label (hover used
+ * to steal ~28px and shove the title left). Project rows only; task rows use
+ * .maka-session-row-signal below. */
 .maka-session-row-trailing {
   display: inline-flex;
   align-items: center;
@@ -380,39 +386,22 @@
 }
 
 /*
- * Slot 1: the leading status gutter.
- *
- * A fixed box every row pays for, whether or not it has a dot, so state reads
- * as one column down the rail instead of a mark that drifts with each title's
- * length. 1rem, the same box Astryx gives the project row's `size="sm"` folder
- * icon: with the group inset zeroed above, the equal gutters are what keep
- * session titles on the project name's x, and the session hover/selected fill
- * on the project row's left edge.
- */
-.maka-session-row-signal {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 1rem;
-  height: 1rem;
-  flex: none;
-}
-
-/*
- * Slot 2: the timestamp at rest, the ⋯ menu on hover or keyboard focus.
+ * The signal slot: the row's state at rest, or its timestamp when it has no
+ * state; the ⋯ menu on hover or keyboard focus.
  *
  * `visibility`, not `display`, and an absolutely positioned menu: the two never
  * occupy layout at the same time and neither can reflow the title. The menu used
  * to be mounted visible on every row, which is what made the trailing cluster
  * five things wide.
  *
- * :focus-within covers the keyboard: focus on the row's own button reveals the
- * menu. The native popover's own open state covers the pointer handoff into the
- * top layer: once the pointer leaves the row, :hover drops before the item can
+ * :focus-visible, not :focus-within: a mouse click leaves focus on the row, and
+ * the row it just opened would otherwise keep its state covered by ⋯. The
+ * native popover's own open state covers the pointer handoff into the top
+ * layer: once the pointer leaves the row, :hover drops before the item can
  * receive its click, and pointer-events: none on this ancestor otherwise makes
  * the page underneath the visible popover win hit testing.
  */
-.maka-session-row-time {
+.maka-session-row-signal {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
@@ -427,39 +416,36 @@
   white-space: nowrap;
 }
 
-/* `opacity`, not `display: none`, so the trigger keeps its place in the tab
-   order and in the accessibility tree — that is what makes the menu reachable
-   without a pointer. `pointer-events: none` goes with it: the button sits
-   absolutely over the trailing slot at `z-index: 1`, so while it is invisible
-   it would otherwise still swallow clicks meant for the row underneath. */
-.maka-session-row > .maka-session-row-action {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.maka-session-row:hover > .maka-session-row-action,
-.maka-session-row:focus-within > .maka-session-row-action,
-.maka-session-row > .maka-session-row-action[data-menu-open="true"] {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.maka-session-row:hover .maka-session-row-time,
-.maka-session-row:focus-within .maka-session-row-time,
-.maka-session-row:has(> .maka-session-row-action[data-menu-open="true"]) .maka-session-row-time {
-  visibility: hidden;
-}
-
-/* Nothing here can reveal the menu later, so it takes the slot outright and the
-   timestamp yields. */
-@media (hover: none) {
+@media (hover: hover) {
+  /* `opacity`, not `display: none`, so the trigger keeps its place in the tab
+     order and in the accessibility tree — that is what makes the menu reachable
+     without a pointer. `pointer-events: none` goes with it: the button sits
+     absolutely over the trailing slot at `z-index: 1`, so while it is invisible
+     it would otherwise still swallow clicks meant for the row underneath. */
   .maka-session-row > .maka-session-row-action {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .maka-session-row:hover > .maka-session-row-action,
+  .maka-session-row:has(:focus-visible) > .maka-session-row-action,
+  .maka-session-row > .maka-session-row-action[data-menu-open="true"] {
     opacity: 1;
     pointer-events: auto;
   }
 
-  .maka-session-row .maka-session-row-time {
+  .maka-session-row[data-actionable="true"]:hover .maka-session-row-signal,
+  .maka-session-row[data-actionable="true"]:has(:focus-visible) .maka-session-row-signal,
+  .maka-session-row:has(> .maka-session-row-action[data-menu-open="true"]) .maka-session-row-signal {
     visibility: hidden;
+  }
+}
+
+/* Nothing here can reveal the menu later, so it stays up and the slot moves
+   aside to sit next to it. */
+@media (hover: none) {
+  .maka-session-row[data-actionable="true"] .maka-session-row-end {
+    margin-inline-end: calc(var(--h-control-sm, 24px) + var(--space-1));
   }
 }
 
@@ -535,6 +521,15 @@
   color: var(--muted-foreground);
   letter-spacing: var(--tracking-wide);
   white-space: nowrap;
+}
+
+/*
+ * Selection is the ground alone. Astryx's selected item also steps up to
+ * medium weight, which re-sets the title's glyphs and moves its ellipsis the
+ * instant a row is opened.
+ */
+.maka-session-panel .astryx-side-nav-item[data-selected] {
+  font-weight: var(--font-weight-normal);
 }
 
 /*

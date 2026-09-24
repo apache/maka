@@ -205,10 +205,8 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     );
   });
 
-  it('keeps the model present in the deepseek shipped baseline', () => {
-    assert.ok(
-      providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-v4-flash-vision-exp'),
-    );
+  it('keeps the vision-capable baseline model in the deepseek shipped baseline', () => {
+    assert.ok(providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-flash'));
   });
 
   it('returns expected metadata from lookupModelMetadata', () => {
