@@ -815,7 +815,7 @@ describe('runtime policy stores', () => {
               ? {}
               : { baseUrl: 'https://relay.example/v1' }),
             enabled: true,
-            enabledModelIds: ['relay-model'],
+            enabledModelIds: ['relay-model', 'deepseek-v4-flash'],
             models: [],
             modelOverrides: { 'relay-model': { contextWindow: 64_000 } },
           })),
@@ -828,7 +828,13 @@ describe('runtime policy stores', () => {
         slug: `${providerType}-relay`,
         providerType: 'custom',
         defaultApiProtocol,
-        modelOverrides: { 'relay-model': { contextWindow: 64_000 } },
+        modelOverrides: {
+          'relay-model': { contextWindow: 64_000 },
+          // The Anthropic type inferred hosted search for this model.
+          ...(providerType === 'anthropic-compatible'
+            ? { 'deepseek-v4-flash': { capabilities: { webSearch: true } } }
+            : {}),
+        },
       }));
       const project = (connections: readonly ConnectionCatalogEntry[]) =>
         connections.map(
