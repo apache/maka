@@ -125,9 +125,12 @@ export function AddProviderForm(props: {
     deriveConnectionSlug(props.providerType, props.existingSlugs),
   );
   const [name, setName] = useState(display.name);
-  const [baseUrl, setBaseUrl] = useState(defaults.baseUrl);
+  const [endpoint, setEndpoint] = useState<{
+    readonly baseUrl: string;
+    readonly defaultApiProtocol: ModelApiProtocol;
+  }>({ baseUrl: defaults.baseUrl, defaultApiProtocol: 'openai-chat' });
+  const { baseUrl, defaultApiProtocol } = endpoint;
   const isCustom = props.providerType === 'custom';
-  const [defaultApiProtocol, setDefaultApiProtocol] = useState<ModelApiProtocol>('openai-chat');
   const [cloudflareAccountId, setCloudflareAccountId] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [defaultModel, setDefaultModel] = useState(recommendedDefaultModel);
@@ -758,7 +761,7 @@ export function AddProviderForm(props: {
           <TextInput
             value={baseUrl}
             onChange={(value) => {
-              setBaseUrl(value);
+              setEndpoint((current) => ({ ...current, baseUrl: value }));
               resetManagedVerification();
               clearFieldError('baseUrl');
             }}
@@ -783,7 +786,12 @@ export function AddProviderForm(props: {
               label: MODEL_API_PROTOCOL_LABELS[protocol],
             }))}
             value={defaultApiProtocol}
-            onChange={(value) => setDefaultApiProtocol(value as ModelApiProtocol)}
+            onChange={(value) =>
+              setEndpoint((current) => ({
+                ...current,
+                defaultApiProtocol: value as ModelApiProtocol,
+              }))
+            }
             isDisabled={busy}
           />
         )}
