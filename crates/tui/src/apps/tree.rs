@@ -302,7 +302,9 @@ impl<M> Builder<'_, M> {
         }
     }
 
-    /// Buttons keep their width; everything else shares the rest equally.
+    /// Children keep their natural widths when the row holds them all;
+    /// otherwise buttons keep theirs and everything else shares the rest
+    /// equally. Fields, bars and splits always stretch.
     fn row(
         &mut self,
         key: String,
@@ -322,16 +324,31 @@ impl<M> Builder<'_, M> {
             .count() as u16;
         let gaps = gap.saturating_mul(children.len().saturating_sub(1) as u16);
         let share = width.saturating_sub(fixed.saturating_add(gaps)) / fills.max(1);
-        let children = children
+        let stretch = children.iter().any(stretchy);
+        let nodes: Vec<_> = children
             .iter()
             .map(|child| {
-                let fill = self.button_width(child).is_none();
                 let path = format!("{path}/{}", child.key());
-                let node = self.node(child, path, share, Axis::Row);
-                if fill { node.size(Size::Fill) } else { node }
+                self.node(child, path, share, Axis::Row)
             })
             .collect();
-        Node::row(key, children).gap(gap)
+        let natural = nodes
+            .iter()
+            .map(ui::natural_width)
+            .fold(gaps, u16::saturating_add);
+        let fill = stretch || natural > width;
+        let nodes = nodes
+            .into_iter()
+            .zip(children)
+            .map(|(node, child)| {
+                if fill && self.button_width(child).is_none() {
+                    node.size(Size::Fill)
+                } else {
+                    node
+                }
+            })
+            .collect();
+        Node::row(key, nodes).gap(gap)
     }
 
     fn split(
@@ -508,7 +525,9 @@ impl<M> Builder<'_, M> {
         let percent = format!("{:>3}%", value.saturating_mul(100) / max.max(1));
         let caption = (!label.is_empty()).then(|| label.width() as u16 + 2);
         let caption_width = caption.unwrap_or(0).min(width / 3);
-        let bar = width.saturating_sub(caption_width + percent.len() as u16 + 1);
+        // The label, the bar and the percentage, a column apart.
+        let gaps = if caption.is_some() { 2 } else { 1 };
+        let bar = width.saturating_sub(caption_width + percent.len() as u16 + gaps);
         let filled = (u64::from(bar) * value / max.max(1)) as usize;
         let (full, empty) = if self.env.ascii {
             ("#", "-")
@@ -540,6 +559,20 @@ impl<M> Builder<'_, M> {
         children.push(Node::text("percent", vec![(percent, Tone::Muted)]));
         Node::row(key, children).gap(1)
     }
+}
+
+/// Whether a node takes whatever width it is given rather than its content's.
+fn stretchy(node: &wire::Node) -> bool {
+    matches!(
+        node,
+        wire::Node::Input { .. }
+            | wire::Node::Progress { .. }
+            | wire::Node::Split { .. }
+            | wire::Node::Scroll { .. }
+            | wire::Node::Markdown { .. }
+            | wire::Node::Code { .. }
+            | wire::Node::Item { .. }
+    ) || node.children().into_iter().any(stretchy)
 }
 
 fn interactive(node: &wire::Node) -> bool {

@@ -404,6 +404,12 @@ impl<M: Clone> Surface<M> {
         self.start = Some(prefix.into());
     }
 
+    /// Focus moves to the first stop under `prefix` once one is drawn.
+    pub fn focus_within(&mut self, prefix: impl Into<String>) {
+        self.focus = None;
+        self.start = Some(prefix.into());
+    }
+
     /// Keyboard focus arrives from outside the page (Tab from navigation).
     pub fn enter(&mut self, last: bool) {
         self.start = None;

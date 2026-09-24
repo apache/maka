@@ -44,6 +44,8 @@ pub struct Snapshot {
     motion: bool,
     sidebar: Option<bool>,
     fullscreen: bool,
+    #[serde(default = "shown")]
+    inspector: bool,
     readings: Vec<(String, crate::pages::chat::reading::Checkpoint)>,
     navigation: crate::navigation::Navigation,
     pages: Vec<(Route, crate::navigation::state::Saved)>,
@@ -54,6 +56,10 @@ pub struct Snapshot {
     resume: Option<crate::pages::resume::Checkpoint>,
     revision: Option<crate::pages::revision::Checkpoint>,
     apps: Vec<crate::apps::Checkpoint>,
+}
+
+fn shown() -> bool {
+    true
 }
 
 impl Snapshot {
@@ -84,6 +90,7 @@ impl Snapshot {
             motion: app.chrome.motion,
             sidebar: app.chrome.sidebar_expanded,
             fullscreen: app.chrome.session_fullscreen,
+            inspector: app.chrome.inspector,
             readings: app.chat.checkpoints(),
             navigation: app.navigation.clone(),
             pages: app.saved_pages(),
@@ -268,6 +275,7 @@ impl Snapshot {
         app.chrome.motion = self.motion;
         app.chrome.sidebar_expanded = self.sidebar;
         app.chrome.session_fullscreen = self.fullscreen;
+        app.chrome.inspector = self.inspector;
         if !keep_locale {
             app.i18n.preference = self.locale;
         }

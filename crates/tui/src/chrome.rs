@@ -24,6 +24,8 @@ pub struct Chrome {
     pub sidebar_expanded: Option<bool>,
     pub session_fullscreen: bool,
     pub details: bool,
+    /// The reader keeps a session's panels beside its conversation.
+    pub inspector: bool,
     pub ascii: bool,
     pub motion: bool,
     pub window_focused: bool,
@@ -44,6 +46,7 @@ impl Default for Chrome {
             sidebar_expanded: None,
             session_fullscreen: false,
             details: false,
+            inspector: true,
             ascii: false,
             motion: true,
             window_focused: true,

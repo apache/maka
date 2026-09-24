@@ -39,6 +39,8 @@ pub enum Focus {
     Transcript,
     Queue,
     Page,
+    /// A session's panels beside its conversation.
+    Inspector,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +58,7 @@ pub enum Action {
     ToggleSidebar,
     ToggleFullscreen,
     ToggleDetails,
+    ToggleInspector,
     ToggleTrace,
     BrowseTranscript,
     Search(crate::pages::chat::render::search::Command),
@@ -343,6 +346,16 @@ impl App {
             }
             commands.push((Action::ToggleFullscreen, "command-fullscreen"));
             commands.push((Action::ToggleDetails, "command-details"));
+            if self.inspector_available() {
+                commands.push((
+                    Action::ToggleInspector,
+                    if self.chrome.inspector {
+                        "command-inspector-hide"
+                    } else {
+                        "command-inspector-show"
+                    },
+                ));
+            }
             commands.push((Action::BrowseTranscript, "chat-browse"));
             for mode in [
                 crate::pages::chat::render::selection::CopyMode::Selection,
@@ -425,6 +438,9 @@ impl App {
                     Action::ToggleDetails,
                     Action::ToggleFullscreen,
                 ];
+                if self.inspector_available() {
+                    actions.push(Action::ToggleInspector);
+                }
                 if self.stop_target().is_some() && self.enabled(&Action::SendMessage) {
                     actions.insert(1, Action::SendMessage);
                     actions.insert(2, Action::SteerMessage);
@@ -687,6 +703,14 @@ impl App {
                     self.focus = Focus::Page;
                 }
             }
+            Action::ToggleInspector => {
+                self.chrome.inspector = !self.chrome.inspector;
+                if !self.chrome.inspector && self.focus == Focus::Inspector {
+                    self.focus = Focus::Composer;
+                }
+                self.apps.inspector.invalidate();
+                self.invalidate_editor_geometry();
+            }
             Action::BrowseTranscript => {
                 self.chat.view.search = None;
                 self.chrome.details = false;
@@ -927,6 +951,7 @@ impl App {
                         .get(&id)
                         .is_some_and(|sent| sent.delivery.blocks_send())
             }
+            Action::ToggleInspector => self.inspector_available(),
             Action::ToggleFullscreen
             | Action::ToggleDetails
             | Action::ToggleTrace
@@ -1169,6 +1194,13 @@ impl App {
             Route::Extensions | Route::App(_) => self
                 .apps_surface()
                 .is_some_and(|surface| surface.captures()),
+            // A session's panels and status lines take what is theirs; the
+            // conversation keeps the rest.
+            Route::Session(_) => {
+                return self
+                    .inspector_input(event)
+                    .or_else(|| self.status_input(event));
+            }
             _ => return None,
         };
         let paste = matches!(event, Event::Paste(_));
@@ -1490,8 +1522,22 @@ impl App {
                                 Focus::Transcript => {
                                     self.focus = if backwards {
                                         Focus::Composer
+                                    } else if self.inspector_shown() {
+                                        Focus::Inspector
                                     } else {
                                         Focus::Page
+                                    };
+                                    self.selected_control = 0;
+                                }
+                                // Panels read after the conversation they belong to.
+                                Focus::Inspector => {
+                                    self.focus = if !backwards {
+                                        Focus::Page
+                                    } else if self.chrome.details {
+                                        Focus::Composer
+                                    } else {
+                                        self.chat.view.enter();
+                                        Focus::Transcript
                                     };
                                     self.selected_control = 0;
                                 }
@@ -1508,6 +1554,8 @@ impl App {
                                             Route::Inbox | Route::Projects | Route::Connections
                                         ) {
                                         Focus::List
+                                    } else if backwards && self.inspector_shown() {
+                                        Focus::Inspector
                                     } else if backwards
                                         && matches!(self.navigation.current(), Route::Session(_))
                                     {
@@ -1532,6 +1580,7 @@ impl App {
                             }
                             match (self.focus, self.navigation.current()) {
                                 (Focus::Navigation, _) => self.sidebar.surface.enter(backwards),
+                                (Focus::Inspector, _) => self.apps.inspector.enter(backwards),
                                 (Focus::Page, Route::Settings) => {
                                     self.settings.surface.enter(backwards)
                                 }
@@ -1549,6 +1598,10 @@ impl App {
                         }
                         KeyCode::Esc if self.focus == Focus::Composer => {
                             self.focus = Focus::Page;
+                            None
+                        }
+                        KeyCode::Esc if self.focus == Focus::Inspector => {
+                            self.focus = Focus::Composer;
                             None
                         }
                         KeyCode::Esc if self.focus == Focus::Transcript => {

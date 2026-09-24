@@ -453,7 +453,7 @@ pub(super) fn height<M>(node: &Node<M>, width: u16) -> u16 {
     }
 }
 
-pub(super) fn width<M>(node: &Node<M>) -> u16 {
+pub(crate) fn width<M>(node: &Node<M>) -> u16 {
     match &node.kind {
         Kind::Column { children, .. } => children.iter().map(width).max().unwrap_or(0),
         Kind::Row { children, gap } => children.iter().map(width).fold(

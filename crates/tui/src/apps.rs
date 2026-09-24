@@ -30,6 +30,7 @@ mod instance;
 pub(crate) mod io;
 mod key;
 pub(crate) mod page;
+pub(crate) mod panels;
 mod region;
 mod saved;
 mod tree;
@@ -62,12 +63,14 @@ pub enum Message {
     Reload,
     /// Visit a page, opening it if it is not open.
     Open(Key),
+    /// Show what belongs with a status line: its panel, else its page.
+    Reveal(Key),
     Instance(Key, Command),
 }
 impl Message {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Directory | Self::Open(_) => "route-extensions",
+            Self::Directory | Self::Open(_) | Self::Reveal(_) => "route-extensions",
             Self::Reload => "extensions-refresh",
             Self::Instance(_, command) => command.label(),
         }
@@ -141,6 +144,13 @@ pub struct Apps {
     confirming: Option<(Key, String)>,
     /// Focus and scroll of the directory page.
     pub surface: ui::Surface<Message>,
+    /// The session inspector: its surface, fields, and whether the last
+    /// frame had room to show it.
+    pub inspector: ui::Surface<Message>,
+    pub(super) inspector_wells: Vec<tree::Well>,
+    pub inspector_visible: bool,
+    /// The status line above a session's composer.
+    pub status: ui::Surface<Message>,
 }
 
 impl Apps {
@@ -287,9 +297,13 @@ impl App {
             return vec![];
         };
         let (root, epoch) = (root_id.clone(), epoch.clone());
-        // A page restored or reached through history opens on arrival.
+        // A page restored or reached through history opens on arrival, and
+        // a session opens the views it shows.
         if let Route::App(key) = self.navigation.current() {
             self.apps.open(&key);
+        }
+        if self.apps.loaded {
+            self.open_session_views();
         }
         let apps = &mut self.apps;
         let mut requests = vec![];
@@ -559,7 +573,20 @@ impl App {
         if let Some(within) = &key.within {
             return self.app_visible(&within.0);
         }
-        self.navigation.current() == Route::App(key.clone())
+        let placement = self
+            .apps
+            .instances
+            .get(key)
+            .and_then(|instance| instance.entry.as_ref())
+            .map_or(Placement::Page, |entry| entry.descriptor.placement.clone());
+        let current = self.navigation.current();
+        let in_session = matches!(&current, Route::Session(id) if key.session.as_ref() == Some(id));
+        match placement {
+            Placement::Page => current == Route::App(key.clone()),
+            Placement::Panel => in_session && self.inspector_shown(),
+            Placement::Status => in_session,
+            Placement::Settings | Placement::Slot { .. } => false,
+        }
     }
     /// The language changed: open, untouched views read themselves again.
     pub(crate) fn apps_relocalize(&mut self) {
@@ -601,6 +628,7 @@ impl App {
         let (key, command) = match message {
             Message::Directory => return connected,
             Message::Reload => return connected && !apps.listing,
+            Message::Reveal(key) => return apps.instances.contains_key(key),
             Message::Open(key) => {
                 return connected
                     && key.within.is_none()
@@ -714,6 +742,7 @@ impl App {
                 self.apps.due = Some(None);
                 return None;
             }
+            Message::Reveal(key) => return self.reveal(&key),
             Message::Open(key) => {
                 self.apps.open(&key);
                 return self.apply(Action::Visit(Route::App(key)));
@@ -1598,5 +1627,106 @@ pub(crate) mod tests {
         let requests = app.apps_requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].key.as_ref(), Some(&page));
+    }
+
+    #[test]
+    fn a_session_shows_its_panels_beside_it_and_one_status_line_above_the_composer() {
+        use maka_plugins::terminal_ui::view::build::*;
+        let placed = |method: &str, placement: Placement| TerminalViewProjection {
+            package_id: "example.goal".into(),
+            method: method.into(),
+            descriptor: Descriptor::new(Text::plain("Goal"), Context::Session)
+                .placement(placement)
+                .icon("◎", "G"),
+            ..projection()
+        };
+        let (panel, status) = (
+            placed("panel", Placement::Panel),
+            placed("status", Placement::Status),
+        );
+        let mut app = App::new(
+            "/test".into(),
+            I18n::new(
+                LocalePreference::Explicit(crate::i18n::Locale::En),
+                crate::i18n::Locale::En,
+            ),
+        );
+        app.connection = ConnectionState::Connected {
+            root_id: "root".into(),
+            epoch: "epoch".into(),
+        };
+        app.apply(Action::Visit(Route::Session("session".into())));
+        draw(&mut app, 170, 40);
+        list(&mut app, vec![(vec![panel.clone(), status.clone()], None)]);
+        let reads = app.apps_requests();
+        assert_eq!(
+            reads.len(),
+            2,
+            "the status line and the panel open with the session"
+        );
+        for read in reads {
+            let key = read.key.clone().unwrap();
+            let view = View {
+                version: maka_plugins::terminal_ui::VERSION,
+                title: "Goal".into(),
+                revision: "r1".into(),
+                fields: vec![],
+                actions: vec![action("pause", "Pause")],
+                root: if key.method == "panel" {
+                    column(
+                        "root",
+                        vec![
+                            heading("objective", "Ship the inspector"),
+                            progress("progress", 3, 5, "Criteria"),
+                            button("pause", "pause", Role::Normal),
+                        ],
+                    )
+                } else {
+                    row(
+                        "root",
+                        vec![
+                            text("objective", "Ship the inspector", Tone::Normal),
+                            text("count", "3/5", Tone::Muted),
+                        ],
+                    )
+                },
+            };
+            app.apps_complete(read, Ok(Output::Reply(Reply::View { view })));
+        }
+        let screen = draw(&mut app, 170, 40);
+        assert!(
+            screen.contains("Criteria") && screen.contains("60%"),
+            "{screen}"
+        );
+        assert!(screen.contains("◎ Ship the inspector") && screen.contains("3/5"));
+        // A panel's actions work while it is on screen.
+        let panel = Key::of(&panel, Some("session")).unwrap();
+        let pause = Message::Instance(panel.clone(), Command::View(Intent::Submit("pause".into())));
+        assert!(app.apps_enabled(&pause));
+        // The status icon reveals its panel and gives it the keyboard.
+        let icon = app
+            .apps
+            .status
+            .rect(&format!(
+                "status/{}/icon",
+                Key::of(&status, Some("session")).unwrap().node()
+            ))
+            .unwrap();
+        app.input(Event::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: icon.x,
+            row: icon.y,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.focus, Focus::Inspector);
+        // Put away, the panels leave the conversation its full width, and
+        // their actions stop with them.
+        app.apply(Action::ToggleInspector);
+        let screen = draw(&mut app, 170, 40);
+        assert!(!screen.contains("Criteria") && screen.contains("3/5"));
+        assert!(!app.apps_enabled(&pause));
+        // Too narrow for both, the conversation keeps the room.
+        app.apply(Action::ToggleInspector);
+        assert!(!draw(&mut app, 100, 40).contains("Criteria"));
     }
 }

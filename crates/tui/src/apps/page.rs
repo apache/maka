@@ -182,7 +182,7 @@ fn bar(app: &App, key: &Key, width: u16) -> Option<Node<Message>> {
 }
 
 /// What went wrong or needs a decision, with the commands that resolve it.
-fn notice(app: &App, key: &Key, width: u16) -> Option<Node<Message>> {
+pub(super) fn notice(app: &App, key: &Key, width: u16) -> Option<Node<Message>> {
     let instance = app.apps.instances.get(key)?;
     let i18n = &app.i18n;
     let message = instance.message.as_ref().map(|message| match message {

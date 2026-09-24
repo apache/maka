@@ -25,6 +25,8 @@ mod node;
 mod sheet;
 mod surface;
 
+/// A node's width at its natural size, before any sharing.
+pub(crate) use layout::width as natural_width;
 pub use node::{Align, Choice, Node, On, Role, Size, Tone};
 pub use sheet::{Layer, Sheet, content_width};
 pub use surface::{Context, Outcome, Surface};

@@ -284,6 +284,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Route::Settings => app.settings.surface.hint(app.focus == Focus::Page),
             Route::Workspace => app.home.surface.hint(app.focus == Focus::Page),
             Route::Extensions => app.apps.surface.hint(app.focus == Focus::Page),
+            Route::Session(_) => app
+                .apps
+                .inspector
+                .hint(app.focus == Focus::Inspector)
+                .or_else(|| app.apps.status.hint(false)),
             Route::App(key) => app
                 .apps
                 .instance(&key)
@@ -550,6 +555,7 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
         Action::ToggleFullscreen if app.fullscreen() => ("⊡", "-"),
         Action::ToggleFullscreen => ("⛶", "+"),
         Action::ToggleDetails => ("ⓘ", "i"),
+        Action::ToggleInspector => ("◨", "]"),
         Action::ToggleTrace => ("⋯", "."),
         Action::BrowseTranscript => ("▤", "B"),
         Action::Search(command) => match command {
@@ -706,6 +712,8 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
         Action::ToggleSidebar => "command-sidebar",
         Action::ToggleFullscreen => "command-fullscreen",
         Action::ToggleDetails => "command-details",
+        Action::ToggleInspector if app.chrome.inspector => "command-inspector-hide",
+        Action::ToggleInspector => "command-inspector-show",
         Action::ToggleTrace if app.chat.view.trace => "command-trace-hide",
         Action::ToggleTrace => "command-trace-show",
         Action::BrowseTranscript => "chat-browse",

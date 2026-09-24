@@ -70,7 +70,9 @@ impl Saved {
                 route,
                 Route::Workspace | Route::Inbox | Route::Projects | Route::Connections
             ),
-            Focus::Composer | Focus::Transcript => matches!(route, Route::Session(_)),
+            Focus::Composer | Focus::Transcript | Focus::Inspector => {
+                matches!(route, Route::Session(_))
+            }
             Focus::Page => matches!(
                 route,
                 Route::Workspace
@@ -118,7 +120,7 @@ impl State {
 
     fn saved(&self, route: &Route, app: &App) -> Saved {
         let focus = match (route, self.focus) {
-            (Route::Session(_), Focus::Page | Focus::Queue) => Focus::Composer,
+            (Route::Session(_), Focus::Page | Focus::Queue | Focus::Inspector) => Focus::Composer,
             (
                 Route::Workspace | Route::Inbox | Route::Projects | Route::Connections,
                 Focus::Page,

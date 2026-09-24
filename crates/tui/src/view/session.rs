@@ -31,6 +31,32 @@ mod search;
 
 /// One reading surface, one input surface. Metadata lives on the input boundary.
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, id: &str) {
+    // Panels sit beside the conversation when both fit; the conversation
+    // never narrows below a comfortable reading width for them.
+    let inspector = app.inspector_wanted() && App::inspector_fits(area.width);
+    app.apps.inspector_visible = inspector;
+    let area = if inspector {
+        let columns = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Length(crate::apps::panels::INSPECTOR + 2),
+        ])
+        .split(area);
+        let edge = Block::default()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(app.theme.colors().border));
+        let inner = edge.inner(columns[1]).inner(Margin::new(1, 0));
+        frame.render_widget(edge, columns[1]);
+        crate::apps::panels::draw_inspector(frame, app, inner, id);
+        Rect::new(
+            columns[0].x,
+            columns[0].y,
+            columns[0].width.saturating_sub(1),
+            columns[0].height,
+        )
+    } else {
+        app.apps.inspector.invalidate();
+        area
+    };
     let extras = app.stop_target().is_some() && app.enabled(&Action::SendMessage);
     let control_width = if extras { 9 } else { 3 };
     let width = area.width.saturating_sub(6 + control_width).max(1);
@@ -40,13 +66,18 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, id: &str) {
     let attachment_rows = u16::from(app.attachments.has(id));
     let directory_rows = u16::from(app.has_directories(id));
     let skill_rows = u16::from(app.has_skills(id));
+    let status_rows = app.status_rows(id);
     let parts = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(super::queue::height(app, area.height)),
         Constraint::Length(1),
+        Constraint::Length(status_rows),
         Constraint::Length(editor_height + 2 + attachment_rows + directory_rows + skill_rows),
     ])
     .split(area);
+    // Status lines align with the composer's text, inside its border.
+    crate::apps::panels::draw_status(frame, app, parts[3].inner(Margin::new(2, 0)), id);
+    let parts = [parts[0], parts[1], parts[2], parts[4]];
     if app.chrome.details {
         let mut lines = crate::pages::sessions::detail_lines(app);
         if let Detail::Ready(item) = &app.sessions.detail {
