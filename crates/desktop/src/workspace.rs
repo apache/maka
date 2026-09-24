@@ -76,21 +76,25 @@ impl Workspace {
             copied: cx.new(|_| Copied::default()),
             _tasks: Vec::new(),
         };
-        this.connect(cx);
+        this.connect(window, cx);
         this
     }
 
-    fn connect(&mut self, cx: &mut Context<Self>) {
+    fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.connection = Connection::Connecting;
         let connecting = cx.global::<Host>().spawn(host::connect(self.root.clone()));
-        self._tasks = vec![cx.spawn(async move |this, cx| {
+        self._tasks = vec![cx.spawn_in(window, async move |this, cx| {
             let result = connecting.await.and_then(|result| result);
-            let Ok(notifications) = this.update(cx, |this, cx| match result {
+            let Ok(notifications) = this.update_in(cx, |this, window, cx| match result {
                 Ok((client, notifications)) => {
                     this.connection = Connection::Ready(client);
                     this.sidebar
                         .update(cx, |sidebar, cx| sidebar.set_can_create(true, cx));
                     this.load_sessions(cx);
+                    // After a reconnect, the session that was open comes back.
+                    if let Some(selected) = this.sidebar.read(cx).selected() {
+                        this.open(selected, window, cx);
+                    }
                     cx.notify();
                     Some(notifications)
                 }
@@ -126,9 +130,14 @@ impl Workspace {
             }
         }
         let _ = this.update(cx, |this, cx| {
-            this.connection = Connection::Failed("Host connection closed".into());
+            this.connection = Connection::Failed("与 Host 的连接已断开".into());
             this.sidebar
                 .update(cx, |sidebar, cx| sidebar.set_can_create(false, cx));
+            // A chat without a connection looks live but cannot send; the
+            // main area shows the failure and a reconnect instead.
+            if let Some(chat) = this.chat.take() {
+                chat.update(cx, |chat, cx| chat.close(cx));
+            }
             cx.notify();
         });
     }
@@ -297,9 +306,9 @@ impl Workspace {
                 "重新连接",
                 ui::Tone::Outline,
                 false,
-                move |_, cx| {
+                move |window, cx| {
                     let _ = this.update(cx, |this, cx| {
-                        this.connect(cx);
+                        this.connect(window, cx);
                         cx.notify();
                     });
                 },

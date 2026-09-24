@@ -133,6 +133,10 @@ impl Sidebar {
         cx.notify();
     }
 
+    pub fn selected(&self) -> Option<String> {
+        self.selected.clone()
+    }
+
     /// The project folder of `id`, or else of the latest session.
     pub fn folder(&self, id: Option<&str>) -> Option<String> {
         id.and_then(|id| self.sessions.iter().find(|session| session.id == id))
