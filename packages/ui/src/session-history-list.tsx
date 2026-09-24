@@ -1004,18 +1004,16 @@ const SessionNavRow = memo(function SessionNavRow(props: {
                 <Badge variant="neutral" label={props.session.executorId} />
               </span>
             ) : null}
-            <span className="maka-session-row-signal">
+            <span className="maka-session-row-signal" aria-hidden="true">
               {signal?.running ? (
                 <RunningIndicator
                   label={signal.label}
-                  tooltip={signal.tooltip}
                   data-session-status={props.session.status}
                 />
               ) : signal ? (
                 <StatusDot
                   variant={signal.variant}
                   label={signal.label}
-                  tooltip={signal.tooltip}
                   data-session-status={props.session.status}
                 />
               ) : props.session.lastMessageAt ? (
