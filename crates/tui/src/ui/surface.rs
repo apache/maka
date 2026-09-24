@@ -111,6 +111,8 @@ pub struct Surface<M> {
     hover: Option<String>,
     popover: Option<Popover>,
     offsets: HashMap<String, u16>,
+    /// The scroller whose thumb the pointer is dragging.
+    drag: Option<String>,
     committed: Option<Committed<M>>,
 }
 
@@ -123,6 +125,7 @@ impl<M> Default for Surface<M> {
             hover: None,
             popover: None,
             offsets: HashMap::new(),
+            drag: None,
             committed: None,
         }
     }
@@ -362,6 +365,7 @@ impl<M: Clone> Surface<M> {
     pub fn invalidate(&mut self) {
         self.committed = None;
         self.hover = None;
+        self.drag = None;
     }
 
     pub fn input(&mut self, event: &Event) -> Outcome<M> {
@@ -422,6 +426,40 @@ impl<M: Clone> Surface<M> {
                 },
                 _ => Outcome::handled(false),
             };
+        }
+        // A scrollbar column is a thumb to drag, never a row to open.
+        let bar = committed.scrollers.iter().rev().find(|scroller| {
+            scroller.content > scroller.viewport.height
+                && scroller.viewport.contains(point)
+                && point.x == scroller.viewport.right().saturating_sub(1)
+        });
+        let dragged = self.drag.as_ref().and_then(|id| {
+            committed
+                .scrollers
+                .iter()
+                .find(|scroller| scroller.id == *id)
+        });
+        match (mouse.kind, bar, dragged) {
+            (MouseEventKind::Down(MouseButton::Left), Some(scroller), _)
+            | (MouseEventKind::Drag(MouseButton::Left), _, Some(scroller)) => {
+                let maximum = scroller.content.saturating_sub(scroller.viewport.height);
+                let span = scroller.viewport.height.saturating_sub(1).max(1);
+                let row = point
+                    .y
+                    .saturating_sub(scroller.viewport.y)
+                    .min(scroller.viewport.height.saturating_sub(1));
+                let offset = (u32::from(row) * u32::from(maximum) / u32::from(span)) as u16;
+                let id = scroller.id.clone();
+                self.offsets.insert(id.clone(), offset.min(maximum));
+                self.drag = Some(id);
+                self.hover = None;
+                return Outcome::handled(true);
+            }
+            (MouseEventKind::Up(MouseButton::Left), _, _) if self.drag.is_some() => {
+                self.drag = None;
+                return Outcome::handled(true);
+            }
+            _ => {}
         }
         let inside = committed.area.contains(point);
         let target = committed
@@ -769,13 +807,21 @@ impl<M: Clone> Surface<M> {
             return Outcome::handled(false);
         };
         if Some(&item.id) == self.focus.as_ref() {
-            // An arrow at a list's edge still chooses the focused row when
-            // it is not the choice yet (it lost its choice to a refresh).
-            return match &item.on {
+            // The focused row may have been scrolled away: bring it back.
+            let (scroller, top, height) = (item.scroller, item.top, item.height);
+            let message = match &item.on {
+                // An arrow at a list's edge still chooses the focused row
+                // when it is not the choice yet (a refresh took its choice).
                 On::Activate(message) if item.follow_focus && !item.current => {
-                    Outcome::emit(message.clone())
+                    Some(message.clone())
                 }
-                _ => Outcome::handled(false),
+                _ => None,
+            };
+            let before = self.offsets.clone();
+            self.reveal(scroller, top, height);
+            return match message {
+                Some(message) => Outcome::emit(message),
+                None => Outcome::handled(self.offsets != before),
             };
         }
         let message = match &item.on {

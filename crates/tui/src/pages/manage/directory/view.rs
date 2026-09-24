@@ -17,74 +17,32 @@
  * under the License.
  */
 
-use super::{Command, Manage, focused};
+use super::{Command, Manage};
 use crate::{
-    app::{Action, App, Hit},
-    view::{button, safe},
-};
-use ratatui::{
-    Frame,
-    layout::{Margin, Rect},
-    style::Style,
-    widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+    app::{Action, App},
+    pages::manage::Dialog,
+    ui::{Node, On, Role, Sheet, Size, Tone},
+    view::safe,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
+/// Browsing Host directories to register a project or reference one in a
+/// turn. Arrows move through the folders, Enter or a click opens one,
+/// Backspace or Left goes up; the location shown is what Register saves.
+pub(in crate::pages::manage) fn sheet(app: &App, dialog: &Dialog) -> Sheet<Action> {
     let reference = app.directory_reference_active();
     let references = app
         .directory_reference_target()
-        .map(|t| app.reference_items(t).to_vec())
+        .map(|target| app.reference_items(target).to_vec())
         .unwrap_or_default();
-    let reference_rows = references.len() as u16;
     let full = app
         .directory_reference_target()
-        .is_some_and(|t| app.reference_count(t) >= 4);
+        .is_some_and(|target| app.reference_count(target) >= 4);
     let busy = app.management.pending.is_some();
-    let dialog = app.management.dialog.as_mut().expect("directory dialog");
-    let browser = dialog.browser.as_mut().expect("directory browser");
-    if area.width < 42 || area.height < 17 {
-        browser.invalidate_geometry();
-        dialog.visible = false;
-        crate::view::clear_overlay(frame, area);
-        frame.render_widget(
-            Paragraph::new(app.i18n.text("terminal-small")).wrap(Wrap { trim: false }),
-            area.inner(Margin::new(1, 1)),
-        );
-        return;
-    }
-    let width = area.width.saturating_sub(2).min(72);
-    let height = area
-        .height
-        .saturating_sub(2)
-        .min((browser.rows.len() as u16 + 10 + reference_rows).clamp(15 + reference_rows, 29));
-    let popup = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    let block = Block::bordered()
-        .border_type(if app.chrome.ascii {
-            ratatui::widgets::BorderType::Plain
-        } else {
-            ratatui::widgets::BorderType::Rounded
-        })
-        .title(app.i18n.text(if reference {
-            "references-title"
-        } else {
-            "directory-title"
-        }))
-        .title_alignment(ratatui::layout::Alignment::Center)
-        .style(base)
-        .border_style(Style::default().fg(app.theme.colors().subtle));
-    let inner = block.inner(popup).inner(Margin::new(1, 0));
-    app.modal_area = Some(popup);
-    crate::view::clear_overlay(frame, popup);
-    frame.render_widget(block, popup);
-    dialog.visible = true;
-    let path = browser.location.as_ref().map_or_else(
+    let browser = dialog.browser.as_ref().expect("directory browser");
+    let enabled = browser.ready() && !browser.resolving && !dialog.blocked && !busy;
+    let place = browser.location.as_ref().map_or_else(
         || app.i18n.text("directory-roots"),
         |location| {
             std::iter::once(location.label.as_str())
@@ -93,212 +51,165 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
                 .join(" / ")
         },
     );
-    // Labels are presentation only, never joined into a Host filesystem path.
-    let path = safe(&path);
-    let mut tail = String::new();
-    if path.width() > inner.width as usize {
-        for grapheme in path.graphemes(true).rev() {
-            if tail.width() + grapheme.width() + 1 > inner.width as usize {
+    // A new place or page opens on its first folder once the folders arrive.
+    let step = if browser.rows.is_empty() {
+        "empty"
+    } else {
+        "rows"
+    };
+    let mut sheet = Sheet::new(
+        format!(
+            "directory:{place}:{}:{step}",
+            browser.cursor.as_deref().unwrap_or("")
+        ),
+        app.i18n.text(if reference {
+            "references-title"
+        } else {
+            "directory-title"
+        }),
+    );
+    let tool = |key: &'static str, glyph: (&'static str, &'static str), command: Command| {
+        let action = Action::Manage(Manage::Directory(command));
+        let enabled = app.enabled(&action);
+        Node::button(
+            key,
+            app.chrome.symbol(glyph.0, glyph.1).to_owned(),
+            Role::Normal,
+        )
+        .on(On::Activate(action))
+        .enabled(enabled)
+    };
+    let tools = vec![
+        tool("parent", ("↑", "^"), Command::Parent),
+        tool("previous", ("‹", "<"), Command::Previous),
+        tool("next", ("›", ">"), Command::Next),
+        tool("refresh", ("⟳", "R"), Command::Refresh),
+    ];
+    // Labels are presentation only, never joined into a Host filesystem path;
+    // a long place keeps its end, where the reader is.
+    let width = crate::ui::content_width(app.frame_size.map_or(80, |(width, _)| width))
+        .saturating_sub(tools.len() as u16 * 6) as usize;
+    let place = safe(&place);
+    let place = if place.width() > width {
+        let mut tail = String::new();
+        for grapheme in place.graphemes(true).rev() {
+            if tail.width() + grapheme.width() + 1 > width {
                 break;
             }
             tail.insert_str(0, grapheme);
         }
-        tail.insert(0, if app.chrome.ascii { '.' } else { '…' });
+        format!("{}{tail}", app.chrome.symbol("…", "."))
     } else {
-        tail = path;
-    }
-    frame.render_widget(
-        Paragraph::new(tail),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
-    let list = Rect::new(
-        inner.x,
-        inner.y + 3,
-        inner.width,
-        inner.height.saturating_sub(8 + reference_rows),
-    );
-    let capacity = usize::from(list.height).max(1);
-    browser.top = browser
-        .top
-        .min(browser.selected)
-        .max(browser.selected.saturating_sub(capacity - 1))
-        .min(browser.rows.len().saturating_sub(capacity));
-    let offset = browser.top;
-    let scrollable = browser.rows.len() > capacity;
-    let enabled = browser.ready() && !browser.resolving && !dialog.blocked && !busy;
-    browser.area = enabled.then_some(list);
-    if !enabled {
-        browser.dragging = false;
-    }
-    for (index, row) in browser
-        .rows
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(list.height as usize)
-    {
-        let rect = Rect::new(
-            list.x,
-            list.y + (index - offset) as u16,
-            list.width.saturating_sub(if scrollable { 2 } else { 0 }),
-            1,
-        );
-        let command = Manage::Directory(Command::Open(index));
-        let active = browser.focus == 0 && browser.selected == index
-            || browser.hovered.as_ref() == Some(&command);
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{} {}",
-                if app.chrome.ascii { ">" } else { "›" },
-                safe(&row.name)
-            ))
-            .style(if !enabled {
-                Style::default().fg(app.theme.colors().subtle)
-            } else if active {
-                app.theme.colors().selected()
-            } else {
-                Style::default()
-            }),
-            rect,
-        );
-        if enabled {
-            app.hits.push(Hit {
-                area: rect,
-                action: Action::Manage(command),
-            });
-        }
-    }
-    if scrollable {
-        let colors = app.theme.colors();
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None)
-            .track_symbol(Some(if app.chrome.ascii { "|" } else { "│" }))
-            .thumb_symbol(if app.chrome.ascii { "#" } else { "┃" })
-            .track_style(Style::default().fg(colors.subtle))
-            .thumb_style(Style::default().fg(if enabled {
-                colors.accent
-            } else {
-                colors.subtle
-            }));
-        let mut scroll = ScrollbarState::new(browser.rows.len().saturating_sub(capacity) + 1)
-            .position(offset)
-            .viewport_content_length(capacity);
-        frame.render_stateful_widget(scrollbar, list, &mut scroll);
-    }
-    if browser.rows.is_empty() && !browser.error {
-        let key = if browser.loading || browser.requested {
-            "projects-loading"
-        } else if browser.location.is_some() {
-            "directory-empty"
-        } else {
-            "directory-no-roots"
-        };
-        frame.render_widget(
-            Paragraph::new(app.i18n.text(key))
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(app.theme.colors().subtle)),
-            list,
-        );
-    }
-    let key = if busy {
-        Some("session-saving")
-    } else if dialog.error.is_some() {
-        dialog.error
-    } else if browser.error {
-        Some("directory-failed")
-    } else if full {
-        Some("references-limit")
-    } else {
-        let command = browser.hovered.clone().unwrap_or_else(|| focused(browser));
-        match command {
-            Manage::Directory(
-                Command::Parent | Command::Refresh | Command::Previous | Command::Next,
-            ) => Some(command.label()),
-            _ => None,
-        }
+        place
     };
-    if let Some(key) = key {
-        let lines = super::super::view::note_lines(&app.i18n.text(key), inner.width);
-        frame.render_widget(
-            Paragraph::new(lines).style(Style::default().fg(
-                if dialog.error.is_some() || browser.error {
-                    app.theme.colors().warning
-                } else {
-                    app.theme.colors().subtle
-                },
-            )),
-            Rect::new(inner.x, inner.bottom() - 5, inner.width, 3),
-        );
-    }
-    let focus = browser.focus;
-    let hovered = browser.hovered.clone();
-    let button_width = |text: &str| (text.width() as u16 + 2).min(inner.width / 2);
-    let register = app.i18n.text(if reference {
-        "references-select"
-    } else {
-        "directory-register"
-    });
-    let cancel = app.i18n.text("session-cancel");
-    let path = app.i18n.text("directory-path");
-    let save_width = button_width(&register);
-    let cancel_width = button_width(&cancel);
-    let save = Rect::new(
-        inner.right() - save_width,
-        inner.bottom() - 1,
-        save_width,
-        1,
-    );
-    let cancel_rect = Rect::new(save.x - cancel_width - 1, save.y, cancel_width, 1);
-    let path_rect = Rect::new(
-        inner.x,
-        save.y,
-        button_width(&path).min(cancel_rect.x.saturating_sub(inner.x + 1)),
-        1,
-    );
-    for (rect, text, command, index) in [
-        (path_rect, path, Manage::Directory(Command::Path), 1),
-        (cancel_rect, cancel, Manage::Close, 6),
-        (save, register, Manage::Save, 7),
-    ] {
-        if reference && index == 1 {
-            continue;
+    let mut header = vec![
+        Node::text("place", vec![(place, Tone::Normal)])
+            .clip()
+            .size(Size::Fill),
+    ];
+    header.extend(tools);
+    sheet = sheet.body(Node::row("header", header).gap(1));
+    if browser.rows.is_empty() {
+        if !browser.error {
+            let key = if browser.loading || browser.requested {
+                "projects-loading"
+            } else if browser.location.is_some() {
+                "directory-empty"
+            } else {
+                "directory-no-roots"
+            };
+            sheet = sheet.text("empty", &app.i18n.text(key), Tone::Subtle);
         }
-        let active = focus == index || hovered.as_ref() == Some(&command);
-        button(frame, app, rect, &text, Action::Manage(command), active);
+    } else {
+        let rows = browser
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let action = Action::Manage(Manage::Directory(Command::Open(index)));
+                let open = app.enabled(&action);
+                Node::text(
+                    index.to_string(),
+                    vec![(
+                        format!("{} {}", app.chrome.symbol("›", ">"), safe(&row.name)),
+                        Tone::Normal,
+                    )],
+                )
+                .clip()
+                .on(On::Activate(action))
+                .enabled(enabled && open)
+            })
+            .collect();
+        let height = app.frame_size.map_or(24, |(_, height)| height);
+        let cap = height.saturating_sub(16 + references.len() as u16).max(3);
+        sheet = sheet.body(Node::scroll("list", Node::column("rows", rows)).size(Size::Upto(cap)));
     }
-    for (index, item) in references.iter().enumerate() {
-        let command = Manage::Directory(Command::RemoveReference(index));
-        let active = focus == index + 8 || hovered.as_ref() == Some(&command);
-        crate::view::list_item(
-            frame,
-            app,
-            Rect::new(
-                inner.x,
-                inner.bottom() - 5 - reference_rows + index as u16,
-                inner.width,
-                1,
-            ),
-            &format!("{}  {}", app.chrome.symbol("×", "x"), safe(&item.path)),
-            Action::Manage(command),
-            active,
-        );
+    let note = if busy {
+        Some(("session-saving", Tone::Subtle))
+    } else if let Some(error) = dialog.error {
+        Some((error, Tone::Warning))
+    } else if browser.error {
+        Some(("directory-failed", Tone::Warning))
+    } else if full {
+        Some(("references-limit", Tone::Subtle))
+    } else {
+        None
+    };
+    if let Some((key, tone)) = note {
+        sheet = sheet.text("note", &app.i18n.text(key), tone);
     }
-    for (index, command, icon, ascii) in [
-        (2, Command::Parent, "↑", "^"),
-        (3, Command::Refresh, "⟳", "R"),
-        (4, Command::Previous, "‹", "<"),
-        (5, Command::Next, "›", ">"),
-    ] {
-        let command = Manage::Directory(command);
-        let active = focus == index || hovered.as_ref() == Some(&command);
-        button(
-            frame,
-            app,
-            Rect::new(inner.x + ((index - 2) * 4) as u16, inner.y + 1, 3, 1),
-            if app.chrome.ascii { ascii } else { icon },
-            Action::Manage(command),
-            active,
+    if !references.is_empty() {
+        let rows = references
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let action = Action::Manage(Manage::Directory(Command::RemoveReference(index)));
+                let enabled = app.enabled(&action);
+                Node::text(
+                    index.to_string(),
+                    vec![(
+                        format!("{}  {}", app.chrome.symbol("×", "x"), safe(&item.path)),
+                        Tone::Normal,
+                    )],
+                )
+                .clip()
+                .on(On::Activate(action))
+                .enabled(enabled)
+            })
+            .collect();
+        sheet = sheet.body(Node::column("references", rows));
+    }
+    if !reference {
+        let action = Action::Manage(Manage::Directory(Command::Path));
+        let enabled = app.enabled(&action);
+        sheet = sheet.aside("path", app.i18n.text("directory-path"), action, enabled);
+        if enabled {
+            // Esc returns to typing the path rather than closing.
+            sheet = sheet.back(Action::Manage(Manage::Directory(Command::Path)));
+        }
+    }
+    let sheet = sheet
+        .button(
+            "cancel",
+            app.i18n.text("session-cancel"),
+            Role::Normal,
+            Action::Manage(Manage::Close),
+            true,
+        )
+        .button(
+            "save",
+            app.i18n.text(if reference {
+                "references-select"
+            } else {
+                "directory-register"
+            }),
+            Role::Primary,
+            Action::Manage(Manage::Save),
+            app.enabled(&Action::Manage(Manage::Save)),
         );
+    if browser.rows.is_empty() {
+        sheet
+    } else {
+        sheet.focus_node("list/rows/0")
     }
 }

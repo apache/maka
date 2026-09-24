@@ -18,11 +18,10 @@
  */
 
 mod view;
-pub(super) use view::draw;
+pub(super) use view::sheet;
 
 use super::{Command as Manage, Target};
 use crate::app::{Action, App};
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use maka_protocol::project::{DIRECTORY_MAX_SEGMENTS, Query, QueryResult};
 use std::collections::VecDeque;
 
@@ -70,12 +69,6 @@ pub(super) struct Browser {
     generation: u64,
     pub location: Option<Location>,
     rows: Vec<Row>,
-    selected: usize,
-    top: usize,
-    area: Option<ratatui::layout::Rect>,
-    dragging: bool,
-    focus: usize, // List, path, parent, refresh, previous, next, cancel, register.
-    hovered: Option<Manage>,
     pub(super) requested: bool,
     pub(super) resolving: bool,
     loading: bool,
@@ -90,12 +83,6 @@ impl Browser {
             generation,
             location: None,
             rows: vec![],
-            selected: 0,
-            top: 0,
-            area: None,
-            dragging: false,
-            focus: 0,
-            hovered: None,
             requested: true,
             resolving: false,
             loading: false,
@@ -111,18 +98,9 @@ impl Browser {
     pub fn can_register(&self) -> bool {
         self.ready() && self.location.is_some()
     }
-    pub fn invalidate_geometry(&mut self) {
-        self.hovered = None;
-        self.area = None;
-        self.dragging = false;
-    }
     fn reset(&mut self) {
         self.rows.clear();
-        self.selected = 0;
-        self.top = 0;
-        self.invalidate_geometry();
         self.next = None;
-        self.hovered = None;
         self.error = false;
         self.requested = true;
     }
@@ -130,7 +108,6 @@ impl Browser {
         self.location = location;
         self.cursor = None;
         self.previous.clear();
-        self.focus = 0;
         self.reset();
     }
     fn query(&self) -> Query {
@@ -152,50 +129,6 @@ impl Browser {
                 },
             },
         }
-    }
-    fn scroll_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> bool {
-        let Some(area) = self.area else { return false };
-        match mouse.kind {
-            MouseEventKind::Up(MouseButton::Left) if self.dragging => {
-                self.dragging = false;
-                return true;
-            }
-            MouseEventKind::Down(MouseButton::Left)
-                if self.rows.len() > usize::from(area.height)
-                    && mouse.column == area.right() - 1
-                    && area.contains((mouse.column, mouse.row).into()) =>
-            {
-                self.dragging = true;
-            }
-            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {}
-            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-                if area.contains((mouse.column, mouse.row).into()) =>
-            {
-                self.move_selection(mouse.kind == MouseEventKind::ScrollDown);
-                self.hovered = None;
-                return true;
-            }
-            _ => return false,
-        }
-        let max = self.rows.len().saturating_sub(usize::from(area.height));
-        let row = mouse
-            .row
-            .saturating_sub(area.y)
-            .min(area.height.saturating_sub(1));
-        self.top = usize::from(row) * max / usize::from(area.height.saturating_sub(1).max(1));
-        self.selected = self.top;
-        self.focus = 0;
-        self.hovered = None;
-        true
-    }
-
-    fn move_selection(&mut self, down: bool) {
-        self.focus = 0;
-        self.selected = if down {
-            (self.selected + 1).min(self.rows.len().saturating_sub(1))
-        } else {
-            self.selected.saturating_sub(1)
-        };
     }
 }
 
@@ -243,26 +176,13 @@ impl App {
         if let Command::RemoveReference(index) = command {
             let target = self.directory_reference_target()?.clone();
             self.reference_items_mut(&target)?.remove(index);
-            if let Some(browser) = self
-                .management
-                .dialog
-                .as_mut()
-                .and_then(|d| d.browser.as_mut())
-            {
-                browser.focus = 6;
-                browser.hovered = None;
-            }
-            self.hits.clear();
             return None;
         }
         let dialog = self.management.dialog.as_mut()?;
         let browser = dialog.browser.as_mut()?;
         match command {
             Command::RemoveReference(_) => unreachable!(),
-            Command::Path => {
-                dialog.browser = None;
-                dialog.focus = 1;
-            }
+            Command::Path => dialog.browser = None,
             Command::Open(index) => {
                 let location = browser.rows.get(index)?.location.clone();
                 browser.navigate(Some(location));
@@ -292,7 +212,6 @@ impl App {
         }
         dialog.error = None;
         dialog.visible = false;
-        self.hits.clear();
         None
     }
     pub fn directory_request(&mut self) -> Option<Request> {
@@ -384,141 +303,34 @@ impl App {
             _ => browser.error = true,
         }
     }
-    pub(super) fn directory_input(&mut self, event: Event) -> (bool, Option<Action>) {
-        let reference = self.directory_reference_active();
-        let count = self
-            .directory_reference_target()
-            .map_or(0, |t| self.reference_items(t).len());
-        let dialog = self.management.dialog.as_mut().expect("directory dialog");
-        let browser = dialog.browser.as_mut().expect("directory browser");
-        if matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release) {
-            browser.hovered = None;
-            browser.dragging = false;
-        }
-        let command = match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return (true, Some(Action::Quit));
-                }
-                KeyCode::Esc => Some(
-                    if reference
-                        || !dialog.visible
-                        || dialog.blocked
-                        || self.management.pending.is_some()
-                    {
-                        Manage::Close
-                    } else {
-                        Manage::Directory(Command::Path)
-                    },
-                ),
-                _ if !dialog.visible => return (false, None),
-                KeyCode::Tab => {
-                    browser.focus = (browser.focus + 1) % (8 + count);
-                    if reference && browser.focus == 1 {
-                        browser.focus = 2;
-                    }
-                    return (true, None);
-                }
-                KeyCode::BackTab => {
-                    browser.focus = (browser.focus + 7 + count) % (8 + count);
-                    if reference && browser.focus == 1 {
-                        browser.focus = 0;
-                    }
-                    return (true, None);
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    browser.move_selection(key.code == KeyCode::Down);
-                    return (true, None);
-                }
-                KeyCode::Home => {
-                    browser.focus = 0;
-                    browser.selected = 0;
-                    return (true, None);
-                }
-                KeyCode::End => {
-                    browser.focus = 0;
-                    browser.selected = browser.rows.len().saturating_sub(1);
-                    return (true, None);
-                }
-                KeyCode::Backspace | KeyCode::Left => Some(Manage::Directory(Command::Parent)),
-                KeyCode::F(5) => Some(Manage::Directory(Command::Refresh)),
-                KeyCode::PageDown => Some(Manage::Directory(Command::Next)),
-                KeyCode::PageUp => Some(Manage::Directory(Command::Previous)),
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    Some(Manage::Save)
-                }
-                KeyCode::Right if browser.focus == 0 => {
-                    Some(Manage::Directory(Command::Open(browser.selected)))
-                }
-                KeyCode::Enter => Some(focused(browser)),
-                _ => None,
-            },
-            Event::Mouse(mouse) if dialog.visible => {
-                if browser.scroll_mouse(mouse) {
-                    return (true, None);
-                }
-                let hit = self
-                    .hits
-                    .iter()
-                    .rev()
-                    .find(|hit| hit.area.contains((mouse.column, mouse.row).into()))
-                    .and_then(|hit| match &hit.action {
-                        Action::Manage(command) => Some(command.clone()),
-                        _ => None,
-                    });
-                match mouse.kind {
-                    MouseEventKind::Down(MouseButton::Left) => hit,
-                    MouseEventKind::Moved => {
-                        let changed = browser.hovered != hit;
-                        browser.hovered = hit;
-                        return (changed, None);
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
-        (
-            command.is_some(),
-            command.and_then(|command| self.apply(Action::Manage(command))),
-        )
-    }
-}
-
-fn focused(browser: &Browser) -> Manage {
-    match browser.focus {
-        0 => Manage::Directory(Command::Open(browser.selected)),
-        1 => Manage::Directory(Command::Path),
-        2 => Manage::Directory(Command::Parent),
-        3 => Manage::Directory(Command::Refresh),
-        4 => Manage::Directory(Command::Previous),
-        5 => Manage::Directory(Command::Next),
-        6 => Manage::Close,
-        7 => Manage::Save,
-        index => Manage::Directory(Command::RemoveReference(index - 8)),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Locale, LocalePreference, app::ConnectionState, i18n::I18n};
-    use crossterm::event::KeyEvent;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
     use maka_protocol::project::{DirectoryEntry, DirectoryRoot};
     use ratatui::{Terminal, backend::TestBackend};
+
+    /// Cells of each screen row; a wide glyph covers its neighbour.
+    fn lines(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+        (0..buffer.area.height)
+            .map(|y| {
+                let (mut line, mut x) = (String::new(), 0);
+                while x < buffer.area.width {
+                    let symbol = buffer[(x, y)].symbol();
+                    line.push_str(symbol);
+                    x += (unicode_width::UnicodeWidthStr::width(symbol) as u16).max(1);
+                }
+                line
+            })
+            .collect()
+    }
 
     #[test]
     fn directory_scrollbar_drags_without_opening_rows_and_resize_retires_its_geometry() {
         use crossterm::event::MouseEvent;
-        fn browser(app: &App) -> &Browser {
-            app.management
-                .dialog
-                .as_ref()
-                .unwrap()
-                .browser
-                .as_ref()
-                .unwrap()
-        }
         fn draw(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal
@@ -533,6 +345,9 @@ mod tests {
                 row,
                 modifiers: KeyModifiers::NONE,
             })
+        };
+        let shown = |buffer: &ratatui::buffer::Buffer, text: &str| {
+            lines(buffer).iter().any(|line| line.contains(text))
         };
         for locale in Locale::ALL {
             let mut app = App::new(
@@ -575,28 +390,26 @@ mod tests {
             for (width, height, ascii) in [(80, 28, false), (52, 22, true)] {
                 app.chrome.ascii = ascii;
                 let buffer = draw(&mut app, width, height);
-                let area = browser(&app).area.unwrap();
-                let bar = area.right() - 1;
                 let glyph = if ascii { "#" } else { "┃" };
-                assert!(buffer.content.iter().any(|cell| cell.symbol() == glyph));
-                assert!(
-                    !app.hits
-                        .iter()
-                        .any(|hit| hit.area.contains((bar, area.y).into())),
-                    "scrollbar is not a directory row"
-                );
-                app.input(mouse(MouseEventKind::Down(MouseButton::Left), bar, area.y));
+                // The thumb sits in the list's last column, beside the rows.
+                let (bar, top) = (0..height)
+                    .find_map(|y| {
+                        (0..width)
+                            .find(|x| buffer[(*x, y)].symbol() == glyph)
+                            .map(|x| (x, y))
+                    })
+                    .expect("a long list shows its scrollbar");
+                assert!(shown(&buffer, "目录-000") && !shown(&buffer, "目录-095"));
+                app.input(mouse(MouseEventKind::Down(MouseButton::Left), bar, top));
                 app.input(mouse(
                     MouseEventKind::Drag(MouseButton::Left),
                     bar,
-                    area.bottom() + 2,
+                    height - 1,
                 ));
                 let buffer = draw(&mut app, width, height);
-                assert_eq!(browser(&app).top, 96 - usize::from(area.height));
-                assert_eq!(
-                    buffer[(bar, area.bottom() - 1)].symbol(),
-                    glyph,
-                    "thumb reaches the true bottom"
+                assert!(
+                    shown(&buffer, "目录-095"),
+                    "the thumb reaches the true bottom"
                 );
                 assert!(
                     app.directory_request().is_none(),
@@ -606,24 +419,22 @@ mod tests {
                 app.input(mouse(
                     MouseEventKind::Up(MouseButton::Left),
                     bar,
-                    area.bottom() + 2,
+                    height - 1,
                 ));
-                assert!(!browser(&app).dragging);
+                // Home brings the focused first folder back into view.
                 app.input(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
-                draw(&mut app, width, height);
-                assert_eq!(browser(&app).top, 0);
-                app.input(mouse(MouseEventKind::Down(MouseButton::Left), bar, area.y));
+                let buffer = draw(&mut app, width, height);
+                assert!(shown(&buffer, "目录-000"));
+                // A resize retires a drag in progress with the old geometry.
+                app.input(mouse(MouseEventKind::Down(MouseButton::Left), bar, top));
                 app.input(Event::Resize(40, 16));
-                assert!(browser(&app).area.is_none());
-                assert!(!browser(&app).dragging);
                 app.input(mouse(
                     MouseEventKind::Drag(MouseButton::Left),
                     bar,
-                    area.bottom() - 1,
+                    height - 1,
                 ));
-                assert_eq!(browser(&app).top, 0);
-                draw(&mut app, 40, 16);
-                assert!(browser(&app).area.is_none());
+                let buffer = draw(&mut app, width, height);
+                assert!(shown(&buffer, "目录-000"));
             }
             draw(&mut app, 80, 28);
             app.input(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
@@ -775,36 +586,19 @@ mod tests {
         for locale in Locale::ALL {
             app.i18n = I18n::new(LocalePreference::Explicit(locale), Locale::En);
             for (width, height) in [(80, 24), (52, 22)] {
-                render(&mut app, width, height);
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
                 assert!(app.management_enabled(&Manage::Save));
+                let register = app.i18n.text("directory-register");
                 assert!(
-                    app.hits
+                    lines(terminal.backend().buffer())
                         .iter()
-                        .any(|h| h.action == Action::Manage(Manage::Save))
+                        .any(|line| line.contains(&register)),
+                    "Register is on screen"
                 );
             }
         }
-        app.management
-            .dialog
-            .as_mut()
-            .unwrap()
-            .browser
-            .as_mut()
-            .unwrap()
-            .hovered = Some(Manage::Directory(Command::Parent));
         app.input(Event::Resize(40, 16));
-        assert!(
-            app.management
-                .dialog
-                .as_ref()
-                .unwrap()
-                .browser
-                .as_ref()
-                .unwrap()
-                .hovered
-                .is_none(),
-            "resize cannot retain a tooltip tied to an old hit region"
-        );
         render(&mut app, 40, 16);
         assert!(!app.management_enabled(&Manage::Save));
         render(&mut app, 80, 24);

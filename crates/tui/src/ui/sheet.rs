@@ -170,7 +170,16 @@ impl<M> Sheet<M> {
     fn footer_width(&self) -> u16 {
         let count = self.aside.len() + self.buttons.len();
         let gaps = 2 * count.saturating_sub(1) as u16;
-        let width = |nodes: &[Node<M>]| nodes.iter().map(layout::width).sum::<u16>();
+        // Buttons are fixed-width: their padding counts, not just the label.
+        let width = |nodes: &[Node<M>]| {
+            nodes
+                .iter()
+                .map(|node| match node.size {
+                    Size::Fixed(width) => width,
+                    _ => layout::width(node),
+                })
+                .sum::<u16>()
+        };
         width(&self.aside) + width(&self.buttons) + gaps
     }
 
@@ -189,15 +198,23 @@ impl<M> Sheet<M> {
 pub struct Layer<M> {
     surface: Surface<M>,
     shown: Option<String>,
+    /// Sheets this one was reached from, newest last: returning to one
+    /// (a sub-view closing, a review going back to editing) resumes its
+    /// focus instead of opening fresh.
+    earlier: Vec<(String, Surface<M>)>,
     /// The drawn box; clicks outside it dismiss.
     area: Option<Rect>,
 }
+
+/// Deep enough for a flow and its sub-views; older steps open fresh.
+const EARLIER: usize = 8;
 
 impl<M> Default for Layer<M> {
     fn default() -> Self {
         Self {
             surface: Surface::default(),
             shown: None,
+            earlier: vec![],
             area: None,
         }
     }
@@ -227,9 +244,28 @@ impl<M: Clone> Layer<M> {
             return false;
         }
         if self.shown.as_ref() != Some(&key) {
-            self.surface = Surface::default();
-            if let Some(focus) = focus {
-                self.surface.focus(focus);
+            let left = std::mem::take(&mut self.surface);
+            if let Some(shown) = self.shown.take() {
+                self.earlier.push((shown, left));
+                if self.earlier.len() > EARLIER {
+                    self.earlier.remove(0);
+                }
+            }
+            match self
+                .earlier
+                .iter()
+                .rposition(|(earlier, _)| *earlier == key)
+            {
+                Some(index) => {
+                    // Back to an earlier step: steps reached from it are gone.
+                    self.surface = self.earlier.remove(index).1;
+                    self.earlier.truncate(index);
+                }
+                None => {
+                    if let Some(focus) = focus {
+                        self.surface.focus(focus);
+                    }
+                }
             }
             self.shown = Some(key);
         }
@@ -289,6 +325,7 @@ impl<M: Clone> Layer<M> {
     /// No sheet is shown; the next one opens fresh.
     pub fn close(&mut self) {
         self.shown = None;
+        self.earlier.clear();
         self.area = None;
         self.surface.leave();
     }
@@ -568,6 +605,37 @@ mod tests {
                 .input(&key(KeyCode::Enter), Message::Dismiss, None)
                 .message,
             Some(Message::Cancel)
+        );
+    }
+
+    #[test]
+    fn returning_to_an_earlier_sheet_resumes_its_focus_until_the_layer_closes() {
+        let mut layer = Layer::default();
+        let enter = |layer: &mut Layer<Message>| {
+            layer
+                .input(&key(KeyCode::Enter), Message::Dismiss, None)
+                .message
+        };
+        draw(&mut layer, sheet("form", true), 80, 24);
+        layer.input(&key(KeyCode::Tab), Message::Dismiss, None);
+        draw(&mut layer, sheet("browser", true), 80, 24);
+        assert_eq!(
+            enter(&mut layer),
+            Some(Message::Cancel),
+            "a sub-view opens fresh"
+        );
+        draw(&mut layer, sheet("form", true), 80, 24);
+        assert_eq!(
+            enter(&mut layer),
+            Some(Message::Archive),
+            "back where the reader left it"
+        );
+        layer.close();
+        draw(&mut layer, sheet("form", true), 80, 24);
+        assert_eq!(
+            enter(&mut layer),
+            Some(Message::Cancel),
+            "reopening starts over"
         );
     }
 

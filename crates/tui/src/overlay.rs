@@ -108,7 +108,7 @@ impl App {
         match overlay {
             Overlay::Shutdown => crate::shutdown::sheet(self),
             Overlay::Consent => crate::pages::extensions::consent_sheet(self),
-            Overlay::Management => crate::pages::manage::sheet(self),
+            Overlay::Reference | Overlay::Management => crate::pages::manage::sheet(self),
             _ => None,
         }
     }
@@ -118,7 +118,7 @@ impl App {
     fn present(&mut self, overlay: Overlay, shown: bool) {
         match overlay {
             Overlay::Consent => self.consent_presented(shown),
-            Overlay::Management => self.management.presented(shown),
+            Overlay::Reference | Overlay::Management => self.management.presented(shown),
             _ => {}
         }
     }
@@ -180,7 +180,7 @@ impl App {
         let Some(dismiss) = overlay.dismiss() else {
             return (false, None);
         };
-        if overlay == Overlay::Management
+        if matches!(overlay, Overlay::Reference | Overlay::Management)
             && let Some(outcome) = self.management_sheet_input(&event)
         {
             return outcome;
@@ -253,7 +253,7 @@ pub(crate) fn draw(
         };
         let shown = app.layer.render(frame, area, sheet, context);
         app.present(overlay, shown);
-        if overlay == Overlay::Management {
+        if matches!(overlay, Overlay::Reference | Overlay::Management) {
             pages::manage::draw_field(frame, app);
         }
         if !shown {

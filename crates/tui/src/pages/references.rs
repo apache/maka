@@ -246,10 +246,20 @@ pub(crate) mod tests {
                 app.apply(Action::References);
                 let query = app.directory_request().unwrap();
                 app.directory_completed(query, Ok(QueryResult::DirectoryRoots { roots: vec![] }));
-                frame(&mut app, width, height);
-                let remove =
-                    Action::Manage(Command::Directory(directory::Command::RemoveReference(0)));
-                assert!(app.hits.iter().any(|h| h.action == remove));
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
+                // The chosen reference is listed with its remove control.
+                let buffer = terminal.backend().buffer();
+                let listed = (0..height).any(|y| {
+                    let (mut line, mut x) = (String::new(), 0);
+                    while x < width {
+                        let symbol = buffer[(x, y)].symbol();
+                        line.push_str(symbol);
+                        x += (unicode_width::UnicodeWidthStr::width(symbol) as u16).max(1);
+                    }
+                    line.contains("×  /workspace/目录")
+                });
+                assert!(listed);
                 app.input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
                 assert!(!app.directory_reference_active());
             }

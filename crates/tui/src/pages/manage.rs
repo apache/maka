@@ -264,10 +264,10 @@ pub struct Dialog {
 }
 
 impl Dialog {
-    /// Presented as a kernel sheet. OAuth, enabled models and the directory
-    /// browser still draw their own sub-view.
+    /// Presented as a kernel sheet. OAuth and enabled models still draw
+    /// their own sub-view.
     pub(crate) fn in_sheet(&self) -> bool {
-        self.kind != Kind::Oauth && self.enabled_models.is_none() && self.browser.is_none()
+        self.kind != Kind::Oauth && self.enabled_models.is_none()
     }
 }
 
@@ -1277,14 +1277,6 @@ impl App {
         {
             return self.enabled_models_input(event);
         }
-        if self
-            .management
-            .dialog
-            .as_ref()
-            .is_some_and(|d| d.browser.is_some())
-        {
-            return self.directory_input(event);
-        }
         // Everything else is a sheet; the overlay layer routes it.
         (false, None)
     }
@@ -1303,7 +1295,23 @@ impl App {
                 let chooser = dialog.chooser.is_some();
                 let models = dialog.models.is_some();
                 let locations = dialog.locations.is_some();
+                let browser = dialog.browser.is_some();
                 match key.code {
+                    KeyCode::F(5) if browser => {
+                        Some(Command::Directory(directory::Command::Refresh))
+                    }
+                    KeyCode::PageUp if browser => {
+                        Some(Command::Directory(directory::Command::Previous))
+                    }
+                    KeyCode::PageDown if browser => {
+                        Some(Command::Directory(directory::Command::Next))
+                    }
+                    KeyCode::Backspace | KeyCode::Left if browser => {
+                        Some(Command::Directory(directory::Command::Parent))
+                    }
+                    KeyCode::Enter if browser && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        Some(Command::Save)
+                    }
                     KeyCode::F(5) if locations => {
                         Some(Command::Locations(locations::Command::Refresh))
                     }
@@ -1439,9 +1447,6 @@ impl Management {
         if let Some(dialog) = &mut self.dialog {
             dialog.visible = false;
             dialog.editor.invalidate_geometry();
-            if let Some(browser) = &mut dialog.browser {
-                browser.invalidate_geometry();
-            }
             if let Some(models) = &mut dialog.enabled_models {
                 models.invalidate_geometry();
             }
