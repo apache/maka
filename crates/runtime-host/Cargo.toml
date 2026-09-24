@@ -84,6 +84,9 @@ libc.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
+maka-acp.workspace = true
+agent-client-protocol.workspace = true
+tokio-util = { workspace = true, features = ["compat"] }
 maka-client.workspace = true
 tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_lc_rs", "tls12"] }
 tempfile.workspace = true

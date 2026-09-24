@@ -48,10 +48,15 @@ struct Fixture {
     trace: PathBuf,
     control: TcpListener,
     executable: String,
+    protocol: u8,
 }
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_protocol(1).await
+    }
+
+    async fn with_protocol(protocol: u8) -> Self {
         let mut temporary = tempfile::Builder::new();
         temporary.prefix("maka-acp-");
         #[cfg(unix)]
@@ -83,6 +88,7 @@ impl Fixture {
             trace,
             control,
             executable,
+            protocol,
         }
     }
 
@@ -155,7 +161,7 @@ impl Fixture {
             success(peer.rpc("plugin.remote", json!({"kind":"call","binding":binding,"target":target,"document":document,"input":{
                 "kind":"configure","expectedRevision":current["revision"],"agents":[{
                     "id":"test.acp","displayName":"Test ACP","executable":self.executable,
-                    "args":[PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/acp-agent.mjs"),self.trace,self.control.local_addr().unwrap().port().to_string()],"env":{}
+                    "args":[PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/acp-agent.mjs"),self.trace,self.control.local_addr().unwrap().port().to_string(),self.protocol.to_string()],"env":{}
                 }]
             }})).await);
         }
@@ -184,7 +190,25 @@ impl Fixture {
     }
 
     async fn process(&self) -> BufReader<TcpStream> {
-        BufReader::new(self.control.accept().await.unwrap().0)
+        let pid = self
+            .records()
+            .into_iter()
+            .rev()
+            .find(|row| row["method"] == "spawn")
+            .unwrap()["pid"]
+            .as_u64()
+            .unwrap();
+        loop {
+            let mut process = BufReader::new(self.control.accept().await.unwrap().0);
+            let mut announced = String::new();
+            process.read_line(&mut announced).await.unwrap();
+            if announced.trim().parse::<u64>().unwrap() == pid {
+                return process;
+            }
+            // SDK negotiation can replace a probe process. Its resource must
+            // already be settled before the selected transport becomes usable.
+            process_closed(&mut process).await;
+        }
     }
 
     async fn facts(&self) -> Vec<Fact> {
@@ -261,7 +285,7 @@ impl Running {
             );
             if !matches!(
                 state["status"].as_str(),
-                Some("admitted" | "created" | "running")
+                Some("admitted" | "created" | "running" | "waiting_for_user")
             ) {
                 assert_eq!(state["status"], status, "{state}");
                 return state;
@@ -298,162 +322,188 @@ async fn process_closed(process: &mut BufReader<TcpStream>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn acp_streams_multiple_turns_and_loads_durable_session_without_replaying_history() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let fixture = Fixture::new().await;
-        let mut running = fixture.open().await;
-        running.create("conversation", &fixture.workspace).await;
-        for text in ["first", "second"] {
-            if text == "second" {
-                running.republish_configuration().await;
+        for protocol in [1, 2, 3] {
+            let fixture = Fixture::with_protocol(protocol).await;
+            let mut running = fixture.open().await;
+            running.create("conversation", &fixture.workspace).await;
+            for text in ["first", "second"] {
+                if text == "second" {
+                    running.republish_configuration().await;
+                }
+                running.start("conversation", text, text).await;
+                running.settled("conversation", text, "completed").await;
             }
-            running.start("conversation", text, text).await;
-            running.settled("conversation", text, "completed").await;
-        }
-        let source = success(
-            running
+            let source = success(
+                running
+                    .peer
+                    .rpc(
+                        "session.catalog.query",
+                        json!({"kind":"get","sessionId":"conversation"}),
+                    )
+                    .await,
+            );
+            let copy = running
                 .peer
                 .rpc(
-                    "session.catalog.query",
-                    json!({"kind":"get","sessionId":"conversation"}),
+                    "session.branch.create",
+                    json!({
+                            "sourceSessionId":"conversation","targetSessionId":"forbidden-copy",
+                            "expectedSourceRevision":source["session"]["revision"],
+                    "sourceTurnId":"second"
+                        }),
                 )
-                .await,
-        );
-        let copy = running
-            .peer
-            .rpc(
-                "session.branch.create",
-                json!({
-                        "sourceSessionId":"conversation","targetSessionId":"forbidden-copy",
-                        "expectedSourceRevision":source["session"]["revision"],
-                "sourceTurnId":"second"
-                    }),
-            )
-            .await;
-        assert_eq!(copy["error"]["code"], "operation_conflict", "{copy}");
-        let missing = success(
-            running
-                .peer
-                .rpc(
-                    "session.catalog.query",
-                    json!({"kind":"get","sessionId":"forbidden-copy"}),
-                )
-                .await,
-        );
-        assert!(missing["session"].is_null());
-        let receipt = success(
-            running
-                .peer
-                .rpc(
-                    "session.copy.query",
-                    json!({"targetSessionId":"forbidden-copy"}),
-                )
-                .await,
-        );
-        assert!(receipt["receipt"].is_null());
-        let mut process = fixture.process().await;
-        let before = fixture.records();
-        assert_eq!(
-            before.iter().filter(|row| row["method"] == "spawn").count(),
-            1
-        );
-        assert_eq!(
-            before
+                .await;
+            assert_eq!(copy["error"]["code"], "operation_conflict", "{copy}");
+            let missing = success(
+                running
+                    .peer
+                    .rpc(
+                        "session.catalog.query",
+                        json!({"kind":"get","sessionId":"forbidden-copy"}),
+                    )
+                    .await,
+            );
+            assert!(missing["session"].is_null());
+            let receipt = success(
+                running
+                    .peer
+                    .rpc(
+                        "session.copy.query",
+                        json!({"targetSessionId":"forbidden-copy"}),
+                    )
+                    .await,
+            );
+            assert!(receipt["receipt"].is_null());
+            let mut process = fixture.process().await;
+            let before = fixture.records();
+            let negotiated: Vec<_> = before
                 .iter()
-                .filter(|row| row["method"] == "session/new")
-                .count(),
-            1
-        );
-        assert_eq!(
-            before
-                .iter()
-                .filter(|row| row["method"] == "session/set_config_option")
-                .count(),
-            1
-        );
-        running.close().await;
-        process_closed(&mut process).await;
+                .filter(|row| row["method"] == "initialize")
+                .map(|row| row["params"]["protocolVersion"].as_u64().unwrap())
+                .collect();
+            assert_eq!(negotiated, if protocol != 2 { vec![2, 1] } else { vec![2] });
+            assert_eq!(
+                before.iter().filter(|row| row["method"] == "spawn").count(),
+                negotiated.len()
+            );
+            assert_eq!(
+                before
+                    .iter()
+                    .filter(|row| row["method"] == "session/new")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                before
+                    .iter()
+                    .filter(|row| row["method"] == "session/set_config_option")
+                    .count(),
+                1
+            );
+            running.close().await;
+            process_closed(&mut process).await;
 
-        let mut running = fixture.open().await;
-        running.republish_configuration().await;
-        running.start("conversation", "third", "third").await;
-        running.settled("conversation", "third", "completed").await;
-        running.close().await;
-        let records = fixture.records();
-        assert_eq!(
-            records
+            let mut running = fixture.open().await;
+            running.republish_configuration().await;
+            running.start("conversation", "third", "third").await;
+            running.settled("conversation", "third", "completed").await;
+            running.close().await;
+            let records = fixture.records();
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|row| row["method"] == "session/new")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|row| row["method"]
+                        == if protocol != 2 {
+                            "session/load"
+                        } else {
+                            "session/resume"
+                        })
+                    .count(),
+                1
+            );
+            let negotiated: Vec<_> = records
                 .iter()
-                .filter(|row| row["method"] == "session/new")
-                .count(),
-            1
-        );
-        assert_eq!(
-            records
-                .iter()
-                .filter(|row| row["method"] == "session/load")
-                .count(),
-            1
-        );
-        assert_eq!(
-            records
-                .iter()
-                .filter(|row| row["method"] == "spawn")
-                .count(),
-            2
-        );
-        let prompts: Vec<_> = records
-            .iter()
-            .filter(|row| row["method"] == "session/prompt")
-            .map(|row| {
-                row["params"]["prompt"].as_array().unwrap().last().unwrap()["text"]
-                    .as_str()
-                    .unwrap()
-            })
-            .collect();
-        assert_eq!(prompts, ["first", "second", "third"]);
-        assert!(
-            records
-                .iter()
-                .filter(|row| row["method"] == "session/set_config_option")
-                .all(|row| row["params"]["value"] == "large")
-        );
-        let facts = fixture.facts().await;
-        let completed: Vec<_> = facts
-            .iter()
-            .filter_map(|fact| match fact {
-                Fact::ExecutorCompleted { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(completed, ["answer first", "answer second", "answer third"]);
-        let mut tools = std::collections::BTreeSet::new();
-        let mut thoughts = 0;
-        let mut results = 0;
-        for fact in &facts {
-            match fact {
-                Fact::ExecutorObserved {
-                    output: Output::ToolStart { tool_call_id, .. },
-                } => {
-                    assert!(tools.insert(tool_call_id));
+                .filter(|row| row["method"] == "initialize")
+                .map(|row| row["params"]["protocolVersion"].as_u64().unwrap())
+                .collect();
+            assert_eq!(
+                negotiated,
+                if protocol != 2 {
+                    vec![2, 1, 2, 1]
+                } else {
+                    vec![2, 2]
                 }
-                Fact::ExecutorObserved {
-                    output: Output::ToolResult { is_error, .. },
-                } => {
-                    assert!(!is_error);
-                    results += 1;
+            );
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|row| row["method"] == "spawn")
+                    .count(),
+                negotiated.len()
+            );
+            let prompts: Vec<_> = records
+                .iter()
+                .filter(|row| row["method"] == "session/prompt")
+                .map(|row| {
+                    row["params"]["prompt"].as_array().unwrap().last().unwrap()["text"]
+                        .as_str()
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(prompts, ["first", "second", "third"]);
+            assert!(
+                records
+                    .iter()
+                    .filter(|row| row["method"] == "session/set_config_option")
+                    .all(|row| row["params"]["value"] == "large")
+            );
+            let facts = fixture.facts().await;
+            let completed: Vec<_> = facts
+                .iter()
+                .filter_map(|fact| match fact {
+                    Fact::ExecutorCompleted { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(completed, ["answer first", "answer second", "answer third"]);
+            let mut tools = std::collections::BTreeSet::new();
+            let mut thoughts = 0;
+            let mut results = 0;
+            for fact in &facts {
+                match fact {
+                    Fact::ExecutorObserved {
+                        output: Output::ToolStart { tool_call_id, .. },
+                    } => {
+                        assert!(tools.insert(tool_call_id));
+                    }
+                    Fact::ExecutorObserved {
+                        output: Output::ToolResult { is_error, .. },
+                    } => {
+                        assert!(!is_error);
+                        results += 1;
+                    }
+                    Fact::ExecutorObserved {
+                        output: Output::ThinkingDelta { .. },
+                    } => thoughts += 1,
+                    Fact::ExecutorObserved {
+                        output: Output::OutputDelta { text },
+                    } => assert!(!text.contains("REPLAY") && !text.contains("OBSOLETE")),
+                    Fact::ExecutorStarted { binding, settings } => {
+                        assert_eq!(binding.package_id, "acceptance.acp-package");
+                        assert_eq!(settings.model.as_deref(), Some("large"));
+                    }
+                    _ => {}
                 }
-                Fact::ExecutorObserved {
-                    output: Output::ThinkingDelta { .. },
-                } => thoughts += 1,
-                Fact::ExecutorObserved {
-                    output: Output::OutputDelta { text },
-                } => assert!(!text.contains("REPLAY")),
-                Fact::ExecutorStarted { binding, settings } => {
-                    assert_eq!(binding.package_id, "acceptance.acp-package");
-                    assert_eq!(settings.model.as_deref(), Some("large"));
-                }
-                _ => {}
             }
+            assert_eq!((tools.len(), results, thoughts), (3, 3, 3));
         }
-        assert_eq!((tools.len(), results, thoughts), (3, 3, 3));
     })
     .await
     .unwrap();
@@ -554,10 +604,13 @@ async fn acp_prompt_loss_is_fenced_across_restart_and_cancel_waits_for_process_c
         let mut running = fixture.open().await;
         running.start("lost", "lost-reopened", "must not execute either").await;
         running.settled("lost", "lost-reopened", "failed").await;
-        assert_eq!(fixture.records().iter().filter(|row| row["method"] == "spawn").count(), 1);
+        assert_eq!(fixture.records().iter().filter(|row| row["method"] == "initialize").map(|row| row["params"]["protocolVersion"].clone()).collect::<Vec<_>>(), vec![json!(2), json!(1)]);
 
         running.create("cancel", &fixture.workspace).await;
         let started = running.start("cancel", "cancel-first", "wait").await;
+        while !fixture.records().iter().any(|row| row["method"] == "session/prompt" && row["params"]["prompt"].as_array().unwrap().last().unwrap()["text"] == "wait") {
+            tokio::task::yield_now().await;
+        }
         let mut process = fixture.process().await;
         let mut line = String::new();
         process.read_line(&mut line).await.unwrap();
@@ -569,7 +622,7 @@ async fn acp_prompt_loss_is_fenced_across_restart_and_cancel_waits_for_process_c
         running.settled("cancel", "cancel-retry", "failed").await;
         running.close().await;
         let records = fixture.records();
-        assert_eq!(records.iter().filter(|row| row["method"] == "spawn").count(), 2);
+        assert_eq!(records.iter().filter(|row| row["method"] == "initialize").map(|row| row["params"]["protocolVersion"].clone()).collect::<Vec<_>>(), vec![json!(2), json!(1), json!(2), json!(1)]);
         assert_eq!(records.iter().filter(|row| row["method"] == "session/new").count(), 2);
         assert_eq!(records.iter().filter(|row| row["method"] == "session/prompt").count(), 2);
     }).await.unwrap();
@@ -578,22 +631,15 @@ async fn acp_prompt_loss_is_fenced_across_restart_and_cancel_waits_for_process_c
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn acp_callbacks_use_host_files_and_commit_permission_answer() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let fixture = Fixture::new().await;
+        for protocol in [1, 2, 3] {
+        let fixture = Fixture::with_protocol(protocol).await;
         std::fs::write(fixture.workspace.join("input.txt"), "fixture contents\n").unwrap();
         let mut running = fixture.open().await;
         running.create("callbacks", &fixture.workspace).await;
         running.start("callbacks", "callbacks-turn", "callbacks").await;
-        let pending = loop {
-            let opened = success(running.peer.rpc("subscription.open", json!({"sessionId":"callbacks","transcript":{"kind":"none"}})).await);
-            success(running.peer.rpc("subscription.close", json!({"subscriptionId":opened["subscriptionId"]})).await);
-            if let Some(pending) = opened["snapshot"]["interactions"]["pending"].as_array().unwrap().first() {
-                break pending.clone();
-            }
-            let state = success(running.peer.rpc("turn.query", json!({"sessionId":"callbacks","turnId":"callbacks-turn"})).await);
-            assert!(matches!(state["status"].as_str(), Some("admitted" | "created" | "running" | "waiting_for_user")), "{state}");
-            tokio::task::yield_now().await;
-        };
+        let pending = pending_permission(&mut running, "callbacks-turn").await;
         assert_eq!(pending["request"]["kind"], "form");
+        if protocol == 2 { assert!(pending.to_string().contains("fixture-command"), "{pending}"); }
         let answer = json!({"sessionId":"callbacks","interactionId":pending["interactionId"],"answer":{"kind":"form","action":"accept","values":{"permission":"allow-once"}}});
         let answered = success(running.peer.rpc("interaction.answer", answer.clone()).await);
         assert_eq!(answered["status"], "answered");
@@ -601,20 +647,80 @@ async fn acp_callbacks_use_host_files_and_commit_permission_answer() {
         assert_eq!(answered["outcome"]["values"]["permission"], "allow-once");
         assert_eq!(success(running.peer.rpc("interaction.answer", answer).await), answered);
         running.settled("callbacks", "callbacks-turn", "completed").await;
-        assert_eq!(std::fs::read_to_string(fixture.workspace.join("written.txt")).unwrap(), "written through Host\n");
+        if protocol != 2 { assert_eq!(std::fs::read_to_string(fixture.workspace.join("written.txt")).unwrap(), "written through Host\n"); }
         assert_eq!(success(running.peer.rpc("interaction.query", json!({"sessionId":"callbacks","interactionId":pending["interactionId"]})).await), answered);
+        let mut process = fixture.process().await;
+        running.start("callbacks", "peer-cancel-turn", "peer-cancel").await;
+        let cancelled = pending_permission(&mut running, "peer-cancel-turn").await;
+        process.get_mut().write_all(b"cancel-permission\n").await.unwrap();
+        running.settled("callbacks", "peer-cancel-turn", "completed").await;
+        let closed = success(running.peer.rpc("interaction.query", json!({"sessionId":"callbacks","interactionId":cancelled["interactionId"]})).await);
+        assert_eq!(closed["outcome"]["kind"], "closure", "{closed}");
         running.close().await;
         let records = fixture.records();
-        assert_eq!(records.iter().find(|row| row["id"] == "read-file").unwrap()["result"]["content"], "fixture contents\n");
-        assert_eq!(records.iter().find(|row| row["id"] == "permission").unwrap()["result"]["outcome"], json!({"outcome":"selected","optionId":"allow-once"}));
-        assert!(fixture.facts().await.iter().any(|fact| matches!(fact, Fact::ExecutorCompleted { text } if text == "callbacks complete")));
+        if protocol != 2 { assert_eq!(records.iter().find(|row| row["id"] == "read-file").unwrap()["result"]["content"], "fixture contents\n"); } else { assert!(!records.iter().any(|row| row["id"] == "read-file")); }
+        let permission_outcomes: Vec<_> = records.iter().filter(|row| row["id"] == "permission").map(|row| row["result"]["outcome"].clone()).collect();
+        assert_eq!(permission_outcomes, vec![json!({"outcome":"selected","optionId":"allow-once"}), json!({"outcome":"cancelled"})]);
+        let facts = fixture.facts().await;
+        assert!(facts.iter().any(|fact| matches!(fact, Fact::ExecutorCompleted { text } if text == "callbacks complete")));
+        let progress: String = facts.iter().filter_map(|fact| match fact {
+            Fact::ExecutorObserved { output: Output::ThinkingDelta { text } } => Some(text.as_str()),
+            _ => None,
+        }).collect();
+        for index in 0..64 { assert!(progress.contains(&format!("permission progress {index}\n")), "{progress}"); }
+        }
     }).await.unwrap();
+}
+
+async fn pending_permission(running: &mut Running, turn: &str) -> Value {
+    loop {
+        let opened = success(
+            running
+                .peer
+                .rpc(
+                    "subscription.open",
+                    json!({"sessionId":"callbacks","transcript":{"kind":"none"}}),
+                )
+                .await,
+        );
+        success(
+            running
+                .peer
+                .rpc(
+                    "subscription.close",
+                    json!({"subscriptionId":opened["subscriptionId"]}),
+                )
+                .await,
+        );
+        if let Some(pending) = opened["snapshot"]["interactions"]["pending"]
+            .as_array()
+            .unwrap()
+            .first()
+        {
+            break pending.clone();
+        }
+        let state = success(
+            running
+                .peer
+                .rpc("turn.query", json!({"sessionId":"callbacks","turnId":turn}))
+                .await,
+        );
+        assert!(
+            matches!(
+                state["status"].as_str(),
+                Some("admitted" | "created" | "running" | "waiting_for_user")
+            ),
+            "{state}"
+        );
+        tokio::task::yield_now().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn acp_setup_stream_authenticates_filters_urls_and_closes_cancelled_processes() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let fixture = Fixture::new().await;
+        for protocol in [1, 2, 3] {
+        let fixture = Fixture::with_protocol(protocol).await;
         let mut running = fixture.open().await;
         let binding = json!({"packageId":"acceptance.acp-package","method":"setup"});
         let target = success(running.peer.rpc("plugin.remote", json!({"kind":"bind","binding":binding})).await)["target"].clone();
@@ -627,12 +733,12 @@ async fn acp_setup_stream_authenticates_filters_urls_and_closes_cancelled_proces
             }}})).await);
             let input = if action == "check" { json!({"agentId":"test.acp","operationId":operation,"kind":"check"}) } else { json!({"agentId":"test.acp","operationId":operation,"kind":"authenticate","methodId":action}) };
             let stream = success(running.peer.rpc("plugin.remote", json!({"kind":"open","binding":binding,"target":target,"document":document,"input":input})).await)["stream"].clone();
-            let mut process = fixture.process().await;
             let first = loop {
                 let response = running.peer.rpc("plugin.remote", json!({"kind":"next","document":document,"stream":stream})).await;
                 if response["result"]["kind"] != "pending" { break response; }
                 tokio::task::yield_now().await;
             };
+            let mut process = fixture.process().await;
             if action == "unsafe" {
                 assert_eq!(first["ok"], false, "{first}");
                 assert!(!first.to_string().contains("http://insecure.example.invalid"));
@@ -660,9 +766,12 @@ async fn acp_setup_stream_authenticates_filters_urls_and_closes_cancelled_proces
         success(running.peer.rpc("plugin.remote", json!({"kind":"close_document","document":document})).await);
         running.close().await;
         let records = fixture.records();
-        assert_eq!(records.iter().filter(|row| row["method"] == "spawn").count(), 4);
-        assert_eq!(records.iter().filter(|row| row["method"] == "authenticate").count(), 3);
+        let versions = records.iter().filter(|row| row["method"] == "initialize").map(|row| row["params"]["protocolVersion"].clone()).collect::<Vec<_>>();
+        assert_eq!(versions, if protocol != 2 { [json!(2), json!(1)].into_iter().cycle().take(8).collect::<Vec<_>>() } else { vec![json!(2); 4] });
+        assert_eq!(records.iter().filter(|row| row["method"] == "spawn").count(), versions.len());
+        assert_eq!(records.iter().filter(|row| row["method"] == if protocol != 2 { "authenticate" } else { "auth/login" }).count(), 3);
         assert!(!records.iter().any(|row| row["method"] == "session/new" || row["method"] == "session/prompt"));
         assert!(fixture.facts().await.iter().all(|fact| !matches!(fact, Fact::InvocationOpened { .. })));
+        }
     }).await.unwrap();
 }

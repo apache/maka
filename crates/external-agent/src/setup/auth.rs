@@ -18,53 +18,63 @@
  */
 
 use super::{Connection, Duration, Error, Value, emit, mpsc, provider};
-use crate::transport::{Frame, RpcError};
-use serde::{Serialize, de::DeserializeOwned};
+use crate::transport::Event;
+use agent_client_protocol as sdk;
 use serde_json::json;
 
-pub(super) async fn rpc<T: DeserializeOwned>(
+pub(super) async fn initialize(
     connection: &mut Connection,
-    method: &str,
-    params: &impl Serialize,
-    timeout: Duration,
     send: &mpsc::Sender<Result<Value, Error>>,
     stderr: &mut Urls,
-) -> Result<T, Error> {
-    tokio::time::timeout(timeout, async {
-        let expected = connection.request(method, params).await.map_err(provider)?;
+) -> Result<(), Error> {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            match connection.next().await.map_err(provider)? {
-                Frame::Response { id, result } if id == expected => {
-                    let value = result.map_err(|error| {
-                        Error::Provider(format!("ACP request failed ({})", error.code))
-                    })?;
-                    return serde_json::from_value(value).map_err(provider);
-                }
-                Frame::Response { .. } => {
-                    return Err(Error::Provider("Unexpected ACP response identity".into()));
-                }
-                Frame::Request { id, .. } => connection
-                    .respond(
-                        id,
-                        Err(RpcError {
-                            code: -32601,
-                            message: "Client callback unavailable during setup".into(),
-                            data: None,
-                        }),
-                    )
-                    .await
-                    .map_err(provider)?,
-                Frame::Notification { .. } => {}
-                Frame::Stderr { bytes } => {
-                    for url in stderr.feed(&bytes)? {
-                        emit(send, json!({"kind":"authorization_url", "url":url})).await?;
-                    }
-                }
+            tokio::select! {
+                biased;
+                event = connection.events.recv() => match event.ok_or_else(|| provider("ACP setup event stream ended"))? {
+                    Event::Initialized(peer) => { connection.peer = Some(*peer); return Ok(()); }
+                    event => observe(event, send, stderr).await?,
+                },
+                result = &mut connection.run => { result.map_err(provider)?; return Err(provider("ACP setup connection ended")); },
             }
         }
-    })
-    .await
-    .map_err(|_| Error::Provider("External agent setup timed out".into()))?
+    }).await.map_err(|_| provider("External agent setup timed out"))?
+}
+
+pub(super) async fn rpc<R: sdk::JsonRpcRequest>(
+    connection: &mut Connection,
+    request: R,
+    send: &mpsc::Sender<Result<Value, Error>>,
+    stderr: &mut Urls,
+) -> Result<R::Response, Error> {
+    let response = connection.request(request).block_task();
+    tokio::pin!(response);
+    tokio::time::timeout(Duration::from_secs(300), async {
+        loop {
+            tokio::select! {
+                biased;
+                event = connection.events.recv() => observe(event.ok_or_else(|| provider("ACP setup event stream ended"))?, send, stderr).await?,
+                result = &mut response => return result.map_err(provider),
+                result = &mut connection.run => { result.map_err(provider)?; return Err(provider("ACP setup connection ended")); },
+            }
+        }
+    }).await.map_err(|_| provider("External agent setup timed out"))?
+}
+
+async fn observe(
+    event: Event,
+    send: &mpsc::Sender<Result<Value, Error>>,
+    stderr: &mut Urls,
+) -> Result<(), Error> {
+    match event {
+        Event::Stderr(bytes) => {
+            for url in stderr.feed(&bytes)? {
+                emit(send, json!({"kind":"authorization_url", "url":url})).await?;
+            }
+        }
+        event => event.reject().map_err(provider)?,
+    }
+    Ok(())
 }
 
 #[derive(Default)]

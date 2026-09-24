@@ -75,6 +75,23 @@ struct Command {
     presentation: Option<mpsc::Sender<OAuthPresentation>>,
 }
 
+pub(crate) struct PendingRequest {
+    received: oneshot::Receiver<Result<Value, ClientError>>,
+}
+
+impl PendingRequest {
+    pub(crate) async fn settle(self) -> Result<Value, RequestFailure> {
+        // A retained receiver keeps the exact queued request observable after a
+        // caller's response deadline. Only that caller chooses when to stop waiting.
+        match self.received.await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error @ ClientError::Rejected(_))) => Err(RequestFailure::Rejected(error)),
+            Ok(Err(error)) => Err(RequestFailure::Unknown(error)),
+            Err(error) => Err(RequestFailure::Unknown(closed(error))),
+        }
+    }
+}
+
 struct Pending {
     operation: Operation,
     observation: PendingObservation,
@@ -384,12 +401,41 @@ impl Client {
         timeout: Duration,
         presentation: Option<mpsc::Sender<OAuthPresentation>>,
     ) -> Result<Value, RequestFailure> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let pending = self
+            .enqueue(operation, input, deadline, presentation)
+            .await?;
+        tokio::time::timeout_at(deadline, pending.settle())
+            .await
+            .map_err(|_| RequestFailure::Unknown(ClientError::Timeout))?
+    }
+
+    pub(crate) async fn request_pending(
+        &self,
+        operation: Operation,
+        input: Value,
+    ) -> Result<PendingRequest, RequestFailure> {
+        self.enqueue(
+            operation,
+            input,
+            tokio::time::Instant::now() + REQUEST_TIMEOUT,
+            None,
+        )
+        .await
+    }
+
+    async fn enqueue(
+        &self,
+        operation: Operation,
+        input: Value,
+        deadline: tokio::time::Instant,
+        presentation: Option<mpsc::Sender<OAuthPresentation>>,
+    ) -> Result<PendingRequest, RequestFailure> {
         if operation == Operation::ClientCapabilityReplace && presentation.is_none() {
             return Err(RequestFailure::NotDispatched(protocol(
                 "Use the OAuth presentation publisher",
             )));
         }
-        let deadline = tokio::time::Instant::now() + timeout;
         let input = self
             .registry
             .decode_input(operation, &input)
@@ -422,14 +468,7 @@ impl Client {
             permit: admitted.0,
             presentation,
         });
-        // Once queued conservatively report unknown; no automatic mutation retry.
-        match tokio::time::timeout_at(deadline, received).await {
-            Ok(Ok(Ok(value))) => Ok(value),
-            Ok(Ok(Err(error @ ClientError::Rejected(_)))) => Err(RequestFailure::Rejected(error)),
-            Ok(Ok(Err(error))) => Err(RequestFailure::Unknown(error)),
-            Ok(Err(error)) => Err(RequestFailure::Unknown(closed(error))),
-            Err(_) => Err(RequestFailure::Unknown(ClientError::Timeout)),
-        }
+        Ok(PendingRequest { received })
     }
 
     pub fn disconnect(&self) {
@@ -467,5 +506,37 @@ impl OperationRegistry for RegistryRef<'_> {
     }
     fn error_codes(&self, op: Operation) -> Option<&[maka_protocol::OperationErrorCode]> {
         self.0.error_codes(op)
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn response_deadline_does_not_discard_a_retained_receipt() {
+        let (reply, received) = oneshot::channel();
+        let pending = PendingRequest { received };
+        let settled = pending.settle();
+        tokio::pin!(settled);
+        assert!(
+            tokio::time::timeout(Duration::ZERO, &mut settled)
+                .await
+                .is_err()
+        );
+        let receipt = serde_json::json!({"kind":"started","turnId":"exact-turn"});
+        reply.send(Ok(receipt.clone())).unwrap();
+        assert_eq!(settled.await.unwrap(), receipt);
+    }
+
+    #[tokio::test]
+    async fn disconnected_retained_receipt_has_unknown_outcome() {
+        let (reply, received) = oneshot::channel();
+        let pending = PendingRequest { received };
+        drop(reply);
+        assert!(matches!(
+            pending.settle().await,
+            Err(RequestFailure::Unknown(ClientError::Closed(_)))
+        ));
     }
 }

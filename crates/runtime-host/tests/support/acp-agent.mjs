@@ -24,6 +24,8 @@ import { once } from 'node:events';
 
 const control = connect(Number(process.argv[3]), '127.0.0.1');
 await once(control, 'connect');
+const v2 = process.argv[4] === '2';
+// Mode 3 reproduces legacy peers that echo the requested version with a v1 envelope.
 const record = (value) => appendFileSync(process.argv[2], `${JSON.stringify(value)}\n`);
 const send = (value) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`);
 const reply = (id, result) => send({ id, result });
@@ -31,13 +33,25 @@ const update = (value) =>
   send({ method: 'session/update', params: { sessionId: 'acp-persistent', update: value } });
 let model = 'small';
 let callbackPrompt;
+let callbackMode;
 let authentication;
 createInterface({ input: control }).on('line', (line) => {
   if (line === 'continue' && authentication !== undefined) reply(authentication, {});
+  if (line === 'cancel-permission') {
+    for (let index = 0; index < 64; index++) {
+      update({
+        sessionUpdate: 'agent_thought_chunk',
+        ...(v2 ? { messageId: 'permission-progress' } : {}),
+        content: { type: 'text', text: `permission progress ${index}\n` },
+      });
+      process.stderr.write('permission diagnostic\n');
+    }
+    send({ method: '$/cancel_request', params: { requestId: 'permission' } });
+  }
 });
 const options = () => [
   {
-    id: 'model',
+    [v2 ? 'configId' : 'id']: 'model',
     name: 'Model',
     category: 'model',
     type: 'select',
@@ -49,6 +63,7 @@ const options = () => [
   },
 ];
 record({ method: 'spawn', pid: process.pid });
+control.write(`${process.pid}\n`);
 for await (const line of createInterface({ input: process.stdin })) {
   const request = JSON.parse(line);
   record(request);
@@ -81,28 +96,48 @@ for await (const line of createInterface({ input: process.stdin })) {
         },
       });
     } else if (id === 'permission') {
+      const cancelled = callbackMode === 'peer-cancel';
       if (
-        request.result.outcome.outcome !== 'selected' ||
-        request.result.outcome.optionId !== 'allow-once'
+        cancelled
+          ? request.result.outcome.outcome !== 'cancelled'
+          : request.result.outcome.outcome !== 'selected' ||
+            request.result.outcome.optionId !== 'allow-once'
       )
         throw new Error('Wrong permission response');
       update({
         sessionUpdate: 'agent_message_chunk',
-        content: { type: 'text', text: 'callbacks complete' },
+        ...(v2 ? { messageId: 'callbacks-answer' } : {}),
+        content: { type: 'text', text: cancelled ? 'permission cancelled' : 'callbacks complete' },
       });
-      reply(callbackPrompt, { stopReason: 'end_turn' });
+      if (v2) update({ sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
+      else reply(callbackPrompt, { stopReason: 'end_turn' });
     }
     continue;
   }
   switch (method) {
     case 'initialize':
-      reply(id, {
-        protocolVersion: 1,
-        agentCapabilities: { loadSession: true },
-        authMethods: ['login', 'unsafe', 'cancel'].map((id) => ({ id, name: id })),
-      });
+      reply(
+        id,
+        v2
+          ? {
+              protocolVersion: 2,
+              info: { name: 'fixture-v2', version: '1' },
+              capabilities: { session: {} },
+              authMethods: ['login', 'unsafe', 'cancel'].map((methodId) => ({
+                methodId,
+                name: methodId,
+                type: 'agent',
+              })),
+            }
+          : {
+              protocolVersion: process.argv[4] === '3' ? params.protocolVersion : 1,
+              agentCapabilities: { loadSession: true },
+              authMethods: ['login', 'unsafe', 'cancel'].map((id) => ({ id, name: id })),
+            },
+      );
       break;
     case 'authenticate':
+    case 'auth/login':
       authentication = id;
       process.stderr.write('unrelated diagnostic https://ignored.example.invalid/\n');
       process.stderr.write(
@@ -119,14 +154,48 @@ for await (const line of createInterface({ input: process.stdin })) {
       });
       reply(id, { configOptions: options() });
       break;
+    case 'session/resume':
+      if (!v2 || params.replayFrom != null) throw new Error('Unexpected replay request');
+      update({ sessionUpdate: 'state_update', state: 'idle' });
+      reply(id, { configOptions: options() });
+      break;
     case 'session/set_config_option':
+      if (v2 && (params.configId !== 'model' || params.type !== 'id'))
+        throw new Error('Wrong v2 configuration wire shape');
       model = params.value;
       reply(id, { configOptions: options() });
       break;
     case 'session/prompt': {
       const text = params.prompt.at(-1).text;
-      if (text === 'callbacks') {
+      if (v2) {
+        reply(id, { messageId: `user-${text}` });
+        update({
+          sessionUpdate: 'user_message',
+          messageId: `user-${text}`,
+          content: params.prompt,
+        });
+        update({ sessionUpdate: 'state_update', state: 'running' });
+      }
+      if (text === 'callbacks' || text === 'peer-cancel') {
         callbackPrompt = id;
+        callbackMode = text;
+        if (v2) {
+          send({
+            id: 'permission',
+            method: 'session/request_permission',
+            params: {
+              sessionId: 'acp-persistent',
+              title: 'Run fixture command',
+              description: 'Confirm the command operation',
+              subject: { type: 'command', command: 'printf fixture-command', cwd: process.cwd() },
+              options: [
+                { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+              ],
+            },
+          });
+          break;
+        }
         send({
           id: 'read-file',
           method: 'fs/read_text_file',
@@ -141,10 +210,11 @@ for await (const line of createInterface({ input: process.stdin })) {
       }
       update({
         sessionUpdate: 'agent_thought_chunk',
+        ...(v2 ? { messageId: `thought-${text}` } : {}),
         content: { type: 'text', text: `thinking ${text}` },
       });
       update({
-        sessionUpdate: 'tool_call',
+        sessionUpdate: v2 ? 'tool_call_update' : 'tool_call',
         toolCallId: 'same-tool-id',
         title: 'Inspect',
         kind: 'read',
@@ -157,9 +227,31 @@ for await (const line of createInterface({ input: process.stdin })) {
         status: 'completed',
         rawOutput: { found: true },
       });
-      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer ' } });
-      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
-      reply(id, { stopReason: 'end_turn' });
+      if (v2) {
+        update({
+          sessionUpdate: 'agent_message_chunk',
+          messageId: `answer-${text}`,
+          content: { type: 'text', text: 'OBSOLETE' },
+        });
+        update({
+          sessionUpdate: 'agent_message',
+          messageId: `answer-${text}`,
+          content: [{ type: 'text', text: 'answer ' }],
+        });
+        update({
+          sessionUpdate: 'agent_message_chunk',
+          messageId: `answer-${text}`,
+          content: { type: 'text', text },
+        });
+        update({ sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
+      } else {
+        update({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'answer ' },
+        });
+        update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+        reply(id, { stopReason: 'end_turn' });
+      }
       break;
     }
     default:

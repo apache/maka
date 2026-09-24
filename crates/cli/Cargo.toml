@@ -36,6 +36,7 @@ path = "src/service_main.rs"
 test = false
 
 [dependencies]
+maka-acp.workspace = true
 maka-client.workspace = true
 maka-config.workspace = true
 maka-tui.workspace = true

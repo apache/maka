@@ -21,12 +21,16 @@ use crate::{
     Error, callbacks,
     conversation::{Journal, Live, State},
     projection::Projection,
-    transport::{Connection, Frame, RpcError},
+    transport::{Connection, Event, Peer},
 };
-use agent_client_protocol_schema::{ProtocolVersion, v1 as acp};
-use maka_plugins::{executor, host::Services, process::Handle};
-use serde::{Serialize, de::DeserializeOwned};
+use agent_client_protocol::{self as sdk, schema::v1 as acp};
+use maka_plugins::{executor, host::Services};
+
 use std::time::Duration;
+
+mod configure;
+mod events;
+mod v2;
 
 pub(crate) struct Driver<'a> {
     host: &'a Services,
@@ -34,6 +38,7 @@ pub(crate) struct Driver<'a> {
     context: &'a executor::Context,
     projection: Option<Projection>,
     replay: bool,
+    v2: Option<v2::Projection>,
 }
 impl<'a> Driver<'a> {
     pub fn new(
@@ -47,28 +52,38 @@ impl<'a> Driver<'a> {
             context,
             projection: None,
             replay: false,
+            v2: None,
         }
     }
 
-    pub async fn connect(&mut self, handle: Handle, journal: &mut Journal) -> Result<Live, Error> {
-        let mut connection = Connection::new(handle);
-        let init = acp::InitializeRequest::new(ProtocolVersion::V1)
-            .client_info(acp::Implementation::new("maka", env!("CARGO_PKG_VERSION")))
-            .client_capabilities(
-                acp::ClientCapabilities::new().fs(acp::FileSystemCapabilities::new()
-                    .read_text_file(true)
-                    .write_text_file(true)),
-            );
-        let initialized: acp::InitializeResponse = self
-            .rpc(
-                &mut connection,
-                "initialize",
-                &init,
-                Duration::from_secs(30),
-            )
-            .await?;
-        if initialized.protocol_version != ProtocolVersion::V1 {
-            return Err(Error::Invalid("agent does not support ACP version 1"));
+    pub async fn connect(
+        &mut self,
+        mut connection: Connection,
+        journal: &mut Journal,
+    ) -> Result<Live, Error> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match self.next_event(&mut connection, deadline).await? {
+                Event::Initialized(peer) => {
+                    connection.peer = Some(*peer);
+                    break;
+                }
+                event => {
+                    self.event(&mut connection, event, deadline).await?;
+                }
+            }
+        }
+        let initialized = match connection.peer.as_ref().unwrap() {
+            Peer::V2(_, initialized) => {
+                let initialized = initialized.clone();
+                return self.connect_v2(connection, journal, initialized).await;
+            }
+            Peer::V1(_, initialized) => initialized.clone(),
+        };
+        if journal.record.v2_defaults.is_some() {
+            return Err(Error::Continuity(
+                "agent changed the session protocol version",
+            ));
         }
         let (session_id, options) = match &journal.record.state {
             State::Creating => {
@@ -81,8 +96,7 @@ impl<'a> Driver<'a> {
                 let result: acp::NewSessionResponse = self
                     .rpc(
                         &mut connection,
-                        "session/new",
-                        &acp::NewSessionRequest::new(&self.request.cwd),
+                        acp::NewSessionRequest::new(&self.request.cwd),
                         Duration::from_secs(30),
                     )
                     .await?;
@@ -103,10 +117,9 @@ impl<'a> Driver<'a> {
                 ));
                 self.replay = true;
                 let result = self
-                    .rpc::<acp::LoadSessionResponse>(
+                    .rpc(
                         &mut connection,
-                        "session/load",
-                        &acp::LoadSessionRequest::new(session_id.clone(), &self.request.cwd),
+                        acp::LoadSessionRequest::new(session_id.clone(), &self.request.cwd),
                         Duration::from_secs(30),
                     )
                     .await;
@@ -135,6 +148,7 @@ impl<'a> Driver<'a> {
             connection,
             session_id,
             options,
+            v2_options: None,
         })
     }
 
@@ -143,12 +157,18 @@ impl<'a> Driver<'a> {
         live: &mut Live,
         journal: &mut Journal,
     ) -> Result<executor::Outcome, Error> {
+        if live.v2_options.is_some() {
+            return self.prompt_v2(live, journal).await;
+        }
         self.projection = Some(Projection::new(
             live.session_id.clone(),
             self.request.invocation.invocation_id.clone(),
         ));
         self.configure(live, &journal.record.defaults).await?;
-        let content = prompt(&self.request.content, self.request.instructions.as_deref())?;
+        let content = prompt(&self.request.content, self.request.instructions.as_deref())?
+            .into_iter()
+            .map(|text| acp::ContentBlock::Text(acp::TextContent::new(text)))
+            .collect();
         journal
             .save(
                 self.host.storage.as_ref(),
@@ -159,10 +179,9 @@ impl<'a> Driver<'a> {
             )
             .await?;
         let result = self
-            .rpc::<acp::PromptResponse>(
+            .rpc(
                 &mut live.connection,
-                "session/prompt",
-                &acp::PromptRequest::new(live.session_id.clone(), content),
+                acp::PromptRequest::new(live.session_id.clone(), content),
                 Duration::from_secs(15 * 60),
             )
             .await;
@@ -197,189 +216,45 @@ impl<'a> Driver<'a> {
         })
     }
 
-    async fn configure(
-        &mut self,
-        live: &mut Live,
-        defaults: &[acp::SessionConfigOption],
-    ) -> Result<(), Error> {
-        let thinking = self
-            .request
-            .settings
-            .thinking_level
-            .map(serde_json::to_value)
-            .transpose()?;
-        for (category, value) in [
-            (
-                acp::SessionConfigOptionCategory::Model,
-                self.request.settings.model.as_deref(),
-            ),
-            (
-                acp::SessionConfigOptionCategory::ThoughtLevel,
-                thinking.as_ref().and_then(|value| value.as_str()),
-            ),
-        ] {
-            let default = defaults
-                .iter()
-                .find(|option| option.category.as_ref() == Some(&category))
-                .and_then(|option| match &option.kind {
-                    acp::SessionConfigKind::Select(select) => {
-                        Some(select.current_value.to_string())
-                    }
-                    _ => None,
-                });
-            let Some(value) = value.or(default.as_deref()) else {
-                continue;
-            };
-            let option = live
-                .options
-                .iter()
-                .find(|option| option.category.as_ref() == Some(&category))
-                .ok_or(Error::Invalid(
-                    "agent does not expose the requested setting",
-                ))?;
-            let acp::SessionConfigKind::Select(select) = &option.kind else {
-                return Err(Error::Invalid("agent setting is not a selector"));
-            };
-            let valid = match &select.options {
-                acp::SessionConfigSelectOptions::Ungrouped(options) => options
-                    .iter()
-                    .any(|option| option.value.to_string() == value),
-                acp::SessionConfigSelectOptions::Grouped(groups) => groups.iter().any(|group| {
-                    group
-                        .options
-                        .iter()
-                        .any(|option| option.value.to_string() == value)
-                }),
-                _ => false,
-            };
-            if !valid {
-                return Err(Error::Invalid(
-                    "agent does not offer the requested setting value",
-                ));
-            }
-            if select.current_value.to_string() == value {
-                continue;
-            }
-            let input = acp::SetSessionConfigOptionRequest::new(
-                live.session_id.clone(),
-                option.id.clone(),
-                acp::SessionConfigOptionValue::value_id(value.to_owned()),
-            );
-            let response: acp::SetSessionConfigOptionResponse = self
-                .rpc(
-                    &mut live.connection,
-                    "session/set_config_option",
-                    &input,
-                    Duration::from_secs(30),
-                )
-                .await?;
-            live.options = response.config_options;
-        }
-        Ok(())
-    }
-
-    async fn rpc<T: DeserializeOwned>(
+    async fn rpc<R: sdk::JsonRpcRequest>(
         &mut self,
         connection: &mut Connection,
-        method: &str,
-        params: &impl Serialize,
+        request: R,
         timeout: Duration,
-    ) -> Result<T, Error> {
-        self.exchange(connection, method, params, timeout).await
-    }
-
-    async fn exchange<T: DeserializeOwned>(
-        &mut self,
-        connection: &mut Connection,
-        method: &str,
-        params: &impl Serialize,
-        timeout: Duration,
-    ) -> Result<T, Error> {
-        let expected = tokio::select! {
-            biased;
-            _ = self.context.cancellation.cancelled() => return Err(Error::Cancelled),
-            result = tokio::time::timeout(timeout, connection.request(method, params)) => result.map_err(|_| Error::Timeout)??,
-        };
+    ) -> Result<R::Response, Error> {
+        let response = connection.request(request).block_task();
+        tokio::pin!(response);
+        let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let frame = tokio::select! {
+            tokio::select! {
                 biased;
                 _ = self.context.cancellation.cancelled() => return Err(Error::Cancelled),
-                result = tokio::time::timeout(timeout, connection.next()) => match result {
-                    Ok(result) => result?,
-                    Err(_) => {
-                        if method == "session/prompt" && let Some(session) = self.session() {
-                            // Best effort protocol notification, followed by owner-confirmed
-                            // process shutdown. Never extend expired execution authority.
-                            let _ = tokio::time::timeout(Duration::from_secs(1), connection.notify("session/cancel", &acp::CancelNotification::new(session.to_owned()))).await;
-                        }
-                        return Err(Error::Timeout);
-                    }
-                },
-            };
-            match frame {
-                Frame::Stderr { .. } => {}
-                Frame::Response { id, result } => {
-                    if id != expected {
-                        return Err(Error::Invalid(
-                            "response does not match the outstanding request",
-                        ));
-                    }
-                    let value = result.map_err(|error| Error::Remote {
-                        code: error.code,
-                        message: error.message,
-                    })?;
-                    return Ok(serde_json::from_value(value)?);
-                }
-                Frame::Notification { method, params } if method == "session/update" => {
-                    let update: acp::SessionNotification = serde_json::from_value(params)?;
-                    if self.replay {
-                        if Some(update.session_id.to_string()).as_deref() != self.session() {
-                            return Err(Error::Invalid(
-                                "replayed update belongs to another session",
-                            ));
-                        }
-                    } else if let Some(projection) = &mut self.projection {
-                        projection
-                            .update(update, self.context.output.as_ref())
-                            .await?;
-                    } else {
-                        return Err(Error::Invalid(
-                            "session update before session establishment",
-                        ));
-                    }
-                }
-                Frame::Notification { .. } => {}
-                Frame::Request { id, method, params } => {
-                    let result = if let Some(session) = self.session() {
-                        callbacks::handle(
-                            &method,
-                            params,
-                            session,
-                            self.request,
-                            self.context,
-                            self.host,
-                            &id,
-                        )
-                        .await
-                        .map_err(|error| RpcError {
-                            code: i64::from(error.code),
-                            message: error.message,
-                            data: None,
-                        })
-                    } else {
-                        Err(RpcError {
-                            code: -32000,
-                            message: "no active session".into(),
-                            data: None,
-                        })
-                    };
-                    connection.respond(id, result).await?;
-                }
+                _ = tokio::time::sleep_until(deadline) => return Err(Error::Timeout),
+                event = connection.events.recv() => self.event(connection, event.ok_or(Error::Invalid("ACP event stream ended"))?, deadline).await?,
+                result = &mut response => return result.map_err(Error::from),
+                result = &mut connection.run => { result?; return Err(Error::Invalid("ACP connection ended")); },
             }
+        }
+    }
+
+    async fn next_event(
+        &self,
+        connection: &mut Connection,
+        deadline: tokio::time::Instant,
+    ) -> Result<Event, Error> {
+        tokio::select! {
+            biased;
+            _ = self.context.cancellation.cancelled() => Err(Error::Cancelled),
+            _ = tokio::time::sleep_until(deadline) => Err(Error::Timeout),
+            event = connection.events.recv() => event.ok_or(Error::Invalid("ACP event stream ended")),
+            result = &mut connection.run => { result?; Err(Error::Invalid("ACP connection ended")) },
         }
     }
 
     fn session(&self) -> Option<&str> {
+        if let Some(projection) = &self.v2 {
+            return Some(&projection.session_id);
+        }
         self.projection
             .as_ref()
             .map(|projection| projection.session_id())
@@ -389,7 +264,7 @@ impl<'a> Driver<'a> {
 fn prompt(
     content: &maka_runtime::input::MessageInput,
     instructions: Option<&str>,
-) -> Result<Vec<acp::ContentBlock>, Error> {
+) -> Result<Vec<String>, Error> {
     if content
         .attachments
         .as_ref()
@@ -399,9 +274,7 @@ fn prompt(
     }
     let mut blocks = Vec::new();
     if let Some(instructions) = instructions.filter(|value| !value.is_empty()) {
-        blocks.push(acp::ContentBlock::Text(acp::TextContent::new(format!(
-            "Instructions from Maka:\n{instructions}"
-        ))));
+        blocks.push(format!("Instructions from Maka:\n{instructions}"));
     }
     let mut text = content.text.clone();
     for quote in content.quotes.iter().flatten() {
@@ -421,6 +294,6 @@ fn prompt(
         text.push_str("\n\nInline references: ");
         text.push_str(&serde_json::to_string(&content.inline_references)?);
     }
-    blocks.push(acp::ContentBlock::Text(acp::TextContent::new(text)));
+    blocks.push(text);
     Ok(blocks)
 }

@@ -54,6 +54,8 @@ enum Command {
     Host(HostCommand),
     /// Execute a journaled Code Mode cell read from stdin.
     Code(code::Args),
+    /// Serve Agent Client Protocol v2 over stdin/stdout.
+    Acp(crate::acp::Args),
     /// Inspect the committed execution log.
     Inspect(Log),
     /// Diagnose commands and manage native sandbox setup.
@@ -290,6 +292,7 @@ impl Cli {
                 Ok(())
             }
             Command::Code(args) => code::run(args).await,
+            Command::Acp(args) => crate::acp::run(args).await,
             Command::Inspect(args) => {
                 let log = EventLog::open(&args.log).await?;
                 let prefix = log.prefix(10_000, 8 * 1024 * 1024).await?;
