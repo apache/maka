@@ -41,6 +41,7 @@ apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-provider.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
+apps/desktop/src/renderer/features/module-hub/ui/mcp-page.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-provider.tsx
 apps/desktop/src/renderer/features/overlays/services-context.tsx
@@ -89,6 +90,7 @@ apps/desktop/src/renderer/features/workbar/tools/inspector/live-context-usage-pr
 apps/desktop/src/renderer/features/workbar/tools/review/session-review-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx
 apps/desktop/src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx
+apps/desktop/src/renderer/features/workbar/ui/recent-turn-overlay.tsx
 apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx
@@ -104,8 +106,6 @@ apps/desktop/src/renderer/features/workhub/ui/workhub-root.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-surface-switch.tsx
 apps/desktop/src/renderer/features/workhub/ui/workhub-work-identity.tsx
 apps/desktop/src/renderer/maka-tokens.css
-apps/desktop/src/renderer/mcp-brand-marks.tsx
-apps/desktop/src/renderer/mcp-page.tsx
 apps/desktop/src/renderer/onboarding-hero.tsx
 apps/desktop/src/renderer/plan-mode-panel.tsx
 apps/desktop/src/renderer/reference-shell.css
@@ -264,13 +264,14 @@ packages/ui/src/platform-shortcut-text.tsx
 packages/ui/src/primitives/chat.tsx
 packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/stat-tile.tsx
+packages/ui/src/progress-card.tsx
 packages/ui/src/prompt-anchor-rail.tsx
 packages/ui/src/quote-ref-chip.tsx
 packages/ui/src/relative-time.tsx
 packages/ui/src/running-indicator.tsx
 packages/ui/src/sandbox-boundary-prompt.tsx
+packages/ui/src/scheduled-task-detail.tsx
 packages/ui/src/scheduled-task-form-dialog.tsx
-packages/ui/src/scheduled-task-inspector.tsx
 packages/ui/src/scheduled-task-panel.tsx
 packages/ui/src/search-modal.tsx
 packages/ui/src/session-context-layer.tsx
@@ -279,7 +280,7 @@ packages/ui/src/session-list-panel.tsx
 packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
 packages/ui/src/session-sidebar-nav.tsx
-packages/ui/src/skill-inspector.tsx
+packages/ui/src/skill-detail.tsx
 packages/ui/src/skills-panel.tsx
 packages/ui/src/styles.css
 packages/ui/src/titlebar-session-identity.tsx

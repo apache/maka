@@ -18,7 +18,7 @@
  */
 
 /* Skills page-specific bits.
-   The skeleton (Astryx Layout: header, toolbar, content, resizable inspector)
+   The skeleton (Astryx Layout: header, toolbar, content, detail dialog)
    lives in the shared ModulePage primitive; rows are Astryx List/ListItem.
    What is left here is the collision-slug treatment, the search summary text,
    and the update-review diff the design system does not model. */
@@ -39,10 +39,6 @@
 .maka-skill-install-complete-icon {
   display: inline-flex;
   color: var(--success);
-}
-
-.maka-skill-inspector {
-  min-width: 0;
 }
 
 .maka-skill-governance-summary {
@@ -84,8 +80,6 @@
   --maka-skill-diff-preview-max-block: calc(var(--space-16) * 4);
   min-width: 0;
   display: grid;
-  /* Single column: the diff review only renders inside the 280–420px
-     inspector, where side-by-side columns would crush both panes. */
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
 }

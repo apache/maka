@@ -537,6 +537,17 @@ export const DefaultLayout: Story = {
     expect(trailingInset).toBeGreaterThanOrEqual(0);
     expect(trailingInset).toBeLessThanOrEqual(16);
     expect(getComputedStyle(actions).columnGap).toBe('4px');
+    // Message metadata mirrors across senders: the prompt's time sits left of
+    // its actions, the answer's time right of its actions.
+    await waitFor(() => expect(canvasElement.querySelector('.maka-turn-footer time')).not.toBeNull());
+    const box = (selector: string) => {
+      const element = canvasElement.querySelector(selector);
+      if (!element) throw new Error(`${selector} did not render`);
+      return element.getBoundingClientRect();
+    };
+    expect(box('.maka-message-meta time').right).toBeLessThanOrEqual(box('.maka-message-meta [data-message-id]').left);
+    expect(box('.maka-turn-footer time').left).toBeGreaterThanOrEqual(box('.maka-turn-footer [data-action="copy"]').right);
+    await expect(canvasElement.querySelector('.maka-turn-footer')).not.toHaveTextContent('claude-sonnet-4-5');
   },
 };
 
@@ -1538,8 +1549,8 @@ export const LongSystemNotes: Story = {
     scrollBehavior: 'auto',
     messages: [
       user('diagnostic-user', 'diagnostic-turn', 2, 'Please continue reviewing the conversation.'),
-      { type: 'system_note', id: 'dropping', turnId: 'diagnostic-turn', ts: NOW - 90_000,
-        kind: 'context_provider_dropping', data: { inputTokens: 98_247, priorInputTokens: 124_832 } },
+      { type: 'system_note', id: 'overflow', turnId: 'diagnostic-turn', ts: NOW - 90_000,
+        kind: 'context_overflow_after_compaction' },
       { type: 'system_note', id: 'overrun', turnId: 'diagnostic-turn', ts: NOW - 80_000,
         kind: 'context_window_overrun', data: { usedTokens: 129_127, declaredContextWindow: 128_000 } },
       { type: 'system_note', id: 'short', turnId: 'diagnostic-turn', ts: NOW - 70_000,
@@ -1582,10 +1593,10 @@ export const LongSystemNotes: Story = {
 
 // Real path: a long session that has accumulated reasoning, several native
 // Astryx tool calls and long prose, a ScheduledTask-triggered turn, with an image
-// staged in the composer and thinking set to medium. Each part is individually
-// reachable; they are stacked into one screen on purpose, as the canonical
-// visual-acceptance scaffold for the transcript. Open this first, then the
-// focused stories above.
+// staged in the composer and thinking set to medium, and the multi-step turn's
+// work log opened. Each part is individually reachable; they are stacked into
+// one screen on purpose, as the canonical visual-acceptance scaffold for the
+// transcript. Open this first, then the focused stories above.
 export const NativeConversation: Story = {
   render: () => (
     <ComposedShell
@@ -1607,6 +1618,29 @@ export const NativeConversation: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const process = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    process.querySelector('summary')!.click();
+    await waitFor(() => expect(process.open).toBe(true));
+    const body = process.querySelector<HTMLElement>('.maka-processing-body')!;
+    const rowGap = Number.parseFloat(getComputedStyle(body).rowGap);
+    const rows = [...body.children].map((row) => ({
+      kind: row.className.split(' ')[0],
+      rect: row.getBoundingClientRect(),
+    }));
+    await expect(new Set(rows.map((row) => row.kind))).toEqual(
+      new Set(['astryx-chat-reasoning', 'astryx-chat-message-bubble', 'astryx-chat-tool-calls']),
+    );
+    const gaps = rows.slice(1).map((row, index) => ({
+      between: `${rows[index]!.kind} → ${row.kind}`,
+      gap: Math.round(row.rect.top - rows[index]!.rect.bottom),
+    }));
+    await expect(gaps).toEqual(gaps.map(({ between }) => ({ between, gap: rowGap })));
+  },
 };
 
 // The relatives that make the active session a branch AND revision 2 of 3.
@@ -4007,6 +4041,14 @@ export const CompletedProcessCollapsed: Story = {
     await expect(getComputedStyle(process!).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     await expect(process!.getBoundingClientRect().height).toBeLessThanOrEqual(summary.getBoundingClientRect().height + 2);
     await expect(answer.getBoundingClientRect().top).toBeGreaterThanOrEqual(process!.getBoundingClientRect().bottom - 1);
+    // The status row reads against the same left edge as the answer text and
+    // the footer; the tool rows' 4px overhang padding belongs to the work-log
+    // body, not this summary (regression: the summary sat 4px right of both).
+    const footer = canvasElement.querySelector('.maka-turn-footer')!;
+    const answerLeft = answer.getBoundingClientRect().left;
+    await expect(process!.querySelector('.maka-turn-statusbar')!.getBoundingClientRect().left)
+      .toBeCloseTo(answerLeft, 1);
+    await expect(footer.getBoundingClientRect().left).toBeCloseTo(answerLeft, 1);
   },
 };
 
@@ -4050,6 +4092,10 @@ export const CompletedProcessExpanded: Story = {
       await expect(child.getBoundingClientRect().width, child.className.toString())
         .toBeLessThanOrEqual(processBox.width + 1);
     }
+    // The tool rows' hover surface still overhangs to the card edge: the body
+    // owns the 4px inline padding their negative margins eat into.
+    const row = processBody.querySelector('.astryx-chat-tool-calls [role="button"]')!;
+    await expect(row.getBoundingClientRect().left).toBeCloseTo(processBox.left, 1);
     await expect(summary).toHaveFocus();
     await expect(await within(canvasElement).findByText('我先检查登录状态的存储和恢复逻辑。')).toBeVisible();
     const answer = await within(canvasElement).findByText('已修复登录状态恢复。');

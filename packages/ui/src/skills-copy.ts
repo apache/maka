@@ -144,15 +144,10 @@ export interface SkillsCopy {
     readFailed: string;
   };
   detail: {
-    label: string;
     enabled: string;
-    pinned: string;
-    inspectorOpened: (name: string) => string;
     idLabel: string;
     scopeLabel: string;
     sourceLabel: string;
-    contextLabel: string;
-    runtimeLabel: string;
     toolsLabel: string;
     pathLabel: string;
   };
@@ -173,7 +168,7 @@ const SKILLS_COPY = {
     status: { metadataError: '元数据异常', managed: { source_missing: '来源缺失', update_available: '可更新', local_modified: '本地已修改', metadata_error: '元数据异常', up_to_date: '受管理', not_managed: '受管理' }, modified: '已修改', bundled: '内置', local: '本地', stateError: '状态异常', enabled: '已启用', disabled: '已停用' },
     page: { title: '技能', toolbarAria: '技能筛选与视图', metaInstalled: (count) => `${count} 个已安装`, metaUpdates: (count) => `${count} 个可更新`, metaAvailable: (count) => `${count} 个可安装`, searchMatches: (count) => `${count} 个匹配`, search: '搜索技能', locations: '技能位置…', moreActions: '更多技能操作', refreshing: '刷新中…', refresh: '刷新' },
     locations: { labels: { 'project:maka': '项目 · Maka', 'project:agents': '项目 · Agents', 'workspace:legacy': '工作区兼容目录', 'user:maka': '用户 · Maka', 'user:agents': '用户 · Agents' }, count: (count) => `${count} 个 Skill`, missing: '创建并打开', blocked: '路径已被阻止', readFailed: '无法读取' },
-    detail: { label: '技能详情', enabled: '启用', pinned: '已固定', inspectorOpened: (name) => `已打开 ${name} 的详情`, idLabel: '标识', scopeLabel: '范围', sourceLabel: '来源', contextLabel: '上下文', runtimeLabel: '运行状态', toolsLabel: '声明工具', pathLabel: '路径' },
+    detail: { enabled: '启用', idLabel: '标识', scopeLabel: '范围', sourceLabel: '来源', toolsLabel: '工具', pathLabel: '路径' },
   },
   'zh-TW': {
     categories: { '内容创作': '內容創作', '数据与AI': '資料與 AI', '设计与UI': '設計與 UI', 'DevOps与部署': 'DevOps 與部署', '文档与写作': '文件與寫作', '效率工具': '效率工具', '研究与分析': '研究與分析' },
@@ -189,7 +184,7 @@ const SKILLS_COPY = {
     status: { metadataError: '後設資料異常', managed: { source_missing: '來源缺失', update_available: '可更新', local_modified: '本地已修改', metadata_error: '後設資料異常', up_to_date: '受管理', not_managed: '受管理' }, modified: '已修改', bundled: '內建', local: '本地', stateError: '狀態異常', enabled: '已啟用', disabled: '已停用' },
     page: { title: '技能', toolbarAria: '技能篩選與檢視', metaInstalled: (count) => `${count} 個已安裝`, metaUpdates: (count) => `${count} 個可更新`, metaAvailable: (count) => `${count} 個可安裝`, searchMatches: (count) => `${count} 個符合`, search: '搜尋技能', locations: '技能位置…', moreActions: '更多技能操作', refreshing: '重新整理中…', refresh: '重新整理' },
     locations: { labels: { 'project:maka': '專案 · Maka', 'project:agents': '專案 · Agents', 'workspace:legacy': '工作區相容目錄', 'user:maka': '使用者 · Maka', 'user:agents': '使用者 · Agents' }, count: (count) => `${count} 個 Skill`, missing: '建立並開啟', blocked: '路徑已被阻止', readFailed: '無法讀取' },
-    detail: { label: '技能詳情', enabled: '啟用', pinned: '已固定', inspectorOpened: (name) => `已開啟 ${name} 的詳情`, idLabel: '標識', scopeLabel: '範圍', sourceLabel: '來源', contextLabel: '上下文', runtimeLabel: '執行狀態', toolsLabel: '宣告工具', pathLabel: '路徑' },
+    detail: { enabled: '啟用', idLabel: '標識', scopeLabel: '範圍', sourceLabel: '來源', toolsLabel: '工具', pathLabel: '路徑' },
   },
   en: {
     categories: { '内容创作': 'Content creation', '数据与AI': 'Data & AI', '设计与UI': 'Design & UI', 'DevOps与部署': 'DevOps & deployment', '文档与写作': 'Documents & writing', '效率工具': 'Productivity', '研究与分析': 'Research & analysis' },
@@ -205,7 +200,7 @@ const SKILLS_COPY = {
     status: { metadataError: 'Metadata error', managed: { source_missing: 'Source missing', update_available: 'Update available', local_modified: 'Locally modified', metadata_error: 'Metadata error', up_to_date: 'Managed', not_managed: 'Managed' }, modified: 'Modified', bundled: 'Built in', local: 'Local', stateError: 'State error', enabled: 'Enabled', disabled: 'Disabled' },
     page: { title: 'Skills', toolbarAria: 'Skill filters and views', metaInstalled: (count) => `${count} installed`, metaUpdates: (count) => count === 1 ? '1 update available' : `${count} updates available`, metaAvailable: (count) => count === 1 ? '1 available to install' : `${count} available to install`, searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`, search: 'Search skills', locations: 'Skill locations…', moreActions: 'More Skill actions', refreshing: 'Refreshing…', refresh: 'Refresh' },
     locations: { labels: { 'project:maka': 'Project · Maka', 'project:agents': 'Project · Agents', 'workspace:legacy': 'Workspace compatibility folder', 'user:maka': 'User · Maka', 'user:agents': 'User · Agents' }, count: (count) => count === 1 ? '1 Skill' : `${count} Skills`, missing: 'Create and open', blocked: 'Path blocked', readFailed: 'Could not read' },
-    detail: { label: 'Skill details', enabled: 'Enabled', pinned: 'Pinned', inspectorOpened: (name) => `${name} details opened`, idLabel: 'ID', scopeLabel: 'Scope', sourceLabel: 'Source', contextLabel: 'Context', runtimeLabel: 'Runtime', toolsLabel: 'Declared tools', pathLabel: 'Path' },
+    detail: { enabled: 'Enabled', idLabel: 'ID', scopeLabel: 'Scope', sourceLabel: 'Source', toolsLabel: 'Tools', pathLabel: 'Path' },
   },
 } satisfies UiCatalog<SkillsCopy>;
 

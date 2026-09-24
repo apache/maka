@@ -175,6 +175,10 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
     listUnsettledToolOperations(
       sessionIds: string | readonly string[],
     ): Promise<UnsettledToolOperationRecord[]>;
+    /** Rebuild one Session's disposable tool projections from its immutable events. */
+    rebuildToolProjectionsForSession?(sessionId: string): Promise<void>;
+    /** Repair terminal projections for selected Sessions without decoding their full histories. */
+    rebuildTerminalToolProjectionsForSessions(sessionIds: readonly string[]): Promise<void>;
     appendRuntimePartialBatch(
       sessionId: string,
       runId: string,
@@ -811,6 +815,12 @@ async function createExecutionStoresForWrite(
         run(() => runtimePersistence.runtimeCommitStore.commitToolOutcome(input)),
       listUnsettledToolOperations: (sessionIds) =>
         run(() => runtimePersistence.runtimeCommitStore.listUnsettledToolOperations(sessionIds)),
+      rebuildTerminalToolProjectionsForSessions: (sessionIds) =>
+        run(() =>
+          runtimePersistence.runtimeCommitStore.rebuildTerminalToolProjectionsForSessions(
+            sessionIds,
+          ),
+        ),
     },
   };
   freezeExecutionStoresFacade(stores);

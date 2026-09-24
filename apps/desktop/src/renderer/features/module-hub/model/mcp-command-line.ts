@@ -17,8 +17,6 @@
  * under the License.
  */
 
-// apps/desktop/src/renderer/mcp-command-line.ts
-//
 // The editor's single 命令 field holds a whole command line; mcp.json keeps
 // the protocol shape (`command` + `args[]`). These two functions are the
 // bridge, and they are inverses: parse(format(command, args)) always yields

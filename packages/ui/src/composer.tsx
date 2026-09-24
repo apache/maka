@@ -1511,6 +1511,19 @@ export const Composer = forwardRef<
     // blurred the window or completed a real drop somewhere.
     if (event.key === 'Escape' && dragActive) {
       setDragActive(false);
+      event.preventDefault();
+      return;
+    }
+    // The mounted composer can be hosted in a dismissible preview. Give that
+    // host first refusal after the editor's local trigger menu has handled Esc.
+    if (event.key === 'Escape' && !event.currentTarget.dispatchEvent(
+      new event.currentTarget.ownerDocument.defaultView!.CustomEvent(
+        'maka-composer-escape',
+        { bubbles: true, cancelable: true },
+      ),
+    )) {
+      event.preventDefault();
+      return;
     }
     // Esc during streaming interrupts the model. We don't preventDefault
     // unconditionally so Esc still works to close modals when the composer

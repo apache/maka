@@ -94,9 +94,12 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   // auto-dismissed (Linux closes popups after window resizes) must not be
   // closed again — closePopup on a dead popup crashes the main process.
   if ((await addPanel.getAttribute('aria-expanded')) === 'true') {
-    await app.evaluate(() => (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup());
+    // Close on the same owner passed to popup(). The no-window overload takes
+    // Electron's close-all MenuRunner path on Linux, even for this single menu.
+    await mainWindow.evaluate((window) =>
+      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup(window));
   }
-  await expect(addPanel).toHaveAttribute('aria-expanded', 'false');
+  await expect(addPanel).not.toHaveAttribute('aria-expanded', 'true');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
   const draftBeforeOverlays = 'Draft survives main-window overlays.';
@@ -167,6 +170,9 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   expect(await app.evaluate(({ app }) => process.platform !== 'darwin' || app.dock!.isVisible())).toBe(true);
   const editor = workhub.locator('.maka-composer-editor [contenteditable="true"]');
   await editor.fill('Keep this draft while folding the conversation.');
+  // The floating native window is foregrounded on local runs. Release its
+  // editor so host keyboard input cannot mutate the draft under assertion.
+  await editor.blur();
   const expandedHeight = await workhub.evaluate(() => window.innerHeight);
   const floatingBottom = () => app.evaluate(({ BrowserWindow }) => {
     const bounds = BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getBounds();

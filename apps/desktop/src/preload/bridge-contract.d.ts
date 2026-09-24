@@ -246,6 +246,7 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigUpdateResult,
   McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
@@ -325,6 +326,18 @@ export interface OnboardingSnapshot {
   chatModelChoices: import('@maka/core/chat-model-choice').ChatModelChoice[];
   sessionSendOutcomes: Record<string, import('@maka/core/session-send-projection').SessionSendProjection>;
 }
+
+export type DesktopOnboardingSessionUpdate =
+  | { kind: 'resync' }
+  | {
+      kind: 'delta';
+      sessionId: string;
+      outcome: import('@maka/core/session-send-projection').SessionSendProjection | null;
+      defaultHost?: {
+        state: OnboardingState;
+        milestones: OnboardingMilestone[];
+      };
+    };
 
 export interface DesktopTaskSubmissionReadinessRequest {
   connectionSlug?: string;
@@ -1582,10 +1595,11 @@ export interface MakaBridge {
     /** Adds a new server; a taken id comes back as `{ status: 'exists' }`
      * instead of an error, so the dialog can put it on the id field. */
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;
-    upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    /** Saves an edit made against `basis`, the server as last shown; one
+     * changed or removed elsewhere since comes back `stale`. */
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult>;
     remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
-    cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult>;
     login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
     /** Ends an in-flight login round; resolves false when none is active. */
@@ -1640,6 +1654,7 @@ export interface MakaBridge {
   };
   onboarding: {
     getSnapshot(): Promise<OnboardingSnapshot>;
+    getSessionUpdate(sessionId: string): Promise<DesktopOnboardingSessionUpdate | null>;
     setMilestone(
       id: OnboardingMilestoneId,
       status: 'completed' | 'skipped',

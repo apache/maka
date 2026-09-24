@@ -287,7 +287,13 @@ export const ProgressModelPicker: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvasElement.querySelector('.workHubLive')).toHaveAttribute('data-progress', 'true'));
+    const card = canvasElement.querySelector('.workHubProgressCard.maka-progress-card');
+    expect(card).toBeVisible();
+    expect(card?.querySelector('.maka-progress-card-summary')).toBeVisible();
     expect(canvas.queryByRole('combobox', { name: /思考级别/ })).toBeNull();
+    const status = card?.querySelector('[role="status"]');
+    expect(status).toBeVisible();
+    expect(status?.closest('button')).toBeNull();
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
     await userEvent.click(editor);
     await userEvent.type(editor, 'Keep this draft readable while choosing a model.');

@@ -21,10 +21,9 @@ import type {
   McpOAuthConfig,
   McpProtocolPreference,
   McpServerConfig,
-  McpServerStatus,
 } from '@maka/core/mcp';
 import { isMcpStdioConfig, resolveMcpProtocolPreference } from '@maka/core/mcp';
-import type { McpCopy } from './locales/mcp-copy.js';
+import type { McpCopy } from '../../../locales/mcp-copy.js';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
 
 /** Electron preserves error messages, but not custom error fields. Map only
@@ -53,9 +52,6 @@ export type McpEditorDraft = {
    * Stored configs are projected to an explicit value before editing. */
   protocol?: McpProtocolPreference;
   headers: string;
-  /** Opaque round-trip state: the editor has no OAuth fields, but an
-   * edit → save of an OAuth-configured server must not delete the block
-   * (the masked clientSecret sentinel restores from disk in main). */
   oauth?: McpOAuthConfig;
 };
 
@@ -130,17 +126,6 @@ export function mcpConfigFromDraft(draft: McpEditorDraft, copy: McpCopy): McpSer
   };
 }
 
-export function presentMcpNegotiatedProtocol(
-  status: McpServerStatus | undefined,
-  copy: McpCopy,
-): string | undefined {
-  if (status?.state !== 'connected' || !status.negotiatedProtocol) return undefined;
-  return copy.detail.negotiatedProtocol(
-    status.negotiatedProtocol.era,
-    status.negotiatedProtocol.revision,
-  );
-}
-
 function parseMap(value: string, copy: McpCopy): Record<string, string> {
   return Object.fromEntries(
     value
@@ -149,13 +134,25 @@ function parseMap(value: string, copy: McpCopy): Record<string, string> {
       .map((line, index) => {
         const separator = line.indexOf('=');
         if (separator <= 0) throw new Error(copy.errors.mapLine(index + 1));
-        return [line.slice(0, separator).trim(), line.slice(separator + 1)];
+        return [line.slice(0, separator).trim(), parseMapValue(line.slice(separator + 1))];
       }),
   );
 }
 
+function parseMapValue(raw: string): string {
+  if (!raw.startsWith('"')) return raw;
+  try {
+    const value: unknown = JSON.parse(raw);
+    return typeof value === 'string' ? value : raw;
+  } catch {
+    return raw;
+  }
+}
+
+// One entry per line, so a value holding a line break, or one that would
+// read back as a quoted string, is written as a JSON string.
 function formatMap(value?: Record<string, string>): string {
   return Object.entries(value ?? {})
-    .map(([key, item]) => `${key}=${item}`)
+    .map(([key, item]) => `${key}=${/[\r\n]/u.test(item) || item.startsWith('"') ? JSON.stringify(item) : item}`)
     .join('\n');
 }

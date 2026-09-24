@@ -680,6 +680,8 @@ export interface TextDeltaEvent extends BaseEvent {
 export interface TextCompleteEvent extends BaseEvent {
   type: 'text_complete';
   interrupted?: true;
+  /** `text` replaces the streamed deltas instead of extending them. */
+  replaced?: true;
   messageId: string;
   text: string;
   /** Provider-owned text metadata such as Responses URL citations. */
@@ -694,9 +696,27 @@ export interface ThinkingDeltaEvent extends BaseEvent {
   text: string;
 }
 
+/**
+ * Apply a text/thinking delta to a stream that has consumed `currentEnd`
+ * source characters. Overlap with consumed text is dropped, so replayed and
+ * reseeded deltas are idempotent. A delta that starts past `currentEnd` is a
+ * gap and returns `undefined`; one without `startOffset` appends.
+ */
+export function foldAssistantDelta(
+  currentEnd: number,
+  delta: { readonly startOffset?: number; readonly text: string },
+): { tail: string; endOffset: number } | undefined {
+  const startOffset = delta.startOffset ?? currentEnd;
+  if (startOffset > currentEnd) return undefined;
+  const tail = delta.text.slice(currentEnd - startOffset);
+  return { tail, endOffset: currentEnd + tail.length };
+}
+
 export interface ThinkingCompleteEvent extends BaseEvent {
   type: 'thinking_complete';
   interrupted?: true;
+  /** `text` replaces the streamed deltas instead of extending them. */
+  replaced?: true;
   messageId: string;
   text: string;
   /** Anthropic signed thinking — MUST be re-sent on replay. */

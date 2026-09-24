@@ -92,6 +92,7 @@ test('applies authoritative replacement once and does not complete it again at T
     deltaFrame(2, 5, '', { complete: true, interrupted: true }),
   ).events;
   assert.ok(completed[0]?.type === 'text_complete' && completed[0].interrupted === true);
+  assert.equal(completed[0].replaced, true);
   assert.deepEqual(
     completed.map((event) => [event.type, 'text' in event ? event.text : '']),
     [['text_complete', 'final']],

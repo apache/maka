@@ -180,6 +180,23 @@ describe('applyLiveTurnEvent', () => {
     );
   });
 
+  it('drops a delta past the consumed source so a later reseed lands whole', () => {
+    const delta = {
+      type: 'text_delta' as const,
+      turnId: 'turn-1',
+      messageId: 'step-1',
+    };
+    const early = applyLiveTurnEvent(undefined, {
+      ...delta, id: 'live-1', ts: 100, startOffset: 5, text: ' world',
+    });
+    assert.equal(early.steps.length, 0);
+
+    const seeded = applyLiveTurnEvent(early, {
+      ...delta, id: 'seed-1', ts: 200, startOffset: 0, text: 'Hello world',
+    });
+    assert.equal(seeded.steps[0]?.text?.text, 'Hello world');
+  });
+
 
   it('projects transient provider retry progress until the next model output', () => {
     const scheduled = applyLiveTurnEvent(armLiveTurn('turn-1'), {
