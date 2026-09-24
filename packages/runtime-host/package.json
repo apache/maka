@@ -30,13 +30,13 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "1.4.0",
+    "@agentclientprotocol/sdk": "1.5.0",
     "@maka/acp-executor-plugin": "0.1.0",
     "@maka/antigravity-acp-plugin": "0.1.0",
     "@maka/core": "0.1.0",
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",
-    "systeminformation": "^5.33.10",
+    "systeminformation": "^5.33.13",
     "ws": "^8.21.3",
     "yaml": "^2.9.1",
     "zod": "^4.6.5"
