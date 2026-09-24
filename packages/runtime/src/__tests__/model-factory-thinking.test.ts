@@ -717,10 +717,13 @@ describe('buildProviderOptions: thinking level', () => {
   });
 
   test('Vercel Gateway sends reasoning effort under its stable namespace and exact model id', () => {
-    assert.deepEqual(
-      [...thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking')],
-      ['off', 'low', 'medium', 'high'],
-    );
+    // models.dev may add effort levels; every advertised level must keep the
+    // same namespace and wire mapping without pinning the entire catalog set.
+    for (const level of thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking')) {
+      assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', level), {
+        vercel: { reasoningEffort: level === 'off' ? 'none' : level },
+      });
+    }
     assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'high'), {
       vercel: { reasoningEffort: 'high' },
     });
