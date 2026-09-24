@@ -100,10 +100,10 @@ temporary Host/catalog unavailability is not proof of deletion.
 The gesture chooses its axis after 18 pixels, requires horizontal movement at
 least 1.5 times the vertical movement, and triggers at 80 horizontal pixels.
 This allows a small diagonal start without locking out the entire horizontal
-gesture. A subdued arrow at the corresponding conversation edge follows the
-pull with a short inward slide and fade. Crossing the threshold requests a move
+gesture. A white arrow on a theme-accent tab sits flush with the corresponding
+conversation edge, widening with the pull and fading in/out. Crossing the threshold requests a move
 and acknowledges only a confirmed selection. An unfinished pull begins its
-320 ms return after 500 ms idle. Completion stays visible for 650 ms, then
+320 ms return after 500 ms idle. Completion stays visible for 200 ms, then
 returns over 320 ms. A continuous tail cannot extend or revive it; a history
 boundary shows a muted arrow. The gesture model owns
 settlement phases and deadlines; the view schedules them and renders feedback

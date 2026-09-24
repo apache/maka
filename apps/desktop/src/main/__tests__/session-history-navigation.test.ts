@@ -143,14 +143,14 @@ it('bounds completion feedback even when a continuous wheel tail never stops', (
   const { catalog, wheel, feedback, targets } = setup();
   for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
   wheel(0);
-  for (let time = 100; time <= 500; time += 100) {
-    act(() => t.mock.timers.tick(100));
+  for (let time = 50; time <= 150; time += 50) {
+    act(() => t.mock.timers.tick(50));
     wheel(time, { deltaX: -2 });
   }
   assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
-  act(() => t.mock.timers.tick(150));
+  act(() => t.mock.timers.tick(50));
   assert.equal(feedback()?.getAttribute('data-phase'), 'returning');
-  for (let time = 700; time <= 1100; time += 100) {
+  for (let time = 250; time <= 650; time += 100) {
     act(() => t.mock.timers.tick(100));
     wheel(time, { deltaX: -2 });
   }
@@ -167,13 +167,13 @@ it('uses elapsed time for animation even when the sample preview freezes the wal
   const { catalog, wheel, feedback } = setup();
   for (const id of ['A', 'B']) catalog.setActiveSessionId(id);
   wheel(0);
-  elapsed = 500;
-  act(() => t.mock.timers.tick(500));
+  elapsed = 100;
+  act(() => t.mock.timers.tick(100));
   wheel(100, { deltaX: -2 });
-  elapsed = 650;
-  act(() => t.mock.timers.tick(150));
+  elapsed = 200;
+  act(() => t.mock.timers.tick(100));
   assert.equal(feedback()?.getAttribute('data-phase'), 'returning');
-  elapsed = 970;
+  elapsed = 520;
   act(() => t.mock.timers.tick(320));
   assert.equal(feedback() === undefined, true);
 });
@@ -188,7 +188,7 @@ it('retains the completion when a Session swap detaches the original wheel targe
   oldTarget.remove();
   wheel(48, { composedPath: () => [oldTarget, document] });
   assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
-  act(() => t.mock.timers.tick(500));
+  act(() => t.mock.timers.tick(150));
   assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
   assert.equal(catalog.getState().activeSessionId, 'B');
   assert.deepEqual(targets, [null]);

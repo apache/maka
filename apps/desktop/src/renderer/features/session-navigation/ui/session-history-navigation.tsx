@@ -138,12 +138,12 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
     data-progress={indicator.progress}
     data-direction={indicator.direction}
     style={{ left: indicator.edge, top: indicator.top,
-      '--swipe-inward': -indicator.direction,
       '--swipe-progress': indicator.progress,
       '--swipe-return-duration': `${SESSION_SWIPE_RETURN_DURATION_MS}ms`,
     } as CSSProperties}
   >
-    <Arrow size={20} strokeWidth={2} />
+    {/* This large edge affordance overrides the global toolbar stroke weight. */}
+    <Arrow size={24} style={{ strokeWidth: 3 }} />
   </div>, document.body);
 }
 

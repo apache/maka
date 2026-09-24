@@ -103,7 +103,7 @@ export function createSessionSwipe() {
       const direction = !fired && Math.abs(distance) >= 80 ? (distance < 0 ? -1 : 1) : null;
       if (direction !== null) fired = true;
       presentation = fired ? 'committed' : 'pulling';
-      settleAt = performance.now() + (fired ? 650 : 500);
+      settleAt = performance.now() + (fired ? 200 : 500);
       return { claimed: true, direction };
     },
   };

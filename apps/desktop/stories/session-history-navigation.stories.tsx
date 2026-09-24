@@ -104,10 +104,11 @@ export const HorizontalScrollOwnership: Story = {
     });
     expect(selected).toHaveTextContent('B');
     expect(getComputedStyle(indicator).pointerEvents).toBe('none');
-    expect((indicator as HTMLElement).offsetWidth).toBe(44);
+    expect((indicator as HTMLElement).offsetHeight).toBe(104);
+    expect(getComputedStyle(indicator.querySelector('svg')!).strokeWidth).toBe('3px');
     const surface = prose.closest('[data-session-history-surface]')!.getBoundingClientRect();
     const arrow = indicator.getBoundingClientRect();
-    expect(arrow.left).toBeGreaterThanOrEqual(surface.left);
+    expect(Math.abs(arrow.left - surface.left)).toBeLessThan(1);
     expect(arrow.right).toBeLessThan(surface.right);
     expect(Math.abs((arrow.top + arrow.bottom) / 2 - (surface.top + surface.bottom) / 2)).toBeLessThan(1);
     expect(wheel(prose, 416, -48)).toBe(true);
@@ -117,6 +118,11 @@ export const HorizontalScrollOwnership: Story = {
     expect(selected).toHaveTextContent('C');
     wheel(prose, 800, 100);
     await waitFor(() => expect(selected).toHaveTextContent('B'));
+    await waitFor(() => {
+      const forward = canvasElement.ownerDocument.querySelector('.session-history-swipe')!;
+      expect(forward).toHaveAttribute('data-direction', '1');
+      expect(Math.abs(forward.getBoundingClientRect().right - surface.right)).toBeLessThan(1);
+    });
     const draft = canvas.getByRole('textbox', { name: 'Draft input' });
     await userEvent.type(draft, 'unsent text');
     expect(wheel(draft, 1200)).toBe(false);
