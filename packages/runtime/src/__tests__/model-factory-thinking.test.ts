@@ -776,6 +776,14 @@ describe('buildProviderOptions: thinking level', () => {
 });
 
 describe('getAIModel: models.dev registry providers', () => {
+  test('a custom Chat connection without a base URL fails with a connection error', () => {
+    const { baseUrl: _baseUrl, ...migrated } = custom('openai-chat');
+    assert.throws(
+      () => getAIModel({ connection: migrated, apiKey: 'test-key', modelId: 'relay-model' }),
+      /custom connection my-relay requires a base URL/,
+    );
+  });
+
   test('routes the existing Kimi provider through its explicitly selected protocol', () => {
     const anthropic = getAIModel({
       connection: conn('kimi-coding-plan'),

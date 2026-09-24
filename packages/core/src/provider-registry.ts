@@ -1162,7 +1162,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: opencodeModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', requireBaseUrl: true },
+    runtimeAdapter: { kind: 'openai-compatible' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
       'openai-responses': {
@@ -1584,7 +1584,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible' },
+    runtimeAdapter: { kind: 'openai-compatible', requireBaseUrl: true },
     protocolAdapters: {
       'openai-responses': {
         kind: 'openai',
