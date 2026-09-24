@@ -335,8 +335,8 @@ pub fn drag_region() -> Stateful<Div> {
                 armed.set(true);
             }
         })
-        .on_mouse_move(move |_, window, _| {
-            if on_move.replace(false) {
+        .on_mouse_move(move |event, window, _| {
+            if on_move.replace(false) && event.pressed_button == Some(MouseButton::Left) {
                 window.start_window_move();
             }
         })

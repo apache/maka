@@ -33,16 +33,17 @@ impl Chat {
         let theme = theme(cx);
         let status: Option<SharedString> = match &self.delivery {
             Some(Delivery::Failed(error)) => Some(format!("未发送：{error}").into()),
-            Some(Delivery::Unknown(error)) => {
-                Some(format!("发送结果未知，未自动重试：{error}").into())
-            }
+            Some(Delivery::Unknown { error, .. }) => Some(
+                format!("发送结果未知（{error}）。消息出现在对话中即已送达；修改草稿可重新发送。")
+                    .into(),
+            ),
             _ => None,
         };
         let running = self.running().is_some();
         let sending = matches!(self.delivery, Some(Delivery::Sending));
         let draft = !self.composer.read(cx).value().trim().is_empty();
         let blocked =
-            self.subscription.is_none() || matches!(self.delivery, Some(Delivery::Unknown(_)));
+            self.subscription.is_none() || matches!(self.delivery, Some(Delivery::Unknown { .. }));
         let this = cx.weak_entity();
         let (path, filled, tip) = if running {
             (
@@ -95,12 +96,12 @@ impl Chat {
                 .size(if running { px(12.) } else { px(16.) }),
             )
             .tooltip(ui::tooltip(tip));
-        let action = ui::pressable(action, move |window, cx| {
+        let action = ui::pressable(action, move |_, cx| {
             let _ = this.update(cx, |chat, cx| {
                 if chat.running().is_some() {
                     chat.stop(cx);
                 } else {
-                    chat.send(window, cx);
+                    chat.send(cx);
                 }
             });
         });

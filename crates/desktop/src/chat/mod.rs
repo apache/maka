@@ -30,8 +30,8 @@ use crate::{
 };
 use gpui_kit::base::input::{InputEvent, TextareaState};
 use gpui_kit::{
-    AppContext, Context, Entity, FocusHandle, FollowMode, ListAlignment, ListOffset, ListState,
-    Pixels, SharedString, Subscription, Window, px,
+    AnyWindowHandle, AppContext, Context, Entity, FocusHandle, FollowMode, ListAlignment,
+    ListOffset, ListState, Pixels, SharedString, Subscription, Window, px,
 };
 use maka_client::{
     Client, RequestFailure,
@@ -65,7 +65,13 @@ gpui_kit::actions!(transcript, [CopySelection]);
 enum Delivery {
     Sending,
     Failed(SharedString),
-    Unknown(SharedString),
+    /// The request may have landed. Sending stays blocked until the prompt
+    /// shows up in the transcript or the user changes the draft, so the
+    /// same text is never sent twice by accident.
+    Unknown {
+        error: SharedString,
+        text: String,
+    },
 }
 
 /// Keeps a just-sent prompt at the top of the view while its reply grows
@@ -104,6 +110,7 @@ pub struct Chat {
     end_space: Pixels,
     jump: bool,
     composer: Entity<TextareaState>,
+    window: AnyWindowHandle,
     delivery: Option<Delivery>,
     stopping: bool,
     answering: Option<String>,
@@ -148,10 +155,18 @@ impl Chat {
                 .submit_on_enter(true)
                 .placeholder("给 Maka 发消息")
         });
-        let submit = cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
-            if let InputEvent::PressEnter { shift: false, .. } = event {
-                this.send(window, cx);
+        let submit = cx.subscribe(&composer, |this, composer, event, cx| match event {
+            InputEvent::PressEnter { shift: false, .. } => this.send(cx),
+            InputEvent::Change => {
+                if let Some(Delivery::Unknown { text, .. }) = &this.delivery
+                    && composer.read(cx).value() != text.as_str()
+                {
+                    this.delivery = None;
+                    this.sent = None;
+                }
+                cx.notify();
             }
+            _ => {}
         });
         let redraw = cx.observe(&copied, |_, _, cx| cx.notify());
         let mut this = Self {
@@ -181,6 +196,7 @@ impl Chat {
             end_space: px(0.),
             jump: false,
             composer,
+            window: window.window_handle(),
             delivery: None,
             stopping: false,
             answering: None,
@@ -511,6 +527,9 @@ impl Chat {
             let row = format!("prompt:{sent}");
             if keys.contains(&row) {
                 self.sent = None;
+                if let Some(Delivery::Unknown { text, .. }) = self.delivery.take() {
+                    self.clear_sent_draft(text, cx);
+                }
                 self.anchor = Some(Anchor { row, pinning: true });
                 // Room for the reply before anything is measured, so the
                 // prompt never shows at the bottom first.
@@ -616,10 +635,26 @@ impl Chat {
         cx.notify();
     }
 
-    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Empties the composer if it still holds the sent text; anything typed
+    /// since is kept.
+    fn clear_sent_draft(&self, text: String, cx: &mut Context<Self>) {
+        let composer = self.composer.clone();
+        let window = self.window;
+        cx.defer(move |cx| {
+            let _ = window.update(cx, |_, window, cx| {
+                composer.update(cx, |composer, cx| {
+                    if composer.value() == text.as_str() {
+                        composer.set_value("", window, cx);
+                    }
+                })
+            });
+        });
+    }
+
+    fn send(&mut self, cx: &mut Context<Self>) {
         if matches!(
             self.delivery,
-            Some(Delivery::Sending | Delivery::Unknown(_))
+            Some(Delivery::Sending | Delivery::Unknown { .. })
         ) || self.subscription.is_none()
         {
             return;
@@ -651,28 +686,30 @@ impl Chat {
         let sending = cx
             .global::<Host>()
             .spawn(async move { client.submit_message(input).await });
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = sending.await;
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update(cx, |this, cx| {
                 this.delivery = match result {
                     Ok(Ok(SubmitResult::Blocked { message, .. })) => {
                         Some(Delivery::Failed(message.into()))
                     }
                     Ok(Ok(_)) => {
-                        // Keep anything typed while the request was in flight.
-                        if this.composer.read(cx).value() == text.as_str() {
-                            this.composer
-                                .update(cx, |composer, cx| composer.set_value("", window, cx));
-                        }
+                        this.clear_sent_draft(text, cx);
                         None
                     }
                     Ok(Err(RequestFailure::NotDispatched(error))) => {
                         Some(Delivery::Failed(error.to_string().into()))
                     }
-                    Ok(Err(error)) => Some(Delivery::Unknown(error.to_string().into())),
-                    Err(error) => Some(Delivery::Unknown(error.into())),
+                    Ok(Err(error)) => Some(Delivery::Unknown {
+                        error: error.to_string().into(),
+                        text,
+                    }),
+                    Err(error) => Some(Delivery::Unknown {
+                        error: error.into(),
+                        text,
+                    }),
                 };
-                if this.delivery.is_some() {
+                if matches!(this.delivery, Some(Delivery::Failed(_))) {
                     this.sent = None;
                 }
                 cx.notify();

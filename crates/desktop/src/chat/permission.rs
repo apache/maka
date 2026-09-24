@@ -18,8 +18,8 @@
  */
 
 //! The card that asks before the agent acts, between the transcript and
-//! the composer. Its first allow choice takes focus when it appears, so
-//! Enter answers it and Tab moves between the choices.
+//! the composer. Unless the user is typing, its first choice takes focus
+//! when it appears, so Enter answers it and Tab moves between the choices.
 
 use super::Chat;
 use crate::{
@@ -27,8 +27,8 @@ use crate::{
     ui::{Tone, button, icon},
 };
 use gpui_kit::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    AnyElement, Context, Focusable, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use maka_protocol::interaction::{self, InteractionRequest};
 use serde_json::{Value, json};
@@ -49,8 +49,13 @@ impl Chat {
         let id = pending.interaction_id().to_owned();
         if self.focused_interaction.as_deref() != Some(id.as_str()) {
             self.focused_interaction = Some(id.clone());
-            let handle = self.permission_focus.clone();
-            window.on_next_frame(move |window, cx| window.focus(&handle, cx));
+            // Taking focus from the composer would turn the next typed space
+            // into an answer.
+            let typing = self.composer.read(cx).focus_handle(cx).is_focused(window);
+            if !typing {
+                let handle = self.permission_focus.clone();
+                window.on_next_frame(move |window, cx| window.focus(&handle, cx));
+            }
         }
         let busy = self.answering.as_deref() == Some(id.as_str());
         let (title, detail, choices): (&str, String, Vec<(&str, &str, Value)>) = match pending
@@ -113,8 +118,9 @@ impl Chat {
             .map(|(ix, (choice, label, value))| {
                 let pending = pending.clone();
                 let this = this.clone();
-                // Choices run from the narrowest allow to deny; the first one is the default.
-                let tone = if ix == 0 {
+                // Only a one-time allow is the default; a session-wide grant
+                // must be chosen deliberately.
+                let tone = if ix == 0 && choice != "session" {
                     Tone::Primary
                 } else {
                     Tone::Outline
