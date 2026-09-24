@@ -799,6 +799,23 @@ export function materializeTurns(
     }
   }
 
+  const toolCalls = messages.filter(
+    (message): message is Extract<StoredMessage, { type: "tool_call" }> =>
+      message.type === "tool_call",
+  );
+  const foldedTools = foldScopedShellRunToolActivities(
+    materializeTools(messages).map((item, index) => ({
+      turnId: toolCalls[index]!.turnId,
+      item,
+    })),
+  );
+  const toolItemsByTurnId = new Map<string, Map<string, ToolActivityItem>>();
+  for (const { turnId, item } of foldedTools) {
+    const turnTools = toolItemsByTurnId.get(turnId);
+    if (turnTools) turnTools.set(item.toolUseId, item);
+    else toolItemsByTurnId.set(turnId, new Map([[item.toolUseId, item]]));
+  }
+
   // Second pass: rebuild each turn's render timeline from its storage-ordered
   // messages, interleaving a step's thinking/text with its paired tools. The
   // timeline is the turn's only tool authority; `tools` is flattened out of it
@@ -808,13 +825,10 @@ export function materializeTurns(
   for (const turnId of order) {
     const turn = byId.get(turnId)!;
     const turnMessages = messagesByTurn.get(turnId) ?? [];
-    const toolItemByUseId = new Map<string, ToolActivityItem>(
-      foldShellRunToolActivities(materializeTools(turnMessages)).map((tool) => [
-        tool.toolUseId,
-        tool,
-      ]),
+    turn.timeline = buildTurnTimeline(
+      turnMessages,
+      toolItemsByTurnId.get(turnId) ?? new Map(),
     );
-    turn.timeline = buildTurnTimeline(turnMessages, toolItemByUseId);
     turn.tools = timelineTools(turn.timeline);
   }
 
@@ -841,24 +855,30 @@ export function finalAssistantReplyText(turn: TurnViewModel): string {
  * there, leaving an orphan tool row and a parent that never took the child's
  * revision.
  */
-export function foldShellRunToolActivities(
-  items: readonly ToolActivityItem[],
-): ToolActivityItem[] {
+interface ScopedToolActivityItem {
+  turnId: string;
+  item: ToolActivityItem;
+}
+
+function foldScopedShellRunToolActivities(
+  items: readonly ScopedToolActivityItem[],
+): ScopedToolActivityItem[] {
   const ownedRefs = new Set<string>();
-  for (const item of items) {
+  for (const { item } of items) {
     if (item.toolName === "Bash" && item.result?.kind === "shell_run")
       ownedRefs.add(item.result.ref);
   }
 
-  const folded: ToolActivityItem[] = [];
+  const folded: ScopedToolActivityItem[] = [];
   const parentIndexByRef = new Map<string, number>();
   const childResultsByRef = new Map<string, ShellRunToolResult[]>();
 
-  for (const item of items) {
+  for (const scopedItem of items) {
+    const { item } = scopedItem;
     const result = item.result?.kind === "shell_run" ? item.result : undefined;
     if (!result || item.toolName === "Bash") {
       if (result) parentIndexByRef.set(result.ref, folded.length);
-      folded.push(item);
+      folded.push(scopedItem);
       continue;
     }
     if (ownedRefs.has(result.ref)) {
@@ -868,14 +888,14 @@ export function foldShellRunToolActivities(
       if (item.toolName === "Read" || item.toolName === "StopBackgroundTask")
         continue;
     }
-    folded.push(item);
+    folded.push(scopedItem);
   }
 
   for (const [ref, results] of childResultsByRef) {
     const index = parentIndexByRef.get(ref)!;
     const parent = folded[index]!;
     let current =
-      parent.result?.kind === "shell_run" ? parent.result : undefined;
+      parent.item.result?.kind === "shell_run" ? parent.item.result : undefined;
     let changed = false;
     for (const result of results) {
       const merged = mergeShellRunStateWithDiagnostics(
@@ -888,18 +908,37 @@ export function foldShellRunToolActivities(
         changed = true;
       }
     }
-    if (changed && current) folded[index] = { ...parent, result: current };
+    if (changed && current)
+      folded[index] = { ...parent, item: { ...parent.item, result: current } };
   }
 
   return folded;
 }
 
+export function foldShellRunToolActivities(
+  items: readonly ToolActivityItem[],
+): ToolActivityItem[] {
+  return foldScopedShellRunToolActivities(
+    items.map((item) => ({ turnId: "", item })),
+  ).map(({ item }) => item);
+}
+
 function foldShellRunTurns(
   turns: readonly TurnViewModel[],
 ): readonly TurnViewModel[] {
-  return projectTurnTools(
-    turns,
-    foldShellRunToolActivities(turns.flatMap((turn) => turn.tools)),
+  const folded = foldScopedShellRunToolActivities(
+    turns.flatMap((turn) =>
+      turn.tools.map((item) => ({ turnId: turn.turnId, item })),
+    ),
+  );
+  const toolsByTurnId = new Map<string, ToolActivityItem[]>();
+  for (const { turnId, item } of folded) {
+    const turnTools = toolsByTurnId.get(turnId);
+    if (turnTools) turnTools.push(item);
+    else toolsByTurnId.set(turnId, [item]);
+  }
+  return turns.map(
+    (turn) => projectTurnTools([turn], toolsByTurnId.get(turn.turnId) ?? [])[0]!,
   );
 }
 
