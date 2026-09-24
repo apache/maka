@@ -1781,13 +1781,13 @@ function AppShellContent({
       contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale),
     showModelSetupToast,
     toastApi,
-    notifyRunEnded: ({ kind, sessionId, body }) => {
+    notifyTurn: ({ kind, sessionId, body }) => {
       if (kind === 'completed' && activeIdRef.current === sessionId)
         setPetCompletionNonce((current) => current + 1);
       const title = sessionsRef.current.find((session) => session.id === sessionId)?.name;
       // Best-effort: swallow any main-side failure so a missed banner
       // never surfaces as an unhandled promise rejection.
-      void window.maka.notifications.runEnded({ kind, title, body }).catch(() => {});
+      void window.maka.notifications.notify({ kind, title, body }).catch(() => {});
     },
   });
 

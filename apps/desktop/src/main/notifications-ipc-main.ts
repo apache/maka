@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { ipcMain, Notification } from 'electron';
+import { app, ipcMain, Notification } from 'electron';
 import type { AppSettings } from '@maka/core/settings';
 import type { createMainWindowController } from './main-window.js';
 import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
@@ -38,8 +38,9 @@ interface NotificationsIpcDeps {
 }
 
 /**
- * Wires the renderer's "a turn just ended" signal to a native OS
- * notification. The renderer fires on every terminal turn event; the
+ * Wires the renderer's "a turn ended or is waiting on the user" signal to a
+ * native OS notification. The renderer fires on every terminal turn event and
+ * every interaction request; the
  * gating (product toggle + platform support + window-focus) lives here
  * in the main process, which is the only place that authoritatively
  * knows whether the window is focused and can raise/focus it on click.
@@ -50,7 +51,7 @@ interface NotificationsIpcDeps {
  */
 export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
   const target = deps.ipcMain ?? ipcMain;
-  target.handle('notifications:runEnded', async (_event, payload: unknown): Promise<void> => {
+  target.handle('notifications:notify', async (_event, payload: unknown): Promise<void> => {
     const raw = (payload ?? {}) as { kind?: unknown; title?: unknown; body?: unknown };
     if (!isRunNotificationKind(raw.kind)) return;
 
@@ -78,5 +79,6 @@ export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
     // back to the foreground — `focus()` already restores + shows.
     notification.on('click', () => deps.mainWindowController.focus());
     notification.show();
+    if (raw.kind === 'waiting') app.dock?.bounce('informational');
   });
 }
