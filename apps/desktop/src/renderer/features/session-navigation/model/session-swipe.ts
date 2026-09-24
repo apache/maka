@@ -106,12 +106,18 @@ export function createSessionSwipe() {
       // Keep momentum latched, but let an intentional reverse start another
       // gesture. Tiny opposite-sign recoil must not undo a completed swipe.
       if (fired) {
+        // Completion latches navigation, not ownership of every later wheel
+        // frame. Vertical scrolling must pass through without canceling it.
+        if (event.deltaX === 0 || Math.abs(event.deltaX) < Math.abs(event.deltaY) * 1.5) {
+          opposingDistance = 0;
+          clearRenewal();
+          return { claimed: false, direction: null };
+        }
         opposingDistance = event.deltaX * distance < 0 ? opposingDistance + event.deltaX : 0;
         // Windows can join successive physical strokes into one wheel stream.
         // A quiet tail followed by two strong frames is renewed input; an
         // isolated coalesced spike, steady drag or recoil is still the tail.
-        if (event.deltaX * distance > 0 && event.timeStamp - firedAt >= 180
-          && Math.abs(event.deltaX) >= Math.abs(event.deltaY) * 1.5) {
+        if (event.deltaX * distance > 0 && event.timeStamp - firedAt >= 180) {
           const magnitude = Math.abs(event.deltaX);
           if (magnitude <= 8) {
             quietSince ??= event.timeStamp;

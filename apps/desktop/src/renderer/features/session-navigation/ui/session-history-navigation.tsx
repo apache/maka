@@ -46,22 +46,23 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
   const gesture = useRef(createSessionSwipe());
   const [indicator, setIndicator] = useState<SwipeIndicator | null>(null);
 
-  useLayoutEffect(() => {
-    current.current = props;
-    if (props.visible) history.current.visit(props.catalog.getState().activeSessionId);
-  });
+  // Both catalog notifications and visibility/render reconciliation enter
+  // here, so a removed-but-still-selected Session can never become a visit.
+  const observe = () => {
+    const { catalog, visible } = current.current;
+    const state = catalog.getState();
+    history.current.forget(state.removedIds);
+    if (visible && !state.removedIds.has(state.activeSessionId ?? '')) {
+      history.current.visit(state.activeSessionId);
+    }
+  };
 
   useLayoutEffect(() => {
-    const observe = () => {
-      const state = props.catalog.getState();
-      history.current.forget(state.removedIds);
-      if (current.current.visible && !state.removedIds.has(state.activeSessionId ?? '')) {
-        history.current.visit(state.activeSessionId);
-      }
-    };
+    current.current = props;
     observe();
-    return props.catalog.subscribe(observe);
-  }, [props.catalog]);
+  });
+
+  useLayoutEffect(() => props.catalog.subscribe(observe), [props.catalog]);
 
   useLayoutEffect(() => {
     const swipe = gesture.current;

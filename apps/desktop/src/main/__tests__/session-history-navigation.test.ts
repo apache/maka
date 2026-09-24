@@ -106,6 +106,18 @@ it('shows pull progress before switching and acknowledges the threshold only onc
   assert.deepEqual(targets, [null]);
 });
 
+it('leaves continuous vertical scrolling uncancelled immediately after a history swipe', () => {
+  const { catalog, wheel, targets } = setup();
+  for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
+  assert.equal(wheel(0), true);
+  for (let time = 100; time <= 1000; time += 100) {
+    assert.equal(wheel(time, { deltaX: 0, deltaY: 50 }), false);
+  }
+  assert.equal(wheel(1100, { deltaX: 3, deltaY: 50 }), false);
+  assert.equal(catalog.getState().activeSessionId, 'B');
+  assert.deepEqual(targets, [null]);
+});
+
 it('recognizes the captured Windows sequence when only its first wheel frame is cancelable', () => {
   const { catalog, wheel, feedback, targets } = setup();
   for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
@@ -355,4 +367,18 @@ it('does not resurrect a confirmed removed visit during an unrelated React commi
   catalog.commitPatch('C', removed);
   wheel(400, { deltaX: 100 });
   assert.equal(catalog.getState().activeSessionId, 'B');
+});
+
+it('preserves forward history when the removed current selection survives another render', () => {
+  const { catalog, render, wheel } = setup();
+  for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
+  wheel(0);
+  assert.equal(catalog.getState().activeSessionId, 'B');
+  catalog.commitPatch('B', null);
+  assert.equal(catalog.getState().activeSessionId, 'B');
+  render();
+  wheel(400, { deltaX: 100 });
+  assert.equal(catalog.getState().activeSessionId, 'C');
+  wheel(800);
+  assert.equal(catalog.getState().activeSessionId, 'A');
 });

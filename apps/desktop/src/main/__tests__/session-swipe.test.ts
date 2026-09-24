@@ -41,6 +41,20 @@ it('moves once per horizontal gesture including its momentum tail', () => {
     { claimed: true, direction: 1 });
 });
 
+it('does not claim vertical frames after committing a horizontal gesture', () => {
+  const swipe = createSessionSwipe();
+  swipe.sample({ deltaX: -100, deltaY: 0, timeStamp: 0, eligible: true });
+  for (let timeStamp = 100; timeStamp <= 1000; timeStamp += 100) {
+    assert.deepEqual(swipe.sample({ deltaX: 0, deltaY: 50, timeStamp, eligible: true }),
+      { claimed: false, direction: null });
+  }
+  assert.deepEqual(swipe.sample({ deltaX: -3, deltaY: 50, timeStamp: 1100, eligible: true }),
+    { claimed: false, direction: null });
+  // Letting vertical input through does not release the horizontal tail latch.
+  assert.deepEqual(swipe.sample({ deltaX: -30, deltaY: 0, timeStamp: 1200, eligible: true }),
+    { claimed: true, direction: null });
+});
+
 it('recognizes a renewed same-direction stroke in the captured Windows stream without waiting for idle', () => {
   const swipe = createSessionSwipe();
   // Rounded physical capture: initial stroke, decaying/coalesced tail, then
