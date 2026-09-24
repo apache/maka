@@ -162,7 +162,7 @@ export function planConnectionMerge(
   incoming: readonly LlmConnection[],
   strategy: ConnectionConflictStrategy,
 ): ConnectionMergePlan {
-  const existingSlugs = new Set(existing.map((c) => c.slug));
+  const existingBySlug = new Map(existing.map((c) => [c.slug, c]));
   const plan: ConnectionMergePlan = { create: [], overwrite: [], skipped: [] };
   const seen = new Set<string>();
   for (const conn of incoming) {
@@ -179,8 +179,14 @@ export function planConnectionMerge(
       plan.skipped.push({ slug: conn.slug, reason: 'provider_retired' });
       continue;
     }
-    if (existingSlugs.has(conn.slug)) {
-      if (strategy === 'overwrite') plan.overwrite.push(cloneJson(conn));
+    const current = existingBySlug.get(conn.slug);
+    if (current) {
+      // A custom connection's protocol is fixed at creation, so an overwrite
+      // could not apply the snapshot's protocol and would leave a hybrid.
+      const protocolFixed =
+        current.providerType === conn.providerType &&
+        current.defaultApiProtocol !== conn.defaultApiProtocol;
+      if (strategy === 'overwrite' && !protocolFixed) plan.overwrite.push(cloneJson(conn));
       else plan.skipped.push({ slug: conn.slug, reason: 'exists' });
     } else {
       plan.create.push(cloneJson(conn));
