@@ -538,6 +538,15 @@
 }
 
 /*
+ * Selection is the ground alone. Astryx's selected item also steps up to
+ * medium weight, which re-sets the title's glyphs and moves its ellipsis the
+ * instant a row is opened.
+ */
+.maka-session-panel .astryx-side-nav-item[data-selected] {
+  font-weight: var(--font-weight-normal);
+}
+
+/*
  * Multi-select.
  *
  * A picked row and the OPEN row share one ground, which is what Codex and
