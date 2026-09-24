@@ -130,6 +130,10 @@ test('reports connection refresh failures against their owning Host', async () =
     },
     runtimeHostProfiles: {
       getDefaultHost: async () => ({ profileId: 'profile-default', hostId: 'host-default' }),
+      getSnapshot: async () => ({
+        defaultProfileId: 'profile-default',
+        entries: [{ isDefault: true, readiness: 'ready' }],
+      }),
     },
   };
 
@@ -166,6 +170,40 @@ test('reports connection refresh failures against their owning Host', async () =
     { profileId: 'profile-b' },
     { profileId: 'profile-default' },
   ]);
+});
+
+test('a default read that fails while the default Host is still connecting stays pending', async () => {
+  const { root } = installReactRenderer();
+  const toasts: unknown[] = [];
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: {
+      getSnapshot: async () => {
+        throw new Error('Runtime Host target did not become ready in time');
+      },
+    },
+    runtimeHostProfiles: {
+      getDefaultHost: async () => ({ profileId: 'profile-default', hostId: 'host-default' }),
+      getSnapshot: async () => ({
+        defaultProfileId: 'profile-default',
+        entries: [{ isDefault: true, readiness: 'connecting' }],
+      }),
+    },
+  };
+
+  function Probe() {
+    useShellConnections({
+      toastApi: { error: (title) => { toasts.push(title); } },
+      uiLocale: 'en',
+      target: { kind: 'default' },
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe));
+  });
+
+  assert.deepEqual(toasts, []);
 });
 
 test('keeps serving the last ready snapshot while a refresh is in flight (#4611)', async () => {

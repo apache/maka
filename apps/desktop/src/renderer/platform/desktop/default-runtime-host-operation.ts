@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { DesktopRuntimeHostRef } from '../preload/bridge-contract.js';
+import type { DesktopRuntimeHostRef } from '../../../preload/bridge-contract.js';
 
 export type DefaultRuntimeHostDiagnosticTarget = { readonly profileId: string };
 
@@ -47,10 +47,10 @@ export async function runOnDefaultRuntimeHost<T>(
   }
 }
 
-export async function isDefaultRuntimeHostResolvable(): Promise<boolean> {
+export async function isDefaultRuntimeHostReady(): Promise<boolean> {
   try {
-    await runOnDefaultRuntimeHost(async () => undefined);
-    return true;
+    const snapshot = await window.maka.runtimeHostProfiles.getSnapshot();
+    return snapshot.entries.find((entry) => entry.isDefault)?.readiness === 'ready';
   } catch {
     return false;
   }

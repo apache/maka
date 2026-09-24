@@ -21,9 +21,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
   defaultRuntimeHostDiagnosticTarget,
-  isDefaultRuntimeHostResolvable,
+  isDefaultRuntimeHostReady,
   runOnDefaultRuntimeHost,
-} from './default-runtime-host-operation.js';
+} from './platform/desktop/default-runtime-host-operation.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 type ToastApi = {
@@ -80,10 +80,10 @@ export function useShellMemoryPill({
     } catch (error) {
       if (refreshSequence.current !== sequence) return;
       // With no active Session the read goes through the default Host — when
-      // it is simply not up yet the ready transition re-runs this refresh.
+      // it is simply not ready yet the ready transition re-runs this refresh.
       if (
         !sessionId &&
-        !(await isDefaultRuntimeHostResolvable())
+        !(await isDefaultRuntimeHostReady())
       ) {
         return;
       }

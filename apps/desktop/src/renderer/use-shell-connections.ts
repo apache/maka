@@ -25,9 +25,9 @@ import type { DesktopNewTaskHostRef } from '../preload/bridge-contract.js';
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
-  isDefaultRuntimeHostResolvable,
+  isDefaultRuntimeHostReady,
   runOnDefaultRuntimeHost,
-} from './default-runtime-host-operation.js';
+} from './platform/desktop/default-runtime-host-operation.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 
@@ -193,11 +193,11 @@ export function useShellConnections(options: {
         refreshSequence.current.get(key) !== sequence ||
         currentKey.current !== key
       ) return;
-      // The default read failing with no default Host up is pending, not a
-      // failure — the ready transition re-fires this refresh.
+      // The default read failing before the default Host is ready is pending,
+      // not a failure — the ready transition re-fires this refresh.
       if (
         target.kind === 'default' &&
-        !(await isDefaultRuntimeHostResolvable())
+        !(await isDefaultRuntimeHostReady())
       ) {
         return;
       }
