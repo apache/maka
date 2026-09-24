@@ -266,7 +266,9 @@ export function decodeModelOverridesTable(value: unknown): Readonly<Record<strin
       `relay model profile for ${modelId}`,
       [
         'thinkingLevels',
+        'defaultThinkingLevel',
         'vision',
+        'applyPatch',
         'contextWindow',
         'serviceTier',
         'compactionThreshold',
@@ -302,8 +304,17 @@ export function decodeModelOverridesTable(value: unknown): Readonly<Record<strin
       }
       declared.thinkingLevels = [...entry.thinkingLevels] as ThinkingLevel[];
     }
+    if (entry.defaultThinkingLevel !== undefined) {
+      if (!isThinkingLevel(entry.defaultThinkingLevel)) {
+        throw domainError(`default thinking level for ${modelId} is invalid`);
+      }
+      declared.defaultThinkingLevel = entry.defaultThinkingLevel;
+    }
     if (entry.vision !== undefined) {
       declared.vision = booleanValue(entry.vision, `declared vision for ${modelId}`);
+    }
+    if (entry.applyPatch !== undefined) {
+      declared.applyPatch = booleanValue(entry.applyPatch, `declared ApplyPatch for ${modelId}`);
     }
     for (const field of [
       'contextWindow',

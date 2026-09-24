@@ -24,8 +24,6 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import {
-  type GitBranchReadResult,
-  type GitBranchSnapshot,
   type GitReviewFile,
   type GitReviewFileStatus,
   type GitReviewReadResult,
@@ -41,35 +39,6 @@ const REVIEW_MAX_DIFF_CHARS = 8 * 1024 * 1024;
 
 export interface GitReviewCommandRunner {
   (root: string, args: readonly string[]): Promise<string>;
-}
-
-/**
- * The working tree's Git branch, for the composer's branch chip. Three states:
- * not a repository (`ok: false, isGitRepo: false` — the caller renders nothing),
- * a detached HEAD (`branch: null`, `shortSha` set), or a named branch.
- *
- * Read-only and deliberately cheap: the review reader withholds the bulk of its
- * work, so this asks only what the chip prints.
- */
-export async function readGitBranch(
-  cwd: string,
-  runGit: GitReviewCommandRunner = runGitCommand,
-): Promise<GitBranchReadResult> {
-  try {
-    const repositoryRoot = await resolveProjectRoot([cwd]);
-    if (!(await resolveProjectGitInfo(repositoryRoot)).isGitRepo) {
-      return { ok: false, isGitRepo: false };
-    }
-    const branch = cleanLine(await runGit(repositoryRoot, ['branch', '--show-current']));
-    // A detached HEAD yields no branch name; its short commit is the honest
-    // answer, and a repository with no commits yet has neither.
-    const shortSha = branch === null
-      ? cleanLine(await runGit(repositoryRoot, ['rev-parse', '--short', 'HEAD']).catch(() => ''))
-      : null;
-    return { ok: true, snapshot: { branch, shortSha } };
-  } catch {
-    return { ok: false, isGitRepo: true };
-  }
 }
 
 export async function readGitReview(

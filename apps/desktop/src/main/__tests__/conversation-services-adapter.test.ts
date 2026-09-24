@@ -47,10 +47,16 @@ test('Desktop conversation adapter keeps snapshot reads and catalog access on th
       searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }),
     },
     mcp: { subscribeChanges: () => () => undefined },
+    runtimeHostProfiles: {
+      subscribeChanges: () => {
+        calls.push('host-changes');
+        return () => undefined;
+      },
+    },
   } as unknown as MakaBridge;
   const services = createDesktopConversationServices(bridge);
 
   await services.sessions.readSnapshot('source');
-  assert.deepEqual(await services.sessions.list(), []);
-  assert.deepEqual(calls, ['snapshot:source']);
+  services.runtimeHosts.subscribeChanges(() => undefined);
+  assert.deepEqual(calls, ['snapshot:source', 'host-changes']);
 });

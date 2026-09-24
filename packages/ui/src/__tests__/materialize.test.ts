@@ -22,7 +22,6 @@ import { describe, test } from "node:test";
 import { decodeCanonicalMessage, type StoredMessage } from '@maka/core/session';
 import { foldTimeline } from '../timeline-fold.js';
 import {
-  materializeChat,
   materializeTools,
   materializeTurns,
   overlayLiveTurn,
@@ -226,21 +225,19 @@ describe("steering timeline", () => {
   });
 });
 
-describe("materializeChat message metadata", () => {
-  test("renders neutral provider dropping guidance for new and legacy records", () => {
-    const base = {
-      type: "system_note" as const,
-      id: "drop",
-      turnId: "t1",
-      ts: 1,
-      kind: "context_provider_dropping" as const,
-      data: { inputTokens: 98_247, priorInputTokens: 124_832 },
-    };
-    const current = materializeChat([base], "en")[0]?.text;
-    const legacy = materializeChat([{ ...base, data: undefined }], "en")[0]?.text;
-    assert.match(current ?? "", /may have been truncated or rewritten/);
-    assert.match(legacy ?? "", /may have been truncated or rewritten/);
-    assert.doesNotMatch(current ?? "", /Declare a context window|compact first/);
+describe("materializeTurns message metadata", () => {
+  test("hides a retired provider dropping note that an old session still carries", () => {
+    const turns = materializeTurns([
+      {
+        type: "system_note",
+        id: "drop",
+        turnId: "t1",
+        ts: 1,
+        kind: "context_provider_dropping",
+        data: { inputTokens: 99_398, priorInputTokens: 134_460 },
+      },
+    ], "en");
+    assert.deepEqual(turns.flatMap((turn) => turn.notes), []);
   });
 
   test("localizes visible system notes", () => {
@@ -255,12 +252,8 @@ describe("materializeChat message metadata", () => {
     ];
 
     assert.equal(
-      materializeChat(messages, "en")[0]?.text,
+      materializeTurns(messages, "en")[0]?.notes[0]?.text,
       "Earlier context compacted.",
-    );
-    assert.equal(
-      materializeChat(messages, "zh-CN")[0]?.text,
-      "已压缩较早的上下文。",
     );
     assert.equal(
       materializeTurns(messages, "zh-CN")[0]?.notes[0]?.text,
@@ -279,7 +272,6 @@ describe("materializeChat message metadata", () => {
         inlineReferences: [],
       },
     ];
-    assert.deepEqual(materializeChat(messages, "en")[0]?.inlineReferences, []);
     assert.deepEqual(materializeTurns(messages, "en")[0]?.user?.inlineReferences, []);
   });
 
@@ -295,10 +287,6 @@ describe("materializeChat message metadata", () => {
       },
     ];
 
-    assert.deepEqual(materializeChat(messages, "en")[0]?.hostOrigin, {
-      kind: "goal",
-      goalId: "goal-1",
-    });
     assert.deepEqual(materializeTurns(messages, "en")[0]?.user?.hostOrigin, {
       kind: "goal",
       goalId: "goal-1",

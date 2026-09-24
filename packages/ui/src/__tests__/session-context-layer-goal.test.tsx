@@ -19,7 +19,7 @@
 
 /**
  * The goal chip is the desktop kill switch for an autonomous loop: a running
- * goal pulses with live progress, while a paused goal burns nothing and must
+ * goal spins with live progress, while a paused goal burns nothing and must
  * read as paused (distinct label, no running affordance) with a resume path.
  */
 
@@ -57,6 +57,7 @@ test('a running goal reads as running and offers pause, with elapsed and tokens'
   assert.ok(markup.includes('12m'));
   assert.ok(markup.includes('12k / 100k'));
   assert.ok(markup.includes('Autonomous goal running'));
+  assert.ok(markup.includes('astryx-spinner'));
   assert.ok(!markup.includes('Autonomous goal paused'));
   assert.ok(markup.includes('Pause autonomous goal after 3/50 iterations'));
   assert.ok(!markup.includes('Resume autonomous goal'));
@@ -78,6 +79,7 @@ test('a paused goal reads as paused and offers resume, not pause', () => {
   });
   assert.ok(markup.includes('Autonomous goal paused'));
   assert.ok(!markup.includes('Autonomous goal running'));
+  assert.ok(!markup.includes('astryx-spinner'));
   assert.ok(markup.includes('Resume autonomous goal after 3/50 iterations'));
   assert.ok(!markup.includes('Pause autonomous goal'));
   // Elapsed shows (frozen), tokens stay hidden without a budget.
@@ -100,6 +102,7 @@ test('a waiting goal reads as waiting without looking active or paused', () => {
   assert.ok(markup.includes('Autonomous goal waiting for conditions to change'));
   assert.ok(!markup.includes('Autonomous goal running'));
   assert.ok(!markup.includes('Autonomous goal paused'));
+  assert.ok(!markup.includes('astryx-spinner'));
   assert.ok(markup.includes('Pause autonomous goal after 4/50 iterations'));
   assert.ok(!markup.includes('Resume autonomous goal'));
   assert.ok(markup.includes('12k / 100k'));

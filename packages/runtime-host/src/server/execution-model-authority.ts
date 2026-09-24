@@ -223,7 +223,7 @@ export interface HostWorkHubRoutingModel {
       }[];
     }>;
     readonly abortSignal: AbortSignal;
-  }): Promise<WorkHubRoutingDecision>;
+  }): Promise<WorkHubRoutingDecision | undefined>;
 }
 
 /** Uses the Coordination Session's exact saved model target for split Intent and Recall. */
@@ -545,7 +545,8 @@ interface HostAuxiliaryModelCallInput {
   readonly header: Pick<
     SessionHeader,
     'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
-  >;
+  > &
+    Partial<Pick<SessionHeader, 'backend'>>;
   readonly callKind: ModelCallKind;
   readonly callId: string;
   readonly abortSignal: AbortSignal;
@@ -590,6 +591,11 @@ async function runHostAuxiliaryModelCall(
   readonly finishReason?: string;
   readonly modelId: string;
 }> {
+  if (input.header.backend === 'plugin-executor') {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Plugin executor Sessions do not provide a native auxiliary model',
+    );
+  }
   const target = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(
       () =>
@@ -967,7 +973,8 @@ export async function resolveExecutionTarget(
   header: Pick<
     BackendFactoryContext['header'],
     'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
-  >,
+  > &
+    Partial<Pick<BackendFactoryContext['header'], 'backend'>>,
   runtimePolicy: {
     readonly operations: Pick<
       RuntimePolicyStoresWriter['operations'],
@@ -977,6 +984,11 @@ export async function resolveExecutionTarget(
   oauthCredentials: HostOAuthExecutionAuthority,
   createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
 ): Promise<ResolvedExecutionTarget> {
+  if (header.backend === 'plugin-executor') {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Plugin Executor Sessions do not expose the native auxiliary model authority',
+    );
+  }
   const resolved = await runtimePolicy.operations.resolveExecutionConnection(
     executionConnectionRef(header),
   );

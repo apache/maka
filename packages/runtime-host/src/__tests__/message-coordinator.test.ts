@@ -660,8 +660,51 @@ test('message execution query reports the Turn that durably owns each Message', 
           turnId: ROOT.turnId,
           runId: ROOT.runId,
         },
+        {
+          // No receipt, steering proof, tombstone, or admission names it, so
+          // the Host reports the absence positively rather than omitting it.
+          messageId: 'unknown-message',
+          state: 'not_admitted',
+        },
       ],
     },
+  });
+});
+
+test('message execution query never observes a submit mid-admission', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  // Hold admission open inside the submit so the query must queue behind it.
+  const preparing = deferred<void>();
+  const release = deferred<void>();
+  fixture.setMessagePreparation(async () => {
+    preparing.resolve(undefined);
+    await release.promise;
+    return { kind: 'ready', content: { text: 'raced' }, skillInvocation: EMPTY_SKILL_INVOCATION };
+  });
+  const submit = fixture.coordinator.handlers['turn.message.submit'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId: 'in-flight-message',
+      content: { text: 'raced' },
+      placement: 'next_turn',
+    } as const,
+    operationContext(),
+  );
+  await preparing.promise;
+  // Issued while the submit holds the Session admission. If the read were not
+  // gated it would see no admission row and answer `not_admitted`, handing the
+  // user a resend for a Message this Host is in the middle of admitting.
+  const query = fixture.coordinator.handlers['turn.message.execution.query'](
+    { sessionId: ROOT.sessionId, messageIds: ['in-flight-message'] },
+    operationContext(),
+  );
+  release.resolve(undefined);
+  await submit;
+  assert.deepEqual(await query, {
+    ok: true,
+    result: { resolutions: [{ messageId: 'in-flight-message', state: 'pending' }] },
   });
 });
 
@@ -3783,6 +3826,39 @@ test('canonical retry omits redundant display text and empty ordered refs', asyn
   fixture.coordinator.completeIdle(batch);
 });
 
+for (const scenario of ['attachments', 'busy', 'history_only'] as const) {
+  test(`external executor admission rejects ${scenario} without creating or queuing a Turn`, async () => {
+    const fixture = createFixture();
+    fixture.root.readSessionHeader = async () => ({
+      isArchived: false,
+      idleOnly: true,
+      supportsAttachments: false,
+      ...(scenario === 'history_only' ? { unavailableReason: 'Start a new task' } : {}),
+    });
+    if (scenario !== 'busy') fixture.setRootState({ kind: 'idle' });
+    const result = await submitContent(
+      fixture,
+      'external-message',
+      {
+        text: 'keep my instructions',
+        ...(scenario === 'attachments'
+          ? { attachments: [attachment('external', 'proof.png')] }
+          : {}),
+      },
+      'next_turn',
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok)
+      assert.equal(
+        result.error.code,
+        scenario === 'busy' ? 'session_busy' : 'operation_unavailable',
+      );
+    assert.equal(fixture.startCalls(), 0);
+    assert.equal(fixture.readMessageAdmission('external-message'), undefined);
+    assert.equal(fixture.drainRequests(), 0);
+  });
+}
+
 function createFixture(
   onProjectionChanged?: (sessionId: string) => void,
   preflightSessionSnapshot: HostMessageCoordinatorOptions['preflightSessionSnapshot'] = () => true,
@@ -3964,6 +4040,7 @@ function createFixture(
   coordinator = new HostMessageCoordinator(options);
   return {
     coordinator,
+    root,
     admissions,
     sessionAdmission,
     setRootState: (state: HostMessageRootState) => {

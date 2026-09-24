@@ -108,7 +108,6 @@ export function createDesktopWorkbarServices(
     popupMenu: (input) => bridge.appWindow.popupMenu(input),
     review: {
       read: (input) => bridge.gitReview.read(input),
-      branch: (sessionId) => bridge.gitReview.branch({ sessionId }),
       subscribeSessionEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
     },
@@ -205,8 +204,6 @@ export function createDesktopWorkbarServices(
         bridge.sessions.reorderQueueEntries(sessionId, entryIds),
       setPermissionMode: async (sessionId, mode) =>
         expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
-      regenerateTurn: (sessionId, input) =>
-        bridge.sessions.regenerateTurn(sessionId, input),
       respondToSandboxBoundary: (sessionId, response) =>
         bridge.sessions.respondToSandboxBoundary(sessionId, response),
       respondToClientCapability: (sessionId, response) =>

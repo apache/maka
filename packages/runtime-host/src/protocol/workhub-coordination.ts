@@ -54,6 +54,7 @@ import {
 
 export interface WorkHubCoordinationConfigureModelInput {
   readonly expectedRevision: number;
+  /** The coordinator stays native because its WorkHub tools are provided by Maka. */
   readonly modelTarget: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
   readonly thinkingLevel: ThinkingLevel | null;
 }
@@ -61,11 +62,12 @@ export interface WorkHubCoordinationConfigureModelInput {
 export function decodeWorkHubCoordinationConfigureModelInput(
   value: unknown,
 ): WorkHubCoordinationConfigureModelInput {
-  const input = requireExactRecord(value, 'WorkHub model configuration', [
-    'expectedRevision',
-    'modelTarget',
-    'thinkingLevel',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'WorkHub model configuration',
+    ['expectedRevision', 'modelTarget', 'thinkingLevel'],
+    [],
+  );
   const decoded = decodeSessionConfigurationUpdateInput({
     sessionId: WORKHUB_COORDINATION_SESSION_ID,
     expectedRevision: input.expectedRevision,
@@ -76,7 +78,10 @@ export function decodeWorkHubCoordinationConfigureModelInput(
   });
   return {
     expectedRevision: decoded.expectedRevision,
-    modelTarget: decoded.patch.modelTarget!,
+    modelTarget: decoded.patch.modelTarget as Extract<
+      SessionModelTarget,
+      { readonly kind: 'explicit' }
+    >,
     thinkingLevel: decoded.patch.thinkingLevel ?? null,
   };
 }

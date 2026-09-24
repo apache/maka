@@ -75,6 +75,10 @@ function createService(
       if (preview.throws) throw new Error('preview failed');
       return preview.count ?? 0;
     },
+    moveToProject: async (id: string, projectId: string | null) => {
+      calls.push(`move:${id}:${projectId ?? 'none'}`);
+      return { ok: true } as const;
+    },
   };
 }
 

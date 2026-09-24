@@ -38,7 +38,8 @@ test('every MCP bridge method rides the scoped Runtime Host seam', () => {
   for (const channel of [
     'mcp:getConfig',
     'mcp:add',
-    'mcp:upsert',
+    'mcp:update',
+    'mcp:setEnabled',
     'mcp:remove',
     'mcp:login',
     'mcp:cancelLogin',

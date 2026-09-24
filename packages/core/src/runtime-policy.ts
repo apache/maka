@@ -128,6 +128,8 @@ export interface RevisionConflict {
 }
 
 export interface RuntimePolicy {
+  /** Optional for compatibility with existing policies; missing means disabled. */
+  readonly jev?: { readonly enabled: boolean };
   readonly networkProxy: {
     readonly enabled: boolean;
     readonly protocol: ProxyProtocol;
@@ -154,6 +156,7 @@ export interface RuntimePolicy {
   };
   readonly chatDefaults: {
     readonly permissionMode: ChatDefaultPermissionMode;
+    /** @deprecated Wire compatibility only; task creation ignores this field. */
     readonly thinkingLevel?: ThinkingLevel;
     readonly codeModeEnabled?: boolean;
   };
@@ -180,6 +183,7 @@ export interface AgentRuntimeSettingsPatch {
 }
 
 export type RuntimePolicyMutation =
+  | { readonly kind: 'set_jev'; readonly value: { readonly enabled: boolean } }
   | { readonly kind: 'set_network_proxy'; readonly value: RuntimePolicy['networkProxy'] }
   | { readonly kind: 'set_personalization'; readonly value: RuntimePolicy['personalization'] }
   | { readonly kind: 'set_memory'; readonly value: RuntimePolicy['memory'] }
@@ -376,22 +380,6 @@ export interface RemoveCatalogConnectionInput {
   readonly expected: ConnectionVersionBasis;
 }
 
-/**
- * Built-in seed evolution as one atomic catalog mutation: a row still exactly
- * matching a historical system seed follows the current seed — enabled ids AND
- * the static inventory — and a system default the migration removes is
- * retargeted in the same document write. Any other inventory is a user
- * selection and is never touched; an already-null default stays null.
- */
-export interface MigrateSystemSeedInput {
-  readonly slug: string;
-  readonly providerType: ProviderType;
-  readonly legacyEnabledModelIds: readonly (readonly string[])[];
-  readonly enabledModelIds: readonly string[];
-  readonly defaultModelId: string;
-  readonly retiredModelIds: readonly string[];
-}
-
 export interface SetDefaultConnectionTargetInput {
   readonly expectedCatalogRevision: Revision;
   readonly target: ConnectionTarget | null;
@@ -412,6 +400,7 @@ export type ConnectionCatalogMutationResult =
   | ConnectionCatalogConflict;
 
 export type CredentialLocator =
+  | { readonly scope: 'jev'; readonly kind: 'api_key' }
   | {
       readonly scope: 'connection';
       readonly connectionId: EntityId;

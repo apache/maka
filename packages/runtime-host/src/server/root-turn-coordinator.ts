@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { WorkHubResultOrigin } from '@maka/core/turn-origin';
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
 import { createHash, randomUUID } from 'node:crypto';
@@ -65,7 +66,6 @@ import {
 } from '@maka/runtime/interaction-authority';
 import {
   normalizeStopSessionSource,
-  RuntimeRegenerateTurnError,
   type SessionManager,
   type StopSessionInput,
 } from '@maka/runtime/session-manager';
@@ -380,7 +380,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     private readonly directoryHostId?: string,
     private readonly prepareWorkHubRoutingDecision?: (
       input: HostWorkHubRoutingDecisionPreparation,
-    ) => Promise<WorkHubRoutingDecision>,
+    ) => Promise<WorkHubRoutingDecision | undefined>,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -1509,9 +1509,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       };
       if (!(await this.bindRecoveryCapabilities(input.sessionId, execution)))
         return { deferred: true };
-      execution = await this.prepareFreshWorkHubExecution(header, turnId, input.content, execution);
       const unavailableReason = runtimeHostExecutionUnavailableReason(header, execution);
       if (unavailableReason) return { error: unavailableReason };
+      execution = await this.prepareFreshWorkHubExecution(header, turnId, input.content, execution);
       const reservation = this.reserveRootTurn(input.sessionId);
       if (!reservation) return { error: 'Another root Turn is being admitted' };
       try {
@@ -1566,18 +1566,21 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     execution: RootExecutionDescriptor,
     inputClosedSignal?: AbortSignal,
   ): Promise<RootExecutionDescriptor> {
-    if (execution.kind !== 'workhub_coordination' || !this.prepareWorkHubRoutingDecision) {
+    if (
+      execution.kind !== 'workhub_coordination' ||
+      execution.feedback ||
+      execution.operation === 'action' ||
+      !this.prepareWorkHubRoutingDecision
+    ) {
       return execution;
     }
-    return {
-      ...execution,
-      routingDecision: await this.prepareWorkHubRoutingDecision({
-        header,
-        turnId,
-        content,
-        ...(inputClosedSignal ? { inputClosedSignal } : {}),
-      }),
-    };
+    const routingDecision = await this.prepareWorkHubRoutingDecision({
+      header,
+      turnId,
+      content,
+      ...(inputClosedSignal ? { inputClosedSignal } : {}),
+    });
+    return routingDecision === undefined ? execution : { ...execution, routingDecision };
   }
 
   prepareMessage(input: HostMessagePreparationInput): Promise<
@@ -1793,6 +1796,83 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     return this.startRootMessage(request, context);
   }
 
+  /** Result delivery uses the same durable root admission as ordinary WorkHub turns.
+   * The deterministic Turn identity is the delivery receipt, including after a crash.
+   * Content is re-read under both Session admissions immediately before committing.
+   */
+  startWorkHubResult(
+    origin: WorkHubResultOrigin,
+    prepareContent: (lease: SessionAdmissionLease) => Promise<MessageContent | undefined>,
+  ): Promise<'delivered' | 'pending' | 'obsolete'> {
+    return this.runCommand(async () => {
+      const sessionId = WORKHUB_COORDINATION_SESSION_ID;
+      const turnId = origin.eventId;
+      let disposition: TurnStartDisposition | undefined;
+      const result = await this.sessionAdmission.runMany(
+        [sessionId, origin.targetSessionId],
+        async (lease) => {
+          const previousDelivery = await this.stores.agentRunStore.readRootTurnAdmission(
+            sessionId,
+            turnId,
+          );
+          if (previousDelivery) {
+            if (
+              previousDelivery.execution.kind !== 'workhub_coordination' ||
+              !isDeepStrictEqual(previousDelivery.execution.feedback, origin)
+            )
+              throw new Error('WorkHub feedback identity conflict');
+            return 'delivered' as const;
+          }
+          if (!this.isSessionExecutionIdle(sessionId)) return 'pending' as const;
+          const content = await prepareContent(lease);
+          if (!content) return 'obsolete' as const;
+          const previous = this.rootAdmissionOwner.latestAdmission(sessionId)?.execution;
+          const execution: RootExecutionDescriptor = {
+            kind: 'workhub_coordination',
+            inputDigest: messageContentDigest(content),
+            feedback: origin,
+            ...(previous?.kind === 'workhub_coordination' && previous.capabilityBinding
+              ? { capabilityBinding: previous.capabilityBinding }
+              : {}),
+          };
+          if (!(await this.bindRecoveryCapabilities(sessionId, execution)))
+            return 'pending' as const;
+          const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
+          if (runtimeHostExecutionUnavailableReason(header, execution)) return 'pending' as const;
+          const reservation = this.reserveRootTurn(sessionId);
+          if (!reservation) return 'pending' as const;
+          try {
+            if (!this.beginRootAdmission(reservation)) return 'pending' as const;
+            const admitted = await this.rootAdmissionOwner.admitRootTurn({
+              sessionId,
+              turnId,
+              proposedRunId: randomUUID(),
+              proposedUserMessageId: turnId,
+              execution,
+              normalizedInput: content,
+              sourceMessages: [],
+              admittedAt: Date.now(),
+            });
+            disposition = await this.prepareAdmittedTurn(
+              activationInputForAdmission(admitted.admission),
+              admitted.admission,
+              this.acquireRecoveryResidency,
+              lease,
+              undefined,
+              undefined,
+              reservation,
+            );
+            return 'delivered' as const;
+          } finally {
+            this.releaseRootReservation(reservation);
+          }
+        },
+      );
+      if (disposition) await this.resolveStartDisposition({ sessionId, turnId }, disposition);
+      return result;
+    });
+  }
+
   async runWorkHubCoordinationOperation(
     request: Extract<RootMessageStartRequest, { execution: { kind: 'workhub_coordination' } }>,
     context: ConnectionContext,
@@ -1919,9 +1999,24 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         header.toolProfile !== 'workhub-coordination-v2'
       )
         return undefined;
+      let content = requireHostedExecutionMessageContent(admission);
+      if (admission.execution.feedback) {
+        const feedback = admission.execution.feedback;
+        const assignments = await this.stores.sessionStore.readActiveWorkHubAssignmentsByTarget([
+          feedback.targetSessionId,
+        ]);
+        const assignment = assignments.find(
+          (a) => a.actionId === feedback.actionId && a.delegationId === feedback.delegationId,
+        );
+        if (!assignment) return undefined;
+        content = normalizeMessageContent({
+          text: assignment.userText,
+          ...(assignment.attachments ? { attachments: assignment.attachments } : {}),
+        });
+      }
       return {
         runId: active.runId,
-        content: requireHostedExecutionMessageContent(admission),
+        content,
         ...(admission.execution.routingDecision
           ? { decision: admission.execution.routingDecision }
           : {}),
@@ -2170,21 +2265,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   ): Promise<RootMessageContentPreparation> {
     if ('content' in request) return { kind: 'ready', content: request.content };
     if ('prepareFreshContent' in request) return request.prepareFreshContent(lease);
-    try {
-      return {
-        kind: 'ready',
-        content: normalizeMessageContent(await request.prepareContent()),
-      };
-    } catch (error) {
-      if (error instanceof RuntimeRegenerateTurnError) {
-        return {
-          kind: 'rejected',
-          outcome:
-            error.code === 'not_found' ? notFound(error.message) : operationConflict(error.message),
-        };
-      }
-      throw error;
-    }
+    return {
+      kind: 'ready',
+      content: normalizeMessageContent(await request.prepareContent()),
+    };
   }
 
   private async queryTurnResume(

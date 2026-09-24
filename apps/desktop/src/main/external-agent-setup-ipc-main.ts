@@ -20,6 +20,7 @@
 import {
   decodeExternalAgentSetupStart,
   decodeExternalAgentSetupAttempt,
+  type ExternalAgentSetupProjection,
 } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { handleReconnectableRead, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
@@ -36,9 +37,17 @@ export function registerExternalAgentSetupIpc(deps: {
   >;
   presentation: RuntimeHostOAuthPresentation;
   selectExecutable?: () => Promise<string | undefined>;
+  onCatalogChanged?: () => void;
 }): void {
   deps.ipcMain.handle('external-agents:select-executable', () => deps.selectExecutable?.());
   let pending: { id: string; expectation: OAuthPresentationExpectation } | undefined;
+  const announced = new Set<string>();
+  const announceSuccess = (result: ExternalAgentSetupProjection) => {
+    if (result.phase !== 'succeeded' || announced.has(result.attemptId)) return;
+    announced.add(result.attemptId);
+    if (announced.size > 32) announced.delete(announced.values().next().value!);
+    deps.onCatalogChanged?.();
+  };
   const clear = (id: string) => {
     if (pending?.id !== id) return;
     pending.expectation.cancel();
@@ -61,6 +70,7 @@ export function registerExternalAgentSetupIpc(deps: {
     try {
       const result = await deps.client.startExternalAgentSetup(input);
       if (['succeeded', 'failed', 'cancelled'].includes(result.phase)) clear(input.attemptId);
+      announceSuccess(result);
       return result;
     } catch (error) {
       clear(input.attemptId);
@@ -78,6 +88,7 @@ export function registerExternalAgentSetupIpc(deps: {
       try {
         const result = await deps.client.queryExternalAgentSetup(attemptId);
         if (['succeeded', 'failed', 'cancelled'].includes(result.phase)) clear(attemptId);
+        announceSuccess(result);
         return result;
       } catch (error) {
         clear(attemptId);

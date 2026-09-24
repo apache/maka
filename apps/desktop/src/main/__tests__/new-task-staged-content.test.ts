@@ -34,7 +34,7 @@ import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer
 import {
   composerModelSupportsVision,
   type NewChatModel,
-} from '../../renderer/shell-chat-model-selection.js';
+} from '../../renderer/features/conversation/index.js';
 
 /**
  * #3408 for what the composer STAGES. The draft text is covered by

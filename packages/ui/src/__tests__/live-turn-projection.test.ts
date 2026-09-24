@@ -180,6 +180,23 @@ describe('applyLiveTurnEvent', () => {
     );
   });
 
+  it('drops a delta past the consumed source so a later reseed lands whole', () => {
+    const delta = {
+      type: 'text_delta' as const,
+      turnId: 'turn-1',
+      messageId: 'step-1',
+    };
+    const early = applyLiveTurnEvent(undefined, {
+      ...delta, id: 'live-1', ts: 100, startOffset: 5, text: ' world',
+    });
+    assert.equal(early.steps.length, 0);
+
+    const seeded = applyLiveTurnEvent(early, {
+      ...delta, id: 'seed-1', ts: 200, startOffset: 0, text: 'Hello world',
+    });
+    assert.equal(seeded.steps[0]?.text?.text, 'Hello world');
+  });
+
 
   it('projects transient provider retry progress until the next model output', () => {
     const scheduled = applyLiveTurnEvent(armLiveTurn('turn-1'), {
@@ -282,6 +299,7 @@ describe('applyLiveTurnEvent', () => {
       text: '完整思考',
       truncated: false,
       complete: true,
+      sourceEndOffset: 4,
     });
   });
 
@@ -710,18 +728,32 @@ describe('reconcileTerminalLiveTurn', () => {
 
   it('keeps terminal live steering until the terminal transcript catches up', () => {
     const message = { id: 'steer-1', content: { text: 'change direction' }, ts: 2 };
+    const boundary = { stepId: 'steering:steer-1', tools: [], steering: message };
     const withSteering: LiveTurnProjection = {
       ...toolOnly,
-      steps: [{ ...toolOnly.steps[0]!, leadingSteering: [message] }],
+      steps: [...toolOnly.steps, boundary],
     };
 
     assert.equal(reconcileTerminalLiveTurn(withSteering, []), withSteering);
-    const steeringOnly = { ...withSteering, steps: [] };
+    const steeringOnly = { ...toolOnly, steps: [boundary] };
     assert.equal(reconcileTerminalLiveTurn(steeringOnly, []), steeringOnly);
     assert.deepEqual(reconcileTerminalLiveTurn(withSteering, [{
       type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
       status: 'completed',
     }]), toolOnly);
+  });
+
+  it('hands a running live steering row to the transcript once its user row is durable', () => {
+    const live = applyLiveTurnEvent(undefined, {
+      type: 'steering_message', id: 'steer-event', messageId: 'steer-1',
+      turnId: 'turn-1', ts: 2, content: { text: 'change direction' },
+    })!;
+
+    assert.equal(reconcileTerminalLiveTurn(live, []), live);
+    assert.deepEqual(reconcileTerminalLiveTurn(live, [{
+      type: 'user', id: 'steer-1', turnId: 'turn-1', ts: 2,
+      text: 'change direction', steeringEventId: 'steer-event',
+    }])?.steps, []);
   });
 
   it('keeps steering-only aborts visible for transcript handoff', () => {
@@ -735,7 +767,7 @@ describe('reconcileTerminalLiveTurn', () => {
     });
 
     assert.equal(aborted?.terminal, true);
-    assert.deepEqual(aborted?.pendingSteering, [message]);
+    assert.deepEqual(aborted?.steps[0]?.steering, message);
   });
 
   it('retains interrupted live output until a persisted result covers it', () => {

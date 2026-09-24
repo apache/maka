@@ -53,7 +53,6 @@ export const PRICING_EXCLUDED_PROVIDER_TYPES = new Set([
   'kimi-coding-plan',
   'minimax-coding-plan',
   'MiniMax-cn',
-  'opencode-free',
   'opencode-go',
   'stepfun-ai-step-plan',
   'stepfun-step-plan',
@@ -567,13 +566,17 @@ function toModelProviderOverride(providerId, modelId, override) {
   if (
     !override ||
     typeof override !== 'object' ||
-    typeof override.npm !== 'string' ||
+    Object.keys(override).some((key) => key !== 'npm' && key !== 'api' && key !== 'body') ||
+    (override.npm !== undefined && typeof override.npm !== 'string') ||
     (override.api !== undefined && typeof override.api !== 'string')
   ) {
     throw new Error(
       `models.dev model ${providerId}/${modelId} has an unsupported provider override`,
     );
   }
+  // Only `npm` selects a runtime adapter; `body` is a request-body default no
+  // projection consumes, so an override without `npm` maps to no row.
+  if (override.npm === undefined) return undefined;
   return { npm: override.npm, ...(override.api ? { api: override.api } : {}) };
 }
 

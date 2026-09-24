@@ -37,6 +37,7 @@ import { getConversationCopy } from './conversation-copy.js';
 import { ICON_SIZE, Pause, Play } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { dotForStatus } from './status-vocabulary.js';
+import { RunningIndicator } from './running-indicator.js';
 
 export interface SessionContextBranch {
   parentSessionId: string;
@@ -94,7 +95,6 @@ export function SessionContextLayer(props: {
   onRevisionNavigate?(sessionId: string): void;
   memoryActive?: boolean;
   onOpenMemorySettings?(): void;
-  deepResearchActive?: boolean;
   goal?: SessionContextGoal;
   actions?: ReactNode;
 }) {
@@ -154,17 +154,14 @@ export function SessionContextLayer(props: {
       key: 'goal',
       element: (
         <div className="maka-session-context__goal">
-          <StatusDot
-            variant={dotForStatus(paused ? 'attention' : 'active')}
-            label={
-              paused
-                ? copy.goalPausedAriaLabel
-                : waiting
-                  ? copy.goalWaitingAriaLabel
-                  : copy.goalRunningAriaLabel
-            }
-            isPulsing={!paused && !waiting}
-          />
+          {paused || waiting ? (
+            <StatusDot
+              variant={dotForStatus(paused ? 'attention' : 'active')}
+              label={paused ? copy.goalPausedAriaLabel : copy.goalWaitingAriaLabel}
+            />
+          ) : (
+            <RunningIndicator label={copy.goalRunningAriaLabel} />
+          )}
           <Text type="supporting" hasTabularNumbers>
             {goalText}
           </Text>
@@ -270,28 +267,6 @@ export function SessionContextLayer(props: {
               : undefined,
           },
         ],
-      }],
-    });
-  }
-
-  if (props.deepResearchActive) {
-    contextItems.push({
-      key: 'deep-research',
-      element: (
-        <Token
-          size="sm"
-          color="blue"
-          label={copy.deepResearchAriaLabel}
-          isLabelHidden
-          endContent={copy.deepResearch}
-          description={copy.deepResearchTitle}
-          icon={<Icon icon="search" size="xsm" />}
-        />
-      ),
-      overflowItems: [{
-        label: copy.deepResearchAriaLabel,
-        icon: <Icon icon="search" size="xsm" />,
-        isDisabled: true,
       }],
     });
   }

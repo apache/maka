@@ -61,23 +61,3 @@ export type GitReviewReadResult =
         | 'invalid_base_branch'
         | 'git_failed';
     };
-
-/**
- * The working tree's Git branch, for the composer's branch chip. `branch: null`
- * with a `shortSha` means a detached HEAD; a repository with no commits yet has
- * neither. The chip is only rendered when the read succeeded.
- */
-export interface GitBranchSnapshot {
-  branch: string | null;
-  shortSha: string | null;
-}
-
-/**
- * `isGitRepo` distinguishes the two ways a read can fail: `false` is "this
- * directory is not a repository" (the caller renders nothing), while `true` is
- * "a repository, but the query failed" (nothing to show either, but the
- * distinction lets a caller decide whether to retry rather than hide for good).
- */
-export type GitBranchReadResult =
-  | { ok: true; snapshot: GitBranchSnapshot }
-  | { ok: false; isGitRepo: boolean };

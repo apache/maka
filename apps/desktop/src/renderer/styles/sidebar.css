@@ -209,6 +209,19 @@
 }
 
 /*
+ * A project row receiving a dragged task. Drawn on the row's own box rather
+ * than on the nested SideNavItem so the whole target — the heading and any
+ * expanded children — reads as one zone. An inset outline, not a border or
+ * padding: it costs no layout, so nothing under the pointer shifts as the ring
+ * appears.
+ */
+.maka-project-row[data-drop-target="true"] {
+  border-radius: var(--radius-control);
+  outline: 2px solid var(--accent-solid);
+  outline-offset: -2px;
+}
+
+/*
  * Grouping switch (session-list-panel.tsx): the last row of the sticky top
  * region, above the scrolling history it governs.
  *
@@ -335,7 +348,8 @@
   flex-shrink: 0;
 }
 
-.maka-session-row-host-badge {
+.maka-session-row-host-badge,
+.maka-session-row-executor-badge {
   display: inline-flex;
   min-width: 0;
   max-width: 88px;
@@ -346,7 +360,8 @@
   flex: none;
 }
 
-.maka-session-row-host-badge > span {
+.maka-session-row-host-badge > span,
+.maka-session-row-executor-badge > span {
   overflow: hidden;
   max-width: 100%;
   text-overflow: ellipsis;
@@ -520,6 +535,15 @@
   color: var(--muted-foreground);
   letter-spacing: var(--tracking-wide);
   white-space: nowrap;
+}
+
+/*
+ * Selection is the ground alone. Astryx's selected item also steps up to
+ * medium weight, which re-sets the title's glyphs and moves its ellipsis the
+ * instant a row is opened.
+ */
+.maka-session-panel .astryx-side-nav-item[data-selected] {
+  font-weight: var(--font-weight-normal);
 }
 
 /*

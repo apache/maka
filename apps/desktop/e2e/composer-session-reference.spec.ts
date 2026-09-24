@@ -29,7 +29,7 @@ test('references another Session from @, including a trailing-space browse', asy
   await composer.fill(sourcePrompt);
   await composer.press('Enter');
   await expect(page.getByText(`Fake backend received: ${sourcePrompt}`)).toBeVisible();
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, {
     timeout: 20_000,
   });
 
@@ -79,7 +79,7 @@ test('references another Session from @, including a trailing-space browse', asy
   await expect(sent).toContainText(followUp);
   await expect(sent).toContainText(sourceName);
   await expect(chip).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, {
     timeout: 20_000,
   });
 });

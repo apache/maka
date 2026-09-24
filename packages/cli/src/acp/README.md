@@ -47,16 +47,29 @@ explicit cancellation still returns `cancelled`, with the failed Stop diagnostic
 retained. Shutdown can cancel an initial attachment waiting for transcript hydration
 or reconnection without waiting for the Host to become available.
 
-Interaction mapping remains deferred to the next ACP capability increment. If a
-pending permission, question, form, sandbox-boundary, or client-capability request
-belongs to an active ACP prompt, the adapter rejects it with JSON-RPC `-32603` and
-`error.data.code: unsupported_interaction` (`error.data.kind` identifies the request).
-It retires the attachment and uses the existing failure path to request Stop for
-that prompt's exact Host Turn. It does not answer or approve the interaction;
-Host remains responsible for settlement. A failed Stop retains the Host diagnostic.
-The durable Session remains owned and can be prompted again or closed.
-Interactions belonging to another client's Turn keep the idle attachment available
-so ACP cancellation and close can still stop the observed root.
+## Capabilities
+
+| Feature | ACP v1 behavior |
+| --- | --- |
+| Session create, list, configure, prompt, cancel, close | Supported through the shared Runtime Host connection. |
+| Tools | `tool_call` and cumulative `tool_call_update` snapshots. Host `toolUseId` is the stable `toolCallId`. |
+| Questions | Requires the client to advertise `elicitation.form`; each question is an optional string field with option hints and free answers. Missing, blank, or declined answers remain unanswered; cancellation cancels the Turn. |
+| Forms | Standard `elicitation/create`, preserving string, number, integer, boolean, enum and multi-enum types and constraints. Defaults are hints, never automatically submitted. Decline and cancel remain distinct answers. |
+| Sandbox boundary and client capability approval | Standard `session/request_permission`. The `allow_always` choice explicitly grants only the displayed scope for this Session; `reject_once` denies it. Permission cancellation cancels the Turn. |
+| MCP | Session-owned stdio servers supplied in `session/new.mcpServers`; discovered tools and MCP form continuation use the existing MCP manager and Host capability path. |
+| Tool `permission` | Standard `session/request_permission`. One-shot allow/deny choices are preserved; eligible tool permissions also expose an explicit allow-for-this-Turn choice. Permission cancellation cancels the Turn. |
+| Load/resume, replacing all MCP configuration, HTTP/SSE/OAuth | Deferred. |
+
+The adapter saves the capabilities supplied during `initialize`. Missing form
+capability, unsupported client methods, or invalid answers explicitly fail the
+affected prompt and stop its exact Host Turn. Host owns interaction closure and
+the canonical answer, including externally answered or replayed requests. Client
+requests are fenced by Session, interaction, Turn/run, and attachment lifetime;
+cancel and EOF release local waits even when the client never responds.
+After a failed Stop, a cancelled Turn stays fenced even if its ACP prompt has
+returned; only an authoritative terminal observation or attachment closure
+releases the fence. An idle attachment does not present another client's Turn
+interactions through this ACP connection.
 
 ## Tool output and completion
 
@@ -88,3 +101,48 @@ reads and failed notifications prevent `end_turn`; cancellation and failed Turns
 do not wait for missing results. An explicit cancellation still returns `cancelled`
 if a notification had already failed. Only the channel decides Turn terminal state; the
 registry waits for final projection delivery before returning `end_turn`.
+
+## Session MCP ownership
+
+The executable must be an absolute path. Duplicate server/env names, malformed
+args/env and unsupported transports are rejected before starting processes.
+Processes use the Session's working directory and the manager's existing
+environment, credential exclusion, log redaction, discovery and cleanup behavior.
+The configuration stays in memory and never edits user MCP settings.
+
+Creation generates an ID, prepares and validates every requested server, publishes
+the Session-scoped capabilities, then dispatches Host `session.create`. One failed
+server releases the entire prepared group. A confirmed creation always returns its
+ID even if optional configuration presentation fails. If the dispatched creation
+response is lost, the error includes `sessionId` and `dispatch: "dispatched"`; the
+adapter retains the connection-local reservation and MCP resources. The client can
+continue with that ID or close it; creation is never silently retried.
+
+Different Sessions can use the same server/tool names with different processes.
+Registration replacement, unregister, disconnection and invocation routing respect
+the target Session and owning connection. A default registration and its target
+Session registration may not expose the same tool identity. Another Session cannot
+borrow the registration through provider fallback. Reconnection republishes the
+current tool snapshot without replaying calls, and prompt admission waits for the
+current connection and tool revision to be published.
+An empty snapshot is published too: it clears contracts lost during disconnection
+and retains the Session retirement notification. Empty registrations share the
+same per-provider limit as registrations with tools and are released on close.
+Host publication checks durable archive/removal state inside its mutation queue;
+never-created Session IDs remain valid for preparation, but retired IDs cannot
+be republished. Unarchiving permits a fresh publication.
+
+Generic MCP `ask` approval uses `admission: "mcp"` and the existing atomic Session
+grant mechanism with `mcp_tool` scope. It does not elevate provider trust or grant
+Host path access. Desktop MCP continues to use its existing capability. These wire
+changes move the Host compatibility epoch from 175 to 176; grant storage needs no migration.
+Close/EOF stops execution, releases subscriptions, unregisters the corresponding
+capabilities and closes MCP transports before closing the shared Host connection.
+The stdio transport stops its direct child; launchers that spawn further processes
+must arrange for those processes to exit themselves.
+If a server exits after creation, its tools are withdrawn and later prompts may
+continue with the remaining published tools.
+
+For a Zed custom agent, configure an absolute Maka executable with `args: ["--acp"]`
+under `agent_servers`, following [Zed's external agent documentation](https://zed.dev/docs/ai/external-agents#custom-agents).
+The standard tool and permission flow does not require a private ACP route.

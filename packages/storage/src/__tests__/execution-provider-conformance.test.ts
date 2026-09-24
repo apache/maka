@@ -193,6 +193,52 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': recovery message evidence has equivalent UTF-8 byte budgets', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const promptText = '需要按 UTF-8 字节计量';
+      const prompt: RuntimeEvent = {
+        id: 'recovery-budget-prompt',
+        sessionId: 'recovery-budget-session',
+        invocationId: 'recovery-budget-invocation',
+        runId: 'recovery-budget-run',
+        turnId: 'recovery-budget-turn',
+        ts: 1,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: promptText },
+      };
+      await s.appendRuntimeEvent(prompt.sessionId, prompt.runId, prompt);
+      const query = {
+        sessionId: prompt.sessionId,
+        turnIds: [prompt.turnId],
+        eventIds: [prompt.id],
+      };
+      const complete = await s.readRecoveryMessageEvents({
+        ...query,
+        budget: { maxRecords: 1, maxBytes: 16 * 1024 },
+      });
+      assert.equal(complete.status, 'complete');
+      if (complete.status !== 'complete') throw new Error('expected recovery evidence');
+      assert.deepEqual(complete.records, [prompt]);
+      assert.equal(complete.sourceRecordCount, 1);
+      assert.ok(complete.storedBytes > promptText.length);
+      assert.deepEqual(
+        await s.readRecoveryMessageEvents({
+          ...query,
+          budget: { maxRecords: 0, maxBytes: 16 * 1024 },
+        }),
+        { status: 'limit_exceeded' },
+      );
+      assert.deepEqual(
+        await s.readRecoveryMessageEvents({
+          ...query,
+          budget: { maxRecords: 1, maxBytes: 1 },
+        }),
+        { status: 'limit_exceeded' },
+      );
+    });
+  });
   test(backend + ': transcript projection consumes bounded detached event iterators', async () => {
     await withProvider(make(), async ({ runtimeEventStore: s }) => {
       const run = {

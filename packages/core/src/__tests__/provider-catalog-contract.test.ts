@@ -20,7 +20,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  defaultEnabledModelIdsWhenOmitted,
   deriveConnectionSlug,
   validateConnectionBaseUrl,
   validateSlug,
@@ -229,7 +228,7 @@ describe('retired provider contract', () => {
   );
 
   it('pins the entries this catalog retires', () => {
-    assert.deepEqual(retired, ['claude-subscription']);
+    assert.deepEqual(retired, ['opencode-free', 'commandcode-go', 'claude-subscription']);
   });
 
   it('keeps a retired provider registered but unwired', () => {
@@ -283,8 +282,9 @@ describe('retired provider contract', () => {
         connection: {
           slug: `${type}-stored`,
           providerType: type,
-          defaultModel: PROVIDER_REGISTRY[type].fallbackModels[0] ?? '',
-          models: undefined,
+          defaultModel: 'stored-model',
+          enabledModelIds: ['stored-model'],
+          models: [{ id: 'stored-model' }],
           modelSource: 'fallback',
         },
       });
@@ -329,36 +329,5 @@ describe('provider catalog contract — fallback lifecycle', () => {
       }
     }
     assert.deepEqual(regressed, []);
-  });
-});
-
-describe('opencode-free retired-model quarantine', () => {
-  const opencodeFree = PROVIDER_REGISTRY['opencode-free'];
-
-  // Ox Alpha Free (x-preview-f-free) was retired upstream on OpenCode Zen while
-  // models.dev still snapshots it free+active, so the derivation would keep
-  // offering it as a default-enabled, picker-visible row. Remove this assertion
-  // together with the OPENCODE_FREE_BROKEN_MODEL_IDS entry once the snapshot
-  // marks it deprecated (or upstream serves it again).
-  it('quarantines x-preview-f-free out of the offered free models', () => {
-    assert.ok(opencodeFree.brokenModelIds?.includes('x-preview-f-free'));
-    assert.ok(!providerFallbackModelIds(opencodeFree).includes('x-preview-f-free'));
-    assert.ok(
-      !(defaultEnabledModelIdsWhenOmitted('opencode-free') ?? []).includes('x-preview-f-free'),
-    );
-  });
-
-  // Mechanism guard, independent of which ids the deny-list holds: a quarantined
-  // id must never leak back into the offered candidates through either path.
-  it('never offers a quarantined broken id as a free candidate', () => {
-    const broken = new Set(opencodeFree.brokenModelIds ?? []);
-    const offered = [
-      ...providerFallbackModelIds(opencodeFree),
-      ...(defaultEnabledModelIdsWhenOmitted('opencode-free') ?? []),
-    ];
-    assert.deepEqual(
-      offered.filter((id) => broken.has(id)),
-      [],
-    );
   });
 });
