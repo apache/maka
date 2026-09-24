@@ -19,6 +19,7 @@
 
 use super::{Choice, LoginStart, LoginTarget, State};
 use crate::editor::Editor;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maka_protocol::configuration::{ConnectionCredentialTarget, validation};
 use serde_json::Value;
 
@@ -89,6 +90,8 @@ impl Identity {
                 )
                 .to_string(),
         );
+        // Show a long configuration from its start, not scrolled to its end.
+        self.fields[2].key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
         self.clear_authentication();
     }
 

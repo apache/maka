@@ -22,7 +22,7 @@ use crate::{
     app::{Action, App},
     ui::{Role, Sheet, Tone},
 };
-use ratatui::{Frame, layout::Rect, style::Style, text::Line};
+use ratatui::{Frame, text::Line};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -90,11 +90,10 @@ pub(crate) fn note_lines(text: &str, width: u16) -> Vec<Line<'static>> {
 /// text dialogs open in their field, where Enter saves.
 pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
     use super::connection::Change;
-    let dialog = app
-        .management
-        .dialog
-        .as_ref()
-        .filter(|dialog| dialog.in_sheet())?;
+    let dialog = app.management.dialog.as_ref()?;
+    if dialog.kind == Kind::Oauth {
+        return Some(super::oauth::sheet(app));
+    }
     if dialog.credentials.is_some() {
         return Some(super::credentials::sheet(app, dialog));
     }
@@ -328,6 +327,14 @@ pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
     {
         return super::enabled_models::draw(frame, app);
     }
+    if app
+        .management
+        .dialog
+        .as_ref()
+        .is_some_and(|dialog| dialog.kind == Kind::Oauth)
+    {
+        return super::oauth::draw(frame, app);
+    }
     let editable = app.management.pending.is_none();
     let rect = app.layer.slot("field").filter(|rect| !rect.is_empty());
     let focused = app.layer.focused("field");
@@ -335,23 +342,12 @@ pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
     let Some(dialog) = app.management.dialog.as_mut() else {
         return;
     };
-    let Some(rect) = rect.filter(|_| dialog.in_sheet()) else {
+    let Some(rect) = rect else {
         dialog.editor.invalidate_geometry();
         return;
     };
     let focused = focused && editable && !dialog.blocked;
     dialog.editor.draw(frame, rect, focused, colors);
-}
-
-/// Sub-views that are not sheets yet.
-pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
-    let Some(dialog) = app.management.dialog.as_ref() else {
-        return;
-    };
-    app.hits.clear();
-    if dialog.kind == Kind::Oauth {
-        super::oauth::draw(frame, app, area, base);
-    }
 }
 
 #[cfg(test)]

@@ -666,9 +666,11 @@ mod tests {
             let dialog = app.management.dialog.as_ref().unwrap();
             assert_eq!(dialog.blocked, blocked);
             assert_eq!(dialog.error, Some(error));
+            screen.draw(|f| crate::view::draw(f, &mut app)).unwrap();
             assert_eq!(
-                dialog.focus, 0,
-                "failure returns focus to Cancel, not network replay"
+                app.layer.focused_path(),
+                Some("footer/cancel"),
+                "failure leaves focus on Cancel, not network replay"
             );
             app.apply(Action::Manage(Command::Close));
         }

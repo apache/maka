@@ -53,13 +53,19 @@ fn oauth_entry_uses_host_enrollment_mouse_keyboard_and_never_starts_on_dismiss()
     let providers = runtime
         .block_on(client.provider_directory(maka_protocol::model_provider::Scope::Profile))
         .unwrap();
-    select_provider(&mut tui, &providers, "chatgpt");
+    let label = select_provider(&mut tui, &providers, "chatgpt");
     tui.wait_for("Choose a provider and authentication method.");
     tui.resize(60, 20);
     tui.wait_for("Continue");
-    // Selection schedules the original enrollment query, not a login. Enter
-    // remains on Close after it settles, even when this provider is enabled.
+    // Selection schedules the original enrollment query, not a login. Focus
+    // stays on the pop-up once it settles, even when this provider is
+    // enabled: Enter only shows the choices again, and Esc closes them
+    // before it dismisses the sheet.
     tui.send(b"\r");
+    tui.wait_for(&format!("● {label}"));
+    tui.send(b"\x1b");
+    tui.wait_until(|screen| !screen.contains(&format!("● {label}")));
+    tui.send(b"\x1b");
     tui.wait_until(|screen| {
         // Home's own button: the sidebar is hidden this narrow.
         !screen.contains("Sign in to a provider") && screen.contains("+ New session")
@@ -132,7 +138,7 @@ fn oauth_start_is_durable_before_dispatch_and_crash_reopens_only_the_original_qu
         std::fs::create_dir(&checkpoint).unwrap();
         tui.click_text("Continue");
         tui.wait_for("Login was not sent:");
-        tui.wait_for("Close   Check   Cancel");
+        tui.wait_for("Close      Check      Cancel");
         assert!(
             relay.requests().is_empty(),
             "storage failure must prevent OAuth dispatch"
@@ -166,7 +172,7 @@ fn oauth_start_is_durable_before_dispatch_and_crash_reopens_only_the_original_qu
         reopened.filter_command("View sign-in");
         reopened.click_text("View sign-in");
         reopened.wait_for("The outcome is unknown.");
-        reopened.wait_for("Close   Check   Cancel");
+        reopened.wait_for("Close      Check      Cancel");
         assert_eq!(
             relay.requests(),
             requests,
@@ -190,7 +196,7 @@ fn oauth_start_is_durable_before_dispatch_and_crash_reopens_only_the_original_qu
 }
 
 fn custom_identity(tui: &mut Pty) {
-    tui.wait_for("Close   Continue");
+    tui.wait_for("Close      Continue");
     tui.click_text("Connection details");
     tui.wait_for("Display name");
     tui.wait_for("Connection ID");
@@ -203,22 +209,39 @@ fn custom_identity(tui: &mut Pty) {
     tui.wait_for("Choose a provider and authentication method.");
     tui.click_text("Connection details");
     tui.wait_until(|screen| {
-        !screen.contains("Display name") && screen.contains("Close   Continue")
+        !screen.contains("Display name") && screen.contains("Close      Continue")
     });
 }
 
-fn select_provider(tui: &mut Pty, directory: &maka_client::ProviderDirectory, name: &str) {
-    for provider in &directory.entries {
-        for method in &provider.descriptor.authentication {
-            let label = format!("{} · {}", provider.descriptor.label, method.label);
-            tui.wait_until(|screen| {
-                screen.contains(&label) && !screen.contains("Checking availability…")
-            });
-            if provider.identity.name == name {
-                return;
-            }
-            tui.click_text(&label);
-        }
-    }
-    panic!("fixture provider was not published: {name}");
+/// Picks the provider's first method from the sheet's provider pop-up,
+/// which keeps the focus; returns its label.
+fn select_provider(
+    tui: &mut Pty,
+    directory: &maka_client::ProviderDirectory,
+    name: &str,
+) -> String {
+    let provider = directory
+        .entries
+        .iter()
+        .find(|provider| provider.identity.name == name)
+        .unwrap_or_else(|| panic!("fixture provider was not published: {name}"));
+    let label = format!(
+        "{} · {}",
+        provider.descriptor.label, provider.descriptor.authentication[0].label
+    );
+    tui.wait_until(|screen| {
+        screen.contains("Provider  ") && !screen.contains("Checking availability…")
+    });
+    tui.click_text("Provider  ");
+    let choice = ["○", "●"].map(|marker| format!("{marker} {label}"));
+    tui.wait_until(|screen| choice.iter().any(|choice| screen.contains(choice)));
+    let shown = tui.screen.snapshot().unwrap().screen;
+    tui.click_text(
+        choice
+            .iter()
+            .find(|choice| shown.contains(*choice))
+            .unwrap(),
+    );
+    tui.wait_for(&format!("{label} ▾"));
+    label
 }

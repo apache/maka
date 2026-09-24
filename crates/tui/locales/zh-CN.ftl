@@ -879,9 +879,9 @@ extensions-failed = 无法加载或保存此页面，草稿已保留。
 extensions-back = 返回
 extensions-invalid-fields = 请检查表单内容后再保存。
 
-oauth-configuration = 提供商配置（JSON）
+oauth-configuration = 配置（JSON）
 
-oauth-authentication-input = 认证输入（隐藏显示）
+oauth-authentication-input = 认证信息
 
 providers-failed = 无法加载提供商能力，请刷新连接列表重试。
 providers-loading = 正在加载提供商…

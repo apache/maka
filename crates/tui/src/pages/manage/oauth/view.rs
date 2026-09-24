@@ -17,289 +17,307 @@
  * under the License.
  */
 
-use super::{Command, Manage};
+use super::{Command, Manage, State};
 use crate::{
     app::{Action, App},
-    view::{button, safe, tone},
+    ui::{self, Node, On, Role, Sheet, Size, Tone},
+    view::{safe, tone},
 };
-use ratatui::{
-    Frame,
-    layout::{Alignment, Margin, Rect},
-    style::{Modifier, Style},
-    widgets::{Block, Paragraph},
-};
+use maka_protocol::oauth::Phase;
+use ratatui::{Frame, layout::Rect, style::Style, widgets::Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-pub(in crate::pages::manage) fn draw(
-    frame: &mut Frame<'_>,
-    app: &mut App,
-    area: Rect,
-    base: Style,
-) {
-    app.hits.clear();
-    let picking = app.management.oauth.attempt.is_none();
-    let presenting = app.management.oauth.display.is_some();
-    let customizable = app.management.oauth.customizable();
-    let expanded = customizable && app.management.oauth.identity.expanded;
-    if !expanded {
-        app.management.oauth.identity.invalidate_geometry();
+/// The connection details rows, one per field index.
+const ROWS: &str = "identity/rows";
+
+fn action(command: Command) -> Action {
+    Action::Manage(Manage::Oauth(command))
+}
+
+/// The connection details row a focus path points into.
+pub(super) fn row(path: &str) -> Option<usize> {
+    path.strip_prefix(ROWS)?.strip_prefix('/')?.parse().ok()
+}
+
+pub(super) fn row_path(index: usize) -> String {
+    format!("{ROWS}/{index}")
+}
+
+fn label(app: &App, state: &State, index: usize) -> String {
+    let mut label = app.i18n.text(Command::Field(index).label());
+    if index == 3
+        && let Some(field) = state.identity.authentication_field()
+    {
+        label.push_str(&format!(" · {}", safe(field)));
     }
-    let height = if expanded {
-        22
-    } else if picking {
-        16
-    } else if presenting {
-        20
-    } else {
-        12
-    };
-    let dialog = app.management.dialog.as_mut().expect("OAuth dialog");
-    dialog.visible = false;
-    if area.width < 44 || area.height < height {
-        app.management.oauth.identity.invalidate_geometry();
-        crate::view::clear_overlay(frame, area);
-        frame.render_widget(
-            Paragraph::new(app.i18n.text("terminal-small")),
-            area.inner(Margin::new(1, 1)),
-        );
-        return;
-    }
-    let width = area.width.saturating_sub(2).min(76);
-    let popup = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    let block = Block::bordered()
-        .title(app.i18n.text("oauth-title"))
-        .title_alignment(Alignment::Center)
-        .border_type(if app.chrome.ascii {
-            ratatui::widgets::BorderType::Plain
-        } else {
-            ratatui::widgets::BorderType::Rounded
-        })
-        .style(base)
-        .border_style(Style::default().fg(tone::accent(app.theme.colors())));
-    let inner = block.inner(popup).inner(Margin::new(1, 0));
-    crate::view::clear_overlay(frame, popup);
-    frame.render_widget(block, popup);
-    app.modal_area = Some(popup);
-    dialog.visible = true;
-    let focus = dialog.focus;
+    label
+}
+
+/// One label column for the provider and every shown field, so the form
+/// reads as a single aligned column.
+fn label_width(app: &App) -> u16 {
     let state = &app.management.oauth;
-    let controls = state.controls();
-    let status_y = inner.y
-        + if expanded {
-            14
-        } else if customizable {
-            8
-        } else if picking {
-            7
-        } else {
-            2
-        };
-    if !picking {
-        frame.render_widget(
-            Paragraph::new(safe(&state.provider_name()))
-                .style(Style::default().add_modifier(Modifier::BOLD)),
-            Rect::new(inner.x, inner.y, inner.width, 1),
-        );
-        if !state.connection_label.is_empty() {
-            frame.render_widget(
-                Paragraph::new(safe(&state.connection_label))
-                    .style(Style::default().fg(app.theme.colors().muted)),
-                Rect::new(inner.x, inner.y + 1, inner.width, 1),
-            );
-        }
+    let width = ui::content_width(app.frame_size.map_or(80, |(width, _)| width));
+    let widest = state
+        .fields()
+        .filter(|_| state.identity.expanded)
+        .map(|index| label(app, state, index).width())
+        .chain([app.i18n.text("onboard-provider").width()])
+        .max()
+        .unwrap_or(0) as u16;
+    (widest + 2).min(width * 2 / 5)
+}
+
+/// Signing in: choose a provider and method (and, optionally, how the
+/// connection is named), follow the authorization it presents, then see the
+/// outcome. Every step opens on Close, so Enter alone never starts or cancels
+/// a sign-in; closing only hides an attempt, which keeps running.
+pub(in crate::pages::manage) fn sheet(app: &App) -> Sheet<Action> {
+    let state = &app.management.oauth;
+    let step = if state.terminal() || state.not_found {
+        "done"
+    } else if state.attempt.is_some() {
+        "attempt"
+    } else {
+        "choose"
+    };
+    let mut sheet = Sheet::new(
+        format!("oauth:{}:{step}", state.generation),
+        app.i18n.text("oauth-title"),
+    );
+    let mut about = vec![];
+    if state.attempt.is_some() {
+        about.push(Node::text(
+            "provider",
+            vec![(safe(&state.provider_name()), Tone::Normal)],
+        ));
     }
-    let status = app.i18n.text(state.status());
-    frame.render_widget(
-        Paragraph::new(super::super::view::note_lines(&status, inner.width)).style(
-            Style::default().fg(
-                if state.error.is_some()
-                    || (customizable && state.identity.error().is_some())
-                    || matches!(
-                        state.projection.as_ref().map(|p| p.phase),
-                        Some(maka_protocol::oauth::Phase::Failed { .. })
-                    )
-                {
-                    app.theme.colors().warning
-                } else {
-                    app.theme.colors().muted
-                },
-            ),
-        ),
-        Rect::new(inner.x, status_y, inner.width, 3),
+    if !state.connection_label.is_empty() {
+        about.push(Node::text(
+            "connection",
+            vec![(safe(&state.connection_label), Tone::Subtle)],
+        ));
+    }
+    if state.attempt.is_none() && !state.choices.is_empty() {
+        about.push(provider(app, state));
+    }
+    if !about.is_empty() {
+        sheet = sheet.body(Node::column("about", about));
+    }
+    if state.customizable() {
+        sheet = sheet.body(identity(app, state));
+    }
+    let phase = state.projection.as_ref().map(|projection| projection.phase);
+    let warning = state.error.is_some()
+        || (state.customizable() && state.identity.error().is_some())
+        || matches!(phase, Some(Phase::Failed { .. }));
+    sheet = sheet.text(
+        "note",
+        &app.i18n.text(state.status()),
+        if warning { Tone::Warning } else { Tone::Subtle },
     );
     if let Some((url, code)) = &state.display {
-        frame.render_widget(
-            Paragraph::new(super::super::view::note_lines(&safe(url), inner.width))
-                .style(Style::default().fg(tone::accent(app.theme.colors()))),
-            Rect::new(inner.x, inner.y + 6, inner.width, 3),
-        );
-        if let Some(code) = code {
-            frame.render_widget(
-                Paragraph::new(safe(code))
-                    .alignment(Alignment::Center)
-                    .style(
-                        Style::default()
-                            .fg(tone::accent(app.theme.colors()))
-                            .add_modifier(Modifier::BOLD),
+        sheet = sheet.body(authorization(app, url, code.as_deref()));
+    }
+    if step == "attempt" {
+        sheet = sheet.text("hide", &app.i18n.text("oauth-hide-note"), Tone::Subtle);
+    }
+    sheet = sheet.button(
+        "close",
+        app.i18n.text("oauth-close"),
+        Role::Normal,
+        Action::Manage(Manage::Close),
+        true,
+    );
+    let button = |sheet: Sheet<Action>, key, command: Command, role| {
+        sheet.button(
+            key,
+            app.i18n.text(command.label()),
+            role,
+            action(command),
+            app.oauth_enabled(command),
+        )
+    };
+    sheet = match step {
+        "done" => button(sheet, "new", Command::New, Role::Primary),
+        "attempt" => button(
+            button(sheet, "check", Command::Check, Role::Normal),
+            "cancel",
+            Command::Cancel,
+            Role::Normal,
+        ),
+        _ if state.error.is_some() => button(
+            button(sheet, "check", Command::Check, Role::Normal),
+            "begin",
+            Command::Begin,
+            Role::Primary,
+        ),
+        _ => button(sheet, "begin", Command::Begin, Role::Primary),
+    };
+    sheet.focus("close")
+}
+
+/// The provider and method, chosen from a pop-up of every one offered.
+fn provider(app: &App, state: &State) -> Node<Action> {
+    let enabled = app.oauth_enabled(Command::Provider(state.provider));
+    let choices = state
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| ui::Choice {
+            label: choice.label(),
+            action: action(Command::Provider(index)),
+        })
+        .collect();
+    Node::row(
+        "choice",
+        vec![
+            Node::text(
+                "label",
+                vec![(app.i18n.text("onboard-provider"), Tone::Muted)],
+            )
+            .clip()
+            .size(Size::Fixed(label_width(app))),
+            Node::text(
+                "value",
+                vec![(
+                    format!(
+                        "{} {}",
+                        safe(&state.provider_name()),
+                        app.chrome.symbol("▾", "v")
                     ),
-                Rect::new(inner.x, inner.y + 10, inner.width, 1),
-            );
-        }
-    }
-    if state.attempt.is_some() && !state.terminal() {
-        frame.render_widget(
-            Paragraph::new(super::super::view::note_lines(
-                &app.i18n.text("oauth-hide-note"),
-                inner.width,
-            ))
-            .style(Style::default().fg(app.theme.colors().subtle)),
-            Rect::new(
-                inner.x,
-                inner.bottom() - if presenting { 6 } else { 4 },
-                inner.width,
-                2,
-            ),
-        );
-    }
-    if customizable {
-        let action = Action::Manage(Manage::Oauth(Command::Identity));
-        let label = format!(
-            "{} {}",
-            app.chrome.symbol(
-                if expanded { "▾" } else { "▸" },
-                if expanded { "v" } else { ">" }
-            ),
-            app.i18n.text("oauth-identity")
-        );
-        crate::view::list_item(
-            frame,
-            app,
-            Rect::new(inner.x, inner.y + 2, inner.width, 1),
-            &label,
-            action,
-            controls.get(focus) == Some(&Manage::Oauth(Command::Identity)),
-        );
-        if expanded {
-            let fields: Vec<_> = app.management.oauth.fields().collect();
-            for (position, index) in fields.into_iter().enumerate() {
-                let command = Command::Field(index);
-                let enabled = app.oauth_enabled(command);
-                let focused = enabled && controls.get(focus) == Some(&Manage::Oauth(command));
-                // Keep each label with its editor, then leave a quiet row
-                // between fields instead of packing content above empty space.
-                let y = inner.y + 4 + position as u16 * 2;
-                let mut label = app.i18n.text(command.label());
-                if index == 3
-                    && let Some(field) = app.management.oauth.identity.authentication_field()
-                {
-                    label.push_str(&format!(" · {}", safe(field)));
-                }
-                frame.render_widget(
-                    Paragraph::new(label).style(Style::default().fg(if focused {
-                        tone::accent(app.theme.colors())
-                    } else {
-                        app.theme.colors().muted
-                    })),
-                    Rect::new(inner.x, y, inner.width, 1),
-                );
-                let rect = Rect::new(inner.x + 1, y + 1, inner.width.saturating_sub(2), 1);
-                frame.render_widget(
-                    Paragraph::new("").style(tone::selection(app.theme.colors())),
-                    rect,
-                );
-                let field = &mut app.management.oauth.identity.fields[index];
-                if index == 3 {
-                    field.draw_masked(frame, rect, focused, app.theme.colors());
-                } else {
-                    field.draw(frame, rect, focused, app.theme.colors());
-                }
-                if index < 2 && field.text().is_empty() && !focused {
-                    frame.render_widget(
-                        Paragraph::new(app.i18n.text("oauth-identity-default"))
-                            .style(Style::default().fg(app.theme.colors().subtle)),
-                        rect,
-                    );
-                }
-                if enabled {
-                    app.hits.push(crate::app::Hit {
-                        area: Rect::new(inner.x, y, inner.width, 2),
-                        action: Action::Manage(Manage::Oauth(command)),
-                    });
-                }
-            }
-        }
-    }
-    let mut right = inner.right();
-    let mut copy_x = inner.x;
-    for (index, command) in controls.iter().enumerate() {
-        let (label, rect) = if let Manage::Oauth(Command::Provider(_)) = command {
-            (
+                    if enabled { Tone::Accent } else { Tone::Subtle },
+                )],
+            )
+            .clip()
+            .size(Size::Fill),
+        ],
+    )
+    .on(On::Choose {
+        choices,
+        current: Some(state.provider),
+    })
+    .enabled(enabled)
+}
+
+/// A disclosure of the connection's name, ID, configuration and
+/// authentication input; its rows are fields drawn by `draw`.
+fn identity(app: &App, state: &State) -> Node<Action> {
+    let expanded = state.identity.expanded;
+    let mut children = vec![
+        Node::text(
+            "toggle",
+            vec![(
                 format!(
                     "{} {}",
-                    safe(&app.management.oauth.provider_name()),
-                    app.chrome.symbol("›", ">")
+                    if expanded {
+                        app.chrome.symbol("▾", "v")
+                    } else {
+                        app.chrome.symbol("▸", ">")
+                    },
+                    app.i18n.text("oauth-identity")
                 ),
-                Rect::new(inner.x, inner.y, inner.width, 1),
-            )
-        } else if matches!(
-            command,
-            Manage::Oauth(Command::CopyLink | Command::CopyCode)
-        ) {
-            let label = app.i18n.text(command.label());
-            let width = (label.width() as u16 + 2).min(inner.width / 2);
-            let rect = Rect::new(copy_x, inner.bottom() - 4, width, 1);
-            copy_x += width;
-            (label, rect)
-        } else {
-            continue;
-        };
-        let draw_control = if matches!(command, Manage::Oauth(Command::Provider(_))) {
-            crate::view::list_item
-        } else {
-            button
-        };
-        draw_control(
-            frame,
-            app,
-            rect,
-            &label,
-            Action::Manage(command.clone()),
-            focus == index,
-        );
+                Tone::Normal,
+            )],
+        )
+        .on(On::Activate(action(Command::Identity)))
+        .enabled(app.oauth_enabled(Command::Identity)),
+    ];
+    if expanded {
+        children.push(Node::column(
+            "rows",
+            state
+                .fields()
+                .map(|index| {
+                    Node::slot(index.to_string(), 1)
+                        .on(On::Activate(action(Command::Field(index))))
+                        .enabled(app.oauth_enabled(Command::Field(index)))
+                })
+                .collect(),
+        ));
     }
-    for (index, command) in controls.iter().enumerate().rev() {
-        if matches!(
-            command,
-            Manage::Oauth(
-                Command::Provider(_)
-                    | Command::CopyLink
-                    | Command::CopyCode
-                    | Command::Identity
-                    | Command::Field(_)
-            )
-        ) {
+    Node::column("identity", children)
+}
+
+/// What the provider asks the user to open and enter, with ways to copy
+/// both. A long link scrolls within a few rows; copying takes all of it.
+fn authorization(app: &App, url: &str, code: Option<&str>) -> Node<Action> {
+    let copy = |key, command: Command| {
+        Node::button(key, app.i18n.text(command.label()), Role::Normal)
+            .on(On::Activate(action(command)))
+            .enabled(app.oauth_enabled(command))
+    };
+    let mut children = vec![
+        Node::scroll("link", Node::text("url", vec![(safe(url), Tone::Accent)]))
+            .size(Size::Upto(3)),
+    ];
+    let mut buttons = vec![copy("link", Command::CopyLink)];
+    if let Some(code) = code {
+        children.push(Node::text("code", vec![(safe(code), Tone::Primary)]));
+        buttons.push(copy("code", Command::CopyCode));
+    }
+    children.push(Node::row("copy", buttons).gap(2));
+    Node::column("authorization", children)
+}
+
+/// Paints the connection details rows: a label, then the editor (the
+/// authentication input masked), or the provider default when empty.
+pub(in crate::pages::manage) fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    let width = label_width(app);
+    let focused = app.layer.focused_path().and_then(row);
+    let colors = app.theme.colors();
+    let default = app.i18n.text("oauth-identity-default");
+    let rows: Vec<_> = (0..4)
+        .map(|index| {
+            let rect = app
+                .layer
+                .rect(&row_path(index))
+                .filter(|rect| !rect.is_empty())?;
+            Some((
+                rect,
+                label(app, &app.management.oauth, index),
+                app.oauth_enabled(Command::Field(index)),
+            ))
+        })
+        .collect();
+    let fields = &mut app.management.oauth.identity.fields;
+    for (index, (field, row)) in fields.iter_mut().zip(rows).enumerate() {
+        let Some((rect, label, enabled)) = row else {
+            field.invalidate_geometry();
             continue;
-        }
-        let label = app.i18n.text(if *command == Manage::Close {
-            "oauth-close"
-        } else {
-            command.label()
-        });
-        let width = (label.width() as u16 + 2).min(inner.width / 3);
-        let rect = Rect::new(right.saturating_sub(width), inner.bottom() - 1, width, 1);
-        right = rect.x.saturating_sub(1);
-        button(
-            frame,
-            app,
-            rect,
-            &label,
-            Action::Manage(command.clone()),
-            focus == index,
+        };
+        let here = enabled && focused == Some(index);
+        let label_rect = Rect::new(rect.x, rect.y, width.min(rect.width), 1);
+        frame.buffer_mut().set_style(label_rect, colors.base());
+        frame.render_widget(
+            Paragraph::new(label).style(Style::default().fg(if here {
+                tone::accent(colors)
+            } else {
+                colors.muted
+            })),
+            Rect::new(
+                label_rect.x,
+                label_rect.y,
+                label_rect.width.saturating_sub(1),
+                1,
+            ),
         );
+        let value = Rect::new(
+            rect.x + label_rect.width,
+            rect.y,
+            rect.width.saturating_sub(label_rect.width),
+            1,
+        );
+        if index == 3 {
+            field.draw_masked(frame, value, here, colors);
+        } else {
+            field.draw(frame, value, here, colors);
+        }
+        if index < 2 && field.text().is_empty() && !here {
+            frame.render_widget(
+                Paragraph::new(default.as_str()).style(Style::default().fg(colors.subtle)),
+                value,
+            );
+        }
     }
 }

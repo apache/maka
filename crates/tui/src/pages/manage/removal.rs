@@ -192,7 +192,6 @@ impl App {
         };
         let state = dialog.removal.as_mut().unwrap();
         state.count = None;
-        dialog.focus = 0;
         match result {
             Ok(Updated::Removal(SessionRemoveResult::RevisionConflict { .. })) => {
                 dialog.blocked = true;

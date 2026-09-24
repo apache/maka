@@ -72,7 +72,7 @@ fn anonymous_setup_verifies_without_writes_and_creates_first_chat() {
     }
     tui.click_text("Name (optional)");
     tui.send(b"New connection");
-    tui.click_text("Provider configuration (JSON)");
+    tui.click_text("Configuration (JSON)");
     tui.send(
         format!(
             "\x01\x1b[200~{}\x1b[201~",

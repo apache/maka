@@ -879,9 +879,9 @@ extensions-failed = This page could not be loaded or saved. Your draft is preser
 extensions-back = Back
 extensions-invalid-fields = Check the fields before saving.
 
-oauth-configuration = Provider configuration (JSON)
+oauth-configuration = Configuration (JSON)
 
-oauth-authentication-input = Authentication input (hidden)
+oauth-authentication-input = Authentication
 
 providers-failed = Could not load provider capabilities. Refresh Connections to retry.
 providers-loading = Loading providers…

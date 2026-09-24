@@ -85,8 +85,8 @@ fn reauthentication_uses_the_new_credential_and_stale_removal_cannot_delete_it()
 
     tui.filter_command("Sign in again");
     tui.click_text("Sign in again");
-    tui.wait_for("Authentication input");
-    tui.click_text("Authentication input");
+    tui.wait_for("Authentication · ");
+    tui.click_text("Authentication · ");
     tui.send(b"new-terminal-key");
     tui.wait_for("Choose a provider");
     tui.click_text("Continue");

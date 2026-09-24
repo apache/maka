@@ -204,6 +204,8 @@ pub struct Layer<M> {
     earlier: Vec<(String, Surface<M>)>,
     /// The drawn box; clicks outside it dismiss.
     area: Option<Rect>,
+    /// Where the shown sheet opened: the area it centered in and its top.
+    top: Option<(Rect, u16)>,
 }
 
 /// Deep enough for a flow and its sub-views; older steps open fresh.
@@ -216,6 +218,7 @@ impl<M> Default for Layer<M> {
             shown: None,
             earlier: vec![],
             area: None,
+            top: None,
         }
     }
 }
@@ -240,10 +243,12 @@ impl<M: Clone> Layer<M> {
         let height = layout::height(&tree, inner).saturating_add(4);
         if !fits_footer || height > area.height.saturating_sub(2) {
             self.area = None;
+            self.top = None;
             self.surface.invalidate();
             return false;
         }
         if self.shown.as_ref() != Some(&key) {
+            self.top = None;
             let left = std::mem::take(&mut self.surface);
             if let Some(shown) = self.shown.take() {
                 self.earlier.push((shown, left));
@@ -269,12 +274,16 @@ impl<M: Clone> Layer<M> {
             }
             self.shown = Some(key);
         }
-        let rect = Rect::new(
-            area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 2,
-            width,
-            height,
-        );
+        // Content that changes while shown (a status arriving, an error
+        // appearing) grows the sheet downward from where it opened rather
+        // than moving what the pointer is aiming at; a new step, a resize or
+        // a sheet that no longer fits centers again.
+        let top = self
+            .top
+            .filter(|(placed, top)| *placed == area && top + height < area.bottom())
+            .map_or(area.y + (area.height - height) / 2, |(_, top)| top);
+        self.top = Some((area, top));
+        let rect = Rect::new(area.x + (area.width - width) / 2, top, width, height);
         // The page stays visible but recedes, so the sheet is what reads.
         frame
             .buffer_mut()
@@ -346,6 +355,7 @@ impl<M: Clone> Layer<M> {
         self.shown = None;
         self.earlier.clear();
         self.area = None;
+        self.top = None;
         self.surface.leave();
     }
 
@@ -683,5 +693,18 @@ mod tests {
                 .message,
             Some(Message::Cancel)
         );
+    }
+
+    #[test]
+    fn a_shown_sheet_grows_downward_and_a_new_step_centers() {
+        let mut layer = Layer::default();
+        let title = "Put this session away?";
+        let (_, terminal) = draw(&mut layer, sheet("a", true), 60, 24);
+        let top = locate(&terminal, title).1;
+        let grown = |key| sheet(key, true).text("more", "One.\nTwo.\nThree.", Tone::Subtle);
+        let (_, terminal) = draw(&mut layer, grown("a"), 60, 24);
+        assert_eq!(locate(&terminal, title).1, top, "a status arriving");
+        let (_, terminal) = draw(&mut layer, grown("b"), 60, 24);
+        assert_eq!(locate(&terminal, title).1, top - 2, "the next step");
     }
 }

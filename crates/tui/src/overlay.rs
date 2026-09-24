@@ -155,11 +155,12 @@ impl App {
             );
         }
         match overlay {
-            Overlay::Shutdown | Overlay::Consent => unreachable!("presented as sheets"),
+            Overlay::Shutdown | Overlay::Consent | Overlay::Reference | Overlay::Management => {
+                unreachable!("presented as sheets")
+            }
             Overlay::Theme => self.theme_input(event),
             Overlay::Skills => self.skills_input(event),
             Overlay::Attachments => self.attachment_input(event),
-            Overlay::Reference | Overlay::Management => self.management_input(event),
             Overlay::Revision => self.revision_input(event),
             Overlay::Recap => self.recap_input(event),
             Overlay::Resume => self.resume_input(event),
@@ -272,11 +273,12 @@ pub(crate) fn draw(
     // sheet rather than closing it: returning focuses what opened it.
     app.layer.invalidate();
     match overlay {
-        Overlay::Shutdown | Overlay::Consent => unreachable!("presented as sheets"),
+        Overlay::Shutdown | Overlay::Consent | Overlay::Reference | Overlay::Management => {
+            unreachable!("presented as sheets")
+        }
         Overlay::Theme => crate::theme::editor::draw(frame, app, area),
         Overlay::Skills => pages::skills::draw(frame, app, area, base),
         Overlay::Attachments => pages::attachments::draw(frame, app, area, base),
-        Overlay::Reference | Overlay::Management => pages::manage::draw(frame, app, area, base),
         Overlay::Revision => pages::revision::draw(frame, app, area, base),
         Overlay::Recap => pages::recap::draw(frame, app, area, base),
         Overlay::Resume => pages::resume::draw(frame, app, area, base),

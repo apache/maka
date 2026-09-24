@@ -21,7 +21,8 @@ mod identity;
 mod input;
 pub mod saved;
 mod view;
-pub(super) use view::draw;
+pub(super) use input::sheet_input;
+pub(super) use view::{draw, sheet};
 
 use super::{Command as Manage, Entity, Kind, Target};
 use crate::{
@@ -193,6 +194,8 @@ pub struct State {
     copy_note: Option<&'static str>,
     not_found: bool,
     identity: identity::Identity,
+    /// Counts fresh starts, so a new sign-in opens its sheet anew.
+    generation: u64,
 }
 
 impl State {
@@ -234,44 +237,7 @@ impl State {
         self.not_found = false;
         self.enrollment = None;
         self.identity = identity::Identity::default();
-    }
-
-    pub(super) fn controls(&self) -> Vec<Manage> {
-        let mut controls = Vec::new();
-        if self.attempt.is_none() && !self.choices.is_empty() {
-            controls.push(Manage::Oauth(Command::Provider(
-                (self.provider + 1) % self.choices.len(),
-            )));
-        }
-        if self.customizable() {
-            controls.push(Manage::Oauth(Command::Identity));
-            if self.identity.expanded {
-                controls.extend(self.fields().map(|i| Manage::Oauth(Command::Field(i))));
-            }
-        }
-        if self.display.is_some() {
-            controls.push(Manage::Oauth(Command::CopyLink));
-            if self
-                .display
-                .as_ref()
-                .is_some_and(|(_, code)| code.is_some())
-            {
-                controls.push(Manage::Oauth(Command::CopyCode));
-            }
-        }
-        controls.push(Manage::Close);
-        if self.terminal() || self.not_found {
-            controls.push(Manage::Oauth(Command::New));
-        } else if self.attempt.is_some() {
-            controls.push(Manage::Oauth(Command::Check));
-            controls.push(Manage::Oauth(Command::Cancel));
-        } else {
-            if self.error.is_some() {
-                controls.push(Manage::Oauth(Command::Check));
-            }
-            controls.push(Manage::Oauth(Command::Begin));
-        }
-        controls
+        self.generation += 1;
     }
 
     fn status(&self) -> &'static str {
@@ -478,22 +444,29 @@ impl App {
                 .display
                 .as_ref()
                 .is_some_and(|(_, code)| code.is_some()),
-            _ if state.pending.is_some() || state.requested.is_some() => false,
-            Command::Provider(index) => index < state.choices.len() && state.attempt.is_none(),
+            // Editing the details races nothing: a started attempt has
+            // already taken them, and then they are not customizable.
             Command::Identity => state.customizable(),
             Command::Field(index) => {
                 state.customizable()
                     && state.identity.expanded
                     && state.fields().any(|field| field == index)
             }
+            // Only an asked, unsent operation blocks the next one. A request
+            // in flight (a poll, an availability check) disables nothing the
+            // user may be focused on: asking again queues behind it, and an
+            // availability answer is kept only for the provider it was for.
+            _ if state.requested.is_some() => false,
+            Command::Provider(index) => index < state.choices.len() && state.attempt.is_none(),
+            Command::Cancel => state.attempt.is_some() && !state.terminal(),
+            Command::Check => !state.terminal(),
+            _ if state.pending.is_some() => false,
             Command::Begin => {
                 state.attempt.is_none()
                     && state.ready
                     && state.enrollment == Some(true)
                     && (!state.customizable() || state.identity.error().is_none())
             }
-            Command::Cancel => state.attempt.is_some() && !state.terminal(),
-            Command::Check => !state.terminal(),
             Command::New => state.terminal() || state.not_found,
         }
     }
@@ -550,20 +523,6 @@ impl App {
             Command::CopyLink | Command::CopyCode => {
                 return Some(Action::Manage(Manage::Oauth(command)));
             }
-        }
-        self.hits.clear();
-        if let Some(dialog) = &mut self.management.dialog {
-            dialog.visible = false;
-            let focused = if matches!(command, Command::Identity | Command::Field(_)) {
-                Manage::Oauth(command)
-            } else {
-                Manage::Close
-            };
-            dialog.focus = state
-                .controls()
-                .iter()
-                .position(|control| *control == focused)
-                .unwrap_or(0);
         }
         None
     }
@@ -645,12 +604,6 @@ impl App {
         request: Request,
         result: Result<Output, RequestFailure>,
     ) -> Option<OAuthPresentationService> {
-        let focused = self
-            .management
-            .dialog
-            .as_ref()
-            .filter(|dialog| dialog.kind == Kind::Oauth)
-            .and_then(|dialog| self.management.oauth.controls().get(dialog.focus).cloned());
         let state = &mut self.management.oauth;
         if state.pending.as_ref() != Some(&request)
             || !matches!(&self.connection, ConnectionState::Connected {root_id, epoch} if *root_id == request.root && *epoch == request.epoch)
@@ -665,7 +618,14 @@ impl App {
                 state.ready = true;
                 service = Some(published);
             }
-            Ok(Output::Enrollment(enrollment)) => state.enrollment = Some(enrollment.enabled),
+            // The choice changed while asking: the current one is asked next.
+            Ok(Output::Enrollment(enrollment)) => {
+                if matches!(&request.call, Call::Enrollment(provider)
+                    if state.choices.get(state.provider).is_some_and(|choice| choice.provider.identity == *provider))
+                {
+                    state.enrollment = Some(enrollment.enabled);
+                }
+            }
             Ok(Output::Login(projection)) => {
                 state.recovered_connection = None;
                 state.awaiting_checkpoint = false;
@@ -702,24 +662,6 @@ impl App {
                     "oauth-request-failed"
                 });
             }
-        }
-        if let Some(dialog) = self
-            .management
-            .dialog
-            .as_mut()
-            .filter(|dialog| dialog.kind == Kind::Oauth)
-        {
-            dialog.visible = false;
-            let controls = state.controls();
-            dialog.focus = focused
-                .and_then(|focused| controls.iter().position(|control| *control == focused))
-                .or_else(|| {
-                    controls
-                        .iter()
-                        .position(|control| *control == Manage::Close)
-                })
-                .unwrap_or(0);
-            self.hits.clear();
         }
         service
     }
@@ -877,6 +819,19 @@ mod tests {
         assert!(!app.oauth_enabled(Command::Begin));
         act(&mut app, Command::Provider(2));
         let enrollment = app.oauth_request().unwrap();
+        // Choosing again while asking keeps only the answer for the choice.
+        render(&mut app, 80, 24);
+        act(&mut app, Command::Provider(1));
+        app.oauth_completed(
+            enrollment,
+            Ok(Output::Enrollment(EnrollmentProjection {
+                provider: crate::providers::fixtures::entry("xai-oauth", true).identity,
+                enabled: true,
+            })),
+        );
+        assert_eq!(app.management.oauth.enrollment, None);
+        act(&mut app, Command::Provider(2));
+        let enrollment = app.oauth_request().unwrap();
         assert!(
             matches!(&enrollment.call, Call::Enrollment(provider) if provider == &crate::providers::fixtures::entry("xai-oauth", true).identity)
         );
@@ -892,18 +847,12 @@ mod tests {
             for (width, height) in [(44, 20), (80, 24), (120, 40)] {
                 render(&mut app, width, height);
                 assert!(app.oauth_enabled(Command::Begin));
-                let close = app
-                    .management
-                    .oauth
-                    .controls()
-                    .iter()
-                    .position(|command| *command == Manage::Close)
-                    .unwrap();
-                assert_eq!(app.management.dialog.as_ref().unwrap().focus, close);
+                assert_eq!(app.layer.focused_path(), Some("footer/close"));
                 assert!(
-                    app.hits
-                        .iter()
-                        .any(|hit| hit.action == Action::Manage(Manage::Oauth(Command::Begin)))
+                    app.layer
+                        .rect("footer/begin")
+                        .is_some_and(|rect| !rect.is_empty()),
+                    "{locale:?} {width}x{height}"
                 );
             }
         }
@@ -929,25 +878,22 @@ mod tests {
             Some("CODE-1234".into()),
         ));
         render(&mut app, 80, 24);
-        let copy = app
-            .management
-            .oauth
-            .controls()
-            .iter()
-            .position(|command| *command == Manage::Oauth(Command::CopyCode))
-            .unwrap();
-        app.management.dialog.as_mut().unwrap().focus = copy;
+        let cancel = "footer/cancel";
+        app.layer.focus_path(cancel);
+        render(&mut app, 80, 24);
         app.management.oauth.next_poll = Some(Instant::now());
         let query = app.oauth_request().unwrap();
         assert_eq!(query.operation(), Operation::Query);
+        render(&mut app, 80, 24);
+        assert_eq!(app.layer.focused_path(), Some(cancel), "a poll in flight");
         let projection = login(&app, Phase::AwaitingAuthorization);
         app.oauth_completed(query, Ok(Output::Login(projection)));
+        render(&mut app, 80, 24);
         assert_eq!(
-            app.management.dialog.as_ref().unwrap().focus,
-            copy,
+            app.layer.focused_path(),
+            Some(cancel),
             "polling must not steal focus"
         );
-        render(&mut app, 80, 24);
         let route = app.navigation.current();
         app.input(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),

@@ -33,7 +33,6 @@ mod references;
 pub mod removal;
 pub mod sandbox;
 pub(crate) mod view;
-pub use view::draw;
 pub(crate) use view::{draw_field, sheet};
 
 use crate::{
@@ -248,7 +247,6 @@ pub struct Dialog {
     target: Target,
     kind: Kind,
     editor: Editor,
-    focus: usize, // Text: editor, cancel, save. Lifecycle: cancel, save.
     visible: bool,
     blocked: bool,
     error: Option<&'static str>,
@@ -261,13 +259,6 @@ pub struct Dialog {
     enabled_models: Option<enabled_models::State>,
     credentials: Option<credentials::State>,
     removal: Option<removal::State>,
-}
-
-impl Dialog {
-    /// Presented as a kernel sheet; OAuth still draws its own sub-view.
-    pub(crate) fn in_sheet(&self) -> bool {
-        self.kind != Kind::Oauth
-    }
 }
 
 pub async fn execute(client: &Client, ticket: &Ticket) -> Result<Updated, RequestFailure> {
@@ -647,7 +638,6 @@ impl App {
                 let dialog = self.management.dialog.as_mut()?;
                 dialog.reviewing = false;
                 dialog.error = None;
-                dialog.focus = 0;
                 dialog.visible = false;
                 self.hits.clear();
             }
@@ -833,16 +823,6 @@ impl App {
                     target,
                     kind,
                     editor,
-                    focus: if kind == Kind::Oauth {
-                        self.management
-                            .oauth
-                            .controls()
-                            .iter()
-                            .position(|control| *control == Command::Close)
-                            .unwrap_or(0)
-                    } else {
-                        0
-                    },
                     visible: false,
                     blocked: false,
                     error: None,
@@ -891,7 +871,6 @@ impl App {
                             .editor
                             .key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
                     }
-                    dialog.focus = 0; // Confirming a bulk change defaults to Cancel.
                     dialog.visible = false;
                     dialog.editor.invalidate_geometry();
                     self.hits.clear();
@@ -1063,7 +1042,6 @@ impl App {
             Ok(Updated::Removal(_)) => unreachable!("removal handled separately"),
             Ok(Updated::ConnectionTest(result)) => {
                 use maka_protocol::connection_effects::ConnectionTestRunResult as Test;
-                dialog.focus = 0;
                 dialog.blocked = true;
                 match result {
                     Test::Committed { test, .. } => dialog.connection_test = Some(test),
@@ -1101,7 +1079,6 @@ impl App {
                 let (error, blocked) = model_fetch::failure(&result);
                 dialog.error = Some(error);
                 dialog.blocked = blocked;
-                dialog.focus = 0;
             }
             Ok(Updated::Credential(_)) => {
                 dialog.blocked = true;
@@ -1155,11 +1132,9 @@ impl App {
             {
                 dialog.error = Some("connection-models-fetch-not-ready");
                 dialog.blocked = true;
-                dialog.focus = 0;
             }
             Err(_) if dialog.kind == Kind::Connection(connection::Change::FetchModels) => {
                 dialog.error = Some("connection-models-fetch-failed");
-                dialog.focus = 0;
             }
             Err(RequestFailure::Rejected(maka_client::ClientError::Rejected(error)))
                 if dialog.kind == Kind::Workspace
@@ -1259,19 +1234,6 @@ impl App {
             });
         }
     }
-    pub fn management_input(&mut self, event: Event) -> (bool, Option<Action>) {
-        if self
-            .management
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.kind == Kind::Oauth)
-        {
-            return self.oauth_input(event);
-        }
-        // Everything else is a sheet; the overlay layer routes it.
-        (false, None)
-    }
-
     /// Input the sheet's owner takes before the sheet: shortcuts of its
     /// sub-states (F5 retries a read, PgUp/PgDn page the project chooser,
     /// Ctrl+Enter applies it), and a focused text field gets every key but
@@ -1287,6 +1249,14 @@ impl App {
             .is_some_and(|dialog| dialog.enabled_models.is_some())
         {
             return self.enabled_models_sheet_input(event);
+        }
+        if self
+            .management
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.kind == Kind::Oauth)
+        {
+            return oauth::sheet_input(self, event);
         }
         if let Event::Key(key) = event
             && key.kind != KeyEventKind::Release
