@@ -111,6 +111,7 @@ export interface MakaActivationRuntime {
 }
 
 export interface MakaActivationDeps {
+  automatedResumeEnabled(): boolean;
   createContext(input: MakaActivationContextInput): Promise<MakaActivationContext>;
   listSessions(stateRoot: string): Promise<SessionSummary[]>;
   workspaceRoot(): string;
@@ -511,7 +512,7 @@ export async function runMakaActivationCli(
         context.runtime,
         session.id,
         { turnId: deps.newId(), text },
-        existing !== undefined,
+        existing !== undefined && deps.automatedResumeEnabled(),
       );
       const drain = (async () => {
         for await (const event of stream) {
@@ -743,9 +744,9 @@ async function activationStream(
   runtime: MakaActivationRuntime,
   sessionId: string,
   input: UserMessageInput,
-  allowSafeBoundaryResume: boolean,
+  allowAutomatedResume: boolean,
 ): Promise<AsyncIterable<SessionEvent>> {
-  if (allowSafeBoundaryResume && runtime.resumeLatest) {
+  if (allowAutomatedResume && runtime.resumeLatest) {
     const resumed = await runtime.resumeLatest(sessionId);
     if (resumed) return resumed;
   }
@@ -806,6 +807,10 @@ function makaActivateHelpText(): string {
 
 function defaultMakaActivationDeps(): MakaActivationDeps {
   return {
+    automatedResumeEnabled: () => {
+      const value = process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+      return value === '1' || value === 'true';
+    },
     createContext: createRuntimeHostActivationContext,
     listSessions: listRuntimeHostActivationSessions,
     workspaceRoot: () => resolve(process.cwd()),
