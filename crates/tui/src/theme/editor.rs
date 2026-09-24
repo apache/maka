@@ -21,9 +21,9 @@ mod view;
 
 use super::{Choice, Palette};
 use crate::app::{Action, App};
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::style::Color;
-pub use view::draw;
+pub(crate) use view::{draw_field, sheet};
 
 const SWATCHES: [u32; 18] = [
     0x71a8fd, 0xbe9df7, 0xec939b, 0xe7bd7f, 0x7ecfa4, 0x71ccd1, 0x205fc1, 0x804caf, 0xb33e48,
@@ -39,6 +39,8 @@ pub enum Command {
     Base(usize),
     Role(usize),
     Swatch(usize),
+    /// Applies the #RRGGBB field, or says why it cannot.
+    Hex,
 }
 impl Command {
     pub fn label(&self) -> &'static str {
@@ -57,8 +59,6 @@ pub struct Editor {
     pub name: crate::editor::Editor,
     pub hex: crate::editor::Editor,
     pub role: usize,
-    pub focus: usize,
-    pub swatch: usize,
     pub base: usize,
     pub visible: bool,
     pub error: Option<&'static str>,
@@ -71,8 +71,6 @@ impl Editor {
             name: Default::default(),
             hex: Default::default(),
             role: 3,
-            focus: 2,
-            swatch: 0,
             base: 0,
             visible: false,
             error: None,
@@ -117,7 +115,6 @@ impl App {
             Command::Close => {
                 self.theme.close_editor();
                 self.invalidate_editor_geometry();
-                self.hits.clear();
             }
             Command::Save => self.theme.save_editor(),
             Command::Reload => self.theme.reload(),
@@ -131,18 +128,19 @@ impl App {
                 match command {
                     Command::Base(index) if index < 3 => {
                         editor.base = index;
-                        editor.focus = 1;
                         editor.colors = [Choice::Maka, Choice::Dusk, Choice::Paper][index].colors();
                         editor.sync_hex();
                     }
                     Command::Role(index) if index < 24 => {
                         editor.role = index;
-                        editor.focus = 2;
                         editor.sync_hex();
                     }
+                    Command::Hex => {
+                        if !editor.valid_hex() {
+                            editor.error = Some("theme-hex-invalid");
+                        }
+                    }
                     Command::Swatch(index) if index < SWATCHES.len() => {
-                        editor.swatch = index;
-                        editor.focus = 3;
                         editor
                             .colors
                             .set_role(editor.role, super::rgb(SWATCHES[index]));
@@ -155,151 +153,81 @@ impl App {
         self.hover = None;
     }
 
-    pub fn theme_input(&mut self, event: Event) -> (bool, Option<Action>) {
+    /// The two text fields take their keys, pastes and pointer before the
+    /// sheet; typing into the hex field applies a valid color at once.
+    pub(crate) fn theme_sheet_input(&mut self, event: &Event) -> Option<(bool, Option<Action>)> {
         let busy = self.theme.busy();
-        let editor = self.theme.editor.as_mut().expect("theme editor");
-        let command = match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Esc => Some(Command::Close),
-                KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return (true, Some(Action::Quit));
-                }
-                _ if busy || !editor.visible => None,
-                KeyCode::Tab | KeyCode::BackTab => {
-                    editor.focus =
-                        (editor.focus + if key.code == KeyCode::Tab { 1 } else { 7 }) % 8;
-                    return (true, None);
-                }
-                KeyCode::Enter => match editor.focus {
-                    1 => Some(Command::Base(editor.base)),
-                    3 => Some(Command::Swatch(editor.swatch)),
-                    4 => {
-                        if !editor.valid_hex() {
-                            editor.error = Some("theme-hex-invalid");
-                        }
-                        return (true, None);
-                    }
-                    5 => Some(Command::Reload),
-                    6 => Some(Command::Close),
-                    7 => Some(Command::Save),
-                    _ => None,
-                },
-                KeyCode::Left | KeyCode::Right if editor.focus == 1 => Some(Command::Base(
-                    (editor.base + if key.code == KeyCode::Right { 1 } else { 2 }) % 3,
-                )),
-                KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::Home
-                | KeyCode::End
-                | KeyCode::PageUp
-                | KeyCode::PageDown
-                    if editor.focus == 2 =>
+        let focused = self.layer.focused_path().map(str::to_owned);
+        let hex_focused = focused.as_deref() == Some(&format!("{}/input", view::HEX));
+        let name_focused = focused.as_deref() == Some(&format!("{}/input", view::NAME));
+        let editor = self.theme.editor.as_mut()?;
+        if busy {
+            return None;
+        }
+        match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if !(name_focused || hex_focused)
+                    || matches!(
+                        key.code,
+                        KeyCode::Esc
+                            | KeyCode::Tab
+                            | KeyCode::BackTab
+                            | KeyCode::Enter
+                            | KeyCode::Up
+                            | KeyCode::Down
+                    )
+                    || (key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('q'))
+                    || matches!(key.code, KeyCode::Char(c) if c.is_control())
                 {
-                    Some(Command::Role(match key.code {
-                        KeyCode::Home => 0,
-                        KeyCode::End => 23,
-                        KeyCode::Up => editor.role.saturating_sub(1),
-                        KeyCode::Down => (editor.role + 1).min(23),
-                        KeyCode::PageUp => editor.role.saturating_sub(10),
-                        _ => (editor.role + 10).min(23),
-                    }))
+                    return None;
                 }
-                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
-                    if editor.focus == 3 =>
-                {
-                    let delta = match key.code {
-                        KeyCode::Left => 17,
-                        KeyCode::Right => 1,
-                        KeyCode::Up => 12,
-                        _ => 6,
-                    };
-                    editor.swatch = (editor.swatch + delta) % SWATCHES.len();
-                    return (true, None);
-                }
-                _ if editor.focus == 0 || editor.focus == 4 => {
-                    if matches!(key.code, KeyCode::Char(c) if c.is_control()) {
-                        return (false, None);
-                    }
-                    let changed = if editor.focus == 0 {
-                        editor.name.key(key)
-                    } else {
-                        editor.hex.key(key)
-                    };
-                    if editor.focus == 4 {
-                        editor.valid_hex();
-                    }
-                    return (changed, None);
-                }
-                _ => None,
-            },
-            Event::Paste(text) if !busy && editor.visible && matches!(editor.focus, 0 | 4) => {
-                if text.chars().any(char::is_control) {
-                    return (false, None);
-                }
-                let changed = if editor.focus == 0 {
-                    editor.name.insert(&text)
+                let field = if hex_focused {
+                    &mut editor.hex
                 } else {
-                    editor.hex.insert(&text)
+                    &mut editor.name
                 };
-                if editor.focus == 4 {
+                let changed = field.key(*key);
+                if hex_focused {
                     editor.valid_hex();
                 }
-                return (changed, None);
+                Some((changed, None))
             }
-            Event::Mouse(mouse) if editor.visible => {
-                if !busy {
-                    for (field, focus) in [(&mut editor.name, 0), (&mut editor.hex, 4)] {
-                        if field.contains((mouse.column, mouse.row).into()) || field.dragging() {
-                            editor.focus = focus;
-                            return (
-                                field.mouse(mouse) || matches!(mouse.kind, MouseEventKind::Down(_)),
-                                None,
-                            );
-                        }
-                    }
-                    if matches!(
-                        mouse.kind,
-                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                    ) && self.hits.iter().any(|hit| {
-                        hit.area.contains((mouse.column, mouse.row).into())
-                            && matches!(hit.action, Action::Theme(Command::Role(_)))
-                    }) {
-                        let index = if mouse.kind == MouseEventKind::ScrollUp {
-                            editor.role.saturating_sub(1)
-                        } else {
-                            (editor.role + 1).min(23)
-                        };
-                        self.theme_action(Command::Role(index));
-                        return (true, None);
-                    }
+            Event::Paste(text) if name_focused || hex_focused => {
+                if text.chars().any(char::is_control) {
+                    return Some((false, None));
                 }
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                    self.hits
-                        .iter()
-                        .rev()
-                        .find(|hit| hit.area.contains((mouse.column, mouse.row).into()))
-                        .and_then(|hit| match &hit.action {
-                            Action::Theme(command) => Some(command.clone()),
-                            _ => None,
-                        })
+                let field = if hex_focused {
+                    &mut editor.hex
                 } else {
-                    None
+                    &mut editor.name
+                };
+                let changed = field.insert(text);
+                if hex_focused {
+                    editor.valid_hex();
                 }
+                Some((changed, None))
+            }
+            Event::Mouse(mouse) => {
+                let point = (mouse.column, mouse.row).into();
+                let (field, key) = [(&mut editor.name, view::NAME), (&mut editor.hex, view::HEX)]
+                    .into_iter()
+                    .find(|(field, _)| field.contains(point) || field.dragging())?;
+                let changed = field.mouse(*mouse);
+                self.layer.focus(key);
+                Some((
+                    changed || matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_)),
+                    None,
+                ))
             }
             _ => None,
-        };
-        if let Some(command) = command {
-            self.theme_action(command);
-            (true, None)
-        } else {
-            (false, None)
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEvent, MouseEvent};
+    use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend};
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(code, modifiers))
@@ -330,29 +258,37 @@ mod tests {
                 let original = app.theme.colors();
                 app.apply(Action::Theme(Command::Open));
                 draw(&mut app, width, height);
-                app.apply(Action::Theme(Command::Role(23)));
+                // The role list opens on the edited role; the selection
+                // follows the focus to the last one, scrolled into view.
+                app.input(key(KeyCode::End, KeyModifiers::NONE));
                 draw(&mut app, width, height);
+                assert_eq!(app.theme.editor.as_ref().unwrap().role, 23);
                 assert!(
-                    app.hits
-                        .iter()
-                        .any(|hit| hit.action == Action::Theme(Command::Role(23)))
+                    app.layer
+                        .rect("columns/roles/list/rows/23")
+                        .is_some_and(|rect| !rect.is_empty())
                 );
                 app.apply(Action::Theme(Command::Role(3)));
                 draw(&mut app, width, height);
-                let hit = app
-                    .hits
-                    .iter()
-                    .find(|hit| hit.action == Action::Theme(Command::Swatch(4)))
-                    .unwrap()
-                    .area;
-                app.input(Event::Mouse(MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column: hit.x,
-                    row: hit.y,
-                    modifiers: KeyModifiers::NONE,
-                }));
+                let click = |app: &mut App, rect: ratatui::layout::Rect| {
+                    for kind in [
+                        MouseEventKind::Down(MouseButton::Left),
+                        MouseEventKind::Up(MouseButton::Left),
+                    ] {
+                        app.input(Event::Mouse(MouseEvent {
+                            kind,
+                            column: rect.x,
+                            row: rect.y,
+                            modifiers: KeyModifiers::NONE,
+                        }));
+                    }
+                };
+                let swatch = app.layer.rect("columns/colors/swatches/r0/4").unwrap();
+                click(&mut app, swatch);
                 assert_eq!(app.theme.colors().accent, super::super::rgb(SWATCHES[4]));
-                app.input(key(KeyCode::Tab, KeyModifiers::NONE));
+                draw(&mut app, width, height);
+                let hex = app.layer.slot(view::HEX).unwrap();
+                click(&mut app, hex);
                 app.input(key(KeyCode::Char('a'), KeyModifiers::CONTROL));
                 app.input(Event::Paste("#AABBCC".into()));
                 assert_eq!(app.theme.colors().accent, super::super::rgb(0xaabbcc));
@@ -374,7 +310,9 @@ mod tests {
                 assert!(!path.exists());
                 draw(&mut app, width, height);
                 app.apply(Action::Theme(Command::Swatch(5)));
-                app.input(key(KeyCode::Tab, KeyModifiers::NONE));
+                draw(&mut app, width, height);
+                let hex = app.layer.slot(view::HEX).unwrap();
+                click(&mut app, hex);
                 app.input(key(KeyCode::Char('a'), KeyModifiers::CONTROL));
                 app.input(Event::Paste("invalid".into()));
                 app.apply(Action::Theme(Command::Save));

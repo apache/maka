@@ -670,6 +670,7 @@ connection-test-changed = Connection, credentials or network settings changed. R
 connection-test-unavailable = This connection cannot be tested now. Check its settings and Host support.
 connection-test-close = Close
 theme-reload = Load custom theme
+theme-reload-file = Reload file
 theme-loading = Loading theme…
 theme-path = File: { $path }
 theme-file-hint = Choose preset swatches or enter hex colors. You can also edit and reload the JSON file.

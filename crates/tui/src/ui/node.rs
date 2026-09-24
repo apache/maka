@@ -179,6 +179,8 @@ impl<M> Node<M> {
         node.role = Some(role);
         node
     }
+    /// A region its owner draws: a field once it has an activation, else a
+    /// canvas (a preview) that takes no focus. Either is found by its path.
     pub fn slot(key: impl Into<Cow<'static, str>>, rows: u16) -> Self {
         Self::new(key, Kind::Slot).size(Size::Fixed(rows))
     }

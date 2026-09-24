@@ -90,6 +90,7 @@ struct Committed<M> {
     area: Rect,
     items: Vec<Item<M>>,
     scrollers: Vec<Scroller>,
+    canvases: Vec<(String, Rect)>,
     popover: Option<Chooser>,
 }
 
@@ -140,7 +141,7 @@ impl<M: Clone> Surface<M> {
             &self.offsets,
         );
         pass.run(tree, area);
-        let (items, scrollers) = (pass.items, pass.scrollers);
+        let (items, scrollers, canvases) = (pass.items, pass.scrollers, pass.canvases);
         let stops: Vec<_> = items.iter().filter(|item| item.enabled).collect();
         match stops
             .iter()
@@ -194,6 +195,7 @@ impl<M: Clone> Surface<M> {
             area,
             items,
             scrollers,
+            canvases,
             popover,
         });
     }
@@ -318,12 +320,19 @@ impl<M: Clone> Surface<M> {
 
     /// Where a node was drawn in the committed frame; empty when scrolled out.
     pub fn rect(&self, id: &str) -> Option<Rect> {
-        self.committed
-            .as_ref()?
+        let committed = self.committed.as_ref()?;
+        committed
             .items
             .iter()
             .find(|item| item.id == id)
             .map(|item| item.rect)
+            .or_else(|| {
+                committed
+                    .canvases
+                    .iter()
+                    .find(|(canvas, _)| canvas == id)
+                    .map(|(_, rect)| *rect)
+            })
     }
 
     /// Focus a node by id; resolved against the next drawn frame.

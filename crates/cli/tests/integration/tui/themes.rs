@@ -41,8 +41,15 @@ fn visual_custom_theme_saves_reopens_and_rejects_external_changes_without_losing
     tui.wait_for("Customize theme");
     tui.click_text("Customize theme");
     tui.wait_for("Preset colors");
-    // Starts on the role list; Tab goes to swatches, then the explicit hex field.
-    tui.send(b"\t\t\x01#89ABCD");
+    // Starts on the role list; the explicit hex field sits right of its label.
+    let screen = tui.screen.snapshot().unwrap().screen;
+    let (row, col) = screen
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("#RRGGBB").map(|byte| (row, line[..byte].width())))
+        .unwrap();
+    tui.click_at(row, col + 10);
+    tui.send(b"\x01#89ABCD");
     tui.wait_for("#89ABCD");
     tui.click_text("Save & apply");
     tui.wait_for("My theme ▾");
@@ -62,7 +69,7 @@ fn visual_custom_theme_saves_reopens_and_rejects_external_changes_without_losing
     reopened.click_text("Save & apply");
     reopened.wait_for("File changed externally");
     assert_eq!(std::fs::read(&path).unwrap(), external);
-    reopened.click_text("Load custom theme");
+    reopened.click_text("Reload file");
     reopened.wait_for("#123456");
     reopened.click_text("Save & apply");
     reopened.wait_for("External ▾");

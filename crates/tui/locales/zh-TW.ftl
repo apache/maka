@@ -670,6 +670,7 @@ connection-test-changed = 連線、憑證或網路設定已變更，請重新開
 connection-test-unavailable = 目前無法測試此連線，請檢查設定及 Host 支援情況。
 connection-test-close = 關閉
 theme-reload = 載入自訂主題
+theme-reload-file = 重新讀取
 theme-loading = 正在載入主題…
 theme-path = 檔案：{ $path }
 theme-file-hint = 選擇預置色盤或手動輸入色碼，也可編輯並重新載入 JSON 檔案。

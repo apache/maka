@@ -103,6 +103,8 @@ pub(super) struct Pass<'a, M> {
     pub offsets: &'a HashMap<String, u16>,
     pub items: Vec<Item<M>>,
     pub scrollers: Vec<Scroller>,
+    /// Slots without an activation: where their owner paints, by id.
+    pub canvases: Vec<(String, Rect)>,
     groups: usize,
 }
 
@@ -120,6 +122,7 @@ impl<'a, M> Pass<'a, M> {
             offsets,
             items: vec![],
             scrollers: vec![],
+            canvases: vec![],
             groups: 0,
         }
     }
@@ -155,6 +158,7 @@ impl<'a, M> Pass<'a, M> {
             role,
             ..
         } = node;
+        let canvas = on.is_none() && matches!(kind, Kind::Slot);
         // Scrolled-out items stay registered with an empty visible rectangle:
         // the pointer cannot hit them, but the keyboard can still reach them.
         if let Some(on) = on
@@ -245,6 +249,9 @@ impl<'a, M> Pass<'a, M> {
                 // The field's well; its owner draws the content on top.
                 self.buffer
                     .set_style(visible, Style::default().bg(self.colors.surface));
+                if canvas {
+                    self.canvases.push((id, visible));
+                }
             }
             Kind::Rule => {
                 let symbol = match (scope.axis, self.ascii) {

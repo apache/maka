@@ -114,6 +114,7 @@ impl App {
             Overlay::Recap => crate::pages::recap::sheet(self),
             Overlay::Branch => crate::pages::branch::sheet(self),
             Overlay::Skills => crate::pages::skills::sheet(self),
+            Overlay::Theme => crate::theme::editor::sheet(self),
             _ => None,
         }
     }
@@ -130,6 +131,11 @@ impl App {
             Overlay::Skills => {
                 if let Some(dialog) = &mut self.skills.dialog {
                     dialog.visible = shown;
+                }
+            }
+            Overlay::Theme => {
+                if let Some(editor) = &mut self.theme.editor {
+                    editor.visible = shown;
                 }
             }
             _ => {}
@@ -176,8 +182,8 @@ impl App {
             | Overlay::Resume
             | Overlay::Recap
             | Overlay::Branch
-            | Overlay::Skills => unreachable!("presented as sheets"),
-            Overlay::Theme => self.theme_input(event),
+            | Overlay::Skills
+            | Overlay::Theme => unreachable!("presented as sheets"),
             Overlay::Attachments => self.attachment_input(event),
             Overlay::Revision => self.revision_input(event),
             Overlay::Onboarding => self.onboarding_input(event),
@@ -200,6 +206,7 @@ impl App {
             Overlay::Reference | Overlay::Management => self.management_sheet_input(&event),
             Overlay::QueueEdit => self.queue_edit_sheet_input(&event),
             Overlay::Skills => self.skills_sheet_input(&event),
+            Overlay::Theme => self.theme_sheet_input(&event),
             _ => None,
         };
         if let Some(outcome) = owned {
@@ -266,8 +273,14 @@ pub(crate) fn draw(
     // only if the sheet actually fit on screen.
     app.present(overlay, true);
     if let Some(sheet) = app.overlay_sheet(overlay) {
+        // The theme editor previews its colors on the page behind; the sheet
+        // keeps the ones it opened with, so its controls stay readable.
+        let colors = match (&app.theme.editor, overlay) {
+            (Some(editor), Overlay::Theme) => editor.chrome,
+            _ => app.theme.colors(),
+        };
         let context = Context {
-            colors: app.theme.colors(),
+            colors,
             ascii: app.chrome.ascii,
             focused: true,
         };
@@ -276,6 +289,7 @@ pub(crate) fn draw(
         match overlay {
             Overlay::Reference | Overlay::Management => pages::manage::draw_field(frame, app),
             Overlay::QueueEdit => pages::queue::edit::draw_field(frame, app),
+            Overlay::Theme => crate::theme::editor::draw_field(frame, app),
             _ => {}
         }
         if !shown {
@@ -302,8 +316,8 @@ pub(crate) fn draw(
         | Overlay::Resume
         | Overlay::Recap
         | Overlay::Branch
-        | Overlay::Skills => unreachable!("presented as sheets"),
-        Overlay::Theme => crate::theme::editor::draw(frame, app, area),
+        | Overlay::Skills
+        | Overlay::Theme => unreachable!("presented as sheets"),
         Overlay::Attachments => pages::attachments::draw(frame, app, area, base),
         Overlay::Revision => pages::revision::draw(frame, app, area, base),
         Overlay::Onboarding => pages::onboarding::draw(frame, app, area, base),
