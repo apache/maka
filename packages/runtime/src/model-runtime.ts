@@ -36,6 +36,7 @@ import {
   anthropicV1BaseUrl,
   googleV1BetaBaseUrl,
   openAiResponsesBaseUrl,
+  openAiChatBaseUrl,
 } from './provider-urls.js';
 import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
 
@@ -149,7 +150,9 @@ export function resolveModelRuntime(
           ? anthropicV1BaseUrl(resolvedBaseUrl)
           : wire === 'openai-responses' && resolvedBaseUrl
             ? openAiResponsesBaseUrl(resolvedBaseUrl)
-            : resolvedBaseUrl;
+            : wire === 'openai-chat' && resolvedBaseUrl
+              ? openAiChatBaseUrl(resolvedBaseUrl)
+              : resolvedBaseUrl;
   const parallelToolCalls = resolveParallelToolCalls(connection, modelId, baseAdapter);
   return {
     ...call,

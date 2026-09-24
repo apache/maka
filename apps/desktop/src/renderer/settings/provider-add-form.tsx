@@ -51,6 +51,7 @@ import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
   OnboardingStepForm,
+  ProviderEndpointField,
   getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type ApiKeyOnboardingBridge,
@@ -747,23 +748,28 @@ export function AddProviderForm(props: {
             }
           />
         ) : (
-          <TextInput
-            value={baseUrl}
-            onChange={(value) => {
-              setBaseUrl(value);
-              resetManagedVerification();
-              clearFieldError('baseUrl');
-            }}
-            placeholder={defaults.baseUrl || 'https://…'}
-            isDisabled={isExperimental || busy}
-            label={copy.endpointLabel}
-            isRequired={requiresBaseUrl}
-            status={
-              error?.field === 'baseUrl'
-                ? { type: 'error', message: error.message }
-                : undefined
-            }
-          />
+          <ProviderEndpointField providerType={props.providerType} baseUrl={baseUrl}>
+            {(requestDescription) => (
+              <TextInput
+                aria-description={requestDescription}
+                value={baseUrl}
+                onChange={(value) => {
+                  setBaseUrl(value);
+                  resetManagedVerification();
+                  clearFieldError('baseUrl');
+                }}
+                placeholder={defaults.baseUrl || 'https://…'}
+                isDisabled={isExperimental || busy}
+                label={copy.endpointLabel}
+                isRequired={requiresBaseUrl}
+                status={
+                  error?.field === 'baseUrl'
+                    ? { type: 'error', message: error.message }
+                    : undefined
+                }
+              />
+            )}
+          </ProviderEndpointField>
         )}
         {showsDefaultModel && (
           <TextInput

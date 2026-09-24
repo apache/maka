@@ -25,6 +25,8 @@ import {
   providerEndpointPresentation,
 } from '../../renderer/settings/provider-endpoint-presentation.js';
 
+import { providerRequestUrlPreview } from '../../renderer/features/connection-settings/index.js';
+
 // A 40-char hex-shaped run, built rather than written: long enough to trip
 // the display redactor's long-opaque-token rule wherever it is left alone.
 const longOpaqueToken = 'ab01'.repeat(10);
@@ -201,4 +203,25 @@ test('endpointCarriesCredentials gates userinfo and query-bearing endpoints', ()
   assert.equal(endpointCarriesCredentials(''), false);
   assert.equal(endpointCarriesCredentials(undefined), false);
   assert.equal(endpointCarriesCredentials('not a url'), false);
+});
+
+
+test('draft request previews follow the relay protocol, custom prefixes and endpoint forms', () => {
+  assert.equal(providerRequestUrlPreview('openai-compatible', 'http://localhost:8080/v1'),
+    'http://localhost:8080/v1/chat/completions');
+  assert.equal(providerRequestUrlPreview('openai-compatible', 'https://relay.example/proxy/chat/completions/'),
+    'https://relay.example/proxy/chat/completions');
+  assert.equal(providerRequestUrlPreview('openai-responses-compatible', 'https://relay.example/proxy/responses'),
+    'https://relay.example/proxy/responses');
+  assert.equal(providerRequestUrlPreview('openai-responses-compatible', 'https://relay.example/'),
+    'https://relay.example/responses');
+});
+
+test('empty, incomplete, unsaveable and model-dependent drafts have no request preview', () => {
+  for (const draft of ['', '  ', 'http', 'https://', 'https:relay.example', 'relay.example/v1',
+    'file:///v1', 'https://relay.example:abc/v1', 'https://user:secret@relay.example/v1',
+    'https://relay.example/v1?token=secret', 'https://relay.example/v1#fragment']) {
+    assert.equal(providerRequestUrlPreview('openai-compatible', draft), null, draft);
+  }
+  assert.equal(providerRequestUrlPreview('openai', 'https://relay.example/v1'), null);
 });

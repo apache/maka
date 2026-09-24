@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { openAiChatBaseUrl, openAiResponsesBaseUrl } from '@maka/core/openai-urls';
 import {
   PROVIDER_REGISTRY,
   providerFallbackModelIds,
@@ -157,7 +158,13 @@ async function fetchProviderModelsStrict(
   apiKey: string,
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ModelInfo[]> {
-  const baseUrl = effectiveBaseUrl(connection);
+  const configuredBaseUrl = effectiveBaseUrl(connection);
+  const baseUrl =
+    configuredBaseUrl && connection.providerType === 'openai-compatible'
+      ? openAiChatBaseUrl(configuredBaseUrl)
+      : configuredBaseUrl && connection.providerType === 'openai-responses-compatible'
+        ? openAiResponsesBaseUrl(configuredBaseUrl)
+        : configuredBaseUrl;
   const definition = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType → no discovery path. Throw a clear error (caught and
   // generalized by the caller) rather than crashing on `.modelDiscovery`.
