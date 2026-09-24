@@ -51,18 +51,21 @@ function isNameClipped(el: HTMLElement | null): boolean {
 /**
  * Track clipping across resize/layout changes so the tooltip appears exactly
  * when the visible name is truncated — and never repeats a fully visible one.
+ * The observed node is whichever span the current branch rendered; renaming
+ * swaps the span for an input and back, so the render phase must rebind on
+ * every such swap (`inactive`), not only when the name text changes.
  */
-function useNameClipped(sessionName: string) {
+function useNameClipped(sessionName: string, inactive: boolean) {
   const measureRef = useRef<HTMLSpanElement>(null);
   const [clipped, setClipped] = useState(false);
   useLayoutEffect(() => {
     const el = measureRef.current;
     setClipped(isNameClipped(el));
-    if (!el || typeof ResizeObserver === 'undefined') return;
+    if (!el || inactive || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => setClipped(isNameClipped(el)));
     observer.observe(el);
     return () => observer.disconnect();
-  }, [sessionName]);
+  }, [sessionName, inactive]);
   return { measureRef, clipped };
 }
 
@@ -94,7 +97,7 @@ export function TitlebarSessionIdentity(props: {
   }, [renaming]);
 
   const path = props.project?.path;
-  const { measureRef, clipped } = useNameClipped(props.sessionName);
+  const { measureRef, clipped } = useNameClipped(props.sessionName, renaming);
   // One control, two kinds of hidden information: with the name truncated,
   // what the reader cannot see is the full text; fully visible, the missing
   // piece is the click affordance — rename. Never the name only.
@@ -161,7 +164,7 @@ export function TitlebarSessionIdentity(props: {
           onCancel={() => endRename(true)}
         />
       ) : props.readOnly ? (
-        <span className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={clipped ? props.sessionName : undefined}>
+        <span ref={measureRef} className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={clipped ? props.sessionName : undefined}>
           {props.sessionName}
         </span>
       ) : (

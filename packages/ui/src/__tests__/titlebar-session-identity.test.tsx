@@ -113,6 +113,31 @@ test('an untruncated session name keeps the rename hint configured on the chip',
   assert.equal(readOnly.getAttribute('title'), null);
 });
 
+test('every branch binds the rendered text node for measurement, including read-only', async () => {
+  const observed: unknown[] = [];
+  const originalObserver = globalThis.ResizeObserver;
+  class RecordingObserver {
+    observe(el: unknown) { observed.push(el); }
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = RecordingObserver as unknown as typeof ResizeObserver;
+  try {
+    const container = await renderIdentity('Short name');
+    const editableSpan = container.querySelector('.maka-titlebar-identity__segment--session');
+    assert.ok(editableSpan);
+    assert.ok(observed.includes(editableSpan), 'editable branch must observe its rendered span');
+    observed.length = 0;
+    const readOnlySpan = await renderReadOnly('A long shared-session title that would not fit the chip width at all');
+    // Regression: the read-only branch once rendered its span without the
+    // measure ref, so `clipped` stayed false forever and the native title
+    // disappeared from shared sessions.
+    assert.ok(observed.includes(readOnlySpan), 'read-only branch must bind the measure ref');
+  } finally {
+    globalThis.ResizeObserver = originalObserver;
+  }
+});
+
 async function renderReadOnly(sessionName: string) {
   const { container, root } = domRoot();
   await act(() => {

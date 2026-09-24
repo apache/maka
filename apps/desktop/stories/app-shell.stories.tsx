@@ -1790,6 +1790,15 @@ export const TitlebarProjectFeedbackNarrow: Story = {
       expect(writeText).toHaveBeenLastCalledWith('/workspace/maka-agent');
       await userEvent.keyboard('{Escape}');
       expect(document.activeElement).toBe(page.getByRole('button', { name: '项目信息' }));
+      // Swap the chip for the rename input and back without renaming: the
+      // measurement must rebind to the freshly rendered span (it was the
+      // observed one only before the swap), otherwise his hover would still
+      // read a tooltip bound to a dead layout.
+      await userEvent.click(page.getByRole('button', { name: '检查项目菜单 — 重命名任务' }));
+      const renameInput = await page.findByRole('textbox', { name: '重命名任务' });
+      expect(renameInput).toHaveValue('检查项目菜单');
+      await userEvent.keyboard('{Escape}');
+      await waitFor(() => expect(document.activeElement).toBe(page.getByRole('button', { name: '检查项目菜单 — 重命名任务' })));
       // The chip is fully visible here, so the hover reveals the rename
       // affordance — the one thing the surface does not show.
       const renameChip = page.getByRole('button', { name: '检查项目菜单 — 重命名任务' });
