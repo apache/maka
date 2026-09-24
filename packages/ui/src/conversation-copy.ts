@@ -171,6 +171,7 @@ export interface ConversationCopy {
   permissions: {
     mode: Record<PermissionMode, { label: string; hint: string }>;
     modeAriaLabel: (label: string) => string;
+    modeUnavailable: string;
   };
   sandboxBoundary: {
     title: string;
@@ -488,6 +489,7 @@ const CONVERSATION_COPY = {
         bypass: { label: '完全权限', hint: '直接访问文件和网络，仅限可信任务。' },
       },
       modeAriaLabel: (label) => `权限模式：${label}`,
+      modeUnavailable: '不可用',
     },
     sandboxBoundary: {
       title: '允许访问工作区以外的内容？',
@@ -612,6 +614,7 @@ const CONVERSATION_COPY = {
         bypass: { label: '完全權限', hint: '直接存取檔案和網路，僅限可信任務。' },
       },
       modeAriaLabel: (label) => `權限模式：${label}`,
+      modeUnavailable: '無法使用',
     },
     sandboxBoundary: {
       title: '允許存取工作區以外的內容？',
@@ -733,6 +736,7 @@ const CONVERSATION_COPY = {
         bypass: { label: 'Full access', hint: 'Direct file and network access. Trust-only tasks.' },
       },
       modeAriaLabel: (label) => `Permission mode: ${label}`,
+      modeUnavailable: 'Unavailable',
     },
     sandboxBoundary: {
       title: 'Allow access outside the workspace?',

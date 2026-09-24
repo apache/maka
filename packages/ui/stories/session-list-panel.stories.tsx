@@ -705,7 +705,7 @@ export const ProjectGroups: Story = {
 
     const taskRow = taskControl.closest<HTMLElement>('[data-session-id]');
     if (!taskRow) throw new Error('task row is missing');
-    const timestamp = taskRow.querySelector<HTMLElement>('.maka-session-row-time');
+    const timestamp = taskRow.querySelector<HTMLElement>('.maka-session-row-signal');
     if (!timestamp) throw new Error('task timestamp is missing');
     const taskActionButton = within(taskRow).getByRole('button', { name: /任务操作$/ });
     taskActionButton.focus();
