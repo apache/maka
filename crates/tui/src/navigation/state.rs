@@ -73,7 +73,12 @@ impl Saved {
             Focus::Composer | Focus::Transcript => matches!(route, Route::Session(_)),
             Focus::Page => matches!(
                 route,
-                Route::Workspace | Route::Settings | Route::Host | Route::Help | Route::Extensions
+                Route::Workspace
+                    | Route::Settings
+                    | Route::Host
+                    | Route::Help
+                    | Route::Extensions
+                    | Route::App(_)
             ),
             Focus::Queue => false,
         };
@@ -170,7 +175,11 @@ impl App {
         match route {
             Route::Settings => self.settings.surface.leave(),
             Route::Workspace => self.home.surface.leave(),
-            Route::Extensions => self.extensions.surface.leave(),
+            Route::Extensions | Route::App(_) => {
+                if let Some(surface) = self.apps_surface() {
+                    surface.leave();
+                }
+            }
             _ => {}
         }
         let state = State::capture(self);

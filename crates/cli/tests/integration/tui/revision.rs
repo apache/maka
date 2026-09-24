@@ -149,7 +149,7 @@ fn revision_edits_ordered_inputs_preserves_attachments_and_reopens_without_resub
     tui.close_terminal();
     tui.finish();
     let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
-    assert_eq!(saved["version"], 15);
+    assert_eq!(saved["version"], 16);
     assert_eq!(saved["revision"]["stage"], "draft");
     assert!(saved["attachments"].as_object().unwrap().is_empty());
     for input in saved["revision"]["inputs"].as_array().unwrap() {

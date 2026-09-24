@@ -253,15 +253,15 @@ impl LostReply {
                                 }
                                 if operation == "plugin.remote" {
                                     assert_eq!(saved["root"], discovery.root_id);
-                                    assert_eq!(saved["extension"]["pending"]["input"], value["input"]["input"]);
-                                    assert_eq!(saved["extension"]["entry"]["target"], value["input"]["target"]);
+                                    assert_eq!(saved["apps"][0]["pending"]["input"], value["input"]["input"]);
+                                    assert_eq!(saved["apps"][0]["entry"]["target"], value["input"]["target"]);
                                 } else {
                                     let original = &saved["unresolved"][0];
                                     assert_eq!(original["root_id"], discovery.root_id);
                                     assert_eq!(original["origin_epoch"], value["input"]["originHostEpoch"]);
                                     assert_eq!(original["session"], value["input"]["sessionId"]);
                                     assert_eq!(original["id"], value["input"]["messageId"]);
-                                    assert_eq!(saved["version"], 15);
+                                    assert_eq!(saved["version"], 16);
                                     assert_eq!(original["content"], value["input"]["content"]);
                                     assert_eq!(original["placement"], value["input"]["placement"]);
                                     assert_eq!(original["input_selections"], value["input"].get("inputSelections").cloned().unwrap_or_else(|| json!({})));

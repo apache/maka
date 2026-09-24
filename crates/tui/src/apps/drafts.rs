@@ -19,6 +19,7 @@
 
 use super::*;
 use crate::ui::{Node, On, Size, Tone};
+use maka_plugins::terminal_ui::view::View;
 
 pub(super) struct Conflict {
     id: String,
@@ -56,7 +57,7 @@ fn replace(control: &mut Control, draft: &Value) -> Result<(), ()> {
 fn context_changed(old: &View, new: &View) -> bool {
     old.title != new.title || old.root != new.root
 }
-impl State {
+impl Instance {
     fn merge(&self, entry: TerminalViewProjection, view: View) -> Result<Review, ()> {
         let original = self.view.as_ref().ok_or(())?;
         let mut review = Review {
@@ -100,7 +101,7 @@ impl State {
     pub fn reload_draft(&mut self, entry: TerminalViewProjection, view: View) {
         self.blocked = true;
         let Ok(review) = self.merge(entry, view) else {
-            self.message = Some(Message::Local("extensions-draft-shape-changed"));
+            self.message = Some(Notice::Local("extensions-draft-shape-changed"));
             return;
         };
         let changed = self
@@ -147,14 +148,16 @@ impl State {
                     .expect("unchanged text cursor");
             }
         }
-        self.message = Some(Message::Local("extensions-draft-ready"));
+        self.message = Some(Notice::Local("extensions-draft-ready"));
     }
 }
 
 /// Reviewing a draft against the form it now belongs to: what changed
 /// around it, then each conflicting field with both values to choose from.
-pub(super) fn nodes(app: &App) -> Vec<Node<Command>> {
-    let state = &app.extensions;
+pub(super) fn nodes(app: &App, key: &Key) -> Vec<Node<Message>> {
+    let Some(state) = app.apps.instances.get(key) else {
+        return vec![];
+    };
     let (Some(review), Some(original)) = (&state.review, &state.view) else {
         return vec![];
     };
@@ -228,7 +231,7 @@ pub(super) fn nodes(app: &App) -> Vec<Node<Command>> {
                         lines("value", &content, Tone::Muted),
                     ],
                 )
-                .on(On::Activate(command))
+                .on(On::Activate(Message::Instance(key.clone(), command)))
                 .current(conflict.mine == Some(mine)),
             );
         }
@@ -240,7 +243,7 @@ pub(super) fn nodes(app: &App) -> Vec<Node<Command>> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{draw, save};
+    use super::super::tests::{command, draw, instance, instance_mut, next, save};
     use super::*;
     use crossterm::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -249,18 +252,19 @@ mod tests {
 
     fn draft() -> App {
         let mut app = super::super::tests::app();
-        let editor = app.extensions.editors.get_mut("name").unwrap();
+        let editor = instance_mut(&mut app).editors.get_mut("name").unwrap();
         editor.clear_if_unchanged("My notes");
         editor.insert("本地草稿🦀");
-        app.extensions
+        let text = editor.text().to_owned();
+        instance_mut(&mut app)
             .drafts
-            .insert("name".into(), json!(editor.text()));
-        app.extensions.disconnect();
+            .insert("name".into(), json!(text));
+        app.apps.disconnect();
         app
     }
     fn reload(app: &mut App, view: View) {
-        app.extensions_action(Command::ResumeDraft);
-        let request = app.extensions_request().unwrap();
+        app.apps_action(command(Command::ResumeDraft));
+        let request = next(app).unwrap();
         assert!(!request.needs_checkpoint());
         assert!(matches!(
             request.work,
@@ -269,9 +273,9 @@ mod tests {
                 ..
             }
         ));
-        let mut entry = app.extensions.entry.clone().unwrap();
+        let mut entry = instance(app).entry.clone().unwrap();
         entry.target.registration = uuid::Uuid::new_v4();
-        app.extensions_complete(
+        app.apps_complete(
             request,
             Ok(Output::Rebound {
                 entry: Box::new(entry),
@@ -290,52 +294,47 @@ mod tests {
     #[test]
     fn draft_reload_merges_disjoint_edits_and_keeps_new_revision_without_saving() {
         let mut app = draft();
-        let saved = app.extensions.checkpoint("root").unwrap();
-        app.extensions = State::new("en");
-        app.extensions.restore(saved).unwrap();
-        assert!(app.extensions_request().is_none());
-        let cursor = app.extensions.editors["name"].cursor();
-        let mut current = app.extensions.view.clone().unwrap();
+        let saved = app.apps.checkpoints("root");
+        app.apps = Apps::new("en");
+        app.apps.restore(saved).unwrap();
+        assert!(next(&mut app).is_none());
+        let cursor = instance(&app).editors["name"].cursor();
+        let mut current = instance(&app).view.clone().unwrap();
         current.revision = "two".into();
         current.fields[0].control = Control::Toggle { value: false };
         reload(&mut app, current);
-        assert!(app.extensions.review.is_none());
-        assert!(app.extensions_enabled(&save()));
-        assert_eq!(app.extensions.drafts["enabled"], json!(false));
-        assert_eq!(app.extensions.drafts["name"], json!("本地草稿🦀"));
-        assert_eq!(app.extensions.editors["name"].cursor(), cursor);
-        assert!(app.extensions_request().is_none(), "resume never submits");
-        app.extensions
-            .checkpoint("root")
-            .unwrap()
-            .validate("root")
-            .unwrap();
-        app.extensions_action(save());
-        let request = app.extensions_request().unwrap();
+        assert!(instance(&app).review.is_none());
+        assert!(app.apps_enabled(&save()));
+        assert_eq!(instance(&app).drafts["enabled"], json!(false));
+        assert_eq!(instance(&app).drafts["name"], json!("本地草稿🦀"));
+        assert_eq!(instance(&app).editors["name"].cursor(), cursor);
+        assert!(next(&mut app).is_none(), "resume never submits");
+        app.apps.checkpoints("root")[0].validate("root").unwrap();
+        app.apps_action(save());
+        let request = next(&mut app).unwrap();
         assert!(
             matches!(&request.work, Work::Call { input: Input::Submit { revision, fields, .. }, .. } if revision == "two" && fields["name"] == json!("本地草稿🦀") && fields["enabled"] == json!(false))
         );
-        assert!(!app.extensions_enabled(&Command::ResumeDraft));
+        assert!(!app.apps_enabled(&command(Command::ResumeDraft)));
     }
 
     #[test]
     fn conflicting_fields_need_explicit_choice_and_cancel_or_disconnect_keeps_original_draft() {
         let mut app = draft();
-        let mut current = app.extensions.view.clone().unwrap();
+        let mut current = instance(&app).view.clone().unwrap();
         current.revision = "two".into();
         current.fields[1].control = text("Changed remotely", 128);
         reload(&mut app, current.clone());
-        assert!(!app.extensions_enabled(&Command::ApplyDraft));
+        assert!(!app.apps_enabled(&command(Command::ApplyDraft)));
         let screen = draw(&mut app, 58, 24);
         assert!(
             screen.replace(' ', "").contains("本地草稿🦀") && screen.contains("Changed remotely"),
             "{screen}"
         );
         // The entire value is clickable, not only the choice marker.
-        let theirs = app
-            .extensions
+        let theirs = app.apps.instances[&super::super::tests::key()]
             .surface
-            .rect("extensions/body/frame/content/conflict-0/theirs")
+            .rect("app/body/frame/content/conflict-0/theirs")
             .unwrap();
         app.input(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -343,35 +342,35 @@ mod tests {
             row: theirs.y + 1,
             modifiers: KeyModifiers::NONE,
         }));
-        assert!(app.extensions_enabled(&Command::ApplyDraft));
+        assert!(app.apps_enabled(&command(Command::ApplyDraft)));
         app.input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        assert!(app.extensions.review.is_none());
-        assert_eq!(app.extensions.drafts["name"], json!("本地草稿🦀"));
+        assert!(instance(&app).review.is_none());
+        assert_eq!(instance(&app).drafts["name"], json!("本地草稿🦀"));
         reload(&mut app, current.clone());
-        app.extensions_action(Command::DraftChoice(0, true));
-        app.extensions_action(Command::ApplyDraft);
-        assert_eq!(app.extensions.drafts["name"], json!("本地草稿🦀"));
-        assert_eq!(app.extensions.view.as_ref().unwrap().revision, "two");
-        assert!(app.extensions_request().is_none());
+        app.apps_action(command(Command::DraftChoice(0, true)));
+        app.apps_action(command(Command::ApplyDraft));
+        assert_eq!(instance(&app).drafts["name"], json!("本地草稿🦀"));
+        assert_eq!(instance(&app).view.as_ref().unwrap().revision, "two");
+        assert!(next(&mut app).is_none());
 
-        app.extensions.disconnect();
+        app.apps.disconnect();
         current.title = "Changed context".into();
         reload(&mut app, current);
-        assert!(app.extensions.review.is_some());
+        assert!(instance(&app).review.is_some());
         let screen = draw(&mut app, 58, 24);
         assert!(screen.contains("Previous form") && screen.contains("Current form"));
-        app.extensions.disconnect();
-        assert!(app.extensions.review.is_none());
-        assert!(app.extensions.blocked);
-        assert_eq!(app.extensions.drafts["name"], json!("本地草稿🦀"));
+        app.apps.disconnect();
+        assert!(instance(&app).review.is_none());
+        assert!(instance(&app).blocked);
+        assert_eq!(instance(&app).drafts["name"], json!("本地草稿🦀"));
     }
 
     #[test]
     fn field_removal_disable_type_and_capacity_changes_never_truncate_a_dirty_value() {
         for change in 0..4 {
             let mut app = draft();
-            let before = app.extensions.drafts.clone();
-            let mut current = app.extensions.view.clone().unwrap();
+            let before = instance(&app).drafts.clone();
+            let mut current = instance(&app).view.clone().unwrap();
             current.revision = "two".into();
             match change {
                 0 => {
@@ -389,11 +388,11 @@ mod tests {
                 _ => current.fields[1].control = text("", 1),
             }
             reload(&mut app, current);
-            assert!(app.extensions.review.is_none());
-            assert!(app.extensions.blocked);
-            assert_eq!(app.extensions.drafts, before);
-            assert_eq!(app.extensions.view.as_ref().unwrap().revision, "one");
-            assert!(app.extensions_request().is_none());
+            assert!(instance(&app).review.is_none());
+            assert!(instance(&app).blocked);
+            assert_eq!(instance(&app).drafts, before);
+            assert_eq!(instance(&app).view.as_ref().unwrap().revision, "one");
+            assert!(next(&mut app).is_none());
         }
     }
 }

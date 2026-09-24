@@ -25,7 +25,7 @@ pub mod tabs;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     tag = "page",
-    content = "session",
+    content = "id",
     rename_all = "snake_case",
     deny_unknown_fields
 )]
@@ -38,7 +38,10 @@ pub enum Route {
     Inbox,
     Projects,
     Connections,
+    /// The directory of every plugin view.
     Extensions,
+    /// A plugin view as a page of its own.
+    App(crate::apps::Key),
 }
 
 impl Route {
@@ -61,7 +64,7 @@ impl Route {
             Self::Inbox => "route-inbox",
             Self::Projects => "route-projects",
             Self::Connections => "route-connections",
-            Self::Extensions => "route-extensions",
+            Self::Extensions | Self::App(_) => "route-extensions",
         }
     }
     pub fn section(&self) -> Self {
@@ -69,6 +72,7 @@ impl Route {
             Self::Session(_) => Self::Workspace,
             Self::Connections => Self::Settings,
             Self::Extensions => Self::Host,
+            Self::App(key) => Self::App(key.clone()),
             _ => self.clone(),
         }
     }
@@ -108,6 +112,18 @@ impl Navigation {
             self.entries.pop_front();
         }
         self.cursor = self.entries.len() - 1;
+    }
+    /// The session most recently visited up to here, the one that
+    /// session-scoped places act on.
+    pub fn recent_session(&self) -> Option<String> {
+        self.entries
+            .iter()
+            .take(self.cursor + 1)
+            .rev()
+            .find_map(|route| match route {
+                Route::Session(id) => Some(id.clone()),
+                _ => None,
+            })
     }
     pub fn back(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);

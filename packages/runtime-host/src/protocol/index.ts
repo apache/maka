@@ -58,6 +58,10 @@ import {
 } from './scheduled-task-change.js';
 import { decodePluginClientChangedFrame, type PluginClientChangedFrame } from './plugin-client.js';
 import {
+  decodePluginTerminalChangedFrame,
+  type PluginTerminalChangedFrame,
+} from './plugin-platform.js';
+import {
   decodeProjectCatalogChangedFrame,
   type ProjectCatalogChangedFrame,
 } from './project-catalog-change.js';
@@ -115,7 +119,7 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Native bundle bindings and whole-catalog invalidation require matching clients.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 187 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 188 as const;
 export const RUNTIME_HOST_MAX_MESSAGE_BYTES = 768 * 1024;
 export const RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS = 64;
 export const INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID = 'maka.interactive' as const;
@@ -189,6 +193,7 @@ export type HostFrame =
   | ModelProviderCatalogChangedFrame
   | ProjectCatalogChangedFrame
   | PluginClientChangedFrame
+  | PluginTerminalChangedFrame
   | SessionCatalogChangedFrame
   | ScheduledTaskChangedFrame;
 
@@ -338,6 +343,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
   }
   if (frame.kind === 'project.catalog.changed') return decodeProjectCatalogChangedFrame(frame);
   if (frame.kind === 'plugin.client.changed') return decodePluginClientChangedFrame(frame);
+  if (frame.kind === 'plugin.terminal.changed') return decodePluginTerminalChangedFrame(frame);
   if (frame.kind === 'model.provider.catalog.changed')
     return decodeModelProviderCatalogChangedFrame(frame);
   if (frame.kind === 'session.catalog.changed') return decodeSessionCatalogChangedFrame(frame);

@@ -74,7 +74,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         app.sidebar.surface.invalidate();
         app.settings.surface.invalidate();
         app.home.surface.invalidate();
-        app.extensions.surface.invalidate();
+        app.apps.surface.invalidate();
+        if let Some(surface) = app.apps_surface() {
+            surface.invalidate();
+        }
         frame.render_widget(
             Paragraph::new(app.i18n.text("terminal-small")).wrap(Wrap { trim: false }),
             area,
@@ -118,9 +121,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     };
     let title = match (&app.navigation.current(), &app.sessions.detail) {
         (Route::Session(id), Detail::Ready(item)) if *id == item.id => safe(&item.name),
-        (Route::Extensions, _) => app
-            .extensions
-            .title(app.i18n.locale().id())
+        (Route::App(key), _) => app
+            .apps
+            .instance(key)
+            .and_then(|instance| instance.title(app.i18n.locale().id()))
             .map(|title| safe(&title))
             .unwrap_or_else(|| app.i18n.text(Route::Extensions.title())),
         _ => app.i18n.text(app.navigation.current().title()),
@@ -229,7 +233,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let page = columns[1].inner(Margin::new(1, 0));
 
     match app.navigation.current() {
-        Route::Extensions => crate::pages::extensions::draw(frame, app, page),
+        Route::Extensions => crate::apps::page::draw_directory(frame, app, page),
+        Route::App(key) => crate::apps::page::draw(frame, app, page, &key),
         Route::Connections => crate::pages::connections::draw(frame, app, page),
         Route::Projects => crate::pages::projects::draw(frame, app, page),
         Route::Workspace => crate::pages::home::draw(frame, app, page, nav_width > 0),
@@ -278,7 +283,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .or_else(|| match app.navigation.current() {
             Route::Settings => app.settings.surface.hint(app.focus == Focus::Page),
             Route::Workspace => app.home.surface.hint(app.focus == Focus::Page),
-            Route::Extensions => app.extensions.surface.hint(app.focus == Focus::Page),
+            Route::Extensions => app.apps.surface.hint(app.focus == Focus::Page),
+            Route::App(key) => app
+                .apps
+                .instance(&key)
+                .and_then(|instance| instance.surface.hint(app.focus == Focus::Page)),
             _ => None,
         })
     {
@@ -404,7 +413,9 @@ fn draw_tooltip(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
     app.sidebar.surface.occlude(popup);
     app.settings.surface.occlude(popup);
     app.home.surface.occlude(popup);
-    app.extensions.surface.occlude(popup);
+    if let Some(surface) = app.apps_surface() {
+        surface.occlude(popup);
+    }
     clear_overlay(frame, popup);
     frame.render_widget(
         Paragraph::new(label)
@@ -439,20 +450,24 @@ pub(crate) fn icon(app: &App, action: &Action) -> &'static str {
         Action::Visit(Route::Help) => ("?", "?"),
         Action::Visit(Route::Projects) => ("▦", "P"),
         Action::Visit(Route::Extensions) => ("◇", "E"),
-        Action::Extension(command) => match command {
-            crate::pages::extensions::Command::Refresh => ("↻", "R"),
-            crate::pages::extensions::Command::Back => ("‹", "<"),
-            crate::pages::extensions::Command::Next => ("›", ">"),
-            crate::pages::extensions::Command::Discard => ("×", "x"),
-            crate::pages::extensions::Command::Reconcile => ("⌕", "?"),
-            crate::pages::extensions::Command::Retry => ("↥", "^"),
-            crate::pages::extensions::Command::ConfirmDiscard => ("×", "x"),
-            crate::pages::extensions::Command::CancelDiscard => ("‹", "<"),
-            crate::pages::extensions::Command::ResumeDraft => ("↻", "R"),
-            crate::pages::extensions::Command::ApplyDraft => ("✓", "+"),
-            crate::pages::extensions::Command::CancelDraft => ("‹", "<"),
-            _ => ("◇", "E"),
-        },
+        Action::Visit(Route::App(_)) => ("◇", "E"),
+        Action::Apps(message) => {
+            use crate::apps::{Command, Message};
+            match message {
+                Message::Reload | Message::Instance(_, Command::Refresh | Command::ResumeDraft) => {
+                    ("↻", "R")
+                }
+                Message::Instance(
+                    _,
+                    Command::Back | Command::CancelDiscard | Command::CancelDraft,
+                ) => ("‹", "<"),
+                Message::Instance(_, Command::Discard | Command::ConfirmDiscard) => ("×", "x"),
+                Message::Instance(_, Command::Reconcile) => ("⌕", "?"),
+                Message::Instance(_, Command::Retry) => ("↥", "^"),
+                Message::Instance(_, Command::ApplyDraft) => ("✓", "+"),
+                _ => ("◇", "E"),
+            }
+        }
         Action::Visit(Route::Connections) => ("⇄", "C"),
         Action::Connection(command) => match command {
             crate::pages::connections::Command::Select(_) => ("⇄", "C"),
@@ -633,7 +648,7 @@ pub(crate) fn action_label(app: &App, action: &Action) -> String {
         Action::Attachment(command) => command.label(),
         Action::References => "references-title",
         Action::Skills(command) => command.label(),
-        Action::Extension(command) => command.label(),
+        Action::Apps(message) => message.label(),
         Action::NextTab => "tabs-next",
         Action::PreviousTab => "tabs-previous",
         Action::CloseTab(_) => "tabs-close",
@@ -734,7 +749,8 @@ fn page_lines(app: &App) -> Vec<Line<'static>> {
         | Route::Inbox
         | Route::Projects
         | Route::Connections
-        | Route::Extensions => vec![],
+        | Route::Extensions
+        | Route::App(_) => vec![],
         Route::Session(_) => crate::pages::sessions::detail_lines(app),
         Route::Host => {
             let mut lines = vec![Line::raw(root()), Line::raw("")];

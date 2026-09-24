@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{Action, App, Command, Input};
+use super::{Action, App, Command, Input, Message};
 use crate::ui::{Role, Sheet, Tone};
 use maka_plugins::authorization::{Capability, Request, Target};
 use maka_protocol::plugin::TerminalViewProjection;
@@ -32,7 +32,7 @@ pub(super) struct Consent {
 
 /// Cancel is the default; authorizing always takes a deliberate move.
 pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
-    let state = app.extensions.consent.as_ref()?;
+    let (key, state) = app.apps.consent.as_ref()?;
     let mut body = format!(
         "{}\n\n{}\n\n",
         visible(&state.entry.package_id),
@@ -55,15 +55,18 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
             "cancel",
             app.i18n.text("session-cancel"),
             Role::Normal,
-            Action::Extension(Command::DismissConsent),
+            Action::Apps(Message::Instance(key.clone(), Command::DismissConsent)),
             true,
         )
         .button(
             "authorize",
             app.i18n.text("extensions-authorize"),
             Role::Primary,
-            Action::Extension(Command::ApproveConsent),
-            app.enabled(&Action::Extension(Command::ApproveConsent)),
+            Action::Apps(Message::Instance(key.clone(), Command::ApproveConsent)),
+            app.enabled(&Action::Apps(Message::Instance(
+                key.clone(),
+                Command::ApproveConsent,
+            ))),
         )
         .focus("cancel"),
     )
@@ -72,13 +75,10 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
 /// An action that asked to be confirmed. The plugin words the question;
 /// the shell owns the sheet, and Cancel is where it opens.
 pub(crate) fn confirm(app: &App) -> Option<Sheet<Action>> {
-    let state = &app.extensions;
-    let (action, id) = state.confirmation()?;
+    let (key, action) = app.apps.confirmation()?;
     let confirm = action.confirm.as_ref()?;
-    let package = state
-        .entry
-        .as_ref()
-        .map_or_else(String::new, |entry| visible(&entry.package_id));
+    let package = visible(&key.package);
+    let id = &action.id;
     Some(
         Sheet::new(format!("confirm:{package}:{id}"), confirm.title.clone())
             .text("message", &confirm.message, Tone::Normal)
@@ -87,7 +87,7 @@ pub(crate) fn confirm(app: &App) -> Option<Sheet<Action>> {
                 "cancel",
                 app.i18n.text("session-cancel"),
                 Role::Normal,
-                Action::Extension(Command::CancelConfirm),
+                Action::Apps(Message::Instance(key.clone(), Command::CancelConfirm)),
                 true,
             )
             .button(
@@ -98,8 +98,8 @@ pub(crate) fn confirm(app: &App) -> Option<Sheet<Action>> {
                 } else {
                     Role::Primary
                 },
-                Action::Extension(Command::Confirm),
-                app.extensions_offered(&Command::Confirm),
+                Action::Apps(Message::Instance(key.clone(), Command::Confirm)),
+                app.apps_offered(&Message::Instance(key.clone(), Command::Confirm)),
             )
             .focus("cancel"),
     )

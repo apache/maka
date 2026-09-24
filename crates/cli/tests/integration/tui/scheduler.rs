@@ -265,9 +265,9 @@ fn scheduler_creation_requires_consent_then_reuses_only_a_live_grant() {
         .join(&client.identity.root_id)
         .join("default/state.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
-    let draft_revision = saved["extension"]["view"]["revision"].clone();
+    let draft_revision = saved["apps"][0]["view"]["revision"].clone();
     assert!(
-        saved["extension"]["pending"].is_null(),
+        saved["apps"][0]["pending"].is_null(),
         "editing has not submitted anything"
     );
     let mut tui = Pty::spawn(&["--root", host.root.to_str().unwrap()]);
@@ -285,7 +285,7 @@ fn scheduler_creation_requires_consent_then_reuses_only_a_live_grant() {
     tui.wait_for("Allow plugin access?");
     let resumed: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
     assert_ne!(
-        resumed["extension"]["view"]["revision"], draft_revision,
+        resumed["apps"][0]["view"]["revision"], draft_revision,
         "an unsubmitted creation uses the fresh form identity; uncertain submissions cannot enter this path"
     );
     tui.send(b"\r"); // Default focus cancels; no authorization or task mutation.
@@ -315,9 +315,8 @@ fn scheduler_creation_requires_consent_then_reuses_only_a_live_grant() {
     assert_eq!(grants.as_array().unwrap().len(), 1);
 
     // Fresh reads keep creation identity separate while reusing actual authority.
+    // Back from a created task leads to where the app starts.
     tui.send(b"\x1b");
-    tui.wait_for("maka.scheduler");
-    tui.click_text("Scheduled tasks");
     tui.wait_for("New reminder");
     tui.click_text("New reminder");
     tui.wait_for("Once");

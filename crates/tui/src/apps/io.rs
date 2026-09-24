@@ -82,7 +82,7 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failu
                     view: View::TerminalViews,
                     root_id: Some(maka_plugins::composition::Scope::Profile),
                     cursor: cursor.clone(),
-                    limit: Some(16),
+                    limit: Some(super::PAGE),
                 })
                 .await
                 .map_err(|error| failure(error, false))?;
@@ -127,7 +127,9 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failu
 fn session(entry: &TerminalViewProjection, request: &Request) -> Option<String> {
     match entry.descriptor.context {
         maka_plugins::terminal_ui::Context::Application => None,
-        maka_plugins::terminal_ui::Context::Session => request.session.clone(),
+        maka_plugins::terminal_ui::Context::Session => {
+            request.key.as_ref().and_then(|key| key.session.clone())
+        }
     }
 }
 fn binding(entry: &TerminalViewProjection, session_id: Option<String>) -> RemoteBinding {

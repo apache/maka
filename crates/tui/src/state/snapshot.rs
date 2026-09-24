@@ -53,7 +53,7 @@ pub struct Snapshot {
     #[serde(default)]
     resume: Option<crate::pages::resume::Checkpoint>,
     revision: Option<crate::pages::revision::Checkpoint>,
-    extension: Option<crate::pages::extensions::Checkpoint>,
+    apps: Vec<crate::apps::Checkpoint>,
 }
 
 impl Snapshot {
@@ -66,7 +66,7 @@ impl Snapshot {
             .collect();
         unresolved.sort_by(|left, right| left.session.cmp(&right.session));
         Self {
-            version: 15,
+            version: 16,
             attachments: app.attachments.saved.clone(),
             directories: app.directories.clone(),
             skills: app.skills.saved.clone(),
@@ -92,7 +92,7 @@ impl Snapshot {
             recap: app.recap.checkpoint(),
             resume: app.resume.checkpoint(),
             revision: app.revision.checkpoint(),
-            extension: app.extensions.checkpoint(root),
+            apps: app.apps.checkpoints(root),
         }
     }
 
@@ -100,7 +100,7 @@ impl Snapshot {
         let id = |id: &str| {
             !id.is_empty() && id.encode_utf16().count() <= 256 && !id.chars().any(char::is_control)
         };
-        if self.version != 15
+        if self.version != 16
             || self.root != root
             || self.tabs.len() > LIMIT
             || self.drafts.len() > LIMIT
@@ -199,8 +199,11 @@ impl Snapshot {
         if let Some(oauth) = &self.oauth {
             oauth.validate()?;
         }
-        if let Some(extension) = &self.extension {
-            extension.validate(root)?;
+        if self.apps.len() > crate::navigation::tabs::LIMIT {
+            return Err("Too many plugin checkpoints".into());
+        }
+        for checkpoint in &self.apps {
+            checkpoint.validate(root)?;
         }
         if let Some(revision) = &self.revision {
             revision.validate(root)?;
@@ -231,9 +234,7 @@ impl Snapshot {
         if let Some(revision) = self.revision {
             app.revision.restore(revision);
         }
-        if let Some(extension) = self.extension {
-            app.extensions.restore(extension)?;
-        }
+        app.apps.restore(self.apps)?;
         if let Some(recap) = self.recap {
             app.recap.restore(recap);
         }
@@ -442,7 +443,7 @@ mod tests {
         request.input().validate().unwrap();
         original.sending.get_mut("a").unwrap().request = request.clone();
         let saved = serde_json::to_value(Snapshot::capture(&original, "root")).unwrap();
-        assert_eq!(saved["version"], 15);
+        assert_eq!(saved["version"], 16);
         let mut restored = app();
         serde_json::from_value::<Snapshot>(saved.clone())
             .unwrap()
@@ -599,7 +600,7 @@ mod tests {
             ("/navigation/cursor", serde_json::json!(128)),
             (
                 "/navigation/entries/0",
-                serde_json::json!({"page":"session","session":"closed"}),
+                serde_json::json!({"page":"session","id":"closed"}),
             ),
             ("/pages/0/1/focus", serde_json::json!("queue")),
         ] {

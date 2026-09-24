@@ -47,7 +47,11 @@ impl MessageWriter for Writer {
     async fn write(&mut self, value: &Value) -> Result<(), TransportError> {
         if matches!(
             value["kind"].as_str(),
-            Some("plugin.client.changed" | "model.provider.catalog.changed")
+            Some(
+                "plugin.client.changed"
+                    | "plugin.terminal.changed"
+                    | "model.provider.catalog.changed"
+            )
         ) {
             return Ok(());
         }
@@ -88,7 +92,11 @@ async fn receive_response(reader: &mut impl MessageReader) -> Value {
             let frame = reader.read().await.unwrap().unwrap();
             if !matches!(
                 frame["kind"].as_str(),
-                Some("plugin.client.changed" | "model.provider.catalog.changed")
+                Some(
+                    "plugin.client.changed"
+                        | "plugin.terminal.changed"
+                        | "model.provider.catalog.changed"
+                )
             ) {
                 return frame;
             }

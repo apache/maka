@@ -164,7 +164,7 @@ fn branch_preserves_selected_history_and_draft_and_reopens_by_original_receipt()
     assert!(saved["branch"].is_null());
     let cursor = saved["navigation"]["cursor"].as_u64().unwrap() as usize;
     assert_eq!(
-        saved["navigation"]["entries"][cursor]["session"],
+        saved["navigation"]["entries"][cursor]["id"],
         request.target_session_id
     );
     let receipt = runtime

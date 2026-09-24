@@ -157,7 +157,11 @@ async fn slow_rpc_allows_same_connection_status_and_flushes_after_input_eof() {
         let frame = receive(&mut replies).await;
         if matches!(
             frame["kind"].as_str(),
-            Some("plugin.client.changed" | "model.provider.catalog.changed")
+            Some(
+                "plugin.client.changed"
+                    | "plugin.terminal.changed"
+                    | "model.provider.catalog.changed"
+            )
         ) {
             continue;
         }

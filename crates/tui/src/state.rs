@@ -22,7 +22,7 @@ mod store;
 
 use crate::{
     app::App,
-    pages::{branch, extensions, manage::oauth, recap, resume, revision, sending::Submission},
+    pages::{branch, manage::oauth, recap, resume, revision, sending::Submission},
 };
 use maka_client::Error;
 use snapshot::Snapshot;
@@ -42,7 +42,7 @@ pub struct State {
     recap: Option<recap::Request>,
     resume: Option<resume::Request>,
     revision: Option<revision::Request>,
-    extension: Option<extensions::Request>,
+    apps: Vec<crate::apps::Request>,
     attachment: Option<crate::pages::attachments::Ticket>,
     generation: u64,
     job: Option<Writing>,
@@ -56,7 +56,7 @@ struct Writing {
     recap: Option<recap::Request>,
     resume: Option<resume::Request>,
     revision: Option<revision::Request>,
-    extension: Option<extensions::Request>,
+    apps: Vec<crate::apps::Request>,
     attachment: Option<crate::pages::attachments::Ticket>,
     generation: u64,
 }
@@ -69,7 +69,7 @@ pub struct Written {
     pub recap: Option<recap::Request>,
     pub resume: Option<resume::Request>,
     pub revision: Option<revision::Request>,
-    pub extension: Option<extensions::Request>,
+    pub apps: Vec<crate::apps::Request>,
     pub attachment: Option<crate::pages::attachments::Ticket>,
 }
 impl State {
@@ -105,7 +105,7 @@ impl State {
                     recap: None,
                     resume: None,
                     revision: None,
-                    extension: None,
+                    apps: Vec::new(),
                     attachment: None,
                     generation: 0,
                     job: None,
@@ -142,7 +142,7 @@ impl State {
         self.recap = None;
         self.resume = None;
         self.revision = None;
-        self.extension = None;
+        self.apps.clear();
         self.attachment = None;
         let mut requests = std::mem::take(&mut self.requests);
         if let Some(job) = &self.job
@@ -177,8 +177,8 @@ impl State {
         self.revision = Some(request);
         self.force();
     }
-    pub fn submit_extension(&mut self, request: extensions::Request) {
-        self.extension = Some(request);
+    pub fn submit_app(&mut self, request: crate::apps::Request) {
+        self.apps.push(request);
         self.force();
     }
     pub fn idle(&self) -> bool {
@@ -206,7 +206,7 @@ impl State {
             recap: self.recap.take(),
             resume: self.resume.take(),
             revision: self.revision.take(),
-            extension: self.extension.take(),
+            apps: std::mem::take(&mut self.apps),
             attachment: self.attachment.take(),
             generation,
         });
@@ -222,10 +222,10 @@ impl State {
         let job = self.job.take().expect("completed writer");
         Written {
             result,
-            extension: if job.generation == self.generation {
-                job.extension
+            apps: if job.generation == self.generation {
+                job.apps
             } else {
-                None
+                Vec::new()
             },
             attachment: if job.generation == self.generation {
                 job.attachment
@@ -300,7 +300,7 @@ mod tests {
             recap: None,
             resume: None,
             revision: None,
-            extension: None,
+            apps: Vec::new(),
             attachment: None,
             generation: 0,
             job: None,
@@ -428,18 +428,21 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_submission_requires_its_own_durable_checkpoint_and_never_replays_on_restore() {
-        use crate::pages::extensions::Command;
+        use crate::apps::{
+            Command, Intent, io,
+            tests::{command, next, save},
+        };
         let (directory, mut state, _) = fixture();
-        let mut app = extensions::tests::app();
+        let mut app = crate::apps::tests::app();
         app.connection = ConnectionState::Connected {
             root_id: ROOT.into(),
             epoch: "epoch".into(),
         };
-        app.extensions_action(Command::View(extensions::Intent::Toggle("enabled".into())));
-        app.extensions_action(extensions::tests::save());
-        let request = app.extensions_request().unwrap();
+        app.apps_action(command(Command::View(Intent::Toggle("enabled".into()))));
+        app.apps_action(save());
+        let submission = next(&mut app).unwrap();
         let (release, blocked) = gate(&state).await;
-        state.submit_extension(request.clone());
+        state.submit_app(submission.clone());
         state.start(&app);
         assert!(
             tokio::time::timeout(Duration::from_millis(30), state.completed())
@@ -449,11 +452,11 @@ mod tests {
         release.send(()).unwrap();
         blocked.await.unwrap();
         let completed = written(&mut state).await;
-        assert!(completed.extension.is_some());
+        assert_eq!(completed.apps.len(), 1);
         assert!(completed.result.is_ok(), "{:?}", completed.result);
         let bytes = read(&directory);
         assert_eq!(
-            bytes["extension"]["pending"]["input"]["fields"]["enabled"],
+            bytes["apps"][0]["pending"]["input"]["fields"]["enabled"],
             false
         );
         let mut reopened = App::new(
@@ -464,42 +467,48 @@ mod tests {
             .unwrap()
             .restore(&mut reopened, false)
             .unwrap();
-        assert!(reopened.extensions_request().is_none());
-        assert!(app.extensions_after_checkpoint(&request, &completed.result));
-        assert!(!app.extensions_after_checkpoint(&request, &completed.result));
-        app.extensions_complete(request, Err(extensions::io::Failure { unknown: true }));
+        assert!(
+            reopened
+                .apps_requests()
+                .iter()
+                .all(|request| !request.needs_checkpoint()),
+            "restoring never replays a write"
+        );
+        assert!(app.apps_after_checkpoint(&submission, &completed.result));
+        assert!(!app.apps_after_checkpoint(&submission, &completed.result));
+        app.apps_complete(submission, Err(io::Failure { unknown: true }));
         // No idempotency declaration means no unsafe retry, including after a failed query.
-        assert!(!app.extensions_enabled(&Command::Retry));
-        assert!(!app.extensions_enabled(&Command::Reconcile));
-        app.extensions_action(Command::Discard);
-        assert!(app.extensions_request().is_none());
-        app.extensions_action(Command::ConfirmDiscard);
-        assert!(app.extensions_request().is_some());
+        assert!(!app.apps_enabled(&command(Command::Retry)));
+        assert!(!app.apps_enabled(&command(Command::Reconcile)));
+        app.apps_action(command(Command::Discard));
+        assert!(next(&mut app).is_none());
+        app.apps_action(command(Command::ConfirmDiscard));
+        assert!(next(&mut app).is_some());
 
         for closing in [false, true] {
-            let mut app = extensions::tests::app();
+            let mut app = crate::apps::tests::app();
             app.connection = ConnectionState::Connected {
                 root_id: ROOT.into(),
                 epoch: "epoch".into(),
             };
-            app.extensions_action(extensions::tests::save());
-            let request = app.extensions_request().unwrap();
+            app.apps_action(save());
+            let submission = next(&mut app).unwrap();
             app.closing = closing;
-            assert!(!app.extensions_after_checkpoint(&request, &Err("disk failure".into())));
-            assert!(app.extensions.checkpoint(ROOT).is_some());
-            assert!(app.extensions_request().is_none());
+            assert!(!app.apps_after_checkpoint(&submission, &Err("disk failure".into())));
+            assert!(!app.apps.checkpoints(ROOT).is_empty());
+            assert!(next(&mut app).is_none());
         }
-        let mut app = extensions::tests::app();
-        app.extensions_action(extensions::tests::save());
-        let request = app.extensions_request().unwrap();
-        state.submit_extension(request);
+        let mut app = crate::apps::tests::app();
+        app.apps_action(save());
+        let submission = next(&mut app).unwrap();
+        state.submit_app(submission);
         let (release, blocked) = gate(&state).await;
         state.start(&app);
         state.cancel_requests();
-        app.extensions.disconnect();
+        app.apps.disconnect();
         release.send(()).unwrap();
         blocked.await.unwrap();
-        assert!(written(&mut state).await.extension.is_none());
+        assert!(written(&mut state).await.apps.is_empty());
     }
 
     #[tokio::test]
@@ -537,7 +546,7 @@ mod tests {
         assert_eq!(written.revision, Some(request.clone()));
         assert!(written.result.is_ok());
         let bytes = read(&directory);
-        assert_eq!(bytes["version"], 15);
+        assert_eq!(bytes["version"], 16);
         assert_eq!(bytes["revision"]["copy"]["targetSessionId"], "revised");
         assert_eq!(bytes["revision"]["inputs"][0]["content"]["text"], "edited");
         let mut incomplete = bytes.clone();

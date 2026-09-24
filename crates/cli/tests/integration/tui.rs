@@ -405,7 +405,11 @@ fn real_host_catalog_subscription_and_remote_updates_reach_clients() {
     tui.wait_for("另一份草稿🦀");
     // Straight from the sidebar, where the older page sits below the fold.
     tui.wheel_at(&first[2].name, true, 12);
-    tui.wait_for("Renamed from another"); // Long names end in an ellipsis there.
+    // The last row showing means the wheel has reached the end of the list,
+    // so rows no longer move under the click.
+    tui.wait_until(|screen| {
+        screen.contains("Renamed from another") && screen.contains(&second[1].name)
+    }); // Long names end in an ellipsis there.
     tui.click_last_text("Renamed from another");
     tui.wait_for("Streamed 中文🦀");
     tui.send(b"\x1b[5;5~"); // Ctrl+PgUp

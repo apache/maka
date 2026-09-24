@@ -30,25 +30,45 @@ use unicode_width::UnicodeWidthStr;
 const SEARCH: &str = "search";
 const ROWS: &str = "list/rows";
 
+/// A command's name: a catalog key, or text a plugin already localized.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Label {
+    Key(&'static str),
+    Text(String),
+}
+impl Label {
+    pub fn text(&self, i18n: &I18n) -> String {
+        match self {
+            Self::Key(key) => i18n.text(key),
+            Self::Text(text) => text.clone(),
+        }
+    }
+}
+impl From<&'static str> for Label {
+    fn from(key: &'static str) -> Self {
+        Self::Key(key)
+    }
+}
+
 #[derive(Default)]
 pub struct State {
-    items: Vec<(Action, &'static str)>,
+    items: Vec<(Action, Label)>,
     query: String,
 }
 
 impl State {
-    pub fn new(items: Vec<(Action, &'static str)>) -> Self {
+    pub fn new(items: Vec<(Action, Label)>) -> Self {
         Self {
             items,
             ..Self::default()
         }
     }
-    pub fn filtered(&self, i18n: &I18n) -> Vec<(Action, &'static str)> {
+    pub fn filtered(&self, i18n: &I18n) -> Vec<(Action, Label)> {
         let query = self.query.to_lowercase();
         self.items
             .iter()
-            .filter(|(_, key)| {
-                let text = i18n.text(key).to_lowercase();
+            .filter(|(_, label)| {
+                let text = label.text(i18n).to_lowercase();
                 query.split_whitespace().all(|word| text.contains(word))
             })
             .cloned()
@@ -91,12 +111,15 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
         let rows = items
             .iter()
             .enumerate()
-            .map(|(index, (action, key))| {
-                Node::text(index.to_string(), vec![(app.i18n.text(key), Tone::Normal)])
-                    .clip()
-                    .on(On::Activate(action.clone()))
-                    .enabled(app.enabled(action))
-                    .current(index == selected)
+            .map(|(index, (action, label))| {
+                Node::text(
+                    index.to_string(),
+                    vec![(label.text(&app.i18n), Tone::Normal)],
+                )
+                .clip()
+                .on(On::Activate(action.clone()))
+                .enabled(app.enabled(action))
+                .current(index == selected)
             })
             .collect();
         sheet.body(
@@ -326,7 +349,7 @@ mod tests {
             app.input(Event::Paste(query));
             assert_eq!(
                 app.commands(),
-                vec![(Action::Visit(Route::Settings), "command-settings")]
+                vec![(Action::Visit(Route::Settings), "command-settings".into())]
             );
             // Old geometry cannot activate a different row after filtering.
             app.input(mouse(
@@ -358,7 +381,7 @@ mod tests {
             frame(&mut app, 52, 18);
             app.input(Event::Paste(app.i18n.text("command-quit")));
             frame(&mut app, 52, 18);
-            assert_eq!(app.commands(), vec![(Action::Quit, "command-quit")]);
+            assert_eq!(app.commands(), vec![(Action::Quit, "command-quit".into())]);
             assert_eq!(app.input(key(KeyCode::Enter)).1, Some(Action::Quit));
             app.apply(Action::Palette);
             frame(&mut app, 52, 18);

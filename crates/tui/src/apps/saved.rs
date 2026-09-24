@@ -19,6 +19,7 @@
 
 use super::*;
 use crate::editor::saved::Cursor;
+use maka_plugins::terminal_ui::view::View;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -33,7 +34,7 @@ pub(super) struct Pending {
 #[serde(deny_unknown_fields)]
 pub struct Checkpoint {
     root: String,
-    session: Option<String>,
+    key: Key,
     entry: TerminalViewProjection,
     view: View,
     route: Value,
@@ -63,11 +64,9 @@ impl Checkpoint {
             }),
         )
         .map_err(|e| e.to_string())?;
-        if self
-            .session
-            .as_ref()
-            .is_some_and(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
-            || self.entry.descriptor.context == Context::Session && self.session.is_none()
+        if !self.key.valid()
+            || !self.key.serves(&self.entry)
+            || (self.entry.descriptor.context == Context::Session) != self.key.session.is_some()
             || self.drafts.len() != self.view.fields.len()
         {
             return Err("Invalid plugin checkpoint context or fields".into());
@@ -138,14 +137,14 @@ impl Checkpoint {
         Ok(())
     }
 }
-impl State {
-    pub fn checkpoint(&self, root: &str) -> Option<Checkpoint> {
-        if !(self.dirty() || self.blocked || self.unresolved.is_some()) {
+impl Instance {
+    fn checkpoint(&self, root: &str, key: &Key) -> Option<Checkpoint> {
+        if !self.keeps() {
             return None;
         }
         Some(Checkpoint {
             root: root.into(),
-            session: self.session.clone(),
+            key: key.clone(),
             entry: self.entry.clone()?,
             view: self.view.clone()?,
             route: self.route.clone(),
@@ -158,39 +157,64 @@ impl State {
             pending: self.unresolved.clone(),
         })
     }
-    pub fn restore(&mut self, checkpoint: Checkpoint) -> Result<(), String> {
-        checkpoint.validate(&checkpoint.root)?;
-        self.install(checkpoint.view);
-        self.entry = Some(checkpoint.entry);
-        self.session = checkpoint.session;
-        self.route = checkpoint.route;
-        self.drafts = checkpoint.drafts;
+    fn restore(checkpoint: Checkpoint) -> Result<Self, String> {
+        let mut instance = Self::new(Some(checkpoint.entry), Value::Null);
+        instance.install(checkpoint.view);
+        instance.route = checkpoint.route;
+        instance.drafts = checkpoint.drafts;
         for (id, cursor) in checkpoint.cursors {
-            let editor = self.editors.get_mut(&id).ok_or("Missing plugin editor")?;
+            let editor = instance
+                .editors
+                .get_mut(&id)
+                .ok_or("Missing plugin editor")?;
             let initial = editor.text().to_owned();
             editor.clear_if_unchanged(&initial);
-            editor.insert(self.drafts[&id].as_str().ok_or("Invalid plugin text")?);
+            editor.insert(instance.drafts[&id].as_str().ok_or("Invalid plugin text")?);
             editor.clear_history();
             editor.restore_cursor(cursor)?;
         }
-        self.unresolved = checkpoint.pending;
-        self.blocked = true;
-        self.loaded = true;
-        self.message = Some(Message::Local(if self.unresolved.is_some() {
+        instance.unresolved = checkpoint.pending;
+        instance.blocked = true;
+        instance.message = Some(Notice::Local(if instance.unresolved.is_some() {
             "extensions-unknown"
         } else {
             "extensions-restored"
         }));
+        Ok(instance)
+    }
+}
+impl Apps {
+    /// What must survive a restart: drafts, blocked forms and open writes.
+    pub fn checkpoints(&self, root: &str) -> Vec<Checkpoint> {
+        self.instances
+            .iter()
+            .filter_map(|(key, instance)| instance.checkpoint(root, key))
+            .collect()
+    }
+    pub fn restore(&mut self, checkpoints: Vec<Checkpoint>) -> Result<(), String> {
+        for checkpoint in checkpoints {
+            checkpoint.validate(&checkpoint.root)?;
+            let key = checkpoint.key.clone();
+            self.instances
+                .insert(key.clone(), Instance::restore(checkpoint)?);
+            self.recent.push(key);
+        }
         Ok(())
     }
 }
 impl App {
-    pub fn extensions_after_checkpoint(
+    pub fn apps_after_checkpoint(
         &mut self,
         request: &Request,
         result: &Result<(), String>,
     ) -> bool {
-        let state = &mut self.extensions;
+        let Some(state) = request
+            .key
+            .as_ref()
+            .and_then(|key| self.apps.instances.get_mut(key))
+        else {
+            return false;
+        };
         if !state.saving || request.generation != state.generation {
             return false;
         }
@@ -205,7 +229,7 @@ impl App {
         state.busy = false;
         state.writing = false;
         state.blocked = true;
-        state.message = Some(Message::Local("extensions-save-failed"));
+        state.message = Some(Notice::Local("extensions-save-failed"));
         false
     }
 }

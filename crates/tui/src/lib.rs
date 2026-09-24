@@ -19,6 +19,7 @@
 
 //! Native terminal client. Host business logic remains outside this crate.
 mod app;
+mod apps;
 mod chrome;
 mod editor;
 mod files;
@@ -58,10 +59,7 @@ enum Completed {
         pages::manage::sandbox::defaults::Request,
         Result<maka_protocol::configuration::policy::RuntimePolicySnapshot, String>,
     ),
-    Extension(
-        pages::extensions::Request,
-        Result<pages::extensions::Output, pages::extensions::io::Failure>,
-    ),
+    Extension(apps::Request, Result<apps::Output, apps::io::Failure>),
     Skills(
         pages::skills::Request,
         Result<
@@ -496,12 +494,12 @@ where
                     Completed::Session(request, result)
                 });
             }
-            if let Some(request) = app.extensions_request() {
+            for request in app.apps_requests() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
-                        state.submit_extension(request);
+                        state.submit_app(request);
                     } else {
-                        app.extensions_after_checkpoint(
+                        app.apps_after_checkpoint(
                             &request,
                             &Err("TUI checkpoint unavailable".into()),
                         );
@@ -509,7 +507,7 @@ where
                 } else {
                     let client = client.clone();
                     jobs.spawn(async move {
-                        let result = pages::extensions::execute(&client, &request).await;
+                        let result = apps::execute(&client, &request).await;
                         Completed::Extension(request, result)
                     });
                 }
@@ -725,7 +723,7 @@ where
                     flushed = false;
                     app.attachments.disconnect();
                     app.skills.disconnect();
-                    app.extensions.disconnect();
+                    app.apps.disconnect();
                     app.recap.disconnect();
                     app.resume.disconnect();
                     app.branch.disconnect();
@@ -759,7 +757,7 @@ where
                     app.abandon_pending_submissions();
                     app.attachments.disconnect();
                     app.skills.disconnect();
-                    app.extensions.disconnect();
+                    app.apps.disconnect();
                     app.recap.disconnect();
                     app.resume.disconnect();
                     app.creating = false;
@@ -954,13 +952,14 @@ where
                         Completed::Resumed(request, result)
                     });
                 }
-                if let Some(request) = written.extension
-                    && app.extensions_after_checkpoint(&request, &written.result)
-                    && let Some(client) = client.clone() {
-                    jobs.spawn(async move {
-                        let result = pages::extensions::execute(&client, &request).await;
-                        Completed::Extension(request, result)
-                    });
+                for request in written.apps {
+                    if app.apps_after_checkpoint(&request, &written.result)
+                        && let Some(client) = client.clone() {
+                        jobs.spawn(async move {
+                            let result = apps::execute(&client, &request).await;
+                            Completed::Extension(request, result)
+                        });
+                    }
                 }
                 if let Some(ticket) = written.attachment
                     && let Some((prepared, transfer)) = app.attachment_after_checkpoint(&ticket, &written.result)
@@ -1119,7 +1118,7 @@ where
                         if let Some(state) = &mut state { state.changed(); }
                     },
                     Some(Ok(Completed::Directory(request, result))) => app.directory_completed(request, result),
-                    Some(Ok(Completed::Extension(request, result))) => app.extensions_complete(request, result),
+                    Some(Ok(Completed::Extension(request, result))) => app.apps_complete(request, result),
                     Some(Ok(Completed::Skills(request, result))) => app.skills_completed(request, result),
                     Some(Ok(Completed::ChooseProject(request, result))) => app.choose_project_completed(request, result),
                     Some(Ok(Completed::Locations(request,result))) => app.locations_completed(request,result),
@@ -1263,6 +1262,9 @@ where
                 match notice {
                     Some(Notification::Catalog(notice)) => {
                         if notice.kind == "project.catalog.changed" { app.project_catalog_changed(); }
+                        if notice.kind == "plugin.terminal.changed" {
+                            app.apps.reload();
+                        }
                         if notice.kind == "model.provider.catalog.changed" {
                             app.providers.refresh();
                         }
@@ -1307,7 +1309,7 @@ where
                 app.abandon_pending_submissions();
                 app.attachments.disconnect();
                 app.skills.disconnect();
-                app.extensions.disconnect();
+                app.apps.disconnect();
                 app.recap.disconnect();
                 app.resume.disconnect();
                 app.abandon_management();
@@ -1333,7 +1335,7 @@ where
     }
     app.attachments.disconnect();
     app.skills.disconnect();
-    app.extensions.disconnect();
+    app.apps.disconnect();
     app.recap.disconnect();
     app.resume.disconnect();
     attachment_jobs.abort_all();

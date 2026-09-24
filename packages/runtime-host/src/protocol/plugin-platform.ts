@@ -39,6 +39,21 @@ import {
   requireString,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
+
+/** The set of terminal views changed; shells list them again. */
+export interface PluginTerminalChangedFrame {
+  readonly kind: 'plugin.terminal.changed';
+  readonly revision: number;
+}
+export function decodePluginTerminalChangedFrame(value: unknown): PluginTerminalChangedFrame {
+  const row = requireExactRecord(value, 'Terminal view change', ['kind', 'revision']);
+  if (row.kind !== 'plugin.terminal.changed')
+    throw invalidProtocolFrame('Invalid terminal view change kind');
+  return {
+    kind: 'plugin.terminal.changed',
+    revision: requireCount(row.revision, 'terminal view revision'),
+  };
+}
 import { defineHostPathOperation, defineOperation } from './operation-spec.js';
 
 const QUERY_ERRORS = [

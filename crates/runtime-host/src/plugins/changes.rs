@@ -30,7 +30,17 @@ impl Platform {
         let mut platform = self.subscribe();
         let mut previous = None;
         let mut provider_revision = None;
+        let mut terminal = None;
+        let mut terminal_revision = 0u64;
         loop {
+            // Shells list terminal views; any change to the set, a new
+            // registration of one, or its descriptor makes them list again.
+            let views = self.terminal_views();
+            if terminal.as_ref().is_some_and(|previous| previous != &views) {
+                terminal_revision += 1;
+                let _ = changes.send(serde_json::json!({"kind":"plugin.terminal.changed","revision":terminal_revision}));
+            }
+            terminal = Some(views);
             let revision = *catalog.borrow_and_update();
             if provider_revision != Some(revision) {
                 let _ = changes.send(serde_json::json!({"kind":"model.provider.catalog.changed","revision":revision}));
@@ -72,5 +82,31 @@ impl Platform {
             }
         }
         self.clients.clear();
+    }
+}
+
+impl Platform {
+    /// What a terminal directory listing depends on, for change detection.
+    fn terminal_views(&self) -> Vec<(String, uuid::Uuid, String)> {
+        let mut views: Vec<_> = self
+            .catalog
+            .snapshot::<maka_plugins::remote::Endpoint>(&Scope::Profile)
+            .entries
+            .into_iter()
+            .filter_map(|(name, endpoint)| {
+                let identity = endpoint.owner.identity().ok()?;
+                if identity.scope != Scope::Profile || !endpoint.is_effective() {
+                    return None;
+                }
+                let descriptor = endpoint.value.terminal_view()?;
+                Some((
+                    name,
+                    endpoint.value.target(&identity).registration,
+                    serde_json::to_string(descriptor).ok()?,
+                ))
+            })
+            .collect();
+        views.sort();
+        views
     }
 }

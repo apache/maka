@@ -37,6 +37,10 @@ pub enum Message {
     Open(String),
     Group(String),
     More,
+    /// A plugin page, pinned above Settings.
+    App(crate::apps::Key),
+    /// Every plugin view, when more pages exist than the sidebar pins.
+    Apps,
     Settings,
     Host,
 }
@@ -82,7 +86,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             .animation
             .frame(crate::motion::Loop::OrbitSmall, app.chrome.ascii)
     });
-    let tree = tree(app, orbit);
+    let tree = tree(app, orbit, area.height);
     let context = ui::Context {
         colors: app.theme.colors(),
         ascii: app.chrome.ascii,
@@ -91,7 +95,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     app.sidebar.surface.render(frame, area, tree, context);
 }
 
-fn tree(app: &App, orbit: Option<&'static str>) -> Node<Message> {
+/// Below this height sessions keep every row; plugin pages move into the list.
+const PINNED: u16 = 30;
+
+fn tree(app: &App, orbit: Option<&'static str>, height: u16) -> Node<Message> {
     let i18n = &app.i18n;
     let connected = matches!(app.connection, ConnectionState::Connected { .. });
     let new = labelled("new", "+", i18n.text("sidebar-new-session"), Tone::Accent)
@@ -99,6 +106,22 @@ fn tree(app: &App, orbit: Option<&'static str>) -> Node<Message> {
         .enabled(connected)
         .hint(i18n.text("session-create"));
     let mut rows = vec![];
+    // On a short terminal the pages lead the list and scroll away with it,
+    // leaving every pinned row to sessions.
+    if height < PINNED {
+        let pages = apps(app);
+        if !pages.is_empty() {
+            rows.push(
+                Node::text(
+                    "apps-title",
+                    vec![(format!("  {}", i18n.text("sidebar-apps")), Tone::Muted)],
+                )
+                .clip(),
+            );
+            rows.extend(pages);
+            rows.push(Node::text("gap-apps", vec![]).size(Size::Fixed(1)));
+        }
+    }
     let catalog = &app.sessions;
     if !connected || (catalog.loading && catalog.items.is_empty()) {
         rows.push(status(i18n.text("sessions-loading")));
@@ -175,6 +198,9 @@ fn tree(app: &App, orbit: Option<&'static str>) -> Node<Message> {
         Node::text("gap", vec![]).size(Size::Fixed(1)),
         Node::scroll("list", Node::column("rows", rows)),
     ];
+    if height >= PINNED {
+        children.extend(apps(app));
+    }
     if let Some(problem) = host_problem(app) {
         children.push(
             labelled("host", app.chrome.symbol("⚠", "!"), problem, Tone::Warning)
@@ -195,9 +221,65 @@ fn tree(app: &App, orbit: Option<&'static str>) -> Node<Message> {
     Node::column("sidebar", children)
 }
 
+/// Pages the sidebar pins before offering the directory instead.
+const PAGES: usize = 5;
+
+/// Plugin pages pinned with Settings: destinations, not sessions.
+fn apps(app: &App) -> Vec<Node<Message>> {
+    let pages = app.apps.pages();
+    let locale = app.i18n.locale().id();
+    let current = app.navigation.current();
+    let mut rows = vec![];
+    let shown = if pages.len() > PAGES {
+        PAGES - 1
+    } else {
+        PAGES
+    };
+    for entry in pages.iter().take(shown) {
+        let Some(key) = crate::apps::Key::of(entry, None) else {
+            continue;
+        };
+        let icon = match &entry.descriptor.icon {
+            Some(icon) if app.chrome.ascii => icon.ascii.clone(),
+            Some(icon) => icon.glyph.clone(),
+            None => app.chrome.symbol("◇", "*").to_owned(),
+        };
+        let title = entry.descriptor.title.resolve(locale).to_owned();
+        rows.push(
+            labelled(
+                format!("app-{}", key.node()),
+                &icon,
+                title.clone(),
+                Tone::Normal,
+            )
+            .on(On::Activate(Message::App(key.clone())))
+            .current(current == Route::App(key))
+            .hint(title),
+        );
+    }
+    if pages.len() > shown {
+        rows.push(
+            labelled(
+                "apps",
+                app.chrome.symbol("⋯", "."),
+                app.i18n.text("sidebar-all-apps"),
+                Tone::Muted,
+            )
+            .on(On::Activate(Message::Apps))
+            .current(current == Route::Extensions),
+        );
+    }
+    rows
+}
+
 /// The icon column leaves a gap even where a terminal draws the glyph
 /// double-width, which unicode-width cannot predict for symbols like ⛭ or ⚠.
-fn labelled(key: &'static str, icon: &str, label: String, tone: Tone) -> Node<Message> {
+fn labelled(
+    key: impl Into<std::borrow::Cow<'static, str>>,
+    icon: &str,
+    label: String,
+    tone: Tone,
+) -> Node<Message> {
     Node::row(
         key,
         vec![
@@ -322,6 +404,8 @@ impl App {
                 self.sessions.more();
                 None
             }
+            Message::App(key) => self.apply(Action::Apps(crate::apps::Message::Open(key))),
+            Message::Apps => self.apply(Action::Apps(crate::apps::Message::Directory)),
             Message::Settings => self.apply(Action::Visit(Route::Settings)),
             Message::Host => self.apply(Action::Visit(Route::Host)),
         }

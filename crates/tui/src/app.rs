@@ -69,7 +69,7 @@ pub enum Action {
     Home(crate::pages::home::Message),
     Attachment(crate::pages::attachments::Command),
     References,
-    Extension(crate::pages::extensions::Command),
+    Apps(crate::apps::Message),
     Skills(crate::pages::skills::Command),
     Revision(crate::pages::revision::Command),
     ToggleSymbols,
@@ -148,7 +148,7 @@ pub struct App {
     /// The modal layer presenting whichever overlay is a kernel sheet.
     pub layer: crate::ui::Layer<Action>,
     pub home: crate::pages::home::State,
-    pub extensions: crate::pages::extensions::State,
+    pub apps: crate::apps::Apps,
     pub directories:
         std::collections::BTreeMap<String, Vec<maka_protocol::turn::DirectoryReference>>,
     pub revision: crate::pages::revision::State,
@@ -205,7 +205,7 @@ impl App {
             sidebar: Default::default(),
             layer: Default::default(),
             home: Default::default(),
-            extensions: crate::pages::extensions::State::new(locale),
+            apps: crate::apps::Apps::new(locale),
             directories: Default::default(),
             revision: Default::default(),
             onboarding: Default::default(),
@@ -236,7 +236,7 @@ impl App {
             frame_size: None,
         }
     }
-    pub fn commands(&self) -> Vec<(Action, &'static str)> {
+    pub fn commands(&self) -> Vec<(Action, crate::pages::commands::Label)> {
         if self.palette.is_some() {
             return self.command_palette.filtered(&self.i18n);
         }
@@ -246,7 +246,7 @@ impl App {
             (Action::Visit(Route::Settings), "command-settings"),
             (Action::Visit(Route::Connections), "route-connections"),
             (
-                Action::Extension(crate::pages::extensions::Command::Open),
+                Action::Apps(crate::apps::Message::Directory),
                 "route-extensions",
             ),
             (
@@ -262,17 +262,6 @@ impl App {
             (Action::Quit, "command-quit"),
             (Action::Detach, "command-detach"),
         ];
-        if self.navigation.current() == Route::Extensions {
-            commands.extend(self.extensions_actions().into_iter().filter_map(|action| {
-                if let Action::Extension(command) = &action
-                    && *command != crate::pages::extensions::Command::Refresh
-                {
-                    Some((action.clone(), command.label()))
-                } else {
-                    None
-                }
-            }));
-        }
         commands.extend(self.management_commands());
         commands.extend(self.branch_commands());
         commands.extend(self.recap_commands());
@@ -398,6 +387,11 @@ impl App {
                 commands.push((Action::ToggleMessage(key), "chat-toggle-message"));
             }
         }
+        let mut commands: Vec<_> = commands
+            .into_iter()
+            .map(|(action, key)| (action, key.into()))
+            .collect();
+        commands.extend(self.apps_commands());
         commands
     }
     pub(crate) fn bind_root(&mut self, root: &str) -> bool {
@@ -409,8 +403,8 @@ impl App {
     }
     pub fn page_actions(&self) -> Vec<Action> {
         let mut actions = match self.navigation.current() {
-            // Extension controls live in its kernel surface.
-            Route::Extensions => vec![],
+            // App and directory controls live in their kernel surfaces.
+            Route::Extensions | Route::App(_) => vec![],
             Route::Connections => self.connection_actions(),
             Route::Projects => self.project_actions(),
             Route::Inbox => {
@@ -450,7 +444,7 @@ impl App {
                 actions
             }
             Route::Host => vec![
-                Action::Extension(crate::pages::extensions::Command::Open),
+                Action::Apps(crate::apps::Message::Directory),
                 if matches!(self.connection, ConnectionState::Connected { .. }) {
                     Action::Refresh
                 } else {
@@ -537,9 +531,11 @@ impl App {
     }
     fn refresh_action(&self) -> Option<Action> {
         match self.navigation.current() {
-            Route::Extensions => Some(Action::Extension(
-                crate::pages::extensions::Command::Refresh,
-            )),
+            Route::Extensions => Some(Action::Apps(crate::apps::Message::Reload)),
+            Route::App(key) => Some(Action::Apps(crate::apps::Message::Instance(
+                key,
+                crate::apps::Command::Refresh,
+            ))),
             Route::Connections => Some(Action::Connection(
                 crate::pages::connections::Command::Refresh,
             )),
@@ -585,7 +581,7 @@ impl App {
             Action::Attachment(command) => return self.attachment_action(command),
             Action::References => self.open_references(),
             Action::Skills(command) => self.skills_action(command),
-            Action::Extension(command) => self.extensions_action(command),
+            Action::Apps(message) => return self.apps_action(message),
             Action::Branch(command) => return self.branch_action(command),
             Action::Recap(command) => return self.recap_action(command),
             Action::Resume(command) => return self.resume_action(command),
@@ -777,8 +773,8 @@ impl App {
             return matches!(self.shutdown.prompt, Some(crate::shutdown::Prompt::Busy))
                 && !self.shutdown.stopping;
         }
-        if let Action::Extension(command) = action {
-            return self.extensions_enabled(command);
+        if let Action::Apps(message) = action {
+            return self.apps_enabled(message);
         }
         if let Action::Skills(command) = action {
             return self.skills_enabled(command);
@@ -971,8 +967,11 @@ impl App {
     fn sync_route(&mut self) {
         self.invalidate_editor_geometry();
         let route = self.navigation.current();
-        if let Route::Session(id) = route {
-            self.sessions.open(&id);
+        if let Route::Session(id) = &route {
+            self.sessions.open(id);
+        }
+        if let Route::App(key) = &route {
+            self.apps.open(key);
         }
         if matches!(self.focus, Focus::List | Focus::Composer | Focus::Queue) {
             self.focus = Focus::Page;
@@ -1053,7 +1052,7 @@ impl App {
 
     pub fn invalidate_editor_geometry(&mut self) {
         self.layer.invalidate();
-        self.extensions.invalidate_geometry();
+        self.apps.invalidate_geometry();
         if let Some(editor) = &mut self.theme.editor {
             editor.invalidate();
         }
@@ -1167,7 +1166,9 @@ impl App {
         let captures = match self.navigation.current() {
             Route::Settings => self.settings.surface.captures(),
             Route::Workspace => self.home.surface.captures(),
-            Route::Extensions => self.extensions.surface.captures(),
+            Route::Extensions | Route::App(_) => self
+                .apps_surface()
+                .is_some_and(|surface| surface.captures()),
             _ => return None,
         };
         let paste = matches!(event, Event::Paste(_));
@@ -1176,12 +1177,13 @@ impl App {
         }
         let outcome = match self.navigation.current() {
             Route::Settings => self.settings.surface.input(event).map(Action::Settings),
-            Route::Extensions => {
-                if let Some(outcome) = self.extensions_owner_input(event) {
-                    return Some(outcome);
+            Route::App(key) => {
+                if let Some(redraw) = self.app_page_input(&key, event) {
+                    return Some((redraw, None));
                 }
-                self.extensions.surface.input(event).map(Action::Extension)
+                self.apps_surface()?.input(event).map(Action::Apps)
             }
+            Route::Extensions => self.apps.surface.input(event).map(Action::Apps),
             _ => self.home.surface.input(event).map(Action::Home),
         };
         outcome
@@ -1344,7 +1346,9 @@ impl App {
                 self.settings.surface.invalidate();
                 self.sidebar.surface.invalidate();
                 self.home.surface.invalidate();
-                self.extensions.surface.invalidate();
+                if let Some(surface) = self.apps_surface() {
+                    surface.invalidate();
+                }
                 self.invalidate_editor_geometry();
                 self.hits.clear();
                 self.frame_size = None;
@@ -1534,8 +1538,10 @@ impl App {
                                 (Focus::Page, Route::Workspace) => {
                                     self.home.surface.enter(backwards)
                                 }
-                                (Focus::Page, Route::Extensions) => {
-                                    self.extensions.surface.enter(backwards)
+                                (Focus::Page, Route::Extensions | Route::App(_)) => {
+                                    if let Some(surface) = self.apps_surface() {
+                                        surface.enter(backwards);
+                                    }
                                 }
                                 _ => {}
                             }

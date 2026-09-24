@@ -43,6 +43,8 @@ pub enum Intent {
 
 /// A text field's well in the laid-out tree; its owner paints the editor.
 pub(crate) struct Well {
+    /// The instance whose field this is.
+    pub key: super::Key,
     pub field: String,
     pub path: String,
     pub label: String,
@@ -52,6 +54,7 @@ pub(crate) struct Well {
 }
 
 pub(crate) struct Env<'a> {
+    pub key: &'a super::Key,
     pub drafts: &'a BTreeMap<String, Value>,
     pub ascii: bool,
     /// Whether a control is offered at all. Transient states (a request in
@@ -485,6 +488,7 @@ impl<M> Builder<'_, M> {
                 ..
             } => {
                 self.wells.push(Well {
+                    key: self.env.key.clone(),
                     field: field.to_owned(),
                     path,
                     label: label.to_owned(),
