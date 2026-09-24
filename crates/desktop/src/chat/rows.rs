@@ -271,6 +271,8 @@ pub fn fold(transcript: &Transcript, running: Option<&str>, open: &HashSet<Strin
         match entry {
             Entry::Prompt { .. } => rows.push(Row::Prompt(ix)),
             Entry::Text { .. } if entry.answers() => rows.push(Row::Text(ix)),
+            // Blank text between calls shows nothing and counts as nothing.
+            Entry::Text { .. } => {}
             _ => match rows.last_mut() {
                 Some(Row::Work { items, .. }) => items.push(ix),
                 _ => rows.push(Row::Work {
@@ -367,6 +369,29 @@ mod tests {
         };
         assert_eq!(result.as_ref().unwrap().output, "a.rs");
         assert_eq!(transcript.turns["t1"].started, Some(1000));
+    }
+
+    #[test]
+    fn blank_text_between_calls_is_neither_shown_nor_counted() {
+        let mut rows = rows();
+        rows.insert(
+            4,
+            json!({"type":"assistant","id":"a9","turnId":"t1","text":"\n\n"}),
+        );
+        rows.insert(
+            5,
+            json!({"type":"tool_call","id":"c2","turnId":"t1","toolName":"Shell","args":{"command":"pwd"}}),
+        );
+        let transcript = transcript(&rows, []);
+        let open = HashSet::from(["t1".to_owned()]);
+        let folded = fold(&transcript, None, &open);
+        let Some(Row::Work { items, .. }) = folded
+            .iter()
+            .find(|row| row.key(&transcript.entries) == "work:c1")
+        else {
+            panic!("{:?}", kinds(&folded, &transcript.entries));
+        };
+        assert_eq!(items.len(), 2, "both calls, no blank text between them");
     }
 
     #[test]
