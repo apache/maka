@@ -38,6 +38,10 @@ import {
 } from '../interaction-authority.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Every delta must concatenate to text_complete; `.` would silently drop
+// line terminators and make structured Markdown reflow only at completion.
+const chunkText = (text: string, large: boolean): string[] =>
+  text.match(large ? /[\s\S]{1,1024}/g : /[\s\S]{1,9}/g) ?? [text];
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
 export const FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT = '__e2e_ask_user_question_during_drain__';
 export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
@@ -103,7 +107,7 @@ export class FakeBackend implements AgentBackend {
     const isLargeSteeringResponse = input.text === FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT;
     const isSteeringScenario =
       input.text === FAKE_WAIT_FOR_STEERING_PROMPT || isLargeSteeringResponse;
-    let text = isLargeSteeringResponse
+    const text = isLargeSteeringResponse
       ? `${'Detailed response. '.repeat(1_400)}Large response complete.`
       : input.text === FAKE_MERMAID_PROMPT
         ? [
@@ -149,16 +153,11 @@ export class FakeBackend implements AgentBackend {
               '```',
             ].join('\n')
           : `Fake backend received: ${input.text}${attLine}\n\nThis proves the session stream, SQLite storage, and renderer loop are connected.`;
-    // Every delta must concatenate to text_complete; `.` would silently drop
-    // line terminators and make structured Markdown reflow only at completion.
-    const chunks = text.match(isLargeSteeringResponse ? /[\s\S]{1,1024}/g : /[\s\S]{1,9}/g) ?? [
-      text,
-    ];
-
-    // Mid-turn steering: drain the caller's pending steering at each step
-    // boundary (here, between streamed chunks), echoing every message as a
-    // `steering_message` so the ledger/transcript render the interjection, and
-    // remembering them so the fake reply acknowledges them like a real model.
+    // Mid-turn steering: like the real Runtime, drain the caller's pending
+    // steering only at a step boundary (before the first step and after each
+    // completed one), echoing every message as a `steering_message` so the
+    // ledger/transcript render the interjection, and acknowledging it in the
+    // next step like a real model.
     const steered: string[] = [];
     // Lease accounting (backend-types contract): settlement is per LEASE,
     // never per batch. A lease is acked only after its OWN echoed event has
@@ -175,7 +174,9 @@ export class FakeBackend implements AgentBackend {
       outstanding.splice(index, 1);
       input.ackSteering?.([leaseId]);
     };
-    const drainSteering = async (): Promise<Array<{ leaseId: string; event: SessionEvent }>> => {
+    const drainSteering = async (): Promise<
+      Array<{ leaseId: string; text: string; event: SessionEvent }>
+    > => {
       const leases = (await input.pullSteering?.()) ?? [];
       if (leases.length === 0) return [];
       outstanding.push(...leases.map((lease) => lease.id));
@@ -183,6 +184,7 @@ export class FakeBackend implements AgentBackend {
         steered.push(lease.content.text);
         return {
           leaseId: lease.id,
+          text: lease.content.text,
           event: {
             type: 'steering_message',
             id: randomUUID(),
@@ -247,66 +249,57 @@ export class FakeBackend implements AgentBackend {
         return;
       }
 
-      if (isSteeringScenario) {
-        let pending = await drainSteering();
-        while (pending.length === 0 && !this.stopped) {
-          await sleep(5);
-          pending = await drainSteering();
-        }
+      let pending = await drainSteering();
+      while (isSteeringScenario && pending.length === 0 && !this.stopped) {
+        await sleep(5);
+        pending = await drainSteering();
+      }
+      let stepMessageId = messageId;
+      let stepText = text;
+      for (;;) {
         for (const { leaseId, event } of pending) {
           yield event;
           settleOutstanding(leaseId);
         }
-      }
-
-      for (const chunk of chunks) {
-        if (this.stopped) {
-          yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+        if (pending.length > 0) {
+          const ack = `Acknowledged steering: ${pending.map(({ text }) => text).join(' | ')}`;
+          stepText = stepText ? `${stepText}\n\n${ack}` : ack;
+        }
+        for (const chunk of chunkText(stepText, isLargeSteeringResponse)) {
+          if (this.stopped) {
+            yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+            yield {
+              type: 'complete',
+              id: randomUUID(),
+              turnId,
+              ts: Date.now(),
+              stopReason: 'user_stop',
+            };
+            return;
+          }
+          if (!isSteeringScenario) await sleep(45);
           yield {
-            type: 'complete',
+            type: 'text_delta',
             id: randomUUID(),
             turnId,
             ts: Date.now(),
-            stopReason: 'user_stop',
+            messageId: stepMessageId,
+            text: chunk,
           };
-          return;
-        }
-        if (!isSteeringScenario) await sleep(45);
-        for (const { leaseId, event } of await drainSteering()) {
-          yield event;
-          settleOutstanding(leaseId);
         }
         yield {
-          type: 'text_delta',
+          type: 'text_complete',
           id: randomUUID(),
           turnId,
           ts: Date.now(),
-          messageId,
-          text: chunk,
+          messageId: stepMessageId,
+          text: stepText,
         };
+        pending = await drainSteering();
+        if (pending.length === 0) break;
+        stepMessageId = randomUUID();
+        stepText = '';
       }
-
-      // Final stranded drain (grok-build safety): a steer that landed after the
-      // last boundary still lands in this turn instead of being lost.
-      for (const { leaseId, event } of await drainSteering()) {
-        yield event;
-        settleOutstanding(leaseId);
-      }
-      if (steered.length > 0) {
-        const ack = `\n\nAcknowledged steering: ${steered.join(' | ')}`;
-        text += ack;
-        yield {
-          type: 'text_delta',
-          id: randomUUID(),
-          turnId,
-          ts: Date.now(),
-          messageId,
-          text: ack,
-        };
-      }
-
-      const ts = Date.now();
-      yield { type: 'text_complete', id: randomUUID(), turnId, ts, messageId, text };
       yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
     } finally {
       if (outstanding.length > 0) input.nackSteering?.(outstanding.splice(0));
