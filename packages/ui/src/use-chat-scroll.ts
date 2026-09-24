@@ -184,13 +184,18 @@ export function useChatScroll(input: {
     else authority.pinToTail();
   }, [input.sessionId]);
 
-  // A new list is measured and moved over its first frames; it is shown on the
-  // frame it reaches its place, not the frame it mounts.
+  // A conversation that opens with its list is measured and moved over its
+  // first frames; it is shown on the frame it reaches its place, not the frame
+  // it mounts. One that opens without a list (still loading, or empty) has
+  // nothing to hold back.
   const [placedSessionId, setPlacedSessionId] = useState<string>();
-  useEffect(
-    () => authority.whenInPlace(() => setPlacedSessionId(input.sessionId)),
-    [authority, input.sessionId],
-  );
+  useEffect(() => {
+    if (turnIdsRef.current.length === 0) {
+      setPlacedSessionId(input.sessionId);
+      return;
+    }
+    return authority.whenInPlace(() => setPlacedSessionId(input.sessionId));
+  }, [authority, input.sessionId]);
 
   useLayoutEffect(() => {
     authority.turnsChanged(list.current.change);
