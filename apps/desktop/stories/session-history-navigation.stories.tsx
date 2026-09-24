@@ -1,0 +1,109 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { useState, useSyncExternalStore } from 'react';
+import { ChatSurfaceLayout, MarkdownBody } from '@maka/ui';
+import { createSessionCatalogController } from '../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
+import { SessionHistoryNavigation, createSessionOpenCommand } from '../src/renderer/features/session-navigation/index.js';
+import type { DesktopSessionSummary } from '../src/shared/desktop-session-projection.js';
+
+const meta = { title: 'Primitives/Session History Navigation' } satisfies Meta;
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+function HistoryInputFixture() {
+  const [catalog] = useState(() => {
+    const controller = createSessionCatalogController();
+    controller.commitSessions(['A', 'B', 'C'].map((id): DesktopSessionSummary => ({
+      id, name: id, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
+      status: 'active', backend: 'fake', llmConnectionSlug: 'test', connectionLocked: true,
+      model: 'test', permissionMode: 'ask', profileId: 'local', profileName: 'Local',
+      profileKind: 'local', runtimeHostId: 'local-host', revision: 0, activityAt: 0,
+    })));
+    controller.setActiveSessionId('A');
+    return controller;
+  });
+  const state = useSyncExternalStore(catalog.subscribe, catalog.getState);
+  const [open] = useState(() => createSessionOpenCommand({
+    activateSession: catalog.setActiveSessionId, exitWorkHub() {},
+    selectSessionSurface() {}, setSearchTarget() {},
+  }));
+  return <>
+    <SessionHistoryNavigation catalog={catalog} visible blocked={false} openSession={open} />
+    <nav aria-label="Test session selection">
+      {['A', 'B', 'C'].map((id) => <button key={id} onClick={() => open(id)}>Open {id}</button>)}
+    </nav>
+    <output aria-label="Selected session">{state.activeSessionId}</output>
+    {/* Input fixture, not another product shell: real ChatSurfaceLayout owns
+        the surface marker and MarkdownBody owns horizontal code scrolling. */}
+    <div style={{ height: 420, width: 600, display: 'flex', flexDirection: 'column' }}>
+      <ChatSurfaceLayout data-session-history-surface="true" composer={<textarea aria-label="Draft input" />}>
+        <p data-testid="history-swipe-prose">Swipe here to navigate session visits.</p>
+        <MarkdownBody text={'```text\n' + 'wide code '.repeat(100) + '\n```'} />
+      </ChatSurfaceLayout>
+    </div>
+  </>;
+}
+
+// Real path: A → C → B, then swipe over conversation prose or a wide code block.
+// This fixture verifies Chromium event propagation and actual overflow geometry;
+// the catalog, navigation command and wheel listener are the production ones.
+export const HorizontalScrollOwnership: Story = {
+  render: () => <HistoryInputFixture />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: 'Open C' }));
+    await userEvent.click(canvas.getByRole('button', { name: 'Open B' }));
+    const selected = canvas.getByLabelText('Selected session');
+    const prose = canvas.getByTestId('history-swipe-prose');
+    const code = await waitFor(() => {
+      const code = canvasElement.querySelector('pre code');
+      expect(code).not.toBeNull();
+      return code!;
+    });
+    let overflow: Element | null = code;
+    while (overflow && !(overflow.scrollWidth > overflow.clientWidth + 1 && /^(auto|scroll)$/.test(getComputedStyle(overflow).overflowX))) {
+      overflow = overflow.parentElement;
+    }
+    expect(overflow, 'The real code block must have horizontal overflow').not.toBeNull();
+    // Synthetic timestamps control gesture boundaries, not render completion.
+    const wheel = (target: Element, timeStamp: number, deltaX = -100) => {
+      const event = new WheelEvent('wheel', { deltaX, bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'timeStamp', { value: timeStamp });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(wheel(code, 0)).toBe(false);
+    expect(wheel(prose, 16)).toBe(false);
+    expect(selected).toHaveTextContent('B');
+    expect(wheel(prose, 400)).toBe(true);
+    await waitFor(() => expect(selected).toHaveTextContent('C'));
+    wheel(prose, 416);
+    expect(selected).toHaveTextContent('C');
+    wheel(prose, 800, 100);
+    await waitFor(() => expect(selected).toHaveTextContent('B'));
+    const draft = canvas.getByRole('textbox', { name: 'Draft input' });
+    await userEvent.type(draft, 'unsent text');
+    expect(wheel(draft, 1200)).toBe(false);
+    expect(draft).toHaveValue('unsent text');
+    expect(selected).toHaveTextContent('B');
+  },
+};
