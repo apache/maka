@@ -65,7 +65,7 @@ import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
-import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
+import { listApiKeyOnboardableProviders, onboardingCreateTarget } from './onboarding-catalog.js';
 import type {
   ConnectionIdentity,
   MakaExternalSessionSurface,
@@ -2770,7 +2770,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // wizard can report unavailability in-frame at submit instead of throwing.
       providers = listApiKeyOnboardableProviders().map((provider) => ({
         ...provider,
-        target: { kind: 'create' as const, providerType: provider.providerType },
+        target: onboardingCreateTarget(provider),
         label: provider.label,
         suggestedSlug: deriveConnectionSlug(provider.providerType),
         enabledModelIds: [],
@@ -2802,8 +2802,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       onSubmitIdentity: (identity) => {
         if (wizardTarget?.kind === 'create') {
           wizardTarget = {
-            kind: 'create',
-            providerType: wizardTarget.providerType,
+            ...onboardingCreateTarget({
+              providerType: wizardTarget.providerType,
+              defaultApiProtocol: wizardTarget.defaultApiProtocol,
+            }),
             ...(identity.slug === null ? {} : { slug: identity.slug }),
             ...(identity.name === null ? {} : { name: identity.name }),
           };

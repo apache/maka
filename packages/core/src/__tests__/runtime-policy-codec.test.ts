@@ -216,7 +216,8 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
         connection: {
           slug: 'unicode-relay',
           name: 'Unicode relay',
-          providerType: 'openai-compatible',
+          providerType: 'custom',
+          defaultApiProtocol: 'openai-chat',
           baseUrl: `https://example.test/${'界'.repeat(2_000)}`,
           enabled: true,
           enabledModelIds: [],
@@ -293,27 +294,16 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     connection: {
       slug: 'relay',
       name: 'Relay',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       baseUrl: 'https://relay.example/v1',
+      defaultApiProtocol: 'anthropic-messages',
       enabled: true,
       enabledModelIds: ['relay-reasoner'],
       modelOverrides: table,
     },
   });
   assert.deepEqual(draft.connection.modelOverrides, table);
-  const responsesDraft = normalizeCreateCatalogConnectionInput({
-    expectedCatalogRevision: 0,
-    connection: {
-      slug: 'responses-relay',
-      name: 'Responses Relay',
-      providerType: 'openai-responses-compatible',
-      baseUrl: 'https://responses.example/v1',
-      enabled: true,
-      enabledModelIds: ['relay-reasoner'],
-      modelOverrides: table,
-    },
-  });
-  assert.deepEqual(responsesDraft.connection.modelOverrides, table);
+  assert.equal(draft.connection.defaultApiProtocol, 'anthropic-messages');
   // The canonical path re-decodes the same table (entry = draft + identity).
   const entry = decodeCanonicalConnectionCatalogEntry({
     ...draft.connection,
@@ -322,6 +312,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     models: [],
   });
   assert.deepEqual(entry.modelOverrides, table);
+  assert.equal(entry.defaultApiProtocol, 'anthropic-messages');
 
   // An empty table is never a state: drafts omit the key, updates read it as
   // the same clear-instruction `null` gives.
@@ -330,7 +321,9 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     connection: {
       slug: 'relay',
       name: 'Relay',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
+      baseUrl: 'https://relay.example/v1',
+      defaultApiProtocol: 'openai-chat',
       enabled: true,
       enabledModelIds: [],
       modelOverrides: {},
@@ -400,9 +393,8 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     facts,
   );
 
-  // `thinkingLevels` and `serviceTier` name a wire feature only the
-  // OpenAI-compatible relays accept, so they stay relay-only on both write
-  // paths: elsewhere they are a request Maka would never send.
+  // `thinkingLevels` and `serviceTier` are declarations only a custom
+  // connection sends, on both write paths.
   for (const wireShaped of [
     { 'relay-reasoner': { thinkingLevels: ['low'] } },
     { 'relay-reasoner': { serviceTier: 'fast' } },
@@ -420,7 +412,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
             modelOverrides: wireShaped,
           },
         }),
-      /require[s]? an OpenAI-compatible connection/,
+      /require[s]? a custom connection/,
       JSON.stringify(wireShaped),
     );
     assert.throws(
@@ -434,7 +426,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
           },
           'anthropic',
         ),
-      /require[s]? an OpenAI-compatible connection/,
+      /require[s]? a custom connection/,
       JSON.stringify(wireShaped),
     );
   }
@@ -445,6 +437,42 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       'anthropic',
     ).modelOverrides,
     null,
+  );
+
+  // A custom connection needs a base URL and a default wire; no other
+  // provider may carry a default wire.
+  const custom = {
+    slug: 'relay',
+    name: 'Relay',
+    providerType: 'custom',
+    baseUrl: 'https://relay.example/v1',
+    defaultApiProtocol: 'openai-chat',
+    enabled: true,
+    enabledModelIds: [],
+  };
+  const { baseUrl: _baseUrl, ...withoutBaseUrl } = custom;
+  const { defaultApiProtocol: _protocol, ...withoutProtocol } = custom;
+  for (const [connection, message] of [
+    [withoutBaseUrl, /requires a base URL/],
+    [withoutProtocol, /default API protocol is invalid/],
+    [{ ...custom, defaultApiProtocol: 'google-generate' }, /default API protocol is invalid/],
+    [
+      { ...custom, providerType: 'openai', baseUrl: undefined },
+      /only a custom connection has a default API protocol/,
+    ],
+  ] as const) {
+    assert.throws(
+      () => normalizeCreateCatalogConnectionInput({ expectedCatalogRevision: 0, connection }),
+      message,
+    );
+  }
+  assert.throws(
+    () =>
+      normalizeConnectionCatalogEntryUpdateForProvider(
+        { name: 'Relay', enabled: true, enabledModelIds: [] },
+        'custom',
+      ),
+    /requires a base URL/,
   );
 
   assert.deepEqual(

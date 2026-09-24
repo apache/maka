@@ -19,6 +19,9 @@
 
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { isRetiredProvider } from '@maka/core/provider-registry';
+import { upgradeLegacyCustomProvider } from './runtime-policy/legacy-custom-connection.js';
+
+export { upgradeLegacyCustomProvider };
 
 /**
  * Config import / export — Alma-style selective bundle.
@@ -165,7 +168,7 @@ export function planConnectionMerge(
   const existingSlugs = new Set(existing.map((c) => c.slug));
   const plan: ConnectionMergePlan = { create: [], overwrite: [], skipped: [] };
   const seen = new Set<string>();
-  for (const conn of incoming) {
+  for (const conn of incoming.map(upgradeLegacyCustomProvider)) {
     if (seen.has(conn.slug)) continue; // de-dupe within the imported set
     seen.add(conn.slug);
     // A backup taken before a provider was retired still carries its

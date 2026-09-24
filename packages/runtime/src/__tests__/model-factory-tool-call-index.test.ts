@@ -25,10 +25,12 @@ import { getAIModel } from '@maka/runtime/model-factory';
 
 const connection: RuntimeExecutionConnection = {
   slug: 'relay',
-  providerType: 'openai-compatible',
+  providerType: 'custom',
+  defaultApiProtocol: 'openai-chat',
   baseUrl: 'https://relay.invalid/v1',
   defaultModel: 'claude-opus-4-8',
 };
+const { defaultApiProtocol: _customOnly, ...nativeFields } = connection;
 
 const prompt: LanguageModelV4CallOptions['prompt'] = [
   { role: 'user', content: [{ type: 'text', text: 'read a.txt' }] },
@@ -76,10 +78,10 @@ function deltaRelay(deltas: readonly ToolCallDelta[]): typeof globalThis.fetch {
 
 async function collectDeltas(
   deltas: readonly ToolCallDelta[],
-  providerType: 'openai-compatible' | 'openai' = 'openai-compatible',
+  providerType: 'custom' | 'openai' = 'custom',
 ): Promise<{ parts: LanguageModelV4StreamPart[]; failure: unknown }> {
   const model = getAIModel({
-    connection: { ...connection, providerType },
+    connection: providerType === 'custom' ? connection : { ...nativeFields, providerType },
     apiKey: 'test-key',
     modelId: 'claude-opus-4-8',
     fetch: deltaRelay(deltas),
@@ -150,7 +152,7 @@ describe('streamed tool-call association', () => {
     );
   });
 
-  for (const providerType of ['openai-compatible', 'openai'] as const) {
+  for (const providerType of ['custom', 'openai'] as const) {
     test(`keeps calls distinct when ${providerType} reuses index zero`, async () => {
       const { parts, failure } = await collectDeltas(
         [
@@ -240,7 +242,7 @@ describe('streamed tool-call association', () => {
     assert.notEqual(failure, undefined);
   });
 
-  for (const providerType of ['openai-compatible', 'openai'] as const) {
+  for (const providerType of ['custom', 'openai'] as const) {
     test(`treats blank continuation aliases as absent on ${providerType}`, async () => {
       const { parts, failure } = await collectDeltas(
         [

@@ -182,7 +182,7 @@ function modelChoice(model: string, supportsVision: boolean): ChatModelChoice {
   return {
     connectionId: 'connection-test',
     connectionSlug: 'test',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'Test',
     model,
     label: model,

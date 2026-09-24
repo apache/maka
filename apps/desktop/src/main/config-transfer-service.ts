@@ -28,6 +28,7 @@ import {
   type ConfigBundle,
   type ConnectionConflictStrategy,
   planConnectionMerge,
+  upgradeLegacyCustomProvider,
 } from '@maka/storage/config-transfer';
 import { type CredentialKind } from '@maka/storage/credential-store';
 
@@ -193,7 +194,7 @@ export function matchesCredentialConnection(
 ): boolean {
   return (
     binding !== undefined &&
-    binding.providerType === target.providerType &&
+    upgradeLegacyCustomProvider(binding).providerType === target.providerType &&
     canonicalEndpoint(binding.effectiveBaseUrl) === canonicalConnectionEffectiveBaseUrl(target)
   );
 }

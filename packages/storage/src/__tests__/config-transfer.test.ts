@@ -143,6 +143,30 @@ describe('config-transfer', () => {
     assert.equal(overwrite.skipped.length, 0);
   });
 
+  it('imports a legacy custom connection type as a custom connection', () => {
+    const legacy = {
+      ...conn('relay', { baseUrl: 'https://relay.example/v1' }),
+      providerType: 'anthropic-compatible',
+    } as unknown as LlmConnection;
+    const plan = planConnectionMerge([], [legacy], 'skip');
+    assert.deepEqual(
+      plan.create.map(({ slug, providerType, defaultApiProtocol, baseUrl }) => ({
+        slug,
+        providerType,
+        defaultApiProtocol,
+        baseUrl,
+      })),
+      [
+        {
+          slug: 'relay',
+          providerType: 'custom',
+          defaultApiProtocol: 'anthropic-messages',
+          baseUrl: 'https://relay.example/v1',
+        },
+      ],
+    );
+  });
+
   it('de-dupes repeated slugs within the imported set', () => {
     const plan = planConnectionMerge([], [conn('x'), conn('x'), conn('y')], 'skip');
     assert.deepEqual(

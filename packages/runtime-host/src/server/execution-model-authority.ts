@@ -25,6 +25,7 @@ import {
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
+import { declaredModelApiProtocol } from '@maka/core/model-thinking';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
@@ -909,9 +910,14 @@ function providerStateIdentityForResolvedExecution(
     Awaited<ReturnType<RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']>>,
     { kind: 'ready' }
   >,
+  model: string,
 ): `sha256:${string}` {
   const credentialBasis = (material: typeof resolved.secretMaterial.connection) =>
     material ? { credentialId: material.credentialId, revision: material.revision } : null;
+  // Provider state from one wire cannot replay on another, so a model whose
+  // declared wire changes starts a new identity. Undeclared stays absent to
+  // keep every other identity unchanged.
+  const apiProtocol = declaredModelApiProtocol(resolved.connection, model);
   return stableHash({
     protocol: 'provider_state_identity_v1',
     connectionId: resolved.connection.connectionId,
@@ -919,6 +925,7 @@ function providerStateIdentityForResolvedExecution(
     endpoint: new URL(effectiveBaseUrl(resolved.connection)).toString(),
     credential: credentialBasis(resolved.secretMaterial.connection),
     requestHeaders: credentialBasis(resolved.secretMaterial.requestHeaders),
+    ...(apiProtocol === undefined ? {} : { apiProtocol }),
   });
 }
 
@@ -1021,6 +1028,9 @@ export async function resolveExecutionTarget(
     slug: resolved.connection.slug,
     providerType: resolved.connection.providerType,
     ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
+    ...(resolved.connection.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: resolved.connection.defaultApiProtocol }),
     defaultModel: model,
     models: discovered
       ? [...resolved.connection.models]
@@ -1035,7 +1045,7 @@ export async function resolveExecutionTarget(
   const requestHeaders = resolved.secretMaterial.requestHeaders
     ? parseRequestHeaders(resolved.secretMaterial.requestHeaders.secret)
     : {};
-  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved);
+  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved, model);
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) {

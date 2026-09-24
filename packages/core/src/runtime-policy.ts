@@ -24,7 +24,7 @@ import type {
   ModelInfo,
 } from './llm-connections.js';
 import type { ThinkingLevel } from './model-thinking.js';
-import type { ProviderType } from './provider-registry.js';
+import type { ModelApiProtocol, ProviderType } from './provider-registry.js';
 import type { ModelOverride } from './model-thinking.js';
 import {
   networkProxyCredentialTarget,
@@ -76,6 +76,7 @@ export {
   decodeConnectionTarget,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
+  decodeDefaultApiProtocol,
   decodeProviderType,
   normalizeCatalogConnectionBaseUrl,
   normalizeConnectionCatalogEntryDraft,
@@ -289,6 +290,8 @@ export interface ConnectionConfiguration {
   readonly name: string;
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
+  /** Required on `custom`, absent elsewhere; fixed at creation. */
+  readonly defaultApiProtocol?: ModelApiProtocol;
   readonly enabled: boolean;
   readonly enabledModelIds: readonly string[];
   /** Connection-scoped user declarations, independent of the enabled selection. */
@@ -319,6 +322,8 @@ export type ConnectionOnboardingTarget =
        */
       readonly slug?: string;
       readonly name?: string;
+      /** Required when creating a `custom` connection. */
+      readonly defaultApiProtocol?: ModelApiProtocol;
     }
   | {
       readonly kind: 'existing';

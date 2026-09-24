@@ -329,7 +329,11 @@ export async function saveConnection(
 ): Promise<LlmConnection> {
   let catalog = await client.loadConnectionCatalog();
   let existing = catalog.connections.find((item) => item.slug === connection.slug);
-  if (existing && existing.providerType !== connection.providerType) {
+  if (
+    existing &&
+    (existing.providerType !== connection.providerType ||
+      existing.defaultApiProtocol !== connection.defaultApiProtocol)
+  ) {
     const removed = await client.removeConnection({
       connectionId: existing.connectionId,
       revision: existing.revision,
@@ -365,6 +369,9 @@ export async function saveConnection(
       name: connection.name,
       providerType: connection.providerType,
       ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
+      ...(connection.defaultApiProtocol === undefined
+        ? {}
+        : { defaultApiProtocol: connection.defaultApiProtocol }),
       enabled: connection.enabled,
       enabledModelIds: [...(connection.enabledModelIds ?? [])],
       ...(importedProfiles === undefined ? {} : { modelOverrides: importedProfiles }),

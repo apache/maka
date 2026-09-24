@@ -18,8 +18,13 @@
  */
 
 import { useState, type FormEvent } from 'react';
-import type { ProviderType } from '@maka/core/llm-connections';
-import { PROVIDER_REGISTRY, deriveConnectionSlug } from '@maka/core/llm-connections';
+import type { ModelApiProtocol, ProviderType } from '@maka/core/llm-connections';
+import {
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
+  PROVIDER_REGISTRY,
+  deriveConnectionSlug,
+} from '@maka/core/llm-connections';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
@@ -121,6 +126,8 @@ export function AddProviderForm(props: {
   );
   const [name, setName] = useState(display.name);
   const [baseUrl, setBaseUrl] = useState(defaults.baseUrl);
+  const isCustom = props.providerType === 'custom';
+  const [defaultApiProtocol, setDefaultApiProtocol] = useState<ModelApiProtocol>('openai-chat');
   const [cloudflareAccountId, setCloudflareAccountId] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [defaultModel, setDefaultModel] = useState(recommendedDefaultModel);
@@ -372,6 +379,7 @@ export function AddProviderForm(props: {
         name: name || display.name,
         providerType: props.providerType,
         baseUrl: resolvedBaseUrl,
+        ...(isCustom ? { defaultApiProtocol } : {}),
         defaultModel: createdDefaultModel,
         ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
         ...(Object.keys(normalizedRequestHeaders).length > 0
@@ -763,6 +771,20 @@ export function AddProviderForm(props: {
                 ? { type: 'error', message: error.message }
                 : undefined
             }
+          />
+        )}
+        {isCustom && (
+          <Selector
+            label={copy.connectionApiProtocol}
+            description={copy.connectionApiProtocolHelp}
+            width="100%"
+            options={MODEL_API_PROTOCOLS.map((protocol) => ({
+              value: protocol,
+              label: MODEL_API_PROTOCOL_LABELS[protocol],
+            }))}
+            value={defaultApiProtocol}
+            onChange={(value) => setDefaultApiProtocol(value as ModelApiProtocol)}
+            isDisabled={busy}
           />
         )}
         {showsDefaultModel && (

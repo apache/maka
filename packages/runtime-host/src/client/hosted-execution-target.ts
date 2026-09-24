@@ -27,6 +27,7 @@ type TargetConnection = Pick<RuntimeHostConnection, 'request'>;
 export interface HostedExecutionTargetInput {
   readonly connection?: {
     readonly providerType: import('@maka/core/llm-connections').ProviderType;
+    readonly defaultApiProtocol?: import('@maka/core/llm-connections').ModelApiProtocol;
     readonly apiKey: string;
   };
   readonly connectionSlug: string;
@@ -56,6 +57,9 @@ export async function configureHostedExecutionTarget(
       : {
           kind: 'create' as const,
           providerType: onboarding.providerType,
+          ...(onboarding.defaultApiProtocol === undefined
+            ? {}
+            : { defaultApiProtocol: onboarding.defaultApiProtocol }),
           slug: input.connectionSlug,
           name: input.connectionSlug,
         };
