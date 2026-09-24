@@ -17,10 +17,12 @@
  * under the License.
  */
 
-use agent_client_protocol_schema::v1 as acp;
+use agent_client_protocol::schema::v1 as acp;
 use maka_plugins::executor::{Error, OutputSink};
 use maka_runtime::executor::Output;
 use std::collections::BTreeMap;
+
+pub(crate) mod v2;
 
 const MAX_BYTES: usize = 1024 * 1024;
 const MAX_TOOLS: usize = 1024;
@@ -293,7 +295,7 @@ fn tool_text(content: Vec<acp::ToolCallContent>) -> Result<String, Error> {
     Ok(text)
 }
 
-async fn emit(sink: &dyn OutputSink, output: Output) -> Result<(), Error> {
+pub(crate) async fn emit(sink: &dyn OutputSink, output: Output) -> Result<(), Error> {
     output.validate().map_err(invalid)?;
     if json(&output)?.len() > 64 * 1024 {
         return Err(invalid("ACP output event exceeds 64 KiB"));
@@ -301,7 +303,7 @@ async fn emit(sink: &dyn OutputSink, output: Output) -> Result<(), Error> {
     sink.emit(output).await
 }
 
-async fn emit_text(
+pub(crate) async fn emit_text(
     mut text: &str,
     sink: &dyn OutputSink,
     output: impl Fn(String) -> Output,
@@ -320,7 +322,7 @@ async fn emit_text(
     Ok(())
 }
 
-async fn emit_result(
+pub(crate) async fn emit_result(
     sink: &dyn OutputSink,
     id: String,
     text: &str,

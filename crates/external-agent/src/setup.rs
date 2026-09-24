@@ -17,8 +17,11 @@
  * under the License.
  */
 
-use crate::{settings::Manager, transport::Connection};
-use agent_client_protocol_schema::{ProtocolVersion, v1 as acp};
+use crate::{
+    settings::Manager,
+    transport::{Connection, Peer},
+};
+use agent_client_protocol::schema::{v1 as acp, v2};
 use futures_util::future::BoxFuture;
 use maka_plugins::{
     authorization, fiber, process,
@@ -234,7 +237,7 @@ async fn work(
             .map_err(|_| Error::CleanupUnconfirmed)?;
         return emit(send, json!({"kind":"installed", "agent":result?})).await;
     }
-    let mut process_id = None;
+    let mut process_owner = None;
     let result = tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(Error::Cancelled),
@@ -242,9 +245,9 @@ async fn work(
         result = async {
             let mut command = agent.expect("process setup has an agent").command();
             command.lifetime = process::Lifetime::Invocation;
-            let handle = manager.host.processes.spawn(scope, command).await.map_err(provider)?;
-            process_id = Some(handle.id.clone());
-            let mut connection = Connection::new(handle).observe_stderr();
+            let handle = manager.host.processes.spawn(scope.clone(), command.clone()).await.map_err(provider)?;
+            let mut connection = Connection::new(manager.host.clone(), scope, command, handle, false);
+            process_owner = Some(connection.owner.clone());
             run(&mut connection, input, send).await
         } => result,
     };
@@ -252,13 +255,8 @@ async fn work(
     // also settles an admitted spawn whose reply was lost during cancellation.
     let cleanup = tokio::time::timeout(Duration::from_secs(4), async {
         let close_process = async {
-            match process_id {
-                Some(id) => manager
-                    .host
-                    .processes
-                    .close(id)
-                    .await
-                    .map_err(|_| Error::CleanupUnconfirmed),
+            match process_owner {
+                Some(owner) => owner.close().await.map_err(|_| Error::CleanupUnconfirmed),
                 None => Ok(()),
             }
         };
@@ -277,51 +275,63 @@ async fn run(
     send: &mpsc::Sender<Result<Value, Error>>,
 ) -> Result<(), Error> {
     let mut stderr = auth::Urls::default();
-    let initialize = acp::InitializeRequest::new(ProtocolVersion::V1)
-        .client_info(acp::Implementation::new("maka", env!("CARGO_PKG_VERSION")))
-        .client_capabilities(acp::ClientCapabilities::new());
-    let initialized: acp::InitializeResponse = auth::rpc(
-        connection,
-        "initialize",
-        &initialize,
-        Duration::from_secs(30),
-        send,
-        &mut stderr,
-    )
-    .await?;
-    if initialized.protocol_version != ProtocolVersion::V1 {
-        return Err(Error::Provider(
-            "Agent does not support ACP version 1".into(),
-        ));
-    }
+    auth::initialize(connection, send, &mut stderr).await?;
     match action {
         Input::Check { .. } => {
-            emit(
-                send,
-                json!({"kind":"initialized", "agentInfo": initialized.agent_info,
-            "authMethods": initialized.auth_methods}),
-            )
-            .await
+            let event = match connection.peer.as_ref().unwrap() {
+                Peer::V1(_, initialized) => {
+                    json!({"kind":"initialized", "agentInfo":initialized.agent_info, "authMethods": initialized.auth_methods})
+                }
+                Peer::V2(_, initialized) => {
+                    // Host setup's method selector has a protocol-independent ID;
+                    // authentication itself uses the negotiated typed SDK request.
+                    let methods: Vec<_> = initialized.auth_methods.iter().map(|method| json!({
+                        "id": method.method_id(), "name": method.name(), "description": method.description(),
+                        "type": if matches!(method, v2::AuthMethod::Agent(_)) { "agent" } else { "unsupported" },
+                    })).collect();
+                    json!({"kind":"initialized", "agentInfo":initialized.info, "authMethods": methods})
+                }
+            };
+            emit(send, event).await
         }
         Input::Authenticate { method_id, .. } => {
-            let supported = initialized.auth_methods.iter().any(|method| {
-                matches!(method, acp::AuthMethod::Agent(_)) && method.id().0.as_ref() == method_id
-            });
-            if !supported {
-                return Err(Error::Invalid(
-                    "Authentication method is not offered or requires an unsupported terminal"
-                        .into(),
-                ));
+            let is_v2 = match connection.peer.as_ref().unwrap() {
+                Peer::V1(_, initialized) => {
+                    if !initialized.auth_methods.iter().any(|method| {
+                        matches!(method, acp::AuthMethod::Agent(_))
+                            && method.id().0.as_ref() == method_id
+                    }) {
+                        return Err(Error::Invalid("Authentication method is not offered or requires an unsupported terminal".into()));
+                    }
+                    false
+                }
+                Peer::V2(_, initialized) => {
+                    if !initialized.auth_methods.iter().any(|method| {
+                        matches!(method, v2::AuthMethod::Agent(_))
+                            && method.method_id().0.as_ref() == method_id
+                    }) {
+                        return Err(Error::Invalid("Authentication method is not offered or requires an unsupported terminal".into()));
+                    }
+                    true
+                }
+            };
+            if is_v2 {
+                auth::rpc(
+                    connection,
+                    v2::LoginAuthRequest::new(method_id),
+                    send,
+                    &mut stderr,
+                )
+                .await?;
+            } else {
+                auth::rpc(
+                    connection,
+                    acp::AuthenticateRequest::new(method_id),
+                    send,
+                    &mut stderr,
+                )
+                .await?;
             }
-            let _: acp::AuthenticateResponse = auth::rpc(
-                connection,
-                "authenticate",
-                &acp::AuthenticateRequest::new(method_id),
-                Duration::from_secs(300),
-                send,
-                &mut stderr,
-            )
-            .await?;
             emit(send, json!({"kind":"authenticated"})).await
         }
         Input::InstallAntigravity { .. } => unreachable!("installation does not run an agent"),

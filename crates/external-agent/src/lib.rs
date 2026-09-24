@@ -75,7 +75,7 @@ impl Agent {
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error(transparent)]
-    Transport(#[from] transport::Error),
+    Sdk(#[from] agent_client_protocol::Error),
     #[error(transparent)]
     Process(#[from] maka_plugins::process::Error),
     #[error(transparent)]
@@ -84,8 +84,6 @@ enum Error {
     Output(#[from] maka_plugins::executor::Error),
     #[error("invalid ACP response: {0}")]
     Decode(#[from] serde_json::Error),
-    #[error("ACP request failed ({code}): {message}")]
-    Remote { code: i64, message: String },
     #[error("external conversation cannot be continued: {0}")]
     Continuity(&'static str),
     #[error("external agent request timed out")]

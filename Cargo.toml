@@ -24,6 +24,7 @@ exclude = [
     "native/runtime-host-windows-task-launcher",
 ]
 members = [
+    "crates/acp",
     "crates/agent",
     "crates/apply-patch",
     "crates/assistant",
@@ -72,6 +73,7 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+agent-client-protocol = { version = "2.2.0", default-features = false, features = ["unstable_protocol_v2"] }
 apply-patch = { path = "crates/apply-patch" }
 cap-fs-ext = "4.0.3"
 cap-std = "4.0.3"
@@ -87,6 +89,7 @@ gix = { version = "=0.87.1", default-features = false, features = ["sha1", "sha2
 imagesize = { version = "=0.15.0", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 jsonschema = { version = "0.56.0", default-features = false }
 libc = "0.2"
+maka-acp = { path = "crates/acp" }
 maka-agent = { path = "crates/agent" }
 maka-assistant = { path = "crates/assistant" }
 maka-background-health = { path = "crates/background-health" }

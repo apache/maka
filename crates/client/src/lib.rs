@@ -42,4 +42,5 @@ pub use model_provider::{ProviderDirectory, ProviderDirectoryError};
 pub use notification::{CatalogNotification, Notification};
 pub use operations::Operations;
 pub use presentation::{OAuthPresentation, OAuthPresentationService};
+pub use turn::PendingTurn;
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

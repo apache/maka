@@ -18,7 +18,7 @@
  */
 
 use crate::{Agent, Error, digest, driver::Driver, transport::Connection};
-use agent_client_protocol_schema::v1 as acp;
+use agent_client_protocol::schema::v1 as acp;
 use maka_plugins::{
     executor,
     host::Services,
@@ -50,6 +50,8 @@ pub(crate) struct Record {
     cwd: String,
     pub state: State,
     pub defaults: Vec<acp::SessionConfigOption>,
+    #[serde(default)]
+    pub v2_defaults: Option<Vec<agent_client_protocol::schema::v2::SessionConfigOption>>,
 }
 
 pub(crate) struct Journal {
@@ -80,6 +82,7 @@ impl Journal {
                 cwd: request.cwd.clone(),
                 state: State::Creating,
                 defaults: vec![],
+                v2_defaults: None,
             },
         };
         if record.configuration != configuration || record.cwd != request.cwd {
@@ -101,6 +104,7 @@ impl Journal {
             cwd: self.record.cwd.clone(),
             state,
             defaults: self.record.defaults.clone(),
+            v2_defaults: self.record.v2_defaults.clone(),
         };
         let records = store
             .batch(vec![Mutation {
@@ -124,6 +128,7 @@ pub(crate) struct Live {
     pub connection: Connection,
     pub session_id: String,
     pub options: Vec<acp::SessionConfigOption>,
+    pub v2_options: Option<Vec<agent_client_protocol::schema::v2::SessionConfigOption>>,
 }
 
 type Slot = Arc<tokio::sync::Mutex<Option<Live>>>;
@@ -197,18 +202,32 @@ impl Provider {
                 .processes
                 .open(scope.clone(), live.connection.id())
         } else {
-            self.host.processes.spawn(scope, self.agent.command()).await
+            self.host
+                .processes
+                .spawn(scope.clone(), self.agent.command())
+                .await
         }?;
         let restored = slot.take();
-        let process_id = handle.id.clone();
+        let mut cleanup = None;
         let mut driver = Driver::new(&self.host, &request, &context);
         let result = async {
             let mut live = match restored {
                 Some(mut live) => {
                     live.connection.rebind(handle)?;
+                    cleanup = Some(live.connection.owner.clone());
                     live
                 }
-                None => driver.connect(handle, &mut journal).await?,
+                None => {
+                    let connection = Connection::new(
+                        self.host.clone(),
+                        scope,
+                        self.agent.command(),
+                        handle,
+                        true,
+                    );
+                    cleanup = Some(connection.owner.clone());
+                    driver.connect(connection, &mut journal).await?
+                }
             };
             let outcome = driver.prompt(&mut live, &mut journal).await?;
             *slot = Some(live);
@@ -218,7 +237,9 @@ impl Provider {
         if result.is_err() {
             // A lost connection can leave the remote prompt uncertain. The journal
             // remains Running, so another activation cannot silently duplicate it.
-            self.host.processes.close(process_id).await?;
+            if let Some(cleanup) = cleanup {
+                cleanup.close().await?;
+            }
         }
         result
     }
