@@ -39,13 +39,22 @@ impl Chat {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let pending = self
+        let Some(pending) = self
             .snapshot
-            .as_ref()?
-            .interactions
-            .pending()
-            .first()?
-            .clone();
+            .as_ref()
+            .and_then(|snapshot| snapshot.interactions.pending().first())
+            .cloned()
+        else {
+            // The answered card took its focus with it; hand it to the
+            // composer unless the reader has since moved it elsewhere.
+            if self.focused_interaction.take().is_some()
+                && (window.focused(cx).is_none() || self.permission_focus.is_focused(window))
+            {
+                let handle = self.composer.read(cx).focus_handle(cx);
+                window.on_next_frame(move |window, cx| window.focus(&handle, cx));
+            }
+            return None;
+        };
         let id = pending.interaction_id().to_owned();
         if self.focused_interaction.as_deref() != Some(id.as_str()) {
             self.focused_interaction = Some(id.clone());
