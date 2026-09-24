@@ -70,3 +70,11 @@ Rebased onto main `c7d205a42`. Combined protocol epoch is 184, including the new
 - Shared transcripts omit full choice requests and answers as private decision evidence; owner transcripts retain them.
 
 Validation: 387 affected core/storage/Host/UI/Desktop tests passed, plus both CLI subscription-recovery variants. Test build, Desktop typecheck, renderer build, strict renderer architecture comparison, changed-file Biome checks, protocol epoch guard, and surface inventory checks passed. No new native-model acceptance run is claimed for this review follow-up. F04 wording limitations remain outside these deterministic fixes.
+
+## Main rebase — 2026-09-24
+
+Rebased onto `276faf1c9`. Preserved main's Jev compatibility boundary (183), moved interaction history to 184 and transcript invalidation to 185, and regenerated the surface inventory (296 files).
+
+The handoff integration test twice timed out waiting for an automatic result from a stopped delegation. Stop retires that delegation from result delivery, so the test now verifies its existing control receipts and target Turn state without waiting for retired notifications. No production behavior was changed for this test correction.
+
+Validation: `npm run build:test`, Desktop typecheck, strict renderer architecture comparison, protocol guard, surface inventory and changed-file Biome checks passed. All 390 affected tests and both CLI recovery tests passed. Native acceptance was not repeated.
