@@ -322,6 +322,11 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'OpenRouter', description: '使用一組金鑰連線各大模型廠商 · OpenAI 相容', badge: '聚合' },
     en: { name: 'OpenRouter', description: 'One API key across all major model labs · OpenAI-compatible', badge: 'Aggregator' },
   },
+  opper: {
+    'zh-CN': { name: 'Opper', description: '欧盟托管 AI 网关，一个密钥接入 30+ 家模型厂商 · OpenAI 兼容', badge: '聚合' },
+    'zh-TW': { name: 'Opper', description: '歐盟託管 AI 閘道，一組金鑰連線 30+ 家模型廠商 · OpenAI 相容', badge: '聚合' },
+    en: { name: 'Opper', description: 'EU-hosted gateway, one key across 30+ model providers · OpenAI-compatible', badge: 'Aggregator' },
+  },
   alibaba: {
     'zh-CN': { name: 'Alibaba', description: '阿里云百炼接入，通义千问 Qwen 模型', badge: 'API' },
     'zh-TW': { name: 'Alibaba', description: '阿里雲百鍊 API 連線，支援通義千問 Qwen 模型', badge: 'API' },
