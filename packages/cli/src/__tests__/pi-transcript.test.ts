@@ -55,7 +55,7 @@ function toolStatus(entry: MakaPiToolEntry | undefined): string | undefined {
 }
 
 describe('Maka Pi TUI transcript', () => {
-  test('renders neutral provider dropping guidance', () => {
+  test('hides a retired provider dropping note that an old session still carries', () => {
     const state = createMakaPiTranscriptState();
     replaceTranscriptWithStoredMessages(state, [
       {
@@ -67,10 +67,8 @@ describe('Maka Pi TUI transcript', () => {
         data: { inputTokens: 100, priorInputTokens: 100 },
       },
     ]);
-    assert.match(
-      renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n'),
-      /truncated or rewritten/,
-    );
+    const rendered = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n');
+    assert.doesNotMatch(rendered, /context_provider_dropping|truncated or rewritten/);
   });
 
   test('renders manual compaction from the typed terminal outcome', async () => {

@@ -180,7 +180,6 @@ import {
 } from './ai-sdk-tool-repair.js';
 
 export interface AiSdkSessionState {
-  contextProviderDroppingReported: boolean;
   cumulativeUsageCheckpoint?: NormalizedAiSdkUsage;
 }
 
@@ -971,8 +970,6 @@ export class AiSdkTurn {
     // result.usage.inputTokens is cumulative across steps and would produce
     // misleading >100% percentages, so the per-step value is captured here.
     let lastStepInputTokens: number | undefined;
-    /** Tool count of the request that produced `lastStepInputTokens`. */
-    let lastStepActiveToolCount: number | undefined;
     // Output tokens of the same step: with the input they are the baseline the
     // next request is judged from (everything the model produced is re-sent).
     let lastStepOutputTokens: number | undefined;
@@ -1288,7 +1285,6 @@ export class AiSdkTurn {
           const turnEvents = await loadDurableTurnEvents();
           const pruned = await this.deps.compaction.pruneToolResults(turnEvents, turnId);
           if (pruned.stats) {
-            if (pruned.stats.prunedToolResults > 0) midTurnState?.stepShaping.add('prune');
             contextBudgetForTelemetry = addToolResultPruneStats(
               contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
               pruned.stats,
@@ -1526,16 +1522,6 @@ export class AiSdkTurn {
               ? codeModeCatalogPrompt
               : undefined,
           ]);
-          // A finalization step resolves an empty tool set, so its request
-          // legitimately drops several thousand schema tokens with no fold,
-          // prune or image omission. Maka shaped that request; the provider did
-          // not drop anything.
-          if (
-            lastStepActiveToolCount !== undefined &&
-            activeToolsForRequest.length < lastStepActiveToolCount
-          ) {
-            midTurnState?.stepShaping.add('tools');
-          }
           const requestCompositionId =
             this.runId && this.deps.backend.recordRequestComposition
               ? await this.deps.backend.recordRequestComposition(this.runId, {
@@ -1831,63 +1817,6 @@ export class AiSdkTurn {
               const stepUsage = providerOutcome.usage;
               providerStepUsage = stepUsage;
               if (!stepUsage) sawUnusableStepUsage = true;
-              // Silent eviction / rewrite check (#4559): this step only
-              // appended (no fold, no prune, no image omission) yet the
-              // provider counted no more input tokens than for the previous
-              // request. Not-greater, not strictly-fewer: a provider that
-              // truncates to a fixed window (Ollama's `num_ctx`) reports the
-              // same total on every later request while Maka keeps
-              // appending, so a plateau is the signal, and an equal count
-              // after an append is already impossible without provider-side
-              // eviction or rewriting. Input against input: the previous
-              // reply's reasoning may not be resent, so input + output is
-              // not the floor of the next input on every wire.
-              const completedRequestIndex = runtimeSteps - 1;
-              // Across the send boundary the comparison is the same one,
-              // against the last request a provider accepted before this
-              // send. A provider that truncates to a fixed window reports
-              // the same input on every later request while the user keeps
-              // adding turns, and a send of one or two steps never sees
-              // that from the inside: the live evidence plateaus at 3,716
-              // input tokens across eight turns with nothing reported
-              // (#4623). The first request of a send therefore compares
-              // against the persisted anchor, which is route-validated
-              // where it is read.
-              const acrossSends = completedRequestIndex === 0;
-              const priorInput = acrossSends
-                ? midTurnState?.priorAcceptedInputTokens
-                : lastStepInputTokens;
-              if (
-                !this.deps.session.contextProviderDroppingReported &&
-                midTurnState &&
-                priorInput !== undefined &&
-                midTurnState.stepShaping.size === 0 &&
-                stepUsage !== undefined &&
-                Number.isFinite(stepUsage.inputTokens) &&
-                stepUsage.inputTokens > 0 &&
-                // Across sends the test is equality, not "did not grow".
-                // Inside a send Maka knows it only appended, so any
-                // shortfall is the provider's. Across the boundary it does
-                // not: a manual compaction leaves the pre-compaction anchor
-                // behind, a turn can carry a smaller tool set, and a user
-                // can edit or branch history. All three shrink the input
-                // legitimately, and none of them lands on exactly the same
-                // count. A provider truncating to a fixed window does, on
-                // every later request.
-                (acrossSends
-                  ? stepUsage.inputTokens === priorInput
-                  : stepUsage.inputTokens <= priorInput)
-              ) {
-                this.deps.session.contextProviderDroppingReported = true;
-                await this.recordSystemNote('context_provider_dropping', turnId, {
-                  inputTokens: stepUsage.inputTokens,
-                  priorInputTokens: priorInput,
-                });
-              }
-              // Clear here, not at the top of the next step: the continuation
-              // lane archives its prune below, after this point, and archiving
-              // is idempotent — the next step's re-projection reports no prune,
-              // so a clear above it would lose the only record of this one.
               midTurnState?.stepShaping.clear();
               // Fail closed: reset on every step boundary so a missing final
               // step's usage does not leave a stale value from an earlier step.
@@ -1961,7 +1890,6 @@ export class AiSdkTurn {
               }
               lastStepInputTokens = stepUsage?.inputTokens;
               lastStepOutputTokens = stepUsage?.outputTokens;
-              lastStepActiveToolCount = activeToolsForRequest.length;
               // A `finishReason: length` is deliberately not a trigger. The
               // reply may have been cut because the provider ran out of
               // window room, or because the provider's own output cap is
