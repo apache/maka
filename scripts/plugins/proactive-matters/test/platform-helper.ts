@@ -112,6 +112,7 @@ export async function fixture(options: any = {}) {
     ]);
   const tools = new Main.PluginToolService(ctx, { agents });
   const systemPrompt = new Main.PluginSystemPromptService(ctx);
+  const turns = new Main.PluginTurnFinishService(ctx);
   const bridge = new Main.PluginClientBridgeService(ctx);
   const composition = new Main.MakaCompositionLoader({ root: ctx });
   const platform = new Main.HostPluginPlatform(control, {
@@ -172,6 +173,7 @@ export async function fixture(options: any = {}) {
     driver,
     tools,
     systemPrompt,
+    turns,
     remote,
     invoke,
     close: () => platform.close(),

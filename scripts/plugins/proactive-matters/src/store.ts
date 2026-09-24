@@ -233,10 +233,10 @@ class SqliteMatterStore implements MatterStore {
       revision: 0,
       status: 'active',
       wakes: [],
+      waitingFor: null,
       activation: null,
       runCount: 0,
       maxRuns: input.maxRuns ?? 100,
-      consecutiveContinuations: 0,
       lastError: null,
       lastUpdate: null,
       createdAt: this.now(),
@@ -485,6 +485,7 @@ class SqliteMatterStore implements MatterStore {
       m.activation = activation;
       m.runCount++;
       m.status = 'active';
+      m.waitingFor = null;
       m.lastError = null;
       m.wakes = m.wakes.filter((w) => w.kind !== 'at' || w.at > this.now());
       this.db
@@ -620,6 +621,9 @@ class SqliteMatterStore implements MatterStore {
           throw new Error('Waiting requires a future time wake');
         if (input.disposition !== 'wait' && wakes.length)
           throw new Error('Only wait dispositions accept wakes');
+        if (input.disposition === 'wait') text(input.waitingFor, 1000, 'waiting condition');
+        else if (input.waitingFor !== undefined)
+          throw new Error('Only wait dispositions accept a waiting condition');
         const update = input.update ? text(input.update, 2000, 'update') : undefined;
         if (
           input.disposition === 'complete' &&
@@ -632,6 +636,7 @@ class SqliteMatterStore implements MatterStore {
         m.stateText = input.stateText;
         m.activation!.settled = true;
         m.wakes = wakes;
+        m.waitingFor = input.disposition === 'wait' ? input.waitingFor!.trim() : null;
         m.status =
           input.disposition === 'complete'
             ? 'completed'
@@ -642,17 +647,12 @@ class SqliteMatterStore implements MatterStore {
           .prepare('UPDATE matter_events SET acknowledged=1 WHERE matter_id=? AND sequence<=?')
           .run(id, m.activation!.eventCursor);
         if (input.disposition === 'continue') {
-          m.consecutiveContinuations++;
-          if (m.consecutiveContinuations > 5) {
-            m.status = 'paused';
-            m.lastError = '连续执行已达上限，请检查进展后继续。';
-          } else
-            this.insertEvent(id, {
-              key: `continue:${activationId}`,
-              source: 'continuation',
-              text: input.reason,
-            });
-        } else m.consecutiveContinuations = 0;
+          this.insertEvent(id, {
+            key: `continue:${activationId}`,
+            source: 'continuation',
+            text: input.reason,
+          });
+        }
         if (terminal(m))
           this.db.prepare('UPDATE matter_events SET acknowledged=1 WHERE matter_id=?').run(id);
         if (m.lastError || update || input.disposition === 'complete')
@@ -665,6 +665,7 @@ class SqliteMatterStore implements MatterStore {
         ...(input.next ? { next: input.next } : {}),
         disposition: input.disposition,
         wakes: input.wakes ?? [],
+        ...(input.waitingFor ? { waitingFor: input.waitingFor } : {}),
         operationId,
       },
     );
@@ -703,6 +704,7 @@ class SqliteMatterStore implements MatterStore {
       if (action === 'pause' || action === 'cancel') {
         m.status = action === 'pause' ? 'paused' : 'cancelled';
         m.wakes = [];
+        m.waitingFor = null;
         if (m.activation)
           this.db
             .prepare('UPDATE matter_runs SET ended_at=?,outcome=? WHERE id=?')
@@ -713,7 +715,7 @@ class SqliteMatterStore implements MatterStore {
         if (m.runCount >= m.maxRuns) m.maxRuns += 100;
         m.status = 'active';
         m.lastError = null;
-        m.consecutiveContinuations = 0;
+        m.waitingFor = null;
         this.insertEvent(id, {
           key: this.newId(),
           source: action,

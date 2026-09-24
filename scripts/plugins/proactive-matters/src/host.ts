@@ -39,7 +39,7 @@ export default {
   packageId: PACKAGE_ID,
   host: {
     name: 'proactive-matters',
-    inject: ['tools', 'agents', 'storage', 'systemPrompt', 'clientBridge'],
+    inject: ['tools', 'agents', 'storage', 'systemPrompt', 'clientBridge', 'turns'],
     async apply(ctx: any, config: any = {}) {
       if (
         !Number.isSafeInteger(config.tickMs ?? 5000) ||
@@ -135,10 +135,22 @@ export default {
               : undefined;
           return (
             MATTER_INSTRUCTIONS +
-            '\nThis conversation is enrolled in a follow-up. Only for a direct new human message changing the requirements, call MatterMessage. Runtime wake notifications, inbox.json and request.md already contain persisted input: never re-submit those through MatterMessage. The plugin panel displays MatterSettle.update; final chat text may briefly report meaningful progress. Do not start another scheduler. Plugin state: ' +
+            '\nOnly use MatterMessage for a direct new human requirement; wake notifications and matter files are already recorded. Plugin state: ' +
             m.status +
             '.'
           );
+        },
+      });
+      ctx.turns.beforeFinish({
+        name: 'proactive-matters.settlement',
+        check: ({ sessionId, turnId }: any) => {
+          const m = store.forSession(sessionId);
+          if (!m?.activation || m.activation.turnId !== turnId || m.activation.settled)
+            return { allow: true };
+          return {
+            allow: false,
+            feedback: 'This follow-up turn has no exit decision yet. Keep doing useful work, or write draft.md and call MatterSettle with continue, wait (a concrete waitingFor condition and future check time), or complete.',
+          };
         },
       });
       ctx.systemPrompt.context({

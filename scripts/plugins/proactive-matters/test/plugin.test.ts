@@ -37,6 +37,7 @@ async function settle(f: any, view: any, turn = 'turn-initial', complete = false
       expectedRevision: view.revision,
       stateFile: view.files.draft,
       disposition: complete ? 'complete' : 'wait',
+      waitingFor: complete ? undefined : '等待外部检查结果',
       wakes: complete ? [] : [{ kind: 'at', at: Date.now() + 250 }],
       summary: '检查后保存当前事实',
       reason: complete ? '目标已满足' : '等待下次复查',
@@ -57,6 +58,9 @@ test('latest main installs the real bundle; same session wakes, refreshes files,
     request: '文件通过检查后完成',
   });
   assert.ok(first.activationId);
+  const finishContext = { sessionId: 'session-1', turnId: 'turn-initial', signal: new AbortController().signal };
+  assert.equal((await f.turns.evaluate(finishContext)).allow, false);
+  assert.deepEqual(await f.turns.evaluate({ ...finishContext, sessionId: 'ordinary-session' }), { allow: true });
   assert.equal((await f.platform.clientSnapshot()).entries.length, 1);
   const prompt = await f.systemPrompt.assemble(
     { sessionId: 'session-1', turnId: 'turn-initial', cwd: f.root },
@@ -66,6 +70,7 @@ test('latest main installs the real bundle; same session wakes, refreshes files,
   assert.ok(prompt.contexts.some((c: any) => c.text.includes('Runtime clock')));
   const m = await settle(f, first);
   assert.equal(m.status, 'waiting');
+  assert.deepEqual(await f.turns.evaluate(finishContext), { allow: true });
   f.driver.end();
   await until(async () => !(await f.remote('matters.list')).matters[0].activation);
   let wakeError: any;

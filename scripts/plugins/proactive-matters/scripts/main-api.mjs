@@ -47,6 +47,7 @@ const exports = [
   ['runtime', 'plugin-agent-service', 'PluginAgentService'],
   ['runtime', 'plugin-tool-service', 'PluginToolService'],
   ['runtime', 'plugin-system-prompt-service', 'PluginSystemPromptService'],
+  ['runtime', 'plugin-turn-finish-service', 'PluginTurnFinishService'],
   ['runtime', 'plugin-data-services', 'PluginStorageService'],
   ['runtime', 'plugin-client-bridge-service', 'PluginClientBridgeService'],
   ['runtime', 'plugin-composition-loader', 'MakaCompositionLoader'],

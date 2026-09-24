@@ -68,10 +68,10 @@ export interface Matter {
   revision: number;
   status: MatterStatus;
   wakes: MatterWake[];
+  waitingFor?: string | null;
   activation: MatterActivation | null;
   runCount: number;
   maxRuns: number;
-  consecutiveContinuations: number;
   lastError: string | null;
   lastUpdate: string | null;
   createdAt: number;
@@ -95,6 +95,7 @@ export interface MatterSettleInput {
   stateText: string;
   disposition: 'continue' | 'wait' | 'complete';
   wakes?: MatterWake[];
+  waitingFor?: string;
   reason: string;
   /** Agent-authored account of this activation, appended to history by the host. */
   summary: string;

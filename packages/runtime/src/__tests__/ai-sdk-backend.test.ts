@@ -105,6 +105,31 @@ import { MakaCompositionLoader } from '../plugin-composition-loader.js';
 import { PluginToolService } from '../plugin-tool-service.js';
 import { testInvocationOpening } from './invocation-fixture.js';
 
+test('a plugin can reject natural turn finish and continue the same model loop', async () => {
+  const durable = durableTurnHarness('turn-finish-check', 'Follow through.');
+  const model = completionModel();
+  const checkedTurns: string[] = [];
+  const backend = createBackend({
+    connection: connection(),
+    modelId: 'mock-model-id',
+    modelFactory: () => model,
+    tools: [],
+    loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    beforeTurnFinish: async ({ turnId }) => {
+      checkedTurns.push(turnId);
+      return checkedTurns.length === 1
+        ? { allow: false, feedback: 'Finish the remaining work first.' }
+        : { allow: true };
+    },
+  });
+
+  const events = await drainDurably(backend.send(durable.input()), durable);
+  assert.deepEqual(checkedTurns, ['turn-finish-check', 'turn-finish-check']);
+  assert.equal(model.doStreamCalls.length, 2);
+  assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /Finish the remaining work first/);
+  assert.equal(events.filter((event) => event.type === 'complete').length, 1);
+});
+
 for (const terminal of ['gateway', 'eof', 'other'] as const) {
   test(`recovers ${terminal} SSE with one failed attempt and no repeated tool effects`, async () => {
     const durable = durableTurnHarness('turn-tb4', 'do the work', { runId: 'run-tb4' });

@@ -91,3 +91,9 @@ The updated suite has 29 passing tests; build, extension import and typecheck pa
 浮窗显式固定在右上角。面板加入输入框：首条消息使用 Maka 现有桌面会话接口创建独立 session，先经插件 Remote 登记该 session，再发送用户原文；后续消息留在同一 session。详情保留进展摘要，并显示最近的用户与助手对话。
 
 Host 不再向普通 session 注入持续跟进启动提示；`MatterStart` 校验插件登记的 session，普通聊天无法登记。现有 29 项测试、扩展包构建与类型检查通过；Client 集成测试覆盖对话框的创建/发送、右上角定位和普通 session 的拒绝。会话接口在 DOM 测试中是受控替身，尚未做发布版 Electron 人工点击或付费模型运行。
+
+## 2026-09-24：插件化的 turn 结束检查
+
+Maka runtime 增加通用 `ctx.turns.beforeFinish` 插件接口。在模型自然结束、仍可继续同一个 turn 时调用；插件可放行，或返回一条仅用于下一步的反馈。持续跟进插件用它要求当前 activation 在退出前调用 `MatterSettle`，业务规则仍留在插件内。`wait` 必须同时带具体等待条件和未来检查时间；去掉连续 `continue` 五轮上限，保留事项总轮次和单轮超时。
+
+插件构建、发布包导入、类型检查和 30 项测试通过；AiSdkBackend 的 242 项测试通过，其中新增用例确认结束检查拒绝后在同一 turn 再次调用模型，最终只产生一次完成事件。Maka runtime 与 runtime-host 类型检查通过。此前的付费 Flash 场景没有为本次改动重跑；宿主模型步数或执行时限耗尽时，结束检查不会强行超出上限，未 settle 的 activation 会暂停。

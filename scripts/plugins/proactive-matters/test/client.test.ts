@@ -77,6 +77,7 @@ test('long-task panel shows progress and creates an isolated follow-up conversat
       expectedRevision: view.revision,
       stateFile: view.files.draft,
       disposition: 'wait',
+      waitingFor: '等待审核结果',
       wakes: [{ kind: 'at', at: Date.now() + 60000 }],
       summary: '已检查',
       reason: '等待',

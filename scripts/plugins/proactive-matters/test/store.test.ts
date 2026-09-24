@@ -72,7 +72,7 @@ function settle(
       summary: 'Inspected current facts and recorded the outcome.',
       reason: '已根据当前情况判断',
       ...(disposition === 'wait'
-        ? { wakes: [{ kind: 'at' as const, at: m.updatedAt + 60000 }] }
+        ? { waitingFor: '等待外部回复', wakes: [{ kind: 'at' as const, at: m.updatedAt + 60000 }] }
         : {}),
     },
     `${m.activation!.id}:settle`,
@@ -138,6 +138,7 @@ test('wait, outbox and event acknowledgement survive reopening together', (t) =>
       expectedRevision: m.revision,
       stateText: '已联系 B',
       disposition: 'wait',
+      waitingFor: '等待 B 回复',
       wakes: [{ kind: 'at', at: f.time() + 60000 }],
       summary: 'Inspected current facts and recorded the outcome.',
       reason: '等回复',
@@ -232,6 +233,7 @@ test('invalid wait leaves state, inbox and outbox unchanged', (t) => {
           expectedRevision: m.revision,
           stateText: 'invalid',
           disposition: 'wait',
+          waitingFor: '等待外部回复',
           summary: 'Inspected current facts and recorded the outcome.',
           reason: 'waiting',
           update: 'bad',
@@ -245,7 +247,7 @@ test('invalid wait leaves state, inbox and outbox unchanged', (t) => {
   assert.equal(f.store.updates().length, 0);
 });
 
-test('missing settle pauses; immediate continuation has a hard cap', (t) => {
+test('missing settle pauses; immediate continuation remains available', (t) => {
   const f = fixture(t);
   let m = f.store.claim(f.m.id)!.matter;
   f.store.finish(m.id, m.activation!.id);
@@ -256,8 +258,25 @@ test('missing settle pauses; immediate continuation has a hard cap', (t) => {
     settle(f.store, m, 'continue');
     f.store.finish(m.id, m.activation!.id);
   }
-  assert.equal(f.store.get(m.id).matter.status, 'paused');
-  assert.equal(f.store.claim(m.id), null);
+  assert.equal(f.store.get(m.id).matter.status, 'active');
+  assert.ok(f.store.claim(m.id));
+});
+
+test('waiting requires a concrete condition', (t) => {
+  const f = fixture(t);
+  const m = f.store.claim(f.m.id)!.matter;
+  assert.throws(
+    () => f.store.settle(m.id, m.activation!.id, {
+      expectedRevision: m.revision,
+      stateText: 'Checked current facts.',
+      disposition: 'wait',
+      wakes: [{ kind: 'at', at: f.time() + 60000 }],
+      summary: 'Checked',
+      reason: 'Wait',
+    }, 'missing-condition'),
+    /waiting condition/,
+  );
+  assert.equal(f.store.get(m.id).matter.revision, m.revision);
 });
 
 test('large event batches retain unread events and cannot falsely complete', (t) => {
@@ -287,6 +306,7 @@ test('settle receipts remain idempotent after their timer has elapsed', (t) => {
     expectedRevision: m.revision,
     stateText: 'Waiting',
     disposition: 'wait' as const,
+    waitingFor: '等待外部检查结果',
     wakes: [{ kind: 'at' as const, at: f.time() + 1000 }],
     summary: 'Inspected current facts and recorded the outcome.',
     reason: 'Check later',
@@ -334,6 +354,7 @@ test('files hold published bodies; drafts, version history and scheduling commit
     expectedRevision: active.revision,
     stateText: f.store.readDraft(active.id, active.activation!.id, context.files.draft),
     disposition: 'wait' as const,
+    waitingFor: '等待外部回复',
     summary: 'Inspected current facts and recorded the outcome.',
     reason: '稍后检查',
     wakes: [{ kind: 'at' as const, at: f.time() - 1 }],
@@ -430,6 +451,7 @@ test('only time wakes and direct user input are admitted', (t) => {
             expectedRevision: m.revision,
             stateText: 'waiting',
             disposition: 'wait',
+            waitingFor: '等待外部回复',
             summary: 'Inspected current facts and recorded the outcome.',
             reason: 'test',
             wakes: [{ kind, source: 'file', subject: 'state.md' }] as never,
@@ -530,6 +552,7 @@ test('state operations and activation handoffs are append-only, timestamped and 
     expectedRevision: saved.revision,
     stateText: 'Confirmed order A. Next: reconsider delivery status after waking.',
     disposition: 'wait' as const,
+    waitingFor: '等待送达',
     summary: 'Created order A and verified confirmation after a lost response.',
     reason: 'Delivery has not happened yet; no useful immediate action.',
     next: 'Recheck delivery; earlier expectations may have changed.',

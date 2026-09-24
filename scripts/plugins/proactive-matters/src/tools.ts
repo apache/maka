@@ -103,7 +103,7 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
     {
       name: 'MatterSettle',
       description:
-        'Commit state and finish this activation: wait with real wake conditions, continue bounded work, or complete the original objective. No business tools may execute after success.',
+        'Commit state and finish this activation: continue immediately, wait for a specific external condition, or complete the original objective. No business tools may execute after success.',
       parameters: z.object({
         expectedRevision: z.number().int().positive(),
         stateFile: z
@@ -113,6 +113,8 @@ export function buildMatterTools(deps: MatterToolsDeps): MakaTool[] {
           ),
         disposition: z.enum(['continue', 'wait', 'complete']),
         wakes: z.array(wake).max(10).optional(),
+        waitingFor: z.string().trim().min(1).max(1000).optional()
+          .describe('For wait only: the concrete condition that prevents useful work now. A wake time is only when to check it.'),
         reason: z.string().min(1).max(2000),
         summary: z
           .string()

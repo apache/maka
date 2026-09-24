@@ -102,6 +102,7 @@ import { PluginWebService } from '@maka/runtime/plugin-web-service';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { PluginSystemPromptService } from '@maka/runtime/plugin-system-prompt-service';
+import { PluginTurnFinishService } from '@maka/runtime/plugin-turn-finish-service';
 import { PluginCommandService } from '@maka/runtime/plugin-command-service';
 import { PluginClientBridgeService } from '@maka/runtime/plugin-client-bridge-service';
 import {
@@ -387,6 +388,7 @@ export async function createExecutionRuntimeHostComposition(
     pluginCredentials.bindRuntime(pluginData);
     const pluginTools = new PluginToolService(pluginRoot, { agents: pluginAgents });
     const pluginSystemPrompt = new PluginSystemPromptService(pluginRoot);
+    const pluginTurnFinish = new PluginTurnFinishService(pluginRoot);
     pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
       composition: new MakaCompositionLoader({ root: pluginRoot }),
       tools: pluginTools,
@@ -1051,6 +1053,8 @@ export async function createExecutionRuntimeHostComposition(
     });
     const hostAiSdkBackendInput = <T extends BackendPreparationContext>(backendContext: T) => ({
       context: backendContext,
+      beforeTurnFinish: (turn: Parameters<typeof pluginTurnFinish.evaluate>[0]) =>
+        pluginTurnFinish.evaluate(turn),
       runtimePolicy: runtimePolicyStores,
       oauthCredentials,
       createRunComposer: createInteractiveRunComposerFactory({
