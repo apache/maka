@@ -1790,6 +1790,11 @@ export const TitlebarProjectFeedbackNarrow: Story = {
       expect(writeText).toHaveBeenLastCalledWith('/workspace/maka-agent');
       await userEvent.keyboard('{Escape}');
       expect(document.activeElement).toBe(page.getByRole('button', { name: '项目信息' }));
+      // The chip is fully visible here, so the hover reveals the rename
+      // affordance — the one thing the surface does not show.
+      const renameChip = page.getByRole('button', { name: '检查项目菜单 — 重命名任务' });
+      await userEvent.hover(renameChip);
+      await waitFor(() => expect(page.getByRole('tooltip', { name: '重命名任务' })).toBeVisible());
     } finally {
       if (original) Object.defineProperty(navigator, 'clipboard', original);
       else Reflect.deleteProperty(navigator, 'clipboard');

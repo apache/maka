@@ -95,10 +95,10 @@ export function TitlebarSessionIdentity(props: {
 
   const path = props.project?.path;
   const { measureRef, clipped } = useNameClipped(props.sessionName);
-  // Show the full name only when ellipsis cut it off; repeating a fully
-  // visible title adds nothing. Rename affordance lives in the accessible
-  // label and the "..." menu, not in a run-on tooltip sentence.
-  const nameTooltip = clipped ? props.sessionName : undefined;
+  // One control, two kinds of hidden information: with the name truncated,
+  // what the reader cannot see is the full text; fully visible, the missing
+  // piece is the click affordance — rename. Never the name only.
+  const nameTooltip = clipped ? props.sessionName : copy.sessions.renameAriaLabel;
   const copyPhase = path ? clipboard.phaseFor(path) : null;
   const copyLabel = copyPhase === 'pending' ? copy.messages.copying
     : copyPhase === 'failed' ? copy.messages.copyFailed
@@ -161,7 +161,7 @@ export function TitlebarSessionIdentity(props: {
           onCancel={() => endRename(true)}
         />
       ) : props.readOnly ? (
-        <span className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={nameTooltip}>
+        <span className="maka-titlebar-identity__name maka-titlebar-identity__segment--session" title={clipped ? props.sessionName : undefined}>
           {props.sessionName}
         </span>
       ) : (

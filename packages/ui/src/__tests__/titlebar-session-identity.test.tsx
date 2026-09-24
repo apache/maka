@@ -18,9 +18,12 @@
  */
 
 /**
- * Titlebar tooltips must add information, not repeat what is on screen.
- * The name button shows the full name only when ellipsis truncated it; the
- * "..." button never repeats the name.
+ * Titlebar tooltips must add information, not repeat what is on screen:
+ * the name chip hints the rename action while fully visible and reveals the
+ * full text once ellipsis truncates it; the "..." button never repeats the
+ * name. Truncation gating itself needs real layout, so this fake DOM only
+ * pins the wiring — the tooltip contents are asserted in the browser tier
+ * (`TitlebarIdentityTruncated` / `TitlebarProjectFeedbackNarrow` plays).
  */
 
 import assert from 'node:assert/strict';
@@ -94,16 +97,35 @@ async function renderIdentity(sessionName: string) {
   return container;
 }
 
-test('an untruncated session name gets no tooltip', async () => {
+test('an untruncated session name keeps the rename hint configured on the chip', async () => {
   const container = await renderIdentity('Short name');
   const nameButton = container.querySelector<HTMLButtonElement>('.maka-titlebar-identity__name');
   assert.ok(nameButton);
   assert.equal(nameButton.getAttribute('aria-label'), 'Short name — Rename task');
-  // A fully visible name must not produce a tooltip at all.
-  const tooltipLight = container.querySelector('.maka-tooltip, [id*="tooltip"]');
-  assert.equal(nameButton.getAttribute('title'), null);
-  assert.equal(tooltipLight, null);
+  // Tooltip is always configured (rename hint when visible, full name when
+  // truncated); only its content switches. aria-describedby proves it is
+  // attached; the visible content is the story plays' job.
+  const nameSpan = container.querySelector('.maka-titlebar-identity__segment--session');
+  assert.ok(nameSpan);
+  assert.notEqual(nameButton.getAttribute('aria-describedby'), null);
+  // The read-only branch's native title stays truncation-gated.
+  const readOnly = await renderReadOnly('Short name');
+  assert.equal(readOnly.getAttribute('title'), null);
 });
+
+async function renderReadOnly(sessionName: string) {
+  const { container, root } = domRoot();
+  await act(() => {
+    root.render(
+      <StrictMode>
+        <LocaleProvider locale="en">
+          <TitlebarSessionIdentity sessionName={sessionName} onRenameSession={() => undefined} readOnly />
+        </LocaleProvider>
+      </StrictMode>,
+    );
+  });
+  return container.querySelector<HTMLElement>('.maka-titlebar-identity__segment--session')!;
+}
 test('the task-actions button never repeats the session name in its tooltip', async () => {
   const longName = ' brew — a long task title about Homebrew updates that overflows the titlebar chip ';
   const container = await renderIdentity(longName);
