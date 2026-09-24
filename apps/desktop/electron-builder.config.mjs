@@ -95,6 +95,8 @@ const baseDesktopBuilderConfig = {
     '!**/node_modules/node-pty/build/!(Release){,/**}',
     '!**/node_modules/node-pty/build/Release/!(*.node|spawn-helper|conpty){,/**}',
     '!**/node_modules/node-pty/node-addon-api{,/**}',
+    // opencli-mcp loads only the grammar's wasm through web-tree-sitter; the native binding is unused.
+    '!**/node_modules/tree-sitter-javascript/{build,prebuilds,src,bindings,binding.gyp}{,/**}',
     '!node_modules/@maka/{mcp,runtime,runtime-host}/package.json',
     '!**/__tests__/**',
     // FakeBackend and the Desktop E2E candidate bootstrap live under

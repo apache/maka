@@ -9786,13 +9786,13 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
 });
 
 describe('AiSdkBackend RunTrace', () => {
-  for (const protocol of ['openai-compatible', 'anthropic-compatible'] as const) {
+  for (const protocol of ['openai-chat', 'anthropic-messages'] as const) {
     test(`records ${protocol} multi-step requests and reconciles complete attempt usage`, async () => {
       const attempts: ModelCallAttempt[] = [];
       const durable = durableTurnHarness('turn-1', 'hi');
       let calls = 0;
       const usageFor = (step: number) => {
-        if (protocol === 'openai-compatible') {
+        if (protocol === 'openai-chat') {
           const input = step === 0 ? 10 : 20;
           const cached = step === 0 ? 4 : 5;
           const output = step === 0 ? 2 : 3;

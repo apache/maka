@@ -557,11 +557,16 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),
       readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
-      readActiveWorkHubAssignmentsByTarget: (targetSessionIds, maxAssignmentsPerTarget) =>
+      readActiveWorkHubAssignmentsByTarget: (
+        targetSessionIds,
+        maxAssignmentsPerTarget,
+        includeStopped,
+      ) =>
         run(() =>
           sessionStore.readActiveWorkHubAssignmentsByTarget(
             targetSessionIds,
             maxAssignmentsPerTarget,
+            includeStopped,
           ),
         ),
       readWorkHubReplacement: (delegationId) =>
@@ -570,10 +575,10 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.readWorkHubReplacementAbort(delegationId)),
       readWorkHubSupersession: (delegationId) =>
         run(() => sessionStore.readWorkHubSupersession(delegationId)),
-      readWorkHubStopRequest: (delegationId) =>
-        run(() => sessionStore.readWorkHubStopRequest(delegationId)),
-      readWorkHubStopResolution: (delegationId) =>
-        run(() => sessionStore.readWorkHubStopResolution(delegationId)),
+      readWorkHubStopRequest: (delegationId, actionId) =>
+        run(() => sessionStore.readWorkHubStopRequest(delegationId, actionId)),
+      readWorkHubStopResolution: (delegationId, actionId) =>
+        run(() => sessionStore.readWorkHubStopResolution(delegationId, actionId)),
       claimWorkHubAction: (claim) => run(() => sessionStore.claimWorkHubAction(claim)),
       readWorkHubActionClaim: (actionId) =>
         run(() => sessionStore.readWorkHubActionClaim(actionId)),

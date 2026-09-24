@@ -17,6 +17,7 @@
  * under the License.
  */
 
+export * from './prompt-suggestion.js';
 export * from './artifact-preview-registry.js';
 export * from './progress-card.js';
 export * from './assistant-stream.js';

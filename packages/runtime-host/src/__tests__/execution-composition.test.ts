@@ -1786,22 +1786,9 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
     let restartedOwner: InteractiveRootOwner | undefined;
     let continuation: { turnId: string; runId: string } | undefined;
     let targetSessionId: string | undefined;
-    // A stopped delegation produces a Host result Turn. Drain that specific
-    // notification before submitting another user Turn to the same WorkHub.
-    const waitForResultCompletion = async (targetTurnId: string) => {
-      await waitFor(async () => {
-        const notification = (await manager.getMessages(WORKHUB_COORDINATION_SESSION_ID)).find(
-          (message) =>
-            message.type === 'user' &&
-            message.origin?.kind === 'workhub_result' &&
-            message.origin.targetTurnId === targetTurnId,
-        );
-        if (!notification) return false;
-        return (await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID)).some(
-          ({ turnId, status }) => turnId === notification.turnId && status === 'completed',
-        );
-      }, 10_000);
-    };
+    // Stop retires the delegation from automatic result delivery, including
+    // after a resumed execution is interrupted. Assert control receipts and
+    // target Turn state below rather than waiting for a retired notification.
     const handoffAndReopen = async () => {
       const requested = deferred<void>();
       const request = manager.requestRunHandoff.bind(manager);
@@ -1878,10 +1865,27 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       assert.equal(original.ok, true);
       if (!original.ok) return;
       await handoffAndReopen();
-      await composition.handlers['turn.stop'](
-        { sessionId: target.id, turnId: original.result.turnId, runId: original.result.runId },
+      const firstStop = await actWorkHub(
+        composition,
+        {
+          actionId: 'workhub-first-stop',
+          userText: 'Stop Payments',
+          proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
+        },
         context,
       );
+      assert.equal(firstStop.ok, true, JSON.stringify(firstStop));
+      const afterStopCandidates = await composition.handlers['workhub.coordination.candidates'](
+        {},
+        context,
+      );
+      assert.equal(afterStopCandidates.ok, true);
+      if (afterStopCandidates.ok)
+        assert.equal(
+          afterStopCandidates.result.candidates.find(({ sessionId }) => sessionId === target.id)
+            ?.latestDelegationActionId,
+          'workhub-resume-stop-delegation',
+        );
 
       pauseNext = true;
       boundary = deferred<void>();
@@ -1897,7 +1901,6 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           },
         },
         context,
-        () => waitForResultCompletion(original.result.turnId),
       );
       assert.equal(resumed.ok, true, JSON.stringify(resumed));
       if (
@@ -1914,6 +1917,25 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       if (!resumedTurn.ok) return;
       continuation = { turnId: resumedTurn.result.turnId, runId: resumedTurn.result.runId };
       assert.equal(resumedTurn.result.status, 'running');
+      assert.deepEqual(
+        await actWorkHub(
+          composition,
+          {
+            actionId: 'workhub-first-stop',
+            userText: 'Stop Payments',
+            proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
+          },
+          context,
+        ),
+        firstStop,
+        'replaying the old stop must not stop the resumed execution',
+      );
+      const stillRunning = await composition.handlers['turn.query'](
+        { sessionId: target.id, turnId: resumedTurn.result.turnId },
+        context,
+      );
+      assert.ok(stillRunning.ok && stillRunning.result.status === 'running');
+
       await handoffAndReopen();
 
       // Lose the response, interrupt the continuation, then discard all
@@ -1949,10 +1971,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           expects: { targetSessionId: target.id },
         },
       };
-      const interruptedTurnId = continuation.turnId;
-      const replayed = await actWorkHub(composition, retry, context, () =>
-        waitForResultCompletion(interruptedTurnId),
-      );
+      const replayed = await actWorkHub(composition, retry, context);
       assert.deepEqual(replayed, resumed);
       const freshAction = { ...retry, actionId: 'workhub-resume-again' };
       const fresh = await actWorkHub(composition, freshAction, context);
@@ -3736,7 +3755,6 @@ async function actWorkHub(
   composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
   input: WorkHubAdmittedAction,
   context: ConnectionContext,
-  beforeAnswer?: () => Promise<void>,
 ) {
   const desktop = composition.clientCapabilities!.attachConnection(
     clientCapabilityConnectionIdentity(context.connectionId),
@@ -3751,9 +3769,6 @@ async function actWorkHub(
       context,
     );
     assert.ok(registered.ok, JSON.stringify(registered));
-    // Host result delivery needs these Desktop capabilities. Test barriers
-    // must run after registration, before admitting the next user Turn.
-    await beforeAnswer?.();
     const { userText, attachments, ...action } = input;
     const turnId = randomUUID();
     const decisions = workHubRoutingDecisions.get(composition);

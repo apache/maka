@@ -404,13 +404,14 @@
 .maka-session-row-signal {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   flex: none;
   min-width: var(--h-control-sm, 24px);
   min-height: var(--h-control-sm, 24px);
 }
 
 .maka-session-row-time-label {
+  margin-inline-start: auto;
   color: var(--muted-foreground);
   font: var(--typography-caption);
   white-space: nowrap;

@@ -65,7 +65,7 @@ const CHOICES: ChatModelChoice[] = [
   choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-opus-4-1', 'Claude Opus 4.1'),
   choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-sonnet-4', 'Claude Sonnet 4'),
   choice('google-lab', 'google', 'Google Gemini', 'gemini-3-pro', 'Gemini 3 Pro'),
-  choice('fireworks', 'openai-compatible', 'Fireworks', 'accounts/fireworks/models/deepseek-v4-flash-0731', 'accounts/fireworks/models/deepseek-v4-flash-0731'),
+  choice('fireworks', 'custom', 'Fireworks', 'accounts/fireworks/models/deepseek-v4-flash-0731', 'accounts/fireworks/models/deepseek-v4-flash-0731'),
 ];
 
 // Canonical user-facing ladder when a model offers the common set.
@@ -82,7 +82,7 @@ const MANY_CHOICES: ChatModelChoice[] = (
     { slug: 'google-lab', type: 'google', label: 'Google Gemini', models: ['gemini-3-pro', 'gemini-3-flash'] },
     { slug: 'deepseek-main', type: 'deepseek', label: 'DeepSeek', models: ['deepseek-chat', 'deepseek-reasoner'] },
     { slug: 'moonshot-main', type: 'moonshot', label: 'Moonshot', models: ['kimi-k2-0711', 'kimi-k1-8k'] },
-    { slug: 'relay', type: 'openai-compatible', label: 'Custom relay', models: ['vendor/alpha', 'vendor/beta', 'vendor/gamma'] },
+    { slug: 'relay', type: 'custom', label: 'Custom relay', models: ['vendor/alpha', 'vendor/beta', 'vendor/gamma'] },
   ] satisfies Array<{ slug: string; type: ProviderType; label: string; models: string[] }>
 ).flatMap((group) => group.models.map((model) => choice(group.slug, group.type, group.label, model, model)));
 
@@ -93,7 +93,7 @@ const LONG_CHOICES: ChatModelChoice[] = [
   {
     connectionId: 'connection-fireworks',
     connectionSlug: 'fireworks',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'Fireworks',
     connectionName: 'Fireworks',
     model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
@@ -105,7 +105,7 @@ const LONG_CHOICES: ChatModelChoice[] = [
   {
     connectionId: 'connection-fireworks',
     connectionSlug: 'fireworks',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'Fireworks',
     connectionName: 'Fireworks',
     model: 'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b',
@@ -116,7 +116,7 @@ const LONG_CHOICES: ChatModelChoice[] = [
   {
     connectionId: 'connection-openrouter',
     connectionSlug: 'openrouter',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'OpenRouter',
     connectionName: 'OpenRouter',
     model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
@@ -131,7 +131,7 @@ function providerMark(type: ProviderType) {
     openai: 'O',
     anthropic: 'A',
     google: 'G',
-    'openai-compatible': 'R',
+    'custom': 'R',
   };
   return <span style={{ fontSize: 11, fontWeight: 700 }}>{labels[type] ?? 'M'}</span>;
 }
@@ -534,7 +534,7 @@ export const LongModelNames: Story = {
         label={LONG_CHOICES[0]!.label}
         choices={LONG_CHOICES}
         currentValue={choiceValue(LONG_CHOICES[0]!)}
-        currentProviderType="openai-compatible"
+        currentProviderType="custom"
         renderProviderMark={providerMark}
         onPick={() => undefined}
       />

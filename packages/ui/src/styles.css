@@ -1146,3 +1146,15 @@
 .maka-choice-panel:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
 
 .maka-choice-hint { margin: 8px 0; }
+
+.maka-form-history { margin: 8px 0; color: var(--foreground); font-size: 13px; }
+.maka-form-history > summary { cursor: pointer; padding: 8px 10px; border-radius: 6px; overflow-wrap: anywhere; }
+.maka-form-history > summary:hover { background: var(--muted); }
+.maka-form-history > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.maka-form-history-content { margin: 4px 10px 12px; padding-left: 16px; border-left: 2px solid var(--border); overflow-wrap: anywhere; }
+.maka-form-history-question { white-space: pre-wrap; font-weight: 500; }
+.maka-form-history-field { margin-top: 12px; }
+.maka-form-history-field p { white-space: pre-wrap; margin: 4px 0; }
+.maka-form-history-field ul { padding-left: 20px; margin: 6px 0; }
+.maka-form-history-field li { padding: 4px 0; }
+.maka-form-history-field li[data-selected='true'] { font-weight: 500; }

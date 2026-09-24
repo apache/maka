@@ -155,3 +155,26 @@ test('MCP can cancel an active login after reopening the page', async () => {
   await act(async () => { await controller.cancelLogin('remote'); });
   assert.equal(controller.statuses[0]?.authorizationPending, false);
 });
+
+test('MCP follows a configured Chrome server until its extension connects', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const { root } = installReactRenderer();
+  const defaults = createFakeModuleHubServices();
+  let connected = false;
+  let reads = 0;
+  const services = createFakeModuleHubServices({ mcp: {
+    ...defaults.mcp,
+    getConfig: async () => ({ ...createDefaultMcpConfig(), mcpServers: { chrome: { command: '/opencli-mcp' } } }),
+    chromeStatus: async () => { reads++; return { command: '/opencli-mcp', connected }; },
+  } });
+  let controller!: ReturnType<typeof useMcpController>;
+  function Probe() { controller = useMcpController(); return null; }
+  await act(async () => root.render(createElement(ModuleHubServicesProvider, { services }, createElement(Probe))));
+  assert.equal(controller.chrome?.connected, false);
+  connected = true;
+  await act(async () => { t.mock.timers.tick(2000); });
+  assert.equal(controller.chrome?.connected, true);
+  const settled = reads;
+  await act(async () => { t.mock.timers.tick(10_000); });
+  assert.equal(reads, settled);
+});

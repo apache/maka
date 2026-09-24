@@ -28,6 +28,20 @@ export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregator
 
 export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
 
+export type ModelApiProtocol = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+
+export const MODEL_API_PROTOCOL_LABELS: Readonly<Record<ModelApiProtocol, string>> = {
+  'openai-chat': 'OpenAI Chat Completions',
+  'openai-responses': 'OpenAI Responses',
+  'anthropic-messages': 'Anthropic Messages',
+};
+
+export const MODEL_API_PROTOCOLS = Object.keys(MODEL_API_PROTOCOL_LABELS) as ModelApiProtocol[];
+
+export function isModelApiProtocol(value: unknown): value is ModelApiProtocol {
+  return MODEL_API_PROTOCOLS.includes(value as ModelApiProtocol);
+}
+
 /**
  * Provider-specific request mutation the Runtime applies to an
  * `open-responses` SDK request before dispatch.
@@ -53,7 +67,6 @@ export type ProviderResponsesContract =
 
 type OpenAiCompatibleRuntimeAdapterBase = {
   kind: 'openai-compatible';
-  name: 'provider' | 'connection';
   includeUsage?: boolean;
   requireBaseUrl?: boolean;
   replayAssistantReasoningAs?: 'reasoning';
@@ -135,9 +148,7 @@ export interface ProviderDefaults {
   status: 'ready' | 'phase3-experimental';
   runtimeAdapter: ProviderRuntimeAdapter;
   /** Additional request protocols; omitted models still use runtimeAdapter. */
-  protocolAdapters?: Partial<
-    Record<'openai-chat' | 'openai-responses' | 'anthropic-messages', ProviderRuntimeAdapter>
-  >;
+  protocolAdapters?: Partial<Record<ModelApiProtocol, ProviderRuntimeAdapter>>;
   /**
    * Maka used to offer this provider and no longer does. The entry stays
    * registered so stored connections still decode; it just cannot be used.
@@ -747,7 +758,6 @@ const providerRegistry = {
     protocolAdapters: {
       'openai-chat': {
         kind: 'openai-compatible',
-        name: 'provider',
         normalizeUsage: true,
         normalizeBaseUrl: true,
       },
@@ -777,7 +787,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...tencentCodingPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -790,7 +800,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...volcengineCodingPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -824,7 +834,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...tencentTokenPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -875,7 +885,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     },
     modelDiscovery: { kind: 'protocol' },
@@ -890,7 +899,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: moonshotModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -921,7 +930,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: ['glm-5.2', 'glm-5.1', 'glm-5-turbo', 'glm-4.7', 'glm-4.5-air'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -960,7 +969,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: siliconflowModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', query: { sub_type: 'chat' } },
     category: 'domestic',
     catalogGroup: 'aggregators',
@@ -973,7 +982,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: vercelModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', auth: 'none', filter: 'language-models' },
     category: 'overseas',
     catalogGroup: 'aggregators',
@@ -988,7 +997,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: { kind: 'protocol' },
@@ -1005,7 +1013,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: {
@@ -1021,7 +1028,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: zaiModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1034,7 +1041,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: xiaomiModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1047,7 +1054,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...xiaomiTokenPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1060,7 +1067,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...xiaomiTokenPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1073,7 +1080,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...xiaomiTokenPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1086,7 +1093,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: cerebrasModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1099,7 +1106,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: mistralModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', responseShape: 'array-or-data' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1125,7 +1132,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: huggingfaceModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', filter: 'tool-capable' },
     category: 'overseas',
     catalogGroup: 'aggregators',
@@ -1140,7 +1147,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       replayAssistantReasoningAs: 'reasoning',
       replayAssistantReasoningDetails: true,
     },
@@ -1156,7 +1162,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: opencodeModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
       'openai-responses': {
@@ -1177,7 +1183,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: opencodeGoModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
       'openai-responses': {
@@ -1213,7 +1219,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: togetherModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1226,7 +1232,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: fireworksModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: {
       kind: 'fireworks',
       accountsPath: '/v1/accounts',
@@ -1244,7 +1250,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: nvidiaModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1257,7 +1263,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: tencentTokenHubModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1270,7 +1276,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: stepfunModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1283,7 +1289,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...stepfunStepPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1296,7 +1302,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...stepfunGlobalStepPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1309,7 +1315,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: stepfunGlobalModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1322,7 +1328,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: ['doubao-seed-2-0-pro-260215'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: {
       kind: 'fallback',
       reason:
@@ -1339,7 +1345,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: deepinfraModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol', path: '/v1/models' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1352,7 +1358,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: groqModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1365,7 +1371,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: openrouterModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'aggregators',
@@ -1378,7 +1384,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: alibabaModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -1391,7 +1397,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: alibabaCnModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'api',
@@ -1404,7 +1410,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...alibabaCodingPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1417,7 +1423,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [...alibabaCodingPlanModelIds],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1432,7 +1438,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: {
         adapter: 'open-responses',
         reasoningReplay: 'plaintext-summary',
@@ -1453,7 +1458,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: {
         adapter: 'open-responses',
         reasoningReplay: 'plaintext-summary',
@@ -1472,7 +1476,7 @@ const providerRegistry = {
     authKind: 'api_key',
     fallbackModels: [],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     protocolAdapters: {
       'anthropic-messages': { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: true },
     },
@@ -1512,7 +1516,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       requireBaseUrl: true,
       replayAssistantReasoningAs: 'reasoning',
     },
@@ -1530,7 +1533,6 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: {
       kind: 'openai-compatible',
-      name: 'provider',
       includeUsage: true,
       replayAssistantReasoningAs: 'reasoning',
     },
@@ -1546,7 +1548,7 @@ const providerRegistry = {
     authKind: 'none',
     fallbackModels: ['llama3.2', 'qwen2.5-coder', 'gemma3'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'ollama' },
     category: 'local',
     catalogGroup: 'local',
@@ -1558,7 +1560,7 @@ const providerRegistry = {
     authKind: 'none',
     fallbackModels: [],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'local',
     catalogGroup: 'local',
@@ -1570,51 +1572,31 @@ const providerRegistry = {
     authKind: 'optional_api_key',
     fallbackModels: ['qwen3-8b'],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai-compatible' },
     modelDiscovery: { kind: 'protocol' },
     category: 'local',
     catalogGroup: 'local',
     catalogOrder: 17.5,
   },
-  'openai-compatible': {
-    label: 'Custom relay (OpenAI Chat-compatible)',
+  custom: {
+    label: 'Custom connection',
     baseUrl: '',
     authKind: 'api_key',
     fallbackModels: [],
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'connection', requireBaseUrl: true },
-    modelDiscovery: { kind: 'protocol' },
-    category: 'custom',
-    catalogGroup: 'aggregators',
-    catalogOrder: 18,
-  },
-  'openai-responses-compatible': {
-    label: 'Custom relay (OpenAI Responses)',
-    baseUrl: '',
-    authKind: 'api_key',
-    fallbackModels: [],
-    status: 'ready',
-    runtimeAdapter: {
-      kind: 'openai',
-      apiProtocol: 'openai-responses',
-      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    runtimeAdapter: { kind: 'openai-compatible', requireBaseUrl: true },
+    protocolAdapters: {
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
-    catalogOrder: 18.1,
-  },
-  'anthropic-compatible': {
-    label: 'Custom relay (Anthropic)',
-    baseUrl: '',
-    authKind: 'api_key',
-    fallbackModels: [],
-    status: 'ready',
-    runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
-    modelDiscovery: { kind: 'protocol' },
-    category: 'custom',
-    catalogGroup: 'aggregators',
-    catalogOrder: 18.2,
+    catalogOrder: 18,
   },
   'github-copilot': {
     label: githubCopilot.name,
@@ -1622,7 +1604,7 @@ const providerRegistry = {
     authKind: 'oauth_token',
     fallbackModels: githubCopilotModelIds,
     status: 'ready',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider', includeUsage: false },
+    runtimeAdapter: { kind: 'openai-compatible', includeUsage: false },
     protocolAdapters: {
       'anthropic-messages': {
         kind: 'anthropic',

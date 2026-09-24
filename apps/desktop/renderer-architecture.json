@@ -43,7 +43,6 @@
     "src/renderer/custom-pet-companion-model.ts",
     "src/renderer/custom-pet-companion.tsx",
     "src/renderer/daily-review-actions.ts",
-    "src/renderer/default-runtime-host-operation.ts",
     "src/renderer/derive-turn-lineage-badges.ts",
     "src/renderer/desktop-execution-boundary-surface.ts",
     "src/renderer/desktop-slash-command.ts",
@@ -312,7 +311,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 9,
-        "nonTriviaTokens": 3575
+        "nonTriviaTokens": 3571
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 0,
@@ -356,10 +355,10 @@
           "./app-shell-copy.js": 1,
           "./command-palette-commands.js": 1,
           "./conversation-markdown.js": 1,
-          "./default-runtime-host-operation.js": 1,
           "./locales/settings-memory-copy.js": 1,
           "./locales/settings-test-result-copy.js": 1,
           "./locales/shell-copy.js": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "react": 1
         },
         "importSpecifiers": 8,
@@ -479,7 +478,7 @@
           "react": 1
         },
         "importSpecifiers": 14,
-        "nonTriviaTokens": 3512
+        "nonTriviaTokens": 3509
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 4,
@@ -533,9 +532,9 @@
         ],
         "dependencyPaths": {
           "./app-shell-copy": 1,
-          "./default-runtime-host-operation.js": 1,
           "./locales/shell-copy.js": 1,
           "./open-path": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "./session-workspace-errors": 1
         },
         "importSpecifiers": 7,
@@ -753,7 +752,6 @@
           "./composer-mentions": 1,
           "./custom-pet-companion": 1,
           "./custom-pet-companion-model": 1,
-          "./default-runtime-host-operation.js": 1,
           "./desktop-execution-boundary-surface": 1,
           "./desktop-slash-command": 1,
           "./error-boundary": 1,
@@ -780,6 +778,7 @@
           "./pending-items": 1,
           "./pending-session-view": 1,
           "./plan-mode-panel": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "./scroll-motion-policy": 1,
           "./session-collaboration-dialog": 1,
           "./session-workspace-errors": 1,
@@ -1193,17 +1192,6 @@
           "@maka/core/daily-review": 1,
           "@maka/core/redaction": 1
         }
-      },
-      "src/renderer/default-runtime-host-operation.ts": {
-        "bridgePaths": {
-          "window.maka.runtimeHostProfiles.getDefaultHost": 2
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
       },
       "src/renderer/derive-turn-lineage-badges.ts": {
         "bridgePaths": {},
@@ -1942,9 +1930,9 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../default-runtime-host-operation.js": 1,
           "../features/app-update/index.js": 1,
           "../locales/settings-preferences-copy.js": 1,
+          "../platform/desktop/default-runtime-host-operation.js": 1,
           "./about-update-status.js": 1,
           "./settings-error-copy.js": 1,
           "./settings-section.js": 1,
@@ -3725,7 +3713,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./app-shell-project-actions": 1,
-          "./default-runtime-host-operation.js": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "./use-stable-actions.js": 1,
           "react": 1
         }
@@ -3767,9 +3755,9 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../shared/runtime-host-identity.js": 1,
-          "./default-runtime-host-operation.js": 1,
           "./locales/shell-copy.js": 1,
           "./locales/shell-remaining-copy.js": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "react": 1
         }
       },
@@ -3798,8 +3786,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./default-runtime-host-operation.js": 1,
           "./locales/shell-copy.js": 1,
+          "./platform/desktop/default-runtime-host-operation.js": 1,
           "react": 1
         }
       },

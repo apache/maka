@@ -118,6 +118,7 @@
   .workHubLive[data-conversation-expanded='false'] .maka-chat-layout > div:last-child > div:has(> div > .workHubComposerSurface) { padding: 0; }
   .workHubLive[data-conversation-expanded='false'] .maka-composer { --shadow-low: none; --shadow-med: none; }
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor { padding-right: 24px; }
+  .workHubLive[data-conversation-expanded='false'] .maka-composer-next-prompt { width: calc(100% - 24px); padding-block: 6px; overflow-y: auto; scrollbar-gutter: stable; scrollbar-width: thin; }
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor [contenteditable='true'] { padding-block: 6px; overscroll-behavior-y: contain; scrollbar-gutter: stable; scrollbar-width: thin; scroll-padding-block: 6px; }
   .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface { position: relative; -webkit-app-region: drag; }
   .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], dialog, a) { -webkit-app-region: no-drag; }
@@ -182,7 +183,7 @@ body:has(.workHubLive[data-placement='floating'][data-progress='true'])::after {
 /* The button owns the rounded stripe; transparent message borders reserve its
    gutter. Hover expands only the paint, so the conversation never shifts. */
 .workhub-surface .maka-transcript-turn[data-turn-accent='true'] > .maka-turn > :is(.maka-user-message, .maka-assistant-answer) { position: relative; }
-.workhub-surface .workhub-message-rail { --button-icon-only-aspect: auto; position: absolute; inset-block: 0; width: 16px; min-width: 0; height: auto; border: 0; border-radius: 5px; padding: 0; background: transparent; cursor: pointer; z-index: 1; }
+.workhub-surface .workhub-message-rail { --button-icon-only-aspect: auto; position: absolute; inset-block: 0; width: 16px; min-width: 0; min-height: 0; height: auto; border: 0; border-radius: 5px; padding: 0; background: transparent; cursor: pointer; z-index: 1; }
 .workhub-message-rail::before { content: ''; position: absolute; inset-block: 0; inset-inline-start: 0; width: 4px; border-radius: 999px; background: var(--maka-turn-accent); transform-origin: left center; transition: transform 150ms ease-out, background-color 150ms ease-out; pointer-events: none; }
 .maka-user-message .workhub-message-rail { inset-inline-end: -4px; }
 .maka-user-message .workhub-message-rail::before { inset-inline-start: auto; inset-inline-end: 0; transform-origin: right center; }

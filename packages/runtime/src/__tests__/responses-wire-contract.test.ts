@@ -419,7 +419,8 @@ describe('responses wire contract', () => {
       });
     }) as unknown as typeof globalThis.fetch;
     const connection = {
-      ...conn('openai-responses-compatible'),
+      ...conn('custom'),
+      defaultApiProtocol: 'openai-responses' as const,
       baseUrl: 'https://relay.example/v1/responses',
     };
     const model = getAIModel({ connection, apiKey: '[redacted]', modelId: 'relay-model', fetch });
@@ -476,12 +477,51 @@ describe('responses wire contract', () => {
     assert.equal(moonshotGlobal.responsesReplayProfile, 'moonshot-global');
 
     const relay = resolveModelRuntime(
-      { providerType: 'openai-responses-compatible' },
+      { providerType: 'custom', defaultApiProtocol: 'openai-responses' },
       'relay-model',
     );
     assert.deepEqual(relay.reasoningReplay, {
       kind: 'responses',
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    });
+  });
+
+  test('one custom connection resolves each model on its own wire', () => {
+    const connection = {
+      providerType: 'custom' as const,
+      defaultApiProtocol: 'openai-chat' as const,
+      baseUrl: 'https://relay.example/v1',
+      models: [
+        { id: 'claude-relay', apiProtocol: 'anthropic-messages' as const },
+        { id: 'gpt-relay', apiProtocol: 'anthropic-messages' as const },
+      ],
+      modelOverrides: { 'gpt-relay': { apiProtocol: 'openai-responses' as const } },
+    };
+    const resolved = Object.fromEntries(
+      ['gpt-relay', 'claude-relay', 'plain-relay'].map((modelId) => {
+        const runtime = resolveModelRuntime(connection, modelId);
+        return [
+          modelId,
+          { wire: runtime.wire, kind: runtime.adapter.kind, baseUrl: runtime.baseUrl },
+        ];
+      }),
+    );
+    assert.deepEqual(resolved, {
+      'gpt-relay': {
+        wire: 'openai-responses',
+        kind: 'openai',
+        baseUrl: 'https://relay.example/v1',
+      },
+      'claude-relay': {
+        wire: 'anthropic-messages',
+        kind: 'anthropic',
+        baseUrl: 'https://relay.example/v1',
+      },
+      'plain-relay': {
+        wire: 'openai-chat',
+        kind: 'openai-compatible',
+        baseUrl: 'https://relay.example/v1',
+      },
     });
   });
 
@@ -500,14 +540,19 @@ describe('responses wire contract', () => {
       ).parallelToolCalls,
       false,
     );
-    assert.equal(
-      resolveModelRuntime({ providerType: 'openai-compatible' }, 'relay-model').parallelToolCalls,
-      undefined,
-    );
+    for (const defaultApiProtocol of ['openai-chat', 'openai-responses'] as const) {
+      assert.equal(
+        resolveModelRuntime({ providerType: 'custom', defaultApiProtocol }, 'relay-model')
+          .parallelToolCalls,
+        undefined,
+        defaultApiProtocol,
+      );
+    }
     assert.equal(
       resolveModelRuntime(
         {
-          providerType: 'openai-compatible',
+          providerType: 'custom',
+          defaultApiProtocol: 'openai-chat',
           models: [{ id: 'relay-model', capabilities: { parallelToolCalls: true } }],
         },
         'relay-model',

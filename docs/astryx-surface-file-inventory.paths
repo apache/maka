@@ -242,6 +242,7 @@ packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/directory-reference-chip.tsx
 packages/ui/src/executor-model-picker.tsx
+packages/ui/src/form-interaction-history.tsx
 packages/ui/src/form-interaction-prompt.tsx
 packages/ui/src/icons.tsx
 packages/ui/src/inline-reference.tsx
@@ -266,6 +267,7 @@ packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/stat-tile.tsx
 packages/ui/src/progress-card.tsx
 packages/ui/src/prompt-anchor-rail.tsx
+packages/ui/src/prompt-suggestion.tsx
 packages/ui/src/quote-ref-chip.tsx
 packages/ui/src/relative-time.tsx
 packages/ui/src/running-indicator.tsx
