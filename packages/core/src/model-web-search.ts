@@ -85,6 +85,7 @@ function providerHostedWebSearchAdapter(
       return { adapter: 'openai-responses', implemented: false };
     case 'openai':
     case 'openai-responses-compatible':
+    case 'meta':
     case 'xai':
     case 'xai-oauth':
       return { adapter: 'openai-responses', implemented: true };
@@ -123,6 +124,8 @@ function providerDefaultHostedWebSearchCapability(
       return deepSeekModelSupportsResponses(modelId) ? capability : null;
     case 'openai':
       return /^gpt-5(?:[.-]|$)/i.test(modelId) ? capability : null;
+    case 'meta':
+      return /^muse-spark-1\.3(?:-contributor)?$/.test(modelId) ? capability : null;
     case 'xai':
     case 'xai-oauth':
       return modelId === 'grok-4.5' ? capability : null;

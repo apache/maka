@@ -134,6 +134,20 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
     },
   },
   {
+    keys: ['meta:reasoning-replay'],
+    title: 'Meta Model API retains encrypted Responses reasoning across a tool continuation',
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'meta',
+        slug: 'meta',
+        name: 'Meta Model API',
+        basePath: '/v1',
+        modelId: 'muse-spark-1.3',
+        apiKey: 'meta-test-key',
+        statelessReasoning: true,
+      }),
+  },
+  {
     keys: [
       'openai-responses-compatible:exact-model-id',
       'openai-responses-compatible:tool-loop',

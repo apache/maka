@@ -152,8 +152,8 @@ async function runGeneratedDiscovery(
     discovery: NonNullable<ProviderContractGeneratedCell['discovery']>;
   },
 ): Promise<void> {
-  const sample = row.sampleModelId;
   const discovery = cell.discovery;
+  const sample = row.sampleModelId;
   // `array-or-data` (mistral) means the same endpoint may answer either
   // `{data:[...]}` or a bare array; both fixtures must parse to the exact id.
   const payloadShapes: ReadonlyArray<'data-object' | 'bare-array'> =
