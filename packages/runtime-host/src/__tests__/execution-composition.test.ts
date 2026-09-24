@@ -1626,23 +1626,21 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
     let restartedOwner: InteractiveRootOwner | undefined;
     let continuation: { turnId: string; runId: string } | undefined;
     let targetSessionId: string | undefined;
-    const actAfterFeedback = async (action: WorkHubAdmittedAction) => {
-      try {
-        return await actWorkHub(composition, action, context);
-      } catch (error) {
-        assert.match(String(error), /"code":"session_busy"/u);
-        const feedback = (await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID)).find(
-          ({ turnId, status }) => turnId.startsWith('whf_') && status === 'running',
+    // A stopped delegation produces a Host result Turn. Drain that specific
+    // notification before submitting another user Turn to the same WorkHub.
+    const waitForResultCompletion = async (targetTurnId: string) => {
+      await waitFor(async () => {
+        const notification = (await manager.getMessages(WORKHUB_COORDINATION_SESSION_ID)).find(
+          (message) =>
+            message.type === 'user' &&
+            message.origin?.kind === 'workhub_result' &&
+            message.origin.targetTurnId === targetTurnId,
         );
-        assert.ok(feedback);
-        await waitFor(async () => {
-          const turns = await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID);
-          return turns.some(
-            ({ turnId, status }) => turnId === feedback.turnId && status === 'completed',
-          );
-        }, 10_000);
-        return actWorkHub(composition, action, context);
-      }
+        if (!notification) return false;
+        return (await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID)).some(
+          ({ turnId, status }) => turnId === notification.turnId && status === 'completed',
+        );
+      }, 10_000);
     };
     const handoffAndReopen = async () => {
       const requested = deferred<void>();
@@ -1729,15 +1727,20 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       boundary = deferred<void>();
       // Stopping either physical run can enqueue a result notification in the
       // coordination Session. Resume only after that notification has settled.
-      const resumed = await actAfterFeedback({
-        actionId: 'workhub-resume-stop-resume',
-        userText: 'Resume Payments',
-        proposal: {
-          operation: 'resume',
-          resumesActionId: 'workhub-resume-stop-delegation',
-          expects: { targetSessionId: target.id },
+      const resumed = await actWorkHub(
+        composition,
+        {
+          actionId: 'workhub-resume-stop-resume',
+          userText: 'Resume Payments',
+          proposal: {
+            operation: 'resume',
+            resumesActionId: 'workhub-resume-stop-delegation',
+            expects: { targetSessionId: target.id },
+          },
         },
-      });
+        context,
+        () => waitForResultCompletion(original.result.turnId),
+      );
       assert.equal(resumed.ok, true, JSON.stringify(resumed));
       if (
         !resumed.ok ||
@@ -1788,10 +1791,13 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           expects: { targetSessionId: target.id },
         },
       };
-      const replayed = await actAfterFeedback(retry);
+      const interruptedTurnId = continuation.turnId;
+      const replayed = await actWorkHub(composition, retry, context, () =>
+        waitForResultCompletion(interruptedTurnId),
+      );
       assert.deepEqual(replayed, resumed);
       const freshAction = { ...retry, actionId: 'workhub-resume-again' };
-      const fresh = await actAfterFeedback(freshAction);
+      const fresh = await actWorkHub(composition, freshAction, context);
       assert.equal(fresh.ok, true, JSON.stringify(fresh));
       if (!fresh.ok || fresh.result.disposition !== 'resume_work' || !fresh.result.targetTurnId)
         return;
@@ -3572,6 +3578,7 @@ async function actWorkHub(
   composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
   input: WorkHubAdmittedAction,
   context: ConnectionContext,
+  beforeAnswer?: () => Promise<void>,
 ) {
   const desktop = composition.clientCapabilities!.attachConnection(
     clientCapabilityConnectionIdentity(context.connectionId),
@@ -3586,6 +3593,9 @@ async function actWorkHub(
       context,
     );
     assert.ok(registered.ok, JSON.stringify(registered));
+    // Host result delivery needs these Desktop capabilities. Test barriers
+    // must run after registration, before admitting the next user Turn.
+    await beforeAnswer?.();
     const { userText, attachments, ...action } = input;
     const turnId = randomUUID();
     const decisions = workHubRoutingDecisions.get(composition);

@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { buildModelCatalogEntries } from '@maka/core/model-catalog';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
 import { modelMetadataIdsForProvider } from '@maka/core/model-metadata';
@@ -53,6 +54,47 @@ function openAiNamespace(options: Record<string, unknown>): Record<string, unkno
 }
 
 describe('responses wire contract', () => {
+  test('GPT-6 catalog thinking levels reach Responses for API and Codex OAuth', async () => {
+    for (const providerType of ['openai', 'openai-codex'] as const) {
+      for (const modelId of ['gpt-6-sol', 'gpt-6-luna']) {
+        const [entry] = buildModelCatalogEntries({
+          providerType,
+          models: [{ id: modelId }],
+          modelSource: 'fetched',
+        });
+        assert.ok(entry);
+        assert.deepEqual(entry.thinkingLevels, ['low', 'medium', 'high', 'xhigh', 'max']);
+
+        const requests: Record<string, unknown>[] = [];
+        const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+          requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return Response.json({
+            id: 'response-gpt-6',
+            object: 'response',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          });
+        }) as typeof globalThis.fetch;
+        const connection = conn(providerType);
+        const model = getAIModel({ connection, apiKey: 'test-token', modelId, fetch });
+
+        for (const level of entry.thinkingLevels) {
+          await model.doGenerate({
+            prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+            providerOptions: buildProviderOptions(connection, modelId, level),
+          });
+        }
+
+        assert.deepEqual(
+          requests.map((body) => (body.reasoning as { effort?: string } | undefined)?.effort),
+          entry.thinkingLevels,
+          `${providerType}/${modelId}`,
+        );
+      }
+    }
+  });
+
   test('does not route Maka tool_search history through OpenAI native tool_search validation', async () => {
     const connection = conn('openai-codex', 'codex-subscription');
     connection.defaultModel = 'gpt-5.6-sol';

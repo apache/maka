@@ -188,8 +188,6 @@ export const exclusionRules = [
       'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
-      'apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
-      'apps/desktop/resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
       'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
       'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
       'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',

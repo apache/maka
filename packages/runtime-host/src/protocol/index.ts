@@ -103,9 +103,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 184 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 185 as const;
+// 185: Combines epoch-184 Agent Graph previews with epoch-183 Jev policy frames.
 // 184: Agent Graph operator snapshots carry bounded output previews and metrics.
 // Older peers reject the additional `output` field on strict operator shapes.
+// 183: Jev policy snapshots, set_jev mutation and credential locator require matching peers.
 // 182: Executor catalogs expose structured model families and thinking variant IDs.
 // 181: Canonical executor models and retained provider stop reasons after cancellation.
 // 180: Reject contradictory executor configuration and legacy model targets.
