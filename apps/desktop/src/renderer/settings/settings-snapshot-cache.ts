@@ -39,6 +39,11 @@ export interface PermissionCenterSnapshot {
   readonly capabilities: CapabilitySnapshotCollection;
 }
 
+export interface SettingsSnapshotTarget {
+  readonly hostKey: string;
+  readonly generationKey: string;
+}
+
 export interface SettingsSnapshotCache {
   readClient(): AppSettings | undefined;
   commitClientRead(snapshot: AppSettings): void;
@@ -55,14 +60,45 @@ export interface SettingsSnapshotCache {
     snapshot: RuntimeHostConnectionsSnapshot,
   ): void;
 
-  readRuntimeHostHealth(key: string): HealthSnapshot | undefined;
-  commitRuntimeHostHealthRead(key: string, snapshot: HealthSnapshot): void;
+  readRuntimeHostHealth(target: SettingsSnapshotTarget): HealthSnapshot | undefined;
+  beginRuntimeHostHealthRead(target: SettingsSnapshotTarget): (snapshot: HealthSnapshot) => void;
 
-  readRuntimeHostPermissionCenter(key: string): PermissionCenterSnapshot | undefined;
-  commitRuntimeHostPermissionCenterRead(
-    key: string,
-    snapshot: PermissionCenterSnapshot,
-  ): void;
+  readRuntimeHostPermissionCenter(target: SettingsSnapshotTarget): PermissionCenterSnapshot | undefined;
+  beginRuntimeHostPermissionCenterRead(target: SettingsSnapshotTarget): (snapshot: PermissionCenterSnapshot) => void;
+}
+
+/** One incarnation per Host, with a commit authority that survives page unmounts. */
+function createHostSnapshotCache<T>() {
+  const entries = new Map<string, {
+    generationKey: string;
+    snapshot?: T;
+    latestRead?: object;
+  }>();
+  return {
+    read(target: SettingsSnapshotTarget): T | undefined {
+      const entry = entries.get(target.hostKey);
+      return entry?.generationKey === target.generationKey ? entry.snapshot : undefined;
+    },
+    beginRead(target: SettingsSnapshotTarget): (snapshot: T) => void {
+      const previous = entries.get(target.hostKey);
+      const entry = previous?.generationKey === target.generationKey
+        ? previous
+        : { generationKey: target.generationKey, snapshot: undefined, latestRead: undefined };
+      const read = {};
+      entry.latestRead = read;
+      entries.set(target.hostKey, entry);
+      return (snapshot) => {
+        if (entries.get(target.hostKey) === entry && entry.latestRead === read) {
+          entry.snapshot = snapshot;
+        }
+      };
+    },
+    prune(currentHostKeys: ReadonlySet<string>): void {
+      for (const key of entries.keys()) {
+        if (!currentHostKeys.has(key)) entries.delete(key);
+      }
+    },
+  };
 }
 
 /**
@@ -75,8 +111,8 @@ export function createSettingsSnapshotCache(): SettingsSnapshotCache {
   let runtimeHostCatalog: DesktopRuntimeHostProfileSnapshot | undefined;
   const runtimeHostSettings = new Map<string, RuntimeHostAppSettings>();
   const runtimeHostConnections = new Map<string, RuntimeHostConnectionsSnapshot>();
-  const runtimeHostHealth = new Map<string, HealthSnapshot>();
-  const runtimeHostPermissionCenter = new Map<string, PermissionCenterSnapshot>();
+  const runtimeHostHealth = createHostSnapshotCache<HealthSnapshot>();
+  const runtimeHostPermissionCenter = createHostSnapshotCache<PermissionCenterSnapshot>();
 
   return {
     readClient: () => client,
@@ -99,12 +135,8 @@ export function createSettingsSnapshotCache(): SettingsSnapshotCache {
       for (const key of runtimeHostConnections.keys()) {
         if (!currentHostKeys.has(key)) runtimeHostConnections.delete(key);
       }
-      for (const key of runtimeHostHealth.keys()) {
-        if (!currentHostKeys.has(key)) runtimeHostHealth.delete(key);
-      }
-      for (const key of runtimeHostPermissionCenter.keys()) {
-        if (!currentHostKeys.has(key)) runtimeHostPermissionCenter.delete(key);
-      }
+      runtimeHostHealth.prune(currentHostKeys);
+      runtimeHostPermissionCenter.prune(currentHostKeys);
     },
     readRuntimeHostSettings: (key) => runtimeHostSettings.get(key),
     commitRuntimeHostSettingsRead: (key, snapshot) => {
@@ -114,14 +146,10 @@ export function createSettingsSnapshotCache(): SettingsSnapshotCache {
     commitRuntimeHostConnectionsRead: (key, snapshot) => {
       runtimeHostConnections.set(key, snapshot);
     },
-    readRuntimeHostHealth: (key) => runtimeHostHealth.get(key),
-    commitRuntimeHostHealthRead: (key, snapshot) => {
-      runtimeHostHealth.set(key, snapshot);
-    },
-    readRuntimeHostPermissionCenter: (key) => runtimeHostPermissionCenter.get(key),
-    commitRuntimeHostPermissionCenterRead: (key, snapshot) => {
-      runtimeHostPermissionCenter.set(key, snapshot);
-    },
+    readRuntimeHostHealth: runtimeHostHealth.read,
+    beginRuntimeHostHealthRead: runtimeHostHealth.beginRead,
+    readRuntimeHostPermissionCenter: runtimeHostPermissionCenter.read,
+    beginRuntimeHostPermissionCenterRead: runtimeHostPermissionCenter.beginRead,
   };
 }
 

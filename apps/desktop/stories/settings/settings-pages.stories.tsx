@@ -22,6 +22,7 @@ import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider, useToast } from '@maka/ui';
+import { runtimeHostSettingsGenerationKey } from '../../src/renderer/settings/runtime-host-settings-target';
 import type {
   AppSettings,
   RuntimeHostAppSettings,
@@ -780,8 +781,12 @@ function seedGeneralSnapshotCache(cache: SettingsSnapshotCache): void {
 
 function seedSettingsPageTransitionSnapshotCache(cache: SettingsSnapshotCache): void {
   seedGeneralSnapshotCache(cache);
-  cache.commitRuntimeHostHealthRead(STORY_RUNTIME_HOST_KEY, healthSnapshot);
-  cache.commitRuntimeHostPermissionCenterRead(STORY_RUNTIME_HOST_KEY, {
+  const target = {
+    hostKey: STORY_RUNTIME_HOST_KEY,
+    generationKey: runtimeHostSettingsGenerationKey({ profileId: 'local', hostId: 'storybook-local-host' }),
+  };
+  cache.beginRuntimeHostHealthRead(target)(healthSnapshot);
+  cache.beginRuntimeHostPermissionCenterRead(target)({
     permissions: permissionSnapshot,
     capabilities: capabilitySnapshot,
   });

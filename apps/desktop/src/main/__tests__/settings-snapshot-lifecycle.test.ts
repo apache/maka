@@ -35,20 +35,15 @@ import {
 import {
   createSettingsSnapshotCache,
   runtimeHostSettingsKey,
-  type PermissionCenterSnapshot,
+  type SettingsSnapshotCache,
 } from '../../renderer/settings/settings-snapshot-cache.js';
-import type { SettingsHostTarget } from '../../renderer/settings/runtime-host-settings-target.js';
+import { runtimeHostSettingsGenerationKey, type SettingsHostTarget } from '../../renderer/settings/runtime-host-settings-target.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
-interface SnapshotPageProps<T> {
-  initialSnapshot?: T;
-  onSnapshot(key: string, snapshot: T): void;
-}
-
 let components: {
-  HealthCenterPage: ComponentType<SnapshotPageProps<HealthSnapshot>>;
-  PermissionCenterPage: ComponentType<SnapshotPageProps<PermissionCenterSnapshot>>;
-  RuntimeHostSettingsTarget: ComponentType<{ host: SettingsHostTarget; children: ReactNode }>;
+  HealthCenterPage: ComponentType<{ snapshotCache: SettingsSnapshotCache }>;
+  PermissionCenterPage: ComponentType<{ snapshotCache: SettingsSnapshotCache }>;
+  RuntimeHostSettingsTarget: ComponentType<{ host: SettingsHostTarget; generation?: string; children: ReactNode }>;
 };
 let bundleDirectory: string;
 
@@ -109,31 +104,50 @@ function pendingReads() {
   };
 }
 
+function snapshots(version = 0) {
+  return {
+    health: { ...HEALTH, checkedAt: HEALTH.checkedAt + version },
+    permissions: { ...PERMISSIONS, checkedAt: PERMISSIONS.checkedAt + version },
+    capabilities: { ...CAPABILITIES, checkedAt: CAPABILITIES.checkedAt + version },
+  };
+}
+
+function expectedSnapshot(page: 'health' | 'permissions', version = 0) {
+  const { health, permissions, capabilities } = snapshots(version);
+  return page === 'health' ? health : { permissions, capabilities };
+}
+
 function setup(page: 'health' | 'permissions') {
-  const { root } = installReactRenderer();
+  const { root, container } = installReactRenderer();
   const cache = createSettingsSnapshotCache();
   const first = pendingReads();
   const { health, permissions, capabilities } = first;
-  const readsByHost = new Map([[runtimeHostSettingsKey(HOST_A), first]]);
-  const readsFor = (host: SettingsHostTarget) => {
-    const key = runtimeHostSettingsKey(host);
-    if (!readsByHost.has(key)) readsByHost.set(key, pendingReads());
-    return readsByHost.get(key)!;
+  const batches = [first];
+  const readsAt = (index: number) => {
+    batches[index] ??= pendingReads();
+    return batches[index];
   };
+  let healthReads = 0;
+  let permissionReads = 0;
+  let capabilityReads = 0;
   const requests: SettingsHostTarget[] = [];
   Object.assign(window, {
     maka: {
-      health: { getSnapshot: (host: SettingsHostTarget) => { requests.push(host); return readsFor(host).health.promise; } },
-      permissions: { getSnapshot: (host: SettingsHostTarget) => { requests.push(host); return readsFor(host).permissions.promise; } },
-      capabilities: { getSnapshot: (host: SettingsHostTarget) => readsFor(host).capabilities.promise },
+      health: { getSnapshot: (host: SettingsHostTarget) => { requests.push(host); return readsAt(healthReads++).health.promise; } },
+      permissions: { getSnapshot: (host: SettingsHostTarget) => { requests.push(host); return readsAt(permissionReads++).permissions.promise; } },
+      capabilities: { getSnapshot: () => readsAt(capabilityReads++).capabilities.promise },
     },
   });
   return {
     cache, health, permissions, capabilities, requests,
-    read: (host: SettingsHostTarget) => page === 'health'
-      ? cache.readRuntimeHostHealth(runtimeHostSettingsKey(host))
-      : cache.readRuntimeHostPermissionCenter(runtimeHostSettingsKey(host)),
-    async render(host?: SettingsHostTarget) {
+    content: () => container.textContent,
+    read: (host: SettingsHostTarget, generation = 'epoch-1') => {
+      const target = { hostKey: runtimeHostSettingsKey(host), generationKey: runtimeHostSettingsGenerationKey(host, generation) };
+      return page === 'health'
+        ? cache.readRuntimeHostHealth(target)
+        : cache.readRuntimeHostPermissionCenter(target);
+    },
+    async render(host?: SettingsHostTarget, generation = 'epoch-1') {
       await act(async () => {
         root.render(host ? createElement(LocaleProvider, {
           locale: 'en',
@@ -141,21 +155,24 @@ function setup(page: 'health' | 'permissions') {
             children: createElement(ToastProvider, {
               children: createElement(components.RuntimeHostSettingsTarget, {
                 host,
+                generation,
                 key: runtimeHostSettingsKey(host),
                 children: page === 'health'
-                  ? createElement(components.HealthCenterPage, { onSnapshot: cache.commitRuntimeHostHealthRead })
-                  : createElement(components.PermissionCenterPage, { onSnapshot: cache.commitRuntimeHostPermissionCenterRead }),
+                  ? createElement(components.HealthCenterPage, { snapshotCache: cache })
+                  : createElement(components.PermissionCenterPage, { snapshotCache: cache }),
               }),
             }),
           }),
         }) : null);
       });
     },
-    async finish() {
+    async finish(index = 0, version = 0) {
+      const reads = readsAt(index);
+      const result = snapshots(version);
       await act(async () => {
-        health.resolve(HEALTH);
-        permissions.resolve(PERMISSIONS);
-        capabilities.resolve(CAPABILITIES);
+        reads.health.resolve(result.health);
+        reads.permissions.resolve(result.permissions);
+        reads.capabilities.resolve(result.capabilities);
       });
     },
   };
@@ -175,6 +192,55 @@ for (const page of ['health', 'permissions'] as const) {
       assert.equal(harness.read(HOST_B), undefined);
     });
   }
+
+  test(`${page}: a same-key epoch change retires the pending page read without a readiness dip`, async () => {
+    const harness = setup(page);
+    await harness.render(HOST_A, 'epoch-1');
+    await harness.render(HOST_A, 'epoch-2');
+    assert.deepEqual(harness.requests, [HOST_A, HOST_A]);
+    await harness.render();
+    await harness.finish(1, 1);
+    await harness.finish(0);
+
+    assert.equal(harness.read(HOST_A, 'epoch-1'), undefined);
+    assert.deepEqual(harness.read(HOST_A, 'epoch-2'), expectedSnapshot(page, 1));
+  });
+
+  test(`${page}: a reconnect cannot seed the new page from the previous incarnation`, async () => {
+    const harness = setup(page);
+    await harness.render(HOST_A, 'epoch-1');
+    await harness.render();
+    await harness.finish();
+    assert.deepEqual(harness.read(HOST_A, 'epoch-1'), expectedSnapshot(page));
+
+    await harness.render(HOST_A, 'epoch-2');
+    assert.equal(harness.read(HOST_A, 'epoch-2'), undefined);
+    await harness.render();
+    await harness.finish(1, 1);
+    assert.deepEqual(harness.read(HOST_A, 'epoch-2'), expectedSnapshot(page, 1));
+  });
+
+  test(`${page}: a same-key epoch change clears the displayed snapshot before the new read finishes`, async () => {
+    const harness = setup(page);
+    await harness.render(HOST_A, 'epoch-1');
+    await harness.finish();
+    assert.notEqual(harness.content(), '', 'the first incarnation has rendered its snapshot');
+
+    await harness.render(HOST_A, 'epoch-2');
+    assert.equal(harness.content(), '', 'only the loading skeleton remains for the new incarnation');
+    assert.deepEqual(harness.requests, [HOST_A, HOST_A]);
+  });
+
+  test(`${page}: a slow unmounted read cannot overwrite a newer completed read`, async () => {
+    const harness = setup(page);
+    await harness.render(HOST_A);
+    await harness.render();
+    await harness.render(HOST_A);
+    await harness.render();
+    await harness.finish(1, 1);
+    await harness.finish(0);
+    assert.deepEqual(harness.read(HOST_A), expectedSnapshot(page, 1));
+  });
 }
 
 test('permissions: unmounting between the two snapshot results only caches a complete pair', async () => {

@@ -64,7 +64,6 @@ import type {
   DesktopSessionSummary,
 } from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
-import type { HealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
 import {
   Banner,
@@ -133,7 +132,6 @@ import {
 import {
   runtimeHostSettingsKey,
   settingsSnapshotCacheFor,
-  type PermissionCenterSnapshot,
   type RuntimeHostConnectionsSnapshot,
   type SettingsSnapshotCache,
 } from './settings-snapshot-cache.js';
@@ -1082,14 +1080,7 @@ function SettingsSurfaceContent(
                             archivedTasks={props.archivedTasks}
                             onTaskImported={props.onTaskImported}
                             onRemoteHostAdded={props.onRemoteHostAdded}
-                            healthSnapshot={selectedRuntimeHostKey
-                              ? snapshotCache.readRuntimeHostHealth(selectedRuntimeHostKey)
-                              : undefined}
-                            permissionCenterSnapshot={selectedRuntimeHostKey
-                              ? snapshotCache.readRuntimeHostPermissionCenter(selectedRuntimeHostKey)
-                              : undefined}
-                            onHealthSnapshot={snapshotCache.commitRuntimeHostHealthRead}
-                            onPermissionCenterSnapshot={snapshotCache.commitRuntimeHostPermissionCenterRead}
+                            snapshotCache={snapshotCache}
                             openProviderCatalog={providerCatalogRequested}
                             initialConnectionSlug={props.initialConnectionSlug}
                             initialCreateProviderType={createProviderRequest}
@@ -1152,10 +1143,7 @@ function SettingsPageBody(props: {
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
   onRemoteHostAdded(profileId: string): void;
-  healthSnapshot?: HealthSnapshot;
-  permissionCenterSnapshot?: PermissionCenterSnapshot;
-  onHealthSnapshot: Parameters<typeof HealthCenterPage>[0]['onSnapshot'];
-  onPermissionCenterSnapshot: Parameters<typeof PermissionCenterPage>[0]['onSnapshot'];
+  snapshotCache: SettingsSnapshotCache;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -1289,19 +1277,9 @@ function SettingsPageBody(props: {
         />
       );
     case 'permissions':
-      return (
-        <PermissionCenterPage
-          initialSnapshot={props.permissionCenterSnapshot}
-          onSnapshot={props.onPermissionCenterSnapshot}
-        />
-      );
+      return <PermissionCenterPage snapshotCache={props.snapshotCache} />;
     case 'health':
-      return (
-        <HealthCenterPage
-          initialSnapshot={props.healthSnapshot}
-          onSnapshot={props.onHealthSnapshot}
-        />
-      );
+      return <HealthCenterPage snapshotCache={props.snapshotCache} />;
     case 'memory':
       // PR-SETTINGS-REVIEW-0 (WAWQAQ msg `886f6406`): the merged
       // memory-review page was too dense; 记忆 is its own page again.

@@ -18,7 +18,7 @@
  */
 
 import type { StatusSemantic } from '@maka/ui';
-import { useEffect, useState, type ComponentType } from 'react';
+import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import {
   ICON_SIZE,
   Accessibility as AccessibilityIcon,
@@ -61,13 +61,14 @@ import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/p
 import { botStatusReasonCopy } from '../locales/settings-bot-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import {
+  RuntimeHostSettingsGenerationBoundary,
   runtimeHostSettingsKey,
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
 import { dotForStatus } from '@maka/ui';
 import { SettingsSkeletonStack } from './settings-skeleton';
-import type { PermissionCenterSnapshot } from './settings-snapshot-cache.js';
+import type { SettingsSnapshotCache } from './settings-snapshot-cache.js';
 import { useActionGuard } from './use-action-guard';
 import {
   SettingsStatusSummaryFilter,
@@ -102,19 +103,30 @@ const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = 
 
 type PermissionStatusFilter = 'granted' | 'pending' | 'denied' | 'other';
 
-export function PermissionCenterPage(props: {
-  initialSnapshot?: PermissionCenterSnapshot;
-  onSnapshot(key: string, snapshot: PermissionCenterSnapshot): void;
-}) {
+interface PermissionCenterPageProps {
+  snapshotCache: SettingsSnapshotCache;
+}
+
+export function PermissionCenterPage(props: PermissionCenterPageProps) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      {(generationKey) => <PermissionCenterContent {...props} generationKey={generationKey} />}
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function PermissionCenterContent(props: PermissionCenterPageProps & { generationKey: string }) {
   const host = useRuntimeHostSettingsTarget();
+  const { generationKey } = props;
+  const snapshotTarget = useMemo(
+    () => ({ hostKey: runtimeHostSettingsKey(host), generationKey }),
+    [host, generationKey],
+  );
   const locale = useUiLocale();
   const copy = getPermissionCenterCopy(locale);
-  const [permissions, setPermissions] = useState<PermissionSnapshot | null>(
-    () => props.initialSnapshot?.permissions ?? null,
-  );
-  const [capabilities, setCapabilities] = useState<CapabilitySnapshotCollection | null>(
-    () => props.initialSnapshot?.capabilities ?? null,
-  );
+  const initialSnapshot = props.snapshotCache.readRuntimeHostPermissionCenter(snapshotTarget);
+  const [permissions, setPermissions] = useState<PermissionSnapshot | null>(initialSnapshot?.permissions ?? null);
+  const [capabilities, setCapabilities] = useState<CapabilitySnapshotCollection | null>(initialSnapshot?.capabilities ?? null);
   const [loading, setLoading] = useState(permissions === null || capabilities === null);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -126,6 +138,7 @@ export function PermissionCenterPage(props: {
 
   useEffect(() => {
     let cancelled = false;
+    const commitSnapshot = props.snapshotCache.beginRuntimeHostPermissionCenterRead(snapshotTarget);
     setLoading(true);
     setError(null);
     Promise.all([
@@ -134,7 +147,7 @@ export function PermissionCenterPage(props: {
     ])
       .then(([perm, caps]) => {
         // Keep complete reads in this Host's cache after navigation.
-        props.onSnapshot(runtimeHostSettingsKey(host), {
+        commitSnapshot({
           permissions: perm,
           capabilities: caps,
         });
@@ -151,7 +164,7 @@ export function PermissionCenterPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [host, locale, props.onSnapshot, refreshTick]);
+  }, [host, locale, props.snapshotCache, snapshotTarget, refreshTick]);
 
   useEffect(() => {
     const refreshAfterSystemSettings = () => {

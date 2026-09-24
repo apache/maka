@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type {
   HealthSignal,
   HealthSignalLayer,
@@ -35,7 +35,12 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { dotForStatus } from '@maka/ui';
-import { runtimeHostSettingsKey, useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  RuntimeHostSettingsGenerationBoundary,
+  runtimeHostSettingsKey,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
+import type { SettingsSnapshotCache } from './settings-snapshot-cache.js';
 import {
   SettingsStatusSummaryFilter,
   type SettingsStatusSummaryOption,
@@ -56,15 +61,29 @@ import {
  * Read-only boundary: no test buttons, no repair flows. Test/repair entries
  * will be wired in PR-HC-2 once typed actions are exposed.
 */
-export function HealthCenterPage(props: {
-  initialSnapshot?: HealthSnapshot;
-  onSnapshot(key: string, snapshot: HealthSnapshot): void;
-}) {
+interface HealthCenterPageProps {
+  snapshotCache: SettingsSnapshotCache;
+}
+
+export function HealthCenterPage(props: HealthCenterPageProps) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      {(generationKey) => <HealthCenterContent {...props} generationKey={generationKey} />}
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function HealthCenterContent(props: HealthCenterPageProps & { generationKey: string }) {
   const host = useRuntimeHostSettingsTarget();
+  const { generationKey } = props;
+  const snapshotTarget = useMemo(
+    () => ({ hostKey: runtimeHostSettingsKey(host), generationKey }),
+    [host, generationKey],
+  );
   const locale = useUiLocale();
   const copy = getHealthCenterCopy(locale);
   const [snapshot, setSnapshot] = useState<HealthSnapshot | null>(
-    () => props.initialSnapshot ?? null,
+    () => props.snapshotCache.readRuntimeHostHealth(snapshotTarget) ?? null,
   );
   const [loading, setLoading] = useState(snapshot === null);
   const [error, setError] = useState<string | null>(null);
@@ -73,13 +92,14 @@ export function HealthCenterPage(props: {
 
   useEffect(() => {
     let cancelled = false;
+    const commitSnapshot = props.snapshotCache.beginRuntimeHostHealthRead(snapshotTarget);
     setLoading(true);
     setError(null);
     window.maka.health
       .getSnapshot(host)
       .then((next) => {
         // Keep successful reads in this Host's cache after navigation.
-        props.onSnapshot(runtimeHostSettingsKey(host), next);
+        commitSnapshot(next);
         if (cancelled) return;
         setSnapshot(next);
         setLoading(false);
@@ -92,7 +112,7 @@ export function HealthCenterPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [host, locale, props.onSnapshot, refreshTick]);
+  }, [host, locale, props.snapshotCache, snapshotTarget, refreshTick]);
 
   useEffect(() => {
     if (!snapshot) return;

@@ -37,7 +37,7 @@ import {
 } from '../../../daily-review-actions.js';
 import { getShellCopy } from '../../../locales/shell-copy.js';
 import { getShellRemainingCopy } from '../../../locales/shell-remaining-copy.js';
-import type { ModuleHubRuntimeHostRef, ModuleHubServices } from '../ports.js';
+import type { ModuleHubRuntimeHostChangedEvent, ModuleHubRuntimeHostRef, ModuleHubServices } from '../ports.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   defaultRuntimeHostOperationHost,
@@ -152,17 +152,29 @@ async function readCurrentDefaultHost<T>(
 export function createDailyReviewBridge(
   services: ModuleHubServices,
   locale: UiLocale,
-): DailyReviewBridge & { invalidateCache(): void } {
+): DailyReviewBridge & {
+  invalidateCache(): void;
+  handleHostChange(event: ModuleHubRuntimeHostChangedEvent): void;
+} {
   const copy = getShellRemainingCopy(locale).dailyReview;
   // Every leaf mount starts on today. Keep only that snapshot, rather than
   // retaining an unbounded history of date/range selections in the renderer.
-  let cachedToday: { dayStart: number; summary: DailyReviewSummary } | undefined;
+  let cachedToday: { dayStart: number; summary: DailyReviewSummary; host: ModuleHubRuntimeHostRef } | undefined;
+  let pendingTodayHost: ModuleHubRuntimeHostRef | undefined;
   let generation = 0;
   let latestTodayRead = 0;
+  function invalidateCache() {
+    cachedToday = undefined;
+    pendingTodayHost = undefined;
+    generation += 1;
+  }
   return {
-    invalidateCache() {
-      cachedToday = undefined;
-      generation += 1;
+    invalidateCache,
+    handleHostChange(event) {
+      if (
+        event.isDefault || event.profileId === cachedToday?.host.profileId
+        || event.profileId === pendingTodayHost?.profileId
+      ) invalidateCache();
     },
     readCachedDay(offsetDays, daySpan = 1) {
       if (offsetDays !== 0 || daySpan !== 1) return undefined;
@@ -174,22 +186,25 @@ export function createDailyReviewBridge(
       const read = cachesToday ? ++latestTodayRead : 0;
       const readGeneration = generation;
       const dayStart = localDayBoundsAt(Date.now(), 0).fromMs;
-      const summary = await readCurrentDefaultHost(services, async (host) => {
+      try {
+        const { summary, host } = await readCurrentDefaultHost(services, async (host) => {
+          signal?.throwIfAborted();
+          if (cachesToday && read === latestTodayRead && readGeneration === generation) {
+            pendingTodayHost = host;
+          }
+          const result = await services.dailyReview.day(offsetDays, daySpan, host);
+          if (!result.ok) throw new Error(result.error.message);
+          return { summary: result.data, host };
+        });
         signal?.throwIfAborted();
-        const result = await services.dailyReview.day(
-          offsetDays,
-          daySpan,
-          host,
-        );
-        if (!result.ok) throw new Error(result.error.message);
-        return result.data;
-      });
-      signal?.throwIfAborted();
-      if (
-        cachesToday && read === latestTodayRead && readGeneration === generation
-        && dayStart === localDayBoundsAt(Date.now(), 0).fromMs
-      ) cachedToday = { dayStart, summary };
-      return summary;
+        if (
+          cachesToday && read === latestTodayRead && readGeneration === generation
+          && dayStart === localDayBoundsAt(Date.now(), 0).fromMs
+        ) cachedToday = { dayStart, summary, host };
+        return summary;
+      } finally {
+        if (cachesToday && read === latestTodayRead) pendingTodayHost = undefined;
+      }
     },
     runOnce(input) {
       return services.dailyReview.runOnce(input);
@@ -217,7 +232,7 @@ export function useDailyReviewController(
     [input.services, input.uiLocale],
   );
   useEffect(() => {
-    const unsubscribe = input.services.runtimeHosts.subscribeChanges(() => bridge.invalidateCache());
+    const unsubscribe = input.services.runtimeHosts.subscribeChanges(bridge.handleHostChange);
     return () => {
       unsubscribe();
       bridge.invalidateCache();

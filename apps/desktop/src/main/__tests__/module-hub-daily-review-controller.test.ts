@@ -156,6 +156,43 @@ test('a new local day cannot reuse yesterday as today or cache an overnight read
   assert.equal(bridge.readCachedDay?.(0, 1), undefined);
 });
 
+test('unrelated Host events preserve both the cached day and an in-flight refresh', async () => {
+  const pending = deferred<{ ok: true; data: DailyReviewSummary }>();
+  let reads = 0;
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(async () => ++reads === 1
+      ? { ok: true, data: summary(1) }
+      : pending.promise),
+  }), 'en');
+  const first = await bridge.fetchDay(0, 1);
+  const refresh = bridge.fetchDay(0, 1);
+  await Promise.resolve();
+  for (const readiness of ['connecting', 'ready', 'reconnecting', 'unavailable'] as const) {
+    bridge.handleHostChange({ profileId: 'unrelated', readiness, isDefault: false });
+    assert.equal(bridge.readCachedDay?.(0, 1), first);
+  }
+  bridge.handleHostChange({ profileId: 'unrelated', readiness: 'unavailable', isDefault: false, removed: true });
+  pending.resolve({ ok: true, data: summary(2) });
+  const fresh = await refresh;
+  assert.equal(bridge.readCachedDay?.(0, 1), fresh);
+
+  bridge.handleHostChange({ profileId: 'local', readiness: 'unavailable', isDefault: false, removed: true });
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+});
+
+test('a former default Host event fences a cold read before there is a cached day', async () => {
+  const pending = deferred<{ ok: true; data: DailyReviewSummary }>();
+  const bridge = createDailyReviewBridge(createFakeModuleHubServices({
+    dailyReview: dailyReviewService(() => pending.promise),
+  }), 'en');
+  const loading = bridge.fetchDay(0, 1);
+  await Promise.resolve();
+  bridge.handleHostChange({ profileId: 'local', readiness: 'ready', isDefault: false });
+  pending.resolve({ ok: true, data: summary(1) });
+  await loading;
+  assert.equal(bridge.readCachedDay?.(0, 1), undefined);
+});
+
 test('the controller invalidates cached and pending reads on Host changes and disposes its subscription', async () => {
   const { root } = installReactRenderer();
   const hostA = { profileId: 'a', hostId: 'a' };
@@ -193,6 +230,9 @@ test('the controller invalidates cached and pending reads on Host changes and di
   await bridge.fetchDay(0, 1);
   await act(async () => root.render(createElement(Probe)));
   assert.equal(controller!.bridge, bridge);
+  assert.ok(bridge.readCachedDay?.(0, 1));
+  assert.ok(listener);
+  listener({ profileId: 'unrelated', readiness: 'reconnecting', isDefault: false });
   assert.ok(bridge.readCachedDay?.(0, 1));
   const loading = bridge.fetchDay(0, 1);
   await Promise.resolve();
