@@ -96,31 +96,70 @@ const schema = z.object({
   maxFires: z.number().int().min(1).max(10_000).optional(),
 });
 
-export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAuthority }): MakaTool {
+/**
+ * Renders an epoch in the Host's local time zone with an explicit offset, so a
+ * model can turn "today at 10:00" into `runAt` without a shell round trip.
+ */
+export function formatScheduledTaskLocalTime(epochMs: number, timeZone?: string): string {
+  const zone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'longOffset',
+    })
+      .formatToParts(epochMs)
+      .map((part) => [part.type, part.value]),
+  );
+  const offset = parts.timeZoneName === 'GMT' ? '+00:00' : parts.timeZoneName?.replace('GMT', '');
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset} (${zone})`;
+}
+
+export function buildScheduledTaskTool(deps: {
+  authority: ScheduledTaskToolAuthority;
+  now?: () => number;
+  timeZone?: string;
+}): MakaTool {
+  const now = deps.now ?? Date.now;
+  const clockLine = () => {
+    const at = now();
+    return `now=${at} (${formatScheduledTaskLocalTime(at, deps.timeZone)})`;
+  };
+  const fireLine = (epochMs: number | null) =>
+    epochMs === null ? '—' : `${epochMs} (${formatScheduledTaskLocalTime(epochMs, deps.timeZone)})`;
   return {
     name: SCHEDULED_TASK_TOOL_NAME,
     displayName: 'ScheduledTask',
     description:
       'Create and manage global scheduled tasks (定时任务). ' +
       'Use for every recurring or one-shot task. All tasks appear in the desktop Scheduled tasks page. ' +
-      'The default session_resume effect continues this conversation; use agent_run for independent work.',
+      'The default session_resume effect continues this conversation; use agent_run for independent work. ' +
+      'Times are epoch milliseconds. Every result reports the current Host time and time zone; ' +
+      'call mode=list first when you need it to compute runAt or startAt.',
     parameters: schema,
     impl: async (raw, ctx) => {
       const input = schema.parse(raw);
       const sessionId = ctx.sessionId;
       if (input.mode === 'list') {
         const tasks = await deps.authority.list();
-        if (tasks.length === 0) return 'No scheduled tasks.';
-        return tasks
-          .map(
+        if (tasks.length === 0) return `No scheduled tasks.\n${clockLine()}`;
+        return [
+          ...tasks.map(
             (task) =>
-              `- ${task.id} | ${task.title} | ${task.status} | next=${task.nextFireAt ?? '—'} | effect=${task.effect.kind}`,
-          )
-          .join('\n');
+              `- ${task.id} | ${task.title} | ${task.status} | next=${fireLine(task.nextFireAt)} | effect=${task.effect.kind}`,
+          ),
+          clockLine(),
+        ].join('\n');
       }
       if (input.mode === 'create') {
         if (!input.title || !input.intentBody || !input.schedule) {
-          return 'create requires title, intentBody, and schedule';
+          return `create requires title, intentBody, and schedule\n${clockLine()}`;
         }
         const result = await deps.authority.create({
           title: input.title,
@@ -130,8 +169,8 @@ export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAutho
           sessionId,
           ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
         });
-        if ('error' in result) return result.error;
-        return `Scheduled task created: ${result.title} (${result.id})\nnextFireAt=${result.nextFireAt}\neffect=${result.effect.kind}`;
+        if ('error' in result) return `${result.error}\n${clockLine()}`;
+        return `Scheduled task created: ${result.title} (${result.id})\nnextFireAt=${fireLine(result.nextFireAt)}\neffect=${result.effect.kind}\n${clockLine()}`;
       }
       if (!input.id) return `${input.mode} requires id`;
       if (input.mode === 'pause') {
