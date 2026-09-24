@@ -27,11 +27,12 @@ import {
 } from '../notifications-policy.js';
 
 it('gates native notifications through every required condition', () => {
-  const base = { enabled: true, supported: true, incognito: false, e2e: false };
+  const base = { enabled: true, supported: true, windowFocused: false, incognito: false, e2e: false };
   const cases = [
     [base, true],
     [{ ...base, enabled: false }, false],
     [{ ...base, supported: false }, false],
+    [{ ...base, windowFocused: true }, false],
     [{ ...base, incognito: true }, false],
     [{ ...base, e2e: true }, false],
   ] as const;

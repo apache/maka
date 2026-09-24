@@ -42,6 +42,12 @@ export interface RunNotificationGate {
   /** Electron `Notification.isSupported()` for the current platform. */
   readonly supported: boolean;
   /**
+   * Whether the main window currently holds OS focus. We suppress the
+   * notification when focused — the user is already looking at Maka, so
+   * a banner would be pure noise.
+   */
+  readonly windowFocused: boolean;
+  /**
    * `settings.privacy.incognitoActive`. A banner carries the session
    * name + reply/error preview *outside* the app (Notification Center,
    * lock screen), which contradicts incognito, so we suppress entirely
@@ -58,7 +64,7 @@ export interface RunNotificationGate {
  * the predicate is a plain conjunction.
  */
 export function shouldRaiseRunNotification(gate: RunNotificationGate): boolean {
-  return gate.enabled && gate.supported && !gate.incognito && !gate.e2e;
+  return gate.enabled && gate.supported && !gate.windowFocused && !gate.incognito && !gate.e2e;
 }
 
 export interface RunNotificationCopy {
