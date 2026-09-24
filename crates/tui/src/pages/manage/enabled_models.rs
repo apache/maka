@@ -334,14 +334,12 @@ impl App {
                 }
                 Some((state.search.insert(text), None))
             }
-            Event::Mouse(mouse)
-                if state
-                    .search
-                    .contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                    || state.search.dragging() =>
-            {
-                self.layer.focus("search");
-                Some((state.search.mouse(*mouse) || !focused, None))
+            Event::Mouse(mouse) if state.search.takes(mouse) => {
+                let press = matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_));
+                if press {
+                    self.layer.focus("search");
+                }
+                Some((state.search.mouse(*mouse) || (press && !focused), None))
             }
             _ => None,
         }

@@ -1335,11 +1335,10 @@ impl App {
                 {
                     Some((dialog.editor.key(*key), None))
                 }
-                Event::Mouse(mouse)
-                    if dialog.editor.contains((mouse.column, mouse.row).into())
-                        || dialog.editor.dragging() =>
-                {
-                    self.layer.focus("field");
+                Event::Mouse(mouse) if dialog.editor.takes(mouse) => {
+                    if matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_)) {
+                        self.layer.focus("field");
+                    }
                     Some((dialog.editor.mouse(*mouse), None))
                 }
                 _ => None,
@@ -1383,14 +1382,12 @@ impl App {
                 }
                 Some((dialog.editor.insert(&text.replace(['\n', '\r'], " ")), None))
             }
-            Event::Mouse(mouse)
-                if dialog
-                    .editor
-                    .contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                    || dialog.editor.dragging() =>
-            {
-                self.layer.focus("field");
-                Some((dialog.editor.mouse(*mouse) || !focused, None))
+            Event::Mouse(mouse) if dialog.editor.takes(mouse) => {
+                let press = matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_));
+                if press {
+                    self.layer.focus("field");
+                }
+                Some((dialog.editor.mouse(*mouse) || (press && !focused), None))
             }
             _ => None,
         }

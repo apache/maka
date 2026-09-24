@@ -209,16 +209,15 @@ impl App {
                 Some((changed, None))
             }
             Event::Mouse(mouse) => {
-                let point = (mouse.column, mouse.row).into();
                 let (field, key) = [(&mut editor.name, view::NAME), (&mut editor.hex, view::HEX)]
                     .into_iter()
-                    .find(|(field, _)| field.contains(point) || field.dragging())?;
+                    .find(|(field, _)| field.takes(mouse))?;
                 let changed = field.mouse(*mouse);
-                self.layer.focus(key);
-                Some((
-                    changed || matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_)),
-                    None,
-                ))
+                if matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_)) {
+                    self.layer.focus(key);
+                    return Some((true, None));
+                }
+                Some((changed, None))
             }
             _ => None,
         }

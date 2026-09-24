@@ -19,7 +19,7 @@
 
 mod input;
 mod view;
-pub use view::draw;
+pub(crate) use view::{draw_field, sheet};
 
 use crate::{
     app::{Action, App, ConnectionState},
@@ -33,7 +33,8 @@ use std::collections::BTreeSet;
 pub enum Command {
     Open,
     Close,
-    Provider,
+    Provider(usize),
+    /// Focuses a setup field.
     Field(usize),
     Verify,
     Toggle(String),
@@ -45,7 +46,7 @@ impl Command {
         match self {
             Self::Open => "onboard-title",
             Self::Close => "session-cancel",
-            Self::Provider => "onboard-provider",
+            Self::Provider(_) => "onboard-provider",
             Self::Field(_) => "onboard-title",
             Self::Verify => "onboard-verify",
             Self::Toggle(_) => "onboard-models",
@@ -107,16 +108,11 @@ pub struct Form {
     fields: [Editor; 3],
     models: Option<Vec<ModelInfo>>,
     selected: BTreeSet<String>,
-    row: usize,
-    focus: usize,
     pub visible: bool,
     blocked: bool,
     error: Option<&'static str>,
 }
 impl Form {
-    fn count(&self) -> usize {
-        if self.models.is_some() { 4 } else { 6 }
-    }
     fn input(&self) -> OnboardingInput {
         let provider = &self.providers[self.provider];
         let name = self.fields[0].text().trim();
@@ -151,6 +147,15 @@ impl App {
                 && !self.interactions.visible
                 && self.queue.edit.is_none();
         }
+        if self.onboarding.dialog.is_some() && *c == Command::Close {
+            return !self.onboarding.pending.as_ref().is_some_and(|p| p.save);
+        }
+        self.onboarding.pending.is_none() && self.onboarding_offered(c)
+    }
+    /// Whether the form offers `c`, before a request in flight is
+    /// considered: its control (and the focus on it) stays while the service
+    /// is asked, and using it then does nothing.
+    pub(super) fn onboarding_offered(&self, c: &Command) -> bool {
         let Some(form) = &self.onboarding.dialog else {
             return false;
         };
@@ -158,12 +163,7 @@ impl App {
             return !self.onboarding.pending.as_ref().is_some_and(|p| p.save);
         }
         let identity = matches!(&self.connection,ConnectionState::Connected{root_id,epoch} if *root_id==form.ticket.root && *epoch==form.ticket.epoch);
-        if !form.visible
-            || form.blocked
-            || !identity
-            || form.providers.is_empty()
-            || self.onboarding.pending.is_some()
-        {
+        if !form.visible || form.blocked || !identity || form.providers.is_empty() {
             return false;
         }
         match c {
@@ -189,7 +189,7 @@ impl App {
                 .is_some_and(|m| m.iter().any(|m| m.id == *id)),
             Command::Back => form.models.is_some(),
             Command::Field(index) => form.models.is_none() && *index < 3,
-            Command::Provider => form.models.is_none(),
+            Command::Provider(index) => form.models.is_none() && *index < form.providers.len(),
             _ => false,
         }
     }
@@ -217,8 +217,6 @@ impl App {
                     ],
                     models: None,
                     selected: BTreeSet::new(),
-                    row: 0,
-                    focus: 0,
                     visible: false,
                     blocked: false,
                     error: None,
@@ -234,8 +232,11 @@ impl App {
                 };
                 f.error = None;
                 match c {
-                    Command::Provider => {
-                        f.provider = (f.provider + 1) % f.providers.len();
+                    Command::Provider(index) => {
+                        if index == f.provider {
+                            return None;
+                        }
+                        f.provider = index;
                         f.fields[1] = Editor::bounded(64 * 1024, "onboard-field-invalid");
                         f.fields[1].insert(
                             &f.providers[f.provider]
@@ -243,9 +244,8 @@ impl App {
                                 .configuration_defaults
                                 .to_string(),
                         );
-                        f.focus = 0;
                     }
-                    Command::Field(index) => f.focus = index + 1,
+                    Command::Field(index) => self.layer.focus_path(&view::row_path(index)),
                     Command::Toggle(id) => {
                         if !f.selected.contains(&id) && f.selected.len() >= 512 {
                             f.error = Some("onboard-model-limit");
@@ -254,21 +254,15 @@ impl App {
                         if !f.selected.remove(&id) {
                             f.selected.insert(id.clone());
                         }
-                        if let Some(models) = &f.models {
-                            f.row = models.iter().position(|m| m.id == id).unwrap_or(0);
-                        }
-                        f.focus = 0;
                     }
                     Command::Back => {
                         f.models = None;
                         f.selected.clear();
-                        f.focus = 0;
                     }
                     _ => {}
                 }
             }
         }
-        self.hits.clear();
         None
     }
     pub fn onboarding_catalog_loaded(&mut self) {
@@ -336,8 +330,6 @@ impl App {
             Ok(ResultValue::Verified(OnboardingVerifyResult::Verified { models })) => {
                 f.models = Some(models);
                 f.selected.clear();
-                f.row = 0;
-                f.focus = 0;
                 f.error = None;
             }
             Ok(ResultValue::Saved(OnboardingSaveResult::Saved { .. })) => {
@@ -548,7 +540,7 @@ mod tests {
         );
         terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
         app.input(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
-        assert_eq!(app.onboarding.dialog.as_ref().unwrap().row, 1);
+        assert_eq!(app.layer.focused_path(), Some("list/rows/1"));
         app.input(Event::Mouse(MouseEvent {
             kind: MouseEventKind::ScrollUp,
             column: 0,
@@ -556,8 +548,8 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         }));
         assert_eq!(
-            app.onboarding.dialog.as_ref().unwrap().row,
-            1,
+            app.layer.focused_path(),
+            Some("list/rows/1"),
             "wheel outside the modal cannot move its model list"
         );
         app.input(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
@@ -565,12 +557,7 @@ mod tests {
             !app.onboarding_enabled(&Command::Save),
             "no silent enable-all default"
         );
-        let hit = app
-            .hits
-            .iter()
-            .find(|h| h.action == Action::Onboard(Command::Toggle("model".into())))
-            .unwrap()
-            .area;
+        let hit = app.layer.rect("list/rows/0").unwrap();
         app.input(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: hit.x,
@@ -579,13 +566,7 @@ mod tests {
         }));
         assert!(app.onboarding_enabled(&Command::Save));
         terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
-        let save_y = app
-            .hits
-            .iter()
-            .find(|h| h.action == Action::Onboard(Command::Save))
-            .unwrap()
-            .area
-            .y;
+        let save_y = app.layer.rect("footer/save").unwrap().y;
         assert!(
             save_y - hit.y < 10,
             "small model inventories keep a compact dialog"
@@ -603,6 +584,7 @@ mod tests {
                 models: vec![model],
             })),
         );
+        terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
         app.input(Event::Key(KeyEvent::new(
             KeyCode::Char(' '),
             KeyModifiers::NONE,
@@ -636,5 +618,43 @@ mod tests {
         );
         app.abandon_onboarding();
         assert!(app.onboarding.dialog.as_ref().unwrap().blocked);
+    }
+
+    #[test]
+    fn a_chooser_open_over_a_field_takes_the_click() {
+        let mut app = App::new(
+            "/unused".into(),
+            I18n::new(LocalePreference::Explicit(Locale::En), Locale::En),
+        );
+        app.connection = ConnectionState::Connected {
+            root_id: "root".into(),
+            epoch: "epoch".into(),
+        };
+        app.providers = crate::providers::fixtures::catalog();
+        app.apply(Action::Onboard(Command::Open));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
+        app.layer.focus_path("form/provider");
+        app.input(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
+        assert!(app.layer.captures());
+        // The chooser's first row lies over the configuration field.
+        let owner = app.layer.rect("form/provider").unwrap();
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.input(Event::Mouse(MouseEvent {
+                kind,
+                column: owner.right() - 3,
+                row: owner.y + 2,
+                modifiers: KeyModifiers::NONE,
+            }));
+        }
+        assert!(!app.layer.captures(), "the choice was made");
+        assert_eq!(app.layer.focused_path(), Some("form/provider"));
     }
 }

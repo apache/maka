@@ -370,15 +370,14 @@ pub(in crate::pages::manage::enabled_models) fn input(
         Event::Mouse(mouse) => {
             let point = Position::new(mouse.column, mouse.row);
             let fields = draft.fields.clone();
-            if let Some(text) = draft
-                .texts
-                .iter_mut()
-                .find(|text| text.editor.contains(point) || text.editor.dragging())
-            {
+            if let Some(text) = draft.texts.iter_mut().find(|text| text.editor.takes(mouse)) {
                 let index = fields.iter().position(|field| *field == text.field)?;
-                text.editor.mouse(*mouse);
-                app.layer.focus_path(&format!("{ROWS}/{index}"));
-                return Some((true, None));
+                let changed = text.editor.mouse(*mouse);
+                if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                    app.layer.focus_path(&format!("{ROWS}/{index}"));
+                    return Some((true, None));
+                }
+                return Some((changed, None));
             }
             if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
                 return None;

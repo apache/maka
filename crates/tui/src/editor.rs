@@ -149,6 +149,17 @@ impl Editor {
         self.dragging
     }
 
+    /// Whether a pointer event is this editor's: a press or the wheel over
+    /// it, or anything while it drags a selection it began. Passing over it
+    /// or releasing a press made elsewhere is not.
+    pub fn takes(&self, mouse: &MouseEvent) -> bool {
+        self.dragging
+            || (matches!(
+                mouse.kind,
+                MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ) && self.contains(Position::new(mouse.column, mouse.row)))
+    }
+
     fn reflow(&mut self) {
         self.layout = Layout::new(&self.text, self.layout.width);
     }

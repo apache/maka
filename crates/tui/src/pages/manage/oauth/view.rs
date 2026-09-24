@@ -21,10 +21,10 @@ use super::{Command, Manage, State};
 use crate::{
     app::{Action, App},
     ui::{self, Node, On, Role, Sheet, Size, Tone},
-    view::{safe, tone},
+    view::safe,
 };
 use maka_protocol::oauth::Phase;
-use ratatui::{Frame, layout::Rect, style::Style, widgets::Paragraph};
+use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 /// The connection details rows, one per field index.
@@ -57,15 +57,14 @@ fn label(app: &App, state: &State, index: usize) -> String {
 /// reads as a single aligned column.
 fn label_width(app: &App) -> u16 {
     let state = &app.management.oauth;
-    let width = ui::content_width(app.frame_size.map_or(80, |(width, _)| width));
-    let widest = state
-        .fields()
-        .filter(|_| state.identity.expanded)
-        .map(|index| label(app, state, index).width())
-        .chain([app.i18n.text("onboard-provider").width()])
-        .max()
-        .unwrap_or(0) as u16;
-    (widest + 2).min(width * 2 / 5)
+    crate::view::form::label_width(
+        state
+            .fields()
+            .filter(|_| state.identity.expanded)
+            .map(|index| label(app, state, index).width())
+            .chain([app.i18n.text("onboard-provider").width()]),
+        app.frame_size.map_or(80, |(width, _)| width),
+    )
 }
 
 /// Signing in: choose a provider and method (and, optionally, how the
@@ -287,37 +286,12 @@ pub(in crate::pages::manage) fn draw(frame: &mut Frame<'_>, app: &mut App) {
             continue;
         };
         let here = enabled && focused == Some(index);
-        let label_rect = Rect::new(rect.x, rect.y, width.min(rect.width), 1);
-        frame.buffer_mut().set_style(label_rect, colors.base());
-        frame.render_widget(
-            Paragraph::new(label).style(Style::default().fg(if here {
-                tone::accent(colors)
-            } else {
-                colors.muted
-            })),
-            Rect::new(
-                label_rect.x,
-                label_rect.y,
-                label_rect.width.saturating_sub(1),
-                1,
-            ),
-        );
-        let value = Rect::new(
-            rect.x + label_rect.width,
-            rect.y,
-            rect.width.saturating_sub(label_rect.width),
-            1,
-        );
-        if index == 3 {
-            field.draw_masked(frame, value, here, colors);
-        } else {
-            field.draw(frame, value, here, colors);
-        }
-        if index < 2 && field.text().is_empty() && !here {
-            frame.render_widget(
-                Paragraph::new(default.as_str()).style(Style::default().fg(colors.subtle)),
-                value,
-            );
-        }
+        let row = crate::view::form::Row {
+            label: &label,
+            focused: here,
+            masked: index == 3,
+            placeholder: (index < 2).then_some(default.as_str()),
+        };
+        crate::view::form::draw(frame, rect, width, row, field, colors);
     }
 }

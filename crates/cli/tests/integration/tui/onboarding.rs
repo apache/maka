@@ -59,17 +59,26 @@ fn anonymous_setup_verifies_without_writes_and_creates_first_chat() {
     let providers = runtime
         .block_on(client.provider_directory(maka_protocol::model_provider::Scope::Profile))
         .unwrap();
-    for provider in providers
+    // The provider is chosen from its pop-up.
+    let label = &providers
         .entries
         .iter()
-        .filter(|entry| entry.descriptor.anonymous)
-    {
-        tui.wait_for(&provider.descriptor.label);
-        if provider.identity.name == "lm-studio" {
-            break;
-        }
-        tui.click_text(&provider.descriptor.label);
-    }
+        .find(|entry| entry.descriptor.anonymous && entry.identity.name == "lm-studio")
+        .unwrap()
+        .descriptor
+        .label;
+    tui.wait_for(" ▾");
+    tui.click_text(" ▾");
+    let choice = ["○", "●"].map(|marker| format!("{marker} {label}"));
+    tui.wait_until(|screen| choice.iter().any(|choice| screen.contains(choice)));
+    let shown = tui.screen.snapshot().unwrap().screen;
+    tui.click_text(
+        choice
+            .iter()
+            .find(|choice| shown.contains(*choice))
+            .unwrap(),
+    );
+    tui.wait_for(&format!("{label} ▾"));
     tui.click_text("Name (optional)");
     tui.send(b"New connection");
     tui.click_text("Configuration (JSON)");
@@ -91,7 +100,7 @@ fn anonymous_setup_verifies_without_writes_and_creates_first_chat() {
         "verification cannot leave a half-configured connection or credential"
     );
     tui.click_text("fixture-model");
-    tui.wait_for("[x] fixture-model");
+    tui.wait_for("[✓] fixture-model");
     tui.click_last_text("Save connection");
     tui.wait_until(|s| {
         !s.contains("Save connection")

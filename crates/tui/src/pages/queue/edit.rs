@@ -22,8 +22,8 @@ use crate::{
     app::{Action, App},
     ui::{Role, Sheet, Tone},
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::{Frame, layout::Position};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use ratatui::Frame;
 
 const FIELD: &str = "message";
 
@@ -103,13 +103,13 @@ impl App {
                 Some((edit.editor.key(*key), None))
             }
             Event::Paste(text) if focused => Some((edit.editor.insert(text), None)),
-            Event::Mouse(mouse)
-                if edit.editor.contains(Position::new(mouse.column, mouse.row))
-                    || edit.editor.dragging() =>
-            {
+            Event::Mouse(mouse) if edit.editor.takes(mouse) => {
+                let press = matches!(mouse.kind, MouseEventKind::Down(_));
                 let changed = edit.editor.mouse(*mouse);
-                self.layer.focus(FIELD);
-                Some((changed || !focused, None))
+                if press {
+                    self.layer.focus(FIELD);
+                }
+                Some((changed || (press && !focused), None))
             }
             _ => None,
         }

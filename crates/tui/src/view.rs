@@ -31,6 +31,7 @@ use ratatui::{
 };
 
 pub(crate) mod activity;
+pub(crate) mod form;
 pub(crate) mod queue;
 mod session;
 pub(crate) mod tone;

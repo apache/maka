@@ -115,6 +115,7 @@ impl App {
             Overlay::Branch => crate::pages::branch::sheet(self),
             Overlay::Skills => crate::pages::skills::sheet(self),
             Overlay::Theme => crate::theme::editor::sheet(self),
+            Overlay::Onboarding => crate::pages::onboarding::sheet(self),
             _ => None,
         }
     }
@@ -136,6 +137,11 @@ impl App {
             Overlay::Theme => {
                 if let Some(editor) = &mut self.theme.editor {
                     editor.visible = shown;
+                }
+            }
+            Overlay::Onboarding => {
+                if let Some(form) = &mut self.onboarding.dialog {
+                    form.visible = shown;
                 }
             }
             _ => {}
@@ -183,10 +189,10 @@ impl App {
             | Overlay::Recap
             | Overlay::Branch
             | Overlay::Skills
-            | Overlay::Theme => unreachable!("presented as sheets"),
+            | Overlay::Theme
+            | Overlay::Onboarding => unreachable!("presented as sheets"),
             Overlay::Attachments => self.attachment_input(event),
             Overlay::Revision => self.revision_input(event),
-            Overlay::Onboarding => self.onboarding_input(event),
             Overlay::Interactions => self.interactions_overlay_input(event),
             Overlay::Palette => self.palette_input(event),
         }
@@ -201,12 +207,15 @@ impl App {
         let Some(dismiss) = overlay.dismiss() else {
             return (false, None);
         };
-        // The sheet's owner takes its fields' keys, pastes and pointer first.
+        // The sheet's owner takes its fields' keys, pastes and pointer first,
+        // unless a chooser is open over them.
         let owned = match overlay {
+            _ if self.layer.captures() => None,
             Overlay::Reference | Overlay::Management => self.management_sheet_input(&event),
             Overlay::QueueEdit => self.queue_edit_sheet_input(&event),
             Overlay::Skills => self.skills_sheet_input(&event),
             Overlay::Theme => self.theme_sheet_input(&event),
+            Overlay::Onboarding => self.onboarding_sheet_input(&event),
             _ => None,
         };
         if let Some(outcome) = owned {
@@ -290,8 +299,10 @@ pub(crate) fn draw(
             Overlay::Reference | Overlay::Management => pages::manage::draw_field(frame, app),
             Overlay::QueueEdit => pages::queue::edit::draw_field(frame, app),
             Overlay::Theme => crate::theme::editor::draw_field(frame, app),
+            Overlay::Onboarding => pages::onboarding::draw_field(frame, app),
             _ => {}
         }
+        app.layer.repaint_chooser(frame, context);
         if !shown {
             crate::view::clear_overlay(frame, area);
             frame.render_widget(
@@ -317,10 +328,10 @@ pub(crate) fn draw(
         | Overlay::Recap
         | Overlay::Branch
         | Overlay::Skills
-        | Overlay::Theme => unreachable!("presented as sheets"),
+        | Overlay::Theme
+        | Overlay::Onboarding => unreachable!("presented as sheets"),
         Overlay::Attachments => pages::attachments::draw(frame, app, area, base),
         Overlay::Revision => pages::revision::draw(frame, app, area, base),
-        Overlay::Onboarding => pages::onboarding::draw(frame, app, area, base),
         Overlay::Interactions => pages::interactions::draw(frame, app, area, base),
         Overlay::Palette => pages::commands::draw(frame, app, area, base),
     }

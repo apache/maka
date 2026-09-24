@@ -368,6 +368,25 @@ impl<M: Clone> Layer<M> {
         self.surface.move_focus(format!("{ROOT}/{path}"));
     }
 
+    /// A chooser is open over the sheet: it takes every key and pointer
+    /// event, so owners leave them alone.
+    pub fn captures(&self) -> bool {
+        self.surface.captures()
+    }
+
+    /// Paints an open chooser over what the owner drew after the sheet.
+    pub fn repaint_chooser(&mut self, frame: &mut Frame<'_>, context: Context) {
+        if self.area.is_some() {
+            self.surface.repaint_popover(
+                frame,
+                &Context {
+                    focused: true,
+                    ..context
+                },
+            );
+        }
+    }
+
     /// Geometry changed: nothing is clickable until the next draw.
     pub fn invalidate(&mut self) {
         self.area = None;

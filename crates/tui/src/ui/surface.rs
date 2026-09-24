@@ -34,6 +34,7 @@ use ratatui::{
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
+#[derive(Clone, Copy)]
 pub struct Context {
     pub colors: Palette,
     pub ascii: bool,
@@ -197,6 +198,22 @@ impl<M: Clone> Surface<M> {
             scrollers,
             canvases,
             popover,
+        });
+    }
+
+    /// Paints an open chooser again, over what an owner drew on top of
+    /// this frame: the chooser is modal, so nothing covers it.
+    pub fn repaint_popover(&mut self, frame: &mut Frame<'_>, context: &Context) {
+        if self.popover.is_none() {
+            return;
+        }
+        let Some(committed) = self.committed.take() else {
+            return;
+        };
+        let popover = self.draw_popover(frame, committed.area, &committed.items, context);
+        self.committed = Some(Committed {
+            popover,
+            ..committed
         });
     }
 

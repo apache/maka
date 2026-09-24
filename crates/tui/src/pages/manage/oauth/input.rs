@@ -21,9 +21,8 @@ use super::{
     Command,
     view::{row, row_path},
 };
-use crate::{app::App, editor::Editor};
+use crate::app::App;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
-use ratatui::layout::Position;
 
 /// Keys, pastes and pointer presses the connection details rows take before
 /// the sheet: a focused row edits its field, Enter moves on to the next row
@@ -80,12 +79,13 @@ pub(in crate::pages::manage) fn sheet_input(
             Some((true, None))
         }
         Event::Mouse(mouse) => {
-            let point = Position::new(mouse.column, mouse.row);
-            let fields = &app.management.oauth.identity.fields;
-            let index = fields
+            let index = app
+                .management
+                .oauth
+                .identity
+                .fields
                 .iter()
-                .position(Editor::dragging)
-                .or_else(|| fields.iter().position(|editor| editor.contains(point)))
+                .position(|editor| editor.takes(mouse))
                 .filter(|index| app.oauth_enabled(Command::Field(*index)))?;
             let changed = app.management.oauth.identity.fields[index].mouse(*mouse);
             if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
