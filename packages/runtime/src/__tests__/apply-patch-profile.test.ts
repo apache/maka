@@ -34,6 +34,10 @@ describe('ApplyPatch profile routing', () => {
       { kind: 'codex-v4a-freeform' },
     );
     assert.deepEqual(
+      resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-flash').applyPatchProfile,
+      { kind: 'portable-v4a' },
+    );
+    assert.deepEqual(
       resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-flash').applyPatchProfile,
       { kind: 'portable-v4a' },
     );

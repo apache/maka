@@ -253,6 +253,7 @@ test('ApplyPatch defaults are model-specific and explicit choices win', () => {
     'gpt-5.6-luna',
     'gpt-6-astra',
     'gpt-5.4-2026-03-05',
+    'deepseek-flash',
     'deepseek-v4-flash',
     'deepseek-v4-pro',
   ]) {
