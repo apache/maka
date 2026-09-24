@@ -238,4 +238,48 @@ impl<M> Node<M> {
         self.hint = Some(hint.into());
         self
     }
+    /// The same tree speaking another page's messages, so one page can
+    /// embed what another builds.
+    pub fn map<N>(self, f: &dyn Fn(M) -> N) -> Node<N> {
+        let kind = match self.kind {
+            Kind::Column { children, gap } => Kind::Column {
+                children: children.into_iter().map(|child| child.map(f)).collect(),
+                gap,
+            },
+            Kind::Row { children, gap } => Kind::Row {
+                children: children.into_iter().map(|child| child.map(f)).collect(),
+                gap,
+            },
+            Kind::Text { spans, align, clip } => Kind::Text { spans, align, clip },
+            Kind::Rule => Kind::Rule,
+            Kind::Slot => Kind::Slot,
+            Kind::Scroll(child) => Kind::Scroll(Box::new(child.map(f))),
+        };
+        let on = self.on.map(|on| match on {
+            On::Activate(message) => On::Activate(f(message)),
+            On::Choose { choices, current } => On::Choose {
+                choices: choices
+                    .into_iter()
+                    .map(|choice| Choice {
+                        label: choice.label,
+                        action: f(choice.action),
+                    })
+                    .collect(),
+                current,
+            },
+            On::Scroll => On::Scroll,
+        });
+        Node {
+            key: self.key,
+            size: self.size,
+            kind,
+            on,
+            enabled: self.enabled,
+            current: self.current,
+            follow_focus: self.follow_focus,
+            submit: self.submit.map(f),
+            hint: self.hint,
+            role: self.role,
+        }
+    }
 }

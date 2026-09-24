@@ -218,27 +218,8 @@ fn panel(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
         ));
     }
     let mut children = vec![Node::row("head", head).gap(1)];
-    children.extend(super::page::notice(app, key, width));
-    let mut wells = vec![];
-    if let Some(view) = &instance.view
-        && instance.review.is_none()
-    {
-        let offered = |intent: &Intent| instance.offered(intent);
-        let env = tree::Env {
-            key,
-            drafts: &instance.drafts,
-            ascii: app.chrome.ascii,
-            offered: &offered,
-            applied: instance.applied.as_deref(),
-        };
-        let wrap = |intent| message(Command::View(intent));
-        let parent = format!("inspector/body/panels/{node}/content");
-        let (view, found) = tree::build(view, &env, &parent, width, &wrap);
-        wells = found;
-        children.push(Node::column("content", vec![view]));
-    } else if instance.review.is_some() {
-        children.push(Node::column("content", super::drafts::nodes(app, key)));
-    }
+    let (pane, wells) = super::page::pane(app, key, &format!("{BODY}/{node}"), width);
+    children.extend(pane);
     (Node::column(node, children).gap(1), wells)
 }
 

@@ -1208,7 +1208,12 @@ impl App {
             return None;
         }
         let outcome = match self.navigation.current() {
-            Route::Settings => self.settings.surface.input(event).map(Action::Settings),
+            Route::Settings => {
+                if let Some(redraw) = self.settings_field_input(event) {
+                    return Some((redraw, None));
+                }
+                self.settings.surface.input(event).map(Action::Settings)
+            }
             Route::App(key) => {
                 if let Some(redraw) = self.app_page_input(&key, event) {
                     return Some((redraw, None));

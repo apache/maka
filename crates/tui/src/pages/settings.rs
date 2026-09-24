@@ -80,12 +80,19 @@ pub enum Message {
     Connections,
     SandboxDefaults,
     Host,
+    /// A plugin's settings pane.
+    Pane(crate::apps::Key),
+    App(crate::apps::Message),
 }
 
 #[derive(Default)]
 pub struct State {
     pub category: Category,
+    /// The plugin pane shown instead of a built-in category.
+    pub pane: Option<crate::apps::Key>,
     pub surface: ui::Surface<Message>,
+    /// Whether the last frame listed every category in one column.
+    pub(crate) single: bool,
 }
 
 /// Rows whose focus a checkpoint keeps, by the shell action each stands for.
@@ -133,21 +140,41 @@ const ROWS: u16 = 64;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let area = area.inner(Margin::new(1, 0));
-    let tree = tree(app, area.width);
+    app.settings.single = area.width < TWO_PANES;
+    let (tree, wells) = tree(app, area.width);
     let context = ui::Context {
         colors: app.theme.colors(),
         ascii: app.chrome.ascii,
         focused: app.focus == Focus::Page && app.overlay().is_none(),
     };
     app.settings.surface.render(frame, area, tree, context);
+    let focused = context
+        .focused
+        .then(|| app.settings.surface.focused().map(str::to_owned))
+        .flatten();
+    crate::apps::paint_settings(frame, app, wells, focused.as_deref(), context.colors);
+    app.settings.surface.repaint_popover(frame, &context);
 }
 
-fn tree(app: &App, width: u16) -> Node<Message> {
+/// A plugin's settings pane, under the column it shares with built-in rows.
+fn pane(app: &App, key: &crate::apps::Key, wells: &mut Vec<crate::apps::Well>) -> Node<Message> {
+    let node = key.node();
+    let (children, found) = crate::apps::page::pane(app, key, &format!("{}{node}", ROW_PATH), ROWS);
+    wells.extend(found);
+    Node::column(node, children).gap(1).map(&Message::App)
+}
+
+fn tree(app: &App, width: u16) -> (Node<Message>, Vec<crate::apps::Well>) {
     let two_panes = width >= TWO_PANES;
+    let panes = app.apps.settings_views();
+    let mut wells = vec![];
     let rows: Vec<Node<Message>> = if two_panes {
-        section(app, app.settings.category)
+        match &app.settings.pane {
+            Some(key) => vec![pane(app, key, &mut wells)],
+            None => section(app, app.settings.category),
+        }
     } else {
-        Category::ALL
+        let mut rows: Vec<_> = Category::ALL
             .into_iter()
             .flat_map(|category| {
                 let title = Node::text(
@@ -156,7 +183,15 @@ fn tree(app: &App, width: u16) -> Node<Message> {
                 );
                 std::iter::once(title).chain(section(app, category))
             })
-            .collect()
+            .collect();
+        for (key, title) in &panes {
+            rows.push(Node::text(
+                format!("{}-title", key.node()),
+                vec![(title.clone(), Tone::Strong)],
+            ));
+            rows.push(pane(app, key, &mut wells));
+        }
+        rows
     };
     // The frame keeps row identities equal in both layouts, so a resize
     // across the breakpoint preserves keyboard focus.
@@ -169,7 +204,7 @@ fn tree(app: &App, width: u16) -> Node<Message> {
     );
     let mut children = vec![];
     if two_panes {
-        let categories = Category::ALL
+        let mut categories: Vec<_> = Category::ALL
             .into_iter()
             .map(|category| {
                 Node::text(
@@ -177,10 +212,18 @@ fn tree(app: &App, width: u16) -> Node<Message> {
                     vec![(app.i18n.text(category.title()), Tone::Normal)],
                 )
                 .on(On::Activate(Message::Category(category)))
-                .current(category == app.settings.category)
+                .current(app.settings.pane.is_none() && category == app.settings.category)
                 .follow_focus()
             })
             .collect();
+        // Plugins' categories follow the built-in ones, in their own order.
+        categories.extend(panes.iter().map(|(key, title)| {
+            Node::text(key.node(), vec![(title.clone(), Tone::Normal)])
+                .clip()
+                .on(On::Activate(Message::Pane(key.clone())))
+                .current(app.settings.pane.as_ref() == Some(key))
+                .follow_focus()
+        }));
         children.push(
             Node::column("categories", categories)
                 .size(Size::Fixed(CATEGORIES))
@@ -189,7 +232,7 @@ fn tree(app: &App, width: u16) -> Node<Message> {
         children.push(Node::rule("divider"));
     }
     children.push(pane);
-    Node::row("settings", children).gap(2)
+    (Node::row("settings", children).gap(2), wells)
 }
 
 /// What every settings row shows: an icon borrowed from its shell action, a
@@ -484,7 +527,15 @@ fn note(key: &'static str, lines: Vec<(String, Tone)>) -> Option<Node<Message>> 
 impl App {
     pub(crate) fn settings_action(&mut self, message: Message) -> Option<Action> {
         match message {
-            Message::Category(category) => self.settings.category = category,
+            Message::Category(category) => {
+                self.settings.category = category;
+                self.settings.pane = None;
+            }
+            Message::Pane(key) => {
+                self.apps.open(&key);
+                self.settings.pane = Some(key);
+            }
+            Message::App(message) => return self.apps_action(message),
             Message::Palette(choice) => self.theme.select(choice),
             Message::Locale(preference) => self.set_locale(preference),
             Message::Ascii(ascii) => self.set_ascii(ascii),

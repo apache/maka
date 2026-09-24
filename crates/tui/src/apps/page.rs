@@ -447,3 +447,45 @@ impl super::Apps {
         self.listing || self.loading.is_some()
     }
 }
+
+/// A view as part of another page: its notice, then the view, its draft
+/// review, or why it is not there yet. `path` is the kernel path of the
+/// column these children go into.
+pub(crate) fn pane(
+    app: &App,
+    key: &Key,
+    path: &str,
+    width: u16,
+) -> (Vec<Node<Message>>, Vec<tree::Well>) {
+    let Some(instance) = app.apps.instances.get(key) else {
+        return (vec![], vec![]);
+    };
+    let mut children: Vec<_> = notice(app, key, width).into_iter().collect();
+    if instance.review.is_some() {
+        children.push(Node::column("content", super::drafts::nodes(app, key)));
+        return (children, vec![]);
+    }
+    let Some(view) = &instance.view else {
+        let text = if instance.entry.is_none() && app.apps.loaded {
+            ("extensions-unavailable", Tone::Warning)
+        } else if instance.busy || instance.pending.is_some() || instance.entry.is_none() {
+            ("extensions-loading", Tone::Subtle)
+        } else {
+            return (children, vec![]);
+        };
+        children.push(Node::text("status", vec![(app.i18n.text(text.0), text.1)]));
+        return (children, vec![]);
+    };
+    let offered = |intent: &Intent| instance.offered(intent);
+    let env = tree::Env {
+        key,
+        drafts: &instance.drafts,
+        ascii: app.chrome.ascii,
+        offered: &offered,
+        applied: instance.applied.as_deref(),
+    };
+    let wrap = |intent| Message::Instance(key.clone(), Command::View(intent));
+    let (view, wells) = tree::build(view, &env, &format!("{path}/content"), width, &wrap);
+    children.push(Node::column("content", vec![view]));
+    (children, wells)
+}

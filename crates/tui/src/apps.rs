@@ -40,6 +40,7 @@ pub use io::{Output, execute};
 pub use key::Key;
 pub use saved::Checkpoint;
 pub use tree::Intent;
+pub(crate) use tree::Well;
 
 use crate::{
     app::{Action, App, ConnectionState},
@@ -149,6 +150,8 @@ pub struct Apps {
     pub inspector: ui::Surface<Message>,
     pub(super) inspector_wells: Vec<tree::Well>,
     pub inspector_visible: bool,
+    /// Where the settings page drew plugin panes' fields.
+    pub(super) settings_wells: Vec<tree::Well>,
     /// The status line above a session's composer.
     pub status: ui::Surface<Message>,
 }
@@ -304,6 +307,17 @@ impl App {
         }
         if self.apps.loaded {
             self.open_session_views();
+            if self.navigation.current() == Route::Settings {
+                let keys: Vec<_> = self
+                    .apps
+                    .settings_views()
+                    .into_iter()
+                    .map(|(key, _)| key)
+                    .collect();
+                for key in keys {
+                    self.apps.open(&key);
+                }
+            }
         }
         let apps = &mut self.apps;
         let mut requests = vec![];
@@ -585,7 +599,11 @@ impl App {
             Placement::Page => current == Route::App(key.clone()),
             Placement::Panel => in_session && self.inspector_shown(),
             Placement::Status => in_session,
-            Placement::Settings | Placement::Slot { .. } => false,
+            Placement::Settings => {
+                current == Route::Settings
+                    && (self.settings.single || self.settings.pane.as_ref() == Some(key))
+            }
+            Placement::Slot { .. } => false,
         }
     }
     /// The language changed: open, untouched views read themselves again.
@@ -879,6 +897,58 @@ impl App {
             Command::Refresh => instance.read(&locale),
         }
         None
+    }
+}
+
+impl Apps {
+    /// Application views placed in Settings, with their titles.
+    pub(crate) fn settings_views(&self) -> Vec<(Key, String)> {
+        let mut views: Vec<_> = self
+            .directory
+            .iter()
+            .filter(|entry| {
+                entry.descriptor.placement == Placement::Settings
+                    && entry.descriptor.context == Context::Application
+            })
+            .collect();
+        views.sort_by(|left, right| {
+            (left.descriptor.order, &left.descriptor.title.fallback)
+                .cmp(&(right.descriptor.order, &right.descriptor.title.fallback))
+        });
+        views
+            .into_iter()
+            .filter_map(|entry| {
+                let title = entry.descriptor.title.resolve(&self.locale).to_owned();
+                Some((Key::of(entry, None)?, title))
+            })
+            .collect()
+    }
+}
+
+/// Settings panes' fields, painted over the settings surface.
+pub(crate) fn paint_settings(
+    frame: &mut ratatui::Frame<'_>,
+    app: &mut App,
+    wells: Vec<Well>,
+    focused: Option<&str>,
+    colors: crate::theme::Palette,
+) {
+    let surface = std::mem::take(&mut app.settings.surface);
+    region::paint(frame, &mut app.apps, &surface, &wells, focused, colors);
+    app.settings.surface = surface;
+    app.apps.settings_wells = wells;
+}
+
+impl App {
+    /// A settings pane's fields take their events before the settings surface.
+    pub(crate) fn settings_field_input(&mut self, event: &crossterm::event::Event) -> Option<bool> {
+        let keyboard = self.focus == crate::app::Focus::Page;
+        let mut surface = std::mem::take(&mut self.settings.surface);
+        let wells = std::mem::take(&mut self.apps.settings_wells);
+        let outcome = region::input(&mut self.apps, &mut surface, &wells, event, keyboard);
+        self.settings.surface = surface;
+        self.apps.settings_wells = wells;
+        outcome
     }
 }
 
@@ -1728,5 +1798,70 @@ pub(crate) mod tests {
         // Too narrow for both, the conversation keeps the room.
         app.apply(Action::ToggleInspector);
         assert!(!draw(&mut app, 100, 40).contains("Criteria"));
+    }
+
+    #[test]
+    fn a_plugin_settings_pane_is_a_category_that_edits_in_place() {
+        let web = TerminalViewProjection {
+            package_id: "example.web".into(),
+            method: "settings".into(),
+            descriptor: Descriptor::new(Text::plain("Web search"), Context::Application)
+                .placement(Placement::Settings),
+            ..projection()
+        };
+        let mut app = App::new(
+            "/test".into(),
+            I18n::new(
+                LocalePreference::Explicit(crate::i18n::Locale::En),
+                crate::i18n::Locale::En,
+            ),
+        );
+        app.connection = ConnectionState::Connected {
+            root_id: "root".into(),
+            epoch: "epoch".into(),
+        };
+        app.apply(Action::Visit(Route::Settings));
+        list(&mut app, vec![(vec![web.clone()], None)]);
+        let key = Key::of(&web, None).unwrap();
+        let read = app
+            .apps_requests()
+            .pop()
+            .expect("settings panes open with Settings");
+        let mut view = form();
+        view.title = "Web search".into();
+        app.apps_complete(read, Ok(Output::Reply(Reply::View { view })));
+        let screen = draw(&mut app, 110, 30);
+        assert!(screen.contains("Web search"), "{screen}");
+        // Choosing the category shows the pane; its fields edit in place.
+        app.apply(Action::Settings(crate::pages::settings::Message::Pane(
+            key.clone(),
+        )));
+        let screen = draw(&mut app, 110, 30);
+        assert!(screen.contains("A plugin-owned form.") && screen.contains("Enabled"));
+        let toggle = app
+            .settings
+            .surface
+            .rect(&format!(
+                "settings/pane/frame/rows/{}/content/root/enabled",
+                key.node()
+            ))
+            .unwrap();
+        app.input(Event::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            column: toggle.x + 1,
+            row: toggle.y,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.apps.instances[&key].drafts["enabled"], json!(false));
+        let save = Message::Instance(key.clone(), Command::View(Intent::Submit("save".into())));
+        assert!(app.apps_enabled(&save));
+        // A built-in category puts the pane away, and its actions with it.
+        app.apply(Action::Settings(crate::pages::settings::Message::Category(
+            crate::pages::settings::Category::Interface,
+        )));
+        assert!(!app.apps_enabled(&save));
+        // Narrow, every category is a section of one list, the pane included.
+        let screen = draw(&mut app, 50, 40);
+        assert!(screen.contains("Web search") && screen.contains("A plugin-owned"));
     }
 }
