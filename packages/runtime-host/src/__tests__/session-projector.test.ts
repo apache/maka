@@ -814,11 +814,14 @@ test('leaves an in-flight steering message in the queue until the runtime event 
     projector.seedActive(false).map((event) => event.type),
     ['queue_update'],
   );
+  // The runtime event takes the entry out of the queue as it places the row…
   assert.deepEqual(
-    projector.accept(steeringFrame(2)).events.map((event) => event.type),
-    ['steering_message'],
+    projector
+      .accept(steeringFrame(2))
+      .events.map((event) => (event.type === 'queue_update' ? event.steeringEntries : event.type)),
+    [[], 'steering_message'],
   );
-  // The lease ack can trail the runtime event; the placed row leaves the queue now.
+  // …and the lease ack can trail it, so a queue revision before the ack keeps it out.
   const beforeAck = projector.accept({
     kind: 'subscription.session_projection',
     hostEpoch: 'host-1',

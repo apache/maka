@@ -3113,11 +3113,13 @@ test("projects Host queue revisions and places steering from the runtime event",
       content: { text: "Change direction" },
     },
   });
-  await waitFor(() => target.events.length === 3);
+  await waitFor(() => target.events.length === 4);
 
   assert.deepEqual(
-    target.events.map((event) => event.type),
-    ["queue_update", "queue_update", "steering_message"],
+    target.events.map((event) =>
+      event.type === "queue_update" ? event.steeringEntries?.map((entry) => entry.state) : event.type,
+    ),
+    [["queued"], ["in_flight"], [], "steering_message"],
   );
   assert.deepEqual(target.events[0], {
     type: "queue_update",
@@ -3130,7 +3132,7 @@ test("projects Host queue revisions and places steering from the runtime event",
     steeringEntries: [queued],
     followupEntries: [],
   });
-  assert.deepEqual(target.events[2], {
+  assert.deepEqual(target.events[3], {
     type: "steering_message",
     id: "steering-event-1",
     turnId: "turn-1",

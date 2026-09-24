@@ -382,6 +382,10 @@ export class RuntimeHostSessionProjector {
       if (event.type === 'steering_message') {
         if (this.#durableTurnByMessage.has(event.messageId)) return emptyUpdate(events);
         this.#placedSteeringMessageIds.add(event.messageId);
+        const { queue, rootTurn } = this.#snapshot;
+        if (rootTurn && queue.steering.some((entry) => entry.messageId === event.messageId)) {
+          events.push(projectQueueUpdate(this.#unplacedQueue(queue), rootTurn.turnId, this.#now()));
+        }
       }
       events.push(event);
       return emptyUpdate(events);
