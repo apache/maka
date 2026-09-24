@@ -181,6 +181,31 @@ test('renders a scan-friendly compact timestamp in the session rail', () => {
   }
 });
 
+test('identifies an external executor in the session rail', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[{ ...session, executorId: 'antigravity' }]}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  const { document } = parseHTML(markup);
+
+  assert.equal(
+    document.querySelector('.maka-session-row-executor-badge')?.textContent,
+    'antigravity',
+  );
+  const describedBy = document
+    .querySelector('.maka-session-row .astryx-side-nav-item')
+    ?.getAttribute('aria-describedby');
+  assert.ok(describedBy);
+  assert.match(
+    document.getElementById(describedBy)?.getAttribute('aria-label') ?? '',
+    /antigravity/,
+  );
+});
+
 test('wires the session navigation control to its hover card description', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">

@@ -194,20 +194,12 @@ const baseDesktopBuilderConfig = {
       to: 'licenses/renderer/GEIST_MONO_LICENSE.txt',
     },
     {
-      from: 'resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
-      to: 'licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
-    },
-    {
       from: 'resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
       to: 'licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
     },
     {
       from: 'resources/licenses/renderer/ALLOGO_LICENSE.txt',
       to: 'licenses/renderer/ALLOGO_LICENSE.txt',
-    },
-    {
-      from: 'resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
-      to: 'licenses/renderer/SEMI_ICONS_LICENSE.txt',
     },
     {
       from: '../../LICENSE',

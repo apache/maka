@@ -899,6 +899,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
     props.picked && (!props.active || props.bulkCount > 1) ? copy.pickedAriaLabel : undefined,
     props.worktree ? copy.worktreeAriaLabel : undefined,
     props.meta,
+    props.session.executorId,
     props.session.lastMessageAt
       ? formatAbsoluteTimestamp(props.session.lastMessageAt, locale)
       : undefined,
@@ -1018,6 +1019,14 @@ const SessionNavRow = memo(function SessionNavRow(props: {
                 <Badge variant="neutral" label={props.meta} />
               </span>
             ) : null}
+            {props.session.executorId ? (
+              <span
+                className="maka-session-row-executor-badge"
+                title={props.session.executorId}
+              >
+                <Badge variant="neutral" label={props.session.executorId} />
+              </span>
+            ) : null}
             <span className="maka-session-row-time">
               {props.session.lastMessageAt ? (
                 <RelativeTime
@@ -1107,6 +1116,7 @@ function SessionHoverCardDescription(props: {
     props.status,
     session.lastMessagePreview || copy.noMessages,
     session.model,
+    session.executorId,
     permission,
     props.projectName,
     session.lastMessageAt
@@ -1143,6 +1153,12 @@ function SessionHoverCardContent(props: {
         <span>{props.status}</span>
         <span aria-hidden="true">·</span>
         <span>{session.model}</span>
+        {session.executorId ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{session.executorId}</span>
+          </>
+        ) : null}
         <span aria-hidden="true">·</span>
         <span>{permission}</span>
       </span>

@@ -223,7 +223,7 @@ export interface HostWorkHubRoutingModel {
       }[];
     }>;
     readonly abortSignal: AbortSignal;
-  }): Promise<WorkHubRoutingDecision>;
+  }): Promise<WorkHubRoutingDecision | undefined>;
 }
 
 /** Uses the Coordination Session's exact saved model target for split Intent and Recall. */
@@ -591,6 +591,11 @@ async function runHostAuxiliaryModelCall(
   readonly finishReason?: string;
   readonly modelId: string;
 }> {
+  if (input.header.backend === 'plugin-executor') {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Plugin executor Sessions do not provide a native auxiliary model',
+    );
+  }
   const target = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(
       () =>

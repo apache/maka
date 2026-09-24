@@ -155,6 +155,7 @@ export interface ConversationCopy {
     thinkingUnsupported: string;
     changeThinkingLevel: string;
     defaultLevel: string;
+    chooseThinkingLevel: string;
     level: Record<ThinkingLevel, string>;
     switching: string;
     model: string;
@@ -470,7 +471,7 @@ const CONVERSATION_COPY = {
       noModelHint: '还没有可用的模型连接，无法发送。', noModelAction: '前往模型设置', noModelSendTitle: '先添加一个模型连接才能发送。',
     },
     model: {
-      thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认',
+      thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认', chooseThinkingLevel: '选择思考级别',
       // Short single-token labels — trigger + popout size to content.
       // Canonical per-chat ladder: 默认 (model default, overriding Settings) / 关 / 低 / 中 / 高 / 超高
       // (minimal/max when offered).
@@ -596,7 +597,7 @@ const CONVERSATION_COPY = {
       noModelHint: '還沒有可用的模型連線，無法傳送。', noModelAction: '前往模型設定', noModelSendTitle: '先新增一個模型連線才能傳送。',
     },
     model: {
-      thinkingLevel: '思考級別', thinkingUnsupported: '目前模型不支援思考級別切換', changeThinkingLevel: '切換目前模型的思考級別', defaultLevel: '預設',
+      thinkingLevel: '思考級別', thinkingUnsupported: '目前模型不支援思考級別切換', changeThinkingLevel: '切換目前模型的思考級別', defaultLevel: '預設', chooseThinkingLevel: '選擇思考級別',
       // Short single-token labels — trigger + popout size to content.
       // Canonical per-chat ladder: 預設 (model default, overriding Settings) / 關 / 低 / 中 / 高 / 超高
       // (minimal/max when offered).
@@ -722,7 +723,7 @@ const CONVERSATION_COPY = {
       noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
     },
     model: {
-      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default',
+      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default', chooseThinkingLevel: 'Choose thinking level',
       level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
       switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this task',
       switchWarning: 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.',

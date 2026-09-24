@@ -1626,6 +1626,22 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
     let restartedOwner: InteractiveRootOwner | undefined;
     let continuation: { turnId: string; runId: string } | undefined;
     let targetSessionId: string | undefined;
+    // A stopped delegation produces a Host result Turn. Drain that specific
+    // notification before submitting another user Turn to the same WorkHub.
+    const waitForResultCompletion = async (targetTurnId: string) => {
+      await waitFor(async () => {
+        const notification = (await manager.getMessages(WORKHUB_COORDINATION_SESSION_ID)).find(
+          (message) =>
+            message.type === 'user' &&
+            message.origin?.kind === 'workhub_result' &&
+            message.origin.targetTurnId === targetTurnId,
+        );
+        if (!notification) return false;
+        return (await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID)).some(
+          ({ turnId, status }) => turnId === notification.turnId && status === 'completed',
+        );
+      }, 10_000);
+    };
     const handoffAndReopen = async () => {
       const requested = deferred<void>();
       const request = manager.requestRunHandoff.bind(manager);
@@ -1721,6 +1737,7 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           },
         },
         context,
+        () => waitForResultCompletion(original.result.turnId),
       );
       assert.equal(resumed.ok, true, JSON.stringify(resumed));
       if (
@@ -1772,26 +1789,13 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
           expects: { targetSessionId: target.id },
         },
       };
-      const replayed = await actWorkHub(composition, retry, context);
+      const interruptedTurnId = continuation.turnId;
+      const replayed = await actWorkHub(composition, retry, context, () =>
+        waitForResultCompletion(interruptedTurnId),
+      );
       assert.deepEqual(replayed, resumed);
       const freshAction = { ...retry, actionId: 'workhub-resume-again' };
-      let fresh;
-      try {
-        fresh = await actWorkHub(composition, freshAction, context);
-      } catch (error) {
-        assert.match(String(error), /"code":"session_busy"/u);
-        const feedback = (await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID)).find(
-          ({ turnId, status }) => turnId.startsWith('whf_') && status === 'running',
-        );
-        assert.ok(feedback);
-        await waitFor(async () => {
-          const turns = await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID);
-          return turns.some(
-            ({ turnId, status }) => turnId === feedback.turnId && status === 'completed',
-          );
-        }, 10_000);
-        fresh = await actWorkHub(composition, freshAction, context);
-      }
+      const fresh = await actWorkHub(composition, freshAction, context);
       assert.equal(fresh.ok, true, JSON.stringify(fresh));
       if (!fresh.ok || fresh.result.disposition !== 'resume_work' || !fresh.result.targetTurnId)
         return;
@@ -2188,6 +2192,109 @@ test('a legacy fake-backend session is refused with the product reason, not a re
       const message = failure instanceof Error ? failure.message : JSON.stringify(failure);
       assert.doesNotMatch(message, /No backend factory registered/);
       assert.equal(parseNoRealConnectionError(message).reason, 'fake_backend');
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production executor admission discovers the Session provider, including profile shadows', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const sessions = [];
+    for (const executorId of ['private', 'shared']) {
+      sessions.push(
+        await stores.sessionStore.create({
+          cwd: root,
+          executorId,
+          llmConnectionSlug: `executor:${executorId}`,
+          model: 'before',
+          permissionMode: 'ask',
+        }),
+      );
+    }
+    const { composition } = await createCapturedExecutionComposition(owner);
+    try {
+      const source = join(root, 'executor-fixture');
+      await mkdir(source);
+      await writeFile(
+        join(source, 'maka.extension.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          id: 'executor-fixture',
+          runtime: { entry: 'index.mjs' },
+          configuration: {
+            properties: { executorId: { type: 'string' }, model: { type: 'string' } },
+            required: ['executorId', 'model'],
+          },
+          composition: { patch: 'maka.composition.json', structuralDependencies: [] },
+        }),
+      );
+      await writeFile(
+        join(source, 'index.mjs'),
+        `export default {
+        packageId: 'executor-fixture',
+        contributions: [{ id: 'executor', kind: 'executor' }],
+        host: { apply(ctx, config) {
+          ctx.executors.register({
+            id: config.executorId,
+            discover: async () => ({
+              id: config.executorId, displayName: config.executorId, readiness: 'ready',
+              models: [{ id: config.model, name: config.model }],
+              supportsAttachments: false, supportsModelChange: true,
+            }),
+            inspectConversation: async () => { throw new Error('Admission must discover, not inspect'); },
+            execute: async () => ({ status: 'completed', text: '' }),
+          });
+        } },
+      };`,
+      );
+      await writeFile(
+        join(source, 'maka.composition.json'),
+        JSON.stringify([
+          {
+            type: 'insert',
+            rootId: 'profile',
+            entry: {
+              id: 'profile-shared',
+              packageId: 'executor-fixture',
+              config: { executorId: 'shared', model: 'profile-model' },
+            },
+          },
+          ...sessions.map((session) => ({
+            type: 'insert',
+            rootId: `session:${session.id}`,
+            entry: {
+              id: `session-${session.executorId}`,
+              packageId: 'executor-fixture',
+              config: { executorId: session.executorId, model: 'session-model' },
+            },
+          })),
+        ]),
+      );
+      const installed = await composition.plugins.installPackage(source);
+      assert.equal(installed.convergence, 'converged', JSON.stringify(installed));
+      const context: ConnectionContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'executor-admission-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      for (const session of sessions) {
+        const current = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+        const outcome = await composition.handlers['session.configuration.update'](
+          {
+            sessionId: session.id,
+            expectedRevision: current.revision,
+            patch: { executorTarget: { executorId: session.executorId!, model: 'session-model' } },
+          },
+          context,
+        );
+        assert.equal(outcome.ok, true, JSON.stringify(outcome));
+        const updated = await stores.sessionStore.readHeaderSnapshot(session.id);
+        assert.equal(updated.model, 'session-model');
+        assert.deepEqual(updated.executorConfig, { model: 'session-model' });
+      }
     } finally {
       await composition.close();
     }
@@ -3469,6 +3576,7 @@ async function actWorkHub(
   composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
   input: WorkHubAdmittedAction,
   context: ConnectionContext,
+  beforeAnswer?: () => Promise<void>,
 ) {
   const desktop = composition.clientCapabilities!.attachConnection(
     clientCapabilityConnectionIdentity(context.connectionId),
@@ -3483,6 +3591,9 @@ async function actWorkHub(
       context,
     );
     assert.ok(registered.ok, JSON.stringify(registered));
+    // Host result delivery needs these Desktop capabilities. Test barriers
+    // must run after registration, before admitting the next user Turn.
+    await beforeAnswer?.();
     const { userText, attachments, ...action } = input;
     const turnId = randomUUID();
     const decisions = workHubRoutingDecisions.get(composition);

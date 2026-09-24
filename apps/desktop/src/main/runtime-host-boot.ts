@@ -1588,7 +1588,7 @@ function registerHostClientIpc(
   void capabilityBinding.aligned.catch((error) =>
     console.error("[runtime-host] MCP capability alignment failed:", error),
   );
-  registerMcpIpcMain({
+  const stopMcpIpc = registerMcpIpcMain({
     ipcMain: scopedIpc,
     store: mcpConfigStore,
     manager: mcpManager,
@@ -1618,6 +1618,7 @@ function registerHostClientIpc(
     preview: { service: managedArtifactPreview, scope: scope.targetEpoch, openExternal: (url) => shell.openExternal(url) },
   });
   registerExternalAgentSetupIpc({ ipcMain: scopedIpc, client, presentation: oauthPresentation,
+    onCatalogChanged: () => sendToRenderer('external-agents:catalog-changed'),
     selectExecutable: async () => {
       const result = await mainWindowController.showOpenDialog({ properties: ['openFile'] });
       return result.canceled ? undefined : result.filePaths[0];
@@ -1837,6 +1838,7 @@ function registerHostClientIpc(
     if (runtimePolicyTargetsByEpoch.get(scope.targetEpoch) === targetContext) {
       runtimePolicyTargetsByEpoch.delete(scope.targetEpoch);
     }
+    stopMcpIpc();
     capabilityBinding.dispose();
     await capabilityBinding.aligned.catch(() => undefined);
   };

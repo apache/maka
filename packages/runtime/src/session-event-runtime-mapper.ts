@@ -680,6 +680,9 @@ function completeRuntimeEvent(
     stateDelta.failureClass =
       memory.failureClass ?? failureClassFromCompleteStopReason(stopReason) ?? 'runtime_error';
   }
+  if (event.providerStopReason !== undefined) {
+    stateDelta.providerStopReason = event.providerStopReason;
+  }
   if (event.contextCompactionOutcome !== undefined) {
     stateDelta.contextCompactionOutcome = event.contextCompactionOutcome;
   }

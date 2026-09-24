@@ -236,6 +236,7 @@ import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
   McpConfigAddResult,
+  McpConfigUpdateResult,
   McpConfigImportResult,
   McpConfigFile,
   McpServerConfig,
@@ -1889,6 +1890,9 @@ const makaBridge = {
     },
   },
   newTasks: {
+    async getExecutors(target, cwd) {
+      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd);
+    },
     getCatalog(): Promise<DesktopNewTaskCatalog> {
       return loadNewTaskCatalog();
     },
@@ -1899,6 +1903,7 @@ const makaBridge = {
         subscribeEveryRuntimeHostEvent('connections:event', handler),
         subscribeEveryRuntimeHostEvent('mcp:changed', handler),
         subscribeEveryRuntimeHostEvent('settings:externalChanged', handler),
+        subscribeEveryRuntimeHostEvent('external-agents:catalog-changed', handler),
       ];
       return () => {
         newTaskChangeListeners.delete(handler);
@@ -2197,6 +2202,8 @@ const makaBridge = {
     },
   } satisfies import('../shared/session-local-contract.js').DesktopSessionLocalBridge,
   sessions: {
+    setExecutorModelConfiguration(sessionId, config) { return invokeSessionUpdate('sessions:setExecutorModelConfiguration', sessionId, config); },
+    getExecutorState(sessionId) { return invokeSessionRuntimeHost('sessions:executorState', sessionId); },
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]> {
       return listDesktopSessions(filter);
     },
@@ -3163,17 +3170,14 @@ const makaBridge = {
     add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult> {
       return invokeSelectedRuntimeHost(host, 'mcp:add', serverId, config);
     },
-    upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
-      return invokeSelectedRuntimeHost(host, 'mcp:upsert', serverId, config);
+    update(serverId: string, config: McpServerConfig, basis: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult> {
+      return invokeSelectedRuntimeHost(host, 'mcp:update', serverId, config, basis);
     },
-    install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
-      return invokeSelectedRuntimeHost(host, 'mcp:install', serverId, config);
+    setEnabled(serverId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<McpConfigUpdateResult> {
+      return invokeSelectedRuntimeHost(host, 'mcp:setEnabled', serverId, enabled);
     },
     remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
       return invokeSelectedRuntimeHost(host, 'mcp:remove', serverId);
-    },
-    cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
-      return invokeSelectedRuntimeHost(host, 'mcp:cancelInstall', serverId);
     },
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult> {
       return invokeSelectedRuntimeHost(host, 'mcp:test', serverId);

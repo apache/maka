@@ -1363,6 +1363,8 @@ export interface CompleteEvent extends BaseEvent {
     | 'permission_handoff'
     | 'step_limit'
     | 'max_tokens';
+  /** External provider terminal reason, retained even when the caller cancelled the turn. */
+  providerStopReason?: string;
   /** Durable result of an explicit context-compaction execution. */
   contextCompactionOutcome?: ContextCompactionOutcome;
 }
