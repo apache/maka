@@ -19,11 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { registerOpencliNativeHost, writeOpencliLaunchers } from '../opencli-chrome.js';
+import { openInChrome, registerOpencliNativeHost, writeOpencliLaunchers } from '../opencli-chrome.js';
 
 test('launchers run the entry in Node mode with the mode each caller needs', { skip: process.platform === 'win32' }, () => {
   const root = mkdtempSync(join(tmpdir(), "maka opencli '"));
@@ -52,12 +52,22 @@ test('Windows launchers set Node mode before starting the entry', () => {
 test('the host manifest goes to Chrome and existing browsers, never over another live install', () => {
   const root = mkdtempSync(join(tmpdir(), 'maka-opencli-'));
   const host = join(root, 'opencli-mcp-host');
-  const other = join(root, 'global-opencli-mcp-host');
-  writeFileSync(other, '');
+  // The launcher format of a global `opencli-mcp setup`.
+  const globalLauncher = (name: string, main: string) => {
+    const file = join(root, name);
+    writeFileSync(file, `#!/bin/sh\nexec "${process.execPath}" "${main}" host\n`);
+    return file;
+  };
+  const liveMain = join(root, 'global', 'main.js');
+  mkdirSync(dirname(liveMain));
+  writeFileSync(liveMain, '');
+  const other = globalLauncher('global-opencli-mcp-host', liveMain);
   const dir = (name: string) => join(root, name, 'NativeMessagingHosts');
   const manifest = (name: string) => join(dir(name), 'com.opencli.mcp.json');
   mkdirSync(dir('brave'), { recursive: true });
   writeFileSync(manifest('brave'), JSON.stringify({ path: other }));
+  mkdirSync(dir('chromium'), { recursive: true });
+  writeFileSync(manifest('chromium'), JSON.stringify({ path: globalLauncher('uninstalled-opencli-mcp-host', join(root, 'uninstalled', 'main.js')) }));
   mkdirSync(dir('profile'), { recursive: true });
   writeFileSync(manifest('profile'), JSON.stringify({ path: join(root, 'removed-host') }));
 
@@ -65,10 +75,12 @@ test('the host manifest goes to Chrome and existing browsers, never over another
     { browser: 'chrome', dir: dir('chrome') },
     { browser: 'edge', dir: dir('edge') },
     { browser: 'brave', dir: dir('brave') },
+    { browser: 'chromium', dir: dir('chromium') },
     { browser: `profile:${root}`, dir: dir('profile') },
   ], 'darwin');
 
-  assert.deepEqual(written, [manifest('chrome'), manifest('profile')]);
+  assert.deepEqual(written, [manifest('chrome'), manifest('chromium'), manifest('profile')]);
+  assert.equal(JSON.parse(readFileSync(manifest('chromium'), 'utf8')).path, host);
   assert.deepEqual(JSON.parse(readFileSync(manifest('chrome'), 'utf8')), {
     name: 'com.opencli.mcp',
     description: 'opencli-mcp browser runtime host',
@@ -77,4 +89,26 @@ test('the host manifest goes to Chrome and existing browsers, never over another
     allowed_origins: ['chrome-extension://lnaoghmfcdnbhgcihkakfobckmfhllkg/'],
   });
   assert.equal(JSON.parse(readFileSync(manifest('brave'), 'utf8')).path, other);
+});
+
+// The stand-in chrome.exe is a shell script, which Windows cannot run.
+test('Windows opens the store page in installed Chrome, not the default browser', { skip: process.platform === 'win32' }, async () => {
+  const local = mkdtempSync(join(tmpdir(), 'maka-opencli-'));
+  const chrome = join(local, 'Google', 'Chrome', 'Application', 'chrome.exe');
+  const received = join(local, 'received-url');
+  mkdirSync(dirname(chrome), { recursive: true });
+  writeFileSync(chrome, `#!/bin/sh\nprintf '%s' "$1" > '${received}'\n`, { mode: 0o755 });
+  const url = 'https://chromewebstore.google.com/detail/opencli';
+  const defaultBrowser: string[] = [];
+  const openExternal = async (target: string) => {
+    defaultBrowser.push(target);
+  };
+
+  await openInChrome(url, openExternal, 'win32', { PROGRAMFILES: join(local, 'missing'), LOCALAPPDATA: local });
+  for (let waited = 0; !existsSync(received) && waited < 5_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(readFileSync(received, 'utf8'), url);
+  assert.deepEqual(defaultBrowser, []);
+
+  await openInChrome(url, openExternal, 'win32', { LOCALAPPDATA: join(local, 'missing') });
+  assert.deepEqual(defaultBrowser, [url]);
 });

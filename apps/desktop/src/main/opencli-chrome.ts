@@ -19,7 +19,7 @@
 
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import type { OpencliChromeStatus } from '@maka/core/mcp';
@@ -132,19 +132,31 @@ export function createOpencliChrome(stateDir: string, openExternal: (url: string
   };
 }
 
+// Uninstalling a global opencli-mcp leaves its launcher behind, so the install
+// counts as live only while every path the launcher runs still exists.
 function ownedByAnotherInstall(file: string, host: string): boolean {
   try {
     const path = (JSON.parse(readFileSync(file, 'utf8')) as { path?: unknown }).path;
-    return typeof path === 'string' && path !== host && existsSync(path);
+    if (typeof path !== 'string' || path === host) return false;
+    return [...readFileSync(path, 'utf8').matchAll(/"([^"]+)"|'([^']+)'/g)]
+      .map((match) => match[1] ?? match[2])
+      .every((quoted) => !isAbsolute(quoted) || existsSync(quoted));
   } catch {
     return false;
   }
 }
 
 // The default browser may not be Chrome, and only Chrome can install it.
-async function openInChrome(url: string, openExternal: (url: string) => Promise<void>): Promise<void> {
-  const launches = process.platform === 'darwin' ? [() => promisify(execFile)('open', ['-a', 'Google Chrome', url])]
-    : process.platform === 'linux' ? ['google-chrome', 'chromium'].map((command) => () => startDetached(command, [url]))
+export async function openInChrome(
+  url: string,
+  openExternal: (url: string) => Promise<void>,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const launches = platform === 'darwin' ? [() => promisify(execFile)('open', ['-a', 'Google Chrome', url])]
+    : platform === 'linux' ? ['google-chrome', 'chromium'].map((command) => () => startDetached(command, [url]))
+    : platform === 'win32' ? [env.PROGRAMFILES, env['PROGRAMFILES(X86)'], env.LOCALAPPDATA]
+      .flatMap((root) => root ? [() => startDetached(join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'), [url])] : [])
     : [];
   for (const launch of launches) {
     try {
