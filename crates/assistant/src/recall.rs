@@ -22,6 +22,7 @@ mod passages;
 mod rank;
 mod reader;
 mod remote;
+mod terminal;
 mod tools;
 mod types;
 
@@ -93,6 +94,7 @@ impl Plugin for Builtin {
             });
             let mut staged = Staged::default();
             remote::publish(&mut staged, &package, recall.clone())?;
+            terminal::publish(&mut staged, &package, recall.clone())?;
             for (name, description, schema) in definitions() {
                 let tool = PluginTool::new(ToolRegistration {
                     definition: ToolDefinition {

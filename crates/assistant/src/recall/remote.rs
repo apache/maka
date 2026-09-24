@@ -40,7 +40,7 @@ pub(super) fn publish(
         )
         .map_err(|e| e.to_string())
 }
-struct Search(Arc<Recall>);
+pub(super) struct Search(pub(super) Arc<Recall>);
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Page {
