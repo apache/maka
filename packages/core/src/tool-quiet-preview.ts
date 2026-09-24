@@ -269,14 +269,6 @@ export function formatToolInvocationLine(
     return parts.join(' · ');
   }
 
-  if (name === 'deep_research_start') {
-    const objective = stringField(args, 'objective');
-    if (objective) {
-      const scopeLevel = stringField(args, 'scope_level');
-      return redactSecrets(scopeLevel ? `${objective} (${scopeLevel})` : objective);
-    }
-  }
-
   if (name === 'GoalSet') {
     const condition = stringField(args, 'condition');
     if (condition) return redactSecrets(condition);
@@ -365,11 +357,6 @@ const ARGS_PREVIEW_SCALAR_KEYS = [
   'ref',
 ] as const;
 
-// This tool's objective is the compact row's durable headline. Keep it
-// explicit rather than widening the generic wire allowlist with a broad key
-// such as `input`: non-WriteStdin tools otherwise retain arbitrary payloads.
-const DEEP_RESEARCH_START_PREVIEW_SCALAR_KEYS = ['objective', 'scope_level'] as const;
-
 const ARGS_PREVIEW_NUMBER_KEYS = ['offset', 'limit'] as const;
 
 function boundPreviewString(value: string): string {
@@ -453,13 +440,9 @@ export function projectToolArgsPreview(
   // Apply the canonical activity projection first so WriteStdin's inputPreview
   // shape (bounded, display-safe) is what the whitelist picks up.
   const projected = asRecord(projectToolActivityArgs(toolName, args)) ?? record;
-  const scalarKeys =
-    toolName === 'deep_research_start'
-      ? [...ARGS_PREVIEW_SCALAR_KEYS, ...DEEP_RESEARCH_START_PREVIEW_SCALAR_KEYS]
-      : ARGS_PREVIEW_SCALAR_KEYS;
 
   const picked = new Map<string, unknown>();
-  for (const key of scalarKeys) {
+  for (const key of ARGS_PREVIEW_SCALAR_KEYS) {
     if (isSensitiveKey(key)) continue;
     const value = previewStringField(projected, key);
     if (value !== undefined) picked.set(key, value);
@@ -492,7 +475,7 @@ export function projectToolArgsPreview(
   // Enforce the whole-preview budget by dropping lowest-priority fields; the
   // first picked (highest-priority) field always survives.
   const keysByPriority = [
-    ...scalarKeys,
+    ...ARGS_PREVIEW_SCALAR_KEYS,
     ...ARGS_PREVIEW_NUMBER_KEYS,
     'inputPreview',
     'size',

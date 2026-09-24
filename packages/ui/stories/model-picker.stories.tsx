@@ -21,17 +21,18 @@ import { useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ProviderType } from '@maka/core/llm-connections';
+import type { ExecutorCatalogEntry, ExecutorSelection } from '@maka/core/executor-catalog';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SessionSummary } from '@maka/core/session';
 import { ChatModelSwitcher, ModelChipStatic, NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
 import {
   exactModelChoiceValue,
-  modelChoiceDescription,
   modelChoiceValue,
   modelMenuGroups,
   type ChatModelChoice,
 } from '../src/chat-model-helpers.js';
 import { ModelPicker } from '../src/model-picker.js';
+import { Composer } from '../src/composer.js';
 import { getConversationCopy } from '../src/conversation-copy.js';
 import { useUiLocale } from '../src/locale-context.js';
 
@@ -174,6 +175,77 @@ function ModelPickerFrame(props: { initialValue?: string }) {
 // Real path: chat → composer footer model control.
 export const Default: Story = {
   render: () => <ModelPickerFrame />,
+};
+
+const ANTIGRAVITY_CATALOG: readonly ExecutorCatalogEntry[] = [{
+  id: 'antigravity-acp',
+  displayName: 'Antigravity',
+  readiness: 'ready',
+  models: [
+    { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)', providerType: 'google' },
+    { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)', providerType: 'google' },
+    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', providerType: 'google' },
+    { id: 'gemini-3.1-pro-low', name: 'Gemini 3.1 Pro (Low)', providerType: 'google' },
+    { id: 'gemini-pro-agent', name: 'Gemini 3.1 Pro (High)', providerType: 'google' },
+  ],
+  modelGroups: [
+    { id: 'flash', name: 'Gemini 3.8 Flash', variants: [
+      { modelId: 'gemini-3.8-flash-low', level: 'low' },
+      { modelId: 'gemini-3.8-flash-medium', level: 'medium' },
+      { modelId: 'gemini-3.8-flash-high', level: 'high' },
+    ] },
+    { id: 'pro', name: 'Gemini 3.1 Pro', variants: [
+      { modelId: 'gemini-3.1-pro-low', level: 'low' },
+      { modelId: 'gemini-pro-agent', level: 'high' },
+    ] },
+  ],
+  currentModel: 'gemini-3.8-flash-high',
+  supportsAttachments: false,
+  supportsModelChange: true,
+}];
+
+// Real path: new task → composer footer model trigger. The ready catalog is a
+// fixture using model IDs observed from official ACP 1.1.1; no Agent runs here.
+function ExecutorPickerFrame({ loading }: { loading: boolean }) {
+  const [selection, setSelection] = useState<ExecutorSelection>();
+  return <div style={{ width: 780, maxWidth: '100%', marginTop: 360 }}>
+    <Composer
+      executorPicker={{
+        catalog: loading ? [] : ANTIGRAVITY_CATALOG,
+        loading,
+        selection,
+        onSelect: setSelection,
+        onSetup: () => {},
+        onRetry: () => {},
+        onNewTask: () => {},
+      }}
+      modelChoices={CHOICES}
+      newChatModel={{ llmConnectionId: 'connection-openai-main', llmConnectionSlug: 'openai-main', model: 'gpt-5' }}
+      onPickNewChatModel={() => {}}
+      onSend={() => {}}
+      onStop={() => {}}
+    />
+  </div>;
+}
+
+export const ExecutorCatalogLoading: Story = {
+  render: () => <ExecutorPickerFrame loading />,
+  play: async () => {
+    const body = within(document.body);
+    await userEvent.click(await body.findByRole('button', { name: /选择模型|Select model/ }));
+    await waitFor(() => expect(body.getByText(/正在读取执行者与模型|Loading agents and models/)).toBeVisible());
+  },
+};
+
+export const ExecutorCatalogReady: Story = {
+  render: () => <ExecutorPickerFrame loading={false} />,
+  play: async () => {
+    const body = within(document.body);
+    await userEvent.click(await body.findByRole('button', { name: /选择模型|Select model/ }));
+    await userEvent.click(await body.findByRole('button', { name: 'Antigravity' }));
+    await expect(body.getByText('Gemini 3.8 Flash')).toBeVisible();
+    await expect(body.getByText('Gemini 3.1 Pro')).toBeVisible();
+  },
 };
 
 // Real path: an existing conversation -> composer footer model control. The

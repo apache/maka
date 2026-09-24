@@ -46,11 +46,11 @@ function recordingEnvironment() {
 test('the Desktop adapter hands the search namespace through and owns the browser edges', async () => {
   const calls: string[] = [];
   const search = {
-    thread: async (request: { query: string }, requestId?: string) => {
-      calls.push(`thread:${request.query}:${requestId}`);
-      return [];
+    recall: async (request: { terms: readonly string[] }, requestId?: string) => {
+      calls.push(`recall:${request.terms.join(',')}:${requestId}`);
+      return { passages: [], gaps: '', searchedEverySession: true };
     },
-    cancelThread: async (requestId: string) => { calls.push(`cancel:${requestId}`); },
+    cancelRecall: async (requestId: string) => { calls.push(`cancel:${requestId}`); },
   };
   const bridge = { search } as unknown as DesktopOverlaysBridge;
   const { environment, writes, blurred } = recordingEnvironment();
@@ -58,12 +58,12 @@ test('the Desktop adapter hands the search namespace through and owns the browse
   const services = createDesktopOverlaysServices(bridge, environment);
 
   assert.equal(services.search, bridge.search);
-  await services.search.thread({ query: 'plan' } as Parameters<typeof services.search.thread>[0], 'search-1');
-  await services.search.cancelThread('search-1');
+  await services.search.recall({ terms: ['plan'] }, 'search-1');
+  await services.search.cancelRecall('search-1');
   services.settingsSection.persist('models');
   services.focus.blurActiveElement();
 
-  assert.deepEqual(calls, ['thread:plan:search-1', 'cancel:search-1']);
+  assert.deepEqual(calls, ['recall:plan:search-1', 'cancel:search-1']);
   assert.deepEqual(writes, [[SETTINGS_SECTION_STORAGE_KEY, 'models']]);
   assert.equal(SETTINGS_SECTION_STORAGE_KEY, 'maka-settings-section-v1');
   assert.equal(blurred(), 1);
@@ -71,7 +71,12 @@ test('the Desktop adapter hands the search namespace through and owns the browse
 });
 
 test('the adapter tolerates an unavailable store and a missing active element', () => {
-  const bridge = { search: { thread: async () => [] } } as unknown as DesktopOverlaysBridge;
+  const bridge = {
+    search: {
+      recall: async () => ({ passages: [], gaps: '', searchedEverySession: true }),
+      cancelRecall: async () => undefined,
+    },
+  } as unknown as DesktopOverlaysBridge;
   const services = createDesktopOverlaysServices(bridge, {
     storage: {
       setItem() {

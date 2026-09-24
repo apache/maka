@@ -28,7 +28,7 @@ import {
   readNewTaskReloadIntent,
   UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
-} from '../../renderer/new-task-reload-intent.js';
+} from '../../renderer/application/contracts/new-task-reload-intent.js';
 
 type Summary = { id: string; lastMessageAt?: number; isArchived: boolean };
 

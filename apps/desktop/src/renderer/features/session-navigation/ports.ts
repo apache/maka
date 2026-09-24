@@ -19,7 +19,9 @@
 
 import type { RefObject } from 'react';
 import type { SessionSummary } from '@maka/core/session';
+import type { ProjectRecord } from '@maka/core/project';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
+import type { DesktopSessionUpdateFailureCode } from '../../../shared/desktop-session-projection.js';
 
 export type SessionNavigationRemoveDisposition = 'removed' | 'restored';
 
@@ -55,9 +57,22 @@ export type SessionNavigationToastApi = {
 };
 
 export interface SessionNavigationSession extends SessionSummary {
+  readonly runtimeHostId: string;
   readonly profileId: string;
   readonly profileName: string;
   readonly profileKind: RuntimeHostProfileKind;
+}
+
+export interface SessionNavigationProjectScope {
+  readonly key: string;
+  readonly profileId: string;
+  readonly hostId: string;
+  readonly profileName: string;
+  readonly profileKind: RuntimeHostProfileKind;
+  readonly project: ProjectRecord;
+  readonly capabilities: {
+    readonly chooseClientDirectory: boolean;
+  };
 }
 
 /** The minimum catalog mutation capability needed by Session Navigation. */
@@ -91,7 +106,22 @@ export interface SessionNavigationSessionService {
    * estimating from the catalog projection.
    */
   previewRemoval(sessionId: string): Promise<number>;
+  /**
+   * Re-file one task under another project, or out of every project (`null`).
+   * Settles as an outcome rather than throwing for the expected refusals, so
+   * the row action can say which one it was.
+   */
+  moveToProject(sessionId: string, projectId: string | null): Promise<SessionMoveOutcome>;
 }
+
+/**
+ * The settlement of a re-file. `ok: false` carries the Host's refusal code so
+ * the row action can name the reason — a running Turn, an unavailable project,
+ * or something already gone — instead of a generic failure.
+ */
+export type SessionMoveOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly code: DesktopSessionUpdateFailureCode };
 
 export interface SessionNavigationServices {
   readonly sessions: SessionNavigationSessionService;

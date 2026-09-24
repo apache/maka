@@ -76,6 +76,17 @@ export async function isDefaultRuntimeHostCurrent(
   }
 }
 
+export async function isDefaultRuntimeHostResolvable(
+  runtimeHosts: ModuleHubRuntimeHostsService,
+): Promise<boolean> {
+  try {
+    await runtimeHosts.getDefault();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function runIfDefaultRuntimeHostCurrent(
   runtimeHosts: ModuleHubRuntimeHostsService,
   host: ModuleHubRuntimeHostRef,

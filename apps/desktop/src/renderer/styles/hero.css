@@ -113,6 +113,6 @@
    launch screen, so its greeting steps down from the first-run hero rung
    to 20px. The OnboardingHero variants keep the large scale —
    they are seen once, and there the headline is the whole message. */
-.maka-hero-empty-chat:not(.maka-hero-deep-research) h1 {
+.maka-hero-empty-chat h1 {
     font: var(--maka-text-heading-1);
   }

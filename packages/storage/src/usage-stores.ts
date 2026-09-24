@@ -281,10 +281,17 @@ export async function openInteractiveUsageStoresForRead(
     openRepos(root, false),
   );
   let closed = false;
+  let barrier: Promise<void> = Promise.resolve();
   let closePromise: Promise<void> | undefined;
   const run = <T>(operation: () => T | Promise<T>): Promise<T> => {
     if (closed) return Promise.reject(new InteractiveUsageStoresClosedError());
-    return runWithStorageRootLease(lease, 'interactive', 'read', async () => operation());
+    const admitted = runWithStorageRootLease(lease, 'interactive', 'read', async () => operation());
+    const settled = admitted.then(
+      () => undefined,
+      () => undefined,
+    );
+    barrier = Promise.all([barrier, settled]).then(() => undefined);
+    return admitted;
   };
   const stores: InteractiveUsageStoresReader = {
     readUsageScreen: (input) => run(() => repos.screen.read(input)),
@@ -297,8 +304,11 @@ export async function openInteractiveUsageStoresForRead(
     close: () => {
       if (closePromise) return closePromise;
       closed = true;
-      repos.screen.close();
-      closePromise = closeRepos(repos.telemetry, repos.modelCalls, repos.pricing);
+      const accepted = barrier;
+      closePromise = accepted.then(async () => {
+        repos.screen.close();
+        await closeRepos(repos.telemetry, repos.modelCalls, repos.pricing);
+      });
       return closePromise;
     },
   };
@@ -433,7 +443,13 @@ function createWriterFacade(
     });
   const read = <T>(operation: () => T): Promise<T> => {
     assertOpen();
-    return run(operation);
+    const admitted = Promise.resolve().then(() => run(operation));
+    const settled = admitted.then(
+      () => undefined,
+      () => undefined,
+    );
+    barrier = Promise.all([barrier, settled]).then(() => undefined);
+    return admitted;
   };
 
   const beginDrain = (): Promise<void> => {

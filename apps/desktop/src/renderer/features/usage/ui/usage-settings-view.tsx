@@ -25,14 +25,23 @@ import {
   Tab,
   TabList,
   Tooltip,
-  Pagination,
 } from '@astryxdesign/core';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import { parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
 import type { UsageRange, UsageSettings, UsageStats } from '@maka/core/settings';
 import { estimatedUsageCost, hasUnavailableUsage } from '@maka/core/usage-ledger-merge';
 import { Button, TextInput, Selector, Switch, useToast, useUiLocale, useMountedRef, Banner } from '@maka/ui';
-import { ICON_SIZE, Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
+import {
+  ICON_SIZE,
+  Activity,
+  BarChart3,
+  ChevronLeft,
+  ChevronRight,
+  Cpu,
+  Database,
+  RefreshCcw,
+  Search,
+} from '@maka/ui/icons';
 import {
   getUsageSettingsCopy,
   type UsageSettingsCopy,
@@ -41,12 +50,18 @@ import { MetricCard } from './metric-card.js';
 import { UsageStatsTable } from './usage-stats-table.js';
 import { useActionGuard } from '../controller/action-guard.js';
 import { useOptimisticSettingsDraft } from '../controller/optimistic-settings-draft.js';
-import { useUsageServices, useUsageStats } from '../services-context.js';
+import {
+  useUsageServices,
+  useUsageStats,
+  type UsagePagingProgress,
+} from '../services-context.js';
 
 type UsageActiveTab = UsageSettings['activeTab'];
 
 const USAGE_REQUESTS_PAGE_SIZE = 50;
+const USAGE_SEARCH_DEBOUNCE_MS = 250;
 const EMPTY_USAGE_LOGS: UsageStats['logs'] = [];
+const normalizeUsageSearch = (search: string) => search.trim().toLowerCase();
 
 /**
  * The Usage settings surface (issue #4425). A disposable view: it unmounts when
@@ -68,7 +83,18 @@ export function UsageSettingsView(props: {
   const toast = useToast();
   const persistedUsage = props.settings;
   // A retained complete result stays bound to its original query until replacement.
-  const { stats, reload, targetKey, state, error, paging, loadMore, screenVersion } = useUsageStats(persistedUsage.range);
+  const {
+    stats,
+    reload,
+    targetKey,
+    state,
+    error,
+    failure,
+    paging,
+    pagingProgress,
+    loadMore,
+    screenVersion,
+  } = useUsageStats(persistedUsage.range);
   const [refreshing, setRefreshing] = useState(false);
   const usageRefreshGuard = useActionGuard<'refresh'>();
   const {
@@ -81,6 +107,13 @@ export function UsageSettingsView(props: {
     (patch) => services.updateUsageSettings(patch),
     { onError: (error) => toast.error(copy.saveFailed, props.describeError(error)) },
   );
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastQuery = useRef<{
+    range: UsageRange;
+    targetKey: string;
+    search: string;
+    status: UsageSettings['status'];
+  } | null>(null);
 
   // Usage records are Host-owned; display preferences are client-owned. Trigger a
   // background reload on mount, whenever the persisted range changes, and whenever
@@ -90,11 +123,43 @@ export function UsageSettingsView(props: {
   // isolation, target invalidation) lives in the scope, so a load in flight when
   // this view unmounts still lands and is visible on return.
   useEffect(() => {
-    void reload(persistedUsage.range, {search: usageDraft.modelFilter, status: usageDraft.status}, true);
+    const query = {
+      range: persistedUsage.range,
+      targetKey,
+      search: normalizeUsageSearch(usageDraft.modelFilter),
+      status: usageDraft.status,
+    };
+    const previous = lastQuery.current;
+    const run = () => {
+      searchTimer.current = null;
+      lastQuery.current = query;
+      void reload(query.range, { search: query.search, status: query.status }, true);
+    };
+    const onlySearchChanged =
+      previous !== null &&
+      previous.range === query.range &&
+      previous.targetKey === query.targetKey &&
+      previous.status === query.status &&
+      previous.search !== query.search;
+    if (onlySearchChanged) {
+      searchTimer.current = setTimeout(run, USAGE_SEARCH_DEBOUNCE_MS);
+    } else if (
+      previous === null ||
+      previous.range !== query.range ||
+      previous.targetKey !== query.targetKey ||
+      previous.status !== query.status ||
+      previous.search !== query.search
+    ) {
+      run();
+    }
+    return () => {
+      if (searchTimer.current !== null) clearTimeout(searchTimer.current);
+      searchTimer.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [persistedUsage.range, targetKey, usageDraft.modelFilter, usageDraft.status]);
 
-  const normalizedModelFilter = usageDraft.modelFilter.trim().toLowerCase();
+  const normalizedModelFilter = normalizeUsageSearch(usageDraft.modelFilter);
   const hasRequestFilters = usageDraft.status !== 'all' || normalizedModelFilter.length > 0;
   const showRequestDetails = usageDraft.activeTab === 'requests' && usageDraft.showDetails;
   const filteredLogs = useMemo(() => {
@@ -130,8 +195,19 @@ export function UsageSettingsView(props: {
   async function refresh() {
     if (!usageRefreshGuard.begin('refresh')) return;
     setRefreshing(true);
+    if (searchTimer.current !== null) clearTimeout(searchTimer.current);
+    searchTimer.current = null;
+    lastQuery.current = {
+      range: usageDraftRef.current.range,
+      targetKey,
+      search: normalizeUsageSearch(usageDraftRef.current.modelFilter),
+      status: usageDraftRef.current.status,
+    };
     try {
-      await reload(usageDraftRef.current.range, {search: usageDraftRef.current.modelFilter, status: usageDraftRef.current.status});
+      await reload(usageDraftRef.current.range, {
+        search: usageDraftRef.current.modelFilter,
+        status: usageDraftRef.current.status,
+      });
     } finally {
       usageRefreshGuard.finish();
       if (usagePageMountedRef.current) setRefreshing(false);
@@ -160,7 +236,7 @@ export function UsageSettingsView(props: {
           role="status"
           title={state === 'stale' ? copy.staleTitle : copy.loadFailed}
           description={state === 'stale' ? copy.staleBody : [
-            error?.includes('screen_response_too_large') ? copy.capacityBody : error,
+            failure?.kind === 'screen_response_too_large' ? copy.capacityBody : error,
             stats ? copy.retainedBody : undefined,
           ].filter(Boolean).join(' ')}
           endContent={state === 'stale' ? (
@@ -236,6 +312,7 @@ export function UsageSettingsView(props: {
               hasNextPage={Boolean(stats?.navigation?.nextCursor)}
               totalRecords={stats?.navigation?.activityTotal ?? filteredLogs.length}
               canLoadNextPage={state === 'ready' && !paging}
+              pagingProgress={pagingProgress}
               onLoadNextPage={loadMore}
               logs={showRequestDetails ? filteredLogs : EMPTY_USAGE_LOGS}
               showDetails={usageDraft.showDetails}
@@ -292,6 +369,7 @@ function UsageRequestsPanel(props: {
   hasNextPage: boolean;
   totalRecords: number;
   canLoadNextPage: boolean;
+  pagingProgress: UsagePagingProgress | null;
   onLoadNextPage(minimumRecords: number): Promise<boolean>;
   logs: UsageStats['logs'];
   showDetails: boolean;
@@ -320,7 +398,7 @@ function UsageRequestsPanel(props: {
   const loadedPageCount = Math.ceil(props.logs.length / USAGE_REQUESTS_PAGE_SIZE);
   const currentPage = Math.min(page, pageCount);
   async function changePage(nextPage: number) {
-    if (props.hasNextPage && !props.canLoadNextPage) return;
+    if (nextPage > loadedPageCount && !props.canLoadNextPage) return;
     const request = ++navigationRequest.current;
     if (nextPage <= loadedPageCount) {
       setPage(nextPage);
@@ -400,14 +478,32 @@ function UsageRequestsPanel(props: {
         rowIndexStart={(currentPage - 1) * USAGE_REQUESTS_PAGE_SIZE + 1}
         rowCount={props.totalRecords}
         footer={pageCount > 1 ? (
-          <div style={{display: 'flex', justifyContent: 'center', marginTop: 'var(--spacing-2)'}}>
-            <Pagination
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 'var(--spacing-2)',
+              marginTop: 'var(--spacing-2)',
+            }}
+          >
+            {props.pagingProgress ? (
+              <small role="status" aria-live="polite">
+                {props.copy.pageProgress(
+                  Math.ceil(props.pagingProgress.loadedRecords / USAGE_REQUESTS_PAGE_SIZE),
+                  Math.ceil(props.pagingProgress.targetRecords / USAGE_REQUESTS_PAGE_SIZE),
+                )}
+              </small>
+            ) : null}
+            <UsagePagination
               page={currentPage}
+              pageCount={pageCount}
+              canVisitPage={(nextPage) =>
+                nextPage <= loadedPageCount ||
+                (props.hasNextPage && props.canLoadNextPage)
+              }
+              copy={props.copy}
               onChange={(nextPage) => void changePage(nextPage)}
-              totalItems={props.totalRecords}
-              pageSize={USAGE_REQUESTS_PAGE_SIZE}
-              size="sm"
-              isDisabled={props.hasNextPage && !props.canLoadNextPage}
             />
           </div>
         ) : undefined}
@@ -446,6 +542,68 @@ function UsageRequestsPanel(props: {
         }}
       />
     </>
+  );
+}
+
+function UsagePagination(props: {
+  page: number;
+  pageCount: number;
+  canVisitPage(page: number): boolean;
+  copy: UsageSettingsCopy;
+  onChange(page: number): void;
+}) {
+  const pages = [...new Set([1, props.page - 1, props.page, props.page + 1, props.pageCount])]
+    .filter((page) => page >= 1 && page <= props.pageCount)
+    .sort((left, right) => left - right);
+  const items: Array<number | string> = [];
+  for (const page of pages) {
+    const previous = items.at(-1);
+    if (typeof previous === 'number' && page - previous > 1) {
+      items.push(`ellipsis-${previous}`);
+    }
+    items.push(page);
+  }
+  const previousPage = props.page - 1;
+  const nextPage = props.page + 1;
+  return (
+    <nav aria-label={props.copy.paginationAria} style={{ display: 'flex', gap: 'var(--spacing-1)' }}>
+      <Button
+        variant="ghost"
+        size="sm"
+        isIconOnly
+        label={props.copy.previousPage}
+        icon={<ChevronLeft size={ICON_SIZE.control} aria-hidden="true" />}
+        isDisabled={previousPage < 1 || !props.canVisitPage(previousPage)}
+        onClick={() => props.onChange(previousPage)}
+      />
+      {items.map((item) =>
+        typeof item === 'string' ? (
+          <span key={item} aria-hidden="true" style={{ alignSelf: 'center' }}>
+            …
+          </span>
+        ) : (
+          <Button
+            key={item}
+            variant={item === props.page ? 'secondary' : 'ghost'}
+            size="sm"
+            label={String(item)}
+            aria-label={props.copy.goToPage(item)}
+            aria-current={item === props.page ? 'page' : undefined}
+            isDisabled={!props.canVisitPage(item)}
+            onClick={() => props.onChange(item)}
+          />
+        ),
+      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        isIconOnly
+        label={props.copy.nextPage}
+        icon={<ChevronRight size={ICON_SIZE.control} aria-hidden="true" />}
+        isDisabled={nextPage > props.pageCount || !props.canVisitPage(nextPage)}
+        onClick={() => props.onChange(nextPage)}
+      />
+    </nav>
   );
 }
 

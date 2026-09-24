@@ -36,6 +36,7 @@ import {
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
 } from '@maka/core/model-call-attempt';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import {
   buildHistoryCompactCheckpoint,
   historyCompactSourceDigest,
@@ -84,7 +85,7 @@ import {
   readToolResultPage,
   readableToolResult,
   resolveReadInput,
-  READ_PAGE_MAX_CHARS,
+  READ_PAGE_MAX_BYTES,
 } from './read-page.js';
 
 export interface ConversationCopySlice {
@@ -497,6 +498,20 @@ function assertConversationRuntimeLedgerCopySupported(
   throw error;
 }
 
+/**
+ * Mirrors the T1 scanner's identity semantics: a call whose args are not
+ * strict JSON cannot authenticate, which the scanner surfaces as a
+ * `canonical_args_hash_conflict` rather than an exception — so the copy pass
+ * must see `undefined` there, not a thrown error.
+ */
+const tryCanonicalToolArgsHash = (toolName: string, args: unknown): string | undefined => {
+  try {
+    return canonicalToolArgsHash(toolName, args);
+  } catch {
+    return undefined;
+  }
+};
+
 export async function cloneConversationRuntimeLedger(
   input: CloneConversationRuntimeLedgerInput,
 ): Promise<CloneConversationRuntimeLedgerResult> {
@@ -652,10 +667,25 @@ export async function cloneConversationRuntimeLedger(
     finished.add(sourceId);
   };
   for (const sourceId of clonedEventBySourceId.keys()) finishTarget(sourceId);
+  // The identity rewrite changes a copied call's canonical args, so the paired
+  // dispatch's recorded hash stops authenticating them and the copied ledger
+  // fails its own T1 re-scan. Collect the source and rewritten identities per
+  // (invocation, tool call) and re-authenticate the dispatches after the
+  // rewrite pass — but only when the source dispatch actually authenticated
+  // the source call. Stamping the rewritten identity over a mismatched hash
+  // would launder an already-corrupt source ledger into a valid-looking copy
+  // instead of preserving the corruption for the re-scan to reject (#5466
+  // review). Identity derivation mirrors the scanner's semantics: args that
+  // are not strict JSON cannot authenticate at all.
+  const rewrittenArgsIdentities = new Map<
+    string,
+    { sourceArgsHash: string | undefined; rewrittenArgsHash: string | undefined }
+  >();
   for (const event of clonedEventBySourceId.values()) {
     if (event.content?.kind === 'function_call' && event.content.name === 'Read') {
       const args = event.content.args;
-      if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string')
+      if (args && typeof args === 'object' && 'path' in args && typeof args.path === 'string') {
+        const sourceArgsHash = tryCanonicalToolArgsHash(event.content.name, args);
         event.content = {
           ...event.content,
           args: {
@@ -667,17 +697,43 @@ export async function cloneConversationRuntimeLedger(
             ),
           },
         };
+        rewrittenArgsIdentities.set(`${event.invocationId}\u0000${event.content.id}`, {
+          sourceArgsHash,
+          rewrittenArgsHash: tryCanonicalToolArgsHash(event.content.name, event.content.args),
+        });
+      }
     }
     if (event.content?.kind === 'text')
       event.content.text = rewriteCopiedText(event.content.text, references, clonedEventBySourceId);
     if (event.content?.kind === 'function_call' && event.content.name === 'ArchiveRead') {
       const args = event.content.args;
       if (args && typeof args === 'object' && 'ref' in args && typeof args.ref === 'string') {
+        const sourceArgsHash = tryCanonicalToolArgsHash(event.content.name, args);
         event.content = {
           ...event.content,
           args: { ...args, ref: rewriteLedgerArchiveText(args.ref, references) },
         };
+        rewrittenArgsIdentities.set(`${event.invocationId}\u0000${event.content.id}`, {
+          sourceArgsHash,
+          rewrittenArgsHash: tryCanonicalToolArgsHash(event.content.name, event.content.args),
+        });
       }
+    }
+  }
+  if (rewrittenArgsIdentities.size > 0) {
+    for (const event of clonedEventBySourceId.values()) {
+      const dispatch = event.actions?.toolDispatch;
+      if (dispatch?.canonicalArgsHash === undefined) continue;
+      const identity = rewrittenArgsIdentities.get(
+        `${event.invocationId}\u0000${dispatch.providerToolCallId}`,
+      );
+      if (identity === undefined) continue;
+      if (identity.sourceArgsHash !== dispatch.canonicalArgsHash) continue;
+      if (identity.rewrittenArgsHash === undefined) continue;
+      event.actions = {
+        ...event.actions,
+        toolDispatch: { ...dispatch, canonicalArgsHash: identity.rewrittenArgsHash },
+      };
     }
   }
   const preparedPlans = flattenedPlans.map((plan) => {
@@ -1304,7 +1360,7 @@ function cloneModelProjectionTransition(
       rewritten.page = readToolResultPage(
         serialized,
         { path: rewritten.resourceRef! },
-        READ_PAGE_MAX_CHARS - JSON.stringify(rewritten).length - 32,
+        READ_PAGE_MAX_BYTES - Buffer.byteLength(JSON.stringify(rewritten)) - 32,
       );
     }
     references.ledgerArchives?.set(

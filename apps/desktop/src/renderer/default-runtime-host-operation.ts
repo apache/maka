@@ -47,6 +47,15 @@ export async function runOnDefaultRuntimeHost<T>(
   }
 }
 
+export async function isDefaultRuntimeHostResolvable(): Promise<boolean> {
+  try {
+    await runOnDefaultRuntimeHost(async () => undefined);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function runIfDefaultRuntimeHostCurrent(
   host: DesktopRuntimeHostRef,
   operation: () => unknown | Promise<unknown>,

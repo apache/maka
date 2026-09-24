@@ -35,15 +35,12 @@ import {
   type StreamDeltaSpec,
 } from '../stream-delta.js';
 
-const CHUNK = '[C]';
 const TOTAL = '[T]';
 
 function spec(overrides: Partial<StreamDeltaSpec> = {}): StreamDeltaSpec {
   return {
-    maxDeltaChars: 1024,
     maxTotalChars: 8,
     recovery: 'head',
-    chunkMarker: CHUNK,
     totalMarker: TOTAL,
     ...overrides,
   };
@@ -77,36 +74,21 @@ describe('applyStreamDelta — the two recovery directions', () => {
   it('freezes a full head-kept buffer and keeps a tail-kept window sliding', () => {
     const frozen = `abcde${TOTAL}`;
     const dropped = applyStreamDelta(frozen, 'more', spec({ recovery: 'head' }));
-    assert.deepEqual(dropped, { text: frozen, redacted: false, truncated: true });
+    assert.deepEqual(dropped, { text: frozen, truncated: true });
 
     const sliding = `${TOTAL}fghij`;
     const advanced = applyStreamDelta(sliding, 'KL', spec({ recovery: 'tail' }));
     assert.equal(advanced.text, `${TOTAL}hijKL`);
     assert.equal(advanced.truncated, true);
   });
-
-  it('caps an oversize single delta the same way in both directions', () => {
-    // Well under the total cap, so only the per-delta gate can fire.
-    const perDelta = spec({ maxDeltaChars: 6, maxTotalChars: 1024 });
-    const expected = `xy${CHUNK}fgh`;
-
-    assert.equal(
-      applyStreamDelta('xy', 'abcdefgh', { ...perDelta, recovery: 'head' }).text,
-      expected,
-    );
-    assert.equal(
-      applyStreamDelta('xy', 'abcdefgh', { ...perDelta, recovery: 'tail' }).text,
-      expected,
-    );
-  });
 });
 
 describe('applyStreamDelta — defensive guard', () => {
-  it('drops a non-string delta without claiming redaction, in both directions', () => {
+  it('drops a non-string delta in both directions', () => {
     for (const recovery of ['head', 'tail'] as const) {
       assert.deepEqual(
         applyStreamDelta('so far', undefined as unknown as string, spec({ recovery })),
-        { text: 'so far', redacted: false, truncated: false },
+        { text: 'so far', truncated: false },
       );
     }
     assert.equal(
@@ -148,12 +130,11 @@ describe('applyStreamComplete', () => {
     );
   });
 
-  it('redacts before the cap and reports it', () => {
+  it('redacts the final payload', () => {
     const result = applyStreamComplete(
       'Authorization: Bearer sk-secret123ABCDEFGHIJKLMNOP',
       { maxTotalChars: 1024, recovery: 'head', totalMarker: TOTAL },
     );
-    assert.equal(result.redacted, true);
     assert.equal(result.truncated, false);
     assert.equal(result.text.includes('sk-secret123ABCDEFGHIJKLMNOP'), false);
   });
@@ -165,7 +146,7 @@ describe('applyStreamComplete', () => {
         recovery: 'tail',
         totalMarker: TOTAL,
       }),
-      { text: '', redacted: false, truncated: false },
+      { text: '', truncated: false },
     );
   });
 });

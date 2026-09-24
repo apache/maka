@@ -149,6 +149,10 @@ export interface DesktopRuntimeHostCandidateDeps {
     input: Pick<CreateSessionRequestInput, "cwd" | "projectId">,
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
+  /** Resolves the selected import destination on the target Host. */
+  readonly resolveExternalSessionImportWorkspace: (
+    target: DesktopRuntimeHostTargetPolicy,
+  ) => Promise<WorkspaceTarget>;
   readonly emitSessionsChanged: (
     scope: DesktopTargetScope,
     reason: SessionChangedReason,
@@ -216,6 +220,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   extends Omit<DesktopRuntimeHostCandidateDeps, "ipcMain"> {
   readonly ipcMain: CandidateIpcMain;
   readonly rootPath: string;
+  readonly rootId: string;
   readonly clientInstanceId?: string;
   readonly electionDeadlineMs?: number;
   readonly connectTimeoutMs?: number;
@@ -872,6 +877,7 @@ export async function createDesktopRuntimeHostCandidate(
       registerRuntimeHostSessionCatalogIpc(
         {
           client,
+          queryExecutors: (input) => client.request('plugin.executor.query', input),
           runningTurnIds: (sessionId) => sessionObserver.observedRunningTurnIds(sessionId),
           resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
           emitSessionsChanged,
@@ -897,6 +903,7 @@ export async function createDesktopRuntimeHostCandidate(
         {
           client,
           emitSessionsChanged,
+          resolveImportWorkspace: () => deps.resolveExternalSessionImportWorkspace(target),
         },
         ipc,
       );

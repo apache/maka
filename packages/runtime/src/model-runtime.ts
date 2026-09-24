@@ -31,6 +31,7 @@ import {
   openAiAdapterApiProtocol,
 } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
+import { modelOverride, type ModelOverrides } from '@maka/core/model-thinking';
 import {
   anthropicV1BaseUrl,
   googleV1BetaBaseUrl,
@@ -43,8 +44,7 @@ export type ModelRuntimeWire =
   | 'openai-chat'
   | 'openai-responses'
   | 'google-generate'
-  | 'cohere-v2'
-  | 'commandcode-cli';
+  | 'cohere-v2';
 
 export type ReasoningReplayContract =
   | { kind: 'none' }
@@ -80,14 +80,6 @@ type ModelRuntimeCall =
       wire: 'cohere-v2';
       adapter: Extract<ProviderRuntimeAdapter, { kind: 'cohere' }>;
       reasoningReplay: { kind: 'none' };
-    }
-  | {
-      wire: 'commandcode-cli';
-      adapter: Extract<ProviderRuntimeAdapter, { kind: 'commandcode-cli' }>;
-      // The gateway rebuilds the upstream request from the replayed blocks and
-      // DeepSeek thinking mode rejects a tool loop whose history lacks its
-      // reasoning, so assistant reasoning is replayed as a `reasoning` block.
-      reasoningReplay: { kind: 'openai-chat-plaintext'; requestField: 'reasoning' };
     };
 
 export type ResolvedModelRuntime = ModelRuntimeCall & {
@@ -103,6 +95,7 @@ export type ResolvedModelRuntime = ModelRuntimeCall & {
 };
 
 export interface ModelRuntimeConnection {
+  readonly modelOverrides?: ModelOverrides;
   readonly slug?: string;
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
@@ -174,6 +167,12 @@ export function resolveModelRuntime(
       {
         wire,
         applyPatchProtocol: adapter.applyPatchProtocol,
+        enabled: modelOverride(connection, modelId)?.applyPatch,
+        customTools:
+          wire === 'openai-responses' &&
+          (connection.providerType === 'openai' || connection.providerType === 'openai-codex') &&
+          replay.kind === 'responses' &&
+          replay.contract.adapter === 'openai',
       },
       modelId,
     ),
@@ -229,14 +228,6 @@ function adapterCalls(adapter: ProviderRuntimeAdapter): ModelRuntimeCall[] {
       return [{ adapter, wire: 'google-generate', reasoningReplay: { kind: 'none' } }];
     case 'cohere':
       return [{ adapter, wire: 'cohere-v2', reasoningReplay: { kind: 'none' } }];
-    case 'commandcode-cli':
-      return [
-        {
-          adapter,
-          wire: 'commandcode-cli',
-          reasoningReplay: { kind: 'openai-chat-plaintext', requestField: 'reasoning' },
-        },
-      ];
     case 'openai-codex':
       return [
         {

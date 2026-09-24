@@ -78,7 +78,7 @@ test('the headless coding profile freezes prompt, tools, and memory and passes p
     profile.systemPrompt,
     [
       'Complete the task by acting with the available tools, not by narrating.',
-      'Prefer Read, Glob, and Grep for inspection, Edit and Write for file changes, and Bash for shell commands and tests.',
+      'Prefer Read, Glob, and Grep for inspection, the available file-editing tool for file changes, and Bash for shell commands and tests.',
       'Verify the result when practical.',
       'Stop when the task is complete.',
     ].join('\n'),
@@ -183,11 +183,19 @@ test('WorkHub v2 keeps its attachment and browser tool ceiling visible in direct
     control,
     tasks,
     makeTool('AskUserQuestion'),
+    makeTool('WorkHubResult'),
   ];
   const projected = projectHostedExecutionTools(tools, 'workhub-coordination-v2');
   assert.deepEqual(
     projected.map(({ name }) => name),
-    [control.name, tasks.name, ...browserTools.map(({ name }) => name), 'Read', 'AskUserQuestion'],
+    [
+      control.name,
+      tasks.name,
+      ...browserTools.map(({ name }) => name),
+      'Read',
+      'AskUserQuestion',
+      'WorkHubResult',
+    ],
   );
   const read = projected.find(({ name }) => name === 'Read')!;
   const context = {

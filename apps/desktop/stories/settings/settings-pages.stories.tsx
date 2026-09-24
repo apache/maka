@@ -87,6 +87,10 @@ import {
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
+import {
+  createSessionCatalogController,
+  type SessionCatalogController,
+} from '../../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type {
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
   DesktopRuntimeHostProfileChangedEvent,
@@ -1597,19 +1601,25 @@ const archivedTaskProjects: ProjectRecord[] = [
  */
 function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedTasksBridge {
   const toast = useToast();
-  const [sessions, setSessions] = useState<DesktopSessionSummary[]>(() =>
-    seed.map((session) => ({
-      ...session,
-      revision: 1,
-      runtimeHostId: 'storybook-local',
-      profileId: 'local',
-      profileName: 'Local',
-      profileKind: 'local',
-    })),
-  );
+  const catalogRef = useRef<SessionCatalogController | null>(null);
+  catalogRef.current ??= (() => {
+    const controller = createSessionCatalogController();
+    controller.commitSessions(
+      seed.map((session) => ({
+        ...session,
+        revision: 1,
+        runtimeHostId: 'storybook-local',
+        profileId: 'local',
+        profileName: 'Local',
+        profileKind: 'local',
+      })),
+    );
+    return controller;
+  })();
+  const catalog = catalogRef.current;
   const confirmDelete = (sessionId: string) =>
     toast.confirm({
-      title: `彻底删除「${sessions.find((session) => session.id === sessionId)?.name ?? ''}」？`,
+      title: `彻底删除「${catalog.getState().sessions.find((session) => session.id === sessionId)?.name ?? ''}」？`,
       description: '任务及其全部消息会被永久删除，无法撤销。',
       confirmLabel: '永久删除',
       cancelLabel: '取消',
@@ -1619,21 +1629,22 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
   // edit-and-resend family with it. Dropping only the id on screen would leave
   // an older revision behind and show a list the real app never produces.
   const drop = (ids: readonly string[]) => {
-    setSessions((current) => {
-      const doomed = new Set(ids.flatMap((id) => revisionFamilySessionIds(current, id)));
-      return current.filter((session) => !doomed.has(session.id));
-    });
+    const current = catalog.getState().sessions;
+    const doomed = new Set(ids.flatMap((id) => revisionFamilySessionIds(current, id)));
+    catalog.commitSessions(current.filter((session) => !doomed.has(session.id)));
   };
   return {
-    sessions,
+    catalog,
     projects: archivedTaskProjects,
-    onRestore: (sessionId) =>
-      setSessions((current) => {
-        const family = new Set(revisionFamilySessionIds(current, sessionId));
-        return current.map((session) =>
+    onRestore: (sessionId) => {
+      const current = catalog.getState().sessions;
+      const family = new Set(revisionFamilySessionIds(current, sessionId));
+      catalog.commitSessions(
+        current.map((session) =>
           family.has(session.id) ? { ...session, isArchived: false } : session,
-        );
-      }),
+        ),
+      );
+    },
     // Mirrors the shell's own row action, which always confirms first — a
     // story where a row vanishes on one click would be showing an interaction
     // the app does not have.
@@ -2228,7 +2239,7 @@ export const GeneralHostSettingsLoading: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText('显示名称');
-    await canvas.findByRole('switch', { name: '完成时发送系统通知' });
+    await canvas.findByRole('switch', { name: '发送系统通知' });
     await expect(
       await canvas.findByRole('button', { name: '默认模型' }),
     ).toBeEnabled();
@@ -2272,7 +2283,7 @@ export const GeneralCachedRevalidation: Story = {
     await expect(tone).toBeDisabled();
     await expect(defaultModel).toBeDisabled();
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
     const mixedBoundary = canvasElement.querySelector<HTMLElement>(
@@ -2373,7 +2384,7 @@ export const GeneralHostGenerationRevalidation: Story = {
     await expect(tone).toBeDisabled();
     await expect(defaultModel).toBeDisabled();
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
     const mixedBoundary = canvasElement.querySelector<HTMLElement>(
@@ -2438,7 +2449,7 @@ export const GeneralBackgroundHostReconnectThenSelect: Story = {
     const currentTone = canvas.queryByRole('textbox', { name: '助手语气偏好' });
     if (currentTone) await expect(currentTone).toBeDisabled();
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('combobox', { name: '界面语言' })).toBeEnabled();
   },
@@ -2455,7 +2466,7 @@ export const GeneralHostSettingsError: Story = {
     await expect(alert).toHaveTextContent('载入设置失败');
     await canvas.findByRole('button', { name: '重试' });
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(canvas.getByRole('button', { name: '默认模型' })).toBeEnabled();
     await expect(canvas.queryByText('显示名称')).not.toBeInTheDocument();
@@ -2474,7 +2485,7 @@ export const GeneralRuntimeHostUnavailable: Story = {
     const alert = await canvas.findByRole('alert');
     await expect(alert).toHaveTextContent('Runtime Host');
     await expect(
-      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+      canvas.getByRole('switch', { name: '发送系统通知' }),
     ).toBeEnabled();
     await expect(
       Array.from(canvasElement.querySelectorAll('[role="status"]')).some(
@@ -2555,6 +2566,15 @@ export const Appearance: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByRole('heading', { name: 'App icon' });
+    const workbarToggle = await canvas.findByRole('switch', { name: 'Show Workbar toggle in titlebar' });
+    expect(workbarToggle).not.toBeChecked();
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('titlebar');
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).not.toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('edge');
+
     for (const name of ['Azure', 'Classic']) {
       const input = await canvas.findByRole('checkbox', { name });
       const card = input.parentElement;
@@ -2654,9 +2674,14 @@ export const UsageRetainedCapacityFailure: Story = {
     const details = canvas.queryByRole('button', {name: copy.showDetails});
     if (details) await userEvent.click(details);
     await canvas.findByRole('button', {name: /next page|下一页|下一頁/i});
+    await expect(await canvas.findByText('420')).toBeVisible();
+    const retainedRow = /^重构使用统计页请求日志的任务列，改为显示会话名称并处理超长标题的截断$/;
+    await expect(await canvas.findByText(retainedRow)).toBeVisible();
     await userEvent.type(await canvas.findByRole('textbox', {name: copy.filterAria}), 'new-filter');
     await expect(await canvas.findByText(new RegExp(copy.capacityBody))).toBeVisible();
     await expect(await canvas.findByText(new RegExp(copy.retainedBody))).toBeVisible();
+    await expect(await canvas.findByText('420')).toBeVisible();
+    await expect(await canvas.findByText(retainedRow)).toBeVisible();
     await expect(await canvas.findByRole('button', {name: /next page|下一页|下一頁/i})).toBeDisabled();
   },
 };

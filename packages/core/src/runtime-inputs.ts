@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { ExecutorConfiguration } from './executor-catalog.js';
+
 /**
  * Inputs to runtime APIs (create session, send message, list/filter).
  */
@@ -55,6 +57,7 @@ export interface CreateSessionInput {
   name?: string;
   /** Named plugin executor. When present, model fields are retained only as display placeholders. */
   executorId?: string;
+  executorConfig?: ExecutorConfiguration;
   /** Immutable Connection entity identity. Omitted only while copying legacy state. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
@@ -99,7 +102,9 @@ export interface CreateSessionInput {
  * type-checks against `bridge-contract.d.ts` alone, so a field added on one
  * side and not the other is a type error nowhere.
  */
-export type CreateSessionRequestInput = Partial<CreateSessionInput> & {
+export type CreateSessionRequestInput = Omit<Partial<CreateSessionInput>, 'thinkingLevel'> & {
+  /** `null` explicitly bypasses the configured per-model default. */
+  thinkingLevel?: ThinkingLevel | null;
   mode?: SessionStartMode;
 };
 
@@ -122,11 +127,6 @@ export interface UserMessageInput extends MessageContent {
   parentSessionId?: string;
   /** What triggered this turn, when it is not a direct user message. */
   origin?: TurnOrigin;
-}
-
-export interface RegenerateTurnInput {
-  sourceTurnId: string;
-  turnId?: string;
 }
 
 export interface BranchFromTurnInput {

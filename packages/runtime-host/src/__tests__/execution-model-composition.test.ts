@@ -157,9 +157,9 @@ const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const HEADLESS_CODING_V1_PROMPT_HASH =
-  'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
+  'sha256:e490f6055478bf8cdcef1aa85217de623f0954120a692358dbba2065ba6710fc';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:9ef90b13f64829ae5baba777e929177838b59c9ed73e12a8c0b24c418ea2e473';
+  'sha256:4bb0eb9897640ff723301f274e2b5c91ff704c65672036d7583bc2e846ed30a2';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -915,12 +915,7 @@ test('backend creation admits an enabled model a live list omits', async () => {
 });
 
 test('backend creation admits an enabled model a snapshot never listed', async () => {
-  // `opencode-free` has no model-list endpoint, so its discovery run replays
-  // the array this build shipped and records `modelSource: 'fallback'`. The
-  // user enabled this id; a release snapshot cannot rule on what an account
-  // serves (#1584). Until now the only id that could get through an absent
-  // inventory was a hardcoded `deepseek` / `deepseek-v4-flash` pair (#2896) —
-  // the same situation, conceded for one provider.
+  // User-selected models remain usable when a fallback catalog has not listed them.
   const modelId = 'claude-opus-5';
   const backend = await createHostAiSdkBackend(
     backendCreationFixture({
@@ -930,10 +925,10 @@ test('backend creation admits an enabled model a snapshot never listed', async (
         kind: 'ready',
         connection: {
           slug: 'backend-creation-connection',
-          providerType: 'opencode-free',
+          providerType: 'volcengine-ark',
           enabledModelIds: [modelId],
           models: [{ id: 'grok-code' }],
-          modelSource: 'fetched' as const,
+          modelSource: 'fallback' as const,
         },
         networkProxy: { enabled: false },
         secretMaterial: {},
@@ -979,11 +974,17 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   const assertProjectedImage = (body: Record<string, unknown> | undefined) => {
     assert.ok(body);
     assert.doesNotMatch(JSON.stringify(body), /raw execution fact/u);
-    assert.deepEqual(JSON.parse(latestToolResultText(body) ?? 'null'), [
+    const toolText = latestToolResultText(body);
+    assert.ok(toolText);
+    assert.equal(toolText.includes(pngBytes.toString('base64')), false);
+    const images = (Array.isArray(body.messages) ? body.messages : [])
+      .filter((message) => message.role === 'user' && Array.isArray(message.content))
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'image_url');
+    assert.deepEqual(images, [
       {
-        type: 'file',
-        mediaType: 'image/png',
-        data: { type: 'data', data: pngBytes.toString('base64') },
+        type: 'image_url',
+        image_url: { url: `data:image/png;base64,${pngBytes.toString('base64')}` },
       },
     ]);
   };
@@ -2587,14 +2588,25 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
     assert.deepEqual(responsesToolNames(request?.body), [
       'Bash',
-      'Edit',
       'Glob',
       'Grep',
       'Read',
       'StopBackgroundTask',
-      'Write',
       'WriteStdin',
+      'apply_patch',
     ]);
+    // DeepSeek defaults to portable ApplyPatch instead of Write/Edit, including
+    // hosted headless sessions. Freeze its actual function-call wire format.
+    const patch = tools.find((tool) => tool.name === 'apply_patch');
+    assert.ok(patch);
+    assert.equal(patch.type, 'function');
+    assert.deepEqual(patch.parameters, {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: { patch: { type: 'string' } },
+      required: ['patch'],
+      additionalProperties: false,
+    });
     const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
     assert.ok(bash);
     // The Eval session runs with Full access: the product Bash, minus the
@@ -3993,6 +4005,25 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       }),
       '## Goal',
     );
+    const providerRequestsBeforePluginTitle = provider.requests.length;
+    assert.equal(
+      await sessionEffects.generateTitle({
+        sessionId: session.id,
+        header: {
+          ...session,
+          backend: 'plugin-executor',
+          executorId: 'codex.app-server',
+          llmConnectionId: undefined,
+          llmConnectionSlug: 'executor:codex.app-server',
+          model: 'gpt-5.6-sol',
+          thinkingLevel: 'high',
+        },
+        sourceText: 'Run this task through the Codex plugin executor',
+        abortSignal: new AbortController().signal,
+      }),
+      undefined,
+    );
+    assert.equal(provider.requests.length, providerRequestsBeforePluginTitle);
     const recap = await sessionEffects.generateRecap({
       sessionId: session.id,
       effectId: 'recap-effect-1',
@@ -4840,7 +4871,7 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
     ).text,
     [
       'Complete the task by acting with the available tools, not by narrating.',
-      'Prefer Read, Glob, and Grep for inspection, Edit and Write for file changes, and Bash for shell commands and tests.',
+      'Prefer Read, Glob, and Grep for inspection, the available file-editing tool for file changes, and Bash for shell commands and tests.',
       'Verify the result when practical.',
       'Stop when the task is complete.',
     ].join('\n'),

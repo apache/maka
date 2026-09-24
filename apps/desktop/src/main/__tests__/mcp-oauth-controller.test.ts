@@ -83,6 +83,28 @@ test('controller login drives browser round-trip to a connected server', async (
   assert.equal(after.state, 'needs-auth');
 });
 
+test('an OAuth error callback is issuer-validated before its error is accepted', async () => {
+  const fixture = await createOAuthFixture();
+  const manager = new McpClientManager({ oauthStorage: createMemoryMcpOAuthStorage() });
+  cleanups.push(() => manager.close());
+  await manager.sync({ version: MCP_CONFIG_VERSION, mcpServers: { remote: { url: fixture.mcpUrl, transport: 'streamable-http' } } });
+  const controller = createMcpOAuthController({ manager, openExternal: async (value) => {
+    const authorization = new URL(value);
+    const callback = new URL(authorization.searchParams.get('redirect_uri')!);
+    callback.searchParams.set('state', authorization.searchParams.get('state')!);
+    callback.searchParams.set('iss', 'https://unrelated.example');
+    callback.searchParams.set('error', 'access_denied');
+    const response = await fetch(callback);
+    assert.doesNotMatch(await response.text(), /access_denied/);
+  } });
+  await assert.rejects(controller.login('remote'), (error: Error) => {
+    assert.match(error.message, /issuer/iu);
+    assert.doesNotMatch(error.message, /unrelated\.example|access_denied/u);
+    return true;
+  });
+  assert.equal(await manager.pendingAuthorization('remote'), undefined);
+});
+
 test('resumeLogin rebinds the persisted callback port and completes the round', async () => {
   const fixture = await createOAuthFixture();
   const storage = createMemoryMcpOAuthStorage();

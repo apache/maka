@@ -23,6 +23,7 @@ import { DropdownMenu, DropdownMenuCheckboxItem, Field, FormLayout } from '@astr
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
+  modelApplyPatchEnabled,
   type ModelOverride,
   type ThinkingLevel,
 } from '@maka/core/model-thinking';
@@ -41,6 +42,7 @@ export function CapabilityEditor(props: {
   onNumericInput(field: 'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', input: string): void;
   defaultContextWindow?: number;
   defaultInputLimit?: number;
+  thinkingLevels: readonly ThinkingLevel[];
   limitsConflict?: boolean;
   contextWindowError?: string;
   disabled: boolean;
@@ -53,6 +55,12 @@ export function CapabilityEditor(props: {
   const thinkingId = useId();
   const visionValue =
     declared?.vision === true ? 'enabled' : declared?.vision === false ? 'disabled' : 'auto';
+  const applyPatchValue =
+    declared?.applyPatch === true
+      ? 'enabled'
+      : declared?.applyPatch === false
+        ? 'disabled'
+        : 'auto';
   const draftLevels = declared?.thinkingLevels ?? [];
   // The menu offers the five declarable levels PLUS anything the stored table
   // already claims — a level saved while it was still declarable (or
@@ -63,6 +71,13 @@ export function CapabilityEditor(props: {
       (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level) ||
       draftLevels.includes(level),
   );
+  const defaultThinkingLevels = props.isRelay && declared?.thinkingLevels !== undefined
+    ? declared.thinkingLevels
+    : props.thinkingLevels;
+  const defaultThinkingLevel = declared?.defaultThinkingLevel !== undefined &&
+    defaultThinkingLevels.includes(declared.defaultThinkingLevel)
+    ? declared.defaultThinkingLevel
+    : '';
   return (
     <FormLayout direction="vertical" defaultOptionality="optional">
       {props.children}
@@ -92,6 +107,26 @@ export function CapabilityEditor(props: {
         value={visionValue}
         onChange={(value) =>
           props.onChange({ vision: value === 'auto' ? undefined : value === 'enabled' })
+        }
+        isDisabled={props.disabled}
+      />
+
+      <Selector
+        label={copy.applyPatch}
+        labelTooltip={copy.applyPatchHelp}
+        size="sm"
+        width="100%"
+        options={[
+          {
+            value: 'auto',
+            label: copy.applyPatchDefaultOption(modelApplyPatchEnabled(modelId)),
+          },
+          { value: 'enabled', label: copy.applyPatchEnabled },
+          { value: 'disabled', label: copy.applyPatchDisabled },
+        ]}
+        value={applyPatchValue}
+        onChange={(value) =>
+          props.onChange({ applyPatch: value === 'auto' ? undefined : value === 'enabled' })
         }
         isDisabled={props.disabled}
       />
@@ -166,10 +201,15 @@ export function CapabilityEditor(props: {
                 aria-label={`${modelId} ${level}`}
                 value={draftLevels.includes(level)}
                 onChange={(checked) => {
+                  const thinkingLevels = checked
+                    ? [...draftLevels, level]
+                    : draftLevels.filter((existing) => existing !== level);
                   props.onChange({
-                    thinkingLevels: checked
-                      ? [...draftLevels, level]
-                      : draftLevels.filter((existing) => existing !== level),
+                    thinkingLevels,
+                    ...(declared?.defaultThinkingLevel !== undefined &&
+                    !thinkingLevels.includes(declared.defaultThinkingLevel)
+                      ? { defaultThinkingLevel: undefined }
+                      : {}),
                   });
                 }}
                 isDisabled={props.disabled}
@@ -177,6 +217,23 @@ export function CapabilityEditor(props: {
             ))}
           </DropdownMenu>
         </Field>
+      )}
+      {defaultThinkingLevels.length > 0 && (
+        <Selector
+          label={copy.defaultThinkingLevel}
+          labelTooltip={copy.defaultThinkingLevelHelp}
+          size="sm"
+          width="100%"
+          options={[
+            { value: '', label: copy.providerDefaultThinking },
+            ...defaultThinkingLevels.map((level) => ({ value: level, label: level })),
+          ]}
+          value={defaultThinkingLevel}
+          onChange={(value) => props.onChange({
+            defaultThinkingLevel: value === '' ? undefined : value as ThinkingLevel,
+          })}
+          isDisabled={props.disabled}
+        />
       )}
       {props.showsFastMode && (
         <Selector

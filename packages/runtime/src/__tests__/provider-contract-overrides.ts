@@ -37,7 +37,6 @@ import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
 import { discoverModels } from './model-discovery-fixture.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
-import { COMMANDCODE_CLI_VERSION } from '../commandcode-cli-language-model.js';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
 import {
   readBody,
@@ -70,16 +69,6 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
     title:
       'GitHub Copilot discovers the account model and completes a reasoning tool loop on its exact wire',
     run: runGitHubCopilotWire,
-  },
-  {
-    keys: [
-      'commandcode-go:exact-model-id',
-      'commandcode-go:tool-loop',
-      'commandcode-go:reasoning-replay',
-    ],
-    title:
-      'Command Code GO completes a reasoning tool loop on /alpha/generate, replaying reasoning and paired tool results as CLI blocks',
-    run: runCommandCodeCliWire,
   },
   {
     keys: ['fireworks-ai:discovery'],
@@ -1377,111 +1366,4 @@ async function runZenMuxSignedReasoningReplay(): Promise<void> {
       ],
     },
   );
-}
-
-async function runCommandCodeCliWire(): Promise<void> {
-  const modelId = 'deepseek/deepseek-v4.1-flash';
-  const requestBodies: Array<{ params: Record<string, unknown> }> = [];
-  const server = await startJsonServer(async (request, response) => {
-    if (request.method === 'GET') {
-      respondJson(response, 200, { object: 'list', data: [{ id: modelId }] });
-      return;
-    }
-    assert.equal(request.url, '/alpha/generate');
-    assert.equal(request.headers.authorization, 'Bearer cc-go-key');
-    assert.equal(request.headers['x-command-code-version'], COMMANDCODE_CLI_VERSION);
-    assert.equal(request.headers['x-cli-environment'], 'production');
-    requestBodies.push(JSON.parse(await readBody(request)) as { params: Record<string, unknown> });
-    response.writeHead(200, { 'content-type': 'text/event-stream' });
-    const events =
-      requestBodies.length === 1
-        ? [
-            { type: 'reasoning-delta', text: 'I should call echo with the requested text.' },
-            {
-              type: 'tool-call',
-              toolCallId: 'cc-call-1',
-              toolName: 'echo',
-              input: { text: 'hello' },
-            },
-            {
-              type: 'finish',
-              finishReason: 'tool-calls',
-              totalUsage: { inputTokens: 8, outputTokens: 4 },
-            },
-          ]
-        : [
-            { type: 'text-delta', text: 'Echoed hello.' },
-            {
-              type: 'finish',
-              finishReason: 'stop',
-              totalUsage: { inputTokens: 12, outputTokens: 3 },
-            },
-          ];
-    for (const event of events) response.write(`data: ${JSON.stringify(event)}\n\n`);
-    response.end('data: [DONE]\n\n');
-  });
-  const connection: LlmConnection = {
-    slug: 'commandcode-go',
-    name: 'Command Code GO',
-    providerType: 'commandcode-go',
-    baseUrl: server.url,
-    defaultModel: modelId,
-    enabled: true,
-    createdAt: 1,
-    updatedAt: 1,
-  };
-  connection.models = await discoverModels(connection, 'cc-go-key');
-
-  const result = await generateText({
-    model: getAIModel({ connection, apiKey: 'cc-go-key', modelId, fetch }),
-    // A model models.dev does not describe resolves no thinking level, so
-    // the effort rides the adapter's own provider-options key directly.
-    providerOptions: { 'commandcode-cli': { reasoningEffort: 'medium' } },
-    tools: {
-      echo: tool({
-        description: 'Echo text',
-        inputSchema: z.object({ text: z.string() }),
-        execute: async ({ text }) => ({ echoed: text }),
-      }),
-    },
-    stopWhen: isStepCount(3),
-    prompt: 'Echo hello',
-  });
-  assert.equal(result.text, 'Echoed hello.');
-
-  assert.equal(requestBodies.length, 2);
-  const [first, second] = requestBodies as [
-    { params: Record<string, unknown> },
-    { params: Record<string, unknown> },
-  ];
-  assert.equal(first.params.model, modelId);
-  assert.equal(first.params.reasoning_effort, 'medium');
-  assert.deepEqual(first.params.tools, [
-    {
-      type: 'function',
-      name: 'echo',
-      description: 'Echo text',
-      input_schema: (first.params.tools as Array<{ input_schema: unknown }>)[0]?.input_schema,
-    },
-  ]);
-  const replay = second.params.messages as Array<{
-    role: string;
-    content: Array<Record<string, unknown>>;
-  }>;
-  const assistant = replay.find((message) => message.role === 'assistant');
-  assert.ok(assistant, 'the second request replays the assistant turn');
-  assert.deepEqual(
-    assistant.content.map((block) => block.type),
-    ['reasoning', 'tool-call'],
-    'reasoning is replayed ahead of the paired tool call',
-  );
-  assert.equal(assistant.content[1]?.toolCallId, 'cc-call-1');
-  const toolMessage = replay.find((message) => message.role === 'tool');
-  assert.ok(toolMessage);
-  assert.deepEqual(toolMessage.content[0], {
-    type: 'tool-result',
-    toolCallId: 'cc-call-1',
-    toolName: 'echo',
-    output: { type: 'text', value: '{"echoed":"hello"}' },
-  });
 }

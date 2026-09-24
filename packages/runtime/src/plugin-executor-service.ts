@@ -17,14 +17,22 @@
  * under the License.
  */
 
+import {
+  isExecutorConfiguration,
+  normalizeCatalogEntry,
+  type ExecutorConfiguration,
+  type ExecutorCatalogEntry,
+} from '@maka/core/executor-catalog';
 import { createHash } from 'node:crypto';
 import type {
   AttachmentRef,
   DirectoryReference,
   QuoteRef,
   ToolActivityKind,
+  ToolOutputStream,
 } from '@maka/core/events';
-import { TOOL_ACTIVITY_KINDS } from '@maka/core/events';
+import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_STREAMS } from '@maka/core/events';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { isExecutorId } from '@maka/core/executor-id';
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import {
@@ -35,6 +43,8 @@ import {
   type MakaPluginRootId,
 } from './plugin-runtime.js';
 import { PluginScopeRegistry } from './plugin-scope-registry.js';
+
+const MAX_EXECUTOR_COMPLETION_TEXT_BYTES = 256 * 1024;
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -49,7 +59,12 @@ export interface PluginExecutorRequest {
   /** Stable key a provider may use to retain its own external conversation. */
   readonly conversationKey: string;
   readonly text: string;
+  readonly configuration?: ExecutorConfiguration;
   readonly cwd: string;
+  /** Executor-specific model selected for this Session. */
+  readonly model?: string;
+  /** Executor-specific reasoning depth; null restores the provider default. */
+  readonly reasoningEffort?: ThinkingLevel | null;
   /** Child-agent instruction when this request belongs to a linked child Session. */
   readonly instructions?: string;
   readonly attachments?: readonly AttachmentRef[];
@@ -74,21 +89,51 @@ export type PluginExecutorOutputEvent =
       readonly displayName?: string;
       readonly activityKind?: ToolActivityKind;
     }
+  | {
+      readonly type: 'tool_output_delta';
+      readonly toolCallId: string;
+      readonly text: string;
+      readonly stream?: ToolOutputStream;
+    }
   | { readonly type: 'tool_progress'; readonly toolCallId: string; readonly text: string }
   | {
       readonly type: 'tool_result';
       readonly toolCallId: string;
-      readonly text: string;
+      readonly content: PluginExecutorToolResultContent;
       readonly isError?: boolean;
     };
 
+/** Durable tool-result shapes that an external executor may publish directly. */
+export type PluginExecutorToolResultContent =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'file_diff'; readonly paths: readonly string[]; readonly diff: string };
+
 export type PluginExecutorCancellationSource = 'provider' | 'caller' | 'executor_retired';
+
+export interface PluginExecutorPermissionOption {
+  readonly optionId: string;
+  readonly name: string;
+}
+
+export interface PluginExecutorPermissionRequest {
+  /** Questions preserve the same provider option identities and settlement path. */
+  readonly kind?: 'permission' | 'question';
+  readonly toolCallId: string;
+  readonly title: string;
+  readonly options: readonly PluginExecutorPermissionOption[];
+}
+
+export type PluginExecutorPermissionResult =
+  | { readonly outcome: 'cancelled' }
+  | { readonly outcome: 'selected'; readonly optionId: string };
 
 export type PluginExecutorResult =
   | { readonly status: 'completed'; readonly text: string }
   | {
       readonly status: 'cancelled';
       readonly reason?: string;
+      /** Provider terminal reason observed while cancellation drained. */
+      readonly providerStopReason?: string;
       /** Service-owned provenance; provider-supplied values are ignored. */
       readonly source?: PluginExecutorCancellationSource;
     }
@@ -102,13 +147,34 @@ export type PluginExecutorResult =
 export interface PluginExecutorContext {
   readonly signal: AbortSignal;
   emit(event: PluginExecutorOutputEvent): void;
+  /** Request one provider-defined permission choice through Maka's hosted form authority. */
+  requestPermission(
+    request: PluginExecutorPermissionRequest,
+  ): Promise<PluginExecutorPermissionResult>;
 }
 
 /** A black-box executor contributed by one Host plugin. */
+export interface PluginExecutorDiscoveryInput {
+  readonly cwd: string;
+  readonly signal: AbortSignal;
+}
+export interface PluginExecutorConversationInput {
+  readonly conversationKey: string;
+  readonly cwd: string;
+  readonly configuration?: ExecutorConfiguration;
+}
+
 export interface PluginExecutorProvider {
   readonly id: string;
   readonly displayName?: string;
   readonly capabilities?: PluginExecutorCapabilities;
+  disposeConversation?(conversationKey: string): Promise<void>;
+  discover?(input: PluginExecutorDiscoveryInput): Promise<ExecutorCatalogEntry>;
+  configureConversation?(
+    input: PluginExecutorConversationInput,
+    signal: AbortSignal,
+  ): Promise<void>;
+  inspectConversation?(input: PluginExecutorConversationInput): Promise<ExecutorCatalogEntry>;
   execute(
     request: Readonly<PluginExecutorRequest>,
     context: PluginExecutorContext,
@@ -118,6 +184,9 @@ export interface PluginExecutorProvider {
 export interface PluginExecutorExecutionOptions {
   readonly signal?: AbortSignal;
   readonly onEvent?: (event: PluginExecutorOutputEvent) => void;
+  readonly onPermissionRequest?: (
+    request: PluginExecutorPermissionRequest,
+  ) => Promise<PluginExecutorPermissionResult>;
 }
 
 export interface PluginExecutorInspection extends MakaContributionIdentity {
@@ -148,6 +217,7 @@ interface RegisteredExecutor extends MakaContributionIdentity {
 }
 
 interface ActiveExecution {
+  readonly conversationKey?: string;
   readonly abort: AbortController;
   readonly settled: Promise<void>;
 }
@@ -193,6 +263,16 @@ export class PluginExecutorService extends Service {
         ...(provider.displayName === undefined ? {} : { displayName: provider.displayName }),
         capabilities,
         execute: provider.execute.bind(provider),
+        ...(provider.disposeConversation
+          ? { disposeConversation: provider.disposeConversation.bind(provider) }
+          : {}),
+        ...(provider.configureConversation
+          ? { configureConversation: provider.configureConversation.bind(provider) }
+          : {}),
+        ...(provider.discover ? { discover: provider.discover.bind(provider) } : {}),
+        ...(provider.inspectConversation
+          ? { inspectConversation: provider.inspectConversation.bind(provider) }
+          : {}),
       });
       const entry: RegisteredExecutor = {
         ...identity,
@@ -246,6 +326,107 @@ export class PluginExecutorService extends Service {
     );
   }
 
+  /** Captures registrations before awaiting provider code; retirement cancels and drains probes. */
+  async catalog(
+    input: {
+      cwd: string;
+      sessionId?: string;
+      /** Discover within this Session's scope without inspecting a retained conversation. */
+      discoverySessionId?: string;
+      executorId?: string;
+      configuration?: ExecutorConfiguration;
+    },
+    signal = AbortSignal.timeout(35_000),
+  ): Promise<readonly ExecutorCatalogEntry[]> {
+    const scopeSessionId = input.sessionId ?? input.discoverySessionId;
+    const entries = scopeSessionId
+      ? [...this.registry.visible(scopeSessionId).values()]
+      : [...this.registry.entries('profile')];
+    const selected = entries.filter(
+      (entry) => !entry.retired && (!input.executorId || entry.provider.id === input.executorId),
+    );
+    if (input.executorId && !selected.length)
+      return [
+        {
+          id: input.executorId,
+          displayName: input.executorId,
+          readiness: 'unavailable',
+          models: [],
+          supportsAttachments: false,
+          supportsModelChange: false,
+        },
+      ];
+    return await Promise.all(
+      selected.map((entry) =>
+        this.withActiveOperation(entry, { signal }, async (combined) => {
+          const fallback: ExecutorCatalogEntry = {
+            id: entry.provider.id,
+            displayName: entry.provider.displayName ?? entry.provider.id,
+            readiness: 'ready',
+            models: [],
+            supportsAttachments: false,
+            supportsModelChange: false,
+          };
+          try {
+            combined.throwIfAborted();
+            const result = input.sessionId
+              ? await entry.provider.inspectConversation?.({
+                  conversationKey: input.sessionId,
+                  cwd: input.cwd,
+                  ...(input.configuration ? { configuration: input.configuration } : {}),
+                })
+              : await entry.provider.discover?.({ cwd: input.cwd, signal: combined });
+            combined.throwIfAborted();
+            if (!result) return fallback;
+            return normalizeCatalogEntry(result, entry.provider.id);
+          } catch {
+            return { ...fallback, readiness: 'unavailable' as const };
+          }
+        }),
+      ),
+    );
+  }
+
+  async configureConversation(
+    sessionId: string,
+    executorId: string,
+    input: PluginExecutorConversationInput,
+  ): Promise<void> {
+    const entry = this.entry(sessionId, executorId);
+    const configure = entry.provider.configureConversation;
+    if (
+      [...entry.active].some((execution) => execution.conversationKey === input.conversationKey) ||
+      !configure
+    )
+      throw new Error('Executor configuration is unavailable or busy');
+    if (!isExecutorConfiguration(input.configuration))
+      throw new TypeError('Invalid executor configuration');
+    await this.withActiveOperation(
+      entry,
+      { conversationKey: input.conversationKey },
+      async (signal) => {
+        await configure(input, AbortSignal.any([signal, AbortSignal.timeout(30_000)]));
+      },
+    );
+  }
+
+  /** Task retirement releases retained provider resources; backend refresh must not. */
+  async retireConversation(sessionId: string): Promise<void> {
+    assertSessionId(sessionId);
+    const outcomes = await Promise.allSettled(
+      [...this.registry.visible(sessionId).values()].map(async (entry) => {
+        const running = [...entry.active].filter((active) => active.conversationKey === sessionId);
+        for (const active of running) active.abort.abort(new Error('Task retired'));
+        await Promise.allSettled(running.map((active) => active.settled));
+        await entry.provider.disposeConversation?.(sessionId);
+      }),
+    );
+    const failures = outcomes.flatMap((outcome) =>
+      outcome.status === 'rejected' ? [outcome.reason] : [],
+    );
+    if (failures.length) throw new AggregateError(failures, 'Executor conversation cleanup failed');
+  }
+
   identity(sessionId: string, executorId: string): PluginExecutorInspection {
     return this.identityForEntry(this.entry(sessionId, executorId));
   }
@@ -284,35 +465,71 @@ export class PluginExecutorService extends Service {
     options: PluginExecutorExecutionOptions,
   ): Promise<PluginExecutorResult> {
     const normalizedRequest = normalizeRequest(request);
+    return await this.withActiveOperation(
+      entry,
+      { conversationKey: normalizedRequest.conversationKey, signal: options.signal },
+      async (signal) => {
+        if (entry.retired) return cancelledResult(new ExecutorRetiredAbort(entry.provider.id));
+        try {
+          const result = await entry.provider.execute(normalizedRequest, {
+            signal,
+            emit: (event) => {
+              if (entry.retired) return;
+              const normalized = normalizeOutputEvent(event, entry.provider.capabilities);
+              try {
+                options.onEvent?.(normalized);
+              } catch {
+                // A presentation observer must not change external execution.
+              }
+            },
+            requestPermission: async (request) => {
+              if (signal.aborted || entry.retired) return Object.freeze({ outcome: 'cancelled' });
+              const normalized = normalizePermissionRequest(request);
+              const result = options.onPermissionRequest
+                ? await options.onPermissionRequest(normalized)
+                : ({ outcome: 'cancelled' } as const);
+              if (signal.aborted || entry.retired) return Object.freeze({ outcome: 'cancelled' });
+              return normalizePermissionResult(result, normalized);
+            },
+          });
+          if (signal.aborted) {
+            const cancelled = cancelledResult(signal.reason);
+            const normalized = normalizeResult(result);
+            return normalized.status === 'cancelled'
+              ? {
+                  ...normalized,
+                  ...cancelled,
+                  ...(normalized.reason ? { reason: normalized.reason } : {}),
+                }
+              : cancelled;
+          }
+          return normalizeResult(result);
+        } catch (error) {
+          if (signal.aborted) return cancelledResult(signal.reason);
+          throw error;
+        }
+      },
+    );
+  }
+
+  private async withActiveOperation<T>(
+    entry: RegisteredExecutor,
+    input: { readonly conversationKey?: string; readonly signal?: AbortSignal },
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
     const abort = new AbortController();
-    const signal = options.signal ? AbortSignal.any([options.signal, abort.signal]) : abort.signal;
+    const signal = input.signal ? AbortSignal.any([input.signal, abort.signal]) : abort.signal;
     let settle!: () => void;
-    const settled = new Promise<void>((resolve) => {
-      settle = resolve;
-    });
-    const active: ActiveExecution = { abort, settled };
+    const active: ActiveExecution = {
+      abort,
+      ...(input.conversationKey ? { conversationKey: input.conversationKey } : {}),
+      settled: new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+    };
     entry.active.add(active);
     try {
-      if (entry.retired) return cancelledResult(new ExecutorRetiredAbort(entry.provider.id));
-      try {
-        const result = await entry.provider.execute(normalizedRequest, {
-          signal,
-          emit: (event) => {
-            if (signal.aborted || entry.retired) return;
-            const normalized = normalizeOutputEvent(event, entry.provider.capabilities);
-            try {
-              options.onEvent?.(normalized);
-            } catch {
-              // A presentation observer must not change external execution.
-            }
-          },
-        });
-        if (signal.aborted) return cancelledResult(signal.reason);
-        return normalizeResult(result);
-      } catch (error) {
-        if (signal.aborted) return cancelledResult(signal.reason);
-        throw error;
-      }
+      return await run(signal);
     } finally {
       entry.active.delete(active);
       settle();
@@ -369,6 +586,8 @@ function normalizeRequest(request: PluginExecutorRequest): Readonly<PluginExecut
   ] as const) {
     if (!value || /[\0\r\n]/u.test(value)) throw new TypeError(`Executor ${label} is invalid`);
   }
+  if (request.configuration !== undefined && !isExecutorConfiguration(request.configuration))
+    throw new TypeError('Executor configuration is invalid');
   if (typeof request.text !== 'string') throw new TypeError('Executor request text is invalid');
   if (request.runId !== undefined && (!request.runId || /[\0\r\n]/u.test(request.runId))) {
     throw new TypeError('Executor runId is invalid');
@@ -378,6 +597,9 @@ function normalizeRequest(request: PluginExecutorRequest): Readonly<PluginExecut
   }
   return Object.freeze({
     ...request,
+    ...(request.configuration
+      ? { configuration: Object.freeze({ ...request.configuration }) }
+      : {}),
     ...(request.attachments ? { attachments: Object.freeze([...request.attachments]) } : {}),
     ...(request.directoryReferences
       ? { directoryReferences: Object.freeze([...request.directoryReferences]) }
@@ -437,6 +659,20 @@ function normalizeOutputEvent(
     });
   }
   if (
+    event.type === 'tool_output_delta' &&
+    capabilities?.toolActivity === true &&
+    isSafeEventId(event.toolCallId) &&
+    isSafeEventText(event.text) &&
+    (event.stream === undefined || TOOL_OUTPUT_STREAMS.some((stream) => stream === event.stream))
+  ) {
+    return Object.freeze({
+      type: event.type,
+      toolCallId: event.toolCallId,
+      text: event.text,
+      ...(event.stream === undefined ? {} : { stream: event.stream }),
+    });
+  }
+  if (
     event.type === 'tool_progress' &&
     capabilities?.toolActivity === true &&
     isSafeEventId(event.toolCallId) &&
@@ -448,31 +684,59 @@ function normalizeOutputEvent(
     event.type === 'tool_result' &&
     capabilities?.toolActivity === true &&
     isSafeEventId(event.toolCallId) &&
-    isSafeEventText(event.text) &&
+    isPluginToolResultContent(event.content) &&
     (event.isError === undefined || typeof event.isError === 'boolean')
   ) {
     return Object.freeze({
       type: event.type,
       toolCallId: event.toolCallId,
-      text: event.text,
+      content:
+        event.content.kind === 'text'
+          ? Object.freeze({ kind: 'text' as const, text: event.content.text })
+          : Object.freeze({
+              kind: 'file_diff' as const,
+              paths: Object.freeze([...event.content.paths]),
+              diff: event.content.diff,
+            }),
       ...(event.isError === undefined ? {} : { isError: event.isError }),
     });
   }
   throw new TypeError('Executor output event is invalid or undeclared');
 }
 
+function isPluginToolResultContent(value: PluginExecutorToolResultContent): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (value.kind === 'text') return isSafeEventText(value.text);
+  return (
+    value.kind === 'file_diff' &&
+    Array.isArray(value.paths) &&
+    value.paths.length > 0 &&
+    value.paths.length <= 64 &&
+    value.paths.every((path) => isSafeEventText(path) && path.trim().length > 0) &&
+    typeof value.diff === 'string' &&
+    value.diff.length <= 1024 * 1024 &&
+    !/[\0\r]/u.test(value.diff)
+  );
+}
+
 function normalizeResult(result: PluginExecutorResult): PluginExecutorResult {
   if (!result || typeof result !== 'object') throw new TypeError('Executor result is invalid');
   if (result.status === 'completed' && typeof result.text === 'string') {
+    if (Buffer.byteLength(result.text, 'utf8') > MAX_EXECUTOR_COMPLETION_TEXT_BYTES)
+      throw new TypeError('Executor completion text exceeds the size limit');
     return Object.freeze({ status: result.status, text: result.text });
   }
   if (
     result.status === 'cancelled' &&
-    (result.reason === undefined || typeof result.reason === 'string')
+    (result.reason === undefined || typeof result.reason === 'string') &&
+    (result.providerStopReason === undefined || isSafeEventText(result.providerStopReason))
   ) {
     return Object.freeze({
       status: result.status,
       ...(result.reason === undefined ? {} : { reason: result.reason }),
+      ...(result.providerStopReason === undefined
+        ? {}
+        : { providerStopReason: result.providerStopReason }),
       source: 'provider',
     });
   }
@@ -492,6 +756,59 @@ function normalizeResult(result: PluginExecutorResult): PluginExecutorResult {
   throw new TypeError('Executor result is invalid');
 }
 
+function normalizePermissionRequest(
+  request: PluginExecutorPermissionRequest,
+): PluginExecutorPermissionRequest {
+  if (
+    !request ||
+    typeof request !== 'object' ||
+    (request.kind !== undefined && request.kind !== 'permission' && request.kind !== 'question') ||
+    !isSafeEventId(request.toolCallId) ||
+    !isSafeEventText(request.title) ||
+    !request.title.trim() ||
+    !Array.isArray(request.options) ||
+    request.options.length === 0 ||
+    request.options.length > 64
+  ) {
+    throw new TypeError('Executor permission request is invalid');
+  }
+  const seen = new Set<string>();
+  const options = request.options.map((option) => {
+    if (
+      !option ||
+      typeof option !== 'object' ||
+      !isSafeEventId(option.optionId) ||
+      !isSafeEventText(option.name) ||
+      !option.name.trim() ||
+      seen.has(option.optionId)
+    ) {
+      throw new TypeError('Executor permission option is invalid');
+    }
+    seen.add(option.optionId);
+    return Object.freeze({ optionId: option.optionId, name: option.name });
+  });
+  return Object.freeze({
+    ...(request.kind ? { kind: request.kind } : {}),
+    toolCallId: request.toolCallId,
+    title: request.title,
+    options: Object.freeze(options),
+  });
+}
+
+function normalizePermissionResult(
+  result: PluginExecutorPermissionResult,
+  request: PluginExecutorPermissionRequest,
+): PluginExecutorPermissionResult {
+  if (result?.outcome === 'cancelled') return Object.freeze({ outcome: 'cancelled' });
+  if (
+    result?.outcome === 'selected' &&
+    request.options.some((option) => option.optionId === result.optionId)
+  ) {
+    return Object.freeze({ outcome: 'selected', optionId: result.optionId });
+  }
+  throw new TypeError('Executor permission result is invalid');
+}
+
 function providerStateIdentity(identity: PluginExecutorInspection): `sha256:${string}` {
   return `sha256:${createHash('sha256')
     .update(
@@ -506,7 +823,7 @@ function providerStateIdentity(identity: PluginExecutorInspection): `sha256:${st
     .digest('hex')}`;
 }
 
-function cancelledResult(reason: unknown): PluginExecutorResult {
+function cancelledResult(reason: unknown): Extract<PluginExecutorResult, { status: 'cancelled' }> {
   const source: PluginExecutorCancellationSource =
     reason instanceof ExecutorRetiredAbort ? 'executor_retired' : 'caller';
   const message =

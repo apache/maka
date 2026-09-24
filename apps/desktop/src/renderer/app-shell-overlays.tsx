@@ -123,18 +123,17 @@ function OverlayLayer({
   overlays,
   ...props
 }: AppShellOverlaysProps & { readonly overlays: OverlaysShellProjection }) {
-  const { commands, selectors } = overlays;
-  const { settings } = selectors;
+  const { settings } = overlays.selectors;
 
   // #1045: base commands freeze per open/close; session rows stay live on
   // visibleSessions/activeId. run() closures read latest options via ref.
-  const paletteCommands = useAppShellCommands(selectors.paletteOpen, props.commandOptions);
+  const paletteProps = useAppShellCommands(overlays.selectors.paletteOpen, props.commandOptions);
   useHotkeys([
     {
       keys: 'mod+shift+d',
       allowInInputs: true,
       onPress: () =>
-        void paletteCommands.find((command) => command.id === 'diag:copy-diagnostics')?.run(),
+        void paletteProps.commands.find((command) => command.id === 'diag:copy-diagnostics')?.run(),
     },
   ]);
 
@@ -157,7 +156,7 @@ function OverlayLayer({
             initialConnectionSlug={settings.connectionDetailSlug}
             initialCreateProviderType={settings.createProviderType}
             onOpenDailyReview={props.onOpenDailyReview}
-            onOpenKeyboardHelp={commands.openHelp}
+            onOpenKeyboardHelp={overlays.commands.openHelp}
             onOpenSession={props.onOpenSettingsSession}
             archivedTasks={props.archivedTasks}
             onTaskImported={props.onExternalSessionImported}
@@ -168,7 +167,7 @@ function OverlayLayer({
       )}
       <Overlays.KeyboardHelpModal />
       <Overlays.SearchModalHost onNavigateToSession={props.onNavigateToSession} />
-      <Overlays.CommandPalette commands={paletteCommands} />
+      <Overlays.CommandPalette {...paletteProps} />
     </>
   );
 }

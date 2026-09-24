@@ -22,25 +22,15 @@ import { Theme } from '@astryxdesign/core/theme';
 import { makaTheme } from './astryx-theme/maka';
 import { AppShell } from './composition/legacy-desktop-region';
 import { useAstryxThemeMode } from './astryx-theme-mode';
-import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 
-export function App({
-  initialOnboardingSnapshot = null,
-}: {
-  /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
-  initialOnboardingSnapshot?: OnboardingSnapshot | null;
-}) {
-  // PR-SHOW-AFTER-FIRST-COMMIT: the BrowserWindow is created hidden
-  // (main-window.ts show: false) so the OS never flashes the index.html
-  // `.maka-preload` skeleton before React paints. A layout effect is too early
-  // for this signal: it runs after the DOM commit but before Chromium paints,
-  // so the main process can show the BrowserWindow while its last composited
-  // frame is still the preload skeleton. Two animation frames put the signal
-  // after at least one paint of the committed AppShell. This remains
-  // unconditional: even when the onboarding snapshot is null and AppShell
-  // mounts its fail-soft loading state, the window should still appear. The
-  // main-process fallback handles a renderer that never reaches either frame.
-  // `window.maka` is undefined outside Electron (storybook), so guard it.
+export function App() {
+  // The launch overlay (`#maka-preload` in index.html) retires on its own once
+  // a surface commits `data-maka-content-ready`; this signal's live job is the
+  // crash-recovery reload, where `ready-to-show` does not re-fire and the
+  // re-hidden window waits on it. A layout effect is too early: it runs after
+  // the DOM commit but before Chromium paints, so two animation frames put the
+  // signal after at least one paint of the committed AppShell. `window.maka`
+  // is undefined outside Electron (storybook), so guard it.
   useEffect(() => {
     let secondFrame = 0;
     const firstFrame = requestAnimationFrame(() => {
@@ -61,7 +51,7 @@ export function App({
   return (
     <StrictMode>
       <Theme theme={makaTheme} mode={astryxMode}>
-        <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
+        <AppShell />
       </Theme>
     </StrictMode>
   );

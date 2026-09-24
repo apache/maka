@@ -19,12 +19,6 @@
 
 import { randomUUID } from 'node:crypto';
 import {
-  buildCommandCodeCliRequest,
-  commandCodeCliGenerateUrl,
-  commandCodeCliHeaders,
-  summarizeCommandCodeCliStream,
-} from './commandcode-cli-language-model.js';
-import {
   PROVIDER_REGISTRY,
   effectiveBaseUrl,
   providerDefaultsOf,
@@ -167,10 +161,8 @@ async function testConnectionStrict(
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }
-  const sessionId =
-    connection.providerType === 'opencode-go' || connection.providerType === 'opencode-free'
-      ? randomUUID()
-      : undefined;
+  if (defaults.retired) return retiredProviderTestResult(connection.providerType);
+  const sessionId = connection.providerType === 'opencode-go' ? randomUUID() : undefined;
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
   const testModel = resolveConnectionTestModel(
@@ -181,44 +173,6 @@ async function testConnectionStrict(
 
   if (!testModel) {
     return { ok: false, errorMessage: 'No model to test' };
-  }
-  if (connection.providerType === 'opencode-free' && !model?.trim()) {
-    const brokenModelIds = new Set(defaults.brokenModelIds ?? []);
-    const candidates = [
-      ...new Set([
-        ...connectionEnabledModelIds(connection).filter((id) => !brokenModelIds.has(id)),
-        ...providerFallbackModelIds(defaults),
-      ]),
-    ];
-    if (candidates.length === 0) {
-      return { ok: false, errorMessage: 'No model to test' };
-    }
-    let lastFailure: ConnectionTestResult | undefined;
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index]!;
-      const remainingMs = timeoutMs - (Date.now() - t0);
-      if (remainingMs <= 0) {
-        return connectionTestFailure(new ConnectionEffectFetchError('timeout'), t0);
-      }
-      const remainingCandidates = candidates.length - index;
-      const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / remainingCandidates));
-      try {
-        const result = await testConnectionModel(
-          connection,
-          secret,
-          candidate,
-          fetchFn,
-          t0,
-          attemptTimeoutMs,
-          sessionId,
-        );
-        if (result.ok) return result;
-        lastFailure = result;
-      } catch (error) {
-        lastFailure = connectionTestFailure(error, t0, true);
-      }
-    }
-    return lastFailure ?? connectionTestFailure(new ConnectionEffectFetchError('timeout'), t0);
   }
 
   return await testConnectionModel(
@@ -296,65 +250,7 @@ async function testConnectionModel(
       );
     case 'cohere':
       return await probeCohere(baseUrl, secret, testModel, t0, fetchFn);
-    case 'commandcode-cli':
-      return await probeCommandCodeCli(baseUrl, secret, testModel, t0, fetchFn, requestHeaders);
   }
-}
-
-async function probeCommandCodeCli(
-  baseUrl: string,
-  apiKey: string,
-  model: string,
-  t0: number,
-  fetchFn: ConnectionEffectFetch | undefined,
-  requestHeaders: Readonly<Record<string, string>> | undefined,
-): Promise<ConnectionTestResult> {
-  const { body } = buildCommandCodeCliRequest(
-    { prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }], maxOutputTokens: 16 },
-    { modelId: model },
-  );
-  const r = await fetchForConnectionEffect(fetchFn, commandCodeCliGenerateUrl(baseUrl), {
-    method: 'POST',
-    headers: { ...commandCodeCliHeaders(apiKey, 'maka'), ...(requestHeaders ?? {}) },
-    body: JSON.stringify(body),
-    timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
-  });
-  if (!r.ok) return httpFailure(r, t0);
-  // HTTP 200 is only the handshake on this wire. The generation adapter fails
-  // the send on an in-band `error` event and on a stream that ends without a
-  // `finish`, so a probe that stopped at the status would store a connection
-  // as verified whose very next send is rejected.
-  const outcome = summarizeCommandCodeCliStream(
-    await r.readText(CONNECTION_EFFECT_JSON_BODY_MAX_BYTES),
-  );
-  const latencyMs = Date.now() - t0;
-  if (outcome.error) {
-    const { message, statusCode } = outcome.error;
-    return {
-      ok: false,
-      latencyMs,
-      errorMessage: message.slice(0, 200),
-      ...(statusCode === undefined ? {} : { statusCode }),
-      errorClass: commandCodeCliStreamErrorClass(statusCode),
-    };
-  }
-  if (!outcome.finished) {
-    return {
-      ok: false,
-      latencyMs,
-      errorMessage: 'The Command Code GO stream ended before the turn finished',
-      errorClass: 'network',
-    };
-  }
-  return { ok: true, latencyMs, modelTested: model };
-}
-
-function commandCodeCliStreamErrorClass(statusCode: number | undefined): ConnectionTestErrorClass {
-  if (statusCode === 401 || statusCode === 403) return 'auth';
-  if (statusCode === 429 || (statusCode !== undefined && statusCode >= 500)) {
-    return 'provider_unavailable';
-  }
-  return 'unknown';
 }
 
 async function probeGitHubCopilot(
@@ -503,46 +399,8 @@ async function probeOpenAI(
     timeoutMs,
   });
   if (!r.ok) return httpFailure(r, t0);
-  if (connection.providerType === 'opencode-free') {
-    const body = await r.readJson<unknown>();
-    if (!isOpenAIChatCompletion(body)) {
-      return {
-        ok: false,
-        errorMessage: 'OpenCode Free returned no valid chat completion',
-        errorClass: 'provider_unavailable',
-        latencyMs: Date.now() - t0,
-        modelTested: model,
-      };
-    }
-    return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
-  }
   await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
-}
-
-function isOpenAIChatCompletion(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const choices = (value as { choices?: unknown }).choices;
-  return (
-    Array.isArray(choices) &&
-    choices.some((choice) => {
-      if (!choice || typeof choice !== 'object') return false;
-      const message = (choice as { message?: unknown }).message;
-      if (!message || typeof message !== 'object') return false;
-      const completion = message as {
-        content?: unknown;
-        reasoning?: unknown;
-        reasoning_content?: unknown;
-        tool_calls?: unknown;
-      };
-      return (
-        typeof completion.content === 'string' ||
-        typeof completion.reasoning === 'string' ||
-        typeof completion.reasoning_content === 'string' ||
-        (Array.isArray(completion.tool_calls) && completion.tool_calls.length > 0)
-      );
-    })
-  );
 }
 
 async function probeGoogle(
