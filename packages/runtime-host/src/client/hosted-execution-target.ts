@@ -18,6 +18,7 @@
  */
 
 import { authorizeConnectionModel, effectiveBaseUrl } from '@maka/core/llm-connections';
+import { declaredModelApiProtocol } from '@maka/core/model-thinking';
 import { readRuntimeHostConnectionCatalog } from './catalog-reader.js';
 import type { RuntimeHostConnection } from './connection.js';
 import { abortable } from './wait-for-ready.js';
@@ -52,7 +53,8 @@ export async function configureHostedExecutionTarget(
     onboarding &&
     target &&
     (target.providerType !== onboarding.providerType ||
-      target.defaultApiProtocol !== onboarding.defaultApiProtocol)
+      (onboarding.defaultApiProtocol !== undefined &&
+        declaredModelApiProtocol(target, input.model) !== onboarding.defaultApiProtocol))
   ) {
     throw new Error('Runtime Host connection provider does not match');
   }

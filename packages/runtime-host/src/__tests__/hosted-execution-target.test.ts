@@ -244,6 +244,30 @@ test('explicit hosted target rejects an existing custom connection on another pr
   assert.deepEqual(operations, ['connection.catalog.query']);
 });
 
+test('explicit hosted target rejects a custom model that runs on another protocol', async () => {
+  const page = catalogPage(['claude-opus-4-8'], ['claude-opus-4-8'], null, 'custom');
+  const connection = {
+    request: async () => ({
+      ...page,
+      items: page.items.map((item) =>
+        item.kind === 'model'
+          ? { ...item, model: { ...item.model, apiProtocol: 'anthropic-messages' } }
+          : item,
+      ),
+    }),
+  } as unknown as Pick<RuntimeHostConnection, 'request'>;
+
+  await assert.rejects(
+    configureHostedExecutionTarget(connection, {
+      connection: { providerType: 'custom', defaultApiProtocol: 'openai-chat', apiKey: 'sk-relay' },
+      connectionSlug: 'env-openai',
+      model: 'claude-opus-4-8',
+      baseUrl: 'https://relay.example/v1',
+    }),
+    /provider does not match/u,
+  );
+});
+
 const CONNECTION_ID = '00000000-0000-4000-8000-000000000001';
 
 function catalogPage(
