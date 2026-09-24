@@ -135,6 +135,12 @@ impl Workspace {
             // A chat without a connection looks live but cannot send; the
             // main area shows the failure and a reconnect instead.
             if let Some(chat) = this.chat.take() {
+                // The Host has never heard of a draft, so a reconnect must
+                // not try to reopen it.
+                if chat.read(cx).draft().is_some() {
+                    this.sidebar
+                        .update(cx, |sidebar, cx| sidebar.select(None, cx));
+                }
                 chat.update(cx, |chat, cx| chat.close(cx));
             }
             cx.notify();
