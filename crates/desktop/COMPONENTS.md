@@ -71,9 +71,10 @@ Problems Waku hit and solved, restated as checks on our code.
 
 Every component is done only when the macOS accessibility tree shows it with a role, a name and its state; it is also how components are checked without screenshots. GPUI reports an element only when it has both an id and a role.
 
-- Done: the sidebar and main area are landmarks; every `pressable` is a button; the composer is a text input (gpui-kit's `Textarea`).
+- Done: the sidebar and main area are landmarks; `pressable` takes a name, so every button has one; session rows carry selection and a description; folds report expanded or collapsed; the permission card is a labeled group; the composer is a text input (gpui-kit's `Textarea`).
+- `StyledText` is never reported, so each markdown block has its own node carrying its text (paragraph, heading level, list item and task state, code, table), and each message is a group naming who wrote it.
 - GPUI drops a cached view's nodes when it reuses the view's last frame, so views are drawn uncached while assistive technology is listening (`workspace::embed`). To report upstream.
-- To do: icon buttons need a name (reuse the tooltip text); session rows become list items with their position; transcript text is `StyledText`, which GPUI never reports, so each block needs an id and a role carrying its text (heading level, list item, code, table cells); the permission card is a labeled group; folds report expanded or collapsed.
+- To do: the header title, the composer's status and errors, and the empty and connection states are plain text; list items lack their position; table cells are one label, not cells. Focus is not reported while the window is inactive, so focus checks need the window in front.
 
 ### Frame budget
 

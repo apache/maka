@@ -90,16 +90,19 @@ pub fn splice(list: &ListState, old: &[String], new: &[String]) {
 
 type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// Makes `element` a control: clicked, or activated with bare Enter or Space
-/// once focused. Chords are left alone so their commands still run.
+/// Makes `element` a control named `name` for assistive technology: clicked,
+/// or activated with bare Enter or Space once focused. Chords are left alone
+/// so their commands still run.
 pub fn pressable(
     element: Stateful<Div>,
+    name: impl Into<SharedString>,
     on_press: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let on_press: Handler = Rc::new(on_press);
     let on_key = on_press.clone();
     element
         .role(Role::Button)
+        .aria_label(name)
         .tab_index(0)
         .on_click(move |_: &ClickEvent, window, cx| {
             cx.stop_propagation();
@@ -131,6 +134,7 @@ pub fn button(
     cx: &App,
 ) -> Stateful<Div> {
     let theme = theme(cx);
+    let label = label.into();
     let base = div()
         .id(id)
         .h(px(28.))
@@ -156,11 +160,11 @@ pub fn button(
                     this.hover(|style| style.bg(theme.hover).text_color(theme.text))
                 }),
         })
-        .child(label.into());
+        .child(label.clone());
     if disabled {
         base.opacity(0.5)
     } else {
-        pressable(base, on_press).active(|style| style.opacity(0.8))
+        pressable(base, label, on_press).active(|style| style.opacity(0.8))
     }
 }
 
@@ -168,6 +172,7 @@ pub fn button(
 pub fn icon_button(
     id: impl Into<ElementId>,
     path: &'static str,
+    name: impl Into<SharedString>,
     small: bool,
     on_press: impl Fn(&mut Window, &mut App) + 'static,
     cx: &App,
@@ -195,6 +200,7 @@ pub fn icon_button(
                     .size(px(icon_size))
                     .group_hover(group, |style| style.text_color(theme.text)),
             ),
+        name,
         on_press,
     )
 }

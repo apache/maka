@@ -104,7 +104,7 @@ impl Chat {
                 }),
             )
             .tooltip(ui::tooltip(tip));
-        let action = ui::pressable(action, move |_, cx| {
+        let action = ui::pressable(action, tip, move |_, cx| {
             let _ = this.update(cx, |chat, cx| {
                 if chat.running().is_some() {
                     chat.stop(cx);

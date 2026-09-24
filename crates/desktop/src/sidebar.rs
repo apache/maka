@@ -27,8 +27,8 @@ use crate::{
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use gpui_kit::{
     AnyElement, Context, EventEmitter, FontWeight, InteractiveElement, IntoElement, ListAlignment,
-    ListState, ParentElement, Render, SharedString, Styled, Task, Transformation, Window, div,
-    list, percentage, prelude::FluentBuilder, px,
+    ListState, ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled, Task,
+    Transformation, Window, div, list, percentage, prelude::FluentBuilder, px,
 };
 use maka_protocol::session::{SessionCatalogProjection, SessionStatus};
 use std::time::Duration;
@@ -153,6 +153,9 @@ impl Sidebar {
     ) -> AnyElement {
         match self.items.get(ix) {
             Some(Item::Group(label)) => div()
+                .id(SharedString::from(self.keys[ix].clone()))
+                .role(Role::Heading)
+                .aria_label(*label)
                 .h(px(30.))
                 .px(px(8.))
                 .pt(px(8.))
@@ -186,19 +189,25 @@ impl Sidebar {
     ) -> AnyElement {
         let theme = theme(cx);
         let selected = self.selected.as_deref() == Some(session.id.as_str());
-        let status = match session.status {
-            SessionStatus::Running => Some(
-                icon("icons/loader-circle.svg", theme.accent)
-                    .size(px(12.))
-                    .with_transformation(Transformation::rotate(percentage(turn.unwrap_or(0.))))
-                    .into_any_element(),
+        let (state, status) = match session.status {
+            SessionStatus::Running => (
+                Some("运行中"),
+                Some(
+                    icon("icons/loader-circle.svg", theme.accent)
+                        .size(px(12.))
+                        .with_transformation(Transformation::rotate(percentage(turn.unwrap_or(0.))))
+                        .into_any_element(),
+                ),
             ),
-            SessionStatus::WaitingForUser | SessionStatus::Blocked => Some(
-                icon("icons/triangle-alert.svg", theme.warning)
-                    .size(px(12.))
-                    .into_any_element(),
+            SessionStatus::WaitingForUser | SessionStatus::Blocked => (
+                Some("等待回应"),
+                Some(
+                    icon("icons/triangle-alert.svg", theme.warning)
+                        .size(px(12.))
+                        .into_any_element(),
+                ),
             ),
-            _ => None,
+            _ => (None, None),
         };
         let project = session
             .workspace
@@ -209,12 +218,19 @@ impl Sidebar {
             .to_owned();
         let id = session.id.clone();
         let entity = cx.weak_entity();
+        let when = ago(now, recency(session));
+        let description = match state {
+            Some(state) => format!("{state} · {project} · {when}"),
+            None => format!("{project} · {when}"),
+        };
         div()
             .h(px(52.))
             .pb(px(1.))
             .child(ui::pressable(
                 div()
                     .id(SharedString::from(format!("session:{}", session.id)))
+                    .aria_selected(selected)
+                    .aria_description(description)
                     .h(px(51.))
                     .px(px(8.))
                     .py(px(7.))
@@ -254,8 +270,9 @@ impl Sidebar {
                             .text_color(theme.muted)
                             .child(icon("icons/folder.svg", theme.muted).size(px(12.)))
                             .child(div().flex_1().min_w_0().truncate().child(project))
-                            .child(div().flex_none().child(ago(now, recency(session)))),
+                            .child(div().flex_none().child(when)),
                     ),
+                title(session),
                 move |_, cx| {
                     let id = id.clone();
                     let _ = entity.update(cx, |sidebar, cx| {
@@ -323,6 +340,7 @@ impl Render for Sidebar {
                         .child(icon("icons/square-pen.svg", theme.muted)),
                 )
                 .child("新建会话"),
+            "新建会话",
             move |_, cx| {
                 if can_create {
                     let _ = entity.update(cx, |_, cx| cx.emit(SidebarEvent::Create));

@@ -28,7 +28,8 @@ use crate::{
 };
 use gpui_kit::{
     AnyElement, Context, Focusable, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    Role, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    px,
 };
 use maka_protocol::interaction::{self, InteractionRequest};
 use serde_json::{Value, json};
@@ -166,6 +167,10 @@ impl Chat {
                 .pb(px(8.))
                 .child(
                     div()
+                        .id("interaction")
+                        .role(Role::Group)
+                        .aria_label(title)
+                        .aria_description(detail.clone())
                         .w_full()
                         .max_w(px(super::view::COLUMN))
                         .p(px(12.))

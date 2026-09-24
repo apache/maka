@@ -33,8 +33,8 @@ use crate::{
 };
 use gpui_kit::{
     AnyElement, App, Div, ElementId, Entity, FontStyle, FontWeight, HighlightStyle,
-    InteractiveElement, InteractiveText, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, div, px, relative,
+    InteractiveElement, InteractiveText, IntoElement, ParentElement, Role, SharedString, Stateful,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, Toggled, div, px, relative,
 };
 use std::{ops::Range, time::Instant};
 
@@ -209,10 +209,54 @@ pub fn render(body: &Body, scope: &Scope, cx: &App) -> Div {
             (Some(Kind::Item(_)), Kind::Item(_)) => metrics.gap * 0.5,
             _ => metrics.gap,
         };
-        column = column.child(div().pt(px(gap)).min_w_0().child(element));
+        column = column.child(
+            accessible(block, scope, ordinal)
+                .pt(px(gap))
+                .min_w_0()
+                .child(element),
+        );
         previous = Some(block);
     }
     column
+}
+
+/// The block's node for assistive technology, which never sees `StyledText`.
+fn accessible(block: &Block, scope: &Scope, ordinal: u32) -> Stateful<Div> {
+    let text = || block.texts[0].text.clone();
+    let node = div().id(ElementId::NamedInteger(
+        scope.row.clone(),
+        (ordinal | 0xffff) as u64,
+    ));
+    match &block.kind {
+        Kind::Paragraph => node.role(Role::Paragraph).aria_label(text()),
+        Kind::Heading(level) => node
+            .role(Role::Heading)
+            .aria_level(*level as usize)
+            .aria_label(text()),
+        Kind::Item(Marker::Task(done)) => node
+            .role(Role::ListItem)
+            .aria_toggled(if *done { Toggled::True } else { Toggled::False })
+            .aria_label(text()),
+        Kind::Item(_) => node.role(Role::ListItem).aria_label(text()),
+        Kind::Code { .. } => node.role(Role::Code).aria_label(text()),
+        Kind::Rule => node,
+        Kind::Table { columns } => {
+            let rows: Vec<String> = block
+                .texts
+                .chunks(*columns)
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| cell.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                })
+                .collect();
+            node.role(Role::Table)
+                .aria_row_count(rows.len())
+                .aria_column_count(*columns)
+                .aria_label(rows.join("\n"))
+        }
+    }
 }
 
 fn text(

@@ -30,7 +30,7 @@ use crate::{
 use chrono::{Local, TimeZone};
 use gpui_kit::{
     AnyElement, App, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    MouseButton, ParentElement, Render, Role, SharedString, StatefulInteractiveElement, Styled,
     StyledText, Window, component::input, div, list, prelude::FluentBuilder, px,
 };
 use std::time::{Duration, Instant};
@@ -140,6 +140,9 @@ impl Chat {
             .justify_end()
             .child(
                 div()
+                    .id(key.clone())
+                    .role(Role::Group)
+                    .aria_label("你的消息")
                     .max_w(px(540.))
                     .min_w_0()
                     .rounded(px(12.))
@@ -162,6 +165,9 @@ impl Chat {
         let key: SharedString = format!("text:{id}").into();
         match self.bodies.get(key.as_ref()) {
             Some(body) => div()
+                .id(key.clone())
+                .role(Role::Group)
+                .aria_label("Maka 的回答")
                 .py(px(4.))
                 .child(md::render(
                     body,
@@ -202,6 +208,7 @@ impl Chat {
             div()
                 .id(group.clone())
                 .group(group.clone())
+                .aria_expanded(open)
                 .h(px(26.))
                 .flex()
                 .items_center()
@@ -213,7 +220,7 @@ impl Chat {
                 .text_color(theme.muted)
                 .hover(|style| style.text_color(theme.text))
                 .focus_visible(|style| style.text_color(theme.text))
-                .child(div().min_w_0().truncate().child(title))
+                .child(div().min_w_0().truncate().child(title.clone()))
                 .child(
                     icon(
                         if open {
@@ -226,6 +233,7 @@ impl Chat {
                     .size(px(10.))
                     .group_hover(group, |style| style.text_color(theme.text)),
                 ),
+            title,
             move |_, cx| {
                 let key = toggle_key.clone();
                 let _ = chat.update(cx, |chat, cx| chat.toggle(key, !open, row, cx));
@@ -316,6 +324,12 @@ impl Chat {
         } else {
             div().into_any_element()
         };
+        let name = match (target.is_empty(), failed) {
+            (true, false) => kind.verb().to_owned(),
+            (true, true) => format!("{}（失败）", kind.verb()),
+            (false, false) => format!("{} {target}", kind.verb()),
+            (false, true) => format!("{} {target}（失败）", kind.verb()),
+        };
         let header = div()
             .id(SharedString::from(format!("{item_key}:header")))
             .h(px(28.))
@@ -340,15 +354,17 @@ impl Chat {
             let key = item_key.clone();
             ui::pressable(
                 header
+                    .aria_expanded(open)
                     .hover(|style| style.bg(theme.hover))
                     .focus_visible(|style| style.bg(theme.hover)),
+                name,
                 move |_, cx| {
                     let key = key.clone();
                     let _ = chat.update(cx, |chat, cx| chat.toggle(key, !open, row, cx));
                 },
             )
         } else {
-            header
+            header.role(Role::Label).aria_label(name)
         };
         div()
             .flex()
@@ -483,6 +499,7 @@ impl Chat {
             div()
                 .id(group.clone())
                 .group(group.clone())
+                .aria_expanded(open)
                 .h(px(24.))
                 .flex()
                 .items_center()
@@ -500,7 +517,7 @@ impl Chat {
                         .text_size(px(13.5))
                         .line_height(px(18.))
                         .font_weight(FontWeight::MEDIUM)
-                        .child(label)
+                        .child(label.clone())
                         .child(
                             icon(
                                 if open {
@@ -515,6 +532,7 @@ impl Chat {
                         ),
                 )
                 .child(line()),
+            label,
             move |_, cx| {
                 let turn = turn.clone();
                 let _ = chat.update(cx, |chat, cx| chat.toggle_turn(turn, cx));
@@ -541,6 +559,7 @@ impl Chat {
         let text = answer.join("\n\n");
         let copy_key: SharedString = format!("footer:{turn}").into();
         let copied = self.copied.read(cx).is(&copy_key);
+        let tip = if copied { "已复制" } else { "复制回答" };
         let source = self.copied.clone();
         let time = self
             .transcript
@@ -564,6 +583,7 @@ impl Chat {
                     } else {
                         "icons/copy.svg"
                     },
+                    tip,
                     false,
                     move |_, cx| {
                         let text = text.clone();
@@ -572,11 +592,7 @@ impl Chat {
                     },
                     cx,
                 )
-                .tooltip(ui::tooltip(if copied {
-                    "已复制"
-                } else {
-                    "复制回答"
-                })),
+                .tooltip(ui::tooltip(tip)),
             )
             .when_some(time, |this, time| {
                 this.child(
@@ -607,6 +623,9 @@ impl Chat {
             None => "正在工作".to_owned(),
         };
         div()
+            .id("working")
+            .role(Role::Status)
+            .aria_label(label.clone())
             .h(px(22.))
             .flex()
             .items_center()
@@ -661,6 +680,7 @@ impl Chat {
                         .hover(|style| style.bg(theme.overlay))
                         .focus_visible(|style| style.border_color(theme.accent))
                         .child(icon("icons/arrow-down.svg", theme.text).size(px(16.))),
+                    "回到最新",
                     move |_, cx| {
                         let _ = chat.update(cx, |chat, cx| chat.jump_to_latest(cx));
                     },
