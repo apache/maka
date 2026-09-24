@@ -161,6 +161,9 @@ export function useChatScroll(input: {
       const index = turnIdsRef.current.indexOf(turnId);
       if (index !== -1) input.virtualizerRef.current?.scrollToIndex(index, options);
     },
+    measured() {
+      return Boolean(input.virtualizerRef.current?.viewportSize);
+    },
   }));
 
   // A passive effect, not a layout one: the scroller is Astryx's layout root,
@@ -180,6 +183,14 @@ export function useChatScroll(input: {
     if (activation.current?.restoreTurnId) authority.releasePin();
     else authority.pinToTail();
   }, [input.sessionId]);
+
+  // A new list is measured and moved over its first frames; it is shown on the
+  // frame it reaches its place, not the frame it mounts.
+  const [placedSessionId, setPlacedSessionId] = useState<string>();
+  useEffect(
+    () => authority.whenInPlace(() => setPlacedSessionId(input.sessionId)),
+    [authority, input.sessionId],
+  );
 
   useLayoutEffect(() => {
     authority.turnsChanged(list.current.change);
@@ -297,6 +308,7 @@ export function useChatScroll(input: {
 
   return {
     highlightedTurnId,
+    placed: placedSessionId === input.sessionId,
     /** The Turn a pending or landing command is about; its row must stay mounted. */
     commandTurnId: input.target?.turnId ?? activation.current?.restoreTurnId,
     revealTurnAtStart,

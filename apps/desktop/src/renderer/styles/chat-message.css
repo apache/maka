@@ -35,15 +35,18 @@
    reading geometry and the deliberately dense conversation type scale. */
 
 /* Like the startup reveal (#5494), the previous transcript stays put until the
-   live answer mounts the new one, which fades in once — no cached tail, no
-   intermediate partial state. */
-.maka-chat-session-swap {
+   live answer mounts the new one, which fades in once it is in place — no
+   cached tail, no intermediate partial state or position. */
+.maka-chat-session-swap:not([data-placed]) {
+  opacity: 0;
+}
+.maka-chat-session-swap[data-placed] {
   animation-name: maka-stream-fade-in;
   animation-duration: var(--duration-emphasized);
   animation-timing-function: var(--ease-out-strong);
 }
 @media (prefers-reduced-motion: reduce) {
-  .maka-chat-session-swap {
+  .maka-chat-session-swap[data-placed] {
     animation: none;
   }
 }
