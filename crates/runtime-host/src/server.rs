@@ -274,6 +274,7 @@ impl Host {
         crate::plugins::web::install(&mut setup)?;
         crate::plugins::insights::install(&mut setup)?;
         crate::plugins::session_import::install(&mut setup)?;
+        crate::plugins::external_agent::install(&mut setup)?;
         crate::plugins::todo::install(&mut setup)?;
         crate::plugins::recall::install(&mut setup)?;
         crate::plugins::assistant::install(&mut setup)?;
@@ -307,13 +308,14 @@ impl Host {
             maka_plugins::services::Services::default(),
             executions.plugin_catalog.clone(),
         )
-        .with_data(data)
+        .with_data(data.clone())
         .with_host(crate::plugins::host::Issuer::new(
             &executions,
             configuration.clone(),
             root.root_id().into(),
             std::mem::take(&mut options.input_roots),
             pricing.clone(),
+            data,
         ));
         let (plugins, plugin_owner) = crate::plugins::Platform::open(
             log.clone(),

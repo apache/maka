@@ -37,6 +37,7 @@ pub(super) struct Worker {
     pub host: Arc<Executions>,
     pub authority: Authority,
     pub input: Spawn,
+    pub private_data: std::path::PathBuf,
     pub id: String,
     pub ticket: Option<Ticket>,
     pub stop: CancellationToken,
@@ -105,7 +106,7 @@ impl Worker {
         let invocation = self.authority.identity.agent();
         let prepared = self
             .host
-            .admit_plugin_process(&self.authority, &self.input.command)
+            .admit_plugin_process(&self.authority, &self.input.command, &self.private_data)
             .await
             .map_err(Error::from)?;
         if self.stop.is_cancelled()

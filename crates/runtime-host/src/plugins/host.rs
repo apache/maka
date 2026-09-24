@@ -33,6 +33,7 @@ pub(crate) struct Issuer {
     configuration: Arc<maka_config::ConfigurationStore>,
     pricing: Arc<crate::server::pricing::Catalog>,
     root: String,
+    data: maka_plugins::storage::Directories,
 }
 impl Issuer {
     pub(crate) fn new(
@@ -41,6 +42,7 @@ impl Issuer {
         root: String,
         inputs: maka_plugins::filesystem::ReadRoots,
         pricing: Arc<crate::server::pricing::Catalog>,
+        data: maka_plugins::storage::Directories,
     ) -> Arc<Self> {
         Arc::new(Self {
             inputs,
@@ -48,6 +50,7 @@ impl Issuer {
             configuration,
             pricing,
             root,
+            data,
         })
     }
 }
@@ -58,6 +61,14 @@ impl Provider for Issuer {
             if owner.identity().map_err(error)?.scope == Scope::DesktopUi {
                 return Ok(None);
             }
+            let private_data = self
+                .data
+                .bind(owner.clone())
+                .map_err(error)?
+                .read_only()
+                .await
+                .map_err(error)?
+                .location();
             let executions = Arc::new(ExecutionAccess {
                 host: self.executions.clone(),
                 owner: owner.clone(),
@@ -98,10 +109,12 @@ impl Provider for Issuer {
                 processes: Arc::new(super::process::Processes::new(
                     self.executions.clone(),
                     owner.clone(),
+                    private_data.clone(),
                 )),
                 terminals: Arc::new(super::terminal::Terminals::new(
                     self.executions.clone(),
                     owner,
+                    private_data,
                 )),
             }))
         })

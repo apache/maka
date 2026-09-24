@@ -405,6 +405,17 @@ impl BoundCommands {
         if existing.is_none()
             && let Some(seed) = &history
         {
+            if let Target::Executor { executor_id, .. } = &request.settings.target
+                && !host
+                    .executor_binding(&id, executor_id)
+                    .map_err(|error| Error::Invalid(error.message))?
+                    .capabilities()
+                    .history_copy
+            {
+                return Err(Error::Invalid(
+                    "executor conversations cannot be seeded from copied history".into(),
+                ));
+            }
             host.check_history_target(&seed.call, &seed.input.session_id)
                 .await?;
             let source = host

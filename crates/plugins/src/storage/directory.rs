@@ -42,7 +42,8 @@ impl Directories {
         ))
     }
 
-    pub(crate) fn bind(&self, owner: Context) -> Result<Directory, crate::Error> {
+    /// Bind the package/scope namespace from the Host-issued Fiber identity.
+    pub fn bind(&self, owner: Context) -> Result<Directory, crate::Error> {
         let identity = owner.identity()?;
         let namespace = Namespace::new(identity.package_id, identity.scope)?;
         // Hash the framed identity, not platform-sensitive path components.

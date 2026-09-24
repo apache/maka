@@ -619,6 +619,7 @@ impl State {
             Request::Read(input) => encode(self.storage.read(input.key).await?),
             Request::Scan(input) => encode(self.storage.scan(input).await?),
             Request::Batch(input) => encode(self.storage.batch(input.mutations).await?),
+            Request::DataLocation => encode(self.data()?.read_only().await?.location()),
             Request::Data(operation) => encode(
                 self.data()?
                     .run(move |root, cancellation| {

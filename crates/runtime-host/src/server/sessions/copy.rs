@@ -85,6 +85,21 @@ pub(super) async fn create(host: &Host, input: Input) -> Result<Output> {
                 "A linked execution workspace requires its owner's lifecycle",
             ));
         }
+        // Destination scope may select a different registration for this ID.
+        // Only Host history is copied; provider-owned conversation state is not.
+        if let crate::session::SessionTarget::Executor { executor_id, .. } =
+            &source.configuration.target
+            && !host
+                .executions
+                .executor_binding(&input.target_session_id, executor_id)?
+                .capabilities()
+                .history_copy
+        {
+            return Err(failure(
+                Code::OperationConflict,
+                "This executor cannot copy its conversation; create a new Session instead",
+            ));
+        }
         let Some((project, workspace)) = observed.take() else {
             let project = match &source.configuration.workspace.target {
                 maka_protocol::session::WorkspaceTarget::Project { project_id } => Some(

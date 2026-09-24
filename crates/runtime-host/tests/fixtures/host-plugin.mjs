@@ -90,6 +90,9 @@ export default async function (ctx) {
     };
   });
   const marker = 'state.bin';
+  const dataLocation = await ctx.data.location();
+  if (typeof dataLocation !== 'string' || dataLocation.length === 0)
+    throw new Error('private file location is unavailable');
   try {
     const page = await ctx.data.read({ path: marker });
     if (new TextDecoder().decode(page.bytes) !== '持久状态🦀')
@@ -223,9 +226,23 @@ export default async function (ctx) {
         if (!chunk) throw new Error('protocol closed before reply');
         if (chunk.stream === 'stdout') output += decoder.decode(chunk.bytes, { stream: true });
       }
+      // A later spawn must not erase a completed process's unread output/exit.
+      const finishedProcess = await context.processes.spawn(command);
+      await finishedProcess.write('ping retained\nquit\n');
+      const completedExit = await finishedProcess.wait();
+      if (!completedExit.success) throw new Error('protocol fixture did not finish');
       // Deliberately leave a call-owned process alive: Host settlement must
       // cancel it and confirm cleanup before committing this invocation's T2.
       await context.processes.spawn(command);
+      let retained = '';
+      for (;;) {
+        const chunk = await finishedProcess.next();
+        if (!chunk) break;
+        if (chunk.stream === 'stdout') retained += decoder.decode(chunk.bytes, { stream: true });
+      }
+      await finishedProcess.close();
+      if (!retained.includes('protocol:ping retained'))
+        throw new Error('completed process output was discarded');
       let terminal = terminals.get(session);
       const ttyCommand = { ...command, env: { ...command.env, MAKA_PLUGIN_PTY_TEST_CHILD: '1' } };
       if (terminal) {
@@ -423,6 +440,7 @@ export default async function (ctx) {
               env: {
                 ...command.env,
                 MAKA_PLUGIN_SANDBOX_TEST_CHILD: '1',
+                MAKA_PLUGIN_PRIVATE_DATA_TEST_PATH: dataLocation,
                 ...(terminal ? { MAKA_PLUGIN_PTY_TEST_CHILD: '1' } : {}),
               },
             };

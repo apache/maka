@@ -53,6 +53,7 @@ pub(super) struct Terminals(Arc<Inner>);
 struct Inner {
     host: Weak<Executions>,
     owner: Context,
+    private_data: std::path::PathBuf,
     handles: Mutex<BTreeMap<String, Arc<Handle>>>,
     capacity: Arc<tokio::sync::Semaphore>,
 }
@@ -64,10 +65,11 @@ impl Terminals {
         }
         Ok(host)
     }
-    pub fn new(host: Weak<Executions>, owner: Context) -> Self {
+    pub fn new(host: Weak<Executions>, owner: Context, private_data: std::path::PathBuf) -> Self {
         Self(Arc::new(Inner {
             host,
             owner,
+            private_data,
             handles: Mutex::default(),
             capacity: Arc::new(tokio::sync::Semaphore::new(8)),
         }))
@@ -102,6 +104,7 @@ impl Terminals {
         let (send, receive) = tokio::sync::oneshot::channel();
         let worker_stop = stop.clone();
         let id = terminal_id.clone();
+        let private_data = self.0.private_data.clone();
         self.0
             .owner
             .spawn_resource("terminal", move |retiring| async move {
@@ -110,6 +113,7 @@ impl Terminals {
                     host,
                     authority,
                     input,
+                    private_data,
                     id,
                     ticket,
                     stop: worker_stop,
@@ -192,7 +196,7 @@ impl Terminals {
             return Err(api::Error::Denied);
         }
         if !host
-            .plugin_process_sandbox(authority, &current)
+            .plugin_process_sandbox(authority, &current, &self.0.private_data)
             .await
             .map_err(api::Error::from)?
             .contains(&record.permissions.sandbox)

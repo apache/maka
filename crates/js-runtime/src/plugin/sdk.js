@@ -595,7 +595,10 @@
           names: () => host('inputs.names'),
           at: (name) => readDirectory('inputs', name),
         }),
-        data: fileEntries((kind, input) => host('data', { kind, input })),
+        data: Object.freeze({
+          ...fileEntries((kind, input) => host('data', { kind, input })),
+          location: () => host('data.location'),
+        }),
         credentials: Object.freeze({
           read: (key) => host('credentials.read', { key }),
           write: (input) => host('credentials.write', input),

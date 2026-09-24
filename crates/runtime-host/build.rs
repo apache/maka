@@ -26,6 +26,8 @@ fn main() {
         "../skills/src/client.tsx",
         "../jev/src/client.tsx",
         "../jev/src/client",
+        "../external-agent/src/client.tsx",
+        "../external-agent/src/client",
         "../session-recap/src/client.tsx",
         "../session-recap/src/client",
         "../goal/src/client.tsx",

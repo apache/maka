@@ -121,6 +121,7 @@ pub struct ExecutorProjection {
 pub struct ExecutorCapabilities {
     pub thinking: bool,
     pub tool_activity: bool,
+    pub history_copy: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
