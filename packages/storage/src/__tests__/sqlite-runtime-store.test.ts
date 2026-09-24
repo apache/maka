@@ -1573,6 +1573,71 @@ describe('SqliteRuntimeStore', () => {
     );
   });
 
+  it('routes nested-tool partial heartbeats to the partial stream, not the ledger', async () => {
+    await withStore(async (store) => {
+      const run = {
+        sessionId: 'session-nested',
+        invocationId: 'invocation-nested',
+        runId: 'run-nested',
+        turnId: 'turn-nested',
+      };
+      await store.appendRuntimeEvent(
+        run.sessionId,
+        run.runId,
+        buildInvocationOpenedEvent({
+          id: 'run-nested-invocation-opened',
+          run,
+          openedAt: 1,
+          opening: {
+            kind: 'invocation_opened',
+            protocol: 'invocation_opened_v1',
+            route: {
+              provenance: 'runtime',
+              backendKind: 'fake',
+              llmConnectionId: 'fake-connection',
+              llmConnectionSlug: 'fake',
+              modelId: 'fake-model',
+            },
+            configuration: {
+              cwd: '/tmp',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+              orchestrationSource: 'session',
+              toolMode: DEFAULT_TOOL_MODE,
+            },
+            root: { kind: 'user' },
+            source: { kind: 'fresh' },
+          },
+        }),
+      );
+      // Code Mode emits one of these per nested-tool progress tick: a
+      // contentless tool heartbeat whose refs carry the nesting provenance
+      // alongside the call it belongs to (apache/maka#5699).
+      await store.appendRuntimeEvent(run.sessionId, run.runId, {
+        id: 'nested-heartbeat-0',
+        ...run,
+        ts: 2,
+        partial: true,
+        role: 'tool',
+        author: 'tool',
+        origin: 'code_mode',
+        modelVisibility: 'hidden',
+        refs: {
+          toolCallId: 'outer-call:nested:nested-call',
+          parentToolCallId: 'outer-call',
+          parentOperationId: 'outer-operation',
+        },
+      });
+      const immutable = await store.readImmutableRuntimeEvents(run.sessionId, run.runId);
+      assert.equal(
+        immutable.some((event) => event.id === 'nested-heartbeat-0'),
+        false,
+        'a transient heartbeat must not enter the immutable ledger',
+      );
+    });
+  });
+
   it('records cache misses across streaming partial commits and hits only in quiet windows', async () => {
     await withStore(async (store) => {
       await commitPreparedInvocation(store, 0);

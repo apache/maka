@@ -96,7 +96,15 @@ export function partialRuntimeStream(event: RuntimeEvent):
   ) {
     identity = `${content.kind}:provider:${event.refs.providerEventId}`;
     text = content.text;
-  } else if (!content && event.refs?.toolCallId && hasOnlyKeys(event.refs, ['toolCallId'])) {
+  } else if (
+    !content &&
+    event.refs?.toolCallId &&
+    hasOnlyKeys(event.refs, ['toolCallId', 'parentToolCallId', 'parentOperationId'])
+  ) {
+    // A contentless tool row is transient progress no matter which provenance
+    // keys ride along: Code Mode's nested heartbeats name their enclosing call
+    // and operation in the same refs (apache/maka#5699). The stream identity
+    // stays the tool call id — parent keys describe lineage, not the stream.
     identity = `tool:call:${event.refs.toolCallId}`;
   }
   if (!identity) return undefined;

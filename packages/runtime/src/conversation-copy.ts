@@ -341,6 +341,11 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
     'readRuntimeEvents' | 'listSessionInvocations'
   >;
 }): Promise<ConversationRuntimeLedgerCopyPlan> {
+  // Legacy ledgers can hold partial rows that a pre-fix writer filed as
+  // immutable — Code Mode's nested tool heartbeats (apache/maka#5699). A copy
+  // carries durable events only, and the import guard still rejects anything
+  // partial that slips past this filter.
+  const sourceEvents = input.sourceEvents.filter((event) => !event.partial);
   const sourceRuns = await input.runtimeEventStore.listSessionInvocations(input.sourceSessionId);
   const transcriptTurnIds = [
     ...new Set(
@@ -350,7 +355,7 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
   const copyTurnIds = conversationCopyTurnClosure(sourceRuns, transcriptTurnIds);
   const selectedRunEvents = await loadConversationCopyRunEvents(
     sourceRuns,
-    input.sourceEvents,
+    sourceEvents,
     copyTurnIds,
     input.runtimeEventStore,
   );
@@ -373,7 +378,7 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
       restoredOpening ? [[run.runId, restoredOpening] as const] : [],
     ),
   );
-  const inlineRuntimeEvents = input.sourceEvents.flatMap((event) => {
+  const inlineRuntimeEvents = sourceEvents.flatMap((event) => {
     const opening = restoredOpenings.get(event.runId);
     if (!opening) return [event];
     restoredOpenings.delete(event.runId);

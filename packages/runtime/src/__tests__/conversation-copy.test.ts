@@ -43,6 +43,7 @@ import {
   isSessionInlineInvocation,
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
@@ -4363,6 +4364,164 @@ test('conversation copy gives a run whose opening the migration shelved its open
       'the copy is a fresh sequence, so the opening is its first event',
     );
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('conversation copy tolerates a legacy ledger holding nested-tool partial heartbeats', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-runtime-copy-'));
+  const runStore = createSqliteAgentRunStore(root);
+  const runtimeEventStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+  try {
+    const sourceEvents: RuntimeEvent[] = [
+      invocationOpenedEvent({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
+      runtimeEvent({
+        id: 'event-call',
+        ts: 2,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'provider-call-1',
+          name: 'CodeMode',
+          args: { code: 'await tools.Write({ path: "notes.txt", content: "hi" })' },
+        },
+      }),
+      runtimeEvent({
+        id: 'event-dispatch',
+        ts: 3,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'operation-1',
+            providerToolCallId: 'provider-call-1',
+            toolName: 'CodeMode',
+            canonicalArgsHash: canonicalToolArgsHash('CodeMode', {
+              code: 'await tools.Write({ path: "notes.txt", content: "hi" })',
+            }),
+            recoveryMode: 'replay_safe',
+          },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+      }),
+      runtimeEvent({
+        id: 'event-outcome',
+        ts: 5,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-1',
+          name: 'CodeMode',
+          result: { kind: 'text', text: 'ok' },
+          isError: false,
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal',
+        ts: 6,
+        status: 'completed',
+      }),
+    ];
+    await runtimeEventStore.importConversationCopyRuntimeEvents('session-source', [
+      { runId: 'run-source', events: sourceEvents },
+    ]);
+    // Pre-fix writers filed Code Mode's nested-tool heartbeats straight into
+    // the immutable ledger, because the partial classifier only recognized
+    // heartbeats whose refs carried nothing but the tool call id
+    // (apache/maka#5699). Replay that legacy shape verbatim: insert the row
+    // the way the old append did, around the (now correct) router.
+    const heartbeat = runtimeEvent({
+      id: 'event-nested-heartbeat',
+      ts: 4,
+      partial: true,
+      role: 'tool',
+      author: 'tool',
+      origin: 'code_mode',
+      modelVisibility: 'hidden',
+      refs: {
+        toolCallId: 'provider-call-1:nested:nested-1',
+        parentToolCallId: 'provider-call-1',
+        parentOperationId: 'operation-1',
+      },
+    });
+    const db = new DatabaseSync(join(root, 'runtime.sqlite'));
+    try {
+      const encoding = encodeCanonicalRuntimeEvent(heartbeat);
+      const seqRow = db
+        .prepare("SELECT MAX(event_seq) AS seq FROM runtime_events WHERE run_id = 'run-source'")
+        .get() as { seq: number | null };
+      db.prepare(
+        `INSERT INTO runtime_events (
+           event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+           event_kind, payload_json, committed_at
+         ) VALUES ('event-nested-heartbeat', 'session-source', 'invocation-source',
+                   'run-source', 'turn-1', ?, 'runtime_fact', ?, 2)`,
+      ).run((seqRow.seq ?? 0) + 1, encoding.json);
+      const ordinalRow = db
+        .prepare(
+          "SELECT MAX(ordinal) AS ordinal FROM runtime_session_event_ordinals WHERE session_id = 'session-source'",
+        )
+        .get() as { ordinal: number | null };
+      db.prepare(
+        "INSERT INTO runtime_session_event_ordinals (session_id, ordinal, event_id) VALUES ('session-source', ?, 'event-nested-heartbeat')",
+      ).run((ordinalRow.ordinal ?? 0) + 1);
+    } finally {
+      db.close();
+    }
+    assert.equal(
+      (await runtimeEventStore.readRuntimeEvents('session-source', 'run-source')).some(
+        (event) => event.id === 'event-nested-heartbeat',
+      ),
+      true,
+      'the fixture reproduces the poisoned legacy ledger',
+    );
+
+    const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(
+      'session-source',
+    );
+    const copied = await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+
+    const targetEvents = await runtimeEventStore.readRuntimeEvents(
+      'session-target',
+      copied.runIdMap[0]!.targetRunId,
+    );
+    assert.equal(
+      targetEvents.some((event) => event.partial === true),
+      false,
+      'transient progress heartbeats are not part of a copy',
+    );
+    assert.deepEqual(
+      targetEvents.map(
+        (event) =>
+          event.content?.kind ?? (event.actions?.toolDispatch ? 'tool_dispatch' : event.status),
+      ),
+      ['invocation_opened', 'function_call', 'tool_dispatch', 'function_response', 'completed'],
+      'every durable event survives the copy',
+    );
+  } finally {
+    runtimeEventStore.close();
+    runStore.close?.();
     await rm(root, { recursive: true, force: true });
   }
 });
