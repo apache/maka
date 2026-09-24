@@ -24,7 +24,7 @@ use crate::{
     theme::theme,
     ui::{self, icon, motion},
 };
-use chrono::{Datelike, Local, TimeZone};
+use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use gpui_kit::{
     AnyElement, Context, EventEmitter, FontWeight, InteractiveElement, IntoElement, ListAlignment,
     ListState, ParentElement, Render, SharedString, Styled, Task, Transformation, Window, div,
@@ -50,6 +50,9 @@ enum Item {
 pub struct Sidebar {
     sessions: Vec<SessionCatalogProjection>,
     items: Vec<Item>,
+    keys: Vec<String>,
+    /// The day the groups were computed for.
+    today: NaiveDate,
     selected: Option<String>,
     can_create: bool,
     error: Option<SharedString>,
@@ -65,6 +68,8 @@ impl Sidebar {
         Self {
             sessions: Vec::new(),
             items: Vec::new(),
+            keys: Vec::new(),
+            today: Local::now().date_naive(),
             selected: None,
             can_create: false,
             error: None,
@@ -80,21 +85,29 @@ impl Sidebar {
     ) {
         sessions.retain(|session| !session.is_archived);
         sessions.sort_by_key(|session| std::cmp::Reverse(recency(session)));
-        let today = Local::now().date_naive();
+        self.sessions = sessions;
+        self.error = None;
+        self.regroup(cx);
+    }
+
+    fn regroup(&mut self, cx: &mut Context<Self>) {
+        self.today = Local::now().date_naive();
         let mut items = Vec::new();
+        let mut keys = Vec::new();
         let mut current = None;
-        for (ix, session) in sessions.iter().enumerate() {
-            let group = day_group(recency(session), today);
+        for (ix, session) in self.sessions.iter().enumerate() {
+            let group = day_group(recency(session), self.today);
             if current != Some(group) {
                 items.push(Item::Group(group));
+                keys.push(format!("group:{group}"));
                 current = Some(group);
             }
             items.push(Item::Session(ix));
+            keys.push(session.id.clone());
         }
-        self.sessions = sessions;
-        self.list.reset(items.len());
+        let old = std::mem::replace(&mut self.keys, keys);
+        ui::splice(&self.list, &old, &self.keys);
         self.items = items;
-        self.error = None;
         cx.notify();
     }
 
@@ -262,7 +275,13 @@ impl Sidebar {
             cx.background_executor()
                 .timer(Duration::from_millis(wait))
                 .await;
-            let _ = this.update(cx, |_, cx| cx.notify());
+            let _ = this.update(cx, |sidebar, cx| {
+                if sidebar.today == Local::now().date_naive() {
+                    cx.notify();
+                } else {
+                    sidebar.regroup(cx);
+                }
+            });
         });
         self.wake = Some((boundary, task));
     }

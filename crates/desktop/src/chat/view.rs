@@ -710,10 +710,11 @@ impl Render for Chat {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
         let fading = self.bodies.values().any(|body| body.fading(now));
-        let moving = self
-            .fold
-            .iter()
-            .any(|row| matches!(row, Row::Working | Row::Work { live: true, .. }));
+        let moving = matches!(self.delivery, Some(super::Delivery::Sending))
+            || self
+                .fold
+                .iter()
+                .any(|row| matches!(row, Row::Working | Row::Work { live: true, .. }));
         self.elapsed = if fading || moving {
             motion::now(window, cx)
         } else {

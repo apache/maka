@@ -20,13 +20,14 @@
 use super::{Chat, Delivery};
 use crate::{
     theme::theme,
-    ui::{self, icon},
+    ui::{self, icon, motion},
 };
 use gpui_kit::{
     Context, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, component::input::Textarea, div, prelude::FluentBuilder,
-    px,
+    StatefulInteractiveElement, Styled, Transformation, component::input::Textarea, div,
+    percentage, prelude::FluentBuilder, px,
 };
+use std::time::Duration;
 
 impl Chat {
     pub(super) fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -93,7 +94,13 @@ impl Chat {
                         theme.muted
                     },
                 )
-                .size(if running { px(12.) } else { px(16.) }),
+                .size(if running { px(12.) } else { px(16.) })
+                .when_some(self.elapsed.filter(|_| sending), |icon, elapsed| {
+                    icon.with_transformation(Transformation::rotate(percentage(motion::cycle(
+                        elapsed,
+                        Duration::from_millis(900),
+                    ))))
+                }),
             )
             .tooltip(ui::tooltip(tip));
         let action = ui::pressable(action, move |_, cx| {

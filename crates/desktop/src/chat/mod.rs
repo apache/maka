@@ -26,7 +26,7 @@ mod view;
 use crate::{
     host::Host,
     md::view::Body,
-    ui::{Copied, scrollbar::Scrollbar, select::Selection},
+    ui::{self, Copied, scrollbar::Scrollbar, select::Selection},
 };
 use gpui_kit::base::input::{InputEvent, TextareaState};
 use gpui_kit::{
@@ -539,23 +539,7 @@ impl Chat {
         }
 
         let old = std::mem::replace(&mut self.keys, keys);
-        let prefix = old
-            .iter()
-            .zip(&self.keys)
-            .take_while(|(a, b)| a == b)
-            .count();
-        let suffix = old[prefix..]
-            .iter()
-            .rev()
-            .zip(self.keys[prefix..].iter().rev())
-            .take_while(|(a, b)| a == b)
-            .count();
-        if prefix + suffix < old.len().max(self.keys.len()) {
-            self.list.splice(
-                prefix..old.len() - suffix,
-                self.keys.len() - prefix - suffix,
-            );
-        }
+        ui::splice(&self.list, &old, &self.keys);
         let tail = self.keys.len().saturating_sub(TAIL_ROWS)..self.keys.len();
         if !tail.is_empty() {
             self.list.remeasure_items(tail);

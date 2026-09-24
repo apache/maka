@@ -28,9 +28,9 @@ pub mod select;
 use crate::theme::theme;
 use gpui_kit::{
     AnyView, App, AppContext, ClickEvent, ClipboardItem, Context, Div, ElementId, FontWeight, Hsla,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Role, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, Svg, Window, div, prelude::FluentBuilder, px,
-    svg,
+    InteractiveElement, IntoElement, KeyDownEvent, ListState, ParentElement, Render, Role,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Svg, Window, div,
+    prelude::FluentBuilder, px, svg,
 };
 use std::{rc::Rc, time::Duration};
 
@@ -71,6 +71,21 @@ pub fn icon(path: &'static str, color: Hsla) -> Svg {
         .size(px(14.))
         .flex_none()
         .text_color(color)
+}
+
+/// Tells `list` which rows changed between two orders of stable keys, so
+/// unchanged rows keep their measured heights and the scroll position holds.
+pub fn splice(list: &ListState, old: &[String], new: &[String]) {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if prefix + suffix < old.len().max(new.len()) {
+        list.splice(prefix..old.len() - suffix, new.len() - prefix - suffix);
+    }
 }
 
 type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
