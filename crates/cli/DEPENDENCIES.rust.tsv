@@ -4,6 +4,7 @@ aead@0.5.2		X									X
 aes@0.8.3		X									X					
 aes-gcm@0.10.3		X									X					
 aes-kw@0.2.1		X									X					
+agent-client-protocol-schema@1.9.1		X														
 ahash@0.8.12		X									X					
 aho-corasick@1.1.5											X				X	
 alacritty_terminal@0.26.0		X														
@@ -390,6 +391,7 @@ maka-client@0.2.0		X
 maka-client-capability@0.2.0		X														
 maka-config@0.2.0		X														
 maka-event-log@0.2.0		X														
+maka-external-agent@0.2.0		X														
 maka-fs-tools@0.2.0		X														
 maka-goal@0.2.0		X														
 maka-graph@0.2.0		X														
@@ -568,6 +570,8 @@ serde_derive_internals@0.30.0		X									X
 serde_json@1.0.151		X									X					
 serde_urlencoded@0.7.1		X									X					
 serde_v8@0.320.0											X					
+serde_with@3.23.0		X									X					
+serde_with_macros@3.23.0		X									X					
 serdect@0.2.0		X									X					
 servo_arc@0.4.3		X									X					
 sha1@0.10.7		X									X					
@@ -663,6 +667,7 @@ tracing-core@0.1.36											X
 try-lock@0.2.5											X					
 tungstenite@0.29.0		X									X					
 type-map@0.5.1		X									X					
+typed-path@0.12.3		X									X					
 typenum@1.20.1		X									X					
 unic-langid@0.9.6		X									X					
 unic-langid-impl@0.9.6		X									X					
@@ -737,6 +742,7 @@ zeroize_derive@1.5.0		X									X
 zerotrie@0.2.5														X		
 zerovec@0.11.8														X		
 zerovec-derive@0.11.6														X		
+zip@8.6.0											X					
 zlib-rs@0.6.7																X
 zmij@1.0.23											X					
 zoneinfo64@0.3.0														X		

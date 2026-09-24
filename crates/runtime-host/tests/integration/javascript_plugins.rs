@@ -96,6 +96,14 @@ async fn external_shared_and_dedicated_plugins_route_services_persist_data_and_d
         if std::env::var_os("MAKA_PLUGIN_SANDBOX_TEST_CHILD").is_some() {
             assert!(std::fs::write(".agents", "must be blocked").is_err());
             std::fs::write("managed-plugin-proof", "workspace write allowed").unwrap();
+            let private = std::path::PathBuf::from(
+                std::env::var_os("MAKA_PLUGIN_PRIVATE_DATA_TEST_PATH").unwrap(),
+            );
+            assert_eq!(
+                std::fs::read(private.join("state.bin")).unwrap(),
+                "持久状态🦀".as_bytes()
+            );
+            std::fs::write(private.join("state.bin"), "持久状态🦀".as_bytes()).unwrap();
         }
         if std::env::var_os("MAKA_PLUGIN_PTY_TEST_CHILD").is_some() {
             assert!(std::io::stdin().is_terminal());
@@ -267,7 +275,7 @@ async fn external_shared_and_dedicated_plugins_route_services_persist_data_and_d
             let choices = peer.rpc("executor.catalog.query", json!({"query":"external acceptance"})).await;
             assert_eq!(choices["ok"], true, "{choices}");
             assert_eq!(choices["result"]["executors"], json!([{"id":"example.external","displayName":"External acceptance",
-                "capabilities":{"thinking":true,"toolActivity":true,"attachments":false}}]));
+                "capabilities":{"thinking":true,"toolActivity":true,"attachments":false,"historyCopy":false}}]));
             assert_eq!(choices["result"]["complete"], true);
             let mut external_runs = vec![("executor-session", false), (external_child.session_id.as_str(), false)];
             if !reopened { external_runs.push((external_child.session_id.as_str(), true)); }
@@ -333,7 +341,12 @@ pub(super) async fn ready(peer: &mut Peer) {
         if status["result"]["convergence"] == "converged" {
             return;
         }
-        assert!(tokio::time::Instant::now() < deadline, "{status}");
+        if tokio::time::Instant::now() >= deadline {
+            let entries = peer
+                .rpc("plugin.platform.query", json!({"view":"failures"}))
+                .await;
+            panic!("{status}; {entries}");
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }

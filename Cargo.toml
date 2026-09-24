@@ -33,6 +33,7 @@ members = [
     "crates/client-capability",
     "crates/config",
     "crates/event-log",
+    "crates/external-agent",
     "crates/fs-tools",
     "crates/goal",
     "crates/graph",
@@ -93,6 +94,7 @@ maka-client = { path = "crates/client" }
 maka-client-capability = { path = "crates/client-capability" }
 maka-config = { path = "crates/config" }
 maka-event-log = { path = "crates/event-log" }
+maka-external-agent = { path = "crates/external-agent" }
 maka-fs-tools = { path = "crates/fs-tools" }
 maka-goal = { path = "crates/goal" }
 maka-graph = { path = "crates/graph" }

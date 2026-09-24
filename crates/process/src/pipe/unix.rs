@@ -102,6 +102,17 @@ impl Child {
         if self.status.is_none() && !self.signalled {
             match rustix::process::kill_process_group(self.pid, Signal::KILL) {
                 Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+                // macOS can reject signalling a group whose root is already a
+                // zombie. This is only a signal result; wait still reaps the
+                // root and independently confirms that every group member left.
+                Err(rustix::io::Errno::PERM)
+                    if matches!(
+                        waitid(
+                            WaitId::Pid(self.pid),
+                            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+                        ),
+                        Ok(Some(_))
+                    ) => {}
                 Err(error) => return Err(error.into()),
             }
             self.signalled = true;

@@ -255,6 +255,7 @@ impl Platform {
                             capabilities: ExecutorCapabilities {
                                 thinking: executor.value.capabilities.thinking,
                                 tool_activity: executor.value.capabilities.tool_activity,
+                                history_copy: executor.value.capabilities.history_copy,
                             },
                         })?);
                     }

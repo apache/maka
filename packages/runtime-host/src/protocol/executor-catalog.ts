@@ -105,11 +105,13 @@ export const EXECUTOR_CATALOG_OPERATION_SPECS = {
           'thinking',
           'toolActivity',
           'attachments',
+          'historyCopy',
         ]);
         if (
           typeof capabilities.thinking !== 'boolean' ||
           typeof capabilities.toolActivity !== 'boolean' ||
-          typeof capabilities.attachments !== 'boolean'
+          typeof capabilities.attachments !== 'boolean' ||
+          typeof capabilities.historyCopy !== 'boolean'
         )
           throw invalidProtocolFrame('Invalid executor capabilities');
         return {
@@ -119,6 +121,7 @@ export const EXECUTOR_CATALOG_OPERATION_SPECS = {
             thinking: capabilities.thinking,
             toolActivity: capabilities.toolActivity,
             attachments: capabilities.attachments,
+            historyCopy: capabilities.historyCopy,
           },
         };
       });

@@ -37,6 +37,10 @@ pub struct Capabilities {
     pub tool_activity: bool,
     #[serde(default)]
     pub attachments: bool,
+    /// Can initialize a new conversation from Host-owned copied history through
+    /// the public history APIs. The Host never copies opaque provider state.
+    #[serde(default)]
+    pub history_copy: bool,
 }
 
 /// Non-secret choices visible in the plugin's scope; discovery grants no execution authority.
@@ -224,6 +228,9 @@ pub struct Settlement {
     _lease: CallGuard,
 }
 impl Binding {
+    pub fn capabilities(&self) -> Capabilities {
+        self.contribution.value.capabilities
+    }
     pub fn with_calls(mut self, calls: crate::call::Issuer) -> Self {
         self.calls = Some(calls);
         self

@@ -85,7 +85,7 @@ impl Executions {
             return Err(Error::Denied);
         }
         if self
-            .plugin_process_sandbox(call, &boundary)
+            .plugin_sandbox(call, &boundary, None)
             .await?
             .permits(&request.permissions)
             .map_err(|error| Error::Invalid(error.to_string()))?

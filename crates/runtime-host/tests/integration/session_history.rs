@@ -29,7 +29,7 @@ use maka_runtime::{
     session::{CopyPurpose, CopyRequest},
 };
 use maka_runtime_host::session::{
-    PreparedSession, SessionConfiguration, SessionTarget, catalog_projection,
+    PreparedSession, SessionConfiguration, SessionModel, catalog_projection,
 };
 use serde_json::json;
 
@@ -41,10 +41,11 @@ async fn catalog_revisions_preserve_branch_origin_without_inheriting_execution_s
             .unwrap()
             .to_owned();
     let configuration = PreparedSession::new(serde_json::from_value(json!({
-        "sessionId":"source", "workspace":{"kind":"host_path","path":cwd}, "executorId":"fixture"
+        "sessionId":"source", "workspace":{"kind":"host_path","path":cwd},
+        "modelTarget":{"kind":"explicit","connectionId":"fixture","connectionSlug":"fixture","model":"fixture"}
     })).unwrap()).unwrap().bind(
         WorkspaceProjection { target: WorkspaceTarget::HostPath { path: cwd.clone() }, host_cwd: cwd },
-        SessionTarget::Executor { executor_id: "fixture".to_owned().try_into().unwrap(), settings: Default::default() },
+        SessionModel { connection_id: "fixture".into(), connection_slug: "fixture".into(), model: "fixture".into() },
         SandboxMode::DangerFullAccess,
     );
     let log = fixture.log().await;

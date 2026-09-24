@@ -178,11 +178,12 @@ async fn read(
         if count == 0 {
             return Ok(());
         }
-        output
-            .try_send(Chunk {
+        tokio::select! {
+            result = output.send(Chunk {
                 stream,
                 bytes: buffer[..count].to_vec(),
-            })
-            .map_err(|_| "process output consumer closed or exceeded its backlog".to_owned())?;
+            }) => result.map_err(|_| "process output consumer closed".to_owned())?,
+            _ = &mut drain => return Err("process output drain timed out".into()),
+        }
     }
 }

@@ -690,7 +690,11 @@ export default async function (ctx) {
     return true;
   });
   await ctx.executors.register(
-    { name: 'example.background', displayName: 'Background acceptance', capabilities: {} },
+    {
+      name: 'example.background',
+      displayName: 'Background acceptance',
+      capabilities: { historyCopy: true },
+    },
     async (request, call) => {
       const catalog = await call.sessions.list();
       if (

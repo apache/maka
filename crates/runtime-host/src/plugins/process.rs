@@ -26,6 +26,7 @@ use maka_plugins::fiber::Context;
 use maka_plugins::process::{self as api, Chunk, Command, Exit, Lifetime};
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::{Arc, Mutex, Weak},
 };
 use tokio::sync::{mpsc, watch};
@@ -52,6 +53,7 @@ pub(super) struct Processes(Arc<Inner>);
 struct Inner {
     host: Weak<Executions>,
     owner: Context,
+    private_data: PathBuf,
     handles: Mutex<BTreeMap<String, Arc<Handle>>>,
 }
 impl Processes {
@@ -62,10 +64,11 @@ impl Processes {
         }
         Ok(host)
     }
-    pub fn new(host: Weak<Executions>, owner: Context) -> Self {
+    pub fn new(host: Weak<Executions>, owner: Context, private_data: PathBuf) -> Self {
         Self(Arc::new(Inner {
             host,
             owner,
+            private_data,
             handles: Mutex::default(),
         }))
     }
@@ -73,7 +76,7 @@ impl Processes {
         let _lease = self.0.owner.admit().map_err(|_| api::Error::Denied)?;
         let host = self.host(&authority)?;
         let prepared = host
-            .admit_plugin_process(&authority, &input)
+            .admit_plugin_process(&authority, &input, &self.0.private_data)
             .await
             .map_err(api::Error::from)?;
         let command = prepared.command;
@@ -103,13 +106,6 @@ impl Processes {
         let id = uuid::Uuid::new_v4().to_string();
         {
             let mut handles = self.0.handles.lock().unwrap();
-            handles.retain(|_, handle| {
-                !handle.stop.is_cancelled()
-                    && !handle
-                        .expires
-                        .as_ref()
-                        .is_some_and(CancellationToken::is_cancelled)
-            });
             if handles.len() >= 32 {
                 return Err(api::Error::Invalid(
                     "plugin process handle capacity exceeded; close unused handles".into(),
@@ -213,10 +209,11 @@ impl Processes {
             .get(id)
             .cloned()
             .ok_or(api::Error::Denied)?;
-        if handle
-            .expires
-            .as_ref()
-            .is_some_and(CancellationToken::is_cancelled)
+        if handle.stop.is_cancelled()
+            || handle
+                .expires
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
         {
             return Err(api::Error::Denied);
         }
@@ -241,7 +238,7 @@ impl Processes {
             return Err(api::Error::Denied);
         }
         if !host
-            .plugin_process_sandbox(authority, &current)
+            .plugin_process_sandbox(authority, &current, &self.0.private_data)
             .await
             .map_err(api::Error::from)?
             .contains(&handle.sandbox)
@@ -260,22 +257,34 @@ impl Processes {
         if bytes.len() > 64 * 1024 {
             return Err(api::Error::Invalid("process input exceeds 64 KiB".into()));
         }
-        let host = self.host(authority)?;
-        let _gate = host.lock_admission().await;
-        self.get(authority, id)
-            .await?
-            .input
-            .try_send(Some(bytes))
-            .map_err(failed)
+        self.send_input(authority, id, Some(bytes)).await
     }
     pub async fn end_input(&self, authority: &Authority, id: &str) -> Result<(), api::Error> {
+        self.send_input(authority, id, None).await
+    }
+    async fn send_input(
+        &self,
+        authority: &Authority,
+        id: &str,
+        bytes: Option<Vec<u8>>,
+    ) -> Result<(), api::Error> {
+        let handle = self.get(authority, id).await?;
+        // Wait for backpressure without holding global execution admission.
+        let permit = tokio::select! {
+            biased;
+            _ = authority.cancellation.cancelled() => return Err(api::Error::Denied),
+            _ = handle.stop.cancelled() => return Err(api::Error::Denied),
+            permit = handle.input.reserve() => permit.map_err(failed)?,
+        };
         let host = self.host(authority)?;
-        let _gate = host.lock_admission().await;
-        self.get(authority, id)
-            .await?
-            .input
-            .try_send(None)
-            .map_err(failed)
+        let _gate = tokio::select! {
+            biased;
+            _ = authority.cancellation.cancelled() => return Err(api::Error::Denied),
+            gate = host.lock_admission() => gate,
+        };
+        self.get(authority, id).await?;
+        permit.send(bytes);
+        Ok(())
     }
     pub async fn next(&self, authority: &Authority, id: &str) -> Result<Option<Chunk>, api::Error> {
         let handle = self.get(authority, id).await?;
@@ -303,7 +312,7 @@ impl Processes {
         }
     }
     pub async fn close(&self, id: &str) -> Result<(), String> {
-        let Some(handle) = self.0.handles.lock().unwrap().remove(id) else {
+        let Some(handle) = self.0.handles.lock().unwrap().get(id).cloned() else {
             return Ok(());
         };
         handle.stop.cancel();
@@ -317,7 +326,9 @@ impl Processes {
             }
         })
         .await
-        .map_err(|_| "process cleanup unconfirmed")?
+        .map_err(|_| "process cleanup unconfirmed")??;
+        self.0.handles.lock().unwrap().remove(id);
+        Ok(())
     }
 }
 fn message(error: impl std::fmt::Display) -> String {

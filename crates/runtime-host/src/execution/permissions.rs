@@ -94,6 +94,28 @@ pub(crate) fn resolve(
     state_root: &Path,
     origin: maka_runtime::execution::WorkspaceOrigin,
 ) -> Result<(Sandbox, Sandbox), maka_sandbox::Error> {
+    resolve_inner(mode, cwd, state_root, origin, None)
+}
+
+/// Private data is captured from the owning Fiber's storage capability by the
+/// Host issuer; command input must never supply this additional authority.
+pub(crate) fn resolve_plugin(
+    mode: SandboxMode,
+    cwd: &Path,
+    state_root: &Path,
+    origin: maka_runtime::execution::WorkspaceOrigin,
+    private_data: &Path,
+) -> Result<(Sandbox, Sandbox), maka_sandbox::Error> {
+    resolve_inner(mode, cwd, state_root, origin, Some(private_data))
+}
+
+fn resolve_inner(
+    mode: SandboxMode,
+    cwd: &Path,
+    state_root: &Path,
+    origin: maka_runtime::execution::WorkspaceOrigin,
+    private_data: Option<&Path>,
+) -> Result<(Sandbox, Sandbox), maka_sandbox::Error> {
     if mode == SandboxMode::DangerFullAccess {
         return Ok((Sandbox::Disabled, Sandbox::Disabled));
     }
@@ -106,6 +128,16 @@ pub(crate) fn resolve(
     let (base, metadata) = maka_fs_tools::workspace::permissions::resolve(mode, cwd)?;
     // A more specific metadata rule must not reopen a protected Host directory.
     let mut state_rules = vec![Rule::subtree(&state_root, Access::Deny)];
+    let private_rule = private_data
+        .map(|path| {
+            maka_fs_tools::workspace::project::host_path(path)
+                .map(|path| Rule::subtree(path, Access::Write))
+                .map_err(|error| maka_sandbox::Error::Invalid(error.to_string()))
+        })
+        .transpose()?;
+    if let Some(rule) = &private_rule {
+        state_rules.push(rule.clone());
+    }
     // These are Host-allocated execution areas, not plugin data or authority.
     // Reopen only this execution's cwd, never the allocation parent or siblings.
     if origin == maka_runtime::execution::WorkspaceOrigin::Allocated
@@ -122,12 +154,102 @@ pub(crate) fn resolve(
         },
         network: Network::Allowed,
     })?;
-    Ok((base.intersect(&ceiling)?, ceiling))
+    let mut sandbox = base.intersect(&ceiling)?;
+    if let Some(rule) = private_rule {
+        sandbox = sandbox.with_grant(
+            &maka_sandbox::grant::Permissions {
+                filesystem: vec![rule],
+                network: Network::Denied,
+            },
+            &ceiling,
+        )?;
+    }
+    Ok((sandbox, ceiling))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn plugin_private_data_grants_only_the_owning_package_and_scope() {
+        use maka_plugins::{composition::Scope, fiber::Fiber, storage::Directories};
+        use maka_runtime::execution::WorkspaceOrigin;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let directories = Directories::open(&root).unwrap();
+        let mut owners = Vec::new();
+        let mut paths = Vec::new();
+        for (package, entry, scope) in [
+            ("example.installer", "first", Scope::Profile),
+            ("example.installer", "second", Scope::Profile),
+            ("example.neighbor", "first", Scope::Profile),
+            ("example.installer", "first", Scope::Session("other".into())),
+        ] {
+            let owner = Fiber::new(package, entry, scope).unwrap();
+            owner.begin_loading().unwrap();
+            let path = directories
+                .bind(owner.context())
+                .unwrap()
+                .read_only()
+                .await
+                .unwrap()
+                .location();
+            paths.push(std::path::PathBuf::from(
+                maka_fs_tools::workspace::project::host_path(&path).unwrap(),
+            ));
+            owners.push(owner);
+        }
+        assert_eq!(paths[0], paths[1]);
+        let own = &paths[0];
+        let workspace = tempfile::tempdir().unwrap();
+        let cwd = std::path::PathBuf::from(
+            maka_fs_tools::workspace::project::host_path(&workspace.path().canonicalize().unwrap())
+                .unwrap(),
+        );
+        for mode in [SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite] {
+            for cwd in [&cwd, own] {
+                let (Sandbox::Managed { filesystem, .. }, ceiling) =
+                    resolve_plugin(mode, cwd, &root, WorkspaceOrigin::Selected, own).unwrap()
+                else {
+                    unreachable!()
+                };
+                let policy = filesystem.compile().unwrap();
+                assert_eq!(policy.access(&own.join("bin/agent")), Access::Write);
+                for denied in [
+                    paths[2].join("secret"),
+                    paths[3].join("secret"),
+                    own.parent().unwrap().join("other/secret"),
+                    own.parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .join("configuration-rust.sqlite"),
+                ] {
+                    assert_eq!(policy.access(&denied), Access::Deny);
+                    assert!(
+                        !ceiling
+                            .permits(&maka_sandbox::grant::Permissions {
+                                filesystem: vec![Rule::exact(denied, Access::Write)],
+                                network: Network::Denied,
+                            })
+                            .unwrap()
+                    );
+                }
+                assert_eq!(
+                    policy.access(&cwd.join(".agents/instructions")),
+                    Access::Read
+                );
+            }
+        }
+        for owner in owners {
+            owner
+                .shutdown(tokio::time::Instant::now() + std::time::Duration::from_secs(2))
+                .await
+                .unwrap();
+        }
+    }
 
     #[cfg(unix)]
     #[test]

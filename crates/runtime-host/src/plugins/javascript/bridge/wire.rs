@@ -157,6 +157,8 @@ pub(super) enum Request {
     Batch(Batch),
     #[serde(rename = "data")]
     Data(maka_plugins::filesystem::entries::Operation),
+    #[serde(rename = "data.location")]
+    DataLocation,
     #[serde(rename = "execution.offerInteraction")]
     OfferInteraction(Execution<maka_plugins::execution::OfferInteraction>),
     #[serde(rename = "execution.interaction")]

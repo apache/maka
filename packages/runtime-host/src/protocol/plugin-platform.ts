@@ -454,10 +454,12 @@ function decodeExecutorInspection(value: unknown): PluginExecutorInspection {
   const capabilities = requireExactRecord(item.capabilities, 'Plugin Executor capabilities', [
     'thinking',
     'toolActivity',
+    'historyCopy',
   ]);
   if (
     typeof capabilities.thinking !== 'boolean' ||
-    typeof capabilities.toolActivity !== 'boolean'
+    typeof capabilities.toolActivity !== 'boolean' ||
+    typeof capabilities.historyCopy !== 'boolean'
   ) {
     throw invalidProtocolFrame('Invalid Plugin Executor capabilities');
   }
@@ -471,6 +473,7 @@ function decodeExecutorInspection(value: unknown): PluginExecutorInspection {
     capabilities: {
       thinking: capabilities.thinking,
       toolActivity: capabilities.toolActivity,
+      historyCopy: capabilities.historyCopy,
     },
   };
 }

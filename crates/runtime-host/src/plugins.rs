@@ -24,6 +24,7 @@ mod changes;
 mod client;
 mod effects;
 mod entrypoint;
+pub(crate) mod external_agent;
 pub(crate) mod goal;
 pub(crate) mod graph;
 pub(crate) mod host;

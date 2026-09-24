@@ -57,10 +57,12 @@ export interface PluginExecutorRequest {
   readonly quotes?: readonly QuoteRef[];
 }
 
-/** Optional presentation capabilities. Text output and terminal results are always supported. */
+/** Text output and terminal results are always supported. */
 export interface PluginExecutorCapabilities {
   readonly thinking?: boolean;
   readonly toolActivity?: boolean;
+  /** Can initialize a conversation from Host-owned copied history. */
+  readonly historyCopy?: boolean;
 }
 
 export type PluginExecutorOutputEvent =
@@ -394,13 +396,15 @@ function normalizeCapabilities(
     (!value ||
       typeof value !== 'object' ||
       (value.thinking !== undefined && typeof value.thinking !== 'boolean') ||
-      (value.toolActivity !== undefined && typeof value.toolActivity !== 'boolean'))
+      (value.toolActivity !== undefined && typeof value.toolActivity !== 'boolean') ||
+      (value.historyCopy !== undefined && typeof value.historyCopy !== 'boolean'))
   ) {
     throw new TypeError('Executor capabilities are invalid');
   }
   return Object.freeze({
     thinking: value?.thinking === true,
     toolActivity: value?.toolActivity === true,
+    historyCopy: value?.historyCopy === true,
   });
 }
 

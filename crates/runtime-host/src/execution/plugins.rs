@@ -102,6 +102,7 @@ impl Executions {
         &self,
         scope: &maka_plugins::call::Scope,
         input: &maka_plugins::process::Command,
+        private_data: &std::path::Path,
     ) -> Result<ProcessAdmission, Error> {
         use maka_plugins::authorization::Boundary;
         input
@@ -113,7 +114,9 @@ impl Executions {
             Boundary::Workspace { workspace, .. } => workspace.host_cwd.clone(),
             Boundary::Profile | Boundary::Directory { .. } => return Err(Error::Denied),
         };
-        let sandbox = self.plugin_process_sandbox(scope, &boundary).await?;
+        let sandbox = self
+            .plugin_process_sandbox(scope, &boundary, private_data)
+            .await?;
         let network = self
             .configuration
             .network_configuration()
@@ -172,6 +175,17 @@ impl Executions {
         &self,
         scope: &maka_plugins::call::Scope,
         boundary: &maka_plugins::authorization::Boundary,
+        private_data: &std::path::Path,
+    ) -> Result<maka_sandbox::Sandbox, Error> {
+        self.plugin_sandbox(scope, boundary, Some(private_data))
+            .await
+    }
+
+    async fn plugin_sandbox(
+        &self,
+        scope: &maka_plugins::call::Scope,
+        boundary: &maka_plugins::authorization::Boundary,
+        private_data: Option<&std::path::Path>,
     ) -> Result<maka_sandbox::Sandbox, Error> {
         use maka_plugins::authorization::Boundary;
         let (cwd, mode, origin) = match boundary {
@@ -196,10 +210,20 @@ impl Executions {
             _ => Vec::new(),
         };
         let state_root = self.paths.state_root.clone();
+        let private_data = private_data.map(std::path::Path::to_owned);
         tokio::task::spawn_blocking(move || {
-            let (mut sandbox, ceiling) =
-                super::permissions::resolve(mode, std::path::Path::new(&cwd), &state_root, origin)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
+            let cwd = std::path::Path::new(&cwd);
+            let (mut sandbox, ceiling) = match private_data {
+                Some(private_data) => super::permissions::resolve_plugin(
+                    mode,
+                    cwd,
+                    &state_root,
+                    origin,
+                    &private_data,
+                ),
+                None => super::permissions::resolve(mode, cwd, &state_root, origin),
+            }
+            .map_err(|error| Error::Invalid(error.to_string()))?;
             for grant in grants {
                 sandbox = sandbox
                     .with_grant(&grant.permissions, &ceiling)

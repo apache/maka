@@ -200,12 +200,23 @@ export interface ToolDefinition {
 export interface ExecutorDefinition {
   name: string;
   displayName: string;
-  capabilities?: { thinking?: boolean; toolActivity?: boolean; attachments?: boolean };
+  capabilities?: {
+    thinking?: boolean;
+    toolActivity?: boolean;
+    attachments?: boolean;
+    /** Can initialize from Host-owned copied history; opaque provider state is never copied. */
+    historyCopy?: boolean;
+  };
 }
 export type ExecutorChoice = {
   id: string;
   displayName: string;
-  capabilities: { thinking: boolean; toolActivity: boolean; attachments: boolean };
+  capabilities: {
+    thinking: boolean;
+    toolActivity: boolean;
+    attachments: boolean;
+    historyCopy: boolean;
+  };
 };
 export type ExecutorChoices = {
   revision: number;
@@ -427,7 +438,10 @@ export interface HostContext {
     restore(id: string): Promise<Executions & Registration>;
   };
   /** Package/scope-private files; the plugin owns file formats and recovery. */
-  readonly data: FileEntries;
+  readonly data: FileEntries & {
+    /** Host path for process arguments; observing it grants no filesystem authority. */
+    location(): Promise<string>;
+  };
   readonly credentials: Credentials;
   sleep(milliseconds: number): Promise<void>;
   /** Cleanup runs in reverse registration order. */
