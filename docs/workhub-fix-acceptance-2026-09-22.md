@@ -82,3 +82,9 @@ Validation: `npm run build:test`, Desktop typecheck, strict renderer architectur
 ## Latest main and protocol version follow-up — 2026-09-24
 
 Rebased onto `f1f259b67`. Main now uses epoch 184 for unified custom providers and 185 for next-prompt suggestions. This PR's interaction history and transcript invalidation boundaries are therefore 186 and 187. Root package version remains `0.2.0`, matching main. Regenerated surface inventory covers 297 files.
+
+## ACP CI race follow-up — 2026-09-24
+
+CI run 36007932149 failed in the ACP child-process form test: `session.transcript.page` returned `not_found` after settlement retired the subscription but before the Client consumed its close frame. A deterministic prompt-transcript test reproduced that response ordering. The CLI now retries this specific operation/error through its existing bounded subscription recovery policy and rereads from the original prompt admission cut.
+
+The new regression failed before the fix. After the fix, all 91 targeted transcript/driver/ACP tests passed, followed by the complete CLI test suite with no failures. CLI build, changed-file Biome, diff whitespace and protocol checks passed; epoch remains 187.

@@ -32,6 +32,7 @@ import {
 } from '@maka/runtime-host/adapter';
 import {
   isRuntimeHostReconnectingConnection,
+  RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
   RuntimeHostSubscriptionError,
   type RuntimeHostConnection,
@@ -800,6 +801,11 @@ export class RuntimeHostSessionChannel {
 
   #canRecover(error: unknown): boolean {
     if (!isRuntimeHostReconnectingConnection(this.#connection)) return false;
+    // The Host can retire a transcript subscription before its close frame is
+    // consumed. Recover the invalidated read through the same bounded policy.
+    if (error instanceof RuntimeHostOperationError) {
+      return error.operation === 'session.transcript.page' && error.code === 'not_found';
+    }
     if (error instanceof RuntimeHostRequestInterruptedError) {
       return error.reason === 'connection_lost';
     }
