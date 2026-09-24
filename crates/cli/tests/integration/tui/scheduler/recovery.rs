@@ -71,7 +71,7 @@ fn terminal_creation_reopens_queries_and_retries_without_duplicating_or_resurrec
             drop(tui);
             let original = proxy.requests()[0]["input"].clone();
             let operation = original["revision"].as_str().unwrap();
-            let receipt = remote(&client, "terminal", json!({"kind":"recover","route":{"operation":operation}})).await;
+            let receipt = remote(&client, "terminal", json!({"kind":"recover","route":{"operation":operation},"locale":"en"})).await;
             if accepted {
                 assert_eq!(receipt["kind"], "applied");
                 remote(&client, "request", json!({"kind":"mutate","mutation":{"kind":"delete","taskId":receipt["route"]["task"]}})).await;

@@ -47,7 +47,8 @@ pub(crate) fn draw(
     editor: &mut Editor,
     colors: Palette,
 ) {
-    let label = Rect::new(rect.x, rect.y, width.min(rect.width), 1);
+    // A multi-line field keeps its label on the first row, beside the text.
+    let label = Rect::new(rect.x, rect.y, width.min(rect.width), rect.height);
     frame.buffer_mut().set_style(label, colors.base());
     frame.render_widget(
         Paragraph::new(row.label).style(Style::default().fg(if row.focused {
@@ -61,7 +62,7 @@ pub(crate) fn draw(
         rect.x + label.width,
         rect.y,
         rect.width.saturating_sub(label.width),
-        1,
+        rect.height,
     );
     if row.masked {
         editor.draw_masked(frame, value, row.focused, colors);

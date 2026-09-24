@@ -254,7 +254,7 @@ impl LostReply {
                                 if operation == "plugin.remote" {
                                     assert_eq!(saved["root"], discovery.root_id);
                                     assert_eq!(saved["extension"]["pending"]["input"], value["input"]["input"]);
-                                    assert_eq!(saved["extension"]["view"]["target"], value["input"]["target"]);
+                                    assert_eq!(saved["extension"]["entry"]["target"], value["input"]["target"]);
                                 } else {
                                     let original = &saved["unresolved"][0];
                                     assert_eq!(original["root_id"], discovery.root_id);

@@ -17,93 +17,21 @@
  * under the License.
  */
 
-use super::{Text, VERSION};
-use crate::Error;
-use serde::{Deserialize, Serialize};
+//! A simple form page for presenters that need no more: prose, links to
+//! other routes, fields and actions, laid out the standard way. It renders
+//! into a [`View`]; the wire only knows views.
+
+use super::{
+    Text, VERSION,
+    view::{self, Node, Role, Target, Tone, View, build},
+};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
 
-/// Finite documents share Remote's payload budget; no executable expressions or nested widgets.
-pub const MAX_BYTES: usize = 64 * 1024;
+pub use super::view::{Control, Request};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Page {
-    pub version: u32,
-    pub title: Text,
-    pub revision: String,
-    pub body: String,
-    pub rows: Vec<Row>,
-    pub fields: Vec<Field>,
-    pub actions: Vec<Action>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Row {
-    pub id: String,
-    pub title: Text,
-    pub description: String,
-    pub route: Value,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Field {
-    pub id: String,
-    pub label: Text,
-    pub enabled: bool,
-    pub control: Control,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Control {
-    Toggle {
-        value: bool,
-    },
-    Text {
-        value: String,
-        max_bytes: usize,
-        multiline: bool,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Action {
-    pub id: String,
-    pub label: Text,
-    pub enabled: bool,
-    /// Only these fields are submitted; unrelated drafts are not implicit input.
-    pub fields: Vec<String>,
-    /// Opaque read-only recovery route. Declares that replaying this exact
-    /// submission is idempotent, including after deletion of its result.
-    pub recovery: Option<Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Request {
-    Recover {
-        route: Value,
-    },
-    Read {
-        route: Value,
-    },
-    Submit {
-        route: Value,
-        revision: String,
-        action: String,
-        fields: BTreeMap<String, Value>,
-        grant: Option<crate::authorization::Id>,
-    },
-}
-
-/// A successful write is acknowledged independently of the following page read.
-/// Failure to refresh cannot turn a committed write into a retryable submission.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// What a page presenter answers; [`Reply::view`] turns it into the wire
+/// reply in the caller's locale.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
     /// No committed receipt was observed; this does not prove non-admission.
     Unrecorded,
@@ -122,212 +50,162 @@ pub enum Reply {
         request: crate::authorization::Request,
     },
 }
+impl Reply {
+    pub fn view(self, locale: &str) -> view::Reply {
+        match self {
+            Self::Unrecorded => view::Reply::Unrecorded,
+            Self::Page { page } => view::Reply::View {
+                view: page.view(locale),
+            },
+            Self::Applied { route } => view::Reply::Applied { route },
+            Self::Conflict => view::Reply::Conflict,
+            Self::Rejected { message } => view::Reply::Rejected {
+                message: message.resolve(locale).into(),
+            },
+            Self::Consent { request } => view::Reply::Consent { request },
+        }
+    }
+}
 
-fn invalid() -> Error {
-    Error::Invalid("Invalid terminal page".into())
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Page {
+    pub title: Text,
+    pub revision: String,
+    pub body: String,
+    pub rows: Vec<Row>,
+    pub fields: Vec<Field>,
+    pub actions: Vec<Action>,
 }
-fn bounded(value: &impl Serialize, max: usize) -> Result<(), Error> {
-    if serde_json::to_vec(value).map_err(|_| invalid())?.len() > max {
-        return Err(invalid());
-    }
-    Ok(())
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub id: String,
+    pub title: Text,
+    pub description: String,
+    pub route: Value,
 }
-fn identifier(value: &str) -> Result<(), Error> {
-    if value.is_empty() || value.len() > 256 || !safe(value, false) {
-        return Err(invalid());
-    }
-    Ok(())
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Field {
+    pub id: String,
+    pub label: Text,
+    pub enabled: bool,
+    pub control: Control,
 }
-fn safe(value: &str, multiline: bool) -> bool {
-    !value.chars().any(|c| {
-        (c.is_control() && !(multiline && matches!(c, '\n' | '\t')))
-            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-    })
-}
-fn route(value: &Value) -> Result<(), Error> {
-    fn count(value: &Value, depth: usize, nodes: &mut usize) -> Result<(), Error> {
-        *nodes += 1;
-        if depth > 8 || *nodes > 128 {
-            return Err(invalid());
-        }
-        match value {
-            Value::Array(items) => {
-                for item in items {
-                    count(item, depth + 1, nodes)?;
-                }
-            }
-            Value::Object(items) => {
-                for (key, item) in items {
-                    if !safe(key, false) {
-                        return Err(invalid());
-                    }
-                    count(item, depth + 1, nodes)?;
-                }
-            }
-            Value::String(text) if !safe(text, false) => return Err(invalid()),
-            _ => {}
-        }
-        Ok(())
-    }
-    count(value, 0, &mut 0)?;
-    bounded(value, 8192)
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Action {
+    pub id: String,
+    pub label: Text,
+    pub enabled: bool,
+    /// Only these fields are submitted; unrelated drafts are not implicit input.
+    pub fields: Vec<String>,
+    /// Opaque read-only recovery route; see [`view::Action::recovery`].
+    pub recovery: Option<Value>,
 }
 
 impl Page {
-    pub fn validate(&self) -> Result<(), Error> {
-        if self.version != VERSION
-            || self.rows.len() > 64
-            || self.fields.len() > 16
-            || self.actions.len() > 16
-            || self.body.len() > 32768
-            || !safe(&self.body, true)
-        {
-            return Err(invalid());
+    /// The page as a view in `locale`: its prose, then its rows, fields and
+    /// the actions in one row, the first of them primary.
+    pub fn view(self, locale: &str) -> View {
+        let mut children = vec![];
+        if !self.body.is_empty() {
+            children.push(Node::Column {
+                key: "body".into(),
+                gap: 0,
+                children: self
+                    .body
+                    .split('\n')
+                    .enumerate()
+                    .map(|(index, line)| build::text(format!("line{index}"), line, Tone::Normal))
+                    .collect(),
+            });
         }
-        self.title.validate()?;
-        identifier(&self.revision)?;
-        let mut ids = BTreeSet::new();
-        for row in &self.rows {
-            identifier(&row.id)?;
-            if !ids.insert(&row.id)
-                || row.description.len() > 1024
-                || !safe(&row.description, false)
-            {
-                return Err(invalid());
-            }
-            row.title.validate()?;
-            route(&row.route)?;
+        if !self.rows.is_empty() {
+            children.push(Node::Column {
+                key: "rows".into(),
+                gap: 0,
+                children: self
+                    .rows
+                    .iter()
+                    .map(|row| Node::Item {
+                        key: row.id.clone(),
+                        title: row.title.resolve(locale).into(),
+                        detail: row.description.clone(),
+                        meta: String::new(),
+                        tone: Tone::Normal,
+                        current: false,
+                        target: Target::Route {
+                            route: row.route.clone(),
+                        },
+                    })
+                    .collect(),
+            });
         }
-        let mut fields = BTreeSet::new();
-        for field in &self.fields {
-            identifier(&field.id)?;
-            if !fields.insert(&field.id) {
-                return Err(invalid());
-            }
-            field.label.validate()?;
-            if let Control::Text {
-                value,
-                max_bytes,
-                multiline,
-            } = &field.control
-                && (*max_bytes == 0
-                    || *max_bytes > 16384
-                    || value.len() > *max_bytes
-                    || !safe(value, *multiline))
-            {
-                return Err(invalid());
-            }
-        }
-        let mut actions = BTreeSet::new();
-        for action in &self.actions {
-            identifier(&action.id)?;
-            action.label.validate()?;
-            if let Some(value) = &action.recovery {
-                // null represents absence on the wire, not a replay promise.
-                if value.is_null() {
-                    return Err(invalid());
-                }
-                route(value)?;
-            }
-            let mut used = BTreeSet::new();
-            if !actions.insert(&action.id)
-                || action
+        if !self.fields.is_empty() {
+            children.push(Node::Column {
+                key: "fields".into(),
+                gap: 0,
+                children: self
                     .fields
                     .iter()
-                    .any(|id| !fields.contains(id) || !used.insert(id))
-            {
-                return Err(invalid());
-            }
+                    .map(|field| {
+                        build::input(
+                            field.id.clone(),
+                            field.id.clone(),
+                            field.label.resolve(locale),
+                        )
+                    })
+                    .collect(),
+            });
         }
-        bounded(self, MAX_BYTES - 64)
-    }
-
-    /// A presentation check, not authorization: the plugin must validate again.
-    pub fn submission(
-        &self,
-        route: Value,
-        action: &str,
-        fields: BTreeMap<String, Value>,
-    ) -> Result<Request, Error> {
-        self.validate()?;
-        let action = self
-            .actions
-            .iter()
-            .find(|item| item.id == action && item.enabled)
-            .ok_or_else(invalid)?;
-        if action.fields.len() != fields.len() {
-            return Err(invalid());
+        if !self.actions.is_empty() {
+            children.push(build::row(
+                "actions",
+                self.actions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, action)| {
+                        build::button(
+                            action.id.clone(),
+                            action.id.clone(),
+                            if index == 0 {
+                                Role::Primary
+                            } else {
+                                Role::Normal
+                            },
+                        )
+                    })
+                    .collect(),
+            ));
         }
-        for id in &action.fields {
-            let field = self
+        View {
+            version: VERSION,
+            title: self.title.resolve(locale).into(),
+            revision: self.revision,
+            fields: self
                 .fields
-                .iter()
-                .find(|field| &field.id == id && field.enabled)
-                .ok_or_else(invalid)?;
-            let value = fields.get(id).ok_or_else(invalid)?;
-            match &field.control {
-                Control::Toggle { .. } if value.is_boolean() => {}
-                Control::Text {
-                    max_bytes,
-                    multiline,
-                    ..
-                } if value
-                    .as_str()
-                    .is_some_and(|text| text.len() <= *max_bytes && safe(text, *multiline)) => {}
-                _ => return Err(invalid()),
-            }
+                .into_iter()
+                .map(|field| view::Field {
+                    id: field.id,
+                    enabled: field.enabled,
+                    control: field.control,
+                })
+                .collect(),
+            actions: self
+                .actions
+                .into_iter()
+                .map(|action| view::Action {
+                    id: action.id,
+                    label: action.label.resolve(locale).into(),
+                    enabled: action.enabled,
+                    fields: action.fields,
+                    recovery: action.recovery,
+                    confirm: None,
+                })
+                .collect(),
+            root: build::column("page", children),
         }
-        let request = Request::Submit {
-            route,
-            revision: self.revision.clone(),
-            action: action.id.clone(),
-            fields,
-            grant: None,
-        };
-        request.validate()?;
-        Ok(request)
-    }
-}
-impl Request {
-    pub fn validate(&self) -> Result<(), Error> {
-        match self {
-            Self::Read { route: value } | Self::Recover { route: value } => route(value)?,
-            Self::Submit {
-                route: value,
-                revision,
-                action,
-                fields,
-                ..
-            } => {
-                route(value)?;
-                identifier(revision)?;
-                identifier(action)?;
-                if fields.len() > 16 {
-                    return Err(invalid());
-                }
-                for (id, value) in fields {
-                    identifier(id)?;
-                    match value {
-                        Value::Bool(_) => {}
-                        Value::String(text) if text.len() <= 16384 && safe(text, true) => {}
-                        _ => return Err(invalid()),
-                    }
-                }
-            }
-        }
-        bounded(self, MAX_BYTES)
-    }
-}
-impl Reply {
-    pub fn validate(&self) -> Result<(), Error> {
-        match self {
-            Self::Page { page } => page.validate()?,
-            Self::Applied { route: value } => route(value)?,
-            Self::Rejected { message } => message.validate()?,
-            Self::Conflict | Self::Unrecorded => {}
-            Self::Consent { request } => request.validate()?,
-        }
-        bounded(self, MAX_BYTES)
     }
 }
 
@@ -336,18 +214,23 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn page() -> Page {
-        Page {
-            version: VERSION,
-            title: Text::plain("Preferences"),
+    #[test]
+    fn a_page_renders_a_valid_localized_view_that_submits_its_fields() {
+        let page = Page {
+            title: Text::localized("Preferences", "偏好", "偏好"),
             revision: "r1".into(),
-            body: String::new(),
-            rows: vec![],
+            body: "First line\nSecond".into(),
+            rows: vec![Row {
+                id: "detail".into(),
+                title: Text::plain("Details"),
+                description: "More".into(),
+                route: json!({"page":"detail"}),
+            }],
             fields: vec![Field {
                 id: "enabled".into(),
-                label: Text::plain("Enabled"),
+                label: Text::localized("Enabled", "启用", "啟用"),
                 enabled: true,
-                control: Control::Toggle { value: true },
+                control: view::Control::Toggle { value: true },
             }],
             actions: vec![Action {
                 id: "save".into(),
@@ -356,56 +239,16 @@ mod tests {
                 fields: vec!["enabled".into()],
                 recovery: None,
             }],
-        }
-    }
-    #[test]
-    fn page_contract_rejects_ambiguous_controls_unsafe_content_and_unbounded_routes() {
-        let valid = page();
-        valid.validate().unwrap();
-        let fields = BTreeMap::from([("enabled".into(), json!(false))]);
-        let request = valid
-            .submission(json!(null), "save", fields.clone())
-            .unwrap();
-        request.validate().unwrap();
-        for variant in 0..9 {
-            let mut invalid = valid.clone();
-            match variant {
-                0 => invalid.version += 1,
-                1 => invalid.fields.push(invalid.fields[0].clone()),
-                2 => invalid.actions[0].fields.push("absent".into()),
-                3 => invalid.body = "\u{001b}[2J".into(),
-                4 => invalid.body = "\u{202e}spoof".into(),
-                5 => invalid.body = "x".repeat(32769),
-                6 => invalid.actions[0].recovery = Some(Value::Null),
-                7 => invalid.actions[0].recovery = Some(json!(vec![Value::Null; 129])),
-                _ => invalid.actions.push(invalid.actions[0].clone()),
-            }
-            assert!(invalid.validate().is_err(), "{variant}");
-        }
-        assert!(valid.submission(json!(null), "other", fields).is_err());
-        assert!(
-            valid
-                .submission(
-                    json!(null),
-                    "save",
-                    BTreeMap::from([("enabled".into(), json!("false"))])
-                )
-                .is_err()
-        );
-        let mut deep = json!(null);
-        for _ in 0..10 {
-            deep = json!([deep]);
-        }
-        assert!(Request::Read { route: deep }.validate().is_err());
-        assert!(
-            Request::Read {
-                route: json!(vec![Value::Null; 129])
-            }
-            .validate()
-            .is_err()
-        );
-        let mut wire = serde_json::to_value(valid).unwrap();
-        wire["fields"][0]["control"]["kind"] = json!("execute");
-        assert!(serde_json::from_value::<Page>(wire).is_err());
+        };
+        let view = page.view("zh-CN");
+        view.validate().unwrap();
+        assert_eq!(view.title, "偏好");
+        view.submission(
+            json!(null),
+            "save",
+            [("enabled".to_string(), json!(false))].into(),
+            "zh-CN".into(),
+        )
+        .unwrap();
     }
 }

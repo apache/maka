@@ -36,6 +36,7 @@ use ratatui::{
 pub(crate) enum Overlay {
     Shutdown,
     Consent,
+    Confirm,
     Theme,
     Skills,
     Attachments,
@@ -62,6 +63,7 @@ impl Overlay {
         match self {
             Self::Shutdown => Action::CancelQuit,
             Self::Consent => Action::Extension(extensions::Command::DismissConsent),
+            Self::Confirm => Action::Extension(extensions::Command::CancelConfirm),
             Self::Theme => Action::Theme(crate::theme::editor::Command::Close),
             Self::Skills => Action::Skills(skills::Command::Close),
             Self::Attachments => Action::Attachment(attachments::Command::Close),
@@ -85,6 +87,7 @@ impl App {
         [
             (Shutdown, self.shutdown.prompt.is_some()),
             (Consent, self.extensions.consent_visible()),
+            (Confirm, self.extensions.confirm_visible()),
             (Theme, self.theme.editor.is_some()),
             (Skills, self.skills.dialog.is_some()),
             (Attachments, self.attachments.dialog.is_some()),
@@ -109,6 +112,7 @@ impl App {
         match overlay {
             Overlay::Shutdown => crate::shutdown::sheet(self),
             Overlay::Consent => crate::pages::extensions::consent_sheet(self),
+            Overlay::Confirm => crate::pages::extensions::confirm_sheet(self),
             Overlay::Reference | Overlay::Management => crate::pages::manage::sheet(self),
             Overlay::QueueEdit => crate::pages::queue::edit::sheet(self),
             Overlay::Resume => crate::pages::resume::sheet(self),

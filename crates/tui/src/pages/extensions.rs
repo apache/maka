@@ -20,21 +20,24 @@
 mod consent;
 mod drafts;
 mod saved;
+mod tree;
 pub use saved::Checkpoint;
 pub(crate) mod io;
 mod view;
-pub(crate) use consent::sheet as consent_sheet;
+pub(crate) use consent::{confirm as confirm_sheet, sheet as consent_sheet};
 pub use io::{Output, execute};
+pub use tree::Intent;
 pub use view::draw;
 
 use crate::{
     app::{Action, App, ConnectionState, Focus},
     editor::Editor,
     navigation::Route,
+    ui,
 };
 use maka_plugins::terminal_ui::{
     Context,
-    page::{Control, Page, Reply, Request as Input},
+    view::{Control, Field, Reply, Request as Input, View},
 };
 use maka_protocol::plugin::TerminalViewProjection;
 use serde_json::Value;
@@ -44,9 +47,11 @@ use std::collections::{BTreeMap, VecDeque};
 pub enum Command {
     Open,
     Choose(usize),
-    Row(usize),
-    Field(usize),
-    Submit(usize),
+    /// What a control of the open view asks for.
+    View(Intent),
+    /// Submits the action its confirmation sheet asked about.
+    Confirm,
+    CancelConfirm,
     ApproveConsent,
     Reconcile,
     Retry,
@@ -67,23 +72,23 @@ impl Command {
         match self {
             Self::Open | Self::Choose(_) => "route-extensions",
             Self::Back => "extensions-back",
-            Self::Refresh => "command-refresh",
+            Self::Refresh => "extensions-refresh",
             Self::Discard => "extensions-discard",
             Self::ConfirmDiscard => "extensions-forget",
-            Self::CancelDiscard => "session-cancel",
+            Self::CancelDiscard
+            | Self::CancelDraft
+            | Self::DismissConsent
+            | Self::CancelConfirm => "session-cancel",
             Self::Next => "sessions-next",
-            Self::Row(_) => "extensions-open",
-            Self::Field(_) => "extensions-edit",
-            Self::Submit(_) => "extensions-save",
+            Self::View(_) => "extensions-open",
+            Self::Confirm => "extensions-save",
             Self::ApproveConsent => "extensions-authorize",
             Self::Reconcile => "extensions-reconcile",
             Self::Retry => "extensions-retry",
             Self::ResumeDraft => "extensions-resume-draft",
             Self::ApplyDraft => "extensions-continue-editing",
-            Self::CancelDraft => "session-cancel",
             Self::DraftChoice(_, true) => "extensions-use-draft",
             Self::DraftChoice(_, false) => "extensions-use-current",
-            Self::DismissConsent => "session-cancel",
         }
     }
 }
@@ -101,7 +106,7 @@ impl Request {
     pub fn needs_checkpoint(&self) -> bool {
         matches!(
             self.work,
-            Work::Page {
+            Work::Call {
                 input: Input::Submit { .. },
                 ..
             } | Work::Authorize { .. }
@@ -111,36 +116,40 @@ impl Request {
 #[derive(Clone)]
 pub(super) enum Work {
     Rebind {
-        view: Box<TerminalViewProjection>,
+        entry: Box<TerminalViewProjection>,
         input: Input,
     },
     Directory(Option<String>),
-    Page {
-        view: Box<TerminalViewProjection>,
+    Call {
+        entry: Box<TerminalViewProjection>,
         input: Input,
     },
     Authorize {
-        view: Box<TerminalViewProjection>,
+        entry: Box<TerminalViewProjection>,
         input: Input,
         proposal: maka_plugins::authorization::Request,
     },
 }
 pub(super) enum Message {
     Local(&'static str),
-    Remote(maka_plugins::terminal_ui::Text),
+    Remote(String),
 }
 
 #[derive(Default)]
 pub struct State {
     generation: u64,
     session: Option<String>,
+    /// Plugins localize their own text; every request names the language.
+    locale: String,
     pub(super) directory: Vec<TerminalViewProjection>,
     next: Option<String>,
     loaded: bool,
-    pub(super) view: Option<TerminalViewProjection>,
-    pub(super) page: Option<Page>,
+    /// The directory entry whose view is open.
+    pub(super) entry: Option<TerminalViewProjection>,
+    pub(super) view: Option<View>,
     route: Value,
-    history: VecDeque<Value>,
+    /// Routes Back returns to, each with the title it showed.
+    history: VecDeque<(Value, String)>,
     pub(super) drafts: BTreeMap<String, Value>,
     pub(super) editors: BTreeMap<String, Editor>,
     pending: Option<Work>,
@@ -148,6 +157,8 @@ pub struct State {
     saving: bool,
     unrecorded: bool,
     confirm_discard: bool,
+    /// An action waiting on its confirmation sheet.
+    confirming: Option<String>,
     review: Option<drafts::Review>,
     consent: Option<consent::Consent>,
     pub(super) busy: bool,
@@ -155,29 +166,39 @@ pub struct State {
     pub(super) blocked: bool,
     pub(super) applied: Option<String>,
     pub(super) message: Option<Message>,
-    pub(super) selected: usize,
-    pub(super) top: usize,
-    pub(super) reveal: bool,
-    pub(super) area: Option<ratatui::layout::Rect>,
+    pub surface: ui::Surface<Command>,
+    /// Where the last frame put each text field.
+    pub(super) wells: Vec<tree::Well>,
 }
 impl State {
+    pub fn new(locale: &str) -> Self {
+        Self {
+            locale: locale.into(),
+            ..Self::default()
+        }
+    }
     pub fn consent_visible(&self) -> bool {
         self.consent.is_some()
     }
-    fn dirty_field(&self, field: &maka_plugins::terminal_ui::page::Field) -> bool {
-        let value = match &field.control {
-            Control::Toggle { value } => Value::Bool(*value),
-            Control::Text { value, .. } => Value::String(value.clone()),
-        };
-        self.drafts.get(&field.id) != Some(&value)
+    /// The confirmation sheet shows only while its action still asks for it.
+    pub fn confirm_visible(&self) -> bool {
+        self.confirmation().is_some()
+    }
+    fn confirmation(&self) -> Option<(&maka_plugins::terminal_ui::view::Action, &str)> {
+        let id = self.confirming.as_deref()?;
+        let action = self.view.as_ref()?.action(id)?;
+        action.confirm.as_ref()?;
+        Some((action, id))
+    }
+    fn dirty_field(&self, field: &Field) -> bool {
+        self.drafts.get(&field.id) != Some(&drafts::value(&field.control))
     }
     fn dirty(&self) -> bool {
-        self.page
+        self.view
             .as_ref()
-            .is_some_and(|page| page.fields.iter().any(|field| self.dirty_field(field)))
+            .is_some_and(|view| view.fields.iter().any(|field| self.dirty_field(field)))
     }
     pub fn invalidate_geometry(&mut self) {
-        self.area = None;
         if let Some(consent) = &mut self.consent {
             consent.rendered = false;
         }
@@ -189,12 +210,13 @@ impl State {
         self.saving = false;
         self.unrecorded = false;
         self.confirm_discard = false;
+        self.confirming = None;
         self.review = None;
         self.consent = None;
         self.generation += 1;
         self.pending = None;
         self.busy = false;
-        self.blocked = self.view.is_some();
+        self.blocked = self.entry.is_some();
         self.loaded = false;
         self.directory.clear();
         self.next = None;
@@ -202,7 +224,7 @@ impl State {
         self.message = self.blocked.then_some(Message::Local(
             if self.writing || self.unresolved.is_some() {
                 "extensions-unknown"
-            } else if self.page.is_some() {
+            } else if self.view.is_some() {
                 "extensions-restored"
             } else {
                 "extensions-disconnected"
@@ -211,113 +233,179 @@ impl State {
         self.writing = false;
     }
     fn read(&mut self) {
-        self.pending = self.view.clone().map(|view| Work::Page {
-            view: Box::new(view),
+        self.pending = self.entry.clone().map(|entry| Work::Call {
+            entry: Box::new(entry),
             input: Input::Read {
                 route: self.route.clone(),
+                locale: self.locale.clone(),
             },
         });
-        self.selected = 0;
-        self.top = 0;
-        self.reveal = true;
-        self.area = None;
     }
-    fn install(&mut self, page: Page) {
+    /// Another place: a fresh surface starts at its top, focus on its first control.
+    fn arrive(&mut self) {
+        self.surface = ui::Surface::default();
+        self.surface.start_at("extensions/body/");
+        self.wells.clear();
+    }
+    fn install(&mut self, view: View) {
         self.drafts.clear();
         self.editors.clear();
-        for field in &page.fields {
-            let value = match &field.control {
-                Control::Toggle { value } => Value::Bool(*value),
-                Control::Text {
-                    value, max_bytes, ..
-                } => {
-                    let mut editor = Editor::bounded(*max_bytes, "extensions-field-limit");
-                    editor.insert(value);
-                    editor.clear_history();
-                    self.editors.insert(field.id.clone(), editor);
-                    Value::String(value.clone())
-                }
-            };
-            self.drafts.insert(field.id.clone(), value);
+        for field in &view.fields {
+            if let Control::Text {
+                value, max_bytes, ..
+            } = &field.control
+            {
+                let mut editor = Editor::bounded(*max_bytes, "extensions-field-limit");
+                editor.insert(value);
+                editor.clear_history();
+                self.editors.insert(field.id.clone(), editor);
+            }
+            self.drafts
+                .insert(field.id.clone(), drafts::value(&field.control));
         }
-        self.page = Some(page);
-        self.selected = 0;
-        self.top = 0;
-        self.reveal = true;
+        self.view = Some(view);
         self.blocked = false;
     }
-    fn controls(&self) -> usize {
-        if let Some(review) = &self.review {
-            return review.conflicts.len() * 2;
+    /// Whether the open view offers this control at all. Requests in flight
+    /// are gated when a command runs, never by disabling what has focus.
+    fn offered(&self, intent: &Intent) -> bool {
+        let Some(view) = &self.view else {
+            return false;
+        };
+        if self.blocked || self.review.is_some() {
+            return false;
         }
-        self.page.as_ref().map_or(self.directory.len(), |page| {
-            page.rows.len() + page.fields.len() + page.actions.len()
-        })
-    }
-    fn selected_command(&self) -> Option<Command> {
-        if self.review.is_some() {
-            return (self.selected < self.controls()).then_some(Command::DraftChoice(
-                self.selected / 2,
-                self.selected.is_multiple_of(2),
-            ));
-        }
-        if let Some(page) = &self.page {
-            let index = self.selected;
-            if index < page.rows.len() {
-                Some(Command::Row(index))
-            } else if index < page.rows.len() + page.fields.len() {
-                Some(Command::Field(index - page.rows.len()))
-            } else {
-                Some(Command::Submit(index - page.rows.len() - page.fields.len()))
+        match intent {
+            // Leaving would drop the drafts; they are saved or discarded first.
+            Intent::Navigate(_) => !self.dirty(),
+            Intent::Submit(id) => view.action(id).is_some_and(|action| {
+                action.enabled
+                    && view
+                        .fields
+                        .iter()
+                        .all(|field| !self.dirty_field(field) || action.fields.contains(&field.id))
+            }),
+            Intent::Toggle(id) | Intent::Pick(id, _) | Intent::Commit(id) => {
+                view.field(id).is_some_and(|field| field.enabled)
             }
-        } else {
-            Some(Command::Choose(self.selected))
         }
     }
-}
-
-impl App {
-    pub fn extensions_actions(&self) -> Vec<Action> {
-        let mut commands = Vec::new();
-        if self.extensions.review.is_some() {
-            return [Command::CancelDraft, Command::ApplyDraft]
-                .into_iter()
-                .map(Action::Extension)
-                .collect();
+    /// What Return in a one-line field submits: the primary button that
+    /// sends the field, else the only action that does.
+    fn default_action(&self, field: &str) -> Option<String> {
+        let view = self.view.as_ref()?;
+        let sends = |id: &str| {
+            view.action(id)
+                .is_some_and(|action| action.fields.iter().any(|item| item == field))
+        };
+        if let Some(id) = tree::primary_actions(view).into_iter().find(|id| sends(id)) {
+            return Some(id.to_owned());
         }
-        if self.extensions.confirm_discard {
-            return [Command::CancelDiscard, Command::ConfirmDiscard]
-                .into_iter()
-                .map(Action::Extension)
-                .collect();
+        let mut senders = view.actions.iter().filter(|action| sends(&action.id));
+        let only = senders.next()?;
+        senders.next().is_none().then(|| only.id.clone())
+    }
+    fn navigate(&mut self, route: Value) {
+        if self.history.len() == 64 {
+            self.history.pop_front();
         }
+        let title = self
+            .view
+            .as_ref()
+            .map_or_else(String::new, |view| view.title.clone());
+        self.history
+            .push_back((std::mem::replace(&mut self.route, route), title));
+        self.arrive();
+        self.read();
+    }
+    fn submit(&mut self, id: &str) {
+        let Some(view) = &self.view else {
+            return;
+        };
+        let Some(action) = view.action(id) else {
+            return;
+        };
+        let fields = action
+            .fields
+            .iter()
+            .filter_map(|id| self.drafts.get(id).map(|value| (id.clone(), value.clone())))
+            .collect();
+        match view.submission(self.route.clone(), id, fields, self.locale.clone()) {
+            Ok(input) => {
+                self.pending = self.entry.clone().map(|entry| Work::Call {
+                    entry: Box::new(entry),
+                    input,
+                })
+            }
+            Err(_) => self.message = Some(Message::Local("extensions-invalid-fields")),
+        }
+    }
+    fn directory(&mut self) {
+        self.view = None;
+        self.entry = None;
+        self.directory.clear();
+        self.next = None;
+        self.loaded = false;
+        self.drafts.clear();
+        self.editors.clear();
+        self.history.clear();
+        self.arrive();
+        self.pending = Some(Work::Directory(None));
+    }
+    /// Recovery and draft commands, shown beside the message that explains them.
+    fn remedies(&self) -> Vec<Command> {
+        if self.review.is_some() {
+            return vec![Command::CancelDraft, Command::ApplyDraft];
+        }
+        if self.confirm_discard {
+            return vec![Command::CancelDiscard, Command::ConfirmDiscard];
+        }
+        let mut commands = vec![];
         if self
-            .extensions
             .unresolved
             .as_ref()
             .is_some_and(|pending| pending.recovery.is_some())
         {
             commands.push(Command::Reconcile);
-            if self.extensions.unrecorded {
+            if self.unrecorded {
                 commands.push(Command::Retry);
             }
         }
-        if self.extensions.view.is_some() {
-            commands.push(Command::Back);
-        }
-        if self.extensions.blocked
-            && self.extensions.page.is_some()
-            && self.extensions.unresolved.is_none()
-        {
+        if self.blocked && self.unresolved.is_none() && self.view.is_some() {
             commands.push(Command::ResumeDraft);
         }
-        if self.extensions.dirty() || self.extensions.blocked {
-            commands.push(Command::Discard);
-        } else {
-            commands.push(Command::Refresh);
-        }
-        if self.extensions.view.is_none() && self.extensions.next.is_some() {
-            commands.push(Command::Next);
+        commands
+    }
+    /// What the page's title bar names: the open view, else its entry.
+    pub fn title(&self, locale: &str) -> Option<String> {
+        self.view
+            .as_ref()
+            .map(|view| view.title.clone())
+            .or_else(|| {
+                self.entry
+                    .as_ref()
+                    .map(|entry| entry.descriptor.title.resolve(locale).to_owned())
+            })
+    }
+}
+
+impl App {
+    /// Every command the page offers now, for the palette.
+    pub fn extensions_actions(&self) -> Vec<Action> {
+        let state = &self.extensions;
+        let mut commands = state.remedies();
+        if state.review.is_none() && !state.confirm_discard {
+            if state.entry.is_some() {
+                commands.insert(0, Command::Back);
+            }
+            commands.push(if state.dirty() || state.blocked {
+                Command::Discard
+            } else {
+                Command::Refresh
+            });
+            if state.entry.is_none() && state.next.is_some() {
+                commands.push(Command::Next);
+            }
         }
         commands.into_iter().map(Action::Extension).collect()
     }
@@ -331,7 +419,7 @@ impl App {
         if self.navigation.current() == Route::Extensions
             && !self.extensions.loaded
             && !self.extensions.blocked
-            && self.extensions.view.is_none()
+            && self.extensions.entry.is_none()
             && self.extensions.pending.is_none()
         {
             // Restoring navigation is a fresh read, not restoring an old registration.
@@ -349,14 +437,14 @@ impl App {
         self.extensions.busy = true;
         self.extensions.writing = matches!(
             work,
-            Work::Page {
+            Work::Call {
                 input: Input::Submit { .. },
                 ..
             } | Work::Authorize { .. }
         );
         if self.extensions.writing {
             let (input, proposal) = match &work {
-                Work::Page { input, .. } => (input.clone(), None),
+                Work::Call { input, .. } => (input.clone(), None),
                 Work::Authorize {
                     input, proposal, ..
                 } => (input.clone(), Some(proposal.clone())),
@@ -365,9 +453,9 @@ impl App {
             let recovery = match &input {
                 Input::Submit { action, .. } => self
                     .extensions
-                    .page
+                    .view
                     .as_ref()
-                    .and_then(|page| page.actions.iter().find(|item| &item.id == action))
+                    .and_then(|view| view.action(action))
                     .and_then(|action| action.recovery.clone()),
                 _ => None,
             };
@@ -400,7 +488,6 @@ impl App {
         state.busy = false;
         state.saving = false;
         state.writing = false;
-        state.area = None;
         let recovering = matches!(
             request.work,
             Work::Rebind {
@@ -417,17 +504,15 @@ impl App {
         );
         let result = match result {
             Ok(Output::Rebound {
-                view,
-                reply: Reply::Page { page },
+                entry,
+                reply: Reply::View { view },
             }) if reloading => {
-                state.reload_draft(*view, page);
-                self.hits.clear();
-                self.hover = None;
+                state.reload_draft(*entry, view);
                 return;
             }
-            Ok(Output::Rebound { view, reply }) if recovering || reloading => {
-                state.view = Some(*view);
-                Ok(Output::Page(reply))
+            Ok(Output::Rebound { entry, reply }) if recovering || reloading => {
+                state.entry = Some(*entry);
+                Ok(Output::Reply(reply))
             }
             Ok(Output::Rebound { .. }) => Err(io::Failure { unknown: false }),
             result => result,
@@ -438,7 +523,7 @@ impl App {
             && request.needs_checkpoint()
             && matches!(
                 &result,
-                Ok(Output::Page(
+                Ok(Output::Reply(
                     Reply::Consent { .. } | Reply::Conflict | Reply::Rejected { .. }
                 )) | Err(io::Failure { unknown: false })
             )
@@ -447,7 +532,7 @@ impl App {
         }
         match result {
             Ok(Output::Rebound { .. }) => unreachable!(),
-            Ok(Output::Page(Reply::Unrecorded)) => {
+            Ok(Output::Reply(Reply::Unrecorded)) => {
                 state.blocked = true;
                 state.unrecorded = recovering;
                 state.message = Some(Message::Local("extensions-unrecorded"));
@@ -456,15 +541,12 @@ impl App {
                 state.loaded = true;
                 state.directory = page.items;
                 state.next = page.next_cursor;
-                state.page = None;
                 state.view = None;
+                state.entry = None;
                 state.blocked = false;
-                state.selected = 0;
-                state.top = 0;
-                state.reveal = true;
             }
-            Ok(Output::Page(Reply::Page { page })) => state.install(page),
-            Ok(Output::Page(Reply::Consent { request: proposal })) => {
+            Ok(Output::Reply(Reply::View { view })) => state.install(view),
+            Ok(Output::Reply(Reply::Consent { request: proposal })) => {
                 // A retry needing consent does not settle an earlier lost write.
                 state.blocked = request.replaying;
                 // Preparing consent does not authorize anything. Leaving the page
@@ -473,13 +555,13 @@ impl App {
                 if self.navigation.current() != Route::Extensions {
                     return;
                 }
-                if let Work::Page {
-                    view,
+                if let Work::Call {
+                    entry,
                     input: input @ Input::Submit { grant: None, .. },
                 } = request.work
                 {
                     state.consent = Some(consent::Consent {
-                        view,
+                        entry,
                         input,
                         proposal,
                         rendered: false,
@@ -489,12 +571,12 @@ impl App {
                     state.message = Some(Message::Local("extensions-failed"));
                 }
             }
-            Ok(Output::Page(Reply::Applied { route })) => {
+            Ok(Output::Reply(Reply::Applied { route })) => {
                 state.unresolved = None;
                 state.unrecorded = false;
                 state.blocked = false;
                 state.applied = match &request.work {
-                    Work::Page {
+                    Work::Call {
                         input:
                             Input::Submit {
                                 route: source,
@@ -507,18 +589,19 @@ impl App {
                 };
                 if state.route != route {
                     state.history.clear();
+                    state.arrive();
                 }
                 state.route = route;
-                state.page = None;
+                state.view = None;
                 state.drafts.clear();
                 state.editors.clear();
                 state.read();
             }
-            Ok(Output::Page(Reply::Conflict)) => {
+            Ok(Output::Reply(Reply::Conflict)) => {
                 state.blocked = true;
                 state.message = Some(Message::Local("extensions-conflict"));
             }
-            Ok(Output::Page(Reply::Rejected { message })) => {
+            Ok(Output::Reply(Reply::Rejected { message })) => {
                 state.blocked = recovering || reloading || request.replaying;
                 state.message = Some(Message::Remote(message));
             }
@@ -531,8 +614,6 @@ impl App {
                 }));
             }
         }
-        self.hits.clear();
-        self.hover = None;
     }
     /// Approval needs the terms on screen; the sheet layer reports that.
     pub(crate) fn consent_presented(&mut self, shown: bool) {
@@ -540,35 +621,66 @@ impl App {
             consent.rendered = shown;
         }
     }
+    /// The language changed: an open, untouched view reads itself again.
+    pub(crate) fn extensions_relocalize(&mut self) {
+        let state = &mut self.extensions;
+        state.locale = self.i18n.locale().id().into();
+        if state.entry.is_some()
+            && state.view.is_some()
+            && !state.dirty()
+            && !state.blocked
+            && state.unresolved.is_none()
+            && state.pending.is_none()
+        {
+            state.read();
+        }
+    }
     pub fn extensions_enabled(&self, command: &Command) -> bool {
         let state = &self.extensions;
+        let idle = !state.busy && state.pending.is_none();
+        match command {
+            Command::DismissConsent | Command::CancelConfirm => self.extensions_offered(command),
+            Command::Open => !state.busy && self.extensions_offered(command),
+            _ => idle && self.extensions_offered(command),
+        }
+    }
+    /// Whether the page offers a command, apart from a request in flight:
+    /// what its controls show, so focus stays put while one completes.
+    pub(crate) fn extensions_offered(&self, command: &Command) -> bool {
+        let state = &self.extensions;
+        let connected = matches!(self.connection, ConnectionState::Connected { .. });
+        let here = self.navigation.current() == Route::Extensions;
         if let Some(consent) = &state.consent {
             return match command {
                 Command::DismissConsent => true,
                 Command::ApproveConsent => {
                     consent.rendered
-                        && !state.busy
                         && (!state.blocked || state.unresolved.is_some())
-                        && self.navigation.current() == Route::Extensions
-                        && matches!(self.connection, ConnectionState::Connected { .. })
+                        && here
+                        && connected
+                }
+                _ => false,
+            };
+        }
+        if let Some((_, id)) = state.confirmation() {
+            return match command {
+                Command::CancelConfirm => true,
+                Command::Confirm => {
+                    connected && here && state.offered(&Intent::Submit(id.to_owned()))
                 }
                 _ => false,
             };
         }
         if *command == Command::Open {
-            return matches!(self.connection, ConnectionState::Connected { .. }) && !state.busy;
+            return connected;
         }
-        if !matches!(self.connection, ConnectionState::Connected { .. })
-            || self.navigation.current() != Route::Extensions
-            || state.busy
-            || state.pending.is_some()
-        {
+        if !connected || !here {
             return false;
         }
         match command {
             Command::ResumeDraft => {
                 state.blocked
-                    && state.page.is_some()
+                    && state.view.is_some()
                     && state.unresolved.is_none()
                     && state.review.is_none()
             }
@@ -601,44 +713,32 @@ impl App {
             }
             Command::ConfirmDiscard | Command::CancelDiscard => state.confirm_discard,
             Command::Discard => state.dirty() || state.blocked,
-            Command::Back => !state.dirty() && state.unresolved.is_none() && !state.blocked,
+            Command::Back => {
+                state.entry.is_some()
+                    && !state.dirty()
+                    && state.unresolved.is_none()
+                    && !state.blocked
+            }
             Command::Refresh => !state.dirty() && !state.blocked,
-            Command::Next => state.view.is_none() && state.next.is_some() && !state.blocked,
+            Command::Next => state.entry.is_none() && state.next.is_some() && !state.blocked,
             Command::Choose(index) => {
                 !state.blocked
-                    && state.directory.get(*index).is_some_and(|view| {
-                        view.descriptor.context == Context::Application || state.session.is_some()
+                    && state.directory.get(*index).is_some_and(|entry| {
+                        entry.descriptor.context == Context::Application || state.session.is_some()
                     })
             }
-            Command::Row(index) => {
-                !state.blocked
-                    && !state.dirty()
+            Command::View(Intent::Commit(field)) => {
+                state.offered(&Intent::Commit(field.clone()))
                     && state
-                        .page
-                        .as_ref()
-                        .is_some_and(|page| *index < page.rows.len())
+                        .default_action(field)
+                        .is_some_and(|id| state.offered(&Intent::Submit(id)))
             }
-            Command::Field(index) => {
-                !state.blocked
-                    && state
-                        .page
-                        .as_ref()
-                        .and_then(|page| page.fields.get(*index))
-                        .is_some_and(|field| field.enabled)
-            }
-            Command::Submit(index) => {
-                !state.blocked
-                    && state.page.as_ref().is_some_and(|page| {
-                        page.actions.get(*index).is_some_and(|action| {
-                            action.enabled
-                                && page.fields.iter().all(|field| {
-                                    !state.dirty_field(field) || action.fields.contains(&field.id)
-                                })
-                        })
-                    })
-            }
-            Command::Open => false,
-            Command::ApproveConsent | Command::DismissConsent => false,
+            Command::View(intent) => state.offered(intent),
+            Command::Open
+            | Command::Confirm
+            | Command::CancelConfirm
+            | Command::ApproveConsent
+            | Command::DismissConsent => false,
         }
     }
     pub fn extensions_action(&mut self, command: Command) {
@@ -661,56 +761,55 @@ impl App {
             self.extensions = State {
                 session,
                 generation,
+                locale: self.i18n.locale().id().into(),
                 pending: Some(Work::Directory(None)),
                 ..State::default()
             };
             self.apply(Action::Visit(Route::Extensions));
             return;
         }
-        self.focus = Focus::List;
         let state = &mut self.extensions;
         state.applied = None;
         match command {
             Command::ResumeDraft => {
                 state.pending = Some(Work::Rebind {
-                    view: Box::new(state.view.clone().unwrap()),
+                    entry: Box::new(state.entry.clone().unwrap()),
                     input: Input::Read {
                         route: state.route.clone(),
+                        locale: state.locale.clone(),
                     },
                 });
             }
             Command::ApplyDraft => state.accept_draft(),
             Command::CancelDraft => {
                 state.review = None;
-                state.selected = 0;
-                state.top = 0;
                 state.message = Some(Message::Local("extensions-restored"));
             }
             Command::DraftChoice(index, mine) => {
                 state.review.as_mut().unwrap().conflicts[index].mine = Some(mine);
-                state.selected = index * 2 + usize::from(!mine);
             }
             Command::Reconcile => {
                 state.unrecorded = false;
                 state.pending = Some(Work::Rebind {
-                    view: Box::new(state.view.clone().unwrap()),
+                    entry: Box::new(state.entry.clone().unwrap()),
                     input: Input::Recover {
                         route: state.unresolved.as_ref().unwrap().recovery.clone().unwrap(),
+                        locale: state.locale.clone(),
                     },
                 });
             }
             Command::Retry => {
                 state.unrecorded = false;
                 let pending = state.unresolved.as_ref().unwrap();
-                let view = Box::new(state.view.clone().unwrap());
+                let entry = Box::new(state.entry.clone().unwrap());
                 state.pending = Some(match &pending.proposal {
                     Some(proposal) => Work::Authorize {
-                        view,
+                        entry,
                         input: pending.input.clone(),
                         proposal: proposal.clone(),
                     },
-                    None => Work::Page {
-                        view,
+                    None => Work::Call {
+                        entry,
                         input: pending.input.clone(),
                     },
                 });
@@ -726,75 +825,58 @@ impl App {
             Command::ApproveConsent => {
                 let consent = state.consent.take().unwrap();
                 state.pending = Some(Work::Authorize {
-                    view: consent.view,
+                    entry: consent.entry,
                     input: consent.input,
                     proposal: consent.proposal,
                 });
             }
-            Command::DismissConsent => {
-                state.consent = None;
+            Command::DismissConsent => state.consent = None,
+            Command::Confirm => {
+                if let Some(id) = state.confirming.take() {
+                    state.submit(&id);
+                }
             }
+            Command::CancelConfirm => state.confirming = None,
             Command::Choose(index) => {
-                state.view = Some(state.directory[index].clone());
+                state.entry = Some(state.directory[index].clone());
                 state.route = Value::Null;
                 state.history.clear();
+                state.arrive();
                 state.read();
             }
-            Command::Row(index) => {
-                let route = state.page.as_ref().unwrap().rows[index].route.clone();
-                if state.history.len() == 64 {
-                    state.history.pop_front();
+            Command::View(Intent::Navigate(route)) => state.navigate(route),
+            Command::View(Intent::Submit(id)) => state.submit_or_confirm(id),
+            Command::View(Intent::Commit(field)) => {
+                if let Some(id) = state.default_action(&field) {
+                    state.submit_or_confirm(id);
                 }
-                state.history.push_back(state.route.clone());
-                state.route = route;
-                state.read();
             }
-            Command::Field(index) => {
-                let page = state.page.as_ref().unwrap();
-                let field = &page.fields[index];
-                state.selected = page.rows.len() + index;
-                if let Some(Value::Bool(value)) = state.drafts.get_mut(&field.id) {
+            Command::View(Intent::Toggle(field)) => {
+                if let Some(Value::Bool(value)) = state.drafts.get_mut(&field) {
                     *value = !*value;
                 }
             }
-            Command::Submit(index) => {
-                let page = state.page.as_ref().unwrap();
-                let action = &page.actions[index];
-                let fields = action
-                    .fields
-                    .iter()
-                    .filter_map(|id| {
-                        state
-                            .drafts
-                            .get(id)
-                            .map(|value| (id.clone(), value.clone()))
-                    })
-                    .collect();
-                match page.submission(state.route.clone(), &action.id, fields) {
-                    Ok(input) => {
-                        state.pending = state.view.clone().map(|view| Work::Page {
-                            view: Box::new(view),
-                            input,
-                        })
-                    }
-                    Err(_) => state.message = Some(Message::Local("extensions-invalid-fields")),
+            Command::View(Intent::Pick(field, value)) => {
+                let valid = state
+                    .view
+                    .as_ref()
+                    .and_then(|view| view.field(&field))
+                    .is_some_and(|field| {
+                        matches!(&field.control, Control::Choice { options, .. }
+                            if options.iter().any(|option| option.value == value))
+                    });
+                if valid {
+                    state.drafts.insert(field, Value::String(value));
                 }
             }
-            Command::Back => {
-                if let Some(route) = state.history.pop_back() {
+            Command::Back => match state.history.pop_back() {
+                Some((route, _)) => {
                     state.route = route;
+                    state.arrive();
                     state.read();
-                } else {
-                    state.page = None;
-                    state.view = None;
-                    state.directory.clear();
-                    state.next = None;
-                    state.loaded = false;
-                    state.drafts.clear();
-                    state.editors.clear();
-                    state.pending = Some(Work::Directory(None));
                 }
-            }
+                None => state.directory(),
+            },
             Command::Discard | Command::ConfirmDiscard => {
                 state.review = None;
                 state.unresolved = None;
@@ -802,19 +884,11 @@ impl App {
                 state.confirm_discard = false;
                 state.message = None;
                 state.generation += 1;
-                state.page = None;
-                state.view = None;
-                state.directory.clear();
-                state.next = None;
-                state.loaded = false;
-                state.drafts.clear();
-                state.editors.clear();
                 state.blocked = false;
-                state.history.clear();
-                state.pending = Some(Work::Directory(None));
+                state.directory();
             }
             Command::Refresh => {
-                if state.view.is_some() {
+                if state.entry.is_some() {
                     state.read();
                 } else {
                     state.pending = Some(Work::Directory(None));
@@ -823,199 +897,124 @@ impl App {
             Command::Next => state.pending = Some(Work::Directory(state.next.clone())),
             Command::Open => {}
         }
-        state.area = None;
-        self.hits.clear();
-        self.hover = None;
     }
-    pub fn extensions_input(&mut self, event: &crossterm::event::Event) -> bool {
+    /// A focused text field takes typing, pastes and its own pointer ahead
+    /// of the surface; Esc steps back a level.
+    pub(crate) fn extensions_owner_input(
+        &mut self,
+        event: &crossterm::event::Event,
+    ) -> Option<(bool, Option<Action>)> {
         use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
-        if self.palette.is_some() || self.navigation.current() != Route::Extensions {
-            return false;
+        let state = &mut self.extensions;
+        if state.surface.captures() {
+            return None;
         }
-        if self.extensions.review.is_some()
-            && matches!(event, Event::Key(key) if key.kind != KeyEventKind::Release && key.code == KeyCode::Esc)
-        {
-            self.extensions_action(Command::CancelDraft);
-            return true;
-        }
-        if let Event::Mouse(mouse) = event
-            && self
-                .extensions
-                .area
-                .is_some_and(|area| area.contains((mouse.column, mouse.row).into()))
-            && matches!(
-                mouse.kind,
-                MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-            )
-        {
-            self.extensions.top = if mouse.kind == MouseEventKind::ScrollDown {
-                self.extensions.top.saturating_add(3)
-            } else {
-                self.extensions.top.saturating_sub(3)
-            };
-            return true;
-        }
-        if let Event::Mouse(mouse) = event
-            && !self.extensions.busy
-            && !self.extensions.blocked
-            && self.extensions.pending.is_none()
-            && let Some(field_id) = self.extensions.page.as_ref().and_then(|page| {
-                page.fields
-                    .iter()
-                    .find(|field| {
-                        field.enabled
-                            && self
-                                .extensions
-                                .editors
-                                .get(&field.id)
-                                .is_some_and(|editor| {
-                                    editor.contains((mouse.column, mouse.row).into())
-                                        || editor.dragging()
-                                })
-                    })
-                    .map(|field| field.id.clone())
-            })
-            && self
-                .extensions
-                .editors
-                .get_mut(&field_id)
-                .unwrap()
-                .mouse(*mouse)
-        {
-            self.focus = Focus::List;
-            let page = self.extensions.page.as_ref().unwrap();
-            self.extensions.selected = page.rows.len()
-                + page
-                    .fields
-                    .iter()
-                    .position(|field| field.id == field_id)
-                    .unwrap();
-            return true;
-        }
-        if self.focus != Focus::List || self.extensions.area.is_none() {
-            return false;
-        }
-        let multiline = matches!(self.extensions.selected_command(), Some(Command::Field(index))
-            if self.extensions.page.as_ref().is_some_and(|page| page.fields[index].enabled
-                && matches!(page.fields[index].control, Control::Text { multiline: true, .. })));
         if let Event::Key(key) = event
             && key.kind != KeyEventKind::Release
-            && !(multiline && matches!(key.code, KeyCode::Enter | KeyCode::Up | KeyCode::Down))
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && key.code == KeyCode::Esc
+            && key.modifiers.is_empty()
+            && self.focus == Focus::Page
         {
-            match key.code {
-                KeyCode::Tab | KeyCode::Down | KeyCode::BackTab | KeyCode::Up => {
-                    let n = self.extensions.controls();
-                    let backwards =
-                        key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT);
-                    if matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
-                        && (n == 0
-                            || backwards && self.extensions.selected == 0
-                            || !backwards && self.extensions.selected + 1 >= n)
-                    {
-                        return false; // Continue through the page toolbar and navigation.
-                    }
-                    self.extensions.reveal = true;
-                    if n > 0 {
-                        self.extensions.selected =
-                            if matches!(key.code, KeyCode::Up | KeyCode::BackTab) {
-                                (self.extensions.selected + n - 1) % n
-                            } else {
-                                (self.extensions.selected + 1) % n
-                            };
-                    }
-                    return true;
-                }
-                KeyCode::PageDown | KeyCode::PageUp => {
-                    let height = self.extensions.area.unwrap().height as usize;
-                    self.extensions.top = if key.code == KeyCode::PageDown {
-                        self.extensions.top.saturating_add(height)
-                    } else {
-                        self.extensions.top.saturating_sub(height)
-                    };
-                    return true;
-                }
-                KeyCode::Char(' ') if matches!(self.extensions.selected_command(), Some(Command::Field(index)) if self.extensions.page.as_ref().is_some_and(|page| matches!(page.fields[index].control, Control::Toggle { .. }))) =>
-                {
-                    self.extensions_action(self.extensions.selected_command().unwrap());
-                    return true;
-                }
-                KeyCode::Esc => {
-                    self.extensions_action(if self.extensions.review.is_some() {
-                        Command::CancelDraft
-                    } else {
-                        Command::Back
-                    });
-                    return true;
-                }
-                KeyCode::Enter => {
-                    if let Some(command) = self.extensions.selected_command() {
-                        self.extensions_action(command);
-                    }
-                    return true;
-                }
-                _ => {}
+            let command = if state.review.is_some() {
+                Command::CancelDraft
+            } else if state.entry.is_some() {
+                Command::Back
+            } else {
+                return None;
+            };
+            self.extensions_action(command);
+            return Some((true, None));
+        }
+        let editable = !state.busy && state.pending.is_none() && !state.blocked;
+        let enabled = |state: &State, field: &str| {
+            state
+                .view
+                .as_ref()
+                .and_then(|view| view.field(field))
+                .is_some_and(|field| field.enabled)
+        };
+        if let Event::Mouse(mouse) = event {
+            let well = state.wells.iter().find(|well| {
+                enabled(state, &well.field)
+                    && state
+                        .editors
+                        .get(&well.field)
+                        .is_some_and(|editor| editor.takes(mouse))
+            })?;
+            let (field, path) = (well.field.clone(), well.path.clone());
+            let press = matches!(mouse.kind, MouseEventKind::Down(_));
+            let changed = editable && state.editors.get_mut(&field)?.mouse(*mouse);
+            if press {
+                state.surface.focus(path);
+                self.focus = Focus::Page;
             }
+            return Some((changed || press, None));
         }
-        let state = &mut self.extensions;
-        if state.busy || state.pending.is_some() || state.blocked {
-            return false;
+        if self.focus != Focus::Page {
+            return None;
         }
-        let Some(page) = &state.page else {
-            return false;
-        };
-        let Some(index) = state.selected.checked_sub(page.rows.len()) else {
-            return false;
-        };
-        let Some(field) = page.fields.get(index).filter(|field| field.enabled) else {
-            return false;
-        };
-        let Some(editor) = state.editors.get_mut(&field.id) else {
-            return false;
-        };
+        let focused = state.surface.focused()?;
+        let well = state.wells.iter().find(|well| well.path == focused)?;
+        let (field, multiline) = (well.field.clone(), well.multiline);
+        if !enabled(state, &field) {
+            return None;
+        }
         let changed = match event {
-            Event::Key(key)
-                if key.kind != KeyEventKind::Release
-                    && !key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !matches!(
-                        key.code,
-                        KeyCode::Char('a' | 'z' | 'y' | 'u' | 'k')
-                            | KeyCode::Left
-                            | KeyCode::Right
-                            | KeyCode::Backspace
-                            | KeyCode::Delete
-                    )
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::META)
+                    || key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !matches!(
+                            key.code,
+                            KeyCode::Char('a' | 'z' | 'y' | 'u' | 'k')
+                                | KeyCode::Left
+                                | KeyCode::Right
+                                | KeyCode::Backspace
+                                | KeyCode::Delete
+                        )
                 {
-                    return false;
+                    return None;
                 }
-                editor.key(*key)
+                match key.code {
+                    KeyCode::Tab | KeyCode::BackTab | KeyCode::F(_) | KeyCode::Esc => return None,
+                    KeyCode::Enter | KeyCode::Up | KeyCode::Down if !multiline => return None,
+                    _ if !editable => return Some((false, None)),
+                    _ => state.editors.get_mut(&field)?.key(*key),
+                }
             }
-            Event::Paste(text) => {
-                if matches!(
-                    field.control,
-                    Control::Text {
-                        multiline: false,
-                        ..
-                    }
-                ) {
-                    editor.insert(&crate::view::safe(text))
-                } else {
+            Event::Paste(text) if editable => {
+                let editor = state.editors.get_mut(&field)?;
+                if multiline {
                     editor.insert(text)
+                } else {
+                    editor.insert(&crate::view::safe(text))
                 }
             }
-            _ => return false,
+            Event::Paste(_) => return Some((false, None)),
+            _ => return None,
         };
         if changed {
             state.applied = None;
-            state
-                .drafts
-                .insert(field.id.clone(), Value::String(editor.text().into()));
+            let text = state.editors[&field].text().to_owned();
+            state.drafts.insert(field, Value::String(text));
         }
-        true
+        Some((true, None))
+    }
+}
+
+impl State {
+    fn submit_or_confirm(&mut self, id: String) {
+        let asks = self
+            .view
+            .as_ref()
+            .and_then(|view| view.action(&id))
+            .is_some_and(|action| action.confirm.is_some());
+        if asks {
+            self.confirming = Some(id);
+        } else {
+            self.submit(&id);
+        }
     }
 }
 
@@ -1023,17 +1022,20 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::i18n::{I18n, LocalePreference};
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent};
     use maka_plugins::{
         composition::Scope,
         remote::Target,
         terminal_ui::{
             Descriptor, Text, VERSION,
-            page::{Action as PageAction, Field},
+            view::{Action as ViewAction, Role, Tone, build::*},
         },
     };
     use ratatui::{Terminal, backend::TestBackend};
     use serde_json::json;
+
+    pub(crate) const TOGGLE: &str = "extensions/body/frame/content/root/enabled";
+    pub(crate) const NAME: &str = "extensions/body/frame/content/root/name";
 
     fn projection() -> TerminalViewProjection {
         TerminalViewProjection {
@@ -1045,48 +1047,34 @@ pub(crate) mod tests {
                 activation: uuid::Uuid::new_v4().to_string(),
                 registration: uuid::Uuid::new_v4(),
             },
-            descriptor: Descriptor {
-                version: VERSION,
-                title: Text::localized("Notes", "笔记", "筆記"),
-                context: Context::Session,
-            },
+            descriptor: Descriptor::new(Text::localized("Notes", "笔记", "筆記"), Context::Session),
         }
     }
-    fn form() -> Page {
-        Page {
+    pub(crate) fn form() -> View {
+        View {
             version: VERSION,
-            title: Text::plain("Notebook"),
+            title: "Notebook".into(),
             revision: "one".into(),
-            body: "A plugin-owned form.".into(),
-            rows: vec![],
-            fields: vec![
-                Field {
-                    id: "enabled".into(),
-                    label: Text::plain("Enabled"),
-                    enabled: true,
-                    control: Control::Toggle { value: true },
-                },
-                Field {
-                    id: "name".into(),
-                    label: Text::plain("Name"),
-                    enabled: true,
-                    control: Control::Text {
-                        value: "My notes".into(),
-                        max_bytes: 128,
-                        multiline: false,
-                    },
-                },
-            ],
-            actions: vec![PageAction {
-                id: "save".into(),
-                label: Text::plain("Save"),
-                enabled: true,
+            fields: vec![toggle("enabled", true), line("name", "My notes", 128)],
+            actions: vec![ViewAction {
                 fields: vec!["enabled".into(), "name".into()],
-                recovery: None,
+                ..action("save", "Save")
             }],
+            root: column(
+                "root",
+                vec![
+                    text("body", "A plugin-owned form.", Tone::Normal),
+                    input("enabled", "enabled", "Enabled"),
+                    input("name", "name", "Name"),
+                    button("save", "save", Role::Primary),
+                ],
+            ),
         }
     }
-    fn draw(app: &mut App, width: u16, height: u16) -> String {
+    pub(crate) fn save() -> Command {
+        Command::View(Intent::Submit("save".into()))
+    }
+    pub(crate) fn draw(app: &mut App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| crate::view::draw(frame, app))
@@ -1098,6 +1086,20 @@ pub(crate) mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+    pub(crate) fn click(app: &mut App, path: &str) {
+        let rect = app.extensions.surface.rect(path).unwrap();
+        for kind in [
+            crossterm::event::MouseEventKind::Down(MouseButton::Left),
+            crossterm::event::MouseEventKind::Up(MouseButton::Left),
+        ] {
+            app.input(Event::Mouse(MouseEvent {
+                kind,
+                column: rect.x + rect.width / 2,
+                row: rect.y,
+                modifiers: KeyModifiers::NONE,
+            }));
+        }
     }
     pub(crate) fn app() -> App {
         let mut app = App::new(
@@ -1124,50 +1126,49 @@ pub(crate) mod tests {
         );
         app.extensions_action(Command::Choose(0));
         let request = app.extensions_request().unwrap();
-        app.extensions_complete(request, Ok(Output::Page(Reply::Page { page: form() })));
+        assert!(matches!(
+            &request.work,
+            Work::Call { input: Input::Read { locale, .. }, .. } if locale == "en"
+        ));
+        app.extensions_complete(request, Ok(Output::Reply(Reply::View { view: form() })));
         app
     }
     #[test]
     fn contributed_form_supports_mouse_keyboard_and_retains_conflicting_drafts_without_rebinding() {
         let mut app = app();
-        assert!(draw(&mut app, 90, 26).contains("Notebook"));
-        let hit = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::Extension(Command::Field(0)))
-            .unwrap()
-            .area;
-        let event = Event::Mouse(crossterm::event::MouseEvent {
-            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-            column: hit.x + hit.width / 2,
-            row: hit.y,
-            modifiers: KeyModifiers::NONE,
-        });
-        app.input(event);
+        let screen = draw(&mut app, 90, 26);
+        assert!(screen.contains("Notebook") && screen.contains("‹ Plugin pages"));
+        click(&mut app, TOGGLE);
         assert_eq!(app.extensions.drafts["enabled"], json!(false));
         draw(&mut app, 90, 26);
         assert!(!app.extensions_enabled(&Command::Refresh));
         app.input(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(app.extensions.surface.focused(), Some(NAME));
         app.input(Event::Key(KeyEvent::new(
             KeyCode::Char('a'),
             KeyModifiers::CONTROL,
         )));
         app.input(Event::Paste("Renamed".into()));
         assert_eq!(app.extensions.drafts["name"], json!("Renamed"));
-        app.extensions.page.as_mut().unwrap().actions[0]
+        app.extensions.view.as_mut().unwrap().actions[0]
             .fields
             .pop();
         assert!(
-            !app.extensions_enabled(&Command::Submit(0)),
+            !app.extensions_enabled(&save()),
             "saving a subset must not discard other drafts"
         );
-        app.extensions.page.as_mut().unwrap().actions[0]
+        app.extensions.view.as_mut().unwrap().actions[0]
             .fields
             .push("name".into());
-        app.extensions_action(Command::Submit(0));
+        // Return in the one-line field submits the primary button's action.
+        draw(&mut app, 90, 26);
+        app.input(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
         let request = app.extensions_request().unwrap();
-        let Work::Page {
-            view,
+        let Work::Call {
+            entry,
             input: Input::Submit {
                 fields, revision, ..
             },
@@ -1175,13 +1176,13 @@ pub(crate) mod tests {
         else {
             panic!("submit");
         };
-        assert_eq!(view.target, app.extensions.view.as_ref().unwrap().target);
+        assert_eq!(entry.target, app.extensions.entry.as_ref().unwrap().target);
         assert_eq!(fields["enabled"], json!(false));
         assert_eq!(fields["name"], json!("Renamed"));
         assert_eq!(revision, "one");
-        app.extensions_complete(request.clone(), Ok(Output::Page(Reply::Conflict)));
+        app.extensions_complete(request.clone(), Ok(Output::Reply(Reply::Conflict)));
         assert_eq!(app.extensions.drafts["name"], json!("Renamed"));
-        assert!(!app.extensions_enabled(&Command::Submit(0)));
+        assert!(!app.extensions_enabled(&save()));
         assert!(
             app.extensions_request().is_none(),
             "no automatic refresh or retry"
@@ -1189,9 +1190,9 @@ pub(crate) mod tests {
         assert!(draw(&mut app, 44, 18).contains("draft"));
         app.extensions_action(Command::Discard);
         let fresh = app.extensions_request().unwrap();
-        app.extensions_complete(request, Ok(Output::Page(Reply::Page { page: form() })));
+        app.extensions_complete(request, Ok(Output::Reply(Reply::View { view: form() })));
         assert!(
-            app.extensions.page.is_none(),
+            app.extensions.view.is_none(),
             "late old result cannot replace new directory"
         );
         app.extensions_complete(
@@ -1202,6 +1203,149 @@ pub(crate) mod tests {
             })),
         );
         assert_eq!(app.extensions.directory.len(), 1);
+    }
+
+    #[test]
+    fn a_rich_view_navigates_routes_picks_choices_and_confirms_destructive_actions() {
+        let mut app = app();
+        let mut view = form();
+        view.fields.push(maka_plugins::terminal_ui::view::Field {
+            id: "mode".into(),
+            enabled: true,
+            control: Control::Choice {
+                value: "fast".into(),
+                options: vec![
+                    maka_plugins::terminal_ui::view::Choice {
+                        value: "fast".into(),
+                        label: "Fast".into(),
+                    },
+                    maka_plugins::terminal_ui::view::Choice {
+                        value: "careful".into(),
+                        label: "Careful".into(),
+                    },
+                ],
+            },
+        });
+        view.actions.push(ViewAction {
+            confirm: Some(maka_plugins::terminal_ui::view::Confirm {
+                title: "Delete notebook?".into(),
+                message: "Its pages go too.".into(),
+                destructive: true,
+            }),
+            ..action("delete", "Delete")
+        });
+        view.root = column(
+            "root",
+            vec![
+                tabs(
+                    "tabs",
+                    "all",
+                    vec![
+                        ("all".into(), "All".into(), json!({"tab":"all"})),
+                        ("mine".into(), "Mine".into(), json!({"tab":"mine"})),
+                    ],
+                ),
+                split(
+                    "split",
+                    40,
+                    link("page", "First page", json!({"page":1}))
+                        .detail("Opened today")
+                        .meta("2 min")
+                        .into(),
+                    markdown("notes", "# Heading\n\n- **bold** item\n- `code`"),
+                ),
+                input("mode", "mode", "Mode"),
+                progress("progress", 3, 4, "Synced"),
+                button("delete", "delete", Role::Destructive),
+            ],
+        );
+        view.validate().unwrap();
+        app.extensions_action(Command::Refresh);
+        let request = app.extensions_request().unwrap();
+        app.extensions_complete(request, Ok(Output::Reply(Reply::View { view })));
+        let screen = draw(&mut app, 100, 30);
+        for expected in [
+            "All",
+            "Mine",
+            "First page",
+            "2 min",
+            "Heading",
+            "• bold item",
+            "75%",
+        ] {
+            assert!(screen.contains(expected), "{expected}: {screen}");
+        }
+        assert!(screen.contains("Fast ▾"));
+        // The chooser opens over the page and picks a declared option only.
+        click(&mut app, "extensions/body/frame/content/root/mode");
+        assert!(app.extensions.surface.captures());
+        app.input(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.input(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.extensions.drafts["mode"], json!("careful"));
+        app.extensions_action(Command::View(Intent::Pick("mode".into(), "absent".into())));
+        assert_eq!(app.extensions.drafts["mode"], json!("careful"));
+        // Leaving with a changed field is not offered; Discard is.
+        assert!(!app.extensions_enabled(&Command::View(Intent::Navigate(json!({"page":1})))));
+        app.extensions.drafts.insert("mode".into(), json!("fast"));
+        // A destructive action asks first, in the shell's own sheet.
+        draw(&mut app, 100, 30);
+        click(&mut app, "extensions/body/frame/content/root/delete/button");
+        assert!(app.extensions_request().is_none());
+        assert!(app.extensions.confirm_visible());
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("Delete notebook?") && screen.contains("Its pages go too."));
+        app.input(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(
+            !app.extensions.confirm_visible(),
+            "Enter defaults to cancel"
+        );
+        assert!(app.extensions_request().is_none());
+        app.extensions_action(save_like("delete"));
+        app.extensions_action(Command::Confirm);
+        assert!(matches!(
+            app.extensions_request().unwrap().work,
+            Work::Call { input: Input::Submit { ref action, .. }, .. } if action == "delete"
+        ));
+
+        // Items read another route; Back returns, naming where it goes.
+        let mut app = self::app();
+        app.extensions.view.as_mut().unwrap().root = column(
+            "root",
+            vec![link("page", "First page", json!({"page":1})).into()],
+        );
+        draw(&mut app, 90, 26);
+        click(&mut app, "extensions/body/frame/content/root/page");
+        let request = app.extensions_request().unwrap();
+        assert!(matches!(
+            &request.work,
+            Work::Call { input: Input::Read { route, .. }, .. } if route == &json!({"page":1})
+        ));
+        let mut detail = form();
+        detail.title = "First page".into();
+        app.extensions_complete(request, Ok(Output::Reply(Reply::View { view: detail })));
+        let screen = draw(&mut app, 90, 26);
+        assert!(screen.contains("‹ Notebook") && screen.contains("First page"));
+        app.input(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(matches!(
+            app.extensions_request().unwrap().work,
+            Work::Call {
+                input: Input::Read {
+                    route: Value::Null,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    fn save_like(action: &str) -> Command {
+        Command::View(Intent::Submit(action.into()))
     }
 
     #[test]
@@ -1219,11 +1363,11 @@ pub(crate) mod tests {
         editor.clear_if_unchanged("My notes");
         editor.insert("Draft");
         let prepare = |app: &mut App| {
-            app.extensions_action(Command::Submit(0));
+            app.extensions_action(save());
             let request = app.extensions_request().unwrap();
             app.extensions_complete(
                 request,
-                Ok(Output::Page(Reply::Consent {
+                Ok(Output::Reply(Reply::Consent {
                     request: proposal.clone(),
                 })),
             );
@@ -1248,7 +1392,7 @@ pub(crate) mod tests {
         prepare(&mut app);
         draw(&mut app, 90, 28);
         app.input(Event::Mouse(crossterm::event::MouseEvent {
-            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
             column: 0,
             row: 0,
             modifiers: KeyModifiers::NONE,
@@ -1272,14 +1416,14 @@ pub(crate) mod tests {
         )));
         let request = app.extensions_request().unwrap();
         let Work::Authorize {
-            view,
+            entry,
             input,
             proposal: actual,
         } = &request.work
         else {
             panic!("explicit approval")
         };
-        assert_eq!(view.target, app.extensions.view.as_ref().unwrap().target);
+        assert_eq!(entry.target, app.extensions.entry.as_ref().unwrap().target);
         assert_eq!(actual, &proposal);
         let Input::Submit { fields, grant, .. } = input else {
             panic!("submit")
@@ -1300,16 +1444,16 @@ pub(crate) mod tests {
             Some(&proposal)
         );
         app.extensions_complete(request, Err(io::Failure { unknown: true }));
-        assert!(!app.extensions_enabled(&Command::Submit(0)));
+        assert!(!app.extensions_enabled(&save()));
         assert!(app.extensions_request().is_none());
 
         let mut app = self::app();
-        app.extensions_action(Command::Submit(0));
+        app.extensions_action(save());
         let request = app.extensions_request().unwrap();
         app.apply(Action::Visit(Route::Workspace));
         app.extensions_complete(
             request,
-            Ok(Output::Page(Reply::Consent { request: proposal })),
+            Ok(Output::Reply(Reply::Consent { request: proposal })),
         );
         assert!(!app.extensions.consent_visible());
         assert!(app.extensions_request().is_none());
@@ -1319,27 +1463,22 @@ pub(crate) mod tests {
     fn disconnect_revokes_controls_preserves_drafts_and_tiny_layout_has_no_stale_clicks() {
         let mut app = app();
         draw(&mut app, 80, 24);
-        app.extensions_action(Command::Field(0));
-        app.extensions_action(Command::Submit(0));
+        app.extensions_action(Command::View(Intent::Toggle("enabled".into())));
+        app.extensions_action(save());
         let request = app.extensions_request().unwrap();
         app.extensions.disconnect();
         app.extensions_complete(
             request,
-            Ok(Output::Page(Reply::Applied { route: Value::Null })),
+            Ok(Output::Reply(Reply::Applied { route: Value::Null })),
         );
         assert_eq!(app.extensions.drafts["enabled"], json!(false));
         assert!(matches!(
             app.extensions.message,
             Some(Message::Local("extensions-unknown"))
         ));
-        assert!(!app.extensions_enabled(&Command::Submit(0)));
+        assert!(!app.extensions_enabled(&save()));
         draw(&mut app, 25, 8);
-        assert!(app.extensions.area.is_none());
-        assert!(
-            !app.hits
-                .iter()
-                .any(|hit| matches!(hit.action, Action::Extension(_)))
-        );
+        assert!(app.extensions.surface.rect(TOGGLE).is_none());
         assert!(app.extensions_request().is_none());
     }
 
@@ -1347,9 +1486,9 @@ pub(crate) mod tests {
     fn saved_unknown_submission_queries_first_and_retries_only_the_original_idempotent_intent() {
         let mut app = app();
         let recovery = json!({"operation":"one"});
-        app.extensions.page.as_mut().unwrap().actions[0].recovery = Some(recovery.clone());
-        app.extensions_action(Command::Field(0));
-        app.extensions_action(Command::Submit(0));
+        app.extensions.view.as_mut().unwrap().actions[0].recovery = Some(recovery.clone());
+        app.extensions_action(Command::View(Intent::Toggle("enabled".into())));
+        app.extensions_action(save());
         let original = app.extensions_request().unwrap();
         assert!(original.needs_checkpoint());
         let frozen = app.extensions.unresolved.as_ref().unwrap().input.clone();
@@ -1361,7 +1500,7 @@ pub(crate) mod tests {
             ("/pending/recovery", json!({"operation":"other"})),
             ("/cursors/name/cursor", json!(999)),
             ("/drafts/name", json!("x".repeat(129))),
-            ("/view/target/activation", json!("not-an-activation")),
+            ("/entry/target/activation", json!("not-an-activation")),
         ] {
             let mut invalid = saved.clone();
             *invalid.pointer_mut(pointer).unwrap() = value;
@@ -1375,21 +1514,21 @@ pub(crate) mod tests {
         }
         app.extensions.disconnect();
         assert!(!app.extensions_after_checkpoint(&original, &Ok(())));
-        app.extensions = State::default();
+        app.extensions = State::new("en");
         app.extensions
             .restore(serde_json::from_value(saved).unwrap())
             .unwrap();
         assert!(app.extensions_request().is_none());
         assert!(!app.extensions_enabled(&Command::Retry));
         assert!(!app.extensions_enabled(&Command::Back));
-        assert!(!app.extensions_enabled(&Command::Submit(0)));
+        assert!(!app.extensions_enabled(&save()));
         app.apply(Action::Visit(Route::Workspace));
         app.extensions_action(Command::Open);
         assert_eq!(app.navigation.current(), Route::Extensions);
         app.extensions_action(Command::Reconcile);
         let query = app.extensions_request().unwrap();
         assert!(
-            matches!(&query.work, Work::Rebind { input: Input::Recover { route }, .. } if route == &recovery)
+            matches!(&query.work, Work::Rebind { input: Input::Recover { route, .. }, .. } if route == &recovery)
         );
         assert!(!query.needs_checkpoint());
         app.extensions_complete(query, Err(io::Failure { unknown: false }));
@@ -1397,12 +1536,12 @@ pub(crate) mod tests {
         assert!(!app.extensions_enabled(&Command::Retry));
         app.extensions_action(Command::Reconcile);
         let query = app.extensions_request().unwrap();
-        let mut view = app.extensions.view.clone().unwrap();
-        view.target.registration = uuid::Uuid::new_v4();
+        let mut entry = app.extensions.entry.clone().unwrap();
+        entry.target.registration = uuid::Uuid::new_v4();
         app.extensions_complete(
             query,
             Ok(Output::Rebound {
-                view: Box::new(view.clone()),
+                entry: Box::new(entry.clone()),
                 reply: Reply::Unrecorded,
             }),
         );
@@ -1411,7 +1550,7 @@ pub(crate) mod tests {
         let retry = app.extensions_request().unwrap();
         assert!(retry.needs_checkpoint());
         assert!(
-            matches!(&retry.work, Work::Page { view: actual, input } if actual.target == view.target && input == &frozen)
+            matches!(&retry.work, Work::Call { entry: actual, input } if actual.target == entry.target && input == &frozen)
         );
         assert!(!app.extensions_after_checkpoint(&original, &Ok(())));
         assert!(app.extensions_after_checkpoint(&retry, &Ok(())));
@@ -1419,7 +1558,7 @@ pub(crate) mod tests {
         // A rejection of this retry cannot settle the earlier uncertain attempt.
         app.extensions_complete(retry, Err(io::Failure { unknown: false }));
         assert!(app.extensions.unresolved.is_some());
-        assert!(!app.extensions_enabled(&Command::Submit(0)));
+        assert!(!app.extensions_enabled(&save()));
         app.extensions_action(Command::Discard);
         assert!(app.extensions.unresolved.is_some());
         assert!(app.extensions_request().is_none());
@@ -1430,7 +1569,7 @@ pub(crate) mod tests {
         app.extensions_complete(
             query,
             Ok(Output::Rebound {
-                view: Box::new(view),
+                entry: Box::new(entry),
                 reply: Reply::Applied {
                     route: json!({"task":"original"}),
                 },
@@ -1438,7 +1577,7 @@ pub(crate) mod tests {
         );
         assert!(app.extensions.unresolved.is_none());
         assert!(
-            matches!(app.extensions_request().unwrap().work, Work::Page { input: Input::Read { route }, .. } if route == json!({"task":"original"}))
+            matches!(app.extensions_request().unwrap().work, Work::Call { input: Input::Read { route, .. }, .. } if route == json!({"task":"original"}))
         );
     }
 }

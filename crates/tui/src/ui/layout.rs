@@ -358,6 +358,7 @@ impl<'a, M> Pass<'a, M> {
             Tone::Primary => Style::default()
                 .fg(colors.accent)
                 .add_modifier(Modifier::BOLD),
+            Tone::Success => Style::default().fg(colors.success),
             Tone::Warning => Style::default().fg(colors.warning),
             Tone::Error => Style::default().fg(colors.error),
             Tone::Hue(index) => Style::default().fg(crate::view::tone::hue(index, colors)),

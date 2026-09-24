@@ -505,6 +505,7 @@ impl App {
     pub(crate) fn set_locale(&mut self, preference: LocalePreference) {
         self.i18n.preference = preference;
         self.chat.invalidate_layout();
+        self.extensions_relocalize();
         // Text widths change. Do not accept clicks against old geometry.
         self.hits.clear();
         self.hover = None;

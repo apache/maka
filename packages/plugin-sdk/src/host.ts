@@ -38,6 +38,7 @@ export type * from './providers.js';
 export type * from './clients.js';
 export type * from './history.js';
 export type * from './session-import.js';
+export type * from './terminal-view.js';
 export type * from './usage.js';
 export type * from './pricing.js';
 
@@ -102,14 +103,9 @@ export interface RemoteOptions {
   /** Host rejects the endpoint for callers without path access. */
   access?: 'granted' | 'host_paths';
 }
-export interface TerminalView {
-  version: 3;
-  title: { fallback: string; translations?: Record<string, string> };
-  context: 'application' | 'session';
-}
 export interface RemoteMethodOptions extends RemoteOptions {
   /** Navigation is bound to this exact Remote registration. */
-  terminalView?: TerminalView;
+  terminalView?: import('./terminal-view.js').TerminalView;
 }
 /** Throw an Error carrying this code to preserve its meaning across Remote.
  * Unclassified exceptions become unavailable. An unknown outcome requires

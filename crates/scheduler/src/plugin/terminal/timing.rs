@@ -203,7 +203,7 @@ mod tests {
             .unwrap()
             .task;
             let page = page(&task, 7, "America/New_York").unwrap();
-            page.validate().unwrap();
+            page.clone().view("en").validate().unwrap();
             let mut fields = page
                 .fields
                 .into_iter()

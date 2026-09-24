@@ -36,6 +36,7 @@ sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 futures-util.workspace = true
+unicode-width.workspace = true
 uuid.workspace = true
 yaml-rust2 = { version = "0.13.0", default-features = false }
 base64 = "0.22"

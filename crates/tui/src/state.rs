@@ -435,8 +435,8 @@ mod tests {
             root_id: ROOT.into(),
             epoch: "epoch".into(),
         };
-        app.extensions_action(Command::Field(0));
-        app.extensions_action(Command::Submit(0));
+        app.extensions_action(Command::View(extensions::Intent::Toggle("enabled".into())));
+        app.extensions_action(extensions::tests::save());
         let request = app.extensions_request().unwrap();
         let (release, blocked) = gate(&state).await;
         state.submit_extension(request.clone());
@@ -482,7 +482,7 @@ mod tests {
                 root_id: ROOT.into(),
                 epoch: "epoch".into(),
             };
-            app.extensions_action(Command::Submit(0));
+            app.extensions_action(extensions::tests::save());
             let request = app.extensions_request().unwrap();
             app.closing = closing;
             assert!(!app.extensions_after_checkpoint(&request, &Err("disk failure".into())));
@@ -490,7 +490,7 @@ mod tests {
             assert!(app.extensions_request().is_none());
         }
         let mut app = extensions::tests::app();
-        app.extensions_action(Command::Submit(0));
+        app.extensions_action(extensions::tests::save());
         let request = app.extensions_request().unwrap();
         state.submit_extension(request);
         let (release, blocked) = gate(&state).await;

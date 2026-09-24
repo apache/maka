@@ -24,7 +24,7 @@ use maka_plugins::{
     contributions::Staged,
     remote::{Caller, Endpoint, Error, Handler, Method, key},
     terminal_ui::{
-        Context, Descriptor, Text, VERSION,
+        Context, Descriptor, Text,
         page::{Action, Control, Field, Page, Reply, Request, Row},
     },
 };
@@ -50,11 +50,7 @@ struct Cursor {
 
 pub(super) fn publish(skills: &Skills, staged: &mut Staged) -> Result<(), String> {
     let endpoint = Endpoint::standalone(Handler::Method(Arc::new(View(skills.clone()))))
-        .with_terminal_view(Descriptor {
-            version: VERSION,
-            title: title(),
-            context: Context::Session,
-        })
+        .with_terminal_view(Descriptor::new(title(), Context::Session))
         .map_err(|e| e.to_string())?;
     staged
         .insert(key(ID, "terminal").map_err(|e| e.to_string())?, endpoint)
@@ -71,6 +67,7 @@ impl Method for View {
         Box::pin(async move {
             let request: Request = serde_json::from_value(input).map_err(invalid)?;
             request.validate().map_err(invalid)?;
+            let locale = request.locale().to_owned();
             let view = caller.views.session().await?;
             let context = WorkspaceContext {
                 workspace: view.workspace.target.clone(),
@@ -79,7 +76,7 @@ impl Method for View {
                 Request::Recover { .. } => {
                     return Err(invalid("This action has no recovery receipt"));
                 }
-                Request::Read { route } => {
+                Request::Read { route, .. } => {
                     let route: Route = if route.is_null() {
                         Route::default()
                     } else {
@@ -127,6 +124,7 @@ impl Method for View {
                     action,
                     fields,
                     grant,
+                    ..
                 } => {
                     if grant.is_some() {
                         return Err(invalid("Unexpected authorization"));
@@ -181,6 +179,7 @@ impl Method for View {
                     }
                 }
             };
+            let reply = reply.view(&locale);
             reply.validate().map_err(invalid)?;
             serde_json::to_value(reply).map_err(invalid)
         })
@@ -194,7 +193,6 @@ fn project(
     next_cursor: Option<String>,
 ) -> Result<Reply, Error> {
     let mut page = Page {
-        version: VERSION,
         title: title(),
         revision: revision.clone(),
         body: String::new(),

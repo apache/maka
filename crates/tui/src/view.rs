@@ -70,6 +70,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if area.width < 30 || area.height < 10 {
         app.chrome.stop_animation();
         app.invalidate_editor_geometry();
+        // Nothing drawn now stays clickable from the last full frame.
+        app.sidebar.surface.invalidate();
+        app.settings.surface.invalidate();
+        app.home.surface.invalidate();
+        app.extensions.surface.invalidate();
         frame.render_widget(
             Paragraph::new(app.i18n.text("terminal-small")).wrap(Wrap { trim: false }),
             area,
@@ -113,6 +118,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     };
     let title = match (&app.navigation.current(), &app.sessions.detail) {
         (Route::Session(id), Detail::Ready(item)) if *id == item.id => safe(&item.name),
+        (Route::Extensions, _) => app
+            .extensions
+            .title(app.i18n.locale().id())
+            .map(|title| safe(&title))
+            .unwrap_or_else(|| app.i18n.text(Route::Extensions.title())),
         _ => app.i18n.text(app.navigation.current().title()),
     };
     // Center against the whole viewport, reserving equal space for both edges.
@@ -268,6 +278,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         .or_else(|| match app.navigation.current() {
             Route::Settings => app.settings.surface.hint(app.focus == Focus::Page),
             Route::Workspace => app.home.surface.hint(app.focus == Focus::Page),
+            Route::Extensions => app.extensions.surface.hint(app.focus == Focus::Page),
             _ => None,
         })
     {
@@ -304,12 +315,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         app.i18n.text("chat-browse-help")
     } else if app.focus == Focus::Queue {
         app.i18n.text("queue-help")
-    } else if app.focus == Focus::List
-        && matches!(
-            app.navigation.current(),
-            Route::Connections | Route::Extensions
-        )
-    {
+    } else if app.focus == Focus::List && app.navigation.current() == Route::Connections {
         String::new()
     } else if app.focus == Focus::List && app.navigation.current() == Route::Projects {
         if app.projects.selected.is_some() {
@@ -398,6 +404,7 @@ fn draw_tooltip(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
     app.sidebar.surface.occlude(popup);
     app.settings.surface.occlude(popup);
     app.home.surface.occlude(popup);
+    app.extensions.surface.occlude(popup);
     clear_overlay(frame, popup);
     frame.render_widget(
         Paragraph::new(label)

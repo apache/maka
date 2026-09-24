@@ -115,6 +115,8 @@ pub struct Surface<M> {
     offsets: HashMap<String, u16>,
     /// The scroller whose thumb the pointer is dragging.
     drag: Option<String>,
+    /// Where focus lands first, by path prefix, once such a stop exists.
+    start: Option<String>,
     committed: Option<Committed<M>>,
 }
 
@@ -128,6 +130,7 @@ impl<M> Default for Surface<M> {
             popover: None,
             offsets: HashMap::new(),
             drag: None,
+            start: None,
             committed: None,
         }
     }
@@ -149,6 +152,16 @@ impl<M: Clone> Surface<M> {
             .position(|item| Some(&item.id) == self.focus.as_ref())
         {
             Some(index) => self.focus_index = index,
+            // A fresh page waits for its content rather than settling on
+            // the chrome above it.
+            None if self.focus.is_none() && self.start.is_some() => {
+                let start = self.start.as_deref().unwrap_or_default();
+                if let Some(index) = stops.iter().position(|item| item.id.starts_with(start)) {
+                    self.focus = Some(stops[index].id.clone());
+                    self.focus_index = index;
+                    self.start = None;
+                }
+            }
             // A removed or disabled target falls to the stop now at its old
             // place, not to the top of the page.
             None if self.focus.is_some() || context.focused => {
@@ -385,8 +398,15 @@ impl<M: Clone> Surface<M> {
         self.set_focus(id);
     }
 
+    /// Until focus is placed, it lands on the first stop under `prefix`
+    /// as soon as one is drawn: a page's content, not its toolbar.
+    pub fn start_at(&mut self, prefix: impl Into<String>) {
+        self.start = Some(prefix.into());
+    }
+
     /// Keyboard focus arrives from outside the page (Tab from navigation).
     pub fn enter(&mut self, last: bool) {
+        self.start = None;
         let Some(committed) = &self.committed else {
             self.focus = None;
             self.focus_index = if last { usize::MAX } else { 0 };

@@ -31,7 +31,7 @@ use maka_plugins::{
     contributions::Staged,
     remote::{Caller, Endpoint, Error, Handler, Method, key},
     terminal_ui::{
-        Context, Descriptor, Text, VERSION,
+        Context, Descriptor, Text,
         page::{Action, Control, Field, Page, Reply, Request, Row},
     },
 };
@@ -55,11 +55,10 @@ struct Route {
 
 pub(super) fn publish(service: Service, staged: &mut Staged) -> Result<(), String> {
     let endpoint = Endpoint::standalone(Handler::Method(Arc::new(View(service))))
-        .with_terminal_view(Descriptor {
-            version: VERSION,
-            title: Text::localized("Scheduled tasks", "计划任务", "排程任務"),
-            context: Context::Application,
-        })
+        .with_terminal_view(Descriptor::new(
+            Text::localized("Scheduled tasks", "计划任务", "排程任務"),
+            Context::Application,
+        ))
         .map_err(super::display)?;
     staged
         .insert(key(ID, "terminal").map_err(super::display)?, endpoint)
@@ -73,16 +72,18 @@ impl Method for View {
         Box::pin(async move {
             let request: Request = serde_json::from_value(input).map_err(invalid)?;
             request.validate().map_err(invalid)?;
+            let locale = request.locale().to_owned();
             let _lease = service.context.admit().map_err(|_| Error::Retired)?;
             let reply = match request {
-                Request::Recover { route } => create::recover(&service, route).await?,
-                Request::Read { route } => read(&service, decode(route)?)?,
+                Request::Recover { route, .. } => create::recover(&service, route).await?,
+                Request::Read { route, .. } => read(&service, decode(route)?)?,
                 Request::Submit {
                     route,
                     revision,
                     action,
                     fields,
                     grant,
+                    ..
                 } => {
                     let route = decode(route)?;
                     if let Some(creation) = route.creation {
@@ -95,6 +96,7 @@ impl Method for View {
                     }
                 }
             };
+            let reply = reply.view(&locale);
             reply.validate().map_err(invalid)?;
             serde_json::to_value(reply).map_err(invalid)
         })
@@ -349,7 +351,6 @@ fn detail(task: Task, revision: u64) -> Page {
 }
 fn empty(title: Text, revision: u64) -> Page {
     Page {
-        version: VERSION,
         title,
         revision: revision.to_string(),
         body: String::new(),
@@ -367,6 +368,7 @@ fn field(id: &str, label: Text, value: String, max_bytes: usize, multiline: bool
             value,
             max_bytes,
             multiline,
+            placeholder: String::new(),
         },
     }
 }
@@ -470,7 +472,7 @@ mod tests {
             .unwrap()
             .task;
             let page = detail(task, 42);
-            page.validate().unwrap();
+            page.clone().view("en").validate().unwrap();
             let editable = body == "ordinary\ntext";
             assert_eq!(
                 page.actions.iter().any(|action| action.id == "save"),

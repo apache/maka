@@ -34,8 +34,8 @@ pub(super) struct Pending {
 pub struct Checkpoint {
     root: String,
     session: Option<String>,
-    view: TerminalViewProjection,
-    page: Page,
+    entry: TerminalViewProjection,
+    view: View,
     route: Value,
     drafts: BTreeMap<String, Value>,
     cursors: BTreeMap<String, Cursor>,
@@ -45,20 +45,21 @@ impl Checkpoint {
     pub fn validate(&self, root: &str) -> Result<(), String> {
         if self.root != root
             || serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
-                > 4 * maka_plugins::terminal_ui::page::MAX_BYTES
+                > 4 * maka_plugins::terminal_ui::view::MAX_BYTES
         {
             return Err("Invalid plugin checkpoint identity or size".into());
         }
-        self.page.validate().map_err(|e| e.to_string())?;
+        self.view.validate().map_err(|e| e.to_string())?;
         Input::Read {
             route: self.route.clone(),
+            locale: "en".into(),
         }
         .validate()
         .map_err(|e| e.to_string())?;
         maka_protocol::plugin::decode_output(
             maka_protocol::Operation::PluginPlatformQuery,
             &serde_json::json!({
-                "view":"terminal_views", "items":[self.view], "nextCursor":null
+                "view":"terminal_views", "items":[self.entry], "nextCursor":null
             }),
         )
         .map_err(|e| e.to_string())?;
@@ -66,16 +67,19 @@ impl Checkpoint {
             .session
             .as_ref()
             .is_some_and(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
-            || self.view.descriptor.context == Context::Session && self.session.is_none()
-            || self.drafts.len() != self.page.fields.len()
+            || self.entry.descriptor.context == Context::Session && self.session.is_none()
+            || self.drafts.len() != self.view.fields.len()
         {
             return Err("Invalid plugin checkpoint context or fields".into());
         }
-        let mut edited = self.page.clone();
+        let mut edited = self.view.clone();
         let mut text_fields = 0;
         for field in &mut edited.fields {
             match (&mut field.control, self.drafts.get(&field.id)) {
                 (Control::Toggle { value }, Some(Value::Bool(draft))) => *value = *draft,
+                (Control::Choice { value, .. }, Some(Value::String(draft))) => {
+                    *value = draft.clone()
+                }
                 (Control::Text { value, .. }, Some(Value::String(draft))) => {
                     *value = draft.clone();
                     text_fields += 1;
@@ -98,13 +102,14 @@ impl Checkpoint {
                 action,
                 fields,
                 grant,
+                locale,
             } = &pending.input
             else {
                 return Err("Invalid frozen plugin submission".into());
             };
             let mut expected = self
-                .page
-                .submission(self.route.clone(), action, fields.clone())
+                .view
+                .submission(self.route.clone(), action, fields.clone(), locale.clone())
                 .map_err(|e| e.to_string())?;
             if let Input::Submit {
                 grant: expected_grant,
@@ -114,18 +119,12 @@ impl Checkpoint {
                 *expected_grant = *grant;
             }
             if route != &self.route
-                || revision != &self.page.revision
+                || revision != &self.view.revision
                 || expected != pending.input
                 || fields
                     .iter()
                     .any(|(key, value)| self.drafts.get(key) != Some(value))
-                || self
-                    .page
-                    .actions
-                    .iter()
-                    .find(|item| &item.id == action)
-                    .map(|item| &item.recovery)
-                    != Some(&pending.recovery)
+                || self.view.action(action).map(|item| &item.recovery) != Some(&pending.recovery)
             {
                 return Err("Frozen plugin intent does not match its form".into());
             }
@@ -147,8 +146,8 @@ impl State {
         Some(Checkpoint {
             root: root.into(),
             session: self.session.clone(),
+            entry: self.entry.clone()?,
             view: self.view.clone()?,
-            page: self.page.clone()?,
             route: self.route.clone(),
             drafts: self.drafts.clone(),
             cursors: self
@@ -161,8 +160,8 @@ impl State {
     }
     pub fn restore(&mut self, checkpoint: Checkpoint) -> Result<(), String> {
         checkpoint.validate(&checkpoint.root)?;
-        self.install(checkpoint.page);
-        self.view = Some(checkpoint.view);
+        self.install(checkpoint.view);
+        self.entry = Some(checkpoint.entry);
         self.session = checkpoint.session;
         self.route = checkpoint.route;
         self.drafts = checkpoint.drafts;

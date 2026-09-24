@@ -19,7 +19,7 @@
 
 use super::{Request, Work};
 use maka_client::{Client, ClientError, RequestFailure};
-use maka_plugins::terminal_ui::page::{Reply, Request as Input};
+use maka_plugins::terminal_ui::view::{Reply, Request as Input};
 use maka_protocol::plugin::{
     Page, Query, QueryResult, RemoteBinding, RemoteKind, RemoteRequest, RemoteResult,
     TerminalViewProjection, View,
@@ -27,9 +27,9 @@ use maka_protocol::plugin::{
 
 pub enum Output {
     Directory(Page<TerminalViewProjection>),
-    Page(Reply),
+    Reply(Reply),
     Rebound {
-        view: Box<TerminalViewProjection>,
+        entry: Box<TerminalViewProjection>,
         reply: Reply,
     },
 }
@@ -47,7 +47,7 @@ fn failure(error: RequestFailure, writing: bool) -> Failure {
 }
 pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failure> {
     match &request.work {
-        Work::Rebind { view, input } => {
+        Work::Rebind { entry, input } => {
             if !matches!(input, Input::Read { .. } | Input::Recover { .. }) {
                 return Err(Failure { unknown: false });
             }
@@ -56,7 +56,7 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failu
                 handler: RemoteKind::Method,
             } = client
                 .plugin_remote(RemoteRequest::Bind {
-                    binding: binding(view, session(view, request)),
+                    binding: binding(entry, session(entry, request)),
                 })
                 .await
                 .map_err(|error| failure(error, false))?
@@ -64,17 +64,17 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failu
                 return Err(Failure { unknown: false });
             };
             // A fresh registration may serve the original entry, never a replacement owner.
-            if target.entry_id != view.target.entry_id {
+            if target.entry_id != entry.target.entry_id {
                 return Err(Failure { unknown: false });
             }
-            let mut view = view.clone();
-            view.target = target;
-            let Output::Page(reply) =
-                call_page(client, &view, input, session(&view, request)).await?
+            let mut entry = entry.clone();
+            entry.target = target;
+            let Output::Reply(reply) =
+                call(client, &entry, input, session(&entry, request)).await?
             else {
                 return Err(Failure { unknown: false });
             };
-            Ok(Output::Rebound { view, reply })
+            Ok(Output::Rebound { entry, reply })
         }
         Work::Directory(cursor) => {
             let result = client
@@ -91,16 +91,16 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failu
                 _ => Err(Failure { unknown: false }),
             }
         }
-        Work::Page { view, input } => call_page(client, view, input, session(view, request)).await,
+        Work::Call { entry, input } => call(client, entry, input, session(entry, request)).await,
         Work::Authorize {
-            view,
+            entry,
             input,
             proposal,
         } => {
             let result = client
                 .plugin_authorization(maka_protocol::plugin::AuthorizationInput::Remote {
-                    binding: binding(view, session(view, request)),
-                    target: view.target.clone(),
+                    binding: binding(entry, session(entry, request)),
+                    target: entry.target.clone(),
                     command: maka_protocol::plugin::AuthorizationCommand::Approve {
                         request: proposal.clone(),
                     },
@@ -119,27 +119,27 @@ pub async fn execute(client: &Client, request: &Request) -> Result<Output, Failu
                 return Err(Failure { unknown: false });
             };
             *receipt = Some(grant.id);
-            call_page(client, view, &input, session(view, request)).await
+            call(client, entry, &input, session(entry, request)).await
         }
     }
 }
 
-fn session(view: &TerminalViewProjection, request: &Request) -> Option<String> {
-    match view.descriptor.context {
+fn session(entry: &TerminalViewProjection, request: &Request) -> Option<String> {
+    match entry.descriptor.context {
         maka_plugins::terminal_ui::Context::Application => None,
         maka_plugins::terminal_ui::Context::Session => request.session.clone(),
     }
 }
-fn binding(view: &TerminalViewProjection, session_id: Option<String>) -> RemoteBinding {
+fn binding(entry: &TerminalViewProjection, session_id: Option<String>) -> RemoteBinding {
     RemoteBinding::Package {
-        package_id: view.package_id.clone(),
-        method: view.method.clone(),
+        package_id: entry.package_id.clone(),
+        method: entry.method.clone(),
         session_id,
     }
 }
-async fn call_page(
+async fn call(
     client: &Client,
-    view: &TerminalViewProjection,
+    entry: &TerminalViewProjection,
     input: &Input,
     session: Option<String>,
 ) -> Result<Output, Failure> {
@@ -153,8 +153,8 @@ async fn call_page(
     };
     let result = client
         .plugin_remote(RemoteRequest::Call {
-            binding: binding(view, session),
-            target: view.target.clone(),
+            binding: binding(entry, session),
+            target: entry.target.clone(),
             document,
             input: serde_json::to_value(input).expect("terminal request"),
         })
@@ -174,7 +174,7 @@ async fn call_page(
         (&input, &reply),
         (
             Input::Read { .. },
-            Reply::Page { .. } | Reply::Conflict | Reply::Rejected { .. }
+            Reply::View { .. } | Reply::Conflict | Reply::Rejected { .. }
         ) | (
             Input::Recover { .. },
             Reply::Applied { .. } | Reply::Unrecorded | Reply::Conflict | Reply::Rejected { .. }
@@ -191,7 +191,7 @@ async fn call_page(
     if !writing {
         closed.map_err(|error| failure(error, false))?;
     }
-    Ok(Output::Page(reply))
+    Ok(Output::Reply(reply))
 }
 
 #[cfg(test)]

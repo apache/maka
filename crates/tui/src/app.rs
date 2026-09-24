@@ -183,6 +183,7 @@ pub struct App {
 
 impl App {
     pub fn new(root: PathBuf, i18n: I18n) -> Self {
+        let locale = i18n.locale().id();
         Self {
             known_root: None,
             page_states: Default::default(),
@@ -204,7 +205,7 @@ impl App {
             sidebar: Default::default(),
             layer: Default::default(),
             home: Default::default(),
-            extensions: Default::default(),
+            extensions: crate::pages::extensions::State::new(locale),
             directories: Default::default(),
             revision: Default::default(),
             onboarding: Default::default(),
@@ -262,7 +263,7 @@ impl App {
             (Action::Detach, "command-detach"),
         ];
         if self.navigation.current() == Route::Extensions {
-            commands.extend(self.page_actions().into_iter().filter_map(|action| {
+            commands.extend(self.extensions_actions().into_iter().filter_map(|action| {
                 if let Action::Extension(command) = &action
                     && *command != crate::pages::extensions::Command::Refresh
                 {
@@ -408,7 +409,8 @@ impl App {
     }
     pub fn page_actions(&self) -> Vec<Action> {
         let mut actions = match self.navigation.current() {
-            Route::Extensions => self.extensions_actions(),
+            // Extension controls live in its kernel surface.
+            Route::Extensions => vec![],
             Route::Connections => self.connection_actions(),
             Route::Projects => self.project_actions(),
             Route::Inbox => {
@@ -1165,15 +1167,22 @@ impl App {
         let captures = match self.navigation.current() {
             Route::Settings => self.settings.surface.captures(),
             Route::Workspace => self.home.surface.captures(),
+            Route::Extensions => self.extensions.surface.captures(),
             _ => return None,
         };
-        if !(mouse || (key && (self.focus == Focus::Page || captures))) {
+        let paste = matches!(event, Event::Paste(_));
+        if !(mouse || ((key || paste) && (self.focus == Focus::Page || captures))) {
             return None;
         }
-        let outcome = if self.navigation.current() == Route::Settings {
-            self.settings.surface.input(event).map(Action::Settings)
-        } else {
-            self.home.surface.input(event).map(Action::Home)
+        let outcome = match self.navigation.current() {
+            Route::Settings => self.settings.surface.input(event).map(Action::Settings),
+            Route::Extensions => {
+                if let Some(outcome) = self.extensions_owner_input(event) {
+                    return Some(outcome);
+                }
+                self.extensions.surface.input(event).map(Action::Extension)
+            }
+            _ => self.home.surface.input(event).map(Action::Home),
         };
         outcome
             .consumed
@@ -1329,15 +1338,13 @@ impl App {
             }
             return (outcome, None);
         }
-        if self.extensions_input(&event) {
-            return (true, None);
-        }
         let action = match event {
             Event::Resize(_, _) => {
                 self.chat.area = None;
                 self.settings.surface.invalidate();
                 self.sidebar.surface.invalidate();
                 self.home.surface.invalidate();
+                self.extensions.surface.invalidate();
                 self.invalidate_editor_geometry();
                 self.hits.clear();
                 self.frame_size = None;
@@ -1452,10 +1459,7 @@ impl App {
                                     self.focus = if !backwards
                                         && matches!(
                                             self.navigation.current(),
-                                            Route::Inbox
-                                                | Route::Projects
-                                                | Route::Connections
-                                                | Route::Extensions
+                                            Route::Inbox | Route::Projects | Route::Connections
                                         ) {
                                         Focus::List
                                     } else if !backwards
@@ -1497,10 +1501,7 @@ impl App {
                                     self.focus = if backwards
                                         && matches!(
                                             self.navigation.current(),
-                                            Route::Inbox
-                                                | Route::Projects
-                                                | Route::Connections
-                                                | Route::Extensions
+                                            Route::Inbox | Route::Projects | Route::Connections
                                         ) {
                                         Focus::List
                                     } else if backwards
@@ -1532,6 +1533,9 @@ impl App {
                                 }
                                 (Focus::Page, Route::Workspace) => {
                                     self.home.surface.enter(backwards)
+                                }
+                                (Focus::Page, Route::Extensions) => {
+                                    self.extensions.surface.enter(backwards)
                                 }
                                 _ => {}
                             }

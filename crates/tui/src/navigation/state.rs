@@ -68,16 +68,12 @@ impl Saved {
             Focus::Navigation => true,
             Focus::List => matches!(
                 route,
-                Route::Workspace
-                    | Route::Inbox
-                    | Route::Projects
-                    | Route::Connections
-                    | Route::Extensions
+                Route::Workspace | Route::Inbox | Route::Projects | Route::Connections
             ),
             Focus::Composer | Focus::Transcript => matches!(route, Route::Session(_)),
             Focus::Page => matches!(
                 route,
-                Route::Workspace | Route::Settings | Route::Host | Route::Help
+                Route::Workspace | Route::Settings | Route::Host | Route::Help | Route::Extensions
             ),
             Focus::Queue => false,
         };
@@ -119,11 +115,7 @@ impl State {
         let focus = match (route, self.focus) {
             (Route::Session(_), Focus::Page | Focus::Queue) => Focus::Composer,
             (
-                Route::Workspace
-                | Route::Inbox
-                | Route::Projects
-                | Route::Connections
-                | Route::Extensions,
+                Route::Workspace | Route::Inbox | Route::Projects | Route::Connections,
                 Focus::Page,
             ) => Focus::List,
             (_, focus) => focus,
@@ -178,6 +170,7 @@ impl App {
         match route {
             Route::Settings => self.settings.surface.leave(),
             Route::Workspace => self.home.surface.leave(),
+            Route::Extensions => self.extensions.surface.leave(),
             _ => {}
         }
         let state = State::capture(self);
@@ -199,7 +192,7 @@ impl App {
             self.inbox.selected = self.inbox.items.first().map(|item| item.id.clone());
         }
         self.focus = match route {
-            Route::Inbox | Route::Projects | Route::Connections | Route::Extensions => Focus::List,
+            Route::Inbox | Route::Projects | Route::Connections => Focus::List,
             Route::Session(_) => Focus::Composer,
             _ => Focus::Page,
         };

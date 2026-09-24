@@ -265,7 +265,7 @@ fn scheduler_creation_requires_consent_then_reuses_only_a_live_grant() {
         .join(&client.identity.root_id)
         .join("default/state.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
-    let draft_revision = saved["extension"]["page"]["revision"].clone();
+    let draft_revision = saved["extension"]["view"]["revision"].clone();
     assert!(
         saved["extension"]["pending"].is_null(),
         "editing has not submitted anything"
@@ -285,7 +285,7 @@ fn scheduler_creation_requires_consent_then_reuses_only_a_live_grant() {
     tui.wait_for("Allow plugin access?");
     let resumed: Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
     assert_ne!(
-        resumed["extension"]["page"]["revision"], draft_revision,
+        resumed["extension"]["view"]["revision"], draft_revision,
         "an unsubmitted creation uses the fresh form identity; uncertain submissions cannot enter this path"
     );
     tui.send(b"\r"); // Default focus cancels; no authorization or task mutation.
@@ -341,11 +341,11 @@ fn scheduler_creation_requires_consent_then_reuses_only_a_live_grant() {
         let RemoteResult::Bound { target, .. } = client.plugin_remote(RemoteRequest::Bind { binding: binding.clone() }).await.unwrap() else { panic!("terminal") };
         client.request(Operation::PluginAuthorization, json!({"binding":binding,"target":target,
             "command":{"kind":"revoke","id":grants[0]["id"]}})).await.unwrap();
-        let page = remote(&client, "terminal", json!({"kind":"read","route":{"creation":{"kind":"form","schedule":"daily"}}})).await;
-        let mut fields = page["page"]["fields"].as_array().unwrap().iter().map(|field| (field["id"].as_str().unwrap().to_owned(), field["control"]["value"].clone())).collect::<serde_json::Map<_, _>>();
+        let page = remote(&client, "terminal", json!({"kind":"read","route":{"creation":{"kind":"form","schedule":"daily"}},"locale":"en"})).await;
+        let mut fields = page["view"]["fields"].as_array().unwrap().iter().map(|field| (field["id"].as_str().unwrap().to_owned(), field["control"]["value"].clone())).collect::<serde_json::Map<_, _>>();
         fields.insert("title".into(), json!("Needs fresh consent"));
         fields.insert("intent".into(), json!("Revoked authority cannot be reused"));
-        let result = remote(&client, "terminal", json!({"kind":"submit", "route":{"creation":{"kind":"form","schedule":"daily"}}, "revision":page["page"]["revision"], "action":"create", "fields":fields})).await;
+        let result = remote(&client, "terminal", json!({"kind":"submit", "route":{"creation":{"kind":"form","schedule":"daily"}}, "revision":page["view"]["revision"], "action":"create", "fields":fields, "locale":"en"})).await;
         assert_eq!(result["kind"], "consent");
         let tasks = remote(&client, "request", json!({"kind":"query","query":{"kind":"list"}})).await;
         assert_eq!(tasks["tasks"].as_array().unwrap().len(), 2);
@@ -353,15 +353,15 @@ fn scheduler_creation_requires_consent_then_reuses_only_a_live_grant() {
             let operation = task["id"].as_str().unwrap().strip_prefix("task-").unwrap();
             let receipt = remote(&client, "request", json!({"kind":"creation","operationId":operation})).await;
             assert_eq!(receipt, json!({"operationId":operation,"taskId":task["id"]}));
-            let timing = remote(&client, "terminal", json!({"kind":"read","route":{"task":task["id"],"timing":true}})).await;
-            let mut fields = timing["page"]["fields"].as_array().unwrap().iter().map(|field| (field["id"].as_str().unwrap().to_owned(), field["control"]["value"].clone())).collect::<serde_json::Map<_, _>>();
+            let timing = remote(&client, "terminal", json!({"kind":"read","route":{"task":task["id"],"timing":true},"locale":"en"})).await;
+            let mut fields = timing["view"]["fields"].as_array().unwrap().iter().map(|field| (field["id"].as_str().unwrap().to_owned(), field["control"]["value"].clone())).collect::<serde_json::Map<_, _>>();
             fields.insert("title".into(), task["title"].clone());
             fields.insert("intent".into(), task["intent"]["body"].clone());
             remote(&client, "request", json!({"kind":"mutate","mutation":{"kind":"delete","taskId":task["id"]}})).await;
             assert_eq!(remote(&client, "request", json!({"kind":"creation","operationId":operation})).await, receipt);
             let replay = remote(&client, "terminal", json!({"kind":"submit",
                 "route":{"creation":{"kind":"form","schedule":task["schedule"]["kind"]}},
-                "revision":operation,"action":"create","fields":fields})).await;
+                "revision":operation,"action":"create","fields":fields,"locale":"en"})).await;
             assert_eq!(replay["kind"], "applied", "committed creation needs no new grant");
             assert_eq!(replay["route"]["task"], task["id"]);
         }

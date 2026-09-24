@@ -40,6 +40,7 @@ pub enum Tone {
     Accent,
     /// The default action: accent, bold.
     Primary,
+    Success,
     Warning,
     Error,
     /// One of the palette's stable identity hues (session titles).

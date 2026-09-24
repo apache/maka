@@ -28,8 +28,9 @@ use maka_plugins::{
     contributions::Staged,
     remote::{Caller, Endpoint, Error, Handler, Method, key},
     terminal_ui::{
-        Context, Descriptor, Text, VERSION,
-        page::{Action, Control, Field, Page, Reply, Request},
+        Context, Descriptor, Text,
+        page::{Action, Field, Page},
+        view::{Control, Reply, Request},
     },
 };
 use serde::Deserialize;
@@ -52,11 +53,7 @@ fn invalid(message: impl ToString) -> Error {
 
 pub(super) fn publish(owner: Arc<Owner>, staged: &mut Staged) -> Result<(), String> {
     let endpoint = Endpoint::standalone(Handler::Method(Arc::new(View(owner))))
-        .with_terminal_view(Descriptor {
-            version: VERSION,
-            title: title(),
-            context: Context::Session,
-        })
+        .with_terminal_view(Descriptor::new(title(), Context::Session))
         .map_err(|error| error.to_string())?;
     staged
         .insert(
@@ -147,7 +144,6 @@ fn clean(value: &str) -> String {
 }
 fn page(current: Option<Current>) -> Page {
     let mut page = Page {
-        version: VERSION,
         title: title(),
         revision: format!(
             "{}:{}:{}:{}",
@@ -238,6 +234,7 @@ fn page(current: Option<Current>) -> Page {
                     value: String::new(),
                     max_bytes: 8192,
                     multiline: true,
+                    placeholder: String::new(),
                 },
             },
             Field {
@@ -252,6 +249,7 @@ fn page(current: Option<Current>) -> Page {
                     value: "10".into(),
                     max_bytes: 3,
                     multiline: false,
+                    placeholder: String::new(),
                 },
             },
             Field {
@@ -266,6 +264,7 @@ fn page(current: Option<Current>) -> Page {
                     value: String::new(),
                     max_bytes: 10,
                     multiline: false,
+                    placeholder: String::new(),
                 },
             },
         ];
@@ -294,15 +293,16 @@ impl Method for View {
         Box::pin(async move {
             let request: Request = serde_json::from_value(input).map_err(invalid)?;
             request.validate().map_err(invalid)?;
+            let locale = request.locale().to_owned();
             let session = caller
                 .session_id
                 .clone()
                 .ok_or_else(|| invalid("Bind Goal to a Session"))?;
             let reply = match request {
-                Request::Read { route } if route.is_null() => Reply::Page {
-                    page: page(manage(owner, caller, json!({"kind":"read"})).await?),
+                Request::Read { route, .. } if route.is_null() => Reply::View {
+                    view: page(manage(owner, caller, json!({"kind":"read"})).await?).view(&locale),
                 },
-                Request::Recover { route } => {
+                Request::Recover { route, .. } => {
                     let operation = route
                         .get("operationId")
                         .and_then(Value::as_str)
@@ -327,6 +327,7 @@ impl Method for View {
                     action,
                     fields,
                     grant,
+                    ..
                 } if route.is_null() => {
                     let (revision, goal_id, operation, blocked) = revision(&basis)?;
                     let input = if action == "save" || action == "start" {
@@ -397,12 +398,11 @@ impl Method for View {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_plugins::terminal_ui::page::Control;
 
     #[test]
     fn session_page_exposes_small_form_and_stable_arm_recovery_identity() {
         let page = page(None);
-        page.validate().unwrap();
+        page.clone().view("en").validate().unwrap();
         assert_eq!(page.fields.len(), 3);
         assert_eq!(page.actions.len(), 2);
         let (_, goal, operation, blocked) = revision(&page.revision).unwrap();
@@ -448,7 +448,7 @@ mod tests {
             authority_blocked: false,
         };
         let page = page(Some(Current { revision: 7, goal }));
-        page.validate().unwrap();
+        page.clone().view("en").validate().unwrap();
         assert!(page.fields.is_empty());
         assert!(page.actions.iter().any(|action| action.id == "pause"));
         assert!(page.actions.iter().any(|action| action.id == "cancel"));

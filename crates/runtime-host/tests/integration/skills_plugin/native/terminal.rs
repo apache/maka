@@ -18,7 +18,7 @@
  */
 
 use maka_client::Client;
-use maka_plugins::terminal_ui::page::{Control, Page, Reply, Request};
+use maka_plugins::terminal_ui::view::{self, Control, Node, Reply, Request, Target};
 use maka_protocol::plugin::{Query, QueryResult, RemoteBinding, RemoteRequest, RemoteResult, View};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,42 +75,32 @@ pub(super) async fn exercise(client: &Client, session: &str) {
     let mut references = BTreeSet::new();
     let mut chosen = None;
     loop {
-        let Reply::Page { page } = decode(
-            client
-                .plugin_remote(call(Request::Read {
-                    route: route.clone(),
-                }))
-                .await
-                .unwrap(),
-        ) else {
+        let Reply::View { view } = decode(client.plugin_remote(call(read(&route))).await.unwrap())
+        else {
             panic!("list");
         };
-        assert!(page.rows.len() <= 9);
-        for row in &page.rows {
-            if row.id == "next" {
+        let rows = links(&view.root);
+        assert!(rows.len() <= 9);
+        for (key, title, target) in &rows {
+            if key == "next" {
                 continue;
             }
-            assert!(references.insert(row.id.clone()), "repeated row");
-            if row.title.fallback == "Review 128" {
-                chosen = Some(row.route.clone());
+            assert!(references.insert(key.clone()), "repeated row");
+            if title == "Review 128" {
+                chosen = Some(target.clone());
             }
         }
-        let Some(next) = page.rows.iter().find(|row| row.id == "next") else {
+        let Some((_, _, next)) = rows.into_iter().find(|(key, ..)| key == "next") else {
             break;
         };
         assert!(references.len() < 512, "bounded fixture must terminate");
-        route = next.route.clone();
+        route = next;
     }
     assert!(references.len() >= 129);
     let route = chosen.unwrap();
-    let Reply::Page { page } = decode(
-        client
-            .plugin_remote(call(Request::Read {
-                route: route.clone(),
-            }))
-            .await
-            .unwrap(),
-    ) else {
+    let Reply::View { view: page } =
+        decode(client.plugin_remote(call(read(&route))).await.unwrap())
+    else {
         panic!("detail");
     };
     assert_eq!(page.fields.len(), 2);
@@ -119,7 +109,7 @@ pub(super) async fn exercise(client: &Client, session: &str) {
         ("pinned".into(), json!(true)),
     ]);
     let input = page
-        .submission(route.clone(), "save", fields.clone())
+        .submission(route.clone(), "save", fields.clone(), "en".into())
         .unwrap();
     assert!(matches!(
         decode(client.plugin_remote(call(input.clone())).await.unwrap()),
@@ -136,7 +126,8 @@ pub(super) async fn exercise(client: &Client, session: &str) {
                         BTreeMap::from([
                             ("enabled".into(), json!(true)),
                             ("pinned".into(), json!(false))
-                        ])
+                        ]),
+                        "en".into()
                     )
                     .unwrap()
                 ))
@@ -145,14 +136,9 @@ pub(super) async fn exercise(client: &Client, session: &str) {
         ),
         Reply::Conflict
     ));
-    let Reply::Page { page: fresh } = decode(
-        client
-            .plugin_remote(call(Request::Read {
-                route: route.clone(),
-            }))
-            .await
-            .unwrap(),
-    ) else {
+    let Reply::View { view: fresh } =
+        decode(client.plugin_remote(call(read(&route))).await.unwrap())
+    else {
         panic!("fresh detail");
     };
     assert_ne!(fresh.revision, page.revision);
@@ -178,7 +164,8 @@ pub(super) async fn exercise(client: &Client, session: &str) {
                             BTreeMap::from([
                                 ("enabled".into(), json!(true)),
                                 ("pinned".into(), json!(false))
-                            ])
+                            ]),
+                            "en".into()
                         )
                         .unwrap()
                 ))
@@ -192,7 +179,25 @@ pub(super) async fn exercise(client: &Client, session: &str) {
         .await
         .unwrap();
 }
-fn values(page: &Page) -> BTreeMap<String, Value> {
+fn read(route: &Value) -> Request {
+    Request::Read {
+        route: route.clone(),
+        locale: "en".into(),
+    }
+}
+/// Every row that reads another route: its key, title and route.
+fn links(node: &Node) -> Vec<(String, String, Value)> {
+    match node {
+        Node::Item {
+            key,
+            title,
+            target: Target::Route { route },
+            ..
+        } => vec![(key.clone(), title.clone(), route.clone())],
+        _ => node.children().into_iter().flat_map(links).collect(),
+    }
+}
+fn values(page: &view::View) -> BTreeMap<String, Value> {
     page.fields
         .iter()
         .map(|field| {
