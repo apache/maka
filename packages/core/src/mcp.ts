@@ -49,6 +49,8 @@ export interface McpRemoteServerConfig {
  * `callbackPort`, because its redirect URI was registered with a fixed port.
  */
 export interface McpOAuthConfig {
+  /** Authorization server that owns the pre-registered client credentials. */
+  issuer?: string;
   clientId?: string;
   clientSecret?: string;
   scopes?: string[];
@@ -244,6 +246,13 @@ export function isNonLoopbackCleartextHttp(url: URL): boolean {
  * fished out of a flattened IPC error string. */
 export type McpConfigAddResult = { status: 'added'; config: McpConfigFile } | { status: 'exists' };
 
+/** Result of changing an existing server. `stale` means another writer (the
+ * TUI, or another window) changed or removed it after the caller read it, so
+ * nothing was written over that change. */
+export type McpConfigUpdateResult =
+  | { status: 'updated'; config: McpConfigFile }
+  | { status: 'stale' };
+
 export type McpConfigSourceFailureReason =
   | 'invalid-json'
   | 'not-object'
@@ -317,6 +326,9 @@ export interface McpServerStatus {
   /** True when the connection is backed by stored OAuth credentials —
    * the UI offers logout only where there is something to drop. */
   authenticated?: boolean;
+  /** Derived from the client's interactive login owner, including after the
+   * configuration page is reopened. */
+  authorizationPending?: boolean;
   updatedAt: number;
 }
 
@@ -356,7 +368,12 @@ export function mcpConfigChangeRetiresCredentials(
   const previousStdio = isMcpStdioConfig(previous);
   const nextStdio = isMcpStdioConfig(next);
   if (previousStdio || nextStdio) return previousStdio !== nextStdio;
-  return previous.url !== next.url;
+  return (
+    previous.url !== next.url ||
+    previous.oauth?.issuer !== next.oauth?.issuer ||
+    previous.oauth?.clientId !== next.oauth?.clientId ||
+    previous.oauth?.clientSecret !== next.oauth?.clientSecret
+  );
 }
 
 export function resolveMcpProtocolPreference(config: McpServerConfig): McpProtocolPreference {

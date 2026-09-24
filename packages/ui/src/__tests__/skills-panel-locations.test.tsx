@@ -29,6 +29,7 @@ import { ToastProvider } from '../toast.js';
 
 const originalGlobals = {
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
+  CSS: globalThis.CSS,
   document: globalThis.document,
   matchMedia: globalThis.matchMedia,
   requestAnimationFrame: globalThis.requestAnimationFrame,
@@ -81,6 +82,7 @@ test('Skill locations close the menu before opening and create only a missing di
       return frameId;
     },
     cancelAnimationFrame: (id: number) => frames.delete(id),
+    CSS: { escape: (value: string) => value },
     IS_REACT_ACT_ENVIRONMENT: true,
   });
 

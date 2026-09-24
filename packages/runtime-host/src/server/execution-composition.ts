@@ -18,6 +18,7 @@
  */
 
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
+import { createJevRoutingModel } from './jev-routing-model.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { attachmentKindFromMimeType, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
@@ -159,6 +160,7 @@ import {
 } from './interactive-run-composer.js';
 
 import {
+  readDuringBackendCreation,
   createHostGoalEvaluator,
   createHostDailyReviewModel,
   createHostMemoryExtractionModel,
@@ -1702,9 +1704,37 @@ export async function createExecutionRuntimeHostComposition(
       },
       (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
       context.owner.capability.rootId,
-      dependencies.workHubRoutingModel
-        ? (input) => workHubCoordination.prepareRoutingDecision(input)
-        : undefined,
+      async (input) => {
+        // Explicit injection remains an experiment seam. Injected models own
+        // policy/egress checks and cancellation; this bypasses the production
+        // Jev preparation deadline (including its transcript-read protection).
+        if (dependencies.workHubRoutingModel)
+          return workHubCoordination.prepareRoutingDecision(input);
+        // One admission budget covers policy/transcript reads, both Jev asks,
+        // candidate resolution and transport cleanup; it is not per request.
+        const signal = AbortSignal.any([
+          ...(input.inputClosedSignal ? [input.inputClosedSignal] : []),
+          AbortSignal.timeout(8_000),
+        ]);
+        try {
+          const { policy } = await readDuringBackendCreation(
+            () => runtimePolicyStores.runtimePolicy.getSnapshot(),
+            signal,
+          );
+          if (!policy.jev?.enabled || policy.privacy.incognitoActive) return undefined;
+          return await readDuringBackendCreation(
+            () =>
+              workHubCoordination.prepareRoutingDecision({ ...input, inputClosedSignal: signal }),
+            signal,
+          );
+        } catch {
+          if (!input.inputClosedSignal?.aborted) {
+            const failure = signal.aborted ? 'timeout' : 'preparation_unavailable';
+            console.warn(`[runtime-host] Jev routing fallback: ${failure}`);
+          }
+          return undefined;
+        }
+      },
     );
     const coordinator = rootCoordinator;
     const pluginModel = createHostPluginModel({
@@ -2171,7 +2201,8 @@ export async function createExecutionRuntimeHostComposition(
       },
     });
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
-      routingModel: dependencies.workHubRoutingModel,
+      routingModel:
+        dependencies.workHubRoutingModel ?? createJevRoutingModel({ stores: runtimePolicyStores }),
       requestForm: (input) => interactions.requestForm(input),
       targetExecution: workHubTargetExecution,
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),

@@ -223,7 +223,7 @@ export interface HostWorkHubRoutingModel {
       }[];
     }>;
     readonly abortSignal: AbortSignal;
-  }): Promise<WorkHubRoutingDecision>;
+  }): Promise<WorkHubRoutingDecision | undefined>;
 }
 
 /** Uses the Coordination Session's exact saved model target for split Intent and Recall. */

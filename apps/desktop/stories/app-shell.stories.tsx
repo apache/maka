@@ -1582,10 +1582,10 @@ export const LongSystemNotes: Story = {
 
 // Real path: a long session that has accumulated reasoning, several native
 // Astryx tool calls and long prose, a ScheduledTask-triggered turn, with an image
-// staged in the composer and thinking set to medium. Each part is individually
-// reachable; they are stacked into one screen on purpose, as the canonical
-// visual-acceptance scaffold for the transcript. Open this first, then the
-// focused stories above.
+// staged in the composer and thinking set to medium, and the multi-step turn's
+// work log opened. Each part is individually reachable; they are stacked into
+// one screen on purpose, as the canonical visual-acceptance scaffold for the
+// transcript. Open this first, then the focused stories above.
 export const NativeConversation: Story = {
   render: () => (
     <ComposedShell
@@ -1607,6 +1607,29 @@ export const NativeConversation: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const process = await waitFor(() => {
+      const found = canvasElement.querySelector<HTMLDetailsElement>('.maka-processing-sequence');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    process.querySelector('summary')!.click();
+    await waitFor(() => expect(process.open).toBe(true));
+    const body = process.querySelector<HTMLElement>('.maka-processing-body')!;
+    const rowGap = Number.parseFloat(getComputedStyle(body).rowGap);
+    const rows = [...body.children].map((row) => ({
+      kind: row.className.split(' ')[0],
+      rect: row.getBoundingClientRect(),
+    }));
+    await expect(new Set(rows.map((row) => row.kind))).toEqual(
+      new Set(['astryx-chat-reasoning', 'astryx-chat-message-bubble', 'astryx-chat-tool-calls']),
+    );
+    const gaps = rows.slice(1).map((row, index) => ({
+      between: `${rows[index]!.kind} → ${row.kind}`,
+      gap: Math.round(row.rect.top - rows[index]!.rect.bottom),
+    }));
+    await expect(gaps).toEqual(gaps.map(({ between }) => ({ between, gap: rowGap })));
+  },
 };
 
 // The relatives that make the active session a branch AND revision 2 of 3.

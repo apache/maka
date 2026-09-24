@@ -1588,7 +1588,7 @@ function registerHostClientIpc(
   void capabilityBinding.aligned.catch((error) =>
     console.error("[runtime-host] MCP capability alignment failed:", error),
   );
-  registerMcpIpcMain({
+  const stopMcpIpc = registerMcpIpcMain({
     ipcMain: scopedIpc,
     store: mcpConfigStore,
     manager: mcpManager,
@@ -1838,6 +1838,7 @@ function registerHostClientIpc(
     if (runtimePolicyTargetsByEpoch.get(scope.targetEpoch) === targetContext) {
       runtimePolicyTargetsByEpoch.delete(scope.targetEpoch);
     }
+    stopMcpIpc();
     capabilityBinding.dispose();
     await capabilityBinding.aligned.catch(() => undefined);
   };

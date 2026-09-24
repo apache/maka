@@ -251,13 +251,6 @@
      emphasis, and using this for CTAs is exactly the palette-invisibility
      bug called out in the --brand-deep note above. */
   --maka-brand: #71a8fd;
-  /* Every MCP market tile renders a real library brand mark on a neutral plate
-     (mcp-brand-marks.tsx: simple-icons + @ant-design/icons-svg DingTalk + the
-     vendored Feishu mark), so no per-brand plate-tint token is needed — a
-     colourful logo already supplies the brand identity. The system-banner tint
-     alias went the same way: the scheduled-tasks banner derives from --accent
-     directly, which is one indirection fewer for the same result. */
-
   /* === text variants (mixed toward foreground for better contrast) === */
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
   --destructive-text: color-mix(in oklab, var(--destructive) 50%, var(--foreground));

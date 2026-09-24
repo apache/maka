@@ -70,6 +70,7 @@
     "src/renderer/locales/settings-data-copy.ts",
     "src/renderer/locales/settings-external-agents-copy.ts",
     "src/renderer/locales/settings-health-copy.ts",
+    "src/renderer/locales/settings-jev-copy.ts",
     "src/renderer/locales/settings-memory-copy.ts",
     "src/renderer/locales/settings-navigation-copy.ts",
     "src/renderer/locales/settings-preferences-copy.ts",
@@ -84,15 +85,7 @@
     "src/renderer/locales/shell-remaining-copy.ts",
     "src/renderer/locales/task-readiness-copy.ts",
     "src/renderer/locales/work-board-error-copy.ts",
-    "src/renderer/locales/workhub-copy.ts",
     "src/renderer/main.tsx",
-    "src/renderer/mcp-brand-contrast.ts",
-    "src/renderer/mcp-brand-marks.tsx",
-    "src/renderer/mcp-catalog.ts",
-    "src/renderer/mcp-command-line.ts",
-    "src/renderer/mcp-editor-validation.ts",
-    "src/renderer/mcp-page-model.ts",
-    "src/renderer/mcp-page.tsx",
     "src/renderer/model-catalog-choices.ts",
     "src/renderer/model-connection-errors.ts",
     "src/renderer/nav-selection.ts",
@@ -226,7 +219,6 @@
   ],
   "legacyFeatureImports": [
     "src/renderer/features/module-hub/controller/use-daily-review-controller.ts -> src/renderer/daily-review-actions",
-    "src/renderer/features/module-hub/ui/module-hub-host.tsx -> src/renderer/mcp-page",
     "src/renderer/features/session-navigation/model/session-list-layout.ts -> src/renderer/browser-storage",
     "src/renderer/features/session-navigation/model/session-rail-layout-store.ts -> src/renderer/browser-storage",
     "src/renderer/features/task-entry/ui/task-entry-host.tsx -> src/renderer/remote-project-directory-dialog",
@@ -1487,6 +1479,15 @@
         "actionFactories": [],
         "dependencyPaths": {}
       },
+      "src/renderer/locales/settings-jev-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
       "src/renderer/locales/settings-memory-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -1623,127 +1624,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "@maka/core/ui-locale": 1
-        }
-      },
-      "src/renderer/locales/workhub-copy.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/mcp-brand-contrast.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/mcp-brand-marks.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./mcp-brand-contrast.js": 1,
-          "@ant-design/icons-svg/es/asn/DingtalkOutlined.js": 1,
-          "simple-icons": 1
-        }
-      },
-      "src/renderer/mcp-catalog.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/mcp-command-line.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {}
-      },
-      "src/renderer/mcp-editor-validation.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./mcp-command-line.js": 1
-        }
-      },
-      "src/renderer/mcp-page-model.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./mcp-command-line.js": 1,
-          "@maka/core/mcp": 1
-        }
-      },
-      "src/renderer/mcp-page.tsx": {
-        "bridgePaths": {
-          "window.maka.mcp.cancelInstall": 1,
-          "window.maka.mcp.getConfig": 1,
-          "window.maka.mcp.importConfig": 1,
-          "window.maka.mcp.install": 1,
-          "window.maka.mcp.listStatuses": 1,
-          "window.maka.mcp.remove": 1,
-          "window.maka.mcp.subscribeChanges": 1,
-          "window.maka.mcp.test": 1,
-          "window.maka.mcp.upsert": 2
-        },
-        "environmentCapabilities": {
-          "cancelAnimationFrame": 1,
-          "requestAnimationFrame": 1,
-          "window.requestAnimationFrame": 2,
-          "window.setTimeout": 1
-        },
-        "hookCalls": {
-          "useEffect": 3,
-          "useMountedRef": 1,
-          "useRef": 4,
-          "useRovingRowFocus": 1,
-          "useState": 11,
-          "useToast": 1,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./default-runtime-host-operation.js": 1,
-          "./locales/mcp-copy": 1,
-          "./mcp-brand-marks": 1,
-          "./mcp-catalog": 1,
-          "./mcp-command-line": 1,
-          "./mcp-editor-validation": 1,
-          "./mcp-page-model": 1,
-          "./settings/settings-error-copy": 1,
-          "@astryxdesign/core": 1,
-          "@astryxdesign/core/Dialog": 1,
-          "@astryxdesign/core/Layout": 1,
-          "@astryxdesign/core/MetadataList": 1,
-          "@maka/core/mcp": 1,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1,
-          "react": 1
         }
       },
       "src/renderer/model-catalog-choices.ts": {
@@ -2418,6 +2298,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/jev-settings": 1,
           "../features/network-proxy/index.js": 1,
           "../locales/settings-preferences-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
