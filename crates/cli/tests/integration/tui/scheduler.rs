@@ -129,6 +129,11 @@ fn scheduler_form_edits_multiline_and_fences_stale_writes_without_running_a_mode
     );
     tui.send(b"\x1b");
     tui.wait_for("First line");
+    // The draft comes first; a change elsewhere then leaves it in place
+    // rather than reading the page again under it.
+    tui.click_text("First line");
+    tui.send(b"\x01\x1b[200~Keep this draft\x1b[201~");
+    tui.wait_for("Keep this draft");
     runtime.block_on(remote(
         &client,
         "request",
@@ -136,8 +141,6 @@ fn scheduler_form_edits_multiline_and_fences_stale_writes_without_running_a_mode
             "kind":"update","taskId":id,"patch":{"title":"Changed elsewhere","intentBody":"Changed remote note"}
         }}),
     ));
-    tui.click_text("First line");
-    tui.send(b"\x01\x1b[200~Keep this draft\x1b[201~");
     tui.click_text("Save");
     tui.wait_for("Your draft is preserved");
     tui.wait_for("Keep this draft");

@@ -533,8 +533,10 @@ impl View {
         key(node.key())?;
         match node {
             Node::Column { gap, children, .. } | Node::Row { gap, children, .. } => {
+                // Children count against the view's node budget, not a
+                // container's: a checklist may hold its whole list.
                 let mut keys = BTreeSet::new();
-                if *gap > 4 || children.len() > 128 {
+                if *gap > 4 {
                     return Err(invalid());
                 }
                 for child in children {
@@ -1128,7 +1130,10 @@ mod tests {
             view.root = node;
         }));
         assert!(invalid(&|view| {
-            view.root = column("root", (0..=128).map(|n| rule(format!("r{n}"))).collect())
+            view.root = column(
+                "root",
+                (0..MAX_NODES).map(|n| rule(format!("r{n}"))).collect(),
+            )
         }));
         assert!(
             valid

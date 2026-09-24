@@ -40,6 +40,7 @@ pub(super) fn register(
         manager,
         reads: Semaphore::new(2),
     });
+    super::terminal::register(staged, &package, service.clone())?;
     for (name, handler) in [
         (
             "settings",
@@ -83,16 +84,16 @@ pub(super) fn register(
     }
     Ok(())
 }
-struct Service {
+pub(super) struct Service {
     manager: Arc<super::Manager>,
     reads: Semaphore,
 }
-struct Call {
-    service: Arc<Service>,
-    action: Action,
+pub(super) struct Call {
+    pub(super) service: Arc<Service>,
+    pub(super) action: Action,
 }
 #[derive(Clone, Copy)]
-enum Action {
+pub(super) enum Action {
     Settings,
     Authorize,
     Query,

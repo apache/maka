@@ -148,7 +148,18 @@ pub fn draw_inspector(frame: &mut Frame<'_>, app: &mut App, area: Rect, session:
     }
     app.apps.inspector_area = Some(area);
     let width = area.width.saturating_sub(1);
-    let keys = app.apps.session_keys(session, &Placement::Panel);
+    // A panel with nothing to say for this session takes no room.
+    let keys: Vec<_> = app
+        .apps
+        .session_keys(session, &Placement::Panel)
+        .into_iter()
+        .filter(|key| {
+            !app.apps.instances[key]
+                .view
+                .as_ref()
+                .is_some_and(tree::blank)
+        })
+        .collect();
     let mut panels = vec![];
     let mut wells = vec![];
     for key in &keys {

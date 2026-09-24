@@ -139,6 +139,7 @@ pub(super) fn read(service: &Service, creation: Route) -> Result<Reply, Error> {
                 enabled: true,
                 fields: page.fields.iter().map(|field| field.id.clone()).collect(),
                 recovery: Some(serde_json::json!({"operation":page.revision})),
+                confirm: None,
             });
         }
     }

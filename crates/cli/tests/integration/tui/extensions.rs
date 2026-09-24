@@ -104,7 +104,10 @@ fn plugin_form_saves_in_place_and_preserves_a_stale_draft_without_model_executio
     let item = selected(&first);
     assert_eq!(item["pinned"], true);
     assert_eq!(item["enabled"], true);
-    // A competing writer changes the same domain revision after the form loaded.
+    // A draft in progress stays put when the page changes underneath: a
+    // competing writer changes the same domain revision while it is edited.
+    tui.click_text("Enabled");
+    tui.wait_for("○─");
     let changed = runtime.block_on(remote(
         &client,
         json!({
@@ -113,8 +116,6 @@ fn plugin_form_saves_in_place_and_preserves_a_stale_draft_without_model_executio
         }),
     ));
     assert_eq!(changed["kind"], "committed");
-    tui.click_text("Enabled");
-    tui.wait_for("○─");
     tui.click_text("Save");
     tui.wait_for("Your draft is preserved");
     tui.send(b"\r"); // A stale submission is disabled, not retried.

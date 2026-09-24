@@ -163,53 +163,54 @@ pub fn method(app: impl App) -> Arc<dyn Method> {
 }
 
 /// A changes stream for descriptors to name: one item each time the watched
-/// revision moves, none at open (the shell has just read). `subscribe`
-/// picks what a caller watches, so a session's stream can ignore others.
-pub fn changes(
-    subscribe: impl Fn(&Caller) -> tokio::sync::watch::Receiver<u64> + Send + Sync + 'static,
+/// value changes, none at open (the shell has just read). `subscribe` picks
+/// what a caller watches, so a session's stream can ignore others.
+pub fn changes<T: Send + Sync + 'static>(
+    subscribe: impl Fn(&Caller) -> tokio::sync::watch::Receiver<T> + Send + Sync + 'static,
 ) -> Arc<dyn StreamProvider> {
     Arc::new(Changes(Box::new(subscribe)))
 }
 
-type Subscribe = Box<dyn Fn(&Caller) -> tokio::sync::watch::Receiver<u64> + Send + Sync>;
-struct Changes(Subscribe);
+type Subscribe<T> = Box<dyn Fn(&Caller) -> tokio::sync::watch::Receiver<T> + Send + Sync>;
+struct Changes<T>(Subscribe<T>);
 
-impl StreamProvider for Changes {
+impl<T: Send + Sync + 'static> StreamProvider for Changes<T> {
     fn open(
         &self,
         input: Value,
         caller: Caller,
     ) -> BoxFuture<'static, Result<Box<dyn Stream>, Error>> {
-        let mut revisions = (self.0)(&caller);
-        revisions.mark_unchanged();
+        let mut values = (self.0)(&caller);
+        values.mark_unchanged();
         let stop = caller.cancellation.child_token();
         Box::pin(async move {
             if !input.is_null() {
                 return Err(Error::Invalid("Changes take no arguments".into()));
             }
             Ok(Box::new(Watching {
-                revisions: tokio::sync::Mutex::new(revisions),
+                values: tokio::sync::Mutex::new(values),
                 stop,
             }) as Box<dyn Stream>)
         })
     }
 }
 
-struct Watching {
-    revisions: tokio::sync::Mutex<tokio::sync::watch::Receiver<u64>>,
+struct Watching<T> {
+    values: tokio::sync::Mutex<tokio::sync::watch::Receiver<T>>,
     stop: tokio_util::sync::CancellationToken,
 }
 
-impl Stream for Watching {
+impl<T: Send + Sync + 'static> Stream for Watching<T> {
     fn next(&self) -> BoxFuture<'_, Result<Option<Value>, Error>> {
         Box::pin(async move {
-            let mut revisions = self.revisions.lock().await;
+            let mut values = self.values.lock().await;
             tokio::select! {
                 biased;
                 _ = self.stop.cancelled() => Ok(None),
-                changed = revisions.changed() => {
+                changed = values.changed() => {
                     changed.map_err(|_| Error::Retired)?;
-                    Ok(Some(Value::from(*revisions.borrow_and_update())))
+                    values.mark_unchanged();
+                    Ok(Some(Value::Null))
                 }
             }
         })

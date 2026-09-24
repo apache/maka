@@ -19,6 +19,7 @@
 
 //! Session checklists are plugin data, not execution evidence or a work queue.
 mod remote;
+mod terminal;
 mod tools;
 
 use futures_util::future::BoxFuture;
@@ -93,6 +94,7 @@ impl Plugin for Builtin {
                 changed: watch::channel(()).0,
             });
             tools::publish(repository.clone(), &mut staged)?;
+            terminal::publish(repository.clone(), &identity.package_id, &mut staged)?;
             if let Some(bundle) = client {
                 remote::publish(repository, &identity.package_id, &bundle, &mut staged)?;
                 context

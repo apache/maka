@@ -98,6 +98,8 @@ pub struct Instance {
     pub(super) confirm_discard: bool,
     pub(super) review: Option<drafts::Review>,
     pub(super) busy: bool,
+    /// The request in flight is a plain read, which the reader may overtake.
+    pub(super) reading: bool,
     pub(super) writing: bool,
     pub(super) blocked: bool,
     /// A change arrived while the view could not be read again.
@@ -135,6 +137,19 @@ impl Instance {
     }
     pub(super) fn idle(&self) -> bool {
         !self.busy && self.pending.is_none()
+    }
+    /// Only a read is in flight: what the reader does next overtakes it.
+    pub(super) fn refreshing(&self) -> bool {
+        self.busy && self.reading && self.pending.is_none()
+    }
+    /// Drops a read in flight so the reader's own action goes first; reads
+    /// replay safely, and its late result no longer applies.
+    pub(super) fn overtake(&mut self) {
+        if self.refreshing() {
+            self.generation += 1;
+            self.busy = false;
+            self.reading = false;
+        }
     }
     pub(super) fn read(&mut self, locale: &str) {
         self.stale = false;
@@ -300,6 +315,7 @@ impl Instance {
         self.generation += 1;
         self.pending = None;
         self.busy = false;
+        self.reading = false;
         self.blocked = self.view.is_some() && self.keeps();
         // A clean view reads again once the directory names a live binding.
         self.stale = self.view.is_some() && !self.blocked;

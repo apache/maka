@@ -22,6 +22,7 @@ mod operators;
 mod read;
 mod remote;
 mod session;
+mod terminal;
 mod tools;
 
 use crate::{Mode, owner::Handle};

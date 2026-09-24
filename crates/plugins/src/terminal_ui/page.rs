@@ -102,6 +102,8 @@ pub struct Action {
     pub fields: Vec<String>,
     /// Opaque read-only recovery route; see [`view::Action::recovery`].
     pub recovery: Option<Value>,
+    /// The shell asks first; a destructive one reads as such.
+    pub confirm: Option<view::Confirm>,
 }
 
 impl Page {
@@ -166,15 +168,12 @@ impl Page {
                     .iter()
                     .enumerate()
                     .map(|(index, action)| {
-                        build::button(
-                            action.id.clone(),
-                            action.id.clone(),
-                            if index == 0 {
-                                Role::Primary
-                            } else {
-                                Role::Normal
-                            },
-                        )
+                        let role = match &action.confirm {
+                            Some(confirm) if confirm.destructive => Role::Destructive,
+                            _ if index == 0 => Role::Primary,
+                            _ => Role::Normal,
+                        };
+                        build::button(action.id.clone(), action.id.clone(), role)
                     })
                     .collect(),
             ));
@@ -201,7 +200,7 @@ impl Page {
                     enabled: action.enabled,
                     fields: action.fields,
                     recovery: action.recovery,
-                    confirm: None,
+                    confirm: action.confirm,
                 })
                 .collect(),
             root: build::column("page", children),
@@ -238,6 +237,7 @@ mod tests {
                 enabled: true,
                 fields: vec!["enabled".into()],
                 recovery: None,
+                confirm: None,
             }],
         };
         let view = page.view("zh-CN");

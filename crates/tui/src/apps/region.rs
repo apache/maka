@@ -97,7 +97,7 @@ pub(super) fn input<M: Clone>(
     let editable = |apps: &Apps, well: &Well| {
         apps.instances
             .get(&well.key)
-            .is_some_and(|instance| instance.idle() && !instance.blocked)
+            .is_some_and(|instance| (instance.idle() || instance.refreshing()) && !instance.blocked)
     };
     if let Event::Mouse(mouse) = event {
         let well = wells.iter().find(|well| {
@@ -169,6 +169,11 @@ pub(super) fn input<M: Clone>(
         _ => return None,
     };
     if changed {
+        // Typing overtakes a refresh in flight; the draft reads again later.
+        if instance.refreshing() {
+            instance.overtake();
+            instance.stale = true;
+        }
         instance.applied = None;
         let text = instance.editors[&well.field].text().to_owned();
         instance

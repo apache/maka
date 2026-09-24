@@ -434,6 +434,13 @@ impl App {
             let replaying = instance.unresolved.is_some();
             instance.generation += 1;
             instance.busy = true;
+            instance.reading = matches!(
+                work,
+                Work::Call {
+                    input: Input::Read { .. },
+                    ..
+                }
+            );
             instance.writing = matches!(
                 work,
                 Work::Call {
@@ -495,6 +502,7 @@ impl App {
             return;
         }
         instance.busy = false;
+        instance.reading = false;
         instance.saving = false;
         instance.writing = false;
         let recovering = matches!(
@@ -722,6 +730,10 @@ impl App {
         };
         match command {
             Command::DismissConsent | Command::CancelConfirm => self.apps_offered(message),
+            // A background refresh never stands in the reader's way.
+            Command::View(_) | Command::Back | Command::Refresh | Command::Discard => {
+                (instance.idle() || instance.refreshing()) && self.apps_offered(message)
+            }
             _ => instance.idle() && self.apps_offered(message),
         }
     }
@@ -857,6 +869,12 @@ impl App {
         let apps = &mut self.apps;
         let instance = apps.instances.get_mut(&key)?;
         instance.applied = None;
+        if matches!(
+            command,
+            Command::View(_) | Command::Back | Command::Refresh | Command::Discard
+        ) {
+            instance.overtake();
+        }
         match command {
             Command::ResumeDraft => {
                 instance.pending = Some(Work::Rebind {

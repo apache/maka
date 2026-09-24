@@ -50,7 +50,12 @@ struct Cursor {
 
 pub(super) fn publish(skills: &Skills, staged: &mut Staged) -> Result<(), String> {
     let endpoint = Endpoint::standalone(Handler::Method(Arc::new(View(skills.clone()))))
-        .with_terminal_view(Descriptor::new(title(), Context::Session))
+        .with_terminal_view(
+            Descriptor::new(title(), Context::Session)
+                .icon("✦", "K")
+                .changes("changes")
+                .order(10),
+        )
         .map_err(|e| e.to_string())?;
     staged
         .insert(key(ID, "terminal").map_err(|e| e.to_string())?, endpoint)
@@ -242,6 +247,7 @@ fn project(
             enabled,
             fields: vec!["enabled".into(), "pinned".into()],
             recovery: None,
+            confirm: None,
         });
     } else {
         for item in items.iter().skip(route.offset).take(WINDOW) {

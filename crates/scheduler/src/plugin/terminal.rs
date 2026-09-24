@@ -55,10 +55,15 @@ struct Route {
 
 pub(super) fn publish(service: Service, staged: &mut Staged) -> Result<(), String> {
     let endpoint = Endpoint::standalone(Handler::Method(Arc::new(View(service))))
-        .with_terminal_view(Descriptor::new(
-            Text::localized("Scheduled tasks", "计划任务", "排程任務"),
-            Context::Application,
-        ))
+        .with_terminal_view(
+            Descriptor::new(
+                Text::localized("Scheduled tasks", "计划任务", "排程任務"),
+                Context::Application,
+            )
+            .icon("⏲", "S")
+            .changes("changes")
+            .order(20),
+        )
         .map_err(super::display)?;
     staged
         .insert(key(ID, "terminal").map_err(super::display)?, endpoint)
@@ -153,6 +158,12 @@ async fn submit(
     } else {
         mutation(task_id, &action, fields)?
     };
+    // A deleted task has no page to return to; the list is where it was.
+    let landing = if action == "delete" {
+        Value::Null
+    } else {
+        serde_json::to_value(route).map_err(invalid)?
+    };
     // The preliminary read only decodes the form; the owner still checks the
     // same revision after any concurrent edit before accepting this mutation.
     Ok(
@@ -161,9 +172,7 @@ async fn submit(
             .mutate_if_current(mutation, Origin::User { grant: None }, revision)
             .await
         {
-            Ok(_) => Reply::Applied {
-                route: serde_json::to_value(route).map_err(invalid)?,
-            },
+            Ok(_) => Reply::Applied { route: landing },
             Err(crate::Error::RevisionConflict) => Reply::Conflict,
             Err(crate::Error::Invalid(_) | crate::Error::Time(_)) => Reply::Rejected {
                 message: Text::localized(
@@ -327,6 +336,7 @@ fn detail(task: Task, revision: u64) -> Page {
             enabled: true,
             fields: vec!["title".into(), "intent".into()],
             recovery: None,
+            confirm: None,
         });
     } else {
         page.body.push_str("\n\n");
@@ -345,7 +355,51 @@ fn detail(task: Task, revision: u64) -> Page {
             enabled: true,
             fields: vec![],
             recovery: None,
+            confirm: None,
         });
+    }
+    // What a task can still do, and removing it, which asks first.
+    let live = matches!(task.status, Status::Active | Status::Paused);
+    for (id, label, offered, confirm) in [
+        (
+            "trigger",
+            Text::localized("Run now", "立即运行", "立即執行"),
+            live,
+            None,
+        ),
+        (
+            "snooze",
+            Text::localized("Snooze an hour", "推迟一小时", "延後一小時"),
+            task.status == Status::Active,
+            None,
+        ),
+        (
+            "clear",
+            Text::localized("Clear history", "清除历史", "清除歷史"),
+            true,
+            None,
+        ),
+        (
+            "delete",
+            Text::localized("Delete", "删除", "刪除"),
+            true,
+            Some(maka_plugins::terminal_ui::view::Confirm {
+                title: "Delete this task?".into(),
+                message: "It stops running and its history goes with it.".into(),
+                destructive: true,
+            }),
+        ),
+    ] {
+        if offered {
+            page.actions.push(Action {
+                id: id.into(),
+                label,
+                enabled: true,
+                fields: vec![],
+                recovery: None,
+                confirm,
+            });
+        }
     }
     page
 }
@@ -398,6 +452,13 @@ fn mutation(
         }
         "pause" if fields.is_empty() => Ok(Mutation::Pause { task_id }),
         "resume" if fields.is_empty() => Ok(Mutation::Resume { task_id }),
+        "trigger" if fields.is_empty() => Ok(Mutation::TriggerNow { task_id }),
+        "snooze" if fields.is_empty() => Ok(Mutation::Snooze {
+            task_id,
+            delay_ms: 3_600_000,
+        }),
+        "clear" if fields.is_empty() => Ok(Mutation::ClearHistory { task_id }),
+        "delete" if fields.is_empty() => Ok(Mutation::Delete { task_id }),
         _ => Err(invalid("Unknown scheduled-task action or fields")),
     }
 }
