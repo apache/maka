@@ -292,6 +292,7 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
 
     store.close();
     let drainRequests = 0;
+    const deletedArtifacts: Array<{ sessionId: string; artifactId: string }> = [];
     const coordinator = new HostArtifactCoordinator(
       store,
       () => {
@@ -299,6 +300,9 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       },
       new SessionAdmissionGate(),
       { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      Date.now,
+      undefined,
+      (sessionId, artifactId) => deletedArtifacts.push({ sessionId, artifactId }),
     );
 
     assert.deepEqual(
@@ -318,6 +322,7 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       },
     );
     assert.equal(drainRequests, 1);
+    assert.deepEqual(deletedArtifacts, []);
     assert.deepEqual(
       await coordinator.handlers['artifact.ingest'](
         {
@@ -340,6 +345,70 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       },
     );
     assert.equal(drainRequests, 2);
+  } finally {
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Artifact deletion publishes invalidation only after a committed delete', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-delete-change-'));
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  try {
+    const store = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await store.create({
+      id: 'user-artifact',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      name: 'preview.html',
+      kind: 'html',
+      content: '<!doctype html><title>Preview</title>',
+      source: 'tool_result',
+      now: 1,
+    });
+    await store.create({
+      id: 'protected-artifact',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      name: 'evidence.txt',
+      kind: 'file',
+      content: 'evidence',
+      source: 'deep_research',
+      now: 2,
+    });
+    const deletedArtifacts: Array<{ sessionId: string; artifactId: string }> = [];
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => assert.fail('handled deletion outcomes must not request Host drain'),
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      Date.now,
+      undefined,
+      (sessionId, artifactId) => deletedArtifacts.push({ sessionId, artifactId }),
+    );
+
+    assert.equal(
+      (
+        await coordinator.handlers['artifact.delete'](
+          { sessionId: 'session-1', artifactId: 'protected-artifact' },
+          connectionContext,
+        )
+      ).ok,
+      false,
+    );
+    assert.deepEqual(deletedArtifacts, []);
+
+    assert.deepEqual(
+      await coordinator.handlers['artifact.delete'](
+        { sessionId: 'session-1', artifactId: 'user-artifact' },
+        connectionContext,
+      ),
+      { ok: true, result: { kind: 'deleted' } },
+    );
+    assert.deepEqual(deletedArtifacts, [{ sessionId: 'session-1', artifactId: 'user-artifact' }]);
+    store.close();
   } finally {
     await owner.close();
     await rm(root, { recursive: true, force: true });

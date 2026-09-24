@@ -18,6 +18,7 @@
  */
 
 import type {
+  ArtifactChangedFrame,
   ConfigurationChangedFrame,
   ConnectionCatalogChangedFrame,
   ProjectCatalogChangedFrame,
@@ -27,6 +28,7 @@ import type {
 } from '../protocol/index.js';
 
 export type HostChangeFrame =
+  | ArtifactChangedFrame
   | ConfigurationChangedFrame
   | ConnectionCatalogChangedFrame
   | ProjectCatalogChangedFrame
@@ -38,6 +40,7 @@ export interface HostChangeSubscription {
 }
 
 export interface HostChangeSubscriptionMask {
+  readonly artifact?: true | { readonly sessionId: string };
   readonly configuration?: boolean;
   readonly connectionCatalog?: boolean;
   readonly projectCatalog?: boolean;
@@ -85,6 +88,14 @@ export class HostChangeFeed {
     });
   }
 
+  publishArtifactDeleted(sessionId: string, artifactId: string): void {
+    this.#publish({ kind: 'artifact.changed', reason: 'deleted', sessionId, artifactId });
+  }
+
+  publishArtifactSessionPurged(sessionId: string): void {
+    this.#publish({ kind: 'artifact.changed', reason: 'session_purged', sessionId });
+  }
+
   /** The Host now resolves connection catalogs differently; clients re-read. */
   publishConnectionCatalog(): void {
     this.#connectionCatalogRevision += 1;
@@ -119,12 +130,13 @@ export class HostChangeFeed {
       sessionId,
     };
     for (const [connectionId, subscription] of this.#subscriptions) {
-      if (!isSubscribed(subscription.mask, frame)) continue;
-      void subscription.sink.send(frame).catch(() => {
-        if (this.#subscriptions.get(connectionId) === subscription) {
-          this.#subscriptions.delete(connectionId);
-        }
-      });
+      if (isSubscribed(subscription.mask, frame)) {
+        void subscription.sink.send(frame).catch(() => {
+          if (this.#subscriptions.get(connectionId) === subscription) {
+            this.#subscriptions.delete(connectionId);
+          }
+        });
+      }
       if (
         closeScopeFor !== undefined &&
         subscription.mask.sessionCatalog !== true &&
@@ -160,6 +172,11 @@ export class HostChangeFeed {
 
 function isSubscribed(mask: HostChangeSubscriptionMask, frame: HostChangeFrame): boolean {
   switch (frame.kind) {
+    case 'artifact.changed':
+      return (
+        mask.artifact === true ||
+        (mask.artifact !== undefined && frame.sessionId === mask.artifact.sessionId)
+      );
     case 'configuration.changed':
       return mask.configuration === true;
     case 'connection.catalog.changed':

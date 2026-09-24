@@ -39,7 +39,11 @@ import {
   RuntimeHostOperationError,
   type RuntimeHostConnection,
 } from '../client/index.js';
-import { RUNTIME_HOST_PROTOCOL_VERSION, type ArtifactQueryResult } from '../protocol/index.js';
+import {
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type ArtifactChangedFrame,
+  type ArtifactQueryResult,
+} from '../protocol/index.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 
 const CURRENT_PROTOCOL = {
@@ -162,12 +166,40 @@ test('production Host ignores Artifact publication residue and preserves deletes
       );
 
       assert.equal((await getArtifact(desktop, sessionId, deleteA)).artifact?.id, deleteA);
+      const artifactChanges: ArtifactChangedFrame[] = [];
+      let resolveArtifactChanges!: () => void;
+      const receivedArtifactChanges = new Promise<void>((resolve) => {
+        resolveArtifactChanges = resolve;
+      });
+      const unsubscribeArtifactChanges = desktop.subscribeArtifactChanges((frame) => {
+        artifactChanges.push(frame);
+        if (artifactChanges.length === 2) resolveArtifactChanges();
+      });
       const [deletedA, deletedB] = await Promise.all([
         desktop.request('artifact.delete', { sessionId, artifactId: deleteA }),
         tui.request('artifact.delete', { sessionId, artifactId: deleteB }),
       ]);
       assert.deepEqual(deletedA, { kind: 'deleted' });
       assert.deepEqual(deletedB, { kind: 'deleted' });
+      await withTimeout(
+        receivedArtifactChanges,
+        5_000,
+        'Artifact delete invalidations were not delivered',
+      );
+      assert.deepEqual(
+        artifactChanges
+          .map((frame) => {
+            assert.equal(frame.reason, 'deleted');
+            return frame.reason === 'deleted'
+              ? { sessionId: frame.sessionId, artifactId: frame.artifactId }
+              : undefined;
+          })
+          .sort((left, right) => (left?.artifactId ?? '').localeCompare(right?.artifactId ?? '')),
+        [
+          { sessionId, artifactId: deleteB },
+          { sessionId, artifactId: deleteA },
+        ].sort((left, right) => left.artifactId.localeCompare(right.artifactId)),
+      );
       await assert.rejects(
         desktop.request('artifact.delete', { sessionId, artifactId: deleteA }),
         operationError('not_found'),
@@ -187,6 +219,9 @@ test('production Host ignores Artifact publication residue and preserves deletes
           operationError('operation_conflict'),
         );
       }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(artifactChanges.length, 2);
+      unsubscribeArtifactChanges();
 
       const stale = await tui.request('artifact.query', {
         kind: 'list_continue',

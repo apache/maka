@@ -163,6 +163,7 @@ function oauthPhysicalConnection(
       return request(operation, input);
     },
     subscribeConfigurationChanges: () => () => {},
+    subscribeArtifactChanges: () => () => {},
     subscribeConnectionCatalogChanges: () => () => {},
     subscribeProjectCatalogChanges: () => () => {},
     subscribeSessionCatalogChanges: () => () => {},

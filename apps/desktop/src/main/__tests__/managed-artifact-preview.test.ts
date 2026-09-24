@@ -85,6 +85,8 @@ test('isolates leases by origin and rejects credentials for another preview', as
     await assert.rejects(fetch(first.url));
     assert.equal(await (await fetch(second.url)).text(), 'second');
     await assert.rejects(service.prepare('host1', client(), 's1', 'a1'), /closed/);
+    service.openScope('host1');
+    assert.equal(await (await fetch((await service.prepare('host1', client(), 's1', 'a1')).url)).text(), html);
     await service.revoke('host2', 's1', 'a1');
     await assert.rejects(fetch(second.url));
   } finally { await service.close(); }
@@ -136,18 +138,81 @@ test('close and cancellation during a stream cannot publish a live endpoint', as
   }
 });
 
-test('bounds concurrent preparations before allocating buffers or ports', async () => {
+test('bounds previews per session instead of starving another session', async () => {
   const service = new ManagedArtifactPreview();
   let resume!: () => void;
   const gate = new Promise<void>((resolve) => { resume = resolve; });
   const source = client();
-  const slow = { ...source, getArtifact: async (s: string, a: string) => { await gate; return source.getArtifact(s, a); } };
+  const slow = { ...source, getArtifact: async () => { await gate; return source.getArtifact('s1', 'a1'); } };
   const pending = Array.from({ length: 16 }, () => service.prepare('h', slow, 's1', 'a1'));
   try {
     await assert.rejects(service.prepare('h', slow, 's1', 'a1'), /Too many/);
+    const other = service.prepare('h', client('other'), 's2', 'a1');
     resume();
-    assert.equal((await Promise.all(pending)).length, 16);
-  } finally { resume(); await Promise.allSettled(pending); await service.close(); }
+    assert.equal((await other).reachable, true);
+    await Promise.all(pending);
+  } finally {
+    resume();
+    await Promise.allSettled(pending);
+    await service.close();
+  }
+});
+
+test('evicts the oldest lease at the global backstop without denying another session', async () => {
+  const service = new ManagedArtifactPreview();
+  try {
+    const endpoints = [];
+    for (let index = 0; index < 64; index += 1) {
+      endpoints.push(await service.prepare('h', client(`preview-${index}`), `s${index}`, 'a1'));
+    }
+    const replacement = await service.prepare('h', client('replacement'), 's64', 'a1');
+    await assert.rejects(fetch(endpoints[0]!.url));
+    assert.equal(await (await fetch(replacement.url)).text(), 'replacement');
+  } finally {
+    await service.close();
+  }
+});
+
+test('releases every preview for a purged session', async () => {
+  const service = new ManagedArtifactPreview();
+  try {
+    const first = await service.prepare('h', client(), 's1', 'a1');
+    const second = await service.prepare('h', client('second'), 's1', 'a2');
+    const otherScope = await service.prepare('other-host', client('other scope'), 's1', 'a1');
+    await service.releaseSession('h', 's1');
+    await assert.rejects(fetch(first.url));
+    await assert.rejects(fetch(second.url));
+    assert.equal(await (await fetch(otherScope.url)).text(), 'other scope');
+    assert.equal((await service.prepare('h', client(), 's1', 'a1')).reachable, true);
+  } finally { await service.close(); }
+});
+
+test('delete and Session purge cancel previews that are still preparing', async () => {
+  for (const release of [
+    (service: ManagedArtifactPreview) => service.revoke('h', 's1', 'a1'),
+    (service: ManagedArtifactPreview) => service.releaseSession('h', 's1'),
+  ]) {
+    const service = new ManagedArtifactPreview();
+    let resume!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const source = client();
+    const preparing = service.prepare('h', {
+      ...source,
+      getArtifact: async (...args) => {
+        await gate;
+        return source.getArtifact(...args);
+      },
+    }, 's1', 'a1');
+    try {
+      await release(service);
+      resume();
+      await assert.rejects(preparing, /closed/);
+    } finally {
+      resume();
+      await Promise.allSettled([preparing]);
+      await service.close();
+    }
+  }
 });
 
 test('tool binds to the admitted session and returns endpoint evidence only', async () => {
