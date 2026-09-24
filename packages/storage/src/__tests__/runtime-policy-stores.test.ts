@@ -810,7 +810,10 @@ describe('runtime policy stores', () => {
             slug: `${providerType}-relay`,
             name: providerType,
             providerType,
-            baseUrl: 'https://relay.example/v1',
+            // Older builds let a relay's endpoint be cleared; that row must still read.
+            ...(providerType === 'anthropic-compatible'
+              ? {}
+              : { baseUrl: 'https://relay.example/v1' }),
             enabled: true,
             enabledModelIds: ['relay-model'],
             models: [],

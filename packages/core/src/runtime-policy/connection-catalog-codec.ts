@@ -163,7 +163,6 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
   );
   const providerType = decodeProviderType(item.providerType);
   const baseUrl = normalizeCatalogConnectionBaseUrl(item.baseUrl, providerType);
-  assertBaseUrlFitsProvider(baseUrl, providerType);
   const defaultApiProtocol = decodeDefaultApiProtocol(item.defaultApiProtocol, providerType);
   const enabledModelIds = decodeConnectionModelIds(item.enabledModelIds);
   const requestBodyOverlay =
@@ -230,7 +229,6 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
 ): ConnectionCatalogEntryUpdate {
   const update = normalizeConnectionCatalogEntryUpdate(value);
   const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
-  assertBaseUrlFitsProvider(baseUrl, providerType);
   assertProfileFieldsFitProvider(update.modelOverrides, providerType);
   return {
     name: update.name,
@@ -402,12 +400,6 @@ export function decodeDefaultApiProtocol(
     throw domainError('custom connection default API protocol is invalid');
   }
   return value;
-}
-
-function assertBaseUrlFitsProvider(baseUrl: string | undefined, providerType: ProviderType): void {
-  if (providerType === 'custom' && baseUrl === undefined) {
-    throw domainError('custom connection requires a base URL');
-  }
 }
 
 // An empty table is not a state worth storing: drafts/canonical entries omit

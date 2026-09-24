@@ -439,8 +439,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     null,
   );
 
-  // A custom connection needs a base URL and a default wire; no other
-  // provider may carry a default wire.
+  // A custom connection needs a default wire; no other provider may carry one.
   const custom = {
     slug: 'relay',
     name: 'Relay',
@@ -450,10 +449,8 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     enabled: true,
     enabledModelIds: [],
   };
-  const { baseUrl: _baseUrl, ...withoutBaseUrl } = custom;
   const { defaultApiProtocol: _protocol, ...withoutProtocol } = custom;
   for (const [connection, message] of [
-    [withoutBaseUrl, /requires a base URL/],
     [withoutProtocol, /default API protocol is invalid/],
     [{ ...custom, defaultApiProtocol: 'google-generate' }, /default API protocol is invalid/],
     [
@@ -466,15 +463,6 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       message,
     );
   }
-  assert.throws(
-    () =>
-      normalizeConnectionCatalogEntryUpdateForProvider(
-        { name: 'Relay', enabled: true, enabledModelIds: [] },
-        'custom',
-      ),
-    /requires a base URL/,
-  );
-
   assert.deepEqual(
     normalizeConnectionCatalogEntryUpdate({
       name: 'Relay',
