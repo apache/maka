@@ -43,6 +43,8 @@ use tokio::sync::mpsc;
 /// one redraw per update, whatever the chunk rate.
 const STREAM_FRAME: Duration = Duration::from_millis(120);
 
+gpui_kit::actions!(workspace, [NewSession, Minimize]);
+
 enum Connection {
     Connecting,
     Ready(Client),
@@ -189,7 +191,18 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
-        let workspace = std::env::current_dir().unwrap_or_else(|_| self.root.clone());
+        // A new session continues in the project at hand; the launch
+        // directory is `/` when the app starts from Finder.
+        let open = self.chat.as_ref().map(|chat| chat.read(cx).session());
+        let Some(workspace) = self
+            .sidebar
+            .read(cx)
+            .folder(open)
+            .map(PathBuf::from)
+            .or_else(std::env::home_dir)
+        else {
+            return;
+        };
         let creating = cx.global::<Host>().spawn(async move {
             let input = maka_protocol::session::decode_session_create_input(&json!({
                 "sessionId": uuid::Uuid::new_v4().to_string(),
@@ -348,6 +361,10 @@ impl Render for Workspace {
         div()
             .size_full()
             .flex()
+            .on_action(
+                cx.listener(|this, _: &NewSession, window, cx| this.create_session(window, cx)),
+            )
+            .on_action(|_: &Minimize, window, _| window.minimize_window())
             .bg(theme.base)
             .text_color(theme.text)
             .font_family(theme.ui_font.clone())

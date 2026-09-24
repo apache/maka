@@ -133,6 +133,14 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// The project folder of `id`, or else of the latest session.
+    pub fn folder(&self, id: Option<&str>) -> Option<String> {
+        id.and_then(|id| self.sessions.iter().find(|session| session.id == id))
+            .or(self.sessions.first())
+            .map(|session| session.workspace.host_cwd.clone())
+            .filter(|folder| !folder.is_empty())
+    }
+
     pub fn name(&self, id: &str) -> Option<SharedString> {
         self.sessions
             .iter()
