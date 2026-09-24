@@ -39,11 +39,10 @@ interface NotificationsIpcDeps {
 
 /**
  * Wires the renderer's "a turn ended or is waiting on the user" signal to a
- * native OS notification. The renderer fires on every terminal turn event and
- * every interaction request; the
- * gating (product toggle + platform support + window-focus) lives here
- * in the main process, which is the only place that authoritatively
- * knows whether the window is focused and can raise/focus it on click.
+ * native OS notification and a dock bounce. The renderer fires on every
+ * terminal turn event and every interaction request; the gating (product
+ * toggle + platform support + incognito) lives here in the main process,
+ * which can also raise/focus the window on click.
  *
  * Fire-and-forget from the renderer's perspective: it does not await the
  * result, so we resolve `void` and never surface main-side failures to
@@ -62,7 +61,6 @@ export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
     const gate = {
       enabled: settings.notifications.runComplete,
       supported,
-      windowFocused: deps.mainWindowController.isFocused(),
       incognito: settings.privacy.incognitoActive,
       e2e: deps.e2e,
     };
@@ -79,6 +77,6 @@ export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
     // back to the foreground — `focus()` already restores + shows.
     notification.on('click', () => deps.mainWindowController.focus());
     notification.show();
-    if (raw.kind === 'waiting') app.dock?.bounce('informational');
+    app.dock?.bounce('informational');
   });
 }

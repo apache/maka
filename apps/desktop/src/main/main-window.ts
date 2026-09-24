@@ -93,10 +93,6 @@ export interface MainWindowController {
   browserWindow(): BrowserWindow | undefined;
   /** Subscribe to app-window moves and resizes; returns an unsubscribe. */
   onWindowGeometryChanged(cb: () => void): () => void;
-  /** Whether the main window currently holds OS focus. False when the
-   * window is gone, minimized to the point of losing focus, or another
-   * app is in front — used to gate "notify only while unfocused". */
-  isFocused(): boolean;
 }
 
 interface MainWindowControllerDeps {
@@ -725,9 +721,6 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       // and flushes it (restore+show+focus) on markReady; after that, focus
       // behaves exactly as before.
       revealGate.requestFocus(mainWindow);
-    },
-    isFocused() {
-      return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
     },
   };
 }
