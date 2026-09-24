@@ -24,16 +24,23 @@ export function createSessionVisitHistory() {
   let entries: Array<string | undefined> = [];
   let cursor = -1;
   let traversing = false;
+  const nextIndex = (direction: HistoryDirection, available: (id: string) => boolean) => {
+    let next = cursor + direction;
+    while (next >= 0 && next < entries.length &&
+      (!entries[next] || entries[next] === entries[cursor] || !available(entries[next]!))) next += direction;
+    return next;
+  };
   return {
+    peek(direction: HistoryDirection, available: (id: string) => boolean): string | undefined {
+      return entries[nextIndex(direction, available)];
+    },
     visit(sessionId: string | undefined): void {
       if (traversing || !sessionId || entries[cursor] === sessionId) return;
       entries = [...entries.slice(0, cursor + 1), sessionId].slice(-100);
       cursor = entries.length - 1;
     },
     move(direction: HistoryDirection, available: (id: string) => boolean, open: (id: string) => boolean): boolean {
-      let next = cursor + direction;
-      while (next >= 0 && next < entries.length &&
-        (!entries[next] || entries[next] === entries[cursor] || !available(entries[next]!))) next += direction;
+      const next = nextIndex(direction, available);
       const id = entries[next];
       if (!id) return false;
       traversing = true;

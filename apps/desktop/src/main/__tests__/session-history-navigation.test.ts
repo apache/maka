@@ -21,7 +21,7 @@ import { strict as assert } from 'node:assert';
 import { afterEach, it } from 'node:test';
 import { act, createElement } from 'react';
 import { parseHTML } from 'linkedom';
-import { installReactRenderer, cleanupFakeDom } from './fake-dom.js';
+import { installReactRenderer, cleanupFakeDom, FakeElement } from './fake-dom.js';
 import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { SessionHistoryNavigation, createSessionOpenCommand } from '../../renderer/features/session-navigation/testing.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
@@ -31,7 +31,10 @@ afterEach(() => { cleanupFakeDom(); while (cleanups.length) cleanups.pop()!(); }
 
 function setup() {
   const { root } = installReactRenderer();
+  const body = new FakeElement('body', document);
+  Object.defineProperty(document, 'body', { value: body });
   const dom = parseHTML('<html><body><main data-session-history-surface><p>Conversation</p><textarea></textarea><div class="scroller"><pre>wide code</pre></div></main><aside>Terminal</aside></body></html>');
+  dom.document.querySelector('main')!.getBoundingClientRect = () => ({ left: 100, right: 700, top: 50, height: 400 }) as DOMRect;
   for (const [key, value] of Object.entries({
     Element: dom.window.Element,
     getComputedStyle: () => ({ overflowX: 'visible' }),
@@ -41,6 +44,13 @@ function setup() {
     cleanups.push(() => { if (prior) Object.defineProperty(globalThis, key, prior); else Reflect.deleteProperty(globalThis, key); });
   }
   const listeners = new Set<EventListener>();
+  const blurListeners = new Set<EventListener>();
+  window.addEventListener = ((name: string, listener: EventListener) => {
+    if (name === 'blur') blurListeners.add(listener);
+  }) as typeof window.addEventListener;
+  window.removeEventListener = ((name: string, listener: EventListener) => {
+    if (name === 'blur') blurListeners.delete(listener);
+  }) as typeof window.removeEventListener;
   document.addEventListener = ((name: string, listener: EventListener) => {
     if (name === 'wheel') listeners.add(listener);
   }) as typeof document.addEventListener;
@@ -77,8 +87,86 @@ function setup() {
     act(() => { for (const listener of listeners) listener(event); });
     return prevented;
   };
-  return { catalog, root, render, wheel, targets, dom, listeners };
+  const feedback = () => body.childNodes[0] as FakeElement | undefined;
+  const blur = () => act(() => { for (const listener of blurListeners) listener(new Event('blur')); });
+  return { catalog, root, render, wheel, targets, dom, listeners, feedback, blur, blurListeners };
 }
+
+it('shows pull progress before switching and acknowledges the threshold only once', () => {
+  const { catalog, wheel, feedback, targets } = setup();
+  for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
+  wheel(0, { deltaX: -24 });
+  assert.equal(catalog.getState().activeSessionId, 'C');
+  assert.equal(feedback()?.getAttribute('data-phase'), 'pulling');
+  assert.equal(String(feedback()?.getAttribute('data-progress')), '0.3');
+  wheel(16, { deltaX: -56 });
+  assert.equal(catalog.getState().activeSessionId, 'B');
+  assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
+  wheel(32);
+  assert.deepEqual(targets, [null]);
+});
+
+it('retracts an unfinished pull after idle and removes the feedback without navigating', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { catalog, wheel, feedback } = setup();
+  for (const id of ['A', 'B']) catalog.setActiveSessionId(id);
+  wheel(0, { deltaX: -32 });
+  act(() => t.mock.timers.tick(250));
+  assert.equal(feedback()?.getAttribute('data-phase'), 'returning');
+  act(() => t.mock.timers.tick(180));
+  assert.equal(feedback(), undefined);
+  assert.equal(catalog.getState().activeSessionId, 'B');
+});
+
+it('shows unavailable feedback at the history boundary instead of acknowledging a move', () => {
+  const { catalog, wheel, feedback, targets } = setup();
+  catalog.setActiveSessionId('A');
+  wheel(0, { deltaX: -32 });
+  assert.equal(feedback()?.getAttribute('data-phase'), 'unavailable');
+  wheel(16);
+  assert.equal(feedback()?.getAttribute('data-phase'), 'unavailable');
+  assert.deepEqual(targets, []);
+});
+
+it('cancels feedback and the gesture when a modal interrupts a pull', () => {
+  const { catalog, wheel, feedback, render } = setup();
+  for (const id of ['A', 'B']) catalog.setActiveSessionId(id);
+  wheel(0, { deltaX: -32 });
+  render(true, true);
+  assert.equal(feedback(), undefined);
+  render();
+  assert.equal(feedback() === undefined, true);
+  wheel(16, { deltaX: -60 });
+  assert.equal(catalog.getState().activeSessionId, 'B');
+  wheel(400);
+  assert.equal(catalog.getState().activeSessionId, 'A');
+});
+
+it('removes an in-progress arrow when the pointer enters an excluded control', () => {
+  const { catalog, wheel, feedback } = setup();
+  for (const id of ['A', 'B']) catalog.setActiveSessionId(id);
+  wheel(0, { deltaX: -32 });
+  wheel(16, { deltaX: -20 }, 'textarea');
+  assert.equal(feedback() === undefined, true);
+  wheel(32);
+  assert.equal(catalog.getState().activeSessionId, 'B');
+});
+
+it('cancels a pull on window blur and releases listeners and timers on unmount', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { catalog, wheel, feedback, blur, root, blurListeners } = setup();
+  for (const id of ['A', 'B']) catalog.setActiveSessionId(id);
+  wheel(0, { deltaX: -32 });
+  blur();
+  assert.equal(feedback() === undefined, true);
+  wheel(16);
+  assert.equal(catalog.getState().activeSessionId, 'B');
+  wheel(400, { deltaX: -32 });
+  act(() => root.render(null));
+  act(() => t.mock.timers.tick(1000));
+  assert.equal(feedback() === undefined, true);
+  assert.equal(blurListeners.size, 0);
+});
 
 it('records rapid requested selections and traverses them through the existing open command', () => {
   const { catalog, render, wheel, targets } = setup();

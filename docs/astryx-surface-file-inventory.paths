@@ -72,6 +72,7 @@ apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-composer.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
+apps/desktop/src/renderer/features/session-navigation/ui/session-history-navigation.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/session-settings/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
@@ -191,6 +192,7 @@ apps/desktop/src/renderer/styles/prompt-rail.css
 apps/desktop/src/renderer/styles/prompt-suggestions.css
 apps/desktop/src/renderer/styles/quote-side-panel.css
 apps/desktop/src/renderer/styles/search-modal.css
+apps/desktop/src/renderer/styles/session-history.css
 apps/desktop/src/renderer/styles/settings.css
 apps/desktop/src/renderer/styles/settings/bot.css
 apps/desktop/src/renderer/styles/settings/form.css

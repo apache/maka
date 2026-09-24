@@ -21,6 +21,17 @@ import { strict as assert } from 'node:assert';
 import { it } from 'node:test';
 import { createSessionVisitHistory } from '../../renderer/features/session-navigation/testing.js';
 
+it('previews the next available visit without moving the cursor', () => {
+  const history = createSessionVisitHistory();
+  for (const id of ['A', 'B', 'C']) history.visit(id);
+  assert.equal(history.peek(-1, (id) => id !== 'B'), 'A');
+  assert.equal(history.peek(-1, () => true), 'B');
+  assert.equal(history.peek(1, () => true), undefined);
+  let opened: string | undefined;
+  history.move(-1, () => true, (id) => { opened = id; return true; });
+  assert.equal(opened, 'B');
+});
+
 it('traverses visits rather than sidebar order without recording traversal as a new visit', () => {
   const history = createSessionVisitHistory();
   const opened: string[] = [];

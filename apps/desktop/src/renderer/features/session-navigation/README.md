@@ -97,9 +97,21 @@ going back discards the forward branch. Confirmed catalog removals erase the
 Session's visits. Missing or pending rows are skipped without erasing them:
 temporary Host/catalog unavailability is not proof of deletion.
 
-The gesture chooses its axis after 8 pixels, requires horizontal movement at
-least twice the vertical movement, and triggers at 80 horizontal pixels. It
-stays latched through the momentum tail until 250 ms without wheel input.
+The gesture chooses its axis after 18 pixels, requires horizontal movement at
+least 1.5 times the vertical movement, and triggers at 80 horizontal pixels.
+This allows a small diagonal start without locking out the entire horizontal
+gesture. A circular arrow at the corresponding conversation edge follows the
+pull and fills toward the threshold. Crossing the threshold requests a move
+and acknowledges only a confirmed selection. An unfinished pull retracts after
+250 ms idle; a history boundary shows a muted arrow without a completion ring.
+Feedback stays local to this component and honors reduced-motion preferences.
+
+The recognizer stays latched through same-direction momentum until 250 ms
+without wheel input. After completion, 24 pixels of consecutive opposite input
+starts a new pull, so an intentional return does not have to wait for idle;
+small recoil does not reset the latch. Modals, leaving the Session surface,
+excluded targets and window blur cancel a pull. Listeners and animation timers
+are released on unmount.
 Vertical/diagonal input, modifiers, non-pixel wheel input, editable controls,
 dialogs and horizontally overflowing content keep their gesture. Scrollable
 code and tables retain horizontal scrolling even at either edge. Workbar,
@@ -137,10 +149,12 @@ surface. A nested interactive surface may also opt out with
 Wheel input does not expose finger count or a reliable momentum-end flag. This
 is horizontal touchpad-style navigation, not a guarantee that only two fingers
 can trigger it; a horizontal mouse wheel producing pixel events may also do so.
-The idle timeout is a conservative gesture boundary, not native phase detection.
+The idle timeout and opposite-input threshold are gesture heuristics, not native
+phase detection.
 
 Node tests cover history branching, removal, selection ordering, rejected opens,
-gesture latching and input exclusion. The focused Storybook interaction checks
-actual Chromium overflow geometry and event propagation using the production
+gesture latching, diagonal starts, immediate reversal, feedback lifecycle and
+input exclusion. The focused Storybook interaction checks actual Chromium
+overflow geometry, arrow placement and event propagation using the production
 component, catalog, open command, ChatSurfaceLayout and MarkdownBody. Automated
 input does not replace physical touchpad tuning on each platform.

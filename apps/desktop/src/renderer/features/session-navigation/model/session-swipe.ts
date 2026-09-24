@@ -26,27 +26,54 @@ export interface SessionSwipeSample {
   eligible: boolean;
 }
 
+export interface SessionSwipeFeedback {
+  direction: HistoryDirection;
+  progress: number;
+  committed: boolean;
+}
+
 export function createSessionSwipe() {
   let lastTime = -Infinity;
   let distance = 0;
   let verticalDistance = 0;
   let fired = false;
+  let opposingDistance = 0;
   let axis: 'pending' | 'horizontal' | 'blocked' = 'pending';
   return {
+    cancel(): void {
+      axis = 'blocked';
+    },
+    feedback(): SessionSwipeFeedback | null {
+      return axis === 'horizontal' && distance !== 0
+        ? { direction: distance < 0 ? -1 : 1, progress: Math.min(Math.abs(distance) / 80, 1), committed: fired }
+        : null;
+    },
     sample(event: SessionSwipeSample): { claimed: boolean; direction: HistoryDirection | null } {
       if (event.timeStamp - lastTime > 250 || event.timeStamp < lastTime) {
         distance = 0;
         verticalDistance = 0;
         fired = false;
+        opposingDistance = 0;
         axis = 'pending';
       }
       lastTime = event.timeStamp;
       if (!event.eligible) axis = 'blocked';
       if (axis === 'blocked') return { claimed: false, direction: null };
+      // Keep momentum latched, but let an intentional reverse start another
+      // gesture. Tiny opposite-sign recoil must not undo a completed swipe.
+      if (fired) {
+        opposingDistance = event.deltaX * distance < 0 ? opposingDistance + event.deltaX : 0;
+        if (Math.abs(opposingDistance) < 24) return { claimed: true, direction: null };
+        distance = opposingDistance - event.deltaX;
+        verticalDistance = 0;
+        opposingDistance = 0;
+        fired = false;
+        axis = 'pending';
+      }
       distance += event.deltaX;
       verticalDistance += Math.abs(event.deltaY);
-      if (axis === 'pending' && Math.max(Math.abs(distance), verticalDistance) >= 8) {
-        axis = Math.abs(distance) >= verticalDistance * 2 ? 'horizontal' : 'blocked';
+      if (axis === 'pending' && Math.max(Math.abs(distance), verticalDistance) >= 18) {
+        axis = Math.abs(distance) >= verticalDistance * 1.5 ? 'horizontal' : 'blocked';
       }
       if (axis !== 'horizontal') return { claimed: false, direction: null };
       const direction = !fired && Math.abs(distance) >= 80 ? (distance < 0 ? -1 : 1) : null;

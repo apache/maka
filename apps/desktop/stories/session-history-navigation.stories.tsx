@@ -94,9 +94,26 @@ export const HorizontalScrollOwnership: Story = {
     expect(wheel(code, 0)).toBe(false);
     expect(wheel(prose, 16)).toBe(false);
     expect(selected).toHaveTextContent('B');
-    expect(wheel(prose, 400)).toBe(true);
+    expect(wheel(prose, 400, -32)).toBe(true);
+    const indicator = await waitFor(() => {
+      const element = canvasElement.ownerDocument.querySelector('.session-history-swipe')!;
+      expect(element).not.toBeNull();
+      expect(element).toHaveAttribute('data-phase', 'pulling');
+      expect(element).toHaveAttribute('data-progress', '0.4');
+      return element;
+    });
+    expect(selected).toHaveTextContent('B');
+    expect(getComputedStyle(indicator).pointerEvents).toBe('none');
+    expect((indicator as HTMLElement).offsetWidth).toBe(44);
+    const surface = prose.closest('[data-session-history-surface]')!.getBoundingClientRect();
+    const arrow = indicator.getBoundingClientRect();
+    expect(arrow.left).toBeGreaterThanOrEqual(surface.left);
+    expect(arrow.right).toBeLessThan(surface.right);
+    expect(Math.abs((arrow.top + arrow.bottom) / 2 - (surface.top + surface.bottom) / 2)).toBeLessThan(1);
+    expect(wheel(prose, 416, -48)).toBe(true);
     await waitFor(() => expect(selected).toHaveTextContent('C'));
-    wheel(prose, 416);
+    await waitFor(() => expect(indicator).toHaveAttribute('data-phase', 'committed'));
+    wheel(prose, 432);
     expect(selected).toHaveTextContent('C');
     wheel(prose, 800, 100);
     await waitFor(() => expect(selected).toHaveTextContent('B'));
@@ -105,5 +122,6 @@ export const HorizontalScrollOwnership: Story = {
     expect(wheel(draft, 1200)).toBe(false);
     expect(draft).toHaveValue('unsent text');
     expect(selected).toHaveTextContent('B');
+    await waitFor(() => expect(canvasElement.ownerDocument.querySelector('.session-history-swipe')).toBeNull());
   },
 };
