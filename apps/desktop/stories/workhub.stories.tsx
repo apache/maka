@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { useState } from 'react';
-import { ToastProvider, LocaleProvider, AstryxLocaleProvider, ChatSurfaceLayout } from '@maka/ui';
+import { useMemo, useState } from 'react';
+import { ComposerPromptSuggestionProvider, ToastProvider, LocaleProvider, AstryxLocaleProvider, ChatSurfaceLayout } from '@maka/ui';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { Meta, StoryObj } from '@storybook/react-vite';
@@ -47,7 +47,7 @@ const repairChoices = [
   providerType: 'openai' as const, providerLabel: connectionName, model, label,
   contextWindow: 100_000, isDefault: index === 0, thinkingLevels: [] as ThinkingLevel[],
 }));
-function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false, repairModel = false): WorkHubServices {
+function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false, repairModel = false, suggestions = false): WorkHubServices {
   let failures = failFirst ? 1 : 0;
   let session: SessionSummary & { revision: number } = {
     id: sessionId, name: 'WorkHub', revision: 1, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
@@ -158,6 +158,12 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
         publish(); return { kind: 'admitted', turnId: input.turnId };
       }
       if (failures-- > 0) throw new Error('Temporary Host failure');
+      if (suggestions) {
+        session = { ...session, runningTurnIds: [input.turnId] }; updateSessions?.();
+        // Model transport is mocked; let the real controller observe an in-flight reply.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        session = { ...session, runningTurnIds: [] }; updateSessions?.();
+      }
       messages = [...messages, { type: 'user', id: input.turnId, turnId: input.turnId, ts: 4, text: input.text, attachments: input.attachments }, { type: 'assistant', id: `${input.turnId}-answer`, turnId: input.turnId, ts: 5, modelId: 'model-a', text: '已收到。' }, { type: 'turn_state', id: `${input.turnId}-done`, turnId: input.turnId, ts: 6, status: 'completed' }];
       publish(); return { kind: 'admitted', turnId: input.turnId };
     },
@@ -183,16 +189,21 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
 
   };
 }
-function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false, repairModel = false }: { failFirst?: boolean; history?: boolean | 'usage'; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean; repairModel?: boolean }) {
+function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false, repairModel = false, suggestions = false }: { failFirst?: boolean; history?: boolean | 'usage'; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean; repairModel?: boolean; suggestions?: boolean }) {
   const [progressHeight, setProgressHeight] = useState(112);
   const [services] = useState(() => {
-    const services = makeServices(failFirst, history, colors, selectTarget, question, progress, repairModel);
+    const services = makeServices(failFirst, history, colors, selectTarget, question, progress, repairModel, suggestions);
     // Storybook has no BrowserWindow: honor the production renderer's native
     // height request and use the native progress card's 360px width.
     if (progress) services.presentation.resizeProgress = async (_request, height) => { setProgressHeight(height); };
     return services;
   });
-  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot /></div></WorkHubServicesProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
+  const [suggestionsEnabled, setSuggestionsEnabled] = useState(suggestions);
+  const prediction = useMemo(() => suggestions ? {
+    enabled: suggestionsEnabled, setEnabled: setSuggestionsEnabled,
+    generate: async () => '继续补充并发回调、重复投递和异常恢复的测试，确认所有边界条件都能正确处理，然后整理测试结果。',
+  } : undefined, [suggestions, suggestionsEnabled]);
+  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><ComposerPromptSuggestionProvider service={prediction}><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot /></div></WorkHubServicesProvider></ComposerPromptSuggestionProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }
 const meta = { title: 'Product/WorkHub', parameters: { layout: 'fullscreen' }, beforeEach: () => {
   Object.values(writes).forEach((spy) => spy.mockClear());
@@ -660,5 +671,44 @@ export const RetryWhileWorkFiltered: Story = {
     await waitFor(() => expect(canvas.getByText('已收到。')).toBeInTheDocument());
     expect(canvas.getByText('FILTERED_RETRY_PROBE', { selector: '.maka-user-message *' })).toBeInTheDocument();
     expect(canvas.queryByRole('button', { name: '显示全部对话' })).toBeNull();
+  },
+};
+
+// Real path: WorkHub → enable next-prompt suggestions → send a request → completed reply.
+// Uses the production WorkHubRoot/controller/Composer; only service transport/model output are mocked.
+export const NextPromptSuggestion: Story = {
+  render: () => <Surface suggestions />,
+  play: async ({ canvasElement }) => {
+    const input = await within(canvasElement).findByRole('textbox');
+    const suggestion = () => canvasElement.querySelector('.maka-composer-next-prompt') as HTMLElement | null;
+    await userEvent.click(input);
+    await userEvent.type(input, '请继续检查支付回调。');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(suggestion()).not.toBeNull());
+    const metrics = (element: Element) => {
+      const range = document.createRange(); range.selectNodeContents(element);
+      const style = getComputedStyle(element);
+      return { rects: [...range.getClientRects()].map(({ x, y, width, height }) => ({ x, y, width, height })),
+        font: style.font, letterSpacing: style.letterSpacing, whiteSpace: style.whiteSpace, wordBreak: style.wordBreak };
+    };
+    expect(getComputedStyle(suggestion()!).pointerEvents).toBe('none');
+    await userEvent.click(input);
+    expect(input).toHaveTextContent('');
+    const offered = metrics(suggestion()!.querySelector('.maka-composer-next-prompt-text')!);
+    const text = suggestion()!.textContent;
+    expect(input).toHaveTextContent('');
+    await userEvent.keyboard('{Tab}');
+    await waitFor(() => expect(input).toHaveTextContent(text!));
+    expect(metrics(input)).toEqual(offered);
+    expect(writes.answer).toHaveBeenCalledTimes(1);
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(2));
+    expect(writes.answer.mock.calls[1][1].text).toBe(text);
+    await waitFor(() => expect(suggestion()).not.toBeNull());
+    await userEvent.keyboard('{Escape}');
+    expect(suggestion()).toBeNull();
+    await userEvent.type(input, '请总结验证结果。');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(suggestion()).not.toBeNull());
   },
 };

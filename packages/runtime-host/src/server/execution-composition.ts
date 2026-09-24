@@ -149,6 +149,7 @@ import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import { HostChangeFeed } from './host-change-feed.js';
 import { HostConfigurationCoordinator } from './configuration-coordinator.js';
+import { HostPromptSuggestionCoordinator, supportsPromptSuggestion } from './prompt-suggestion.js';
 import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
@@ -166,6 +167,7 @@ import {
   createHostMemoryExtractionModel,
   createHostPluginModel,
   createHostSessionEffectModel,
+  createHostPromptSuggestionModel,
   type HostWorkHubRoutingModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
@@ -351,6 +353,7 @@ export async function createExecutionRuntimeHostComposition(
   let graphControlStore: ExecutionGraphStore | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
+  let promptSuggestions: HostPromptSuggestionCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
   let unsubscribeRuntimeEventCommits: (() => void) | undefined;
@@ -1002,6 +1005,7 @@ export async function createExecutionRuntimeHostComposition(
       (sessionId) => {
         continuityCoordinator.enqueueTranscriptAdvanced(sessionId);
         sessionAdmission.detach(() => workHubResults?.notify(sessionId));
+        sessionAdmission.detach(() => promptSuggestions?.reconcile(sessionId));
       },
     );
     unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
@@ -1419,6 +1423,55 @@ export async function createExecutionRuntimeHostComposition(
       requestDrain: context.requestDrain,
     });
     sessionEffects = sessionEffectCoordinator;
+    const promptSuggestionCoordinator = new HostPromptSuggestionCoordinator({
+      generate: createHostPromptSuggestionModel({
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        usage: openedUsageStores,
+        requestDrain: context.requestDrain,
+      }),
+      readSource: (sessionId) =>
+        sessionAdmission.run(sessionId, async () => {
+          if (
+            (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.privacy.incognitoActive
+          )
+            return undefined;
+          const canonical = await canonicalProjectionReader.read(sessionId);
+          const turn = canonical?.rootTurn;
+          if (
+            !canonical ||
+            !turn ||
+            turn.status !== 'completed' ||
+            turn.contextCompactionOutcome ||
+            canonical.session.isArchived ||
+            canonical.interactions.pending.length ||
+            canonical.queue.followup.length ||
+            canonical.queue.steering.length ||
+            canonical.goal?.status === 'active' ||
+            requireSessionManager(manager).runningTurnIds(sessionId).length
+          )
+            return undefined;
+          const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+          if (!supportsPromptSuggestion(sessionId, header)) return undefined;
+          await requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId);
+          const view = await recapReadModel.getSessionView(sessionId);
+          if (
+            view.messages.some(
+              (message) =>
+                message.type === 'user' && message.turnId === turn.turnId && message.origin,
+            )
+          )
+            return undefined;
+          return {
+            sessionId,
+            turnId: turn.turnId,
+            terminalEventId: turn.terminalEventId,
+            header,
+            messages: view.messages,
+          };
+        }),
+    });
+    promptSuggestions = promptSuggestionCoordinator;
     const resolveChildTools = async (sessionId: string) => {
       const header = await stores.sessionStore.readHeader(sessionId);
       const shell = resolveTurnShellPlan(
@@ -2942,6 +2995,7 @@ export async function createExecutionRuntimeHostComposition(
           messages.handlers,
           interactions.handlers,
           sessionEffectCoordinator.handlers,
+          promptSuggestionCoordinator.handlers,
           continuityCoordinator.handlers,
           runtimeResources.handlers,
           contextOperations.handlers,
@@ -2976,6 +3030,7 @@ export async function createExecutionRuntimeHostComposition(
           () => messages.beginDrain(),
           () => interactions.beginDrain(),
           () => sessionEffects?.beginDrain(),
+          () => promptSuggestions?.beginDrain(),
         ],
         close: [
           async () => {
@@ -2988,6 +3043,7 @@ export async function createExecutionRuntimeHostComposition(
           () => runtimeResources?.close(),
           () => workspaceExecution?.close(),
           () => sessionEffects?.close(),
+          () => promptSuggestions?.close(),
           () => messages.close(),
           () => interactions.close(),
           () => turnAccessRequests?.close(),
@@ -3169,6 +3225,7 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       await sessionEffects?.close();
+      await promptSuggestions?.close();
     } catch (closeError) {
       errors.push(closeError);
     }

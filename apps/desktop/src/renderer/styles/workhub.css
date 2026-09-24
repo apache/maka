@@ -118,6 +118,7 @@
   .workHubLive[data-conversation-expanded='false'] .maka-chat-layout > div:last-child > div:has(> div > .workHubComposerSurface) { padding: 0; }
   .workHubLive[data-conversation-expanded='false'] .maka-composer { --shadow-low: none; --shadow-med: none; }
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor { padding-right: 24px; }
+  .workHubLive[data-conversation-expanded='false'] .maka-composer-next-prompt { width: calc(100% - 24px); padding-block: 6px; overflow-y: auto; scrollbar-gutter: stable; scrollbar-width: thin; }
   .workHubLive[data-conversation-expanded='false'] .maka-composer-editor [contenteditable='true'] { padding-block: 6px; overscroll-behavior-y: contain; scrollbar-gutter: stable; scrollbar-width: thin; scroll-padding-block: 6px; }
   .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface { position: relative; -webkit-app-region: drag; }
   .workHubLive[data-conversation-expanded='false'] .workHubComposerSurface :is(button, input, textarea, [contenteditable='true'], [role='listbox'], [role='option'], dialog, a) { -webkit-app-region: no-drag; }

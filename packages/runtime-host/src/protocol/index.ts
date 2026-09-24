@@ -103,7 +103,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 184 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 185 as const;
+// 185: Add the bounded next-prompt suggestion operation.
 // 184: the unified `custom` provider type and its defaultApiProtocol require matching peers.
 // 183: Jev policy snapshots, set_jev mutation and credential locator require matching peers.
 // 182: Executor catalogs expose structured model families and thinking variant IDs.
