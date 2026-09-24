@@ -67,6 +67,7 @@ const LLM_USAGE_QUERY_FIELDS = new Set([
   'providerId',
   'modelId',
   'status',
+  'callKinds',
 ]);
 const TOOL_USAGE_QUERY_FIELDS = new Set(['range', 'toolName', 'status']);
 const USAGE_BUCKET_FIELDS = new Set([
@@ -709,7 +710,18 @@ function decodeLlmUsageQuery(value: unknown): LlmUsageQuery {
     ...optionalQueryText(query, 'providerId'),
     ...optionalQueryText(query, 'modelId'),
     ...(query.status === undefined ? {} : { status: decodeUsageStatus(query.status) }),
+    ...(query.callKinds === undefined ? {} : { callKinds: decodeCallKinds(query.callKinds) }),
   };
+}
+
+function decodeCallKinds(value: unknown): readonly ModelCallKind[] {
+  if (!Array.isArray(value)) throw invalidProtocolFrame('Invalid usage query callKinds');
+  return value.map((entry) => {
+    if (typeof entry !== 'string' || !MODEL_CALL_KINDS.includes(entry as ModelCallKind)) {
+      throw invalidProtocolFrame('Invalid usage query callKind');
+    }
+    return entry as ModelCallKind;
+  });
 }
 
 function decodeToolUsageQuery(value: unknown): ToolUsageQuery {

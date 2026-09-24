@@ -24,7 +24,11 @@ import type {
 import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
 
-type SessionUsageSummary = UsageSummaryV2 & { readonly provenance?: UsageProvenance };
+type SessionUsageSummary = UsageSummaryV2 & {
+  readonly provenance?: UsageProvenance;
+  /** The agent loop's own calls, when the narrower read succeeded (#5691). */
+  readonly mainSummary?: SessionUsageSummary;
+};
 
 /**
  * Overview view model for the Inspector panel's summary sections.
@@ -243,15 +247,20 @@ export function deriveInspectorOverviewModel(
 }
 
 function usageCacheHitRate(usage: SessionUsageSummary | undefined): number | undefined {
-  if (!usage || usage.totalTokens.input === 0) return undefined;
+  // Auxiliary calls keep their own prompt prefix, so blending them into the
+  // rate reports the main loop's caching as worse than it is (#5691). The
+  // main-only summary is the rate's input; the blended summary is only the
+  // fallback when the narrower read is unavailable.
+  const main = usage?.mainSummary ?? usage;
+  if (!main || main.totalTokens.input === 0) return undefined;
   if (
-    usage.provenance &&
-    (usage.provenance.coverage.usagePartialAttempts > 0 ||
-      usage.provenance.coverage.usageMissingAttempts > 0)
+    main.provenance &&
+    (main.provenance.coverage.usagePartialAttempts > 0 ||
+      main.provenance.coverage.usageMissingAttempts > 0)
   ) {
     return undefined;
   }
-  return usage.totalTokens.cacheRead / usage.totalTokens.input;
+  return main.totalTokens.cacheRead / main.totalTokens.input;
 }
 
 /**

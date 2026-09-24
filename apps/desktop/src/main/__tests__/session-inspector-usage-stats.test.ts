@@ -344,3 +344,42 @@ test('hovering the dominant segment leaves the layout untouched', () => {
   assert.ok(arcs[0].end >= 1 - RING_MIN_SWEEP);
   assert.equal(arcs[1].end, 1);
 });
+
+test('reads the cache rate from the main loop alone when the main summary is available', () => {
+  // A 10k-token uncached suggestion call drops a 95%-cached main loop to a
+  // blended 86%: auxiliary prompts keep their own prefix, so the rate must
+  // read the main summary, not the blend (#5691).
+  const blended = usageSummary({
+    totalTokens: {
+      input: 1_100_000,
+      output: 60_300,
+      cacheMiss: 150_000,
+      cacheRead: 950_000,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 1_160_300,
+    },
+  });
+  const main = usageSummary({
+    totalTokens: {
+      input: 1_000_000,
+      output: 60_000,
+      cacheMiss: 50_000,
+      cacheRead: 950_000,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 1_060_000,
+    },
+  });
+
+  const blendedRate = deriveInspectorOverviewModel(undefined, blended).cacheHitRate;
+  const refined = deriveInspectorOverviewModel(undefined, {
+    ...blended,
+    mainSummary: main,
+  }).cacheHitRate;
+
+  assert.ok(blendedRate);
+  assert.equal(Math.round(blendedRate * 100), 86);
+  assert.ok(refined);
+  assert.equal(Math.round(refined * 100), 95);
+});
