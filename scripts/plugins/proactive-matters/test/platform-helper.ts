@@ -153,6 +153,7 @@ export async function fixture(options: any = {}) {
     turn = 'turn-initial',
     session = 'session-1',
   ) => {
+    if (name === 'MatterStart') await remote('matters.authorize-session', { sessionId: session });
     const tool = tools.resolve(session, []).tools.find((t: any) => t.name === name);
     if (!tool) throw Error('Missing tool ' + name);
     return tool.impl(tool.parameters.parse(input), {

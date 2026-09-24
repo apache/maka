@@ -85,3 +85,9 @@
 - Updated the opt-in live scenario to deliver its amendment as an ordinary human conversation turn; no paid model run was performed for these fixes.
 
 The updated suite has 29 passing tests; build, extension import and typecheck pass. Historical 26-test and Flash results above describe the earlier implementation, not proof of these fixes.
+
+## 2026-09-24：独立长任务对话框
+
+浮窗显式固定在右上角。面板加入输入框：首条消息使用 Maka 现有桌面会话接口创建独立 session，先经插件 Remote 登记该 session，再发送用户原文；后续消息留在同一 session。详情保留进展摘要，并显示最近的用户与助手对话。
+
+Host 不再向普通 session 注入持续跟进启动提示；`MatterStart` 校验插件登记的 session，普通聊天无法登记。现有 29 项测试、扩展包构建与类型检查通过；Client 集成测试覆盖对话框的创建/发送、右上角定位和普通 session 的拒绝。会话接口在 DOM 测试中是受控替身，尚未做发布版 Electron 人工点击或付费模型运行。

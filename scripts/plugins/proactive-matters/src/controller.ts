@@ -178,11 +178,14 @@ export class MatterController {
   }
   async enroll(input: { title: string; request: string }, call: MakaToolContext) {
     this.assertReady();
+    if (!this.store.isAuthorizedSession(call.sessionId))
+      throw new Error('Start a follow-up from the long-task dialog');
     if (this.store.forSession(call.sessionId))
       throw new Error(
         'This conversation already has a follow-up; use MatterMessage or MatterControl',
       );
     const m = this.store.create({ ...input, sessionId: call.sessionId, cwd: call.cwd });
+    this.store.consumeAuthorizedSession(call.sessionId);
     const claimed = this.store.claim(m.id)!.matter;
     this.store.bindTurn(m.id, claimed.activation!.id, call.turnId);
     const agent = await this.agent(call.sessionId);

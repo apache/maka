@@ -31,7 +31,7 @@ import {
   MakaClientSlotOutlet,
 } from '../.artifacts/ui-api.mjs';
 import { fixture, sleep, until } from './platform-helper.js';
-test('real main Client Runtime renders a read-only task list and detail through generation-fenced Remote', async () => {
+test('long-task panel shows progress and creates an isolated follow-up conversation', async () => {
   const f = await fixture();
   const { window } = parseHTML('<html><head></head><body><div id="root"></div></body></html>');
   const globals = ['window', 'document', 'navigator', 'HTMLElement', 'IS_REACT_ACT_ENVIRONMENT'];
@@ -49,6 +49,17 @@ test('real main Client Runtime renders a read-only task list and detail through 
       configurable: true,
     });
   const root = new MakaClientRoot();
+  const sent: Array<{ sessionId: string; text: string }> = [];
+  (window as any).maka = {
+    sessions: {
+      create: async () => ({ id: 'dialog-session' }),
+      send: async (sessionId: string, command: any) => {
+        sent.push({ sessionId, text: command.text });
+        return { ok: true, turnId: command.turnId };
+      },
+      readSnapshot: async () => ({ items: [] }),
+    },
+  };
   const streams = new Map<string, any>();
   let nextId = 0;
   let runtime: any;
@@ -82,7 +93,7 @@ test('real main Client Runtime renders a read-only task list and detail through 
       staticModules: { react: React },
       loadBundle: async () =>
         runInNewContext(bundle, {
-          window: { __MakaModuleLoader__: runtime.loader },
+          window: Object.assign(window, { __MakaModuleLoader__: runtime.loader }),
           AbortController,
         }),
       remote: {
@@ -101,6 +112,7 @@ test('real main Client Runtime renders a read-only task list and detail through 
           streams.delete(streamId);
         },
       },
+      productEvents: { subscribe: () => () => {} },
     });
     await runtime.reconcile({
       ...snapshot,
@@ -138,6 +150,7 @@ test('real main Client Runtime renders a read-only task list and detail through 
       });
     };
     await click('长任务');
+    assert.match(window.document.head.textContent!, /left:auto;right:24px;top:88px/);
     assert.match(window.document.body.textContent!, /面板测试/);
     assert.match(window.document.body.textContent!, /下次检查/);
     assert.doesNotMatch(window.document.body.textContent!, /状态：等待外部结果/);
@@ -145,7 +158,7 @@ test('real main Client Runtime renders a read-only task list and detail through 
     assert.match(window.document.body.textContent!, /已经做了什么/);
     assert.match(window.document.body.textContent!, /已检查/);
     assert.match(window.document.body.textContent!, /检查审核结果，通过后安排验收会议/);
-    assert.equal(window.document.querySelectorAll('textarea').length, 0);
+    assert.equal(window.document.querySelectorAll('textarea').length, 1);
     assert.ok(
       ![...window.document.querySelectorAll('button')].some((b) =>
         ['暂停', '更多', '聊这个任务', '现在检查', '结束跟进'].includes(b.textContent || ''),
@@ -163,6 +176,27 @@ test('real main Client Runtime renders a read-only task list and detail through 
     assert.match(window.document.body.textContent!, /任务已暂停/);
     await click('收起长任务');
     assert.equal(window.document.querySelectorAll('.mt-card').length, 0);
+    await click('长任务');
+    await click('返回列表');
+    const input = window.document.querySelector('textarea')!;
+    await React.act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '明天检查评审状态');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+      await sleep(20);
+    });
+    const form = window.document.querySelector('.mt-compose')!;
+    await React.act(async () => {
+      form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+      await sleep(60);
+    });
+    assert.deepEqual(sent, [{ sessionId: 'dialog-session', text: '明天检查评审状态' }]);
+    const pending = f.tools.resolve('dialog-session', []).tools.find((t: any) => t.name === 'MatterStart');
+    assert.ok(pending);
+    // Only a session authorized by the dialog may enroll; ordinary conversations stay ordinary.
+    await assert.rejects(() => pending.impl({ title: '普通聊天', request: '持续跟进' }, {
+      sessionId: 'ordinary-session', turnId: 'ordinary-turn', toolCallId: 'ordinary-call',
+      cwd: f.root, abortSignal: new AbortController().signal, permissionMode: 'default',
+    }), /long-task dialog/);
     // Stale generation fences are checked by the real Host, not mocked by the Client.
     const descriptor = snapshot.entries[0];
     await assert.rejects(() =>

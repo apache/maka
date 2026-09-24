@@ -119,6 +119,9 @@ export interface MatterRun {
 
 /** A single transaction owns state, event acknowledgement, wakes and updates. */
 export interface MatterStore {
+  authorizeSession(sessionId: string): void;
+  isAuthorizedSession(sessionId: string): boolean;
+  consumeAuthorizedSession(sessionId: string): void;
   handoff(id: string): { summary: string; reason: string; next?: string; at: number } | null;
   workspace(id: string, activationId: string): MatterFileContext;
   readDraft(id: string, activationId: string, path: string): string;

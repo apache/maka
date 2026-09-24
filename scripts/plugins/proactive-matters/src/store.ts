@@ -78,6 +78,7 @@ class SqliteMatterStore implements MatterStore {
   ) {
     db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS plugin_bindings (session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS plugin_authorized_sessions (session_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS plugin_lease (id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, until_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS matters (id TEXT PRIMARY KEY, session_id TEXT UNIQUE NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS matter_events (
@@ -117,6 +118,17 @@ class SqliteMatterStore implements MatterStore {
       this.db.exec('ROLLBACK');
       throw error;
     }
+  }
+  authorizeSession(sessionId: string): void {
+    const id = text(sessionId, 200, 'session');
+    if (this.forSession(id)) throw new Error('This session already has a follow-up');
+    this.db.prepare('INSERT OR IGNORE INTO plugin_authorized_sessions VALUES(?,?)').run(id, this.now());
+  }
+  isAuthorizedSession(sessionId: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM plugin_authorized_sessions WHERE session_id=?').get(sessionId));
+  }
+  consumeAuthorizedSession(sessionId: string): void {
+    this.db.prepare('DELETE FROM plugin_authorized_sessions WHERE session_id=?').run(sessionId);
   }
   private read(id: string): Matter {
     const row = this.db.prepare('SELECT payload FROM matters WHERE id=?').get(id);

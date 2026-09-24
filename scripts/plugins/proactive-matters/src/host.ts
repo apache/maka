@@ -92,7 +92,7 @@ export default {
       ctx.tools.register({
         name: 'MatterStart',
         description:
-          'Start durable follow-up in this conversation when the user asks you to keep following an objective. This enrolls the current session and starts this activation. Read returned file paths, work normally, then write draft.md and MatterSettle. One follow-up per conversation.',
+          'Start durable follow-up only in a session opened from the long-task dialog. Read returned file paths, work normally, then write draft.md and MatterSettle. One follow-up per conversation.',
         parameters: startInput,
         categoryHint: 'file_write',
         executionSemantics: 'exclusive_step',
@@ -130,7 +130,9 @@ export default {
         text: ({ sessionId }: any) => {
           const m = store.forSession(sessionId);
           if (!m)
-            return 'When the user explicitly asks for ongoing follow-up across time, use MatterStart to enroll this conversation. Do not use it for ordinary one-off tasks.';
+            return store.isAuthorizedSession(sessionId)
+              ? 'This conversation was opened from the long-task dialog. For its first user message, call MatterStart with a short title and the full user request, then continue the ordinary agent loop. Use MatterSettle only when this activation must end or the objective is done.'
+              : undefined;
           return (
             MATTER_INSTRUCTIONS +
             '\nThis conversation is enrolled in a follow-up. Only for a direct new human message changing the requirements, call MatterMessage. Runtime wake notifications, inbox.json and request.md already contain persisted input: never re-submit those through MatterMessage. The plugin panel displays MatterSettle.update; final chat text may briefly report meaningful progress. Do not start another scheduler. Plugin state: ' +
@@ -147,6 +149,14 @@ export default {
           return m && !['completed', 'cancelled'].includes(m.status)
             ? buildMatterStepContext()
             : undefined;
+        },
+      });
+      ctx.clientBridge.rpc({
+        name: 'matters.authorize-session',
+        invoke: (input: any) => {
+          const { sessionId } = z.object({ sessionId: z.string().trim().min(1).max(200) }).parse(input);
+          store.authorizeSession(sessionId);
+          return { authorized: true };
         },
       });
       ctx.clientBridge.rpc({
