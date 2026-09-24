@@ -54,14 +54,11 @@ import type {
 import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
-import { finalAssistantReplyText } from './materialize.js';
+import { finalAssistantReplyText, type TurnViewModel } from './materialize.js';
 import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
-import type { LiveProviderRetry, LiveTurnProjection } from './live-turn-projection.js';
+import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
-  ModelProviderRetryIndicator,
-  LocalizedChatMessage,
-  TurnStatusBar,
   TurnView,
   TransientUserMessage,
   type TurnFooterActionMeta,
@@ -378,10 +375,7 @@ export function ChatView(props: {
   // #642 single render path: the in-flight answer is injected into the tail
   // turn's TurnView (the SAME node as the eventual committed turn) instead of a
   // separate streaming <section>, so live→settled is a data-source swap, not an
-  // unmount/mount. The streaming turn is always the last turn: the user message
-  // is committed optimistically (showOptimisticUserMessage) before streaming
-  // starts, so `materializeTurns` already emits it — with an empty assistant
-  // timeline — as `turns[last]`. Only the tail TurnView gets a fresh
+  // unmount/mount. Only the tail TurnView gets a fresh
   // `liveStreaming` object per delta (→ it alone re-renders); every sibling
   // gets a stable `undefined` and its memo skips. That the sibling's `turn`
   // prop is also stable is the projection's tested contract, not a property
@@ -406,10 +400,12 @@ export function ChatView(props: {
   const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
   const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
   const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
-  const preTurnRetry =
-    activeContent !== undefined && activeContent.turnId === tailTurnId
-      ? activeContent.providerRetry
-      : undefined;
+  // The Host can name its running Turn before the transcript carries it. Until
+  // then the tail renders the TurnView that Turn will become, so the handoff
+  // moves nothing. It stays out of `turns`: that list is transcript evidence.
+  const pendingTurn: TurnViewModel | undefined = tailTurnId === undefined || hasRenderedLiveTurn ? undefined : {
+    turnId: tailTurnId, status: 'running', tools: [], notes: [], timeline: [], startedAt: activeContent?.startedAt ?? 0,
+  };
   const boundaryOverlayTurnId = activeContent?.turnId
     ?? (streamingActive ? tailTurnId : undefined);
   const transformedUserTurnIds = useMemo(
@@ -523,6 +519,30 @@ export function ChatView(props: {
     inlineTransientMessageIds,
     turns,
   );
+  // Tail rows have no Turn ancestor, so the reading measure that `.maka-turn`
+  // owns would not reach them: without it the bubble spans the full window.
+  const tail = pendingTurn ? (
+    <div className="maka-pending-turn">
+      <TurnView
+        turn={pendingTurn}
+        activityObserved
+        promptStatus={props.turnDecorations?.get(pendingTurn.turnId)?.promptStatus}
+        transientMessages={tailTransientMessages}
+        userLabel={props.userLabel}
+        liveStreaming={{ runningStatus, providerRetry: activeContent?.providerRetry }}
+      />
+    </div>
+  ) : tailTransientMessages.length > 0 ? (
+    <section className="maka-turn">
+      {tailTransientMessages.map((message) => (
+        <TransientUserMessage
+          key={message.id}
+          message={message}
+          status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined}
+        />
+      ))}
+    </section>
+  ) : null;
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
   const { highlightedTurnId, placed, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
     scrollRef,
@@ -601,7 +621,7 @@ export function ChatView(props: {
     // content here too — otherwise the first question stays invisible for the
     // whole fork round trip (#4654). Once the fork commits `activeSession`
     // arrives and the full transcript below takes over.
-    const hasOptimisticContent = transientMessages.length > 0 || runningStatus;
+    const hasOptimisticContent = tail !== null;
     const emptyContent = props.emptyOverride ?? (
       <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
@@ -647,19 +667,7 @@ export function ChatView(props: {
                   ))}
                 </>
               ) : null}
-              {/* Tail rows have no Turn ancestor, so the reading measure that
-                  `.maka-turn` owns would not reach them: without the wrapper
-                  the bubble stretches across the full window width. */}
-              {transientMessages.length > 0 && (
-                <section className="maka-turn">
-                  {transientMessages.map((message) => (
-                    <TransientUserMessage key={message.id} message={message}
-                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined} />
-                  ))}
-                </section>
-              )}
-              {/* The pre-Turn cue is the same status row the Turn will show. */}
-              {runningStatus && <PreTurnCue running />}
+              {tail}
             </>
           ) : null}
         </ChatMessageList>
@@ -859,32 +867,7 @@ export function ChatView(props: {
                   }}
                 </Virtualizer>
               </div>
-              {/* A local copy the transcript already shows as the tail Turn's
-                  own user row must not render again below the running status;
-                  the inline slot drops it, so the tail slot drops it too.
-                  Same reading-measure reasoning as the optimistic path above. */}
-              {tailTransientMessages.length > 0 && (
-                <section className="maka-turn">
-                  {tailTransientMessages.map((message) => (
-                    <TransientUserMessage
-                      key={message.id}
-                      message={message}
-                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined}
-                    />
-                  ))}
-                </section>
-              )}
-              {/* A send arm already names its Turn, but the transcript may not
-                  contain it yet. Keep feedback below the pending prompt until
-                  that same TurnView can take over — and show it the way the
-                  TurnView will, so the handoff does not shift the row. */}
-              {streamingActive && !hasRenderedLiveTurn && (
-                preTurnRetry ? (
-                  <PreTurnCue providerRetry={preTurnRetry} />
-                ) : runningStatus ? (
-                  <PreTurnCue running />
-                ) : null
-              )}
+              {tail}
               {conversationItemPlacement.orphan && (
                 <Fragment key={conversationItemPlacement.orphan.id}>
                   {conversationItemPlacement.orphan.content}
@@ -953,28 +936,6 @@ export function ChatView(props: {
 }
 
 /** Turns holding document focus or a selection endpoint; virtualization must not unmount them. */
-/**
- * The cue shown before the transcript contains the Turn: the same status row
- * the TurnView will render, so the handoff does not shift the row.
- */
-function PreTurnCue(props: { running?: boolean; providerRetry?: LiveProviderRetry }) {
-  const copy = getConversationCopy(useUiLocale()).messages;
-  return (
-    <section className="maka-turn" data-live-streaming="true">
-      <LocalizedChatMessage
-        accessibleLabel={copy.assistantAriaLabel}
-        sender="assistant"
-        className="maka-chat-message maka-assistant-answer"
-      >
-        <div className="maka-assistant-answer-content">
-          <TurnStatusBar status="running" running={props.running} providerRetry={props.providerRetry} />
-          {props.providerRetry ? <ModelProviderRetryIndicator retry={props.providerRetry} /> : null}
-        </div>
-      </LocalizedChatMessage>
-    </section>
-  );
-}
-
 /**
  * virtua disables pointer events while its scroller moves, and a streaming
  * answer moves the pinned scroller every frame, which would leave every Turn

@@ -77,11 +77,17 @@ test('ChatView renders the optimistic bubble and running status before a session
   const markup = renderChatView({
     transientMessages: [OPTIMISTIC_BUBBLE],
     activeTurn: { turnId: 'turn-1' },
+    turnDecorations: new Map([['turn-1', {
+      header: null,
+      promptStatus: createElement('span', { 'data-testid': 'prompt-status' }),
+    }]]),
   });
-  // The user's question is on screen immediately, before the fork/session lands.
-  assert.match(markup, /why does this fail\?/);
-  // The running-status line rides alongside it (the no-turn bare-turn fallback).
-  assert.match(markup, /data-live-streaming="true"/);
+  const { document } = parseHTML(markup);
+  // The question and its running status render as the one Turn they become.
+  const turn = document.querySelector('.maka-pending-turn > .maka-turn[data-turn-id="turn-1"]');
+  assert.ok(turn?.querySelector('.maka-user-message')?.textContent?.includes('why does this fail?'));
+  assert.ok(turn?.querySelector('.maka-user-message [data-testid="prompt-status"]'), 'the prompt keeps its Turn status');
+  assert.ok(turn?.querySelector('.maka-turn-processing'));
   // The optimistic content takes over from the empty state.
   assert.doesNotMatch(markup, /empty-state-marker/);
 });
@@ -92,7 +98,7 @@ test('ChatView shows the empty state when there is neither a bubble nor a runnin
     activeTurn: undefined,
   });
   assert.doesNotMatch(markup, /why does this fail\?/);
-  assert.doesNotMatch(markup, /data-live-streaming="true"/);
+  assert.doesNotMatch(markup, /maka-turn-processing/);
   // The empty state (onboarding surface / hero) must still render — the empty
   // optimistic fragments must not suppress it.
   assert.match(markup, /empty-state-marker/);

@@ -579,7 +579,7 @@ export const TurnView = memo(function TurnView(props: {
         </Marker>
       )}
       {props.transientMessages?.map((message) => (
-        <TransientUserMessage key={message.id} message={message} />
+        <TransientUserMessage key={message.id} message={message} status={props.promptStatus} />
       ))}
       {turn.user && turn.user.hostOrigin?.kind !== 'workhub_result' && (
         <LocalizedChatMessage
