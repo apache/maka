@@ -82,6 +82,7 @@ fn main() -> Result<(), String> {
             KeyBinding::new("cmd-m", workspace::Minimize, None),
             KeyBinding::new("cmd-n", workspace::NewSession, None),
             KeyBinding::new("cmd-c", chat::CopySelection, Some("Transcript")),
+            KeyBinding::new("escape", chat::Interrupt, Some("Chat")),
             // Every Enter chord but plain Enter starts a new line.
             KeyBinding::new(
                 "ctrl-enter",

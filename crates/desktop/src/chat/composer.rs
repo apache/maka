@@ -33,6 +33,7 @@ impl Chat {
     pub(super) fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme(cx);
         let status: Option<SharedString> = match &self.delivery {
+            _ if self.stop_armed.is_some() => Some("再按一次 Esc 停止".into()),
             Some(Delivery::Failed(error)) => Some(format!("未发送：{error}").into()),
             Some(Delivery::Unknown { error, .. }) => Some(
                 format!("发送结果未知（{error}）。消息出现在对话中即已送达；修改草稿可重新发送。")

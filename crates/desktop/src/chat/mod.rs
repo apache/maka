@@ -31,7 +31,7 @@ use crate::{
 use gpui_kit::base::input::{InputEvent, TextareaState};
 use gpui_kit::{
     AnyWindowHandle, AppContext, Context, Entity, FocusHandle, FollowMode, ListAlignment,
-    ListOffset, ListState, Pixels, SharedString, Subscription, Window, px,
+    ListOffset, ListState, Pixels, SharedString, Subscription, Task, Window, px,
 };
 use maka_client::{
     Client, RequestFailure,
@@ -60,7 +60,10 @@ const PAGE_BYTES: u64 = 64 * 1024;
 /// Streaming changes the height of the reply and of the rows around it.
 const TAIL_ROWS: usize = 3;
 
-gpui_kit::actions!(transcript, [CopySelection]);
+gpui_kit::actions!(transcript, [CopySelection, Interrupt]);
+
+/// A second Esc within this long stops the running turn.
+const STOP_CONFIRM: Duration = Duration::from_millis(1500);
 
 enum Delivery {
     Sending,
@@ -113,6 +116,8 @@ pub struct Chat {
     window: AnyWindowHandle,
     delivery: Option<Delivery>,
     stopping: bool,
+    /// Set by a first Esc while a turn runs; clears itself.
+    stop_armed: Option<Task<()>>,
     answering: Option<String>,
     interaction_error: Option<SharedString>,
     focus: FocusHandle,
@@ -199,6 +204,7 @@ impl Chat {
             window: window.window_handle(),
             delivery: None,
             stopping: false,
+            stop_armed: None,
             answering: None,
             interaction_error: None,
             focus: cx.focus_handle(),
@@ -617,6 +623,27 @@ impl Chat {
         self.list.set_follow_mode(FollowMode::Tail);
         self.jump = false;
         cx.notify();
+    }
+
+    /// Esc while a turn runs: the first press asks, the second stops.
+    /// Returns false when there is nothing to stop, so Esc goes on.
+    fn interrupt(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.running().is_none() {
+            return false;
+        }
+        if self.stop_armed.take().is_some() {
+            self.stop(cx);
+        } else {
+            self.stop_armed = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(STOP_CONFIRM).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.stop_armed = None;
+                    cx.notify();
+                });
+            }));
+        }
+        cx.notify();
+        true
     }
 
     /// Empties the composer if it still holds the sent text; anything typed

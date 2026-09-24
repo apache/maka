@@ -31,7 +31,7 @@ use chrono::{Local, TimeZone};
 use gpui_kit::{
     AnyElement, App, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    StyledText, Window, div, list, prelude::FluentBuilder, px,
+    StyledText, Window, component::input, div, list, prelude::FluentBuilder, px,
 };
 use std::time::{Duration, Instant};
 
@@ -751,6 +751,18 @@ impl Render for Chat {
             .size_full()
             .flex()
             .flex_col()
+            .key_context("Chat")
+            .on_action(cx.listener(|this, _: &super::Interrupt, _, cx| {
+                if !this.interrupt(cx) {
+                    cx.propagate();
+                }
+            }))
+            // The composer's own Esc, once it has nothing left to dismiss.
+            .on_action(cx.listener(|this, _: &input::Escape, _, cx| {
+                if !this.interrupt(cx) {
+                    cx.propagate();
+                }
+            }))
             .bg(theme.base)
             .text_color(theme.text)
             .child(
