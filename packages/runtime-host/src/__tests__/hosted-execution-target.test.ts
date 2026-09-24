@@ -219,6 +219,31 @@ test('explicit hosted target creates a custom connection with its default protoc
   });
 });
 
+test('explicit hosted target rejects an existing custom connection on another protocol', async () => {
+  const operations: string[] = [];
+  const connection = {
+    request: async (operation: string) => {
+      operations.push(operation);
+      return catalogPage(['claude-opus-4-8'], ['claude-opus-4-8'], null, 'custom');
+    },
+  } as unknown as Pick<RuntimeHostConnection, 'request'>;
+
+  await assert.rejects(
+    configureHostedExecutionTarget(connection, {
+      connection: {
+        providerType: 'custom',
+        defaultApiProtocol: 'anthropic-messages',
+        apiKey: 'sk-relay',
+      },
+      connectionSlug: 'env-openai',
+      model: 'claude-opus-4-8',
+      baseUrl: 'https://relay.example/v1',
+    }),
+    /provider does not match/u,
+  );
+  assert.deepEqual(operations, ['connection.catalog.query']);
+});
+
 const CONNECTION_ID = '00000000-0000-4000-8000-000000000001';
 
 function catalogPage(

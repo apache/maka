@@ -48,7 +48,12 @@ export async function configureHostedExecutionTarget(
   const before = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
   const target = before.connections.find((candidate) => candidate.slug === input.connectionSlug);
   const onboarding = input.connection;
-  if (onboarding && target && target.providerType !== onboarding.providerType) {
+  if (
+    onboarding &&
+    target &&
+    (target.providerType !== onboarding.providerType ||
+      target.defaultApiProtocol !== onboarding.defaultApiProtocol)
+  ) {
     throw new Error('Runtime Host connection provider does not match');
   }
   if (onboarding) {
