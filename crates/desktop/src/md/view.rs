@@ -125,9 +125,9 @@ pub struct Scope<'a> {
 pub fn render(body: &Body, scope: &Scope, cx: &App) -> Div {
     let theme = theme(cx);
     let metrics = scope.metrics;
+    // A block, not a flex column: taffy sizes a flex column's content to
+    // zero, which shrinks a user bubble to one character per line.
     let mut column = div()
-        .flex()
-        .flex_col()
         .min_w_0()
         .text_size(px(metrics.text))
         .line_height(px(metrics.line))
