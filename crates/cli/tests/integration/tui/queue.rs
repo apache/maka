@@ -95,7 +95,7 @@ fn real_host_queue_edits_retracts_promotes_and_steers_at_the_model_boundary() {
     tui.wait_for("Edit queued message");
     tui.send("\x01\x1b[200~follow-first-edited 中文🦀\x1b[201~".as_bytes());
     tui.wait_for("follow-first-edited 中文🦀");
-    tui.click_last_text("Save"); // The actual modal button, not its shortcut hint.
+    tui.click_last_text("Save");
     // Drain PTY output until the canonical projection is painted before querying
     // Host facts; an unread terminal can block rendering and subsequent input.
     tui.wait_until(|screen| !screen.contains("Edit queued message"));

@@ -253,7 +253,6 @@ queue-down = 下移 · Alt+↓
 queue-save = 保存
 queue-close = 取消
 queue-help = ↑↓ 选择 · e 编辑 · x 撤回 · s 补充当前轮 · Alt+↑↓ 排序 · Esc 返回
-queue-edit-help = Ctrl+S 保存 · Esc 取消
 queue-changed = 队列已变化 · 编辑内容保留；关闭后重新打开以使用最新版本
 queue-saving = 正在保存…
 queue-too-large = 待处理消息文本超过 48 KiB

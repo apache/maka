@@ -488,7 +488,6 @@ impl App {
         self.hits.clear();
         self.modal_area = None;
         self.queue.area = None;
-        self.queue.edit_area = None;
         self.chat.area = None;
         self.frame_size = Some((area.width, area.height));
     }
@@ -1076,7 +1075,6 @@ impl App {
             }
         }
         self.queue.area = None;
-        self.queue.edit_area = None;
         if let Some(edit) = &mut self.queue.edit {
             edit.editor.invalidate_geometry();
         }

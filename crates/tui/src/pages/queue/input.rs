@@ -18,10 +18,7 @@
  */
 use super::{Command, Kind};
 use crate::app::{Action, App, Focus};
-use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-};
-use ratatui::layout::Position;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
     pub fn queue_key(&mut self, key: KeyEvent) -> (bool, Option<Action>) {
@@ -61,64 +58,6 @@ impl App {
             true,
             command.and_then(|command| self.apply(Action::Queue(command))),
         )
-    }
-    pub fn queue_edit_input(&mut self, event: Event) -> (bool, Option<Action>) {
-        let action = match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key.code == KeyCode::Esc {
-                    Some(Action::Queue(Command::Close))
-                } else if key.code == KeyCode::Char('q')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    Some(Action::Quit)
-                } else if self.queue.edit_area.is_none() {
-                    return (false, None);
-                } else if key.code == KeyCode::Char('s')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    Some(Action::Queue(Command::Save))
-                } else {
-                    return (
-                        self.queue
-                            .edit
-                            .as_mut()
-                            .is_some_and(|edit| edit.editor.key(key)),
-                        None,
-                    );
-                }
-            }
-            Event::Paste(text) if self.queue.edit_area.is_some() => {
-                return (
-                    self.queue
-                        .edit
-                        .as_mut()
-                        .is_some_and(|edit| edit.editor.insert(&text)),
-                    None,
-                );
-            }
-            Event::Mouse(mouse) if self.queue.edit_area.is_some() => {
-                let point = Position::new(mouse.column, mouse.row);
-                if let Some(edit) = &mut self.queue.edit
-                    && (edit.editor.contains(point) || edit.editor.dragging())
-                    && edit.editor.mouse(mouse)
-                {
-                    return (true, None);
-                }
-                if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
-                    return (false, None);
-                }
-                self.hits
-                    .iter()
-                    .rev()
-                    .find(|hit| hit.area.contains(point))
-                    .and_then(|hit| {
-                        matches!(hit.action, Action::Queue(Command::Save | Command::Close))
-                            .then(|| hit.action.clone())
-                    })
-            }
-            _ => return (false, None),
-        };
-        (true, action.and_then(|action| self.apply(action)))
     }
     pub fn queue_edit_status(&self) -> Option<String> {
         let edit = self.queue.edit.as_ref()?;

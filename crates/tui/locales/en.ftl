@@ -253,7 +253,6 @@ queue-down = Move down · Alt+↓
 queue-save = Save
 queue-close = Cancel
 queue-help = ↑↓ Select · e Edit · x Remove · s Current turn · Alt+↑↓ Reorder · Esc Back
-queue-edit-help = Ctrl+S Save · Esc Cancel
 queue-changed = Queue changed · Edit kept; close and reopen to use the latest version
 queue-saving = Saving…
 queue-too-large = Queued text exceeds 48 KiB

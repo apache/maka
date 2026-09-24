@@ -253,7 +253,6 @@ queue-down = 下移 · Alt+↓
 queue-save = 儲存
 queue-close = 取消
 queue-help = ↑↓ 選擇 · e 編輯 · x 撤回 · s 補充目前輪 · Alt+↑↓ 排序 · Esc 返回
-queue-edit-help = Ctrl+S 儲存 · Esc 取消
 queue-changed = 佇列已變更 · 編輯內容保留；關閉後重新開啟以使用最新版本
 queue-saving = 正在儲存…
 queue-too-large = 待處理訊息文字超過 48 KiB

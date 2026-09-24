@@ -31,6 +31,7 @@ use maka_protocol::{
 use ratatui::layout::Rect;
 use serde_json::{Value, json};
 
+pub(crate) mod edit;
 mod input;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,7 +102,6 @@ pub struct Ticket {
 pub struct Queue {
     pub selected: Option<String>,
     pub area: Option<Rect>,
-    pub edit_area: Option<Rect>,
     pub edit: Option<Edit>,
     pending: Option<Ticket>,
     awaiting: Option<(Target, u64)>,
@@ -532,25 +532,36 @@ mod tests {
                         .draw(|frame| crate::view::draw(frame, &mut app))
                         .unwrap();
                     app.input(Event::Paste("\nchanged 中文🦀".into()));
+                    assert_eq!(app.drafts["chat"].text(), "");
+                    if width < 34 {
+                        // Too narrow for the sheet: nothing is editable or
+                        // submittable until it fits.
+                        assert_eq!(app.queue.edit.as_ref().unwrap().editor.text(), "f3 中文🦀");
+                        assert!(key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL).is_none());
+                        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+                        assert!(app.queue.edit.is_none());
+                        continue;
+                    }
                     assert_eq!(
                         app.queue.edit.as_ref().unwrap().editor.text(),
                         "f3 中文🦀\nchanged 中文🦀"
                     );
-                    assert_eq!(app.drafts["chat"].text(), "");
-                    assert!(app.hits.iter().all(|hit| matches!(
-                        hit.action,
-                        Action::Queue(Command::Save | Command::Close)
-                    )));
+                    // Enter breaks the line rather than saving.
+                    assert!(key(&mut app, KeyCode::Enter, KeyModifiers::NONE).is_none());
+                    key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+                    // The row between the title and the field.
+                    let field = app.layer.slot("message").unwrap();
                     assert!(
                         app.input(Event::Mouse(MouseEvent {
                             kind: MouseEventKind::Down(MouseButton::Left),
-                            column: app.modal_area.unwrap().x,
-                            row: app.modal_area.unwrap().y,
+                            column: field.x,
+                            row: field.y - 1,
                             modifiers: KeyModifiers::NONE
                         }))
                         .1
                         .is_none()
                     );
+                    assert!(app.queue.edit.is_some(), "a press inside keeps the sheet");
                     assert_eq!(
                         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL),
                         Some(Action::Queue(Command::Save))
