@@ -23,7 +23,7 @@
 //! its owner to dismiss it. Nothing beneath a sheet sees input.
 use super::{
     layout,
-    node::{Node, On, Role, Size, Tone},
+    node::{Kind, Node, On, Role, Size, Tone},
     surface::{Context, Outcome, Surface},
 };
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
@@ -40,6 +40,8 @@ const INPUT: &str = "input";
 const WIDTH: u16 = 64;
 /// Narrower than this, prose wraps into a column nobody can read.
 const MIN_WIDTH: u16 = 28;
+/// Rows a capped viewer keeps when its sheet must fit a short terminal.
+const VIEWER: u16 = 3;
 
 /// Width of a sheet's content over a terminal this wide: what an owner
 /// lays out a field for before the sheet is drawn.
@@ -194,6 +196,22 @@ impl<M> Sheet<M> {
     }
 }
 
+/// Takes up to `excess` rows from the capped viewers (scrolling areas sized
+/// `Upto`) of a column, each keeping at least `VIEWER` rows: a short
+/// terminal shows less of a list rather than no sheet at all.
+fn yield_rows<M>(node: &mut Node<M>, width: u16, excess: &mut u16) {
+    if let (Kind::Scroll(_), Size::Upto(most)) = (&node.kind, node.size) {
+        let shown = layout::height(node, width).min(most);
+        let given = shown.saturating_sub(VIEWER).min(*excess);
+        node.size = Size::Upto(shown - given);
+        *excess -= given;
+    } else if let Kind::Column { children, .. } = &mut node.kind {
+        for child in children {
+            yield_rows(child, width, excess);
+        }
+    }
+}
+
 /// The modal layer that presents one sheet at a time.
 pub struct Layer<M> {
     surface: Surface<M>,
@@ -239,9 +257,15 @@ impl<M: Clone> Layer<M> {
         let fits_footer = inner >= sheet.footer_width().max(MIN_WIDTH);
         let key = sheet.key.clone();
         let focus = sheet.focus.take();
-        let tree = sheet.tree();
-        let height = layout::height(&tree, inner).saturating_add(4);
-        if !fits_footer || height > area.height.saturating_sub(2) {
+        let mut tree = sheet.tree();
+        let available = area.height.saturating_sub(2);
+        let mut height = layout::height(&tree, inner).saturating_add(4);
+        if height > available {
+            let mut excess = height - available;
+            yield_rows(&mut tree, inner, &mut excess);
+            height = layout::height(&tree, inner).saturating_add(4);
+        }
+        if !fits_footer || height > available {
             self.area = None;
             self.top = None;
             self.surface.invalidate();
@@ -706,5 +730,38 @@ mod tests {
         assert_eq!(locate(&terminal, title).1, top, "a status arriving");
         let (_, terminal) = draw(&mut layer, grown("b"), 60, 24);
         assert_eq!(locate(&terminal, title).1, top - 2, "the next step");
+    }
+
+    #[test]
+    fn a_short_terminal_shortens_viewers_before_refusing_the_sheet() {
+        let viewer = || {
+            let lines = (0..20)
+                .map(|index| {
+                    Node::text(
+                        index.to_string(),
+                        vec![(format!("line {index}"), Tone::Normal)],
+                    )
+                })
+                .collect();
+            sheet("viewer", true).body(
+                Node::scroll("log", Node::column("lines", lines))
+                    .on(On::Scroll)
+                    .size(Size::Upto(12)),
+            )
+        };
+        let mut layer = Layer::default();
+        // Title, note, footer and gaps take twelve of the eighteen rows.
+        let (shown, terminal) = draw(&mut layer, viewer(), 60, 20);
+        assert!(shown, "the viewer gave up rows");
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("line 5") && !text.contains("line 6"));
+        let (shown, _) = draw(&mut layer, viewer(), 60, 14);
+        assert!(!shown, "three rows are the least a viewer keeps");
     }
 }

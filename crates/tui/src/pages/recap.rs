@@ -26,7 +26,7 @@ use maka_client::{Client, ClientError, RequestFailure};
 use maka_protocol::plugin::{RemoteBinding, RemoteKind, RemoteRequest, RemoteResult};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-pub use view::draw;
+pub(crate) use view::sheet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
@@ -43,6 +43,8 @@ pub enum Command {
     Retry,
     Forget,
     ConfirmForget,
+    /// Keeps the retry after asking to forget it.
+    Keep,
     Close,
 }
 impl Command {
@@ -55,6 +57,7 @@ impl Command {
             Self::Retry => "recap-retry",
             Self::Forget => "recap-forget",
             Self::ConfirmForget => "recap-confirm-forget",
+            Self::Keep => "session-cancel",
             Self::Close => "session-remove-close",
         }
     }
@@ -124,8 +127,6 @@ pub struct State {
     pub visible: bool,
     rendered: bool,
     discarding: bool,
-    focus: usize,
-    scroll: u16,
     target: Option<Target>,
     saved: Option<Checkpoint>,
     pending: Option<Request>,
@@ -145,6 +146,10 @@ impl State {
     }
     pub fn invalidate_geometry(&mut self) {
         self.rendered = false;
+    }
+    /// The sheet reports whether it is on screen; its commands need it.
+    pub(crate) fn presented(&mut self, shown: bool) {
+        self.rendered = shown;
     }
     pub fn disconnect(&mut self) {
         self.pending = None;
@@ -252,6 +257,18 @@ impl App {
             .unwrap_or_default()
     }
     pub fn recap_enabled(&self, command: &Command) -> bool {
+        let idle = self.recap.pending.is_none() && self.recap.requested.is_none();
+        self.recap_offered(command)
+            && (idle
+                || matches!(
+                    command,
+                    Command::Open(_) | Command::Resume | Command::Close | Command::Keep
+                ))
+    }
+    /// Whether the dialog offers `command`, before a request in flight is
+    /// considered: its button (and the focus on it) stays while the Host is
+    /// asked, and pressing it then does nothing.
+    fn recap_offered(&self, command: &Command) -> bool {
         let state = &self.recap;
         let connected = matches!((&self.connection,&state.target),
             (ConnectionState::Connected {root_id,epoch},Some(target)) if *root_id==target.root && *epoch==target.epoch);
@@ -259,7 +276,8 @@ impl App {
             Command::Open(target)=> !state.visible && state.saved.is_none() && state.pending.is_none() && self.recap_target().as_ref()==Some(target),
             Command::Resume=> !state.visible && state.saved.as_ref().is_some_and(|saved| matches!(&self.connection,ConnectionState::Connected{root_id,..} if *root_id==saved.root)),
             Command::Close=>state.visible,
-            _=> state.visible && state.rendered && connected && state.pending.is_none() && state.requested.is_none() && match command {
+            Command::Keep=>state.visible && state.discarding,
+            _=> state.visible && state.rendered && connected && match command {
                 Command::Read=>true,
                 Command::Generate=>state.loaded && state.saved.is_none(),
                 Command::Retry=>state.saved.is_some(),
@@ -281,6 +299,7 @@ impl App {
             Command::Forget => {
                 state.discarding = true;
             }
+            Command::Keep => {}
             Command::ConfirmForget => {
                 state.saved = None;
                 state.visible = false;
@@ -290,8 +309,6 @@ impl App {
             Command::Open(target) => {
                 state.target = Some(target);
                 state.visible = true;
-                state.focus = 0;
-                state.scroll = 0;
                 state.loaded = false;
                 state.receipt = None;
                 state.error = None;
@@ -310,8 +327,6 @@ impl App {
                 });
                 state.visible = true;
                 state.rendered = false;
-                state.focus = 0;
-                state.scroll = 0;
                 state.requested = Some(None);
             }
             Command::Close => {
@@ -353,7 +368,6 @@ impl App {
         state.pending = Some(request.clone());
         state.saving = request.needs_checkpoint();
         state.error = None;
-        state.focus = 0;
         Some(request)
     }
     pub fn recap_after_checkpoint(
@@ -405,7 +419,6 @@ impl App {
                 state.loaded = true;
                 state.receipt = receipt;
                 state.error = None;
-                state.scroll = 0;
             }
             Err(error) => {
                 state.error = Some(error.to_string());

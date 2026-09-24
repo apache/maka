@@ -111,6 +111,7 @@ impl App {
             Overlay::Reference | Overlay::Management => crate::pages::manage::sheet(self),
             Overlay::QueueEdit => crate::pages::queue::edit::sheet(self),
             Overlay::Resume => crate::pages::resume::sheet(self),
+            Overlay::Recap => crate::pages::recap::sheet(self),
             _ => None,
         }
     }
@@ -122,6 +123,7 @@ impl App {
             Overlay::Consent => self.consent_presented(shown),
             Overlay::Reference | Overlay::Management => self.management.presented(shown),
             Overlay::Resume => self.resume.presented(shown),
+            Overlay::Recap => self.recap.presented(shown),
             _ => {}
         }
     }
@@ -163,12 +165,12 @@ impl App {
             | Overlay::Reference
             | Overlay::Management
             | Overlay::QueueEdit
-            | Overlay::Resume => unreachable!("presented as sheets"),
+            | Overlay::Resume
+            | Overlay::Recap => unreachable!("presented as sheets"),
             Overlay::Theme => self.theme_input(event),
             Overlay::Skills => self.skills_input(event),
             Overlay::Attachments => self.attachment_input(event),
             Overlay::Revision => self.revision_input(event),
-            Overlay::Recap => self.recap_input(event),
             Overlay::Branch => self.branch_input(event),
             Overlay::Onboarding => self.onboarding_input(event),
             Overlay::Interactions => self.interactions_overlay_input(event),
@@ -288,12 +290,12 @@ pub(crate) fn draw(
         | Overlay::Reference
         | Overlay::Management
         | Overlay::QueueEdit
-        | Overlay::Resume => unreachable!("presented as sheets"),
+        | Overlay::Resume
+        | Overlay::Recap => unreachable!("presented as sheets"),
         Overlay::Theme => crate::theme::editor::draw(frame, app, area),
         Overlay::Skills => pages::skills::draw(frame, app, area, base),
         Overlay::Attachments => pages::attachments::draw(frame, app, area, base),
         Overlay::Revision => pages::revision::draw(frame, app, area, base),
-        Overlay::Recap => pages::recap::draw(frame, app, area, base),
         Overlay::Branch => pages::branch::draw(frame, app, area, base),
         Overlay::Onboarding => pages::onboarding::draw(frame, app, area, base),
         Overlay::Interactions => pages::interactions::draw(frame, app, area, base),
