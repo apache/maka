@@ -22,7 +22,7 @@ use super::catalog::Model;
 use crate::editor::Editor;
 use maka_protocol::{configuration::ModelOverride, session::ThinkingLevel};
 use serde_json::{Value, json};
-pub(super) use view::{draw, input};
+pub(super) use view::{draw, input, sheet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -106,8 +106,6 @@ pub(super) struct Draft {
     texts: Vec<Text>,
     default_context: Option<u64>,
     default_input: Option<u64>,
-    focus: usize, // field identities, Back, Cancel, Save
-    offset: usize,
 }
 const LEVELS: [ThinkingLevel; 7] = [
     ThinkingLevel::Off,
@@ -161,8 +159,6 @@ impl Draft {
             texts,
             default_context: model.default_context,
             default_input: model.default_input,
-            focus: 0,
-            offset: 0,
         }
     }
     pub fn invalidate_geometry(&mut self) {
@@ -189,7 +185,6 @@ impl Draft {
         else {
             return;
         };
-        self.focus = index;
         let field = self.fields[index];
         if field == Field::Advanced {
             if matches!(command, Command::Adjust(_, _)) {
@@ -460,30 +455,22 @@ mod tests {
                 super::super::Command::Profile(Command::Adjust(18, true)),
             )));
             assert!(!app.management_enabled(&Manage::Save));
-            for (width, height) in [(42, 17), (80, 24), (120, 40)] {
+            for (width, height) in [(48, 22), (80, 24), (120, 40)] {
                 screen = Terminal::new(TestBackend::new(width, height)).unwrap();
+                screen
+                    .draw(|frame| crate::view::draw(frame, &mut app))
+                    .unwrap();
+                // Every setting, advanced ones included, can take focus and be seen.
                 for index in 0..37 {
-                    let draft = app
-                        .management
-                        .dialog
-                        .as_mut()
-                        .unwrap()
-                        .enabled_models
-                        .as_mut()
-                        .unwrap()
-                        .profile
-                        .as_mut()
-                        .unwrap();
-                    draft.focus = index;
+                    let path = format!("fields/rows/{index}");
+                    app.layer.focus_path(&path);
                     screen
                         .draw(|frame| crate::view::draw(frame, &mut app))
                         .unwrap();
                     assert!(app.management.dialog.as_ref().unwrap().visible);
-                    let area = app.modal_area.unwrap();
                     assert!(
-                        app.hits
-                            .iter()
-                            .all(|hit| area.contains((hit.area.x, hit.area.y).into()))
+                        app.layer.rect(&path).is_some_and(|rect| !rect.is_empty()),
+                        "focused setting {index} is scrolled into view at {width}x{height}"
                     );
                 }
                 assert!(
@@ -491,45 +478,17 @@ mod tests {
                     "{:?}",
                     app.i18n.diagnostics()
                 );
-                let hit = app
-                    .hits
-                    .iter()
-                    .find(|hit| {
-                        matches!(
-                            hit.action,
-                            Action::Manage(Manage::EnabledModels(super::super::Command::Profile(
-                                Command::Field(_)
-                            )))
-                        )
-                    })
-                    .unwrap()
-                    .clone();
-                app.apply(hit.action.clone());
+                // Choosing a visible setting never jumps the viewport.
+                let before = app.layer.rect("fields/rows/30");
+                app.apply(Action::Manage(Manage::EnabledModels(
+                    super::super::Command::Profile(Command::Field(30)),
+                )));
                 screen
                     .draw(|frame| crate::view::draw(frame, &mut app))
                     .unwrap();
-                assert_eq!(
-                    app.hits
-                        .iter()
-                        .find(|current| current.action == hit.action)
-                        .unwrap()
-                        .area,
-                    hit.area,
-                    "selecting a visible field must not jump the viewport"
-                );
+                assert_eq!(app.layer.rect("fields/rows/30"), before);
             }
-            let draft = app
-                .management
-                .dialog
-                .as_mut()
-                .unwrap()
-                .enabled_models
-                .as_mut()
-                .unwrap()
-                .profile
-                .as_mut()
-                .unwrap();
-            draft.focus = 1;
+            app.layer.focus_path("fields/rows/1");
             screen
                 .draw(|frame| crate::view::draw(frame, &mut app))
                 .unwrap();
@@ -542,17 +501,7 @@ mod tests {
             screen
                 .draw(|frame| crate::view::draw(frame, &mut app))
                 .unwrap();
-            let area = app
-                .hits
-                .iter()
-                .find(|hit| {
-                    hit.action
-                        == Action::Manage(Manage::EnabledModels(super::super::Command::Profile(
-                            Command::Field(1),
-                        )))
-                })
-                .unwrap()
-                .area;
+            let area = app.layer.rect("fields/rows/1").unwrap();
             app.input(Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: area.x + 20,

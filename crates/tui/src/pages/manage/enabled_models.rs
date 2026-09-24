@@ -25,10 +25,10 @@ use crate::{
     app::{Action, App},
     editor::Editor,
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use maka_protocol::configuration::ConnectionCatalogQueryInput;
 use serde_json::Value;
-pub(super) use view::draw;
+pub(super) use view::sheet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -58,9 +58,6 @@ pub(super) struct State {
     catalog: catalog::Catalog,
     pub selected: Vec<String>,
     search: Editor,
-    row: usize,
-    focus: usize, // search, list, cancel, save: stable across all loading states.
-    hovered: Option<Manage>,
     pub edit_profiles: bool,
     profile: Option<profile::Draft>,
 }
@@ -84,9 +81,6 @@ impl State {
             },
             selected: row.model_ids.clone(),
             search: Editor::bounded(128, "enabled-model-search-limit"),
-            row: 0,
-            focus: 0,
-            hovered: None,
             edit_profiles,
             profile: None,
         }
@@ -147,7 +141,6 @@ impl State {
     }
     pub fn invalidate_geometry(&mut self) {
         self.search.invalidate_geometry();
-        self.hovered = None;
         if let Some(profile) = &mut self.profile {
             profile.invalidate_geometry();
         }
@@ -165,18 +158,6 @@ impl State {
             })
             .map(|(i, _)| i)
             .collect()
-    }
-    fn current(&self) -> Option<&str> {
-        self.filtered()
-            .get(self.row)
-            .map(|i| self.catalog.rows[*i].id.as_str())
-    }
-    fn move_row(&mut self, delta: isize) {
-        self.row = self
-            .row
-            .saturating_add_signed(delta)
-            .min(self.filtered().len().saturating_sub(1));
-        self.focus = 1;
     }
 }
 impl App {
@@ -210,18 +191,21 @@ impl App {
         }
     }
     pub(super) fn enabled_models_action(&mut self, command: Command) -> Option<Action> {
+        if command == Command::Search {
+            self.layer.focus("search");
+            return None;
+        }
         let dialog = self.management.dialog.as_mut()?;
         let state = dialog.enabled_models.as_mut()?;
         match command {
             Command::Profile(command) => {
                 if command == profile::Command::Back {
                     state.profile = None;
-                    state.focus = 1;
                 } else {
                     state.profile.as_mut()?.apply(command);
                 }
             }
-            Command::Search => state.focus = 0,
+            Command::Search => unreachable!("handled above"),
             Command::Retry => state.catalog.retry(),
             Command::Toggle(id) => {
                 if state.edit_profiles {
@@ -235,7 +219,6 @@ impl App {
                             .cloned()
                             .unwrap_or_default(),
                     ));
-                    self.hits.clear();
                     dialog.error = None;
                     return None;
                 }
@@ -245,21 +228,11 @@ impl App {
                     dialog.error = Some("onboard-model-limit");
                     return None;
                 } else {
-                    state.selected.push(id.clone());
+                    state.selected.push(id);
                 }
-                if let Some(index) = state
-                    .filtered()
-                    .iter()
-                    .position(|index| state.catalog.rows[*index].id == id)
-                {
-                    state.row = index;
-                }
-                state.focus = 1;
             }
         }
         dialog.error = None;
-        state.hovered = None;
-        self.hits.clear();
         None
     }
     pub fn enabled_models_request(&mut self) -> Option<Request> {
@@ -305,158 +278,115 @@ impl App {
         };
         state.catalog.complete(result);
     }
-    pub(super) fn enabled_models_input(&mut self, event: Event) -> (bool, Option<Action>) {
-        if self
-            .management
-            .dialog
-            .as_ref()
-            .and_then(|dialog| dialog.enabled_models.as_ref())
-            .is_some_and(|state| state.profile.is_some())
-        {
+    /// Input the owner takes before the sheet: a focused search field gets
+    /// its keys, Down or Enter moves into the list; F5 retries a failed read
+    /// and Ctrl+Enter saves. The settings step has a form of its own.
+    pub(super) fn enabled_models_sheet_input(
+        &mut self,
+        event: &Event,
+    ) -> Option<(bool, Option<Action>)> {
+        let state = self.management.dialog.as_ref()?.enabled_models.as_ref()?;
+        if state.profile.is_some() {
             return profile::input(self, event);
         }
-        let page = self
-            .hits
-            .iter()
-            .filter(|h| {
-                matches!(
-                    h.action,
-                    Action::Manage(Manage::EnabledModels(Command::Toggle(_)))
-                )
-            })
-            .count()
-            .max(1);
-        let dialog = self
-            .management
-            .dialog
-            .as_mut()
-            .expect("enabled models dialog");
-        let state = dialog
-            .enabled_models
-            .as_mut()
-            .expect("enabled models state");
-        let editable = dialog.visible && !dialog.blocked && self.management.pending.is_none();
-        let command = match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                state.hovered = None;
-                match key.code {
-                    KeyCode::Esc => Some(Manage::Close),
-                    KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return (true, Some(Action::Quit));
-                    }
-                    _ if !editable => None,
-                    KeyCode::Tab => {
-                        state.focus = (state.focus + 1) % if state.edit_profiles { 3 } else { 4 };
-                        return (true, None);
-                    }
-                    KeyCode::BackTab => {
-                        let controls = if state.edit_profiles { 3 } else { 4 };
-                        state.focus = (state.focus + controls - 1) % controls;
-                        return (true, None);
-                    }
-                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        Some(Manage::Save)
-                    }
-                    KeyCode::Enter => match state.focus {
-                        0 => {
-                            state.focus = 1;
-                            return (true, None);
-                        }
-                        1 => state
-                            .current()
-                            .map(|id| Manage::EnabledModels(Command::Toggle(id.into()))),
-                        2 => Some(Manage::Close),
-                        _ => Some(Manage::Save),
-                    },
-                    KeyCode::Down | KeyCode::Up => {
-                        state.move_row(if key.code == KeyCode::Down { 1 } else { -1 });
-                        return (true, None);
-                    }
-                    KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown
-                        if state.focus == 1 =>
-                    {
-                        state.move_row(match key.code {
-                            KeyCode::Home => isize::MIN,
-                            KeyCode::End => isize::MAX,
-                            KeyCode::PageUp => -(page as isize),
-                            _ => page as isize,
-                        });
-                        return (true, None);
-                    }
-                    KeyCode::Char(' ') if state.focus == 1 => state
-                        .current()
-                        .map(|id| Manage::EnabledModels(Command::Toggle(id.into()))),
-                    KeyCode::F(5) => Some(Manage::EnabledModels(Command::Retry)),
-                    _ if state.focus == 0 => {
-                        let changed = state.search.key(key);
-                        if changed {
-                            state.row = 0;
-                        }
-                        return (changed, None);
-                    }
-                    _ => None,
+        if let Event::Key(key) = event
+            && key.kind != KeyEventKind::Release
+        {
+            let command = match key.code {
+                KeyCode::F(5) => Some(Manage::EnabledModels(Command::Retry)),
+                KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(Manage::Save)
                 }
+                _ => None,
+            };
+            if let Some(command) = command {
+                return Some((true, self.apply(Action::Manage(command))));
             }
-            Event::Paste(text) if editable && state.focus == 0 => {
-                if text.chars().any(char::is_control) {
-                    return (false, None);
+        }
+        let busy = self.management.pending.is_some();
+        let dialog = self.management.dialog.as_mut()?;
+        if !dialog.visible || dialog.blocked || busy || self.layer.slot("search").is_none() {
+            return None;
+        }
+        let state = dialog.enabled_models.as_mut()?;
+        let focused = self.layer.focused("search");
+        match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release && focused => {
+                if matches!(key.code, KeyCode::Down | KeyCode::Enter) && key.modifiers.is_empty() {
+                    let first = state
+                        .filtered()
+                        .first()
+                        .map(|index| state.catalog.rows[*index].id.clone())?;
+                    self.layer.focus_path(&format!("list/rows/{first}"));
+                    return Some((true, None));
                 }
-                let changed = state.search.insert(&text);
-                if changed {
-                    state.row = 0;
-                }
-                return (changed, None);
-            }
-            Event::Mouse(mouse) if dialog.visible => {
-                if editable
-                    && matches!(
-                        mouse.kind,
-                        MouseEventKind::Down(MouseButton::Left)
-                            | MouseEventKind::Drag(MouseButton::Left)
-                            | MouseEventKind::Up(MouseButton::Left)
-                    )
-                    && (state.search.contains((mouse.column, mouse.row).into())
-                        || state.search.dragging())
+                if matches!(key.code, KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab)
+                    || (key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('q'))
                 {
-                    state.focus = 0;
-                    return (state.search.mouse(mouse), None);
+                    return None;
                 }
-                let hit = self
-                    .hits
-                    .iter()
-                    .rev()
-                    .find(|h| h.area.contains((mouse.column, mouse.row).into()))
-                    .and_then(|h| match &h.action {
-                        Action::Manage(c) => Some(c.clone()),
-                        _ => None,
-                    });
-                match mouse.kind {
-                    MouseEventKind::Down(MouseButton::Left) => hit,
-                    MouseEventKind::Moved => {
-                        let changed = state.hovered != hit;
-                        state.hovered = hit;
-                        return (changed, None);
-                    }
-                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-                        if editable
-                            && matches!(hit, Some(Manage::EnabledModels(Command::Toggle(_)))) =>
-                    {
-                        state.move_row(if mouse.kind == MouseEventKind::ScrollDown {
-                            1
-                        } else {
-                            -1
-                        });
-                        return (true, None);
-                    }
-                    _ => None,
+                Some((state.search.key(*key), None))
+            }
+            Event::Paste(text) if focused => {
+                if text.chars().any(char::is_control) {
+                    return Some((false, None));
                 }
+                Some((state.search.insert(text), None))
+            }
+            Event::Mouse(mouse)
+                if state
+                    .search
+                    .contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                    || state.search.dragging() =>
+            {
+                self.layer.focus("search");
+                Some((state.search.mouse(*mouse) || !focused, None))
             }
             _ => None,
-        };
-        (
-            command.is_some(),
-            command.and_then(|c| self.apply(Action::Manage(c))),
-        )
+        }
+    }
+}
+
+/// Paints the search field, with its prompt while empty, or the settings form.
+pub(super) fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
+    if app
+        .management
+        .dialog
+        .as_ref()
+        .and_then(|dialog| dialog.enabled_models.as_ref())
+        .is_some_and(|state| state.profile.is_some())
+    {
+        return profile::draw(frame, app);
+    }
+    let rect = app.layer.slot("search").filter(|rect| !rect.is_empty());
+    let focused = app.layer.focused("search");
+    let editable = app.management.pending.is_none();
+    let colors = app.theme.colors();
+    let prompt = app.i18n.text("enabled-model-search");
+    let Some(dialog) = app.management.dialog.as_mut() else {
+        return;
+    };
+    let blocked = dialog.blocked;
+    let Some(state) = dialog.enabled_models.as_mut() else {
+        return;
+    };
+    let Some(rect) = rect else {
+        state.search.invalidate_geometry();
+        return;
+    };
+    state
+        .search
+        .draw(frame, rect, focused && editable && !blocked, colors);
+    if state.search.text().is_empty() {
+        // Beside the cursor, so the prompt never hides it.
+        let prompt_area =
+            ratatui::layout::Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(1), 1);
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(prompt)
+                .style(ratatui::style::Style::default().fg(colors.subtle)),
+            prompt_area,
+        );
     }
 }
 
@@ -464,8 +394,39 @@ impl App {
 mod tests {
     use super::*;
     use crate::{Locale, LocalePreference, app::ConnectionState, i18n::I18n, navigation::Route};
+    use crossterm::event::{MouseButton, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend};
     use serde_json::json;
+
+    /// Cells of each screen row; a wide glyph covers its neighbour.
+    fn lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                let (mut line, mut x) = (String::new(), 0);
+                while x < buffer.area.width {
+                    let symbol = buffer[(x, y)].symbol();
+                    line.push_str(symbol);
+                    x += (unicode_width::UnicodeWidthStr::width(symbol) as u16).max(1);
+                }
+                line
+            })
+            .collect()
+    }
+    fn locate(terminal: &Terminal<TestBackend>, text: &str) -> (u16, u16) {
+        lines(terminal)
+            .iter()
+            .enumerate()
+            .find_map(|(y, line)| {
+                line.find(text).map(|byte| {
+                    (
+                        unicode_width::UnicodeWidthStr::width(&line[..byte]) as u16,
+                        y as u16,
+                    )
+                })
+            })
+            .unwrap_or_else(|| panic!("{text:?} is not on screen"))
+    }
 
     fn first() -> Value {
         json!({"kind":"page","revision":9,"connectionCount":1,"defaultTarget":{"connectionId":"c","modelId":"kept"},
@@ -529,25 +490,14 @@ mod tests {
                 !app.management_enabled(&Manage::Save),
                 "unchanged sets are not writes"
             );
-            for (width, height) in [(42, 17), (80, 24), (120, 40)] {
+            for (width, height) in [(48, 20), (80, 24), (120, 40)] {
                 let mut screen = Terminal::new(TestBackend::new(width, height)).unwrap();
                 screen.draw(|f| crate::view::draw(f, &mut app)).unwrap();
-                let hit = app
-                    .hits
-                    .iter()
-                    .find(|h| {
-                        h.action
-                            == Action::Manage(Manage::EnabledModels(Command::Toggle(
-                                "manual".into(),
-                            )))
-                    })
-                    .unwrap()
-                    .area;
-                assert!(app.modal_area.unwrap().contains((hit.x, hit.y).into()));
+                let (x, y) = locate(&screen, "[✓] manual");
                 app.input(Event::Mouse(crossterm::event::MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),
-                    column: hit.x,
-                    row: hit.y,
+                    column: x,
+                    row: y,
                     modifiers: KeyModifiers::NONE,
                 }));
                 assert!(app.management_enabled(&Manage::Save));
@@ -562,16 +512,11 @@ mod tests {
             app.apply(Action::Manage(Manage::EnabledModels(Command::Search)));
             app.input(Event::Paste("新增".into()));
             terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
-            assert_eq!(
-                app.hits
-                    .iter()
-                    .filter(|h| matches!(
-                        &h.action,
-                        Action::Manage(Manage::EnabledModels(Command::Toggle(_)))
-                    ))
-                    .count(),
-                1
-            );
+            let rows = lines(&terminal)
+                .iter()
+                .filter(|line| line.contains("[ ] ") || line.contains("[✓] "))
+                .count();
+            assert_eq!(rows, 1, "the search narrows the list to the new model");
             app.input(Event::Key(crossterm::event::KeyEvent::new(
                 KeyCode::Down,
                 KeyModifiers::NONE,

@@ -313,7 +313,26 @@ impl<M: Clone> Layer<M> {
 
     /// The owner took a pointer press into field `key`.
     pub fn focus(&mut self, key: &str) {
-        self.surface.focus(format!("{ROOT}/{key}/{INPUT}"));
+        self.surface.move_focus(format!("{ROOT}/{key}/{INPUT}"));
+    }
+
+    /// Where the node at `path` below the sheet was drawn (an owner-drawn
+    /// row among several); empty when scrolled out.
+    pub fn rect(&self, path: &str) -> Option<Rect> {
+        self.area?;
+        self.surface.rect(&format!("{ROOT}/{path}"))
+    }
+
+    /// The focused node's path below the sheet.
+    pub fn focused_path(&self) -> Option<&str> {
+        self.surface
+            .focused()?
+            .strip_prefix(ROOT)?
+            .strip_prefix('/')
+    }
+
+    pub fn focus_path(&mut self, path: &str) {
+        self.surface.move_focus(format!("{ROOT}/{path}"));
     }
 
     /// Geometry changed: nothing is clickable until the next draw.

@@ -116,6 +116,9 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
     if dialog.browser.is_some() {
         return Some(super::directory::sheet(app, dialog));
     }
+    if dialog.enabled_models.is_some() {
+        return Some(super::enabled_models::sheet(app, dialog));
+    }
     let busy = app.management.pending.is_some();
     let kind = dialog.kind;
     let label = kind.label(&dialog.target);
@@ -317,6 +320,14 @@ pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
 
 /// Paints the sheet's text field, or forgets its geometry when none is shown.
 pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
+    if app
+        .management
+        .dialog
+        .as_ref()
+        .is_some_and(|dialog| dialog.enabled_models.is_some())
+    {
+        return super::enabled_models::draw(frame, app);
+    }
     let editable = app.management.pending.is_none();
     let rect = app.layer.slot("field").filter(|rect| !rect.is_empty());
     let focused = app.layer.focused("field");
@@ -340,8 +351,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
     app.hits.clear();
     if dialog.kind == Kind::Oauth {
         super::oauth::draw(frame, app, area, base);
-    } else if dialog.enabled_models.is_some() {
-        super::enabled_models::draw(frame, app, area, base);
     }
 }
 

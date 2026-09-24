@@ -327,7 +327,22 @@ impl<M: Clone> Surface<M> {
     }
 
     /// Focus a node by id; resolved against the next drawn frame.
+    /// Restores a focus quietly: scroll positions stay where they are.
     pub fn focus(&mut self, id: String) {
+        self.set_focus(id);
+    }
+
+    /// Moves focus as the reader would, bringing a target that the last
+    /// frame had scrolled out back into view.
+    pub fn move_focus(&mut self, id: String) {
+        if let Some((scroller, top, height)) = self
+            .committed
+            .as_ref()
+            .and_then(|committed| committed.items.iter().find(|item| item.id == id))
+            .map(|item| (item.scroller, item.top, item.height))
+        {
+            self.reveal(scroller, top, height);
+        }
         self.set_focus(id);
     }
 
@@ -515,6 +530,7 @@ impl<M: Clone> Surface<M> {
                 };
                 let maximum = scroller.content.saturating_sub(scroller.viewport.height);
                 let offset = self.offsets.entry(scroller.id.clone()).or_default();
+                *offset = (*offset).min(maximum);
                 let before = *offset;
                 *offset = if mouse.kind == MouseEventKind::ScrollUp {
                     offset.saturating_sub(3)
@@ -587,6 +603,7 @@ impl<M: Clone> Surface<M> {
             let page = scroller.viewport.height.saturating_sub(1).max(1);
             if maximum > 0 {
                 let offset = self.offsets.entry(scroller.id.clone()).or_default();
+                *offset = (*offset).min(maximum);
                 let before = *offset;
                 *offset = match key.code {
                     KeyCode::Up => offset.saturating_sub(1),
@@ -865,7 +882,11 @@ impl<M: Clone> Surface<M> {
             return;
         };
         let viewport = scroller.viewport;
+        // A stored offset can exceed a taller viewport's range; start from
+        // what was actually drawn.
+        let maximum = scroller.content.saturating_sub(viewport.height);
         let offset = self.offsets.entry(scroller.id.clone()).or_default();
+        *offset = (*offset).min(maximum);
         let above = i32::from(viewport.y) - top;
         let below = top + i32::from(height) - i32::from(viewport.bottom());
         if above > 0 {
