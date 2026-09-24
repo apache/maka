@@ -153,9 +153,16 @@ impl Builder {
                 self.push(&text, source + ticks, Some(Style::Code));
             }
             Event::Html(text) | Event::InlineHtml(text) => self.push(&text, source, None),
-            Event::SoftBreak => self.push(" ", source, None),
-            Event::HardBreak => self.push("\n", source, None),
-            Event::TaskListMarker(done) => self.marker = Some(Marker::Task(done)),
+            // Chat text means its single newlines.
+            Event::SoftBreak | Event::HardBreak => self.push("\n", source, None),
+            Event::TaskListMarker(done) => match &mut self.open {
+                // A loose item opens its paragraph before the checkbox arrives.
+                Some(Block {
+                    kind: Kind::Item(marker),
+                    ..
+                }) => *marker = Marker::Task(done),
+                _ => self.marker = Some(Marker::Task(done)),
+            },
             Event::Rule => {
                 if self.nesting == 0 {
                     self.tops.push(source);
@@ -175,6 +182,7 @@ impl Builder {
             Tag::Paragraph | Tag::HtmlBlock => self.open_text(source),
             Tag::Heading { level, .. } => {
                 self.close_text();
+                self.flush_marker();
                 self.heading = Some(match level {
                     HeadingLevel::H1 => 1,
                     HeadingLevel::H2 => 2,
@@ -187,10 +195,12 @@ impl Builder {
             }
             Tag::BlockQuote(_) => {
                 self.close_text();
+                self.flush_marker();
                 self.quote += 1;
             }
             Tag::CodeBlock(kind) => {
                 self.close_text();
+                self.flush_marker();
                 let language = match kind {
                     CodeBlockKind::Fenced(info) => info
                         .split_whitespace()
@@ -204,6 +214,7 @@ impl Builder {
             }
             Tag::List(start) => {
                 self.close_text();
+                self.flush_marker();
                 self.lists.push(start);
             }
             Tag::Item => {
@@ -219,6 +230,7 @@ impl Builder {
             }
             Tag::Table(alignments) => {
                 self.close_text();
+                self.flush_marker();
                 self.open = Some(self.block(
                     Kind::Table {
                         columns: alignments.len(),
@@ -273,10 +285,7 @@ impl Builder {
             }
             TagEnd::Item => {
                 self.close_text();
-                // An item with no text still shows its marker.
-                if let Some(marker) = self.marker.take() {
-                    self.emit(Kind::Item(marker));
-                }
+                self.flush_marker();
             }
             TagEnd::Table => {
                 if let Some(block) = self.open.take() {
@@ -310,6 +319,14 @@ impl Builder {
     fn emit(&mut self, kind: Kind) {
         let block = self.block(kind, vec![Text::default()]);
         self.blocks.push(block);
+    }
+
+    /// An item whose first block is not text still shows its marker, on a
+    /// row of its own above that block.
+    fn flush_marker(&mut self) {
+        if let Some(marker) = self.marker.take() {
+            self.emit(Kind::Item(marker));
+        }
     }
 
     fn open_text(&mut self, _source: usize) {
@@ -481,6 +498,38 @@ mod tests {
     const CORPUS: &str = "# Title\n\nIntro with **bold** and `code` and a [link](https://x.y).\n\n- one\n- two\n  - nested\n\n1. first\n2. second\n\n> quoted\n> text\n\n```rust\nfn main() {}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\nSetext\n===\n\nDone ~~now~~.\n";
 
     #[test]
+    fn single_newlines_stay_line_breaks() {
+        let parsed = parse("Name: a\nPath: b", 0);
+        assert_eq!(parsed.blocks[0].texts[0].text, "Name: a\nPath: b");
+    }
+
+    #[test]
+    fn an_item_keeps_its_marker_above_a_leading_block() {
+        let blocks = texts(&parse("1. ```sh\n   ls\n   ```\n2. next\n", 0).blocks);
+        assert_eq!(
+            blocks,
+            vec![
+                (Kind::Item(Marker::Number(1)), vec![String::new()]),
+                (
+                    Kind::Code {
+                        language: Some("sh".into())
+                    },
+                    vec!["ls".into()]
+                ),
+                (Kind::Item(Marker::Number(2)), vec!["next".into()]),
+            ]
+        );
+        let loose = texts(&parse("- [x] done\n\n- [ ] todo\n", 0).blocks);
+        assert_eq!(
+            loose,
+            vec![
+                (Kind::Item(Marker::Task(true)), vec!["done".into()]),
+                (Kind::Item(Marker::Task(false)), vec!["todo".into()]),
+            ]
+        );
+    }
+
+    #[test]
     fn flattens_lists_quotes_tables_and_code() {
         let parsed = parse(CORPUS, 0);
         let blocks = texts(&parsed.blocks);
@@ -500,7 +549,7 @@ mod tests {
             (Kind::Item(Marker::Number(2)), vec!["second".into()])
         );
         assert_eq!(parsed.blocks[7].quote, 1);
-        assert_eq!(blocks[7].1, vec!["quoted text".to_string()]);
+        assert_eq!(blocks[7].1, vec!["quoted\ntext".to_string()]);
         assert_eq!(
             blocks[8],
             (
