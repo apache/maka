@@ -289,6 +289,7 @@ mod tests {
             max_bytes,
             multiline: false,
             placeholder: String::new(),
+            secret: false,
         }
     }
     #[test]

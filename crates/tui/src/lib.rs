@@ -1280,6 +1280,7 @@ where
                         if notice.kind == "session.catalog.changed" {
                             if let Some(id) = &notice.session_id {
                                 app.sessions.invalidate(id);
+                                app.apps_session_changed(id);
                             } else {
                                 app.sessions.refresh();
                             }

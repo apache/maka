@@ -89,9 +89,9 @@ pub(super) fn publish(
         )
         .map_err(message)
 }
-struct Service {
-    web: Arc<Web>,
-    scope: maka_plugins::composition::Scope,
+pub(super) struct Service {
+    pub(super) web: Arc<Web>,
+    pub(super) scope: maka_plugins::composition::Scope,
 }
 impl Method for Service {
     fn call(&self, input: Value, caller: Caller) -> BoxFuture<'static, Result<Value, Error>> {

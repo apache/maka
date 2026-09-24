@@ -29,6 +29,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod remote;
+mod terminal;
 
 pub const ID: &str = "maka.insights";
 
@@ -81,16 +82,18 @@ impl Plugin for Builtin {
                     .map_err(message)?;
             } else {
                 let host = context.host.ok_or("Insights requires Host capabilities")?;
+                let insights = remote::Insights {
+                    usage: host.usage,
+                    pricing: host.pricing,
+                    store: host.storage,
+                };
+                terminal::publish(insights.clone(), &identity.package_id, &mut staged)?;
                 staged
                     .insert(
                         key(&identity.package_id, "request").map_err(message)?,
                         Endpoint::new(
                             client.content_digest.clone(),
-                            Handler::Method(Arc::new(remote::Insights {
-                                usage: host.usage,
-                                pricing: host.pricing,
-                                store: host.storage,
-                            })),
+                            Handler::Method(Arc::new(insights)),
                         ),
                     )
                     .map_err(message)?;

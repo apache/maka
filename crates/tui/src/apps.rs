@@ -468,6 +468,7 @@ impl App {
                     input,
                     proposal,
                     recovery,
+                    withheld: false,
                 });
                 instance.saving = true;
                 instance.unrecorded = false;
@@ -819,7 +820,7 @@ impl App {
                     && instance
                         .unresolved
                         .as_ref()
-                        .is_some_and(|pending| pending.recovery.is_some())
+                        .is_some_and(|pending| pending.recovery.is_some() && !pending.withheld)
             }
             Command::ConfirmDiscard | Command::CancelDiscard => instance.confirm_discard,
             Command::Discard => instance.dirty() || instance.blocked,
@@ -1024,6 +1025,35 @@ impl App {
                 })
             })
             .collect()
+    }
+    /// A session changed (a turn settled, its metadata moved): its views on
+    /// screen that follow no changes stream of their own read again.
+    pub fn apps_session_changed(&mut self, session: &str) {
+        let locale = self.apps.locale.clone();
+        let visible: Vec<_> = self
+            .apps
+            .instances
+            .keys()
+            .filter(|key| key.session.as_deref() == Some(session) && self.app_visible(key))
+            .cloned()
+            .collect();
+        for key in visible {
+            let Some(instance) = self.apps.instances.get_mut(&key) else {
+                continue;
+            };
+            let follows = instance
+                .entry
+                .as_ref()
+                .is_some_and(|entry| entry.descriptor.changes.is_some());
+            if follows {
+                continue;
+            }
+            if instance.idle() && !instance.keeps() && instance.view.is_some() {
+                instance.read(&locale);
+            } else {
+                instance.stale = true;
+            }
+        }
     }
     /// A changes stream said its views are stale: those on screen and
     /// untouched read again; the rest read once they can.
@@ -2141,5 +2171,56 @@ pub(crate) mod tests {
         // Off screen, the stream closes.
         app.apply(Action::Visit(Route::Workspace));
         assert!(app.apps_watches().is_empty());
+    }
+
+    #[test]
+    fn keys_typed_into_a_view_never_reach_the_checkpoint_and_cannot_be_resent() {
+        use maka_plugins::terminal_ui::view::build::*;
+        let mut app = app();
+        {
+            let instance = instance_mut(&mut app);
+            let view = instance.view.as_mut().unwrap();
+            view.fields.push(maka_plugins::terminal_ui::view::Field {
+                id: "key".into(),
+                enabled: true,
+                control: Control::Text {
+                    value: String::new(),
+                    max_bytes: 256,
+                    multiline: false,
+                    placeholder: String::new(),
+                    secret: true,
+                },
+            });
+            view.actions[0].fields.push("key".into());
+            view.actions[0].recovery = Some(json!({"operation":"one"}));
+            view.root = column(
+                "root",
+                vec![
+                    input("key", "key", "API key"),
+                    button("save", "save", Role::Primary),
+                ],
+            );
+            let view = view.clone();
+            instance.install(view);
+        }
+        instance_mut(&mut app)
+            .drafts
+            .insert("key".into(), json!("sk-very-secret"));
+        app.apps_action(save());
+        let submission = next(&mut app).unwrap();
+        assert!(submission.needs_checkpoint());
+        let saved = serde_json::to_string(&app.apps.checkpoints("root")).unwrap();
+        assert!(!saved.contains("sk-very-secret"), "{saved}");
+        let checkpoint = app.apps.checkpoints("root").pop().unwrap();
+        checkpoint.validate("root").unwrap();
+        let mut restored = Apps::new("en");
+        restored.restore(vec![checkpoint]).unwrap();
+        let instance = restored.instances.get_mut(&key()).unwrap();
+        assert!(instance.unresolved.as_ref().unwrap().withheld);
+        instance.unrecorded = true;
+        assert!(
+            !instance.remedies().contains(&Command::Retry),
+            "a submission missing its key can be checked, never resent"
+        );
     }
 }

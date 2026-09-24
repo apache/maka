@@ -423,6 +423,7 @@ fn field(id: &str, label: Text, value: String, max_bytes: usize, multiline: bool
             max_bytes,
             multiline,
             placeholder: String::new(),
+            secret: false,
         },
     }
 }

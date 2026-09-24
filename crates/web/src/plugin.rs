@@ -43,6 +43,7 @@ pub const ID: &str = "maka.web";
 
 mod remote;
 mod search_tool;
+mod terminal;
 
 pub struct Builtin {
     pub client: Option<Arc<maka_plugins::client::Bundle>>,
@@ -133,6 +134,7 @@ impl Plugin for Builtin {
                 .insert("WebFetch", tool)
                 .map_err(|error| error.to_string())?;
             search_tool::publish(web.clone(), &mut staged)?;
+            terminal::publish(web.clone(), &identity, &mut staged)?;
             if let Some(bundle) = client {
                 remote::publish(web, &identity, &bundle, &mut staged)?;
                 context

@@ -416,6 +416,7 @@ fn panel(current: Option<&Current>, cx: &Words) -> View {
                     max_bytes: 10,
                     multiline: false,
                     placeholder: cx.t("Optional", "可选", "可選"),
+                    secret: false,
                 },
                 ..line_field("budget", "", 10)
             },

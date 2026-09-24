@@ -51,6 +51,7 @@ pub(crate) struct Well {
     pub label_width: u16,
     pub multiline: bool,
     pub placeholder: String,
+    pub secret: bool,
 }
 
 pub(crate) struct Env<'a, M> {
@@ -565,6 +566,7 @@ impl<M> Builder<'_, M> {
             Control::Text {
                 multiline,
                 placeholder,
+                secret,
                 ..
             } => {
                 self.wells.push(Well {
@@ -575,6 +577,7 @@ impl<M> Builder<'_, M> {
                     label_width: self.label_width,
                     multiline: *multiline,
                     placeholder: placeholder.clone(),
+                    secret: *secret,
                 });
                 let (message, enabled) = self.offer(Intent::Commit(field.to_owned()));
                 Node::slot(key, if *multiline { AREA_ROWS } else { 1 })

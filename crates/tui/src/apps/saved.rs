@@ -28,6 +28,10 @@ pub(super) struct Pending {
     pub input: Input,
     pub proposal: Option<maka_plugins::authorization::Request>,
     pub recovery: Option<Value>,
+    /// A key or password this submission carried was not saved with it, so
+    /// only its outcome can be checked; it cannot be sent again.
+    #[serde(default)]
+    pub withheld: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -142,19 +146,55 @@ impl Instance {
         if !self.keeps() {
             return None;
         }
+        let view = self.view.clone()?;
+        // Keys and passwords never reach the disk: a secret field saves as
+        // its initial value, in drafts and in a frozen submission alike.
+        let secrets: BTreeMap<&str, &str> = view
+            .fields
+            .iter()
+            .filter_map(|field| match &field.control {
+                Control::Text {
+                    value,
+                    secret: true,
+                    ..
+                } => Some((field.id.as_str(), value.as_str())),
+                _ => None,
+            })
+            .collect();
+        let mut drafts = self.drafts.clone();
+        let mut cursors: BTreeMap<_, _> = self
+            .editors
+            .iter()
+            .map(|(id, editor)| (id.clone(), editor.cursor()))
+            .collect();
+        for (id, initial) in &secrets {
+            drafts.insert((*id).into(), Value::String((*initial).into()));
+            let mut editor = crate::editor::Editor::default();
+            editor.insert(initial);
+            cursors.insert((*id).into(), editor.cursor());
+        }
+        let pending = self.unresolved.clone().map(|mut pending| {
+            if let Input::Submit { fields, .. } = &mut pending.input {
+                for (id, initial) in &secrets {
+                    if let Some(value) = fields.get_mut(*id)
+                        && value.as_str() != Some(initial)
+                    {
+                        *value = Value::String((*initial).into());
+                        pending.withheld = true;
+                    }
+                }
+            }
+            pending
+        });
         Some(Checkpoint {
             root: root.into(),
             key: key.clone(),
             entry: self.entry.clone()?,
-            view: self.view.clone()?,
+            view,
             route: self.route.clone(),
-            drafts: self.drafts.clone(),
-            cursors: self
-                .editors
-                .iter()
-                .map(|(id, editor)| (id.clone(), editor.cursor()))
-                .collect(),
-            pending: self.unresolved.clone(),
+            drafts,
+            cursors,
+            pending,
         })
     }
     fn restore(checkpoint: Checkpoint) -> Result<Self, String> {

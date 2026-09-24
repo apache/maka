@@ -286,7 +286,12 @@ impl Instance {
             .is_some_and(|pending| pending.recovery.is_some())
         {
             commands.push(Command::Reconcile);
-            if self.unrecorded {
+            if self.unrecorded
+                && !self
+                    .unresolved
+                    .as_ref()
+                    .is_some_and(|pending| pending.withheld)
+            {
                 commands.push(Command::Retry);
             }
         }

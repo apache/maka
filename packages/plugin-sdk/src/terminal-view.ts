@@ -128,6 +128,8 @@ export type TerminalControl =
       max_bytes: number;
       multiline?: boolean;
       placeholder?: string;
+      /** Drawn masked, for keys and passwords; never saved in shell checkpoints. */
+      secret?: boolean;
     }
   | { kind: 'choice'; value: string; options: { value: string; label: string }[] };
 

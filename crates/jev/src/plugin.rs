@@ -31,6 +31,7 @@ use maka_plugins::{
 use serde_json::Value;
 use std::sync::Arc;
 mod remote;
+mod terminal;
 pub const ID: &str = "maka.jev";
 pub struct Builtin {
     pub client: Option<Arc<Bundle>>,
@@ -91,6 +92,7 @@ impl Plugin for Builtin {
                     .services
                     .provide_method(SERVICE, backend.clone())
                     .map_err(message)?;
+                terminal::publish(backend.clone(), &mut staged)?;
                 remote::publish(backend, client.as_deref(), &mut staged)?;
                 if let Some(client) = client {
                     context

@@ -78,6 +78,9 @@ pub enum Control {
         multiline: bool,
         #[serde(default)]
         placeholder: String,
+        /// Drawn masked, for keys and passwords; its value is never shown.
+        #[serde(default)]
+        secret: bool,
     },
     /// One of a few values, chosen from a pop-up.
     Choice {
@@ -463,6 +466,7 @@ impl View {
                     max_bytes,
                     multiline,
                     placeholder,
+                    ..
                 } => {
                     if *max_bytes == 0 || *max_bytes > MAX_TEXT || value.len() > *max_bytes {
                         return Err(invalid());
@@ -987,6 +991,7 @@ pub mod build {
                 max_bytes,
                 multiline: false,
                 placeholder: String::new(),
+                secret: false,
             },
         }
     }
@@ -1000,6 +1005,7 @@ pub mod build {
                 max_bytes,
                 multiline: true,
                 placeholder: String::new(),
+                secret: false,
             },
         }
     }

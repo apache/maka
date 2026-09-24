@@ -65,7 +65,7 @@ pub(super) fn paint<M: Clone>(
             form::Row {
                 label: &well.label,
                 focused: focused == Some(well.path.as_str()),
-                masked: false,
+                masked: well.secret,
                 placeholder,
             },
             editor,
