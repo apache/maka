@@ -143,28 +143,17 @@ describe('config-transfer', () => {
     assert.equal(overwrite.skipped.length, 0);
   });
 
-  it('imports a legacy custom connection type as a custom connection', () => {
+  it('skips a connection whose provider type no longer exists', () => {
     const legacy = {
       ...conn('relay', { baseUrl: 'https://relay.example/v1' }),
       providerType: 'anthropic-compatible',
     } as unknown as LlmConnection;
-    const plan = planConnectionMerge([], [legacy], 'skip');
+    const plan = planConnectionMerge([], [legacy, conn('x')], 'skip');
     assert.deepEqual(
-      plan.create.map(({ slug, providerType, defaultApiProtocol, baseUrl }) => ({
-        slug,
-        providerType,
-        defaultApiProtocol,
-        baseUrl,
-      })),
-      [
-        {
-          slug: 'relay',
-          providerType: 'custom',
-          defaultApiProtocol: 'anthropic-messages',
-          baseUrl: 'https://relay.example/v1',
-        },
-      ],
+      plan.create.map((c) => c.slug),
+      ['x'],
     );
+    assert.deepEqual(plan.skipped, [{ slug: 'relay', reason: 'provider_retired' }]);
   });
 
   it('de-dupes repeated slugs within the imported set', () => {
