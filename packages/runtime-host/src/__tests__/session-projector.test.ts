@@ -818,6 +818,20 @@ test('leaves an in-flight steering message in the queue until the runtime event 
     projector.accept(steeringFrame(2)).events.map((event) => event.type),
     ['steering_message'],
   );
+  // The lease ack can trail the runtime event; the placed row leaves the queue now.
+  const beforeAck = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 3,
+    snapshot: snapshot({ queue: queue(4, [steeringEntry('in_flight')]) }),
+  });
+  assert.deepEqual(
+    beforeAck.events.map((event) =>
+      event.type === 'queue_update' ? event.steeringEntries : event.type,
+    ),
+    [[]],
+  );
 });
 
 test('suppresses the live echo for a steering message already durable in the bootstrap', () => {
@@ -834,10 +848,12 @@ test('suppresses the live echo for a steering message already durable in the boo
     () => 10,
   );
 
-  // Durable and in-flight: no synthesis seed…
+  // Durable and in-flight: the queue no longer lists it…
   assert.deepEqual(
-    projector.seedActive(false).map((event) => event.type),
-    ['queue_update'],
+    projector
+      .seedActive(false)
+      .map((event) => (event.type === 'queue_update' ? event.steeringEntries : event.type)),
+    [[]],
   );
   // …and the late echo of the same message is the duplicate.
   assert.deepEqual(projector.accept(steeringFrame(1)).events, []);

@@ -93,6 +93,7 @@ export class RuntimeHostSessionProjector {
   readonly #now: () => number;
   readonly #durableTurnByMessage: Map<string, string>;
   readonly #accumulators = new Map<string, AssistantAccumulator>();
+  readonly #placedSteeringMessageIds = new Set<string>();
   #projectMessageAdmissions: boolean;
 
   constructor(
@@ -163,7 +164,7 @@ export class RuntimeHostSessionProjector {
     const events: SessionEvent[] = [];
     const queueEvents =
       this.#projectMessageAdmissions || queueHasEntries(this.#snapshot.queue)
-        ? [projectQueueUpdate(this.#snapshot.queue, root.turnId, this.#now())]
+        ? [projectQueueUpdate(this.#unplacedQueue(this.#snapshot.queue), root.turnId, this.#now())]
         : [];
     if (this.#projectMessageAdmissions) {
       events.push(
@@ -378,9 +379,11 @@ export class RuntimeHostSessionProjector {
     }
     if (frame.kind === 'subscription.session_event') {
       const event = projectSessionEvent(frame);
-      if (event.type !== 'steering_message' || !this.#durableTurnByMessage.has(event.messageId)) {
-        events.push(event);
+      if (event.type === 'steering_message') {
+        if (this.#durableTurnByMessage.has(event.messageId)) return emptyUpdate(events);
+        this.#placedSteeringMessageIds.add(event.messageId);
       }
+      events.push(event);
       return emptyUpdate(events);
     }
     if (frame.kind !== 'subscription.session_projection') return emptyUpdate(events);
@@ -397,7 +400,7 @@ export class RuntimeHostSessionProjector {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
     }
     if (root && queueChanged(previousSnapshot.queue, next.queue)) {
-      events.push(projectQueueUpdate(next.queue, root.turnId, this.#now()));
+      events.push(projectQueueUpdate(this.#unplacedQueue(next.queue), root.turnId, this.#now()));
     }
     if (startedTurn) this.#accumulators.clear();
     // Emit the presentation-only compaction-started event when the root Turn
@@ -479,6 +482,17 @@ export class RuntimeHostSessionProjector {
       });
     }
     return events;
+  }
+
+  // The runtime writes a steering message before the Host acknowledges its
+  // lease, so the queue can still list an entry the timeline already shows.
+  #unplacedQueue(queue: SessionMessageQueueProjection): SessionMessageQueueProjection {
+    const steering = queue.steering.filter(
+      (entry) =>
+        !this.#placedSteeringMessageIds.has(entry.messageId) &&
+        !this.#durableTurnByMessage.has(entry.messageId),
+    );
+    return steering.length === queue.steering.length ? queue : { ...queue, steering };
   }
 }
 
