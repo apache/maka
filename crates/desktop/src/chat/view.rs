@@ -760,8 +760,9 @@ impl Render for Chat {
             && !self.anchor.as_ref().is_some_and(|anchor| anchor.pinning);
         self.jump = settled && at_end.map_or(self.jump, |at_end| !at_end);
         // A tail that does not fill the viewport never scrolls, so the
-        // scroll handler would never ask for what came before it.
-        if !self.keys.is_empty() && self.list.max_offset_for_scrollbar().y <= px(0.5) {
+        // scroll handler would never ask for what came before it. The lead
+        // is set only from measured rows; before that, every list looks short.
+        if self.lead > px(0.) {
             self.fetch_older(cx);
         }
 
