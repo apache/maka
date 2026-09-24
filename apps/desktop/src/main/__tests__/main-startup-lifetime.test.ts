@@ -112,12 +112,39 @@ test('creates the main window before starting Local Host reconciliation', () => 
   assert.doesNotMatch(mainSource, /startup-presentation/u);
 });
 
+test('preserves the three startup task gates', () => {
+  const registryImport = bootSource.indexOf(
+    'createRuntimeHostStartupTaskRegistry',
+  );
+  const registryCreate = bootSource.indexOf(
+    'const startupTasks = createRuntimeHostStartupTaskRegistry',
+  );
+  const hostStart = bootSource.indexOf('runtimeHostStart = shellEnvReady.then');
+  const immediateRun = bootSource.indexOf(
+    'runPhase(runtimeHostStartupTaskPhases.immediate)',
+  );
+  const shellEnvRun = bootSource.indexOf(
+    'runPhase(runtimeHostStartupTaskPhases.shellEnvReady)',
+  );
+  const runtimeHostRun = bootSource.indexOf(
+    'runPhase(runtimeHostStartupTaskPhases.runtimeHostReady)',
+    hostStart,
+  );
+
+  assert.ok(registryImport >= 0);
+  assert.ok(registryCreate > registryImport);
+  assert.ok(hostStart >= 0);
+  assert.ok(immediateRun >= registryCreate && immediateRun < hostStart);
+  assert.ok(shellEnvRun >= registryCreate && shellEnvRun < hostStart);
+  assert.ok(runtimeHostRun > hostStart);
+});
+
 test('does not release renderer IPC before persistent handlers are registered', () => {
   assert.match(mainSource, /await boot\.runtimeHostBootReady;/u);
   assert.ok(mainSource.indexOf('await boot.runtimeHostBootReady;') < mainSource.indexOf('bootContext.markIpcReady();'));
-  assert.match(bootSource, /export const runtimeHostBootReady = \(async \(\) => \{/u);
+  assert.match(bootSource, /export const runtimeHostBootReady = Promise\.resolve\(/u);
   const readyStart = bootSource.indexOf('export const runtimeHostBootReady');
-  const readyEnd = bootSource.indexOf('})();', readyStart) + '})();'.length;
+  const readyEnd = bootSource.indexOf('\n);', readyStart) + '\n);'.length;
   const readyBody = bootSource.slice(readyStart, readyEnd);
   assert.match(readyBody, /registerDesktopWorkBoard\(\)/u);
   assert.match(bootSource, /if \(!registerDesktopWorkBoard\(\)\) \{/u);
