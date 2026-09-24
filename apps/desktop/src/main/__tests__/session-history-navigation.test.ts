@@ -106,16 +106,106 @@ it('shows pull progress before switching and acknowledges the threshold only onc
   assert.deepEqual(targets, [null]);
 });
 
+it('recognizes the captured Windows sequence when only its first wheel frame is cancelable', () => {
+  const { catalog, wheel, feedback, targets } = setup();
+  for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
+  // Physical touchpad capture: the tiny opening event is cancelable; Chromium
+  // delivers the remaining horizontal displacement as non-cancelable events.
+  wheel(0, { deltaX: -1.6667, cancelable: true });
+  assert.equal(wheel(3.2, { deltaX: -6.6667, cancelable: false }), false);
+  assert.equal(wheel(25.5, { deltaX: -21.6667, cancelable: false }), false);
+  assert.equal(feedback()?.getAttribute('data-phase'), 'pulling');
+  assert.equal(wheel(146.6, { deltaX: -201.6667, cancelable: false }), false);
+  assert.equal(catalog.getState().activeSessionId, 'B');
+  assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
+  wheel(151.5, { deltaX: -31.6667, cancelable: false });
+  assert.deepEqual(targets, [null]);
+});
+
 it('retracts an unfinished pull after idle and removes the feedback without navigating', (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  t.mock.method(performance, 'now', () => Date.now());
   const { catalog, wheel, feedback } = setup();
   for (const id of ['A', 'B']) catalog.setActiveSessionId(id);
   wheel(0, { deltaX: -32 });
-  act(() => t.mock.timers.tick(250));
+  act(() => t.mock.timers.tick(300));
+  assert.equal(feedback()?.getAttribute('data-phase'), 'pulling');
+  act(() => t.mock.timers.tick(200));
   assert.equal(feedback()?.getAttribute('data-phase'), 'returning');
-  act(() => t.mock.timers.tick(180));
+  act(() => t.mock.timers.tick(320));
   assert.equal(feedback(), undefined);
   assert.equal(catalog.getState().activeSessionId, 'B');
+});
+
+it('bounds completion feedback even when a continuous wheel tail never stops', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  t.mock.method(performance, 'now', () => Date.now());
+  const { catalog, wheel, feedback, targets } = setup();
+  for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
+  wheel(0);
+  for (let time = 100; time <= 500; time += 100) {
+    act(() => t.mock.timers.tick(100));
+    wheel(time, { deltaX: -2 });
+  }
+  assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
+  act(() => t.mock.timers.tick(150));
+  assert.equal(feedback()?.getAttribute('data-phase'), 'returning');
+  for (let time = 700; time <= 1100; time += 100) {
+    act(() => t.mock.timers.tick(100));
+    wheel(time, { deltaX: -2 });
+  }
+  assert.equal(feedback() === undefined, true);
+  assert.equal(catalog.getState().activeSessionId, 'B');
+  assert.deepEqual(targets, [null]);
+});
+
+it('uses elapsed time for animation even when the sample preview freezes the wall clock', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.method(Date, 'now', () => 0);
+  let elapsed = 0;
+  t.mock.method(performance, 'now', () => elapsed);
+  const { catalog, wheel, feedback } = setup();
+  for (const id of ['A', 'B']) catalog.setActiveSessionId(id);
+  wheel(0);
+  elapsed = 500;
+  act(() => t.mock.timers.tick(500));
+  wheel(100, { deltaX: -2 });
+  elapsed = 650;
+  act(() => t.mock.timers.tick(150));
+  assert.equal(feedback()?.getAttribute('data-phase'), 'returning');
+  elapsed = 970;
+  act(() => t.mock.timers.tick(320));
+  assert.equal(feedback() === undefined, true);
+});
+
+it('retains the completion when a Session swap detaches the original wheel target', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  t.mock.method(performance, 'now', () => Date.now());
+  const { catalog, wheel, feedback, dom, targets } = setup();
+  for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
+  wheel(0);
+  const oldTarget = dom.document.querySelector('p')!;
+  oldTarget.remove();
+  wheel(48, { composedPath: () => [oldTarget, document] });
+  assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
+  act(() => t.mock.timers.tick(500));
+  assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
+  assert.equal(catalog.getState().activeSessionId, 'B');
+  assert.deepEqual(targets, [null]);
+});
+
+it('accepts a reverse on the new conversation after a completed gesture loses its old target', () => {
+  const { catalog, wheel, feedback, targets } = setup();
+  for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
+  wheel(0);
+  // Session replacement sends the remaining wheel tail outside the marked
+  // surface. That completed tail must not lock the next deliberate return.
+  wheel(100, { deltaX: -30 }, 'aside');
+  wheel(200, { deltaX: 30, cancelable: false });
+  assert.equal(feedback()?.getAttribute('data-phase'), 'pulling');
+  wheel(220, { deltaX: 60, cancelable: false });
+  assert.equal(catalog.getState().activeSessionId, 'C');
+  assert.deepEqual(targets, [null, null]);
 });
 
 it('shows unavailable feedback at the history boundary instead of acknowledging a move', () => {
@@ -153,7 +243,8 @@ it('removes an in-progress arrow when the pointer enters an excluded control', (
 });
 
 it('cancels a pull on window blur and releases listeners and timers on unmount', (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  t.mock.method(performance, 'now', () => Date.now());
   const { catalog, wheel, feedback, blur, root, blurListeners } = setup();
   for (const id of ['A', 'B']) catalog.setActiveSessionId(id);
   wheel(0, { deltaX: -32 });

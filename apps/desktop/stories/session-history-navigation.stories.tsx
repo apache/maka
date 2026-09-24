@@ -85,8 +85,8 @@ export const HorizontalScrollOwnership: Story = {
     }
     expect(overflow, 'The real code block must have horizontal overflow').not.toBeNull();
     // Synthetic timestamps control gesture boundaries, not render completion.
-    const wheel = (target: Element, timeStamp: number, deltaX = -100) => {
-      const event = new WheelEvent('wheel', { deltaX, bubbles: true, cancelable: true });
+    const wheel = (target: Element, timeStamp: number, deltaX = -100, cancelable = true) => {
+      const event = new WheelEvent('wheel', { deltaX, bubbles: true, cancelable });
       Object.defineProperty(event, 'timeStamp', { value: timeStamp });
       target.dispatchEvent(event);
       return event.defaultPrevented;
@@ -122,6 +122,22 @@ export const HorizontalScrollOwnership: Story = {
     expect(wheel(draft, 1200)).toBe(false);
     expect(draft).toHaveValue('unsent text');
     expect(selected).toHaveTextContent('B');
+    await waitFor(() => expect(canvasElement.ownerDocument.querySelector('.session-history-swipe')).toBeNull());
+    // The Windows capture starts tiny and only its first frame is cancelable.
+    wheel(prose, 1600, -1.6667);
+    expect(wheel(prose, 1603.2, -6.6667, false)).toBe(false);
+    expect(wheel(prose, 1625.5, -21.6667, false)).toBe(false);
+    await waitFor(() => expect(canvasElement.ownerDocument.querySelector('.session-history-swipe')).toHaveAttribute('data-phase', 'pulling'));
+    wheel(prose, 1746.6, -201.6667, false);
+    await waitFor(() => expect(selected).toHaveTextContent('C'));
+    // Keep the original final Session for the native wheel smoke that follows.
+    wheel(prose, 2100, 100);
+    await waitFor(() => expect(selected).toHaveTextContent('B'));
+    await waitFor(() => expect(canvasElement.ownerDocument.querySelector('.session-history-swipe')).toHaveAttribute('data-phase', 'returning'));
+    const returning = canvasElement.ownerDocument.querySelector('.session-history-swipe')!;
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      expect(getComputedStyle(returning).transitionDuration.split(',')[0]).toBe('0.32s');
+    }
     await waitFor(() => expect(canvasElement.ownerDocument.querySelector('.session-history-swipe')).toBeNull());
   },
 };

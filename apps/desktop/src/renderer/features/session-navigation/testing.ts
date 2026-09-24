@@ -20,7 +20,7 @@
 import type { SessionNavigationServices } from './ports.js';
 export { createSessionVisitHistory } from './model/session-visit-history.js';
 export { createSessionSwipe } from './model/session-swipe.js';
-export { SessionHistoryNavigation, isSessionHistorySwipeTarget } from './ui/session-history-navigation.js';
+export { SessionHistoryNavigation } from './ui/session-history-navigation.js';
 
 export type {
   SessionNavigationPorts,

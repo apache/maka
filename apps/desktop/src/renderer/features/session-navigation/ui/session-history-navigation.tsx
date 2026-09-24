@@ -22,7 +22,7 @@ import { createPortal } from 'react-dom';
 import { ArrowLeft, ArrowRight } from '@maka/ui/icons';
 import type { SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { createSessionVisitHistory } from '../model/session-visit-history.js';
-import { createSessionSwipe, type SessionSwipeFeedback } from '../model/session-swipe.js';
+import { createSessionSwipe, SESSION_SWIPE_RETURN_DURATION_MS, type SessionSwipeFeedback } from '../model/session-swipe.js';
 
 export interface SessionHistoryNavigationProps {
   catalog: SessionCatalogController;
@@ -66,9 +66,15 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
     const swipe = gesture.current;
     setIndicator(null);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const release = () => {
-      setIndicator((value) => value && { ...value, phase: 'returning' });
-      timer = setTimeout(() => setIndicator(null), 180);
+    const scheduleSettlement = () => {
+      clearTimeout(timer);
+      const delay = swipe.settleAfter();
+      if (delay === null) return;
+      timer = setTimeout(() => {
+        const phase = swipe.settle();
+        setIndicator((value) => phase && value ? { ...value, phase } : null);
+        scheduleSettlement();
+      }, delay);
     };
     const cancel = () => {
       swipe.cancel();
@@ -79,20 +85,25 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
       const { catalog, visible, blocked, openSession } = current.current;
       const state = catalog.getState();
       const eligible = visible && !blocked && Boolean(state.activeSessionId)
-        && !event.defaultPrevented && event.cancelable && event.deltaMode === 0
+        && !event.defaultPrevented && event.deltaMode === 0
         && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
         && isSessionHistorySwipeTarget(event);
       const result = swipe.sample({
         deltaX: event.deltaX, deltaY: event.deltaY, timeStamp: event.timeStamp, eligible,
       });
-      if (result.claimed) event.preventDefault();
+      // Chromium may make only the first frame cancelable. That flag governs
+      // preventDefault, not whether subsequent displacement belongs to a swipe.
+      if (result.claimed && event.cancelable) event.preventDefault();
       const feedback = swipe.feedback();
       if (!feedback) {
         clearTimeout(timer);
         setIndicator(null);
         return;
       }
-      if (feedback.committed && result.direction === null) return;
+      if (feedback.committed && result.direction === null) {
+        scheduleSettlement();
+        return;
+      }
       const available = (id: string) => catalog.getState().sessions.some((session) => session.id === id && session.localState !== 'pending');
       const canMove = history.current.peek(feedback.direction, available) !== undefined;
       let moved = false;
@@ -107,8 +118,7 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
       const rect = surface.getBoundingClientRect();
       setIndicator({ ...feedback, phase: moved ? 'committed' : (!canMove || feedback.committed) ? 'unavailable' : 'pulling',
         edge: feedback.direction === -1 ? rect.left : rect.right, top: rect.top + rect.height / 2 });
-      clearTimeout(timer);
-      timer = setTimeout(release, 250);
+      scheduleSettlement();
     };
     document.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('blur', cancel);
@@ -130,17 +140,15 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
     style={{ left: indicator.edge, top: indicator.top,
       '--swipe-inward': -indicator.direction,
       '--swipe-progress': indicator.progress,
+      '--swipe-return-duration': `${SESSION_SWIPE_RETURN_DURATION_MS}ms`,
     } as CSSProperties}
   >
-    <svg className="session-history-swipe-ring" viewBox="0 0 44 44" fill="none">
-      <circle cx="22" cy="22" r="19" pathLength="1" stroke="currentColor" strokeWidth="2" />
-    </svg>
     <Arrow size={20} strokeWidth={2} />
   </div>, document.body);
 }
 
 /** Horizontal content keeps its entire gesture, even at either scroll edge. */
-export function isSessionHistorySwipeTarget(event: Pick<WheelEvent, 'composedPath'>): boolean {
+function isSessionHistorySwipeTarget(event: Pick<WheelEvent, 'composedPath'>): boolean {
   for (const target of event.composedPath()) {
     if (!(target instanceof Element)) continue;
     if (target.matches('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="alertdialog"], [role="menu"], [data-session-history-ignore]')) return false;

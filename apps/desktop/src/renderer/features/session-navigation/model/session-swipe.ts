@@ -19,6 +19,8 @@
 
 import type { HistoryDirection } from './session-visit-history.js';
 
+export const SESSION_SWIPE_RETURN_DURATION_MS = 320;
+
 export interface SessionSwipeSample {
   deltaX: number;
   deltaY: number;
@@ -39,12 +41,24 @@ export function createSessionSwipe() {
   let fired = false;
   let opposingDistance = 0;
   let axis: 'pending' | 'horizontal' | 'blocked' = 'pending';
+  let presentation: 'pulling' | 'committed' | 'returning' | null = null;
+  let settleAt = 0;
   return {
     cancel(): void {
       axis = 'blocked';
+      presentation = null;
+    },
+    /** The gesture owner also owns feedback lifetime; the view only schedules it. */
+    settleAfter(): number | null {
+      return presentation === null ? null : Math.max(0, settleAt - performance.now());
+    },
+    settle(): 'returning' | null {
+      presentation = presentation && presentation !== 'returning' ? 'returning' : null;
+      if (presentation === 'returning') settleAt = performance.now() + SESSION_SWIPE_RETURN_DURATION_MS;
+      return presentation;
     },
     feedback(): SessionSwipeFeedback | null {
-      return axis === 'horizontal' && distance !== 0
+      return presentation !== null && (axis === 'horizontal' || fired) && distance !== 0
         ? { direction: distance < 0 ? -1 : 1, progress: Math.min(Math.abs(distance) / 80, 1), committed: fired }
         : null;
     },
@@ -55,14 +69,24 @@ export function createSessionSwipe() {
         fired = false;
         opposingDistance = 0;
         axis = 'pending';
+        presentation = null;
       }
       lastTime = event.timeStamp;
-      if (!event.eligible) axis = 'blocked';
-      if (axis === 'blocked') return { claimed: false, direction: null };
+      if (!event.eligible) {
+        // After completion, a detached target is only an inert tail. It must
+        // neither navigate nor poison a deliberate reverse on the new surface.
+        if (fired) return { claimed: false, direction: null };
+        axis = 'blocked';
+      }
+      if (axis === 'blocked') {
+        if (!fired) presentation = null;
+        return { claimed: false, direction: null };
+      }
       // Keep momentum latched, but let an intentional reverse start another
       // gesture. Tiny opposite-sign recoil must not undo a completed swipe.
       if (fired) {
         opposingDistance = event.deltaX * distance < 0 ? opposingDistance + event.deltaX : 0;
+        // The tail cannot extend or revive a completed visual acknowledgement.
         if (Math.abs(opposingDistance) < 24) return { claimed: true, direction: null };
         distance = opposingDistance - event.deltaX;
         verticalDistance = 0;
@@ -78,6 +102,8 @@ export function createSessionSwipe() {
       if (axis !== 'horizontal') return { claimed: false, direction: null };
       const direction = !fired && Math.abs(distance) >= 80 ? (distance < 0 ? -1 : 1) : null;
       if (direction !== null) fired = true;
+      presentation = fired ? 'committed' : 'pulling';
+      settleAt = performance.now() + (fired ? 650 : 500);
       return { claimed: true, direction };
     },
   };

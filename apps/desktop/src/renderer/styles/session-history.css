@@ -26,35 +26,22 @@
   place-items: center;
   pointer-events: none;
   border-radius: 50%;
-  background: var(--background);
+  background: color-mix(in srgb, var(--background) 94%, var(--foreground));
   color: var(--foreground);
-  box-shadow: 0 2px 12px oklch(0 0 0 / 0.16), inset 0 0 0 1px var(--border);
-  opacity: calc(0.5 + var(--swipe-progress) * 0.5);
-  transform: translate(calc(-50% + var(--swipe-inward) * (28px + var(--swipe-progress) * 24px)), -50%);
-  transition: transform 80ms ease-out, opacity 120ms ease-out, background 120ms, color 120ms;
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.08), inset 0 0 0 1px color-mix(in srgb, var(--border) 65%, transparent);
+  opacity: calc(0.45 + var(--swipe-progress) * 0.5);
+  transform: translate(calc(-50% + var(--swipe-inward) * (28px + var(--swipe-progress) * 16px)), -50%);
+  transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 220ms ease-out;
 }
 
 @starting-style {
   .session-history-swipe {
     opacity: 0;
-    transform: translate(calc(-50% + var(--swipe-inward) * 28px), -50%) scale(0.8);
+    transform: translate(calc(-50% + var(--swipe-inward) * 20px), -50%) scale(0.84);
   }
 }
 
-.session-history-swipe-ring {
-  position: absolute;
-  inset: 0;
-  width: 44px;
-  height: 44px;
-  transform: rotate(-90deg);
-  stroke-dasharray: 1;
-  stroke-dashoffset: calc(1 - var(--swipe-progress));
-  transition: stroke-dashoffset 80ms ease-out;
-}
-
 .session-history-swipe[data-phase="committed"] {
-  background: var(--foreground);
-  color: var(--background);
   opacity: 1;
 }
 
@@ -64,19 +51,14 @@
   transform: translate(calc(-50% + var(--swipe-inward) * 28px), -50%);
 }
 
-.session-history-swipe[data-phase="unavailable"] .session-history-swipe-ring {
-  visibility: hidden;
-}
-
 .session-history-swipe[data-phase="returning"] {
   opacity: 0;
-  transform: translate(calc(-50% + var(--swipe-inward) * 28px), -50%) scale(0.8);
-  transition-duration: 180ms;
+  transform: translate(calc(-50% + var(--swipe-inward) * 20px), -50%) scale(0.84);
+  transition-duration: var(--swipe-return-duration);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-history-swipe,
-  .session-history-swipe-ring {
+  .session-history-swipe {
     transition: none;
   }
 }

@@ -100,11 +100,23 @@ temporary Host/catalog unavailability is not proof of deletion.
 The gesture chooses its axis after 18 pixels, requires horizontal movement at
 least 1.5 times the vertical movement, and triggers at 80 horizontal pixels.
 This allows a small diagonal start without locking out the entire horizontal
-gesture. A circular arrow at the corresponding conversation edge follows the
-pull and fills toward the threshold. Crossing the threshold requests a move
-and acknowledges only a confirmed selection. An unfinished pull retracts after
-250 ms idle; a history boundary shows a muted arrow without a completion ring.
-Feedback stays local to this component and honors reduced-motion preferences.
+gesture. A subdued arrow at the corresponding conversation edge follows the
+pull with a short inward slide and fade. Crossing the threshold requests a move
+and acknowledges only a confirmed selection. An unfinished pull begins its
+320 ms return after 500 ms idle. Completion stays visible for 650 ms, then
+returns over 320 ms. A continuous tail cannot extend or revive it; a history
+boundary shows a muted arrow. The gesture model owns
+settlement phases and deadlines; the view schedules them and renders feedback
+locally, honoring reduced-motion preferences. Deadlines use monotonic elapsed
+time, so clock changes and the sample preview's frozen date cannot prolong them.
+
+Wheel `cancelable` controls only whether the view calls `preventDefault`.
+Chromium can make only the first frame cancelable, so non-cancelable frames still
+contribute displacement when the target and modifiers are eligible. They do not
+bypass input exclusions. A completed gesture keeps its acknowledgement if a
+Session swap detaches the original target; it cannot navigate on that excluded
+tail or lock out a deliberate reverse on the new surface. Explicit
+modal/visibility/blur cancellation still removes it.
 
 The recognizer stays latched through same-direction momentum until 250 ms
 without wheel input. After completion, 24 pixels of consecutive opposite input
@@ -153,8 +165,9 @@ The idle timeout and opposite-input threshold are gesture heuristics, not native
 phase detection.
 
 Node tests cover history branching, removal, selection ordering, rejected opens,
-gesture latching, diagonal starts, immediate reversal, feedback lifecycle and
-input exclusion. The focused Storybook interaction checks actual Chromium
+gesture latching, diagonal starts, immediate reversal, feedback lifecycle,
+the captured Windows first-frame-only cancelability sequence and input
+exclusion. The focused Storybook interaction checks actual Chromium
 overflow geometry, arrow placement and event propagation using the production
 component, catalog, open command, ChatSurfaceLayout and MarkdownBody. Automated
 input does not replace physical touchpad tuning on each platform.
