@@ -878,15 +878,12 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       : props.session.status,
     locale,
   ).label;
-  // What the row communicates without text and the dot does NOT already say,
-  // inside the button so it lands in the accessible name. `signals[0]` is
-  // skipped because the dot slot carries it; the rest of the list, the worktree
-  // attribute, and the timestamp reached assistive tech nowhere else — the
-  // timestamp renders `aria-hidden` and swaps out for the ⋯ menu, and worktree
-  // is an attribute of the row rather than a signal, so it never competes for
-  // the dot.
+  // What the row communicates without text, inside the button so it lands in
+  // the accessible name. All of it, `signals[0]` included: the trailing slot
+  // that draws the dot or the timestamp is hidden while the ⋯ menu covers it,
+  // and a hidden box is gone from the accessibility tree too.
   const rowDescription = [
-    ...signals.slice(1).map((entry) => entry.tooltip ?? entry.label),
+    ...signals.map((entry) => entry.tooltip ?? entry.label),
     // Being picked is a fact about the row that the ground alone carries. It is
     // NOT `aria-current`: that names the one current page, and a set of picked
     // rows is not a set of current pages.
@@ -959,27 +956,6 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         aria-describedby={hoverDescriptionId}
         size="md"
         isSelected={props.active}
-        // Slot 1, the row's leading edge. A fixed gutter every row pays for,
-        // whether or not it has a dot, so state reads as one column down the
-        // rail instead of a mark that drifts with each title's length.
-        icon={
-          <span className="maka-session-row-signal">
-            {signal?.running ? (
-              <RunningIndicator
-                label={signal.label}
-                tooltip={signal.tooltip}
-                data-session-status={props.session.status}
-              />
-            ) : signal ? (
-              <StatusDot
-                variant={signal.variant}
-                label={signal.label}
-                tooltip={signal.tooltip}
-                data-session-status={props.session.status}
-              />
-            ) : null}
-          </span>
-        }
         onClick={(event) => {
           // Shift- and ⌘-clicks are answered by the list, which has already
           // moved the set by the time this runs. Opening the task as well
@@ -1004,10 +980,11 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           props.onSelectSession(props.session.id);
         }}
         endContent={
-          // Slot 2. The timestamp is what the row shows at rest; the ⋯ menu
-          // below is absolutely positioned over this box and sidebar.css swaps
-          // the two on hover or keyboard focus. The span is rendered even with
-          // no timestamp so the column exists on every row.
+          // The signal slot shows the row's state, or its timestamp when there
+          // is nothing to report; the ⋯ menu below is absolutely positioned
+          // over this box and sidebar.css swaps the two on hover or keyboard
+          // focus. The span is rendered even when empty so the column exists
+          // on every row.
           <span className="maka-session-row-end">
             {props.sessionBadge ? (
               <span className="maka-session-row-attention-badge">
@@ -1027,8 +1004,21 @@ const SessionNavRow = memo(function SessionNavRow(props: {
                 <Badge variant="neutral" label={props.session.executorId} />
               </span>
             ) : null}
-            <span className="maka-session-row-time">
-              {props.session.lastMessageAt ? (
+            <span className="maka-session-row-signal">
+              {signal?.running ? (
+                <RunningIndicator
+                  label={signal.label}
+                  tooltip={signal.tooltip}
+                  data-session-status={props.session.status}
+                />
+              ) : signal ? (
+                <StatusDot
+                  variant={signal.variant}
+                  label={signal.label}
+                  tooltip={signal.tooltip}
+                  data-session-status={props.session.status}
+                />
+              ) : props.session.lastMessageAt ? (
                 <RelativeTime
                   ts={props.session.lastMessageAt}
                   variant="sidebar"
@@ -1599,7 +1589,7 @@ interface SessionRowSignal {
  * Everything true about the session that is worth saying, in priority order.
  *
  * The row draws ONE dot — `signals[0]` — but it says all of them. Keeping the
- * list is what lets the two visible slots stay two while the row still reaches
+ * list is what lets the row keep one visible slot while it still reaches
  * a screen reader with the same facts a sighted user gets from the dot's
  * colour, the row's dimming, and the tooltip. Collapsing to a single signal
  * inside this function is what previously made the trailing `Badge` the only
