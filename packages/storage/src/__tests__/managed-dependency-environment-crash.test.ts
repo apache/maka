@@ -168,7 +168,11 @@ function dependencySource() {
 async function waitForChildReady(child: ChildProcess): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let output = '';
-    const timeout = setTimeout(() => finish(new Error('owner child did not become ready')), 15_000);
+    let diagnostics = '';
+    const timeout = setTimeout(
+      () => finish(new Error(`owner child did not become ready: ${diagnostics}`)),
+      15_000,
+    );
     const finish = (error?: Error) => {
       clearTimeout(timeout);
       child.stdout?.off('data', onData);
@@ -182,9 +186,14 @@ async function waitForChildReady(child: ChildProcess): Promise<void> {
       output += chunk.toString('utf8');
       if (output.includes('READY\n')) finish();
     };
-    const onErrorData = (chunk: Buffer) => finish(new Error(chunk.toString('utf8')));
+    // READY 是启动协议，stderr 也会含 Node 22 的 SQLite 实验性警告。
+    // 保留有界诊断供超时/退出失败使用，不能仅凭 stderr 判定启动失败。
+    const onErrorData = (chunk: Buffer) => {
+      diagnostics = (diagnostics + chunk.toString('utf8')).slice(-8_192);
+    };
     const onError = (error: Error) => finish(error);
-    const onExit = (code: number | null) => finish(new Error(`owner child exited early: ${code}`));
+    const onExit = (code: number | null) =>
+      finish(new Error(`owner child exited early: ${code}: ${diagnostics}`));
     child.stdout?.on('data', onData);
     child.stderr?.on('data', onErrorData);
     child.on('error', onError);

@@ -521,3 +521,18 @@ jobs:
       - name: Validate installed CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
         run: npm run release:cli:smoke -- packages/cli/release/*.tgz
+
+      # Reuse the built output in this runner. These fixtures exercise the
+      # minimum supported Node's event-loop and experimental SQLite behavior.
+      - name: Select minimum supported Node
+        if: steps.plan.outputs.runtime_host == 'true' || contains(steps.plan.outputs.standard_workspaces, 'packages/storage')
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.19.0'
+
+      - name: Test Node 22 Host and storage lifetimes
+        if: steps.plan.outputs.runtime_host == 'true' || contains(steps.plan.outputs.standard_workspaces, 'packages/storage')
+        run: >-
+          node --test --test-concurrency=1
+          packages/runtime-host/dist/__tests__/resumable-peer-stream.test.js
+          packages/storage/dist/__tests__/managed-dependency-environment-crash.test.js
