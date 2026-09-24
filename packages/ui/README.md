@@ -43,7 +43,7 @@ Four export surfaces, in the order to look:
 import { Badge, Button, ChatView, Composer, useToast } from '@maka/ui';
 ```
 
-Sub-path exports (declared in `package.json` `exports`): `@maka/ui/artifact-preview-registry`, `@maka/ui/assistant-stream`, `@maka/ui/icons`, and `@maka/ui/maka-uri`. (`@maka/ui/icons` re-exports Lucide symbols; model-provider brand logos live in the renderer's `settings/provider-*`, not here — bot-provider logos are in `@maka/ui`'s `bot-brand-logo`.)
+Sub-path exports (declared in `package.json` `exports`): `@maka/ui/artifact-preview-registry`, `@maka/ui/icons`, and `@maka/ui/maka-uri`. (`@maka/ui/icons` re-exports Lucide symbols; model-provider brand logos live in the renderer's `settings/provider-*`, not here — bot-provider logos are in `@maka/ui`'s `bot-brand-logo`.)
 
 New renderer CSS owns product layout containers only. It must not target Astryx internal elements, roles, slots, or generated classes to restyle component chrome.
 
