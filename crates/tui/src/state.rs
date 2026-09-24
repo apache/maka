@@ -596,11 +596,7 @@ mod tests {
         app.chat.view.enter();
         let open = app.branch_commands()[0].0.clone();
         app.apply(open);
-        terminal
-            .draw(|f| {
-                crate::pages::branch::draw(f, &mut app, f.area(), ratatui::style::Style::default())
-            })
-            .unwrap();
+        terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
         app.apply(Action::Branch(Command::Confirm));
         let request = app.branch_request().unwrap();
         let (release, blocked) = gate(&state).await;

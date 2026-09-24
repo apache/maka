@@ -28,7 +28,7 @@ use maka_protocol::{
     session::{SessionCatalogProjection, copy},
 };
 use serde::{Deserialize, Serialize};
-pub use view::draw;
+pub(crate) use view::sheet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Basis {
@@ -108,7 +108,6 @@ enum Phase {
 pub struct State {
     pub visible: bool,
     rendered: bool,
-    focus: usize,
     basis: Option<Basis>,
     saved: Option<Checkpoint>,
     phase: Phase,
@@ -128,6 +127,10 @@ impl State {
     }
     pub fn invalidate_geometry(&mut self) {
         self.rendered = false;
+    }
+    /// The sheet reports whether it is on screen; its commands need it.
+    pub(crate) fn presented(&mut self, shown: bool) {
+        self.rendered = shown;
     }
     pub fn disconnect(&mut self) {
         self.pending = None;
@@ -272,13 +275,11 @@ impl App {
                 state.basis = Some(basis);
                 state.phase = Phase::Confirm;
                 state.error = None;
-                state.focus = 0;
                 state.visible = true;
                 state.rendered = false;
             }
             Command::Resume => {
                 state.visible = true;
-                state.focus = 0;
                 state.rendered = false;
             }
             Command::Close => {
@@ -304,7 +305,6 @@ impl App {
                 });
                 state.requested = Some(false);
                 state.phase = Phase::Saving;
-                state.focus = 0;
             }
             Command::Query => {
                 state.requested = Some(true);
@@ -348,7 +348,6 @@ impl App {
         };
         state.pending = Some(request.clone());
         state.phase = if query { Phase::Pending } else { Phase::Saving };
-        state.focus = 0;
         Some(request)
     }
     pub fn branch_after_checkpoint(
@@ -389,7 +388,6 @@ impl App {
             state.phase = Phase::Unknown;
             return;
         }
-        state.focus = 0;
         match result {
             Ok(Output::Ready(session)) => {
                 state.phase = Phase::Ready;
@@ -441,12 +439,7 @@ pub(crate) mod tests {
 
     fn frame(app: &mut App, width: u16, height: u16) {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|f| {
-                app.hits.clear();
-                draw(f, app, f.area(), app.theme.colors().base());
-            })
-            .unwrap();
+        terminal.draw(|f| crate::view::draw(f, app)).unwrap();
     }
     pub(crate) fn fixture() -> (App, Basis) {
         let mut app = App::new(
@@ -516,9 +509,11 @@ pub(crate) mod tests {
         app.apply(Action::Branch(Command::Confirm));
         let request = app.branch_request().unwrap();
         assert!(!request.query);
+        frame(&mut app, 80, 24);
         app.input(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         assert_eq!(
-            app.branch.focus, 0,
+            app.layer.focused_path(),
+            Some("footer/close"),
             "pending dialog has only one focusable action"
         );
         let saved = serde_json::to_value(app.branch.checkpoint()).unwrap();
@@ -563,22 +558,13 @@ pub(crate) mod tests {
             epoch: "new-epoch".into(),
         };
         frame(&mut app, 80, 24);
-        let button = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::Branch(Command::Query))
-            .unwrap()
-            .area;
+        let button = app.layer.rect("footer/primary").unwrap();
         let mut source = super::super::sessions::tests::item("source");
         source.name = "A source name arriving after the dialog was opened".repeat(4);
         app.sessions.items.push(source);
         frame(&mut app, 80, 24);
         assert_eq!(
-            app.hits
-                .iter()
-                .find(|hit| hit.action == Action::Branch(Command::Query))
-                .unwrap()
-                .area,
+            app.layer.rect("footer/primary").unwrap(),
             button,
             "catalog arrivals cannot move the recovery action under the mouse"
         );
