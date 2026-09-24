@@ -113,6 +113,7 @@ impl App {
             Overlay::Resume => crate::pages::resume::sheet(self),
             Overlay::Recap => crate::pages::recap::sheet(self),
             Overlay::Branch => crate::pages::branch::sheet(self),
+            Overlay::Skills => crate::pages::skills::sheet(self),
             _ => None,
         }
     }
@@ -126,6 +127,11 @@ impl App {
             Overlay::Resume => self.resume.presented(shown),
             Overlay::Recap => self.recap.presented(shown),
             Overlay::Branch => self.branch.presented(shown),
+            Overlay::Skills => {
+                if let Some(dialog) = &mut self.skills.dialog {
+                    dialog.visible = shown;
+                }
+            }
             _ => {}
         }
     }
@@ -169,9 +175,9 @@ impl App {
             | Overlay::QueueEdit
             | Overlay::Resume
             | Overlay::Recap
-            | Overlay::Branch => unreachable!("presented as sheets"),
+            | Overlay::Branch
+            | Overlay::Skills => unreachable!("presented as sheets"),
             Overlay::Theme => self.theme_input(event),
-            Overlay::Skills => self.skills_input(event),
             Overlay::Attachments => self.attachment_input(event),
             Overlay::Revision => self.revision_input(event),
             Overlay::Onboarding => self.onboarding_input(event),
@@ -193,6 +199,7 @@ impl App {
         let owned = match overlay {
             Overlay::Reference | Overlay::Management => self.management_sheet_input(&event),
             Overlay::QueueEdit => self.queue_edit_sheet_input(&event),
+            Overlay::Skills => self.skills_sheet_input(&event),
             _ => None,
         };
         if let Some(outcome) = owned {
@@ -294,9 +301,9 @@ pub(crate) fn draw(
         | Overlay::QueueEdit
         | Overlay::Resume
         | Overlay::Recap
-        | Overlay::Branch => unreachable!("presented as sheets"),
+        | Overlay::Branch
+        | Overlay::Skills => unreachable!("presented as sheets"),
         Overlay::Theme => crate::theme::editor::draw(frame, app, area),
-        Overlay::Skills => pages::skills::draw(frame, app, area, base),
         Overlay::Attachments => pages::attachments::draw(frame, app, area, base),
         Overlay::Revision => pages::revision::draw(frame, app, area, base),
         Overlay::Onboarding => pages::onboarding::draw(frame, app, area, base),

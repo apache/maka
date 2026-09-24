@@ -18,174 +18,157 @@
  */
 
 use super::{Action, App, Command};
-use crate::view::{button, safe};
-use ratatui::{
-    Frame,
-    layout::{Margin, Rect},
-    style::Style,
-    widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+use crate::{
+    ui::{Node, On, Role, Sheet, Size, Tone},
+    view::safe,
 };
-use unicode_width::UnicodeWidthStr;
+use crossterm::event::{Event, KeyCode, KeyEventKind};
+use ratatui::{Frame, layout::Rect};
 
-pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
-    app.hits.clear();
-    if area.width < 42 || area.height < 18 {
-        app.skills.invalidate_geometry();
-        crate::view::clear_overlay(frame, area);
-        frame.render_widget(
-            Paragraph::new(app.i18n.text("terminal-small")).wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
-    }
+const ROWS: &str = "list/rows";
+
+/// Picking Skills for the next turn: Selected · N shows only the picked
+/// ones, the tools page and refresh, and the list toggles with a click,
+/// Space or Enter. What the focused skill does reads below the list.
+/// Picks apply at once, so the sheet only closes.
+pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
+    let dialog = app.skills.dialog.as_ref()?;
     let rows = app.skill_rows();
-    let target = app.skills.dialog.as_ref().unwrap().target.clone();
-    let picked = app.picked_skills(&target).to_vec();
-    let width = area.width.saturating_sub(2).min(76);
-    let dialog = app.skills.dialog.as_ref().unwrap();
-    let desired_height = if dialog.loading || dialog.requested {
-        29
-    } else {
-        (rows.len() * 2 + 10).clamp(16, 29) as u16
-    };
-    let height = area.height.saturating_sub(2).min(desired_height);
-    let popup = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    app.modal_area = Some(popup);
-    crate::view::clear_overlay(frame, popup);
-    let colors = app.theme.colors();
-    let block = Block::bordered()
-        .border_type(if app.chrome.ascii {
-            ratatui::widgets::BorderType::Plain
-        } else {
-            ratatui::widgets::BorderType::Rounded
-        })
-        .title(app.i18n.text("skills-title"))
-        .title_alignment(ratatui::layout::Alignment::Center)
-        .style(base)
-        .border_style(Style::default().fg(colors.subtle));
-    let inner = block.inner(popup).inner(Margin::new(1, 0));
-    frame.render_widget(block, popup);
-    let capacity = usize::from(inner.height.saturating_sub(8) / 2).max(1);
-    let list = Rect::new(inner.x, inner.y + 3, inner.width, (capacity * 2) as u16);
-    let d = app.skills.dialog.as_mut().unwrap();
-    d.visible = true;
-    d.area = Some(list);
-    d.selected = d.selected.min(rows.len().saturating_sub(1));
-    d.top = d
-        .top
-        .min(d.selected)
-        .max(d.selected.saturating_sub(capacity - 1))
-        .min(rows.len().saturating_sub(capacity));
-    let (top, selected, focus, selected_only, loading, error) = (
-        d.top,
-        d.selected,
-        d.focus,
-        d.selected_only,
-        d.loading || d.requested,
-        d.error,
-    );
-    let scrollable = rows.len() > capacity;
-    for (index, row) in rows.iter().enumerate().skip(top).take(capacity) {
-        let rect = Rect::new(
-            list.x,
-            list.y + ((index - top) * 2) as u16,
-            list.width.saturating_sub(if scrollable { 2 } else { 0 }),
-            1,
-        );
-        let checked = picked.iter().any(|p| p.id == row.id);
-        let label = format!(
-            "{} {}",
-            if checked {
-                app.chrome.symbol("✓", "x")
-            } else {
-                " "
-            },
-            safe(&row.name)
-        );
-        crate::view::list_item(
-            frame,
-            app,
-            rect,
-            &label,
-            Action::Skills(Command::Toggle(index)),
-            focus == 0 && selected == index,
-        );
-    }
-    if scrollable {
-        let widget = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None)
-            .track_symbol(Some(app.chrome.symbol("│", "|")))
-            .thumb_symbol(app.chrome.symbol("┃", "#"))
-            .track_style(Style::default().fg(colors.subtle))
-            .thumb_style(Style::default().fg(colors.accent));
-        let mut state = ScrollbarState::new(rows.len() - capacity + 1)
-            .position(top)
-            .viewport_content_length(capacity);
-        frame.render_stateful_widget(widget, list, &mut state);
-    }
-    let selected_label = format!("{} · {}", app.i18n.text("skills-selected"), picked.len());
-    button(
-        frame,
-        app,
-        Rect::new(inner.x, inner.y, selected_label.width() as u16 + 2, 1),
-        &selected_label,
-        Action::Skills(Command::Selected),
-        focus == 1 || selected_only,
-    );
-    for (n, command, label) in [
-        (2, Command::Refresh, app.chrome.symbol("⟳", "r")),
-        (3, Command::Previous, app.chrome.symbol("‹", "<")),
-        (4, Command::Next, app.chrome.symbol("›", ">")),
-    ] {
-        button(
-            frame,
-            app,
-            Rect::new(inner.right() - ((5 - n) * 4) as u16, inner.y, 3, 1),
-            label,
-            Action::Skills(command),
-            focus == n,
-        );
-    }
-    let note = if let Some(error) = error {
-        app.i18n.text(error)
-    } else if loading {
-        app.i18n.text("skills-loading")
+    let picked = app.picked_skills(&dialog.target);
+    let loading = dialog.loading || dialog.requested;
+    let step = if loading {
+        "loading"
     } else if rows.is_empty() {
-        app.i18n.text("skills-empty")
+        "empty"
     } else {
-        safe(&rows[selected].description)
+        "rows"
     };
-    frame.render_widget(
-        Paragraph::new(note)
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(if error.is_some() {
-                colors.warning
-            } else {
-                colors.subtle
-            })),
-        Rect::new(inner.x, inner.bottom() - 4, inner.width, 2),
-    );
-    let label = app.i18n.text("session-remove-close");
-    let width = (label.width() as u16 + 4).min(inner.width);
-    button(
-        frame,
-        app,
-        Rect::new(
-            inner.x + (inner.width - width) / 2,
-            inner.bottom() - 1,
-            width,
-            1,
+    let cursor = dialog
+        .page
+        .as_ref()
+        .map_or("", |(_, cursor)| cursor.as_str());
+    let mut sheet = Sheet::new(
+        format!(
+            "skills:{}:{}:{cursor}:{step}",
+            dialog.session, dialog.selected_only
         ),
-        &label,
-        Action::Skills(Command::Close),
-        focus == 5,
+        app.i18n.text("skills-title"),
     );
+    let tool = |key: &'static str, glyph: (&'static str, &'static str), command: Command| {
+        Node::button(
+            key,
+            app.chrome.symbol(glyph.0, glyph.1).to_owned(),
+            Role::Normal,
+        )
+        .on(On::Activate(Action::Skills(command.clone())))
+        .enabled(app.skills_enabled(&command))
+    };
+    let selected = format!("{} · {}", app.i18n.text("skills-selected"), picked.len());
+    sheet = sheet.body(
+        Node::row(
+            "header",
+            vec![
+                Node::button("selected", selected, Role::Normal)
+                    .on(On::Activate(Action::Skills(Command::Selected)))
+                    .enabled(app.skills_enabled(&Command::Selected))
+                    .current(dialog.selected_only),
+                Node::text("space", vec![]).size(Size::Fill),
+                tool("previous", ("‹", "<"), Command::Previous),
+                tool("next", ("›", ">"), Command::Next),
+                tool("refresh", ("⟳", "R"), Command::Refresh),
+            ],
+        )
+        .gap(1),
+    );
+    if !rows.is_empty() {
+        let nodes = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let mark = if picked.iter().any(|item| item.id == row.id) {
+                    app.chrome.symbol("✓", "x")
+                } else {
+                    " "
+                };
+                Node::text(
+                    index.to_string(),
+                    vec![(format!("[{mark}] {}", safe(&row.name)), Tone::Normal)],
+                )
+                .clip()
+                .on(On::Activate(Action::Skills(Command::Toggle(index))))
+                .enabled(app.skills_enabled(&Command::Toggle(index)))
+            })
+            .collect();
+        let height = app.frame_size.map_or(24, |(_, height)| height);
+        sheet = sheet.body(
+            Node::scroll("list", Node::column("rows", nodes))
+                .size(Size::Upto(height.saturating_sub(14).max(3))),
+        );
+    }
+    let focused = app
+        .layer
+        .focused_path()
+        .and_then(|path| {
+            path.strip_prefix(ROWS)?
+                .strip_prefix('/')?
+                .parse::<usize>()
+                .ok()
+        })
+        .and_then(|index| rows.get(index));
+    let (note, tone) = if let Some(error) = dialog.error {
+        (app.i18n.text(error), Tone::Warning)
+    } else if loading {
+        (app.i18n.text("skills-loading"), Tone::Subtle)
+    } else if rows.is_empty() {
+        (app.i18n.text("skills-empty"), Tone::Subtle)
+    } else {
+        (
+            focused.map_or_else(String::new, |row| safe(&row.description)),
+            Tone::Subtle,
+        )
+    };
+    if !note.is_empty() {
+        sheet = sheet.text("note", &note, tone);
+    }
+    let sheet = sheet.button(
+        "close",
+        app.i18n.text("session-remove-close"),
+        Role::Normal,
+        Action::Skills(Command::Close),
+        true,
+    );
+    Some(if rows.is_empty() {
+        sheet.focus("close")
+    } else {
+        sheet.focus_node(format!("{ROWS}/0"))
+    })
+}
+
+impl App {
+    /// Shortcuts the sheet's owner takes first: F5 refreshes, PgUp and PgDn
+    /// turn the page, and so do ← and → from the list, where they have
+    /// nowhere else to go.
+    pub(crate) fn skills_sheet_input(&mut self, event: &Event) -> Option<(bool, Option<Action>)> {
+        let Event::Key(key) = event else {
+            return None;
+        };
+        if key.kind == KeyEventKind::Release || !key.modifiers.is_empty() {
+            return None;
+        }
+        let listed = self
+            .layer
+            .focused_path()
+            .is_some_and(|path| path.starts_with(ROWS));
+        let command = match key.code {
+            KeyCode::F(5) => Command::Refresh,
+            KeyCode::PageUp => Command::Previous,
+            KeyCode::PageDown => Command::Next,
+            KeyCode::Left if listed => Command::Previous,
+            KeyCode::Right if listed => Command::Next,
+            _ => return None,
+        };
+        Some((true, self.apply(Action::Skills(command))))
+    }
 }
 
 pub fn chips(frame: &mut Frame<'_>, app: &mut App, area: Rect, session: &str) {

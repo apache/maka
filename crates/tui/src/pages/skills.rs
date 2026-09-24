@@ -20,16 +20,15 @@
 mod io;
 mod view;
 pub use io::execute;
-pub use view::{chips, draw};
+pub use view::chips;
+pub(crate) use view::sheet;
 
 use crate::{
     app::{Action, App, ConnectionState},
     pages::references::Target,
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use maka_protocol::plugin::RemoteResult;
 use maka_skills::api::{InvocableItem, InvocableResult};
-use ratatui::layout::Rect;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -106,11 +105,6 @@ pub struct Dialog {
     loading: bool,
     rows: Vec<InvocableItem>,
     selected_only: bool,
-    selected: usize,
-    top: usize,
-    focus: usize,
-    area: Option<Rect>,
-    dragging: bool,
     pub visible: bool,
     error: Option<&'static str>,
 }
@@ -131,8 +125,6 @@ impl State {
     }
     pub fn invalidate_geometry(&mut self) {
         if let Some(d) = &mut self.dialog {
-            d.area = None;
-            d.dragging = false;
             d.visible = false;
         }
     }
@@ -213,7 +205,6 @@ impl App {
         }
         if command == Command::Close {
             self.skills.dialog = None;
-            self.hits.clear();
             return;
         }
         if command == Command::Open {
@@ -244,15 +235,9 @@ impl App {
                 loading: false,
                 rows: vec![],
                 selected_only: false,
-                selected: 0,
-                top: 0,
-                focus: 0,
-                area: None,
-                dragging: false,
                 visible: false,
                 error: None,
             });
-            self.hits.clear();
             return;
         }
         if let Command::Toggle(index) = command {
@@ -282,8 +267,6 @@ impl App {
                 }
             }
             let dialog = self.skills.dialog.as_mut().unwrap();
-            dialog.selected = index;
-            dialog.focus = 0;
             dialog.error = (!valid).then_some("skills-limit");
             return;
         }
@@ -310,15 +293,11 @@ impl App {
             }
             _ => {}
         }
-        d.selected = 0;
-        d.top = 0;
         d.error = None;
-        d.dragging = false;
         if d.requested {
             d.rows.clear();
             d.next = None;
         }
-        self.hits.clear();
     }
     pub(crate) fn skills_request(&mut self) -> Option<Request> {
         if self
@@ -401,120 +380,6 @@ impl App {
             }
         }
     }
-    pub(crate) fn skills_input(&mut self, event: Event) -> (bool, Option<Action>) {
-        let commands = [
-            Command::Selected,
-            Command::Refresh,
-            Command::Previous,
-            Command::Next,
-            Command::Close,
-        ];
-        let rows = self.skill_rows();
-        let Some(d) = &mut self.skills.dialog else {
-            return (false, None);
-        };
-        let mut command = None;
-        match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key.code == KeyCode::Char('q')
-                    && key
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::CONTROL)
-                {
-                    return (true, Some(Action::Quit));
-                }
-                d.dragging = false;
-                match key.code {
-                    KeyCode::Esc => command = Some(Command::Close),
-                    KeyCode::F(5) => command = Some(Command::Refresh),
-                    KeyCode::Tab => d.focus = (d.focus + 1) % 6,
-                    KeyCode::BackTab => d.focus = (d.focus + 5) % 6,
-                    KeyCode::Down => {
-                        d.focus = 0;
-                        d.selected = (d.selected + 1).min(rows.len().saturating_sub(1));
-                    }
-                    KeyCode::Up => {
-                        d.focus = 0;
-                        d.selected = d.selected.saturating_sub(1);
-                    }
-                    KeyCode::Home => {
-                        d.focus = 0;
-                        d.selected = 0;
-                    }
-                    KeyCode::End => {
-                        d.focus = 0;
-                        d.selected = rows.len().saturating_sub(1);
-                    }
-                    KeyCode::Enter | KeyCode::Char(' ') => {
-                        command = Some(if d.focus == 0 {
-                            Command::Toggle(d.selected)
-                        } else {
-                            commands[d.focus - 1].clone()
-                        })
-                    }
-                    KeyCode::Left => command = Some(Command::Previous),
-                    KeyCode::Right => command = Some(Command::Next),
-                    _ => {}
-                }
-            }
-            Event::Mouse(mouse) if d.visible => {
-                let area = d.area;
-                match mouse.kind {
-                    MouseEventKind::Up(MouseButton::Left) => d.dragging = false,
-                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-                        if area.is_some_and(|a| a.contains((mouse.column, mouse.row).into())) =>
-                    {
-                        d.focus = 0;
-                        d.selected = if mouse.kind == MouseEventKind::ScrollDown {
-                            (d.selected + 1).min(rows.len().saturating_sub(1))
-                        } else {
-                            d.selected.saturating_sub(1)
-                        };
-                    }
-                    MouseEventKind::Down(MouseButton::Left)
-                    | MouseEventKind::Drag(MouseButton::Left)
-                        if area.is_some_and(|a| {
-                            d.dragging
-                                || (mouse.column == a.right() - 1
-                                    && a.contains((mouse.column, mouse.row).into())
-                                    && rows.len() > usize::from(a.height / 2).max(1))
-                        }) =>
-                    {
-                        let a = area.unwrap();
-                        d.dragging = true;
-                        let row = mouse
-                            .row
-                            .saturating_sub(a.y)
-                            .min(a.height.saturating_sub(1));
-                        d.top = usize::from(row)
-                            * rows.len().saturating_sub(usize::from(a.height / 2).max(1))
-                            / usize::from(a.height.saturating_sub(1).max(1));
-                        d.selected = d.top;
-                        d.focus = 0;
-                    }
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        command = self
-                            .hits
-                            .iter()
-                            .find(|h| h.area.contains((mouse.column, mouse.row).into()))
-                            .and_then(|h| {
-                                if let Action::Skills(c) = &h.action {
-                                    Some(c.clone())
-                                } else {
-                                    None
-                                }
-                            });
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-        if let Some(command) = command {
-            self.skills_action(command);
-        }
-        (true, None)
-    }
 }
 #[cfg(test)]
 pub(crate) mod tests {
@@ -523,7 +388,9 @@ pub(crate) mod tests {
         i18n::{I18n, Locale, LocalePreference},
         navigation::Route,
     };
-    use crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::{Terminal, backend::TestBackend};
 
     pub(crate) fn frame(app: &mut App, width: u16, height: u16) {
@@ -582,7 +449,7 @@ pub(crate) mod tests {
             page(&mut app, request, 32, true);
             for (width, height) in [(80, 28), (52, 22)] {
                 frame(&mut app, width, height);
-                let a = app.skills.dialog.as_ref().unwrap().area.unwrap();
+                let first = app.layer.rect("list/rows/0").unwrap();
                 let mouse = |kind, column, row| {
                     Event::Mouse(MouseEvent {
                         kind,
@@ -591,46 +458,53 @@ pub(crate) mod tests {
                         modifiers: KeyModifiers::NONE,
                     })
                 };
-                app.input(mouse(MouseEventKind::ScrollDown, a.x, a.y));
-                assert_eq!(app.skills.dialog.as_ref().unwrap().selected, 1);
-                app.input(mouse(MouseEventKind::ScrollUp, a.x, a.y));
-                assert_eq!(app.skills.dialog.as_ref().unwrap().selected, 0);
+                let shown = |app: &App, index: usize| {
+                    app.layer
+                        .rect(&format!("list/rows/{index}"))
+                        .is_some_and(|rect| !rect.is_empty())
+                };
+                app.input(mouse(MouseEventKind::ScrollDown, first.x, first.y));
+                frame(&mut app, width, height);
+                assert!(!shown(&app, 0), "the wheel scrolls the list");
+                app.input(mouse(MouseEventKind::ScrollUp, first.x, first.y));
+                frame(&mut app, width, height);
+                assert!(shown(&app, 0));
+                // The scrollbar sits just right of the rows.
                 app.input(mouse(
                     MouseEventKind::Down(MouseButton::Left),
-                    a.right() - 1,
-                    a.y,
+                    first.right(),
+                    first.y,
                 ));
                 app.input(mouse(
                     MouseEventKind::Drag(MouseButton::Left),
-                    a.right() - 1,
-                    a.bottom() + 1,
+                    first.right(),
+                    first.y + height,
+                ));
+                app.input(mouse(
+                    MouseEventKind::Up(MouseButton::Left),
+                    first.right(),
+                    first.y + height,
                 ));
                 frame(&mut app, width, height);
-                assert_eq!(
-                    app.skills.dialog.as_ref().unwrap().top,
-                    32 - usize::from(a.height / 2)
-                );
+                assert!(shown(&app, 31), "dragging the thumb reaches the end");
                 assert!(
                     app.skills.saved.is_empty(),
                     "dragging cannot select a skill"
                 );
                 app.input(Event::Resize(30, 12));
-                assert!(app.skills.dialog.as_ref().unwrap().area.is_none());
                 frame(&mut app, 30, 12);
                 assert!(!app.skills.dialog.as_ref().unwrap().visible);
+                assert!(!app.skills_enabled(&Command::Toggle(0)));
+                app.input(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
+                frame(&mut app, width, height);
                 app.input(Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
                 frame(&mut app, width, height);
             }
-            let hit = app
-                .hits
-                .iter()
-                .find(|h| h.action == Action::Skills(Command::Toggle(0)))
-                .unwrap()
-                .area;
+            let row = app.layer.rect("list/rows/0").unwrap();
             app.input(Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
-                column: hit.x + 5,
-                row: hit.y,
+                column: row.x + 5,
+                row: row.y,
                 modifiers: KeyModifiers::NONE,
             }));
             assert_eq!(app.skills.saved["b"][0].id, "review-000");
@@ -661,10 +535,9 @@ pub(crate) mod tests {
             app.apply(Action::Skills(Command::Selected));
             frame(&mut app, 80, 28);
             assert_eq!(app.skill_rows().len(), 1);
-            assert_eq!(
-                app.modal_area.unwrap().height,
-                16,
-                "one selected item uses a compact popup"
+            assert!(
+                app.layer.rect("list/rows/0").is_some() && app.layer.rect("list/rows/1").is_none(),
+                "only the picked skill is listed"
             );
             app.input(Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
