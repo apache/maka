@@ -880,8 +880,8 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   ).label;
   // What the row communicates without text, inside the button so it lands in
   // the accessible name. All of it, `signals[0]` included: the trailing slot
-  // that draws the dot or the timestamp is hidden while the ⋯ menu covers it,
-  // and a hidden box is gone from the accessibility tree too.
+  // that draws the dot or the timestamp is `aria-hidden`, and hidden outright
+  // while the ⋯ menu covers it.
   const rowDescription = [
     ...signals.map((entry) => entry.tooltip ?? entry.label),
     // Being picked is a fact about the row that the ground alone carries. It is

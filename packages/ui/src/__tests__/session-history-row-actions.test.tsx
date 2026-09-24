@@ -276,8 +276,6 @@ test('a row shows its state in place of the timestamp and still names it when co
     assert.equal(slot(waiting.id).querySelector('.maka-session-row-time-label'), null);
     assert.equal(slot(idle.id).querySelector('.astryx-status-dot'), null);
     assert.equal(slot(idle.id).querySelector('.maka-session-row-time-label')?.textContent, '46min');
-    // The slot is hidden while ⋯ covers it, so the button has to carry the
-    // state itself.
     assert.match(
       row(waiting.id).querySelector('.astryx-side-nav-item .maka-visually-hidden')?.textContent ??
         '',
