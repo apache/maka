@@ -94,6 +94,7 @@ impl Plugin for Builtin {
                         .requiring_host_paths(),
                     )
                     .map_err(message)?;
+                crate::terminal::publish(backend.clone(), &identity.package_id, &mut staged)?;
                 // CLI and other clients consume the identical public handler.
                 staged
                     .insert(

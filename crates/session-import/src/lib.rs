@@ -28,6 +28,7 @@ pub mod opencode;
 pub mod plugin;
 pub mod remote;
 pub mod source;
+mod terminal;
 mod transcript;
 
 pub use transcript::{Error, Fingerprint, Transcript};

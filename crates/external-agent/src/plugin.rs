@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod terminal;
 use crate::{Agent, settings::Manager};
 use maka_plugins::{
     client::{Bundle, Client},
@@ -88,6 +89,12 @@ impl Plugin for Builtin {
                     context: context.lifecycle.clone(),
                 });
                 let handler = Arc::new(Management(manager));
+                terminal::publish(
+                    handler.clone(),
+                    setup.clone(),
+                    &identity.package_id,
+                    &mut staged,
+                )?;
                 staged
                     .insert(
                         remote::key(&identity.package_id, "manage").map_err(message)?,
@@ -145,7 +152,7 @@ enum Request {
     Schema,
     Reconcile,
 }
-struct Management(Arc<Manager>);
+pub(crate) struct Management(Arc<Manager>);
 impl Method for Management {
     fn call(
         &self,
