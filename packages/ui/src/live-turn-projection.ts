@@ -64,13 +64,13 @@ export interface LiveThinkingProjection {
 
 export interface LiveTurnStepProjection {
   stepId: string;
-  /** Event ts of the first word that opened this step or slice. */
+  /** Event ts of the first word that opened this step. */
   startedAt?: number;
   contentOrder?: LiveTurnStepContentKind[];
   /**
-   * A steering boundary slice: the steering row is emitted at this position
-   * and the slice holds no content. Content events never resolve to it
-   * (`steering:`-prefixed stepIds collide with no real stepId).
+   * A durable steering row, placed where the runtime stream delivered it; it
+   * holds no content. Content events never resolve to it (`steering:`-prefixed
+   * stepIds collide with no real stepId).
    */
   steering?: LiveSteeringProjection;
   thinking?: LiveThinkingProjection;
@@ -221,11 +221,9 @@ function projectLiveTurnEvent(
     const prior = current?.turnId === event.turnId
       ? current
       : { turnId: event.turnId, steps: [] };
-    if (liveSteeringMessages(prior).some((message) => message.id === event.messageId)) {
+    if (prior.steps.some((step) => step.steering?.id === event.messageId)) {
       return confirmed(prior);
     }
-    // A steering's position is fixed by stream order: it becomes a boundary
-    // slice immediately instead of parking until a later event claims it.
     return {
       ...confirmed(prior),
       steps: [
@@ -252,15 +250,13 @@ function projectLiveTurnEvent(
   if (event.type === 'error' || event.type === 'abort') {
     if (!current || current.turnId !== event.turnId) return current;
     const steps = terminalizeLiveSteps(current.steps);
-    if (steps.length === 0 && liveSteeringMessages(current).length === 0) return undefined;
+    if (steps.length === 0) return undefined;
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
     return { ...withoutRetry, terminal: true, steps };
   }
   if (event.type === 'complete') {
     if (!current || current.turnId !== event.turnId) return current;
-    if (current.steps.length === 0 && liveSteeringMessages(current).length === 0) {
-      return undefined;
-    }
+    if (current.steps.length === 0) return undefined;
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
     return {
       ...withoutRetry,
@@ -308,37 +304,16 @@ function projectLiveTurnEvent(
     : event.type === 'tool_start'
       ? event.stepId ?? existingToolStep?.stepId ?? `tool:${event.toolUseId}`
       : existingToolStep?.stepId ?? `tool:${event.toolUseId}`;
-  // A steering boundary freezes the positions before it: same-stepId deltas
-  // arriving after one continue the step in a fresh slice, so a stepId can
-  // repeat across the array. Completions and events for an existing tool row
-  // are updates to a row whose position is already fixed — they resolve to
-  // the row's last slice wherever it sits, on either side of a boundary.
-  const boundaryIndex = prior.steps.findLastIndex((candidate) => candidate.steering !== undefined);
-  const sameStepIndex = prior.steps.findLastIndex((candidate) => candidate.stepId === stepId);
   const stepIndex = existingToolStep === undefined
-    ? event.type === 'thinking_complete' || event.type === 'text_complete'
-      ? sameStepIndex
-      : sameStepIndex > boundaryIndex ? sameStepIndex : -1
-    : event.type !== 'tool_start'
-        || event.stepId === undefined
-        || event.stepId === existingToolStep.stepId
-      ? prior.steps.indexOf(existingToolStep)
-      : sameStepIndex;
+    || (event.type === 'tool_start' && event.stepId !== undefined && event.stepId !== existingToolStep.stepId)
+    ? prior.steps.findIndex((candidate) => candidate.stepId === stepId)
+    : prior.steps.indexOf(existingToolStep);
   const step: LiveTurnStepProjection = stepIndex < 0
     ? { stepId, startedAt: event.ts, tools: [] }
     : prior.steps[stepIndex]!;
-  // Slices of one step share a source stream; each begins where the earlier
-  // slices of its step stopped. A completion carries the full source text, or
-  // a replacement that lands whole in the last slice.
-  const sliceStart = (kind: 'thinking' | 'text'): number => {
-    const before = stepIndex < 0 ? prior.steps.length : stepIndex;
-    return prior.steps.findLast((candidate, index) =>
-      index < before && candidate.stepId === stepId && candidate[kind] !== undefined,
-    )?.[kind]?.sourceEndOffset ?? 0;
-  };
   let nextStep: LiveTurnStepProjection;
   if (event.type === 'thinking_delta') {
-    const delta = foldAssistantDelta(step.thinking?.sourceEndOffset ?? sliceStart('thinking'), event);
+    const delta = foldAssistantDelta(step.thinking?.sourceEndOffset ?? 0, event);
     if (!delta) return confirmed(prior);
     const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.tail, {
       locale,
@@ -359,10 +334,7 @@ function projectLiveTurnEvent(
       },
     };
   } else if (event.type === 'thinking_complete') {
-    const applied = applyThinkingComplete(
-      event.replaced ? event.text : event.text.slice(sliceStart('thinking')),
-      { locale },
-    );
+    const applied = applyThinkingComplete(event.text, { locale });
     nextStep = {
       ...step,
       thinking: {
@@ -373,7 +345,7 @@ function projectLiveTurnEvent(
       },
     };
   } else if (event.type === 'text_delta') {
-    const delta = foldAssistantDelta(step.text?.sourceEndOffset ?? sliceStart('text'), event);
+    const delta = foldAssistantDelta(step.text?.sourceEndOffset ?? 0, event);
     if (!delta) return confirmed(prior);
     const applied = applyAssistantDelta(step.text?.text ?? '', delta.tail, {
       locale,
@@ -394,10 +366,7 @@ function projectLiveTurnEvent(
       },
     };
   } else if (event.type === 'text_complete') {
-    const applied = applyAssistantComplete(
-      event.replaced ? event.text : event.text.slice(sliceStart('text')),
-      { locale },
-    );
+    const applied = applyAssistantComplete(event.text, { locale });
     nextStep = {
       ...step,
       text: {
@@ -552,35 +521,14 @@ function projectLiveTurnEvent(
       ? prior.steps.map((candidate, index) => index === stepIndex ? nextStep : candidate)
       : [...prior.steps, nextStep];
   }
-  // A completion finalizes the message across every slice it occupies: an
-  // earlier slice keeps the portion it rendered — marked complete — so a
-  // steering boundary never relocates pre-steering content into the full text
-  // a later slice finalizes.
-  const finalizedKind = event.type === 'thinking_complete'
-    ? 'thinking'
-    : event.type === 'text_complete' ? 'text' : undefined;
-  if (finalizedKind !== undefined) {
-    steps = steps.map((candidate) =>
-      candidate !== nextStep
-          && candidate.stepId === stepId
-          && candidate[finalizedKind] !== undefined
-        ? { ...candidate, [finalizedKind]: { ...candidate[finalizedKind]!, complete: true } }
-        : candidate);
-  }
   return { ...priorWithoutRetry, steps };
-}
-
-function liveSteeringMessages(current: LiveTurnProjection): LiveSteeringProjection[] {
-  return current.steps.flatMap((step) => (step.steering ? [step.steering] : []));
 }
 
 /**
  * Streaming display handoff: drop the committed text/thinking slots for `stepId`.
  * Tools that still carry live stream evidence (outputChunks) stay — empty
  * shell_run durable results do not cover them, and co-located Bash+answer
- * steps must not lose pre-handoff output when the answer settles. `stepId`
- * can match multiple slices once a steering boundary split the step;
- * steering boundary slices carry their own namespaced id and never match.
+ * steps must not lose pre-handoff output when the answer settles.
  */
 export function settleLiveTurnStep(
   current: LiveTurnProjection,
@@ -659,18 +607,12 @@ export function reconcileTerminalLiveTurn(
       steps: terminalizeLiveSteps(current.steps),
     };
   }
-  if (
-    projection.terminal === true
-    && liveSteeringMessages(projection).length > 0
-    && !transcriptReachedTerminal
-  ) return projection;
+  const userIds = new Set(turnMessages.flatMap((message) => message.type === 'user' ? [message.id] : []));
   const assistantIds = new Set(turnMessages.flatMap((message) => message.type === 'assistant' ? [message.id] : []));
   const toolCallIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_call' ? [message.id] : []));
   const toolResultIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_result' ? [message.toolUseId] : []));
-  let steps = projection.steps.filter((step) => {
-    // Steering boundary slices hold no durable-comparable content; the
-    // overlay dedupes against the persisted user row by id.
-    if (step.steering !== undefined) return true;
+  const steps = projection.steps.filter((step) => {
+    if (step.steering !== undefined) return !transcriptReachedTerminal && !userIds.has(step.steering.id);
     if (step.text?.text.length) return true;
     if (step.thinking && !assistantIds.has(step.stepId)) return true;
     const toolsCovered = step.tools.every((tool) => {
@@ -685,15 +627,6 @@ export function reconcileTerminalLiveTurn(
     });
     return !toolsCovered;
   });
-  // Once persisted turn_state records the terminal handoff, the transcript is
-  // authoritative for accepted steering; retaining the live copy would leave
-  // a duplicate or a nacked ghost instruction on screen.
-  const steeringSettled = projection.terminal === true
-    && transcriptReachedTerminal
-    && liveSteeringMessages(projection).length > 0;
-  if (steeringSettled) {
-    steps = steps.filter((step) => step.steering === undefined);
-  }
   if (
     steps.length === 0
     && projection.terminal
@@ -703,6 +636,6 @@ export function reconcileTerminalLiveTurn(
       || steps.length !== projection.steps.length
     )
   ) return undefined;
-  if (steps.length === projection.steps.length && !steeringSettled) return projection;
+  if (steps.length === projection.steps.length) return projection;
   return { ...projection, steps };
 }

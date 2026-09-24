@@ -1443,6 +1443,46 @@ test('a later message cannot complete ahead of the prefix a subscriber is still 
   coordinator.close();
 });
 
+test('a steering message cannot overtake the prefix a subscriber is still being paid', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  let first = '';
+  for (let index = 0; index < 24; index += 1) {
+    const text = `${index}:${'x'.repeat(8 * 1024)}`;
+    first += text;
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(index), text });
+  }
+  const sink = new GatedSink();
+  const connection = attachTestConnection(coordinator, 'connection-steer-order', sink);
+  const opened = await open(coordinator, 'connection-steer-order');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textCompleteEvent('message-1', first));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'steering_message',
+    id: 'steering-event-1',
+    turnId: 'turn-1',
+    ts: 7,
+    messageId: 'steering-message-1',
+    content: { text: 'redirect' },
+  });
+  sink.release();
+  await waitFor(() => sink.frames.some((frame) => frame.kind === 'subscription.session_event'));
+
+  const order = sink.frames.flatMap((frame) =>
+    frame.kind === 'subscription.session_delta' && frame.delta.complete
+      ? [`complete:${frame.delta.messageId}`]
+      : frame.kind === 'subscription.session_event'
+        ? [frame.event.type]
+        : [],
+  );
+  assert.deepEqual(order, ['complete:message-1', 'steering_message']);
+  coordinator.close();
+});
+
 // #5365: the Turn ending does not unsay what the Host already streamed. The
 // terminal publication used to drop every unpaid backlog, so a subscriber was
 // left holding a truncated answer that the client then reported as complete.

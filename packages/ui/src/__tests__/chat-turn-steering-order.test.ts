@@ -33,7 +33,6 @@ import { renderTranscriptMarkup } from './transcript-test-dom.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { armLiveTurn, type LiveTurnProjection } from '../live-turn-projection.js';
 import { applyLiveTurnEvent } from './live-turn-zh.js';
-import { redactSecrets } from '../redact.js';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
 test('renders a thinking-only interruption as a divider without an empty answer bubble', () => {
@@ -137,7 +136,7 @@ const timelineOrder = (timeline: readonly TurnTimelineItem[]): string[] =>
         : `${item.kind}:${item.text}`,
   );
 
-test('keeps post-steering work below the steering row even when it continues the same step', () => {
+test('keeps a step whole above a steering row that its later output arrives after', () => {
   let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
     type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'pre-steer reasoning',
   });
@@ -147,34 +146,26 @@ test('keeps post-steering work below the steering row even when it continues the
   live = applyLiveTurnEvent(live, {
     type: 'steering_message', id: 'steer-event', turnId: 'turn-1', messageId: 'steer-1', ts: 3, content: { text: 'steer' },
   });
-  // A late result for a row that already exists updates that row in place; it
-  // does not claim the steering because its position was fixed at tool_start.
   live = applyLiveTurnEvent(live, {
-    type: 'tool_result', id: 'e3', turnId: 'turn-1', toolUseId: 'tool-1', isError: false, ts: 4,
-    content: { kind: 'text', text: 'done' },
-  });
-  // While the steering awaits its boundary it must already render as one.
-  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
-    'thinking:pre-steer reasoning', 'tools:tool-1', 'user:steer',
-  ]);
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_delta', id: 'e4', turnId: 'turn-1', messageId: 'm1', ts: 5, text: 'post-steer reasoning',
+    type: 'thinking_delta', id: 'e4', turnId: 'turn-1', messageId: 'm1', ts: 5, text: ' continues',
   });
   live = applyLiveTurnEvent(live, {
     type: 'tool_start', id: 'e5', turnId: 'turn-1', stepId: 'm1', toolUseId: 'tool-2', toolName: 'Bash', args: {}, ts: 6,
   });
   live = applyLiveTurnEvent(live, {
-    type: 'text_delta', id: 'e6', turnId: 'turn-1', messageId: 'm1', ts: 7, text: 'answer continues',
+    type: 'text_delta', id: 'e6', turnId: 'turn-1', messageId: 'm1', ts: 7, text: 'answer',
+  });
+  live = applyLiveTurnEvent(live, {
+    type: 'text_delta', id: 'e7', turnId: 'turn-1', messageId: 'm2', ts: 8, text: 'reply to steer',
   });
 
   const timeline = overlayLiveTurn([], live, 'en')[0]!.timeline;
   assert.deepEqual(timelineOrder(timeline), [
-    'thinking:pre-steer reasoning',
-    'tools:tool-1',
+    'thinking:pre-steer reasoning continues',
+    'tools:tool-1+tool-2',
+    'text:answer',
     'user:steer',
-    'thinking:post-steer reasoning',
-    'tools:tool-2',
-    'text:answer continues',
+    'text:reply to steer',
   ]);
   const folded = foldTimeline(timeline).entries.map((entry) =>
     entry.kind === 'processing'
@@ -185,9 +176,9 @@ test('keeps post-steering work below the steering row even when it continues the
   );
   assert.deepEqual(folded, [
     'fold:thinking+tools',
+    'text:answer',
     'user:steer',
-    'fold:thinking+tools',
-    'text:answer continues',
+    'text:reply to steer',
   ]);
 });
 
@@ -224,28 +215,7 @@ test('keeps pre-steering content in place when its completion lands after the bo
   ]);
 });
 
-test('splits a completion across the boundary instead of duplicating the sealed portion', () => {
-  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
-    type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'pre-',
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'steering_message', id: 'steer-event', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_delta', id: 'e2', turnId: 'turn-1', messageId: 'm1', ts: 3, text: 'post',
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_complete', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, text: 'pre-post',
-  });
-
-  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
-    'thinking:pre-',
-    'user:steer',
-    'thinking:post',
-  ]);
-});
-
-test('lands a replacing completion whole instead of slicing at the delta offset', () => {
+test('lands a completion after a steering row whole on its step', () => {
   let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
     type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: 'AAAA',
   });
@@ -256,60 +226,12 @@ test('lands a replacing completion whole instead of slicing at the delta offset'
     type: 'thinking_delta', id: 'e2', turnId: 'turn-1', messageId: 'm1', ts: 3, text: 'BBBB',
   });
   live = applyLiveTurnEvent(live, {
-    type: 'thinking_complete', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, text: 'ABC', replaced: true,
+    type: 'thinking_complete', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, text: 'ABC',
   });
 
   assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
-    'thinking:AAAA',
-    'user:steer',
     'thinking:ABC',
-  ]);
-});
-
-test('applies a reseed across the boundary only to the live slice', () => {
-  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
-    type: 'text_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, startOffset: 0, text: 'pre-',
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'steering_message', id: 's1', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'tool_start', id: 'e2', turnId: 'turn-1', stepId: 'm1', toolUseId: 'tool-1', toolName: 'Read', args: {}, ts: 3,
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'text_delta', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, startOffset: 4, text: 'post',
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'text_delta', id: 'seed', turnId: 'turn-1', messageId: 'm1', ts: 5, startOffset: 0, text: 'pre-post more',
-  });
-
-  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
-    'text:pre-',
     'user:steer',
-    'tools:tool-1',
-    'text:post more',
-  ]);
-});
-
-test('splits a completion by source offset when the sealed slice shows redacted text', () => {
-  const secret = 'sk-abcdef0123456789abcdef0123456789';
-  let live: LiveTurnProjection | undefined = applyLiveTurnEvent(armLiveTurn('turn-1'), {
-    type: 'thinking_delta', id: 'e1', turnId: 'turn-1', messageId: 'm1', ts: 1, text: `use ${secret}\n`,
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'steering_message', id: 's1', turnId: 'turn-1', messageId: 'steer-1', ts: 2, content: { text: 'steer' },
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_delta', id: 'e2', turnId: 'turn-1', messageId: 'm1', ts: 3, text: 'post',
-  });
-  live = applyLiveTurnEvent(live, {
-    type: 'thinking_complete', id: 'e3', turnId: 'turn-1', messageId: 'm1', ts: 4, text: `use ${secret}\npost`,
-  });
-
-  assert.deepEqual(timelineOrder(overlayLiveTurn([], live, 'en')[0]!.timeline), [
-    `thinking:${redactSecrets(`use ${secret}\n`)}`,
-    'user:steer',
-    'thinking:post',
   ]);
 });
 

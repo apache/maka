@@ -130,26 +130,13 @@ test('queue_update events drive the independent desktop queue projection', () =>
   });
   assert.equal(transientMessages.size, 0, 'Host evidence retires local placeholders');
 
-  handlers.handleEvent('session-1', {
-    type: 'steering_message',
-    id: 'steering-message-steer',
-    turnId: 'turn-1',
-    messageId: 'message-steer',
-    ts: 2,
-    content: { text: 'adjust this run' },
-  });
-  assert.equal(transientMessages.size, 0);
-  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
-    queueRevision: 3,
-    entries: [{
-      entryId: 'entry-next',
-      messageId: 'message-next',
-      content: { text: 'do this next' },
-      placement: 'next_turn',
-      state: 'queued',
-    }],
-  });
-
+  const nextEntry = {
+    entryId: 'entry-next',
+    messageId: 'message-next',
+    content: { text: 'do this next' },
+    placement: 'next_turn' as const,
+    state: 'queued' as const,
+  };
   handlers.handleEvent('session-1', {
     type: 'queue_update',
     id: 'queue-2',
@@ -159,23 +146,28 @@ test('queue_update events drive the independent desktop queue projection', () =>
     steering: ['adjust this run'],
     followup: ['do this next'],
     steeringEntries: [inFlightEntry],
-    followupEntries: [{
-      entryId: 'entry-next',
-      messageId: 'message-next',
-      content: { text: 'do this next' },
-      placement: 'next_turn',
-      state: 'queued',
-    }],
+    followupEntries: [nextEntry],
   });
-  assert.deepEqual(controller.getState().messageQueueBySession['session-1']?.entries, [{
-    entryId: 'entry-next',
-    messageId: 'message-next',
-    content: { text: 'do this next' },
-    placement: 'next_turn',
-    state: 'queued',
-  }]);
-  assert.equal(transientMessages.size, 0);
+  assert.deepEqual(
+    controller.getState().messageQueueBySession['session-1']?.entries,
+    [inFlightEntry, nextEntry],
+    'a pulled message stays pending until the runtime places it',
+  );
   assert.equal(transientMessages.size, 0, 'in-flight queue projection must not re-add a local row');
+
+  handlers.handleEvent('session-1', {
+    type: 'steering_message',
+    id: 'steering-message-steer',
+    turnId: 'turn-1',
+    messageId: 'message-steer',
+    ts: 4,
+    content: { text: 'adjust this run' },
+  });
+  assert.equal(transientMessages.size, 0);
+  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
+    queueRevision: 4,
+    entries: [nextEntry],
+  });
 
   handlers.handleEvent('session-1', {
     type: 'message_admission',

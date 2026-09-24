@@ -823,20 +823,22 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         state.toolResultPreviews.delete(event.toolUseId);
       }
       for (const subscriber of state.subscribers.values()) {
-        const frame: SessionEventFrame = {
-          kind: 'subscription.session_event',
-          hostEpoch: this.#hostEpoch,
-          subscriptionId: subscriber.subscriptionId,
-          sequence: subscriber.nextSequence,
-          sessionId,
-          runId,
-          event: projectSessionEvent(
-            event,
+        this.#deliverInOrder(subscriber, () => {
+          const frame: SessionEventFrame = {
+            kind: 'subscription.session_event',
+            hostEpoch: this.#hostEpoch,
+            subscriptionId: subscriber.subscriptionId,
+            sequence: subscriber.nextSequence,
             sessionId,
-            subscriber.principalKind === 'session_guest',
-          ),
-        };
-        this.#enqueue(subscriber, frame);
+            runId,
+            event: projectSessionEvent(
+              event,
+              sessionId,
+              subscriber.principalKind === 'session_guest',
+            ),
+          };
+          this.#enqueue(subscriber, frame);
+        });
       }
     });
   }

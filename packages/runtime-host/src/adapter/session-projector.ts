@@ -31,7 +31,6 @@ import type {
   SessionAssistantStreamIdentity,
   SessionMessageQueueProjection,
   SessionSteeringEvent,
-  SteeringMessageSnapshot,
   SubscriptionFrame,
   LiveTurnSnapshot,
   TurnSnapshot,
@@ -93,10 +92,6 @@ export class RuntimeHostSessionProjector {
   #snapshot: SessionContinuitySnapshot;
   readonly #now: () => number;
   readonly #durableTurnByMessage: Map<string, string>;
-  // Only live/synthesized messages for the current root belong here. Durable
-  // transcript identity stays in the admission map above, so this render
-  // ledger cannot grow with the lifetime of the session.
-  readonly #renderedSteeringMessageIds = new Set<string>();
   readonly #accumulators = new Map<string, AssistantAccumulator>();
   #projectMessageAdmissions: boolean;
 
@@ -208,22 +203,6 @@ export class RuntimeHostSessionProjector {
     }
     for (const interaction of this.#snapshot.interactions.pending) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
-    }
-    for (const entry of rootQueueInFlight(this.#snapshot.queue)) {
-      if (
-        this.#durableTurnByMessage.has(entry.messageId) ||
-        this.#renderedSteeringMessageIds.has(entry.messageId)
-      )
-        continue;
-      this.#renderedSteeringMessageIds.add(entry.messageId);
-      events.push({
-        type: 'steering_message',
-        id: `host-queue:${this.#snapshot.queue.hostEpoch}:${this.#snapshot.queue.queueRevision}:${entry.entryId}`,
-        turnId: root.turnId,
-        messageId: entry.messageId,
-        ts: this.#now(),
-        content: structuredClone(entry.content),
-      });
     }
     return [...events, ...queueEvents];
   }
@@ -383,7 +362,6 @@ export class RuntimeHostSessionProjector {
           ts: this.#now(),
           text: folded.text,
           ...(delta.interrupted ? { interrupted: true } : {}),
-          ...(replaced ? { replaced: true } : {}),
         });
       } else if (folded.tail && !replaced) {
         events.push({
@@ -400,16 +378,9 @@ export class RuntimeHostSessionProjector {
     }
     if (frame.kind === 'subscription.session_event') {
       const event = projectSessionEvent(frame);
-      if (event.type === 'steering_message') {
-        if (
-          this.#durableTurnByMessage.has(event.messageId) ||
-          this.#renderedSteeringMessageIds.has(event.messageId)
-        ) {
-          return emptyUpdate(events);
-        }
-        this.#renderedSteeringMessageIds.add(event.messageId);
+      if (event.type !== 'steering_message' || !this.#durableTurnByMessage.has(event.messageId)) {
+        events.push(event);
       }
-      events.push(event);
       return emptyUpdate(events);
     }
     if (frame.kind !== 'subscription.session_projection') return emptyUpdate(events);
@@ -422,31 +393,10 @@ export class RuntimeHostSessionProjector {
     const root = next.rootTurn;
     const startedTurn =
       root && (!previousRoot || root.runId !== previousRoot.runId) ? root : undefined;
-    if (startedTurn) this.#renderedSteeringMessageIds.clear();
     for (const interaction of newlyPendingInteractions(previousSnapshot, next)) {
       events.push(...projectRuntimeHostInteractionRequest(interaction, this.#now()));
     }
-    const enteredActiveTurn =
-      root && queueChanged(previousSnapshot.queue, next.queue)
-        ? newlyInFlight(previousSnapshot.queue, next.queue)
-        : [];
     if (root && queueChanged(previousSnapshot.queue, next.queue)) {
-      for (const entry of enteredActiveTurn) {
-        if (
-          this.#durableTurnByMessage.has(entry.messageId) ||
-          this.#renderedSteeringMessageIds.has(entry.messageId)
-        )
-          continue;
-        this.#renderedSteeringMessageIds.add(entry.messageId);
-        events.push({
-          type: 'steering_message',
-          id: `host-queue:${next.queue.hostEpoch}:${next.queue.queueRevision}:${entry.entryId}`,
-          turnId: root.turnId,
-          messageId: entry.messageId,
-          ts: this.#now(),
-          content: structuredClone(entry.content),
-        });
-      }
       events.push(projectQueueUpdate(next.queue, root.turnId, this.#now()));
     }
     if (startedTurn) this.#accumulators.clear();
@@ -492,7 +442,6 @@ export class RuntimeHostSessionProjector {
         ts: this.#now(),
         text: accumulator.text,
         ...(accumulator.interrupted ? { interrupted: true } : {}),
-        ...(accumulator.replaced ? { replaced: true } : {}),
       });
     }
     if (root.status === 'completed') {
@@ -750,23 +699,6 @@ function queueChanged(
   next: SessionMessageQueueProjection,
 ): boolean {
   return previous.hostEpoch !== next.hostEpoch || previous.queueRevision !== next.queueRevision;
-}
-
-function newlyInFlight(
-  previous: SessionMessageQueueProjection,
-  next: SessionMessageQueueProjection,
-): Extract<SteeringMessageSnapshot, { state: 'in_flight' }>[] {
-  const previousIds = new Set(rootQueueInFlight(previous).map((entry) => entry.entryId));
-  return rootQueueInFlight(next).filter((entry) => !previousIds.has(entry.entryId));
-}
-
-function rootQueueInFlight(
-  queue: SessionMessageQueueProjection,
-): Extract<SteeringMessageSnapshot, { state: 'in_flight' }>[] {
-  return queue.steering.filter(
-    (entry): entry is Extract<SteeringMessageSnapshot, { state: 'in_flight' }> =>
-      entry.state === 'in_flight',
-  );
 }
 
 function queueHasEntries(queue: SessionMessageQueueProjection): boolean {
