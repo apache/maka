@@ -991,12 +991,10 @@ function AppShellContent({
   const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
     activeId,
     activeExecutionBoundary,
-    activeId ? (activeSessionForView?.permissionMode ?? 'ask') : newSessionPermissionMode,
+    newSessionPermissionMode,
+    activeId ? sessionSettingIntent.overlays.permissionMode[activeId] : undefined,
   );
-  const activePermissionMode = activeId
-    ? sessionSettingIntent.overlays.permissionMode[activeId]
-      ?? activeBoundarySurface.permissionMode
-    : activeBoundarySurface.permissionMode;
+  const activePermissionMode = activeBoundarySurface.permissionMode;
   const planMode = usePlanModeState(ownerActiveId ? activeHostSession : undefined);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
@@ -1780,10 +1778,13 @@ function AppShellContent({
     notifyRunEnded: ({ kind, sessionId, body }) => {
       if (kind === 'completed' && activeIdRef.current === sessionId)
         setPetCompletionNonce((current) => current + 1);
-      const title = sessionsRef.current.find((session) => session.id === sessionId)?.name;
-      // Best-effort: swallow any main-side failure so a missed banner
-      // never surfaces as an unhandled promise rejection.
-      void window.maka.notifications.runEnded({ kind, title, body }).catch(() => {});
+      // The live reply text is usually handed to the transcript before
+      // `complete` arrives; the Host commits the row's reply preview first.
+      // Best-effort: swallow any failure so a missed banner never surfaces
+      // as an unhandled promise rejection.
+      refreshChangedSession(sessionId)
+        .then((session) => window.maka.notifications.runEnded({ kind, title: session?.name, body: body ?? session?.lastMessagePreview }))
+        .catch(() => undefined);
     },
   });
 
@@ -2455,13 +2456,9 @@ function AppShellContent({
                           ? shellCopy.permissionModeWaiting
                           : undefined
                   }
-                  onPermissionModeChange={
-                    activeBoundarySurface.localInteractionAvailable
-                      ? async mode => {
-                          await setPermissionMode(mode)
-                        }
-                      : undefined
-                  }
+                  onPermissionModeChange={async mode => {
+                    await setPermissionMode(mode)
+                  }}
                   planModeActive={activePlanMode}
                   // No pending-keyed disable while a toggle commits: the
                   // pending registries already swallow re-entrant toggles, and

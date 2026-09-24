@@ -145,6 +145,7 @@ import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
 import { createMcpExclusiveLane, registerMcpIpcMain } from "./mcp-ipc-main.js";
+import { createOpencliChrome } from "./opencli-chrome.js";
 import { createOnboardingService } from "./onboarding-service.js";
 import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
 import {
@@ -347,6 +348,7 @@ function activeRuntimeHostRef(): DesktopTargetScope | undefined {
 const runtimeHostGeneration = app.isPackaged ? app.getVersion() : randomUUID();
 const useBotOnboardingFixture = e2eFixture?.scenario === "settings-bots-onboarding";
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
+const opencliChrome = createOpencliChrome(userDataDir, (url) => shell.openExternal(url));
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
   clientVersion: app.getVersion(),
@@ -1601,6 +1603,8 @@ function registerHostClientIpc(
     emitChanged: (statuses) =>
       sendToRenderer("mcp:changed", statuses),
   });
+  scopedIpc.handle("mcp:chromeStatus", () => opencliChrome.status());
+  scopedIpc.handle("mcp:connectChrome", () => opencliChrome.connect());
   registerRuntimeHostConnectionsIpc({
     ipcMain: scopedIpc,
     client,
