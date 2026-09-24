@@ -44,7 +44,7 @@ pub struct Snapshot {
     motion: bool,
     sidebar: Option<bool>,
     fullscreen: bool,
-    #[serde(default = "shown")]
+    #[serde(default)]
     inspector: bool,
     readings: Vec<(String, crate::pages::chat::reading::Checkpoint)>,
     navigation: crate::navigation::Navigation,
@@ -56,10 +56,6 @@ pub struct Snapshot {
     resume: Option<crate::pages::resume::Checkpoint>,
     revision: Option<crate::pages::revision::Checkpoint>,
     apps: Vec<crate::apps::Checkpoint>,
-}
-
-fn shown() -> bool {
-    true
 }
 
 impl Snapshot {

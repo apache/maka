@@ -55,6 +55,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, id: &str) {
         )
     } else {
         app.apps.inspector.invalidate();
+        app.apps.inspector_area = None;
         area
     };
     let extras = app.stop_target().is_some() && app.enabled(&Action::SendMessage);

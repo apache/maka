@@ -21,6 +21,7 @@
 //! The descriptor says where the shell presents a view and how it looks in
 //! navigation; the view itself arrives as a component tree ([`view`]).
 
+pub mod app;
 pub mod page;
 pub mod view;
 

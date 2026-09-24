@@ -41,6 +41,8 @@ pub struct Owner {
     gate: Mutex<()>,
     pending: AtomicBool,
     wake: Notify,
+    /// Moves on every durable Goal write, for views that follow it.
+    pub revisions: tokio::sync::watch::Sender<u64>,
 }
 impl BackgroundWork for Owner {
     fn is_pending(&self) -> bool {
@@ -61,7 +63,12 @@ impl Owner {
             gate: Mutex::new(()),
             pending: AtomicBool::new(true),
             wake: Notify::new(),
+            revisions: tokio::sync::watch::channel(0).0,
         })
+    }
+    /// A write that views following Goals should see.
+    fn written(&self) {
+        self.revisions.send_modify(|revision| *revision += 1);
     }
     pub fn changed(&self) {
         self.pending.store(true, Ordering::Release);
@@ -153,6 +160,7 @@ impl Owner {
         let baseline = self.meter(arm.grant, session).await?;
         let _gate = self.gate.lock().await;
         let goal = self.repo.arm(session, arm, baseline).await?;
+        self.written();
         self.changed();
         Ok(goal)
     }
@@ -202,6 +210,7 @@ impl Owner {
         let goal = saved.goal.clone();
         let _gate = self.gate.lock().await;
         self.repo.save(saved).await?;
+        self.written();
         self.changed();
         Ok(goal)
     }
@@ -231,6 +240,7 @@ impl Owner {
         let goal = saved.goal.clone();
         let _gate = self.gate.lock().await;
         self.repo.save(saved).await?;
+        self.written();
         self.changed();
         Ok(goal)
     }
@@ -290,6 +300,7 @@ impl Owner {
                         }
                         saved.goal.note = error.to_string();
                         let _ = self.repo.save(saved).await;
+                        self.written();
                     }
                 }
             }
@@ -309,6 +320,7 @@ impl Owner {
         {
             goal.pending = None;
             self.repo.save(saved).await?;
+            self.written();
             return Ok(());
         }
         let commands = self.executions.restore(goal.arm.grant).await?;
@@ -320,6 +332,7 @@ impl Owner {
                         goal.status = Status::Paused;
                         goal.note = "Incognito mode stopped Goal continuation".into();
                         self.repo.save(saved).await?;
+                        self.written();
                         return Ok(());
                     }
                     // Commit the dispatch boundary under the same short gate as controls.
@@ -342,6 +355,7 @@ impl Owner {
                         }
                         next.dispatched = true;
                         self.repo.save(current).await?;
+                        self.written();
                     }
                     let result = commands.submit(pending.request.clone()).await;
                     if matches!(
@@ -360,6 +374,7 @@ impl Owner {
                         {
                             next.dispatched = false;
                             self.repo.save(current).await?;
+                            self.written();
                         }
                     }
                     result?;
@@ -390,6 +405,7 @@ impl Owner {
                                 .into();
                         }
                         self.repo.save(saved).await?;
+                        self.written();
                     }
                     return Ok(());
                 }
@@ -412,12 +428,14 @@ impl Owner {
                         .map_err(|e| e.to_string());
                     goal.settled(outcome, usage);
                     self.repo.save(saved).await?;
+                    self.written();
                     self.changed();
                     return Ok(());
                 }
                 Progress::Paused => {
                     goal.handoff_paused();
                     self.repo.save(saved).await?;
+                    self.written();
                     self.changed();
                     return Ok(());
                 }
@@ -432,6 +450,7 @@ impl Owner {
             goal.status = Status::Paused;
             goal.note = "Incognito mode stopped Goal continuation".into();
             self.repo.save(saved).await?;
+            self.written();
             return Ok(());
         }
         if commands.activity(session.into()).await?.busy {
@@ -442,6 +461,7 @@ impl Owner {
             goal.reserve()?;
         }
         self.repo.save(saved).await?;
+        self.written();
         self.changed();
         Ok(())
     }

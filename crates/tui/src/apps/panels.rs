@@ -36,7 +36,7 @@ use ratatui::{Frame, layout::Rect};
 const BODY: &str = "inspector/body/panels";
 /// The inspector's width, and the least the conversation keeps beside it.
 pub(crate) const INSPECTOR: u16 = 40;
-const CONVERSATION: u16 = 72;
+const CONVERSATION: u16 = 80;
 
 impl super::Apps {
     /// Session views of one placement, in their declared order.
@@ -120,7 +120,12 @@ impl App {
             self.apps
                 .session_keys(session, &Placement::Status)
                 .iter()
-                .any(|key| self.apps.instances[key].view.is_some()),
+                .any(|key| {
+                    self.apps.instances[key]
+                        .view
+                        .as_ref()
+                        .is_some_and(|view| !tree::blank(view))
+                }),
         )
     }
 }
@@ -138,8 +143,10 @@ pub fn draw_inspector(frame: &mut Frame<'_>, app: &mut App, area: Rect, session:
     if area.width < 12 || area.height < 3 {
         app.apps.inspector.invalidate();
         app.apps.inspector_wells.clear();
+        app.apps.inspector_area = None;
         return;
     }
+    app.apps.inspector_area = Some(area);
     let width = area.width.saturating_sub(1);
     let keys = app.apps.session_keys(session, &Placement::Panel);
     let mut panels = vec![];
@@ -234,7 +241,12 @@ pub fn draw_status(frame: &mut Frame<'_>, app: &mut App, area: Rect, session: &s
         .apps
         .session_keys(session, &Placement::Status)
         .into_iter()
-        .filter(|key| app.apps.instances[key].view.is_some())
+        .filter(|key| {
+            app.apps.instances[key]
+                .view
+                .as_ref()
+                .is_some_and(|view| !tree::blank(view))
+        })
         .collect();
     let share = area.width / (keys.len().max(1) as u16);
     let mut items = vec![];
@@ -302,8 +314,8 @@ impl App {
         }
         let keyboard = self.focus == Focus::Inspector;
         let over = matches!(event, Event::Mouse(mouse)
-            if self.apps.inspector.rect("inspector").is_some_and(|rect|
-                rect.contains((mouse.column, mouse.row).into())));
+            if self.apps.inspector_area.is_some_and(|area|
+                area.contains((mouse.column, mouse.row).into())));
         if !keyboard && !over && !self.apps.inspector.captures() {
             return None;
         }

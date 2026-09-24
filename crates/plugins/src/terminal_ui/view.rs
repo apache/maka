@@ -988,6 +988,43 @@ pub mod build {
             },
         }
     }
+    /// A multi-line text field.
+    pub fn area(id: impl Into<String>, value: impl Into<String>, max_bytes: usize) -> Field {
+        Field {
+            id: id.into(),
+            enabled: true,
+            control: Control::Text {
+                value: value.into(),
+                max_bytes,
+                multiline: true,
+                placeholder: String::new(),
+            },
+        }
+    }
+    /// One of a few values, shown with their labels.
+    pub fn choice(
+        id: impl Into<String>,
+        value: impl Into<String>,
+        options: Vec<(String, String)>,
+    ) -> Field {
+        Field {
+            id: id.into(),
+            enabled: true,
+            control: Control::Choice {
+                value: value.into(),
+                options: options
+                    .into_iter()
+                    .map(|(value, label)| Choice { value, label })
+                    .collect(),
+            },
+        }
+    }
+    pub fn code(key: impl Into<String>, text: impl Into<String>) -> Node {
+        Node::Code {
+            key: key.into(),
+            text: text.into(),
+        }
+    }
     /// Neutralizes what business text may carry into a view: control and
     /// bidirectional-override characters become spaces.
     pub fn clean(value: &str, multiline: bool) -> String {

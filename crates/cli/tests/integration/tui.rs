@@ -30,6 +30,7 @@ mod environment;
 mod extensions;
 mod forms;
 mod frames;
+mod goal;
 mod imports;
 mod input;
 mod management;

@@ -150,6 +150,8 @@ pub struct Apps {
     pub inspector: ui::Surface<Message>,
     pub(super) inspector_wells: Vec<tree::Well>,
     pub inspector_visible: bool,
+    /// Where the last frame drew the inspector, for the pointer.
+    pub(super) inspector_area: Option<ratatui::layout::Rect>,
     /// Where the settings page drew plugin panes' fields.
     pub(super) settings_wells: Vec<tree::Well>,
     /// The status line above a session's composer.
@@ -1854,6 +1856,7 @@ pub(crate) mod tests {
             epoch: "epoch".into(),
         };
         app.apply(Action::Visit(Route::Session("session".into())));
+        app.chrome.inspector = true;
         draw(&mut app, 170, 40);
         list(&mut app, vec![(vec![panel.clone(), status.clone()], None)]);
         let reads = app.apps_requests();

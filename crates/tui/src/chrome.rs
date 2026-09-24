@@ -46,7 +46,7 @@ impl Default for Chrome {
             sidebar_expanded: None,
             session_fullscreen: false,
             details: false,
-            inspector: true,
+            inspector: false,
             ascii: false,
             motion: true,
             window_focused: true,

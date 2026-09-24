@@ -149,6 +149,25 @@ pub(crate) fn prose(view: &View) -> String {
     out.join("\n")
 }
 
+/// Whether a view shows nothing at all, so its place can stay empty.
+pub(crate) fn blank(view: &View) -> bool {
+    fn empty(node: &wire::Node) -> bool {
+        match node {
+            wire::Node::Text { spans, .. } => spans.iter().all(|span| span.text.trim().is_empty()),
+            wire::Node::Markdown { text, .. } | wire::Node::Code { text, .. } => {
+                text.trim().is_empty()
+            }
+            wire::Node::Rule { .. } | wire::Node::Slot { .. } => true,
+            wire::Node::Column { .. }
+            | wire::Node::Row { .. }
+            | wire::Node::Scroll { .. }
+            | wire::Node::Split { .. } => node.children().into_iter().all(empty),
+            _ => false,
+        }
+    }
+    empty(&view.root)
+}
+
 /// Every slot a view declares: its path in the view, name and context.
 pub(crate) fn slots(view: &View) -> Vec<(String, String, Value)> {
     fn walk(node: &wire::Node, path: String, out: &mut Vec<(String, String, Value)>) {
