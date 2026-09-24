@@ -356,7 +356,7 @@ export interface OpencliChromeStatus {
    * this command is the Chrome connection. */
   command: string;
   /** The extension is running in Chrome and reached the host. Without it the
-   * server still starts, but only public site commands work. */
+   * server still starts and lists its tools, but every call fails. */
   connected: boolean;
 }
 

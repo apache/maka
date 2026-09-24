@@ -35,7 +35,7 @@ test('launchers run the entry in Node mode with the mode each caller needs', { s
   // Chrome appends the calling extension's origin.
   assert.deepEqual(
     JSON.parse(execFileSync(launchers.host, ['chrome-extension://id/'], { encoding: 'utf8' })),
-    { args: ['host', '--native'], node: '1' },
+    { args: ['host'], node: '1' },
   );
 });
 
@@ -45,7 +45,7 @@ test('Windows launchers set Node mode before starting the entry', () => {
   assert.equal(launchers.command, join(dir, 'opencli-mcp.cmd'));
   assert.equal(
     readFileSync(launchers.host, 'utf8'),
-    '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"C:\\Maka\\Maka.exe" "C:\\Maka\\main.js" host --native\r\n',
+    '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"C:\\Maka\\Maka.exe" "C:\\Maka\\main.js" host\r\n',
   );
 });
 

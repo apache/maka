@@ -20,13 +20,20 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { EXTENSION_ID, EXTENSION_STORE_URL } from 'opencli-mcp/dist/src/host/extension.js';
-import { nativeHostDirs, runningProfileDirs } from 'opencli-mcp/dist/src/host/registration.js';
-import { hostHealth, readHostState } from 'opencli-mcp/dist/src/host/state.js';
 import type { OpencliChromeStatus } from '@maka/core/mcp';
-import { NATIVE_HOST_NAME } from 'opencli-mcp/dist/src/protocol.js';
+
+// The package exports only its adapter SDK, so the CLI entry and host modules
+// are reached by file path, which holds for the pinned version.
+const OPENCLI_DIST = join(dirname(dirname(fileURLToPath(import.meta.resolve('opencli-mcp/adapter-sdk')))), 'dist', 'src');
+const opencliModule = <T>(path: string) => import(pathToFileURL(join(OPENCLI_DIST, path)).href) as Promise<T>;
+const [{ EXTENSION_ID, EXTENSION_STORE_URL }, { nativeHostDirs, runningProfileDirs }, { hostHealth, readHostState }, { NATIVE_HOST_NAME }] = await Promise.all([
+  opencliModule<typeof import('opencli-mcp/dist/src/host/extension.js')>('host/extension.js'),
+  opencliModule<typeof import('opencli-mcp/dist/src/host/registration.js')>('host/registration.js'),
+  opencliModule<typeof import('opencli-mcp/dist/src/host/state.js')>('host/state.js'),
+  opencliModule<typeof import('opencli-mcp/dist/src/protocol.js')>('protocol.js'),
+]);
 
 export interface OpencliChrome {
   status(): Promise<OpencliChromeStatus>;
@@ -64,7 +71,7 @@ export function writeOpencliLaunchers(
     writeFileSync(file, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${shellQuote(executable)} ${shellQuote(entry)} ${args}\n`, { mode: 0o755 });
     return file;
   };
-  return { command: write('opencli-mcp', 'stdio'), host: write('opencli-mcp-host', 'host --native') };
+  return { command: write('opencli-mcp', 'stdio'), host: write('opencli-mcp-host', 'host') };
 }
 
 export interface NativeHostTarget {
@@ -106,8 +113,7 @@ export function registerOpencliNativeHost(
 }
 
 export function createOpencliChrome(stateDir: string, openExternal: (url: string) => Promise<void>): OpencliChrome {
-  const entry = fileURLToPath(import.meta.resolve('opencli-mcp/dist/src/main.js'));
-  const launchers = writeOpencliLaunchers(join(stateDir, 'opencli-mcp'), process.platform, process.execPath, entry);
+  const launchers = writeOpencliLaunchers(join(stateDir, 'opencli-mcp'), process.platform, process.execPath, join(OPENCLI_DIST, 'main.js'));
   const status = async (): Promise<OpencliChromeStatus> => {
     const health = await hostHealth(readHostState());
     return { command: launchers.command, connected: health.ok && health.extensionConnected === true };

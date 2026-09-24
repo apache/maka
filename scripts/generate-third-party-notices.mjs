@@ -127,9 +127,6 @@ const EMBEDDED_COMPONENT_LICENSES = new Map([
   ],
 ]);
 const MIT_COPYRIGHT_OVERRIDES = new Map([
-  // Declares MIT without a LICENSE file; its only author is the owner of
-  // github.com/jackwener/opencli-mcp, which ships it inside opencli-mcp.
-  ['@opencli-mcp/adapter-sdk@0.1.0', 'Copyright (c) 2026 jackwener'],
   // The published tarball omits the monorepo-root LICENSE.
   ['@earendil-works/pi-tui@0.84.4', 'Copyright (c) 2025 Mario Zechner'],
   ['@earendil-works/pi-tui@0.85.1', 'Copyright (c) 2025 Mario Zechner'],
@@ -224,15 +221,9 @@ function packageNameFromLockPath(lockPath) {
 function buildLockIndex() {
   const lock = readJson(join(repoRoot, 'package-lock.json'));
   const index = new Map();
-  for (const [linkPath, link] of Object.entries(lock.packages ?? {})) {
-    // A registry package can ship another package inside itself and depend on
-    // it by `file:` (opencli-mcp's adapter SDK). npm records only a link to a
-    // versionless entry, so the installed manifest is the one to read.
-    const bundled = link?.link && link.resolved?.startsWith('node_modules/');
-    const lockPath = bundled ? link.resolved : linkPath;
-    const metadata = bundled ? readJson(join(repoRoot, lockPath, 'package.json')) : link;
+  for (const [lockPath, metadata] of Object.entries(lock.packages ?? {})) {
     if (!metadata?.version) continue;
-    const name = bundled ? metadata.name : packageNameFromLockPath(lockPath);
+    const name = packageNameFromLockPath(lockPath);
     if (!name) continue;
     const key = `${name}@${metadata.version}`;
     const entries = index.get(key) ?? [];
