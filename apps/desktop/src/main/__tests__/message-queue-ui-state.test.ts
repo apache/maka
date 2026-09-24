@@ -283,7 +283,7 @@ test('an interaction request notifies that the turn is waiting on the user', () 
     setInteractionBySession: controller.setInteractionBySession,
     showModelSetupToast() {},
     toastApi: { error() {} },
-    notifyTurn(payload) {
+    notifyRunEnded(payload) {
       notified.push(payload);
     },
   });

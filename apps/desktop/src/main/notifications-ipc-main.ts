@@ -51,7 +51,7 @@ interface NotificationsIpcDeps {
  */
 export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
   const target = deps.ipcMain ?? ipcMain;
-  target.handle('notifications:notify', async (_event, payload: unknown): Promise<void> => {
+  target.handle('notifications:runEnded', async (_event, payload: unknown): Promise<void> => {
     const raw = (payload ?? {}) as { kind?: unknown; title?: unknown; body?: unknown };
     if (!isRunNotificationKind(raw.kind)) return;
 

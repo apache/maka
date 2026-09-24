@@ -585,7 +585,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2741
+        "nonTriviaTokens": 2681
       },
       "src/renderer/app-shell-session-ui-state.ts": {
         "importDeclarations": 0,
@@ -672,7 +672,7 @@
           "window.maka.diagnostics.copyPreviousMainProcessInterruption": 1,
           "window.maka.diagnostics.copyReport": 1,
           "window.maka.diagnostics.takePreviousMainProcessInterruption": 1,
-          "window.maka.notifications.notify": 1,
+          "window.maka.notifications.runEnded": 1,
           "window.maka.onboarding.setMilestone": 1,
           "window.maka.sessions.compact": 1,
           "window.maka.sessions.getPlanState": 1,

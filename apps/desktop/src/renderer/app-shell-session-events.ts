@@ -95,7 +95,7 @@ export function createAppShellSessionEventHandlers(options: {
     diagnosticTarget?: { sessionId: string },
   ) => void;
   toastApi: ToastApi;
-  notifyTurn?: (payload: { kind: 'completed' | 'errored' | 'waiting'; sessionId: string; body?: string }) => void;
+  notifyRunEnded?: (payload: { kind: 'completed' | 'errored' | 'waiting'; sessionId: string; body?: string }) => void;
   scheduleFrame?: (callback: () => void) => void;
   displayBatch?: AppShellSessionDisplayBatch;
 }): AppShellSessionEventHandlers {
@@ -114,7 +114,7 @@ export function createAppShellSessionEventHandlers(options: {
     onContextCompactionOutcome,
     showModelSetupToast,
     toastApi,
-    notifyTurn,
+    notifyRunEnded,
   } = options;
   const scheduleFrame = options.scheduleFrame ?? createConversationDisplayFrameScheduler();
   const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
@@ -345,13 +345,10 @@ export function createAppShellSessionEventHandlers(options: {
       case 'user_question_request':
       case 'form_request':
         onInteractionChanged?.(sessionId);
-        notifyTurn?.({
+        notifyRunEnded?.({
           kind: 'waiting',
           sessionId,
-          body: event.type === 'user_question_request' ? event.questions[0]?.question
-            : event.type === 'form_request' ? event.message
-            : event.type === 'sandbox_boundary_request' ? event.justification
-            : undefined,
+          body: event.type === 'user_question_request' ? event.questions[0]?.question : undefined,
         });
         break;
       // The runtime drops its owner on this ack, not on the tool result that
@@ -390,7 +387,7 @@ export function createAppShellSessionEventHandlers(options: {
             );
           }
         }
-        notifyTurn?.({ kind: 'errored', sessionId, body: modelConnectionErrors.sessionEventErrorMessage(event, uiLocale) });
+        notifyRunEnded?.({ kind: 'errored', sessionId, body: modelConnectionErrors.sessionEventErrorMessage(event, uiLocale) });
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
@@ -403,10 +400,8 @@ export function createAppShellSessionEventHandlers(options: {
         onInteractionChanged?.(sessionId);
         if (event.contextCompactionOutcome)
           onContextCompactionOutcome?.(sessionId, event.turnId, event.contextCompactionOutcome);
-        if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
-          const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
-          notifyTurn?.({ kind: 'completed', sessionId, body });
-        }
+        if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens')
+          notifyRunEnded?.({ kind: 'completed', sessionId });
         void refreshSessions();
         const terminalMessageId = terminalRefreshOptions(before)?.requiredAssistantMessageId;
         if (terminalMessageId) {

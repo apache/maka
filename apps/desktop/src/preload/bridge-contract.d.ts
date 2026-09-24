@@ -1646,7 +1646,7 @@ export interface MakaBridge {
      * `body` the start of the reply, error message, or question; main
      * sanitizes + falls back to generic copy. Main gates on the product
      * toggle + window focus before raising a native OS notification. */
-    notify(payload: {
+    runEnded(payload: {
       kind: 'completed' | 'errored' | 'waiting';
       title?: string;
       body?: string;

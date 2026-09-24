@@ -1781,13 +1781,16 @@ function AppShellContent({
       contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale),
     showModelSetupToast,
     toastApi,
-    notifyTurn: ({ kind, sessionId, body }) => {
+    notifyRunEnded: ({ kind, sessionId, body }) => {
       if (kind === 'completed' && activeIdRef.current === sessionId)
         setPetCompletionNonce((current) => current + 1);
-      const title = sessionsRef.current.find((session) => session.id === sessionId)?.name;
-      // Best-effort: swallow any main-side failure so a missed banner
-      // never surfaces as an unhandled promise rejection.
-      void window.maka.notifications.notify({ kind, title, body }).catch(() => {});
+      // The live reply text is usually handed to the transcript before
+      // `complete` arrives; the Host commits the row's reply preview first.
+      // Best-effort: swallow any failure so a missed banner never surfaces
+      // as an unhandled promise rejection.
+      refreshChangedSession(sessionId)
+        .then((session) => window.maka.notifications.runEnded({ kind, title: session?.name, body: body ?? session?.lastMessagePreview }))
+        .catch(() => undefined);
     },
   });
 

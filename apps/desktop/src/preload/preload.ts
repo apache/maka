@@ -3657,12 +3657,12 @@ const makaBridge = {
     // sanitizes both and falls back to generic copy when blank. Main gates
     // on the product toggle + window focus before raising a native OS
     // notification.
-    notify(payload: {
+    runEnded(payload: {
       kind: 'completed' | 'errored' | 'waiting';
       title?: string;
       body?: string;
     }): Promise<void> {
-      return invokeWhenReady('notifications:notify', payload);
+      return invokeWhenReady('notifications:runEnded', payload);
     },
   },
   inspector: {
