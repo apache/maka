@@ -162,7 +162,8 @@ pub fn button(
         })
         .child(label.clone());
     if disabled {
-        base.opacity(0.5)
+        // Still a named button, only without the press action.
+        base.role(Role::Button).aria_label(label).opacity(0.5)
     } else {
         pressable(base, label, on_press).active(|style| style.opacity(0.8))
     }
@@ -203,6 +204,18 @@ pub fn icon_button(
         name,
         on_press,
     )
+}
+
+/// Error text in the danger color, reported as an alert.
+pub fn alert(id: impl Into<ElementId>, text: impl Into<SharedString>, cx: &App) -> Stateful<Div> {
+    let text = text.into();
+    div()
+        .id(id)
+        .role(Role::Alert)
+        .aria_label(text.clone())
+        .text_size(px(12.5))
+        .text_color(theme(cx).danger)
+        .child(text)
 }
 
 /// A one-line tooltip for `.tooltip(tooltip("…"))`.

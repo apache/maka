@@ -27,7 +27,7 @@ use super::{
 use crate::{
     theme::{Theme, theme},
     ui::{
-        Copied, icon,
+        Copied, icon, icon_button,
         select::{Key, Selection},
     },
 };
@@ -132,8 +132,10 @@ pub fn render(body: &Body, scope: &Scope, cx: &App) -> Div {
         .text_size(px(metrics.text))
         .line_height(px(metrics.line))
         .text_color(scope.color);
+    let blocks: Vec<&Block> = body.document.blocks().collect();
+    let positions = list_positions(&blocks);
     let mut previous: Option<&Block> = None;
-    for (ix, block) in body.document.blocks().enumerate() {
+    for (ix, block) in blocks.iter().copied().enumerate() {
         let ordinal = (ix as u32) << 16;
         let fades = |text: &Text| match (&body.arrivals, scope.now) {
             (Some(arrivals), Some(now)) => arrivals.spans(text, now),
@@ -210,7 +212,7 @@ pub fn render(body: &Body, scope: &Scope, cx: &App) -> Div {
             _ => metrics.gap,
         };
         column = column.child(
-            accessible(block, scope, ordinal)
+            accessible(block, positions[ix], scope, ordinal)
                 .pt(px(gap))
                 .min_w_0()
                 .child(element),
@@ -221,42 +223,101 @@ pub fn render(body: &Body, scope: &Scope, cx: &App) -> Div {
 }
 
 /// The block's node for assistive technology, which never sees `StyledText`.
-fn accessible(block: &Block, scope: &Scope, ordinal: u32) -> Stateful<Div> {
+fn accessible(
+    block: &Block,
+    position: Option<(usize, usize)>,
+    scope: &Scope,
+    ordinal: u32,
+) -> Stateful<Div> {
     let text = || block.texts[0].text.clone();
-    let node = div().id(ElementId::NamedInteger(
-        scope.row.clone(),
-        (ordinal | 0xffff) as u64,
-    ));
+    // Links live inside `InteractiveText`, so each gets an empty node of its
+    // own that assistive technology can press.
+    let links = match block.kind {
+        Kind::Table { .. } | Kind::Rule => &[][..],
+        _ => &block.texts[0].links[..],
+    };
+    let node = div()
+        .id(ElementId::NamedInteger(
+            scope.row.clone(),
+            (ordinal | 0xffff) as u64,
+        ))
+        .children(links.iter().enumerate().map(|(ix, (range, url))| {
+            let url = url.clone();
+            div()
+                .id(ElementId::NamedInteger("link".into(), ix as u64))
+                .role(Role::Link)
+                .aria_label(block.texts[0].text[range.clone()].to_owned())
+                .aria_description(url.clone())
+                .absolute()
+                .size_0()
+                .on_click(move |_, _, cx| cx.open_url(&url))
+        }));
     match &block.kind {
         Kind::Paragraph => node.role(Role::Paragraph).aria_label(text()),
         Kind::Heading(level) => node
             .role(Role::Heading)
             .aria_level(*level as usize)
             .aria_label(text()),
-        Kind::Item(Marker::Task(done)) => node
-            .role(Role::ListItem)
-            .aria_toggled(if *done { Toggled::True } else { Toggled::False })
-            .aria_label(text()),
-        Kind::Item(_) => node.role(Role::ListItem).aria_label(text()),
-        Kind::Code { .. } => node.role(Role::Code).aria_label(text()),
-        Kind::Rule => node,
-        Kind::Table { columns } => {
-            let rows: Vec<String> = block
-                .texts
-                .chunks(*columns)
-                .map(|row| {
-                    row.iter()
-                        .map(|cell| cell.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" | ")
-                })
-                .collect();
-            node.role(Role::Table)
-                .aria_row_count(rows.len())
-                .aria_column_count(*columns)
-                .aria_label(rows.join("\n"))
+        Kind::Item(marker) => {
+            let (position, size) = position.unwrap_or((1, 1));
+            let node = node
+                .role(Role::ListItem)
+                .aria_position_in_set(position)
+                .aria_size_of_set(size)
+                .aria_label(text());
+            match marker {
+                Marker::Task(done) => {
+                    node.aria_toggled(if *done { Toggled::True } else { Toggled::False })
+                }
+                _ => node,
+            }
+        }
+        Kind::Code { language } => node
+            .role(Role::Code)
+            .aria_label(text())
+            .when_some(language.clone(), |node, language| {
+                node.aria_description(language)
+            }),
+        // The table reports its own rows and cells.
+        Kind::Rule | Kind::Table { .. } => node,
+    }
+}
+
+/// Each list item's position in its list and the list's length. Items of
+/// one list share a depth, quote and numbering; a block shallower than a
+/// list ends it.
+fn list_positions(blocks: &[&Block]) -> Vec<Option<(usize, usize)>> {
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    // Open lists, innermost last: depth, quote, numbered, run.
+    let mut open: Vec<(u8, u8, bool, usize)> = Vec::new();
+    for (ix, block) in blocks.iter().enumerate() {
+        open.retain(|(depth, ..)| *depth <= block.depth);
+        let Kind::Item(marker) = block.kind else {
+            continue;
+        };
+        let numbered = matches!(marker, Marker::Number(_));
+        match open.last() {
+            Some(&(depth, quote, kind, run))
+                if depth == block.depth && quote == block.quote && kind == numbered =>
+            {
+                runs[run].push(ix);
+            }
+            last => {
+                if last.is_some_and(|(depth, ..)| *depth == block.depth) {
+                    open.pop();
+                }
+                open.push((block.depth, block.quote, numbered, runs.len()));
+                runs.push(vec![ix]);
+            }
         }
     }
+    let mut positions = vec![None; blocks.len()];
+    for run in &runs {
+        for (position, ix) in run.iter().enumerate() {
+            positions[*ix] = Some((position + 1, run.len()));
+        }
+    }
+    positions
 }
 
 fn text(
@@ -485,34 +546,26 @@ fn code_block(
                         .child(language.unwrap_or_default().to_lowercase()),
                 )
                 .child(
-                    div()
-                        .id(ElementId::NamedInteger(copy_key.clone(), 1))
-                        .size(px(24.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(5.))
-                        .cursor_pointer()
-                        .hover(|this| this.bg(theme.hover))
-                        .child(
-                            icon(
-                                if copied {
-                                    "icons/check.svg"
-                                } else {
-                                    "icons/copy.svg"
-                                },
-                                theme.muted,
-                            )
-                            .size(px(12.)),
-                        )
-                        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation()
-                        })
-                        .on_click(move |_, _, cx| {
+                    icon_button(
+                        ElementId::NamedInteger(copy_key.clone(), 1),
+                        if copied {
+                            "icons/check.svg"
+                        } else {
+                            "icons/copy.svg"
+                        },
+                        if copied { "已复制" } else { "复制代码" },
+                        true,
+                        move |_, cx| {
                             source.update(cx, |copied, cx| {
                                 copied.copy(copy_key.clone(), raw.clone(), cx)
                             })
-                        }),
+                        },
+                        cx,
+                    )
+                    // A press here is not the start of a text selection.
+                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation()
+                    }),
                 ),
         )
         .child(
@@ -542,6 +595,10 @@ fn table(
     let widths = column_widths(columns, &block.texts);
     let rows = block.texts.chunks(columns).count();
     let mut table = div()
+        .id("table")
+        .role(Role::Table)
+        .aria_row_count(rows)
+        .aria_column_count(columns)
         .flex()
         .flex_col()
         .w_full()
@@ -553,6 +610,9 @@ fn table(
         .line_height(px(scope.metrics.line - 2.));
     for (row_ix, cells) in block.texts.chunks(columns).enumerate() {
         let mut row = div()
+            .id(row_ix)
+            .role(Role::Row)
+            .aria_row_index(row_ix)
             .flex()
             .w_full()
             .when(row_ix == 0, |this| {
@@ -566,6 +626,15 @@ fn table(
             let cell_ordinal = ordinal + (row_ix * columns + column) as u32;
             row = row.child(
                 div()
+                    .id(column)
+                    .role(if row_ix == 0 {
+                        Role::ColumnHeader
+                    } else {
+                        Role::Cell
+                    })
+                    .aria_row_index(row_ix)
+                    .aria_column_index(column)
+                    .aria_label(cell.text.clone())
                     .w(relative(widths[column]))
                     .min_w_0()
                     .px(px(9.))
@@ -620,6 +689,31 @@ use gpui_kit::prelude::FluentBuilder;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_items_know_their_place_in_their_own_list() {
+        let parsed =
+            super::super::parse::parse("- a\n- b\n  - c\n- d\n\n1. x\n2. y\n\ntext\n\n- z\n", 0);
+        let blocks: Vec<&Block> = parsed.blocks.iter().collect();
+        let items: Vec<(String, (usize, usize))> = blocks
+            .iter()
+            .zip(list_positions(&blocks))
+            .filter_map(|(block, position)| Some((block.texts[0].text.clone(), position?)))
+            .collect();
+        let expected = [
+            ("a", (1, 3)),
+            ("b", (2, 3)),
+            ("c", (1, 1)),
+            ("d", (3, 3)),
+            ("x", (1, 2)),
+            ("y", (2, 2)),
+            ("z", (1, 1)),
+        ];
+        assert_eq!(
+            items,
+            expected.map(|(text, position)| (text.to_owned(), position))
+        );
+    }
 
     fn cells(texts: &[&str]) -> Vec<Text> {
         texts

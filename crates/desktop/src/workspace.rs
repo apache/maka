@@ -31,7 +31,8 @@ use crate::{
 use gpui_kit::{
     AnyElement, AppContext, AsyncApp, Context, Div, Entity, FontWeight, InteractiveElement,
     IntoElement, MouseButton, ParentElement, Render, Role, SharedString, Stateful,
-    StatefulInteractiveElement, StyleRefinement, Styled, Task, WeakEntity, Window, div, px,
+    StatefulInteractiveElement, StyleRefinement, Styled, Task, WeakEntity, Window, div,
+    prelude::FluentBuilder, px,
 };
 use maka_client::{Client, Notification};
 use maka_protocol::session::{SessionCatalogQueryInput, SessionCatalogQueryResult};
@@ -281,6 +282,12 @@ impl Workspace {
             .items_center()
             .child(
                 div()
+                    .id("title")
+                    .when(!title.is_empty(), |this| {
+                        this.role(Role::Heading)
+                            .aria_level(1)
+                            .aria_label(title.clone())
+                    })
                     .min_w_0()
                     .truncate()
                     .text_size(px(13.))
@@ -325,7 +332,13 @@ impl Workspace {
             .gap(px(12.))
             .text_size(px(13.))
             .text_color(theme.muted)
-            .child(message)
+            .child(
+                div()
+                    .id("connection")
+                    .role(Role::Status)
+                    .aria_label(message.clone())
+                    .child(message),
+            )
             .children(reconnect)
             .into_any_element()
     }

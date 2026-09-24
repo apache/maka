@@ -72,6 +72,9 @@ impl Chat {
             Row::Summary { turn, open } => (self.summary(turn, *open, this, theme), Some(turn)),
             Row::Notice { turn, text } => (
                 div()
+                    .id("notice")
+                    .role(Role::Alert)
+                    .aria_label(text.clone())
                     .flex()
                     .gap(px(8.))
                     .items_start()
@@ -873,12 +876,9 @@ impl Render for Chat {
                         .px(px(20.))
                         .pb(px(8.))
                         .child(
-                            div()
+                            ui::alert("chat-error", error, cx)
                                 .w_full()
-                                .max_w(px(COLUMN))
-                                .text_size(px(12.5))
-                                .text_color(theme.danger)
-                                .child(error),
+                                .max_w(px(COLUMN)),
                         ),
                 )
             })

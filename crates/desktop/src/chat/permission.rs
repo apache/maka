@@ -24,7 +24,7 @@
 use super::Chat;
 use crate::{
     theme::theme,
-    ui::{Tone, button, icon},
+    ui::{self, Tone, button, icon},
 };
 use gpui_kit::{
     AnyElement, Context, Focusable, FontWeight, InteractiveElement, IntoElement, ParentElement,
@@ -212,13 +212,7 @@ impl Chat {
                                 .child(detail),
                         )
                         .when_some(self.interaction_error.clone(), |this, error| {
-                            this.child(
-                                div()
-                                    .mt(px(8.))
-                                    .text_size(px(12.5))
-                                    .text_color(theme.danger)
-                                    .child(error),
-                            )
+                            this.child(ui::alert("interaction-error", error, cx).mt(px(8.)))
                         })
                         .child(div().mt(px(10.)).flex().gap(px(8.)).children(buttons)),
                 )

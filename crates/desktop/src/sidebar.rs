@@ -165,8 +165,9 @@ impl Sidebar {
                 .text_color(theme(cx).muted)
                 .child(*label)
                 .into_any_element(),
-            Some(Item::Session(session)) => {
-                let session = &self.sessions[*session];
+            Some(Item::Session(position)) => {
+                let position = *position;
+                let session = &self.sessions[position];
                 let turn = if busy(session) {
                     motion::now(window, cx)
                         .map(|elapsed| motion::cycle(elapsed, Duration::from_millis(900)))
@@ -174,7 +175,7 @@ impl Sidebar {
                     None
                 };
                 let now = Local::now().timestamp_millis().max(0) as u64;
-                self.row(session, turn, now, cx)
+                self.row(session, position, turn, now, cx)
             }
             None => div().into_any_element(),
         }
@@ -183,6 +184,7 @@ impl Sidebar {
     fn row(
         &self,
         session: &SessionCatalogProjection,
+        position: usize,
         turn: Option<f32>,
         now: u64,
         cx: &mut Context<Self>,
@@ -230,6 +232,8 @@ impl Sidebar {
                 div()
                     .id(SharedString::from(format!("session:{}", session.id)))
                     .aria_selected(selected)
+                    .aria_position_in_set(position + 1)
+                    .aria_size_of_set(self.sessions.len())
                     .aria_description(description)
                     .h(px(51.))
                     .px(px(8.))
@@ -356,14 +360,7 @@ impl Render for Sidebar {
             .child(crate::workspace::drag_region().h(px(TITLEBAR)).flex_none())
             .child(div().px(px(10.)).child(new_row))
             .when_some(self.error.clone(), |this, error| {
-                this.child(
-                    div()
-                        .px(px(14.))
-                        .py(px(6.))
-                        .text_size(px(12.5))
-                        .text_color(theme.danger)
-                        .child(error),
-                )
+                this.child(ui::alert("sidebar-error", error, cx).px(px(14.)).py(px(6.)))
             })
             .child(
                 div().flex_1().min_h_0().px(px(10.)).pt(px(4.)).child(

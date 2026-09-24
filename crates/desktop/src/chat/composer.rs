@@ -127,13 +127,7 @@ impl Chat {
                     .flex_col()
                     .gap(px(6.))
                     .when_some(status, |this, status| {
-                        this.child(
-                            div()
-                                .px(px(4.))
-                                .text_size(px(12.5))
-                                .text_color(theme.danger)
-                                .child(status),
-                        )
+                        this.child(ui::alert("composer-status", status, cx).px(px(4.)))
                     })
                     .child(
                         div()

@@ -74,7 +74,9 @@ Every component is done only when the macOS accessibility tree shows it with a r
 - Done: the sidebar and main area are landmarks; `pressable` takes a name, so every button has one; session rows carry selection and a description; folds report expanded or collapsed; the permission card is a labeled group; the composer is a text input (gpui-kit's `Textarea`).
 - `StyledText` is never reported, so each markdown block has its own node carrying its text (paragraph, heading level, list item and task state, code, table), and each message is a group naming who wrote it.
 - GPUI drops a cached view's nodes when it reuses the view's last frame, so views are drawn uncached while assistive technology is listening (`workspace::embed`). To report upstream.
-- To do: the header title, the composer's status and errors, and the empty and connection states are plain text; list items lack their position; table cells are one label, not cells. Focus is not reported while the window is inactive, so focus checks need the window in front.
+- Tables report rows and cells; list items and session rows report their position; links inside text are pressable nodes; the header title is a heading; errors are alerts (`ui::alert`) and the empty and connection states a status.
+- GPUI has no disabled state and no live regions: a disabled button is still a named button without a press action, and alerts are not announced when they appear. To report upstream.
+- Focus is not reported while the window is inactive, so focus checks need the window in front.
 
 ### Frame budget
 
