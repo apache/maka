@@ -46,6 +46,10 @@ function history(): StoredMessage[] {
   ];
 }
 
+function answers(turn: TurnViewModel | undefined): string[] {
+  return turn?.timeline.flatMap((item) => item.kind === 'text' ? [item.text] : []) ?? [];
+}
+
 const backgroundUpdate: ShellRunUpdate = {
   sessionId: SESSION,
   ownership: { kind: 'local' },
@@ -91,8 +95,8 @@ describe('incremental transcript projection', () => {
     assert.equal(historicalReads, 0, 'stable message references must skip historical materialization');
     assert.strictEqual(after[0], before[0]);
     assert.notStrictEqual(after[1], before[1]);
-    assert.equal(before[1]?.assistant?.text, 'done', 'previous projections are immutable snapshots');
-    assert.equal(after[1]?.assistant?.text, 'done\n\none more step');
+    assert.deepEqual(answers(before[1]), ['done'], 'previous projections are immutable snapshots');
+    assert.deepEqual(answers(after[1]), ['done', 'one more step']);
     assert.strictEqual(projection.project({ locale: 'en', sessionId: SESSION, messages: appended }), after);
   });
 
@@ -176,7 +180,7 @@ describe('incremental transcript projection', () => {
     messages = messages.map((message) => message.id === 'a1'
       ? { ...message, text: 'replaced answer' } as StoredMessage
       : message);
-    assert.equal(project()[0]?.assistant?.text, 'replaced answer');
+    assert.deepEqual(answers(project()[0]), ['replaced answer']);
     messages = [...messages, { type: 'assistant', id: 'a3', turnId: 'turn-2', ts: 8, text: 'after edit', modelId: 'model-1' }];
     project();
 
@@ -196,7 +200,7 @@ describe('incremental transcript projection', () => {
     project();
     messages = [...messages, toolCall('read-new', 'turn-2', 'Read', { path: REF }, 9), toolResult('read-new', 'turn-2', shellRun(8), 10)];
     assert.equal(project().at(-1)?.tools[0]?.toolName, 'Read', 'a removed Bash cannot hide a new Read');
-    assert.equal(first[0]?.assistant?.text, 'started');
+    assert.deepEqual(answers(first[0]), ['started']);
     assert.equal(first[0]?.notes.length, 0);
   });
 
