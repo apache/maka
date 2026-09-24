@@ -485,6 +485,66 @@ test('a current Owner connection keeps its catalog TTL across ordinary reads', a
   assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, 'idle');
 });
 
+for (const backgroundActivity of ['running', 'waiting_for_user'] as const) {
+  test(`failed Owner TTL refresh clears ${backgroundActivity} until a successful retry`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: 10_000 });
+    const db = await database(t);
+    const failed = deferred<SessionCatalogProjection[]>();
+    const recovered = deferred<SessionCatalogProjection[]>();
+    const errors: unknown[] = [];
+    let reads = 0;
+    let changes = 0;
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+      client: { ...client('epoch'), listSessions: () => {
+        reads += 1;
+        if (reads === 1) return Promise.resolve([{
+          ...swarmCatalogSession(), backgroundActivity,
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'] },
+        }]);
+        return reads <= 3 ? failed.promise : recovered.promise;
+      } },
+    };
+    const service = new DesktopSessionLocalService(db.store, {
+      targets: () => [target], changed: () => { changes += 1; }, onError: (error) => errors.push(error),
+    });
+    db.beforeClose.push(() => service.close());
+    service.catalog();
+    await waitFor(() => changes === 1);
+    assert.equal(service.catalog()[0]?.authoritative, true);
+
+    t.mock.timers.tick(6_001);
+    assert.equal(service.catalog()[0]?.authoritative, true, 'keep live state while refresh is pending');
+    assert.equal(reads, 2);
+    failed.reject(new Error('catalog unavailable'));
+    await waitFor(() => errors.length === 1);
+    await nextTurn();
+    const cached = service.catalog()[0]!;
+    assert.equal(cached.authoritative, false);
+    assert.equal(cached.sessions[0]?.localState, 'cached');
+    assert.equal(cached.sessions[0]?.backgroundActivity, undefined);
+    assert.equal(cached.sessions[0]?.runningTurnIds, undefined);
+    assert.equal(changes, 2, 'notify consumers when live state becomes unknown');
+    assert.equal(reads, 3, 'retry cached state without another TTL delay');
+    assert.equal(db.store.sessions('authority')[0]?.backgroundActivity, backgroundActivity, 'retain disk history');
+
+    await waitFor(() => errors.length === 2);
+    await nextTurn();
+    assert.equal(changes, 2, 'repeated failures must not trigger a notification/retry loop');
+    assert.equal(reads, 3);
+    assert.equal(service.catalog()[0]?.authoritative, false);
+    assert.equal(reads, 4);
+    recovered.resolve([swarmCatalogSession('idle')]);
+    await waitFor(() => changes === 3);
+    const live = service.catalog()[0]!;
+    assert.equal(live.authoritative, true);
+    assert.equal(live.sessions[0]?.localState, undefined);
+    assert.equal(live.sessions[0]?.backgroundActivity, 'idle');
+    assert.deepEqual(live.sessions[0]?.runningTurnIds, []);
+    assert.equal(reads, 4);
+  });
+}
+
 test('local IDs bind content, retries are idempotent, and admission stays bounded', async (t) => {
   const { store } = await database(t);
   const first = store.enqueue('authority-1', intent());
