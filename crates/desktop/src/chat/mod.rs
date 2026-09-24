@@ -31,7 +31,7 @@ use crate::{
 use gpui_kit::base::input::{InputEvent, TextareaState};
 use gpui_kit::{
     AnyWindowHandle, AppContext, Context, Entity, FocusHandle, FollowMode, ListAlignment,
-    ListOffset, ListState, Pixels, SharedString, Subscription, Task, Window, px,
+    ListOffset, ListState, Pixels, ScrollHandle, SharedString, Subscription, Task, Window, px,
 };
 use maka_client::{
     Client, RequestFailure,
@@ -99,6 +99,9 @@ pub struct Chat {
     fold: Vec<Row>,
     keys: Vec<String>,
     bodies: HashMap<String, Body>,
+    /// Scroll of each thought's expanded detail, which follows new text
+    /// while the reader stays at its end.
+    peeks: HashMap<String, ScrollHandle>,
     list: ListState,
     scrollbar: Scrollbar,
     selection: Selection,
@@ -192,6 +195,7 @@ impl Chat {
             fold: Vec::new(),
             keys: Vec::new(),
             bodies: HashMap::new(),
+            peeks: HashMap::new(),
             list,
             scrollbar: Scrollbar::default(),
             selection: Selection::default(),
@@ -528,9 +532,13 @@ impl Chat {
                     self.bodies.insert(key.clone(), Body::new(text, streaming));
                 }
             }
+            if matches!(entry, Entry::Thought { .. }) {
+                self.peeks.entry(key.clone()).or_default();
+            }
             seen.insert(key);
         }
         self.bodies.retain(|key, _| seen.contains(key));
+        self.peeks.retain(|key, _| seen.contains(key));
 
         if let Some(sent) = &self.sent {
             let row = format!("prompt:{sent}");

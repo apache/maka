@@ -379,16 +379,30 @@ impl Chat {
             .gap(px(8.));
         let row: SharedString = item_key.to_owned().into();
         match entry {
-            Entry::Thought { id, .. } => match self.bodies.get(&format!("thought:{id}")) {
-                Some(markdown) => body
-                    .child(md::render(
-                        markdown,
-                        &self.scope(&row, md::COMPACT, theme.muted),
-                        cx,
-                    ))
-                    .into_any_element(),
-                None => body.into_any_element(),
-            },
+            Entry::Thought { id, streaming, .. } => {
+                let key = format!("thought:{id}");
+                let body = match self.peeks.get(&key) {
+                    Some(peek) => {
+                        let (offset, max) = (peek.offset().y, peek.max_offset().y);
+                        // Follow new text until the reader scrolls up.
+                        if *streaming && -offset >= max - px(2.) {
+                            peek.scroll_to_bottom();
+                        }
+                        body.track_scroll(peek)
+                    }
+                    None => body,
+                };
+                match self.bodies.get(&key) {
+                    Some(markdown) => body
+                        .child(md::render(
+                            markdown,
+                            &self.scope(&row, md::COMPACT, theme.muted),
+                            cx,
+                        ))
+                        .into_any_element(),
+                    None => body.into_any_element(),
+                }
+            }
             Entry::Tool { result, .. } => {
                 let mut sections = Vec::new();
                 if let Some(input) = tools::input(entry) {
