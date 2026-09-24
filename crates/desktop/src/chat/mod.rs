@@ -120,6 +120,8 @@ pub struct Chat {
     sent: Option<String>,
     anchor: Option<Anchor>,
     end_space: Pixels,
+    /// Room above a short transcript at rest, so it sits on the composer.
+    lead: Pixels,
     jump: bool,
     composer: Entity<TextareaState>,
     window: AnyWindowHandle,
@@ -214,6 +216,7 @@ impl Chat {
             sent: None,
             anchor: None,
             end_space: px(0.),
+            lead: px(0.),
             jump: false,
             composer,
             window: window.window_handle(),
@@ -651,21 +654,42 @@ impl Chat {
 
     /// Before layout: size the room under the anchored prompt and hold the
     /// prompt at the top while that room remains.
-    fn place(&mut self, window: &Window) {
-        let Some(anchor) = &mut self.anchor else {
-            self.end_space = px(0.);
-            return;
-        };
-        let Some(ix) = self.keys.iter().position(|key| *key == anchor.row) else {
-            self.anchor = None;
-            self.end_space = px(0.);
-            return;
-        };
+    fn place(&mut self, window: &mut Window) {
         let viewport = match self.list.viewport_bounds().size.height {
             height if height > px(0.) => height,
             _ => window.viewport_size().height,
         };
-        let last = self.keys.len() - 1;
+        let last = self.keys.len().saturating_sub(1);
+        let Some(ix) = self
+            .anchor
+            .as_ref()
+            .and_then(|anchor| self.keys.iter().position(|key| *key == anchor.row))
+        else {
+            self.anchor = None;
+            self.end_space = px(0.);
+            // Unmeasured content is unknown, not empty: a full viewport of
+            // lead would push every row out of sight.
+            match (
+                self.list.bounds_for_item(0),
+                self.list.bounds_for_item(last),
+            ) {
+                (Some(top), Some(bottom)) => {
+                    let content = bottom.bottom() - top.top() + px(22.);
+                    self.lead = (viewport - content).max(px(0.));
+                }
+                _ if self.list.max_offset_for_scrollbar().y > px(0.5) => self.lead = px(0.),
+                // A short list is fully laid out by the next frame.
+                _ if !self.keys.is_empty() && self.list.viewport_bounds().size.height > px(0.) => {
+                    window.request_animation_frame()
+                }
+                _ => {}
+            }
+            return;
+        };
+        self.lead = px(0.);
+        let Some(anchor) = &mut self.anchor else {
+            return;
+        };
         // Unmeasured rows are unknown, not empty: keep the last answer.
         if let (Some(top), Some(bottom)) = (
             self.list.bounds_for_item(ix),

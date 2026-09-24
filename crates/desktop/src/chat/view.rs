@@ -780,6 +780,7 @@ impl Render for Chat {
                     .unwrap_or_else(|| div().into_any_element())
             })
             .size_full()
+            .pt(self.lead)
             .pb(px(22.) + self.end_space)
         };
         div()
