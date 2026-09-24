@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
+import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { SessionSummary } from '@maka/core/session';
 import {
   decodeActivationRequest,
@@ -109,12 +110,13 @@ function fakeDeps(
     onCreateSession?: () => void;
     onClose?: () => void;
     safeBoundaryResume?: boolean;
+    automatedResumeEnabled?: boolean;
     onResume?: () => void;
     onSandboxBoundaryResponse?: (response: { requestId: string; decision: 'deny' }) => void;
     sendMessage?: (
       runtime: MakaActivationRuntime,
       sessionId: string,
-      input: { turnId: string; text: string },
+      input: UserMessageInput,
     ) => AsyncIterable<SessionEvent>;
   } = {},
 ): MakaActivationDeps {
@@ -151,6 +153,7 @@ function fakeDeps(
   };
 
   return {
+    automatedResumeEnabled: () => options.automatedResumeEnabled === true,
     createContext: async (input) => {
       options.onContext?.(input);
       observer = input.runOutcomeObserver;
@@ -550,9 +553,10 @@ describe('maka activate JSONL protocol', () => {
     }
   });
 
-  test('resumes an existing compatible session without creating another one', async () => {
+  test('keeps a fresh activation stimulus instead of implicitly resuming an existing session', async () => {
     let created = false;
     let resumed = false;
+    let sentText: string | undefined;
     let requestedConnection: string | undefined;
     const lines: string[] = [];
     const result = await runMakaActivationCli(
@@ -578,6 +582,10 @@ describe('maka activate JSONL protocol', () => {
           onResume: () => {
             resumed = true;
           },
+          sendMessage: async function* (_runtime, _sessionId, input) {
+            sentText = input.text;
+            yield* completedEvents();
+          },
         }),
         writeStdout: (text) => lines.push(text.trim()),
       },
@@ -585,9 +593,44 @@ describe('maka activate JSONL protocol', () => {
 
     assert.equal(result, 0);
     assert.equal(created, false);
-    assert.equal(resumed, true);
+    assert.equal(resumed, false);
+    assert.equal(sentText, 'Inspect the workspace');
     assert.equal(requestedConnection, 'local');
     assert.equal(JSON.parse(lines.at(-1)!).makaSessionId, 'maka-session-1');
+  });
+
+  test('only opts automated activation into resume when explicitly enabled', async () => {
+    let resumed = false;
+    let stimulusSent = false;
+    const result = await runMakaActivationCli(
+      [
+        '--state-root',
+        ROOTS.stateRoot,
+        '--workspace-root',
+        ROOTS.workspaceRoot,
+        '--config-root',
+        ROOTS.configRoot,
+      ],
+      {
+        ...fakeDeps({
+          input: JSON.stringify(validRequest({ makaSessionId: 'maka-session-1' })),
+          sessions: [summary()],
+          safeBoundaryResume: true,
+          automatedResumeEnabled: true,
+          onResume: () => {
+            resumed = true;
+          },
+          sendMessage: async function* () {
+            stimulusSent = true;
+            yield* completedEvents();
+          },
+        }),
+      },
+    );
+
+    assert.equal(result, 0);
+    assert.equal(resumed, true);
+    assert.equal(stimulusSent, false);
   });
 
   test('maps timeout to retryable_failure and emits one terminal outcome', async () => {

@@ -28,8 +28,10 @@ Planning and execution remain separate operations. Desktop and CLI/TUI expose
 explicit resume by default; every attempt still passes through the authoritative
 safety planner. `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` disables new explicit and
 model-driven resume planning. `=1` additionally permits model-driven WorkHub
-resume, preserving the previous full opt-in behavior. Startup recovery may
-reconstruct an already admitted continuation, but it does not automatically
+resume and automated activation resume, preserving the previous full opt-in
+behavior. An existing Session alone does not authorize `maka activate` to resume
+an old Turn: by default it sends the new activation stimulus. Startup recovery
+may reconstruct an already admitted continuation, but it does not automatically
 select an ordinary failed or cancelled Run.
 
 ## Continuation unit
