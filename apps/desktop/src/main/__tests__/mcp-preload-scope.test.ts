@@ -69,13 +69,15 @@ test('every MCP bridge method carries typed config failures intact through the b
     on: events.on.bind(events), off: events.off.bind(events), send() {},
     async invoke(channel: string, ...args: unknown[]) {
       if (channel === 'app:bootstrapReady') return undefined;
-      if (channel === 'runtime-host:identities') return structuredClone([owner]);
+      if (channel === 'runtime-host:identities') {
+        return structuredClone([{ ...owner, epoch: owner.targetEpoch, isDefault: true }]);
+      }
       if (channel === 'runtime-host:awaitReady') {
-        assert.deepEqual(JSON.parse(JSON.stringify(args[0])), owner);
+        assert.deepEqual(JSON.parse(JSON.stringify(args[0])), { hostId: owner.hostId, targetEpoch: owner.targetEpoch });
         return { ready: true };
       }
       assert.ok(channel.startsWith('mcp:'), channel);
-      assert.deepEqual(JSON.parse(JSON.stringify(args[0])), owner);
+      assert.deepEqual(JSON.parse(JSON.stringify(args[0])), { hostId: owner.hostId, targetEpoch: owner.targetEpoch });
       channels.push(channel);
       return structuredClone(failure);
     },
