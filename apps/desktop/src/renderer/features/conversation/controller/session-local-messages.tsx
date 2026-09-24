@@ -56,7 +56,10 @@ export function SessionLocalMessages(props: {
               id: message.messageId,
               text: message.text,
               ts: message.createdAt,
-              transientPlacement: message.turnId ? 'current_turn' : (message.localDisplayPlacement ?? message.placement),
+              // Only an ordinary send records where it is shown; without that a
+              // current-turn intent is steering.
+              transientPlacement: message.turnId || message.localDisplayPlacement === 'current_turn' ? 'transcript'
+                : message.placement === 'current_turn' ? 'steering' : 'follow_up',
               attachments: message.attachments,
               directoryReferences: message.directoryReferences,
               quotes: message.quotes,

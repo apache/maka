@@ -709,7 +709,7 @@ export const PromptSentBeforeTurnLands: Story = {
           id: 'msg-sent',
           text: '刚发出的问题：这一轮的耗时是怎么算出来的？',
           ts: NOW,
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
           hostTurnId: 'turn-sent',
           deliveryStatus: '已接收',
         }],
@@ -2384,7 +2384,7 @@ function StreamingTailHarness({ pendingUser = false, hostAhead = false }: { pend
         // Before admission the local copy has no Host Turn name yet.
         transientMessages: (pendingUser || !admitted) && question && !settled ? [{
           id: 'msg-tail-1', text: question, ts: NOW - 30_000,
-          transientPlacement: 'current_turn', ...(admitted ? { hostTurnId: 'turn-tail' } : {}),
+          transientPlacement: 'transcript', ...(admitted ? { hostTurnId: 'turn-tail' } : {}),
         }] : [],
         viewportNavigation,
         messages: [

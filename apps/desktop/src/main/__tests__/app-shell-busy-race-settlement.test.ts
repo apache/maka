@@ -67,11 +67,6 @@ describe('busy-raced send settlement', () => {
       ) => {
         assert.equal(placement, 'next_turn');
         assert.equal(command.localDisplayPlacement, 'current_turn');
-        const current = transient.get(command.messageId)!;
-        transient.set(command.messageId, mergeTransientMessageProjection(current, {
-          ...current, transientPlacement: 'next_turn', deliveryStatus: 'Sending',
-        }));
-        assert.equal(transient.get(command.messageId)?.transientPlacement, 'current_turn');
         return { ok: true, disposition: 'locally_saved', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
       },
     } });
@@ -81,7 +76,7 @@ describe('busy-raced send settlement', () => {
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
       });
       assert.equal(await actions.send('hi'), true);
-      assert.equal([...transient.values()][0]?.transientPlacement, 'current_turn');
+      assert.equal([...transient.values()][0]?.transientPlacement, 'transcript');
     } finally { restoreWindow(); }
   });
 
@@ -89,7 +84,7 @@ describe('busy-raced send settlement', () => {
     const transient = new Map<string, TransientUserMessageProjection>();
     const restoreWindow = installWindow({ sessions: {
       submitMessage: async (_sessionId: string, _placement: string, _command: unknown) => {
-        assert.equal([...transient.values()][0]?.pendingSteering, true);
+        assert.equal([...transient.values()][0]?.transientPlacement, 'steering');
         return { ok: true, disposition: 'steering', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
       },
     } });
@@ -101,7 +96,7 @@ describe('busy-raced send settlement', () => {
         updateTransientMessage: (_sessionId, message) => transient.set(message.id, message),
       });
       assert.equal(await actions.enqueueMessage('session-a', 'steer', 'current_turn'), true);
-      assert.equal([...transient.values()][0]?.pendingSteering, true);
+      assert.equal([...transient.values()][0]?.transientPlacement, 'steering');
     } finally { restoreWindow(); }
   });
 
@@ -406,7 +401,7 @@ describe('busy-raced send settlement', () => {
 
       assert.ok(submittedMessageId);
       assert.equal(transient.get(submittedMessageId)?.text, 'also check the tests');
-      assert.equal(transient.get(submittedMessageId)?.transientPlacement, 'current_turn');
+      assert.equal(transient.get(submittedMessageId)?.transientPlacement, 'transcript');
 
       releaseAdmission();
       assert.equal(await sending, true);
@@ -451,7 +446,7 @@ describe('busy-raced send settlement', () => {
       assert.equal(transientState.rows.size, 1);
       assert.equal(transientState.rows.has('host-turn'), false);
       assert.equal([...transientState.rows.values()][0]?.hostTurnId, 'host-turn');
-      assert.equal([...transientState.rows.values()][0]?.transientPlacement, 'current_turn');
+      assert.equal([...transientState.rows.values()][0]?.transientPlacement, 'transcript');
     } finally {
       restoreWindow();
     }
@@ -463,13 +458,13 @@ describe('busy-raced send settlement', () => {
     const restoreWindow = installWindow({
       newTasks: { create: async () => ({ id: 'session-new' }) },
       sessions: {
-        submitMessage: async (_sessionId: string, placement: string, command: { messageId: string }) => {
+        submitMessage: async (_sessionId: string, placement: string, command: { messageId: string; localDisplayPlacement?: string }) => {
           assert.equal(placement, 'next_turn');
+          assert.equal(command.localDisplayPlacement, 'current_turn');
           const current = transient.get(command.messageId)!;
           transient.set(command.messageId, mergeTransientMessageProjection(current, {
-            ...current, transientPlacement: 'next_turn', deliveryStatus: 'Failed',
+            ...current, deliveryStatus: 'Failed',
           }));
-          assert.equal(transient.get(command.messageId)?.transientPlacement, 'current_turn');
           return { ok: true, disposition: 'locally_saved', attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
         },
       },
@@ -485,7 +480,7 @@ describe('busy-raced send settlement', () => {
       });
       assert.equal(await actions.send('hi'), true);
       assert.equal([...transient.values()][0]?.deliveryStatus, 'Failed');
-      assert.equal([...transient.values()][0]?.transientPlacement, 'current_turn');
+      assert.equal([...transient.values()][0]?.transientPlacement, 'transcript');
     } finally { restoreWindow(); }
   });
 
@@ -503,7 +498,7 @@ describe('busy-raced send settlement', () => {
           removed.push(sessionId);
         },
         submitMessage: async (_sessionId: string, _placement: string, command: { messageId: string }) => {
-          assert.equal(transientState.rows.get(command.messageId)?.transientPlacement, 'current_turn');
+          assert.equal(transientState.rows.get(command.messageId)?.transientPlacement, 'transcript');
           return {
             ok: true,
             disposition: 'followup',

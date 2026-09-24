@@ -66,12 +66,17 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   })));
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
   assert.equal(transient.get('root')?.deliveryStatus, 'Host outcome unknown');
-  assert.equal(transient.get('root')?.transientPlacement, 'current_turn', 'a restored ordinary send stays in the transcript');
-  assert.equal(transient.get('followup')?.transientPlacement, 'next_turn', 'an explicit follow-up stays queued');
+  const placements = () => Object.fromEntries([...transient].map(([id, message]) => [id, message.transientPlacement]));
+  // The Host queues an ordinary send behind a running Turn, but it is shown
+  // where the user sent it.
+  assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' });
+  messages = messages.map((message) => ({ ...message, state: 'failed' }));
+  await act(async () => changed('session-1'));
+  assert.deepEqual(placements(), { steering: 'steering', followup: 'follow_up', root: 'transcript' }, 'failed delivery moves nothing');
   messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn' } : {}) }));
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root']);
-  assert.equal(transient.get('root')?.transientPlacement, 'current_turn');
+  assert.equal(transient.get('root')?.transientPlacement, 'transcript');
   assert.equal(transient.get('root')?.deliveryStatus, undefined, 'an accepted send shows only its time');
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root'], 'a retained local copy cannot resurrect a withdrawn queue entry');
