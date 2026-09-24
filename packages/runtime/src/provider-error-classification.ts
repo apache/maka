@@ -53,6 +53,18 @@ const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
   'ENETUNREACH',
 ]);
 
+// A successful status acknowledges the headers, not a complete response body.
+// Unlike pre-response failures, require an explicit interruption code here:
+// neither SDK retryability nor arbitrary TLS/undici errors prove a transient cut.
+const RESPONSE_TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ECONNABORTED',
+  'UND_ERR_SOCKET',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
 /**
  * xAI emits this code for transient model capacity failures, including when
  * the same payload is relayed through an OpenAI-compatible gateway. Do not
@@ -113,7 +125,7 @@ interface ProviderErrorEvidence {
   code: string;
   /** Structured provider identifiers (code/type), lowercased. */
   structuredCodes: string[];
-  /** Structured pre-response transport evidence from SDK metadata or cause codes. */
+  /** Structured transport evidence, including interruptions after successful headers. */
   transportFailure: boolean;
 }
 
@@ -177,10 +189,12 @@ function providerErrorTarget(error: unknown): unknown {
 }
 
 function isTransportFailure(target: unknown, statusCode: string): boolean {
-  if (statusCode) return false;
+  const successfulResponse = /^2\d\d$/.test(statusCode);
+  if (statusCode && !successfulResponse) return false;
   const record = objectRecord(target);
   if (!record) return false;
   if (
+    !successfulResponse &&
     target instanceof Error &&
     target.name === 'AI_APICallError' &&
     safeField(record, 'isRetryable') === true
@@ -194,13 +208,29 @@ function isTransportFailure(target: unknown, statusCode: string): boolean {
     seen.add(current);
     const currentRecord = objectRecord(current);
     if (!currentRecord) return false;
+    if (successfulResponse) {
+      const nestedStatus =
+        safeField(currentRecord, 'statusCode') ?? safeField(currentRecord, 'status');
+      // Do not reinterpret a cancellation or a nested HTTP rejection as a
+      // recoverable body interruption merely because it has a socket cause.
+      if (
+        safeField(currentRecord, 'name') === 'AbortError' ||
+        ((typeof nestedStatus === 'number' || typeof nestedStatus === 'string') &&
+          nestedStatus !== '' &&
+          !/^2\d\d$/.test(String(nestedStatus)))
+      ) {
+        return false;
+      }
+    }
     const code = safeField(currentRecord, 'code');
     if (
       typeof code === 'string' &&
-      (TRANSPORT_FAILURE_CODES.has(code) ||
-        code.startsWith('ERR_SSL_') ||
-        code.startsWith('ERR_TLS_') ||
-        code.startsWith('UND_ERR_'))
+      (successfulResponse
+        ? RESPONSE_TRANSPORT_FAILURE_CODES.has(code)
+        : TRANSPORT_FAILURE_CODES.has(code) ||
+          code.startsWith('ERR_SSL_') ||
+          code.startsWith('ERR_TLS_') ||
+          code.startsWith('UND_ERR_'))
     ) {
       return true;
     }
@@ -771,10 +801,15 @@ function isTrustedCodexEdgeRejection(facts: ProviderErrorFacts): boolean {
   const seen = new Set<unknown>();
   for (let depth = 0; depth < 5 && current !== undefined && !seen.has(current); depth += 1) {
     seen.add(current);
-    if (current instanceof Error && current.name === 'OpenAiCodexEdgeRejectionError') return true;
+    if (
+      current instanceof Error &&
+      safeField(current as unknown as Record<string, unknown>, 'name') ===
+        'OpenAiCodexEdgeRejectionError'
+    )
+      return true;
     current =
       typeof current === 'object' && current !== null
-        ? (current as { cause?: unknown }).cause
+        ? safeField(current as Record<string, unknown>, 'cause')
         : undefined;
   }
   return false;
