@@ -480,9 +480,15 @@ function buildThinkingProviderOptions(
     case 'custom':
       // Messages needs a thinking mode beside the effort. A declared level is
       // the user's statement the gateway thinks, so it always gets adaptive.
+      // Messages has no `minimal` effort; `low` is its lowest.
       if (runtime.wire === 'anthropic-messages') {
         return level
-          ? { anthropic: { thinking: { type: 'adaptive', display: 'summarized' }, effort: level } }
+          ? {
+              anthropic: {
+                thinking: { type: 'adaptive', display: 'summarized' },
+                effort: level === 'minimal' ? 'low' : level,
+              },
+            }
           : {};
       }
       return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel, runtime);

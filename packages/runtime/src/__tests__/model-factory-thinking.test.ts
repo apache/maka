@@ -626,15 +626,16 @@ describe('buildProviderOptions: thinking level', () => {
       ...undeclared,
       modelOverrides: {
         'claude-sonnet-4': { thinkingLevels: ['low', 'high'] },
-        'kimi-k3': { thinkingLevels: ['high', 'max'] },
+        'kimi-k3': { thinkingLevels: ['minimal', 'high', 'max'] },
       },
     };
-    for (const [modelId, level] of [
-      ['claude-sonnet-4', 'high'],
-      ['kimi-k3', 'max'],
+    for (const [modelId, level, effort] of [
+      ['claude-sonnet-4', 'high', 'high'],
+      ['kimi-k3', 'max', 'max'],
+      ['kimi-k3', 'minimal', 'low'],
     ] as const) {
       assert.deepEqual(buildProviderOptions(declared, modelId, level), {
-        anthropic: { thinking: { type: 'adaptive', display: 'summarized' }, effort: level },
+        anthropic: { thinking: { type: 'adaptive', display: 'summarized' }, effort },
       });
     }
     assert.deepEqual(buildProviderOptions(declared, 'kimi-k3', 'low'), {});
