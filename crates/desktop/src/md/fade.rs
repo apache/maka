@@ -65,6 +65,14 @@ impl Arrivals {
             prefix -= 1;
         }
         self.chunks.retain(|chunk| chunk.start < prefix);
+        // A chunk's range ends where the next begins, so only a finished
+        // run at the front can go without changing the others.
+        let finished = self
+            .chunks
+            .iter()
+            .take_while(|chunk| now - chunk.at >= chunk.duration)
+            .count();
+        self.chunks.drain(..finished);
         if new.len() <= prefix {
             return;
         }
@@ -171,5 +179,18 @@ mod tests {
         let text = &parse("abc xyz", 0).blocks[0].texts[0];
         let spans = arrivals.spans(text, later);
         assert_eq!(spans, vec![(4..7, 0.)]);
+    }
+
+    #[test]
+    fn a_long_stream_keeps_only_the_chunks_still_fading() {
+        let start = Instant::now();
+        let mut arrivals = Arrivals::seeded();
+        let mut source = String::new();
+        for step in 0..100u64 {
+            let old = source.clone();
+            source.push_str("word ");
+            arrivals.record(&old, &source, start + Duration::from_millis(step * 120));
+        }
+        assert!(arrivals.chunks.len() <= 5, "{}", arrivals.chunks.len());
     }
 }
