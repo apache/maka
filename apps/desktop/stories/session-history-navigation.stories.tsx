@@ -85,8 +85,8 @@ export const HorizontalScrollOwnership: Story = {
     }
     expect(overflow, 'The real code block must have horizontal overflow').not.toBeNull();
     // Synthetic timestamps control gesture boundaries, not render completion.
-    const wheel = (target: Element, timeStamp: number, deltaX = -100, cancelable = true) => {
-      const event = new WheelEvent('wheel', { deltaX, bubbles: true, cancelable });
+    const wheel = (target: Element, timeStamp: number, deltaX = -100, cancelable = true, point?: { clientX: number; clientY: number }) => {
+      const event = new WheelEvent('wheel', { deltaX, bubbles: true, cancelable, ...point });
       Object.defineProperty(event, 'timeStamp', { value: timeStamp });
       target.dispatchEvent(event);
       return event.defaultPrevented;
@@ -104,6 +104,9 @@ export const HorizontalScrollOwnership: Story = {
     });
     expect(selected).toHaveTextContent('B');
     expect(getComputedStyle(indicator).pointerEvents).toBe('none');
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      expect(getComputedStyle(indicator).transitionDuration).toBe('0.18s, 0.2s');
+    }
     expect((indicator as HTMLElement).offsetHeight).toBe(104);
     expect(getComputedStyle(indicator.querySelector('svg')!).strokeWidth).toBe('3px');
     const surface = prose.closest('[data-session-history-surface]')!.getBoundingClientRect();
@@ -142,8 +145,35 @@ export const HorizontalScrollOwnership: Story = {
     await waitFor(() => expect(canvasElement.ownerDocument.querySelector('.session-history-swipe')).toHaveAttribute('data-phase', 'returning'));
     const returning = canvasElement.ownerDocument.querySelector('.session-history-swipe')!;
     if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      expect(getComputedStyle(returning).transitionDuration.split(',')[0]).toBe('0.32s');
+      expect(getComputedStyle(returning).transitionDuration.split(',')[0]).toBe('0.42s');
     }
+    await waitFor(() => expect(canvasElement.ownerDocument.querySelector('.session-history-swipe')).toBeNull());
+    // Session replacement makes the main column inert. Chromium hits its
+    // ancestor, which can remain the wheel target after loading completes.
+    const layout = prose.closest<HTMLElement>('[data-session-history-surface]')!;
+    const rect = prose.getBoundingClientRect();
+    const point = { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+    layout.inert = true;
+    const latchedTarget = document.elementFromPoint(point.clientX, point.clientY)!;
+    expect(latchedTarget.contains(layout)).toBe(true);
+    wheel(latchedTarget, 2600, -30, true, point);
+    expect(selected).toHaveTextContent('B');
+    layout.inert = false;
+    wheel(latchedTarget, 2630, -90, false, point);
+    await waitFor(() => expect(selected).toHaveTextContent('C'));
+    const fast = canvasElement.ownerDocument.querySelector('.session-history-swipe')!;
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      expect(getComputedStyle(fast).transitionDuration).toBe('0.28s, 0.3s');
+    }
+    // Live hit-testing must retain the original editor/overflow exclusions.
+    for (const target of [draft, code]) {
+      const r = target.getBoundingClientRect();
+      expect(wheel(latchedTarget, target === draft ? 3100 : 3500, 100, true,
+        { clientX: r.left + 2, clientY: r.top + 2 })).toBe(false);
+      expect(selected).toHaveTextContent('C');
+    }
+    wheel(prose, 3900, 100);
+    await waitFor(() => expect(selected).toHaveTextContent('B'));
     await waitFor(() => expect(canvasElement.ownerDocument.querySelector('.session-history-swipe')).toBeNull());
   },
 };

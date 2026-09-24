@@ -142,17 +142,18 @@ it('bounds completion feedback even when a continuous wheel tail never stops', (
   t.mock.method(performance, 'now', () => Date.now());
   const { catalog, wheel, feedback, targets } = setup();
   for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
-  wheel(0);
+  wheel(0, { deltaX: -20 });
+  wheel(180, { deltaX: -60 });
   for (let time = 50; time <= 150; time += 50) {
     act(() => t.mock.timers.tick(50));
-    wheel(time, { deltaX: -2 });
+    wheel(time + 180, { deltaX: -2 });
   }
   assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
   act(() => t.mock.timers.tick(50));
   assert.equal(feedback()?.getAttribute('data-phase'), 'returning');
   for (let time = 250; time <= 650; time += 100) {
     act(() => t.mock.timers.tick(100));
-    wheel(time, { deltaX: -2 });
+    wheel(time + 180, { deltaX: -2 });
   }
   assert.equal(feedback() === undefined, true);
   assert.equal(catalog.getState().activeSessionId, 'B');
@@ -172,9 +173,12 @@ it('uses elapsed time for animation even when the sample preview freezes the wal
   wheel(100, { deltaX: -2 });
   elapsed = 200;
   act(() => t.mock.timers.tick(100));
+  assert.equal(feedback()?.getAttribute('data-phase'), 'committed');
+  elapsed = 320;
+  act(() => t.mock.timers.tick(120));
   assert.equal(feedback()?.getAttribute('data-phase'), 'returning');
-  elapsed = 520;
-  act(() => t.mock.timers.tick(320));
+  elapsed = 740;
+  act(() => t.mock.timers.tick(420));
   assert.equal(feedback() === undefined, true);
 });
 
@@ -206,6 +210,21 @@ it('accepts a reverse on the new conversation after a completed gesture loses it
   wheel(220, { deltaX: 60, cancelable: false });
   assert.equal(catalog.getState().activeSessionId, 'C');
   assert.deepEqual(targets, [null, null]);
+});
+
+it('recovers an ancestor-latched wheel target after the conversation leaves inert loading', () => {
+  const { catalog, wheel, dom } = setup();
+  for (const id of ['A', 'B', 'C']) catalog.setActiveSessionId(id);
+  const surface = dom.document.querySelector('main')!;
+  Object.defineProperty(document, 'querySelector', { configurable: true, value: dom.document.querySelector.bind(dom.document) });
+  Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => surface.hasAttribute('inert') ? dom.document.body : dom.document.querySelector('p') });
+  surface.setAttribute('inert', '');
+  wheel(0, { deltaX: -30, clientX: 200, clientY: 100 }, 'body');
+  assert.equal(catalog.getState().activeSessionId, 'C');
+  surface.removeAttribute('inert');
+  // Chromium keeps the non-inert ancestor as the target of the wheel stream.
+  wheel(30, { deltaX: -90, clientX: 200, clientY: 100 }, 'body');
+  assert.equal(catalog.getState().activeSessionId, 'B');
 });
 
 it('shows unavailable feedback at the history boundary instead of acknowledging a move', () => {

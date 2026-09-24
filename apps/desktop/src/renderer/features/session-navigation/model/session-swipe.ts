@@ -19,13 +19,15 @@
 
 import type { HistoryDirection } from './session-visit-history.js';
 
-export const SESSION_SWIPE_RETURN_DURATION_MS = 320;
+const normalMotion = { arrivalMs: 180, opacityMs: 200, holdMs: 200, returnMs: 320 };
+const fastMotion = { arrivalMs: 280, opacityMs: 300, holdMs: 320, returnMs: 420 };
 
 export interface SessionSwipeSample {
   deltaX: number;
   deltaY: number;
   timeStamp: number;
-  eligible: boolean;
+  /** null suspends input during inert transcript replacement, without rejecting the gesture. */
+  eligible: boolean | null;
 }
 
 export interface SessionSwipeFeedback {
@@ -43,7 +45,22 @@ export function createSessionSwipe() {
   let axis: 'pending' | 'horizontal' | 'blocked' = 'pending';
   let presentation: 'pulling' | 'committed' | 'returning' | null = null;
   let settleAt = 0;
+  let startedAt = 0;
+  let fast = false;
+  let firedAt = 0;
+  let quietSince: number | null = null;
+  let renewedDistance = 0;
+  let renewedFrames = 0;
+  let renewedAt = 0;
+  const clearRenewal = () => {
+    quietSince = null;
+    renewedDistance = 0;
+    renewedFrames = 0;
+  };
   return {
+    motion() {
+      return fast ? fastMotion : normalMotion;
+    },
     cancel(): void {
       axis = 'blocked';
       presentation = null;
@@ -54,7 +71,7 @@ export function createSessionSwipe() {
     },
     settle(): 'returning' | null {
       presentation = presentation && presentation !== 'returning' ? 'returning' : null;
-      if (presentation === 'returning') settleAt = performance.now() + SESSION_SWIPE_RETURN_DURATION_MS;
+      if (presentation === 'returning') settleAt = performance.now() + this.motion().returnMs;
       return presentation;
     },
     feedback(): SessionSwipeFeedback | null {
@@ -70,8 +87,12 @@ export function createSessionSwipe() {
         opposingDistance = 0;
         axis = 'pending';
         presentation = null;
+        startedAt = event.timeStamp;
+        fast = false;
+        clearRenewal();
       }
       lastTime = event.timeStamp;
+      if (event.eligible === null) return { claimed: false, direction: null };
       if (!event.eligible) {
         // After completion, a detached target is only an inert tail. It must
         // neither navigate nor poison a deliberate reverse on the new surface.
@@ -86,24 +107,59 @@ export function createSessionSwipe() {
       // gesture. Tiny opposite-sign recoil must not undo a completed swipe.
       if (fired) {
         opposingDistance = event.deltaX * distance < 0 ? opposingDistance + event.deltaX : 0;
-        // The tail cannot extend or revive a completed visual acknowledgement.
-        if (Math.abs(opposingDistance) < 24) return { claimed: true, direction: null };
-        distance = opposingDistance - event.deltaX;
+        // Windows can join successive physical strokes into one wheel stream.
+        // A quiet tail followed by two strong frames is renewed input; an
+        // isolated coalesced spike, steady drag or recoil is still the tail.
+        if (event.deltaX * distance > 0 && event.timeStamp - firedAt >= 180
+          && Math.abs(event.deltaX) >= Math.abs(event.deltaY) * 1.5) {
+          const magnitude = Math.abs(event.deltaX);
+          if (magnitude <= 8) {
+            quietSince ??= event.timeStamp;
+            renewedDistance = 0;
+            renewedFrames = 0;
+          } else if (magnitude >= 12 && quietSince !== null && event.timeStamp - quietSince >= 40) {
+            if (renewedFrames === 0 || event.timeStamp - renewedAt > 80) {
+              renewedAt = event.timeStamp;
+              renewedDistance = 0;
+              renewedFrames = 0;
+            }
+            renewedDistance += event.deltaX;
+            renewedFrames++;
+          } else if (magnitude < 12) {
+            // The new stroke may ramp up through weak opening frames. Keep
+            // the quiet-tail readiness, but do not count them as strong input.
+            renewedDistance = 0;
+            renewedFrames = 0;
+          } else clearRenewal();
+        } else clearRenewal();
+        const renewed = renewedFrames >= 2 && Math.abs(renewedDistance) >= 40;
+        // Neither ordinary momentum nor an isolated spike revives the arrow.
+        if (Math.abs(opposingDistance) < 24 && !renewed) return { claimed: true, direction: null };
+        distance = (renewed ? renewedDistance : opposingDistance) - event.deltaX;
         verticalDistance = 0;
         opposingDistance = 0;
         fired = false;
         axis = 'pending';
+        startedAt = renewed ? renewedAt : event.timeStamp;
+        fast = false;
+        clearRenewal();
       }
+      if (distance === 0 && axis === 'pending') startedAt = event.timeStamp;
       distance += event.deltaX;
       verticalDistance += Math.abs(event.deltaY);
       if (axis === 'pending' && Math.max(Math.abs(distance), verticalDistance) >= 18) {
         axis = Math.abs(distance) >= verticalDistance * 1.5 ? 'horizontal' : 'blocked';
       }
       if (axis !== 'horizontal') return { claimed: false, direction: null };
+      fast ||= Math.abs(distance) >= 40 && Math.abs(distance) / Math.max(event.timeStamp - startedAt, 16) >= 1;
       const direction = !fired && Math.abs(distance) >= 80 ? (distance < 0 ? -1 : 1) : null;
-      if (direction !== null) fired = true;
+      if (direction !== null) {
+        fired = true;
+        firedAt = event.timeStamp;
+        clearRenewal();
+      }
       presentation = fired ? 'committed' : 'pulling';
-      settleAt = performance.now() + (fired ? 200 : 500);
+      settleAt = performance.now() + (fired ? this.motion().holdMs : 500);
       return { claimed: true, direction };
     },
   };

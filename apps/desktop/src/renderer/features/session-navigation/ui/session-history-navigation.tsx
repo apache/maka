@@ -22,7 +22,7 @@ import { createPortal } from 'react-dom';
 import { ArrowLeft, ArrowRight } from '@maka/ui/icons';
 import type { SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { createSessionVisitHistory } from '../model/session-visit-history.js';
-import { createSessionSwipe, SESSION_SWIPE_RETURN_DURATION_MS, type SessionSwipeFeedback } from '../model/session-swipe.js';
+import { createSessionSwipe, type SessionSwipeFeedback } from '../model/session-swipe.js';
 
 export interface SessionHistoryNavigationProps {
   catalog: SessionCatalogController;
@@ -36,6 +36,7 @@ interface SwipeIndicator extends SessionSwipeFeedback {
   phase: 'pulling' | 'committed' | 'unavailable' | 'returning';
   edge: number;
   top: number;
+  motion: ReturnType<ReturnType<typeof createSessionSwipe>['motion']>;
 }
 
 /** Local feedback updates do not re-render the shell. */
@@ -84,10 +85,11 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
     const onWheel = (event: WheelEvent) => {
       const { catalog, visible, blocked, openSession } = current.current;
       const state = catalog.getState();
+      const surface = resolveSwipeSurface(event);
       const eligible = visible && !blocked && Boolean(state.activeSessionId)
         && !event.defaultPrevented && event.deltaMode === 0
         && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
-        && isSessionHistorySwipeTarget(event);
+        && (surface === 'loading' ? null : Boolean(surface));
       const result = swipe.sample({
         deltaX: event.deltaX, deltaY: event.deltaY, timeStamp: event.timeStamp, eligible,
       });
@@ -112,11 +114,9 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
           openSession(id);
           return catalog.getState().activeSessionId === id;
         });
-      const surface = event.composedPath().find((target): target is Element =>
-        target instanceof Element && target.hasAttribute('data-session-history-surface'));
-      if (!surface) return;
+      if (!surface || surface === 'loading') return;
       const rect = surface.getBoundingClientRect();
-      setIndicator({ ...feedback, phase: moved ? 'committed' : (!canMove || feedback.committed) ? 'unavailable' : 'pulling',
+      setIndicator({ ...feedback, motion: swipe.motion(), phase: moved ? 'committed' : (!canMove || feedback.committed) ? 'unavailable' : 'pulling',
         edge: feedback.direction === -1 ? rect.left : rect.right, top: rect.top + rect.height / 2 });
       scheduleSettlement();
     };
@@ -139,7 +139,9 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
     data-direction={indicator.direction}
     style={{ left: indicator.edge, top: indicator.top,
       '--swipe-progress': indicator.progress,
-      '--swipe-return-duration': `${SESSION_SWIPE_RETURN_DURATION_MS}ms`,
+      '--swipe-arrival-duration': `${indicator.motion.arrivalMs}ms`,
+      '--swipe-opacity-duration': `${indicator.motion.opacityMs}ms`,
+      '--swipe-return-duration': `${indicator.motion.returnMs}ms`,
     } as CSSProperties}
   >
     {/* This large edge affordance overrides the global toolbar stroke weight. */}
@@ -148,13 +150,36 @@ export function SessionHistoryNavigation(props: SessionHistoryNavigationProps) {
 }
 
 /** Horizontal content keeps its entire gesture, even at either scroll edge. */
-function isSessionHistorySwipeTarget(event: Pick<WheelEvent, 'composedPath'>): boolean {
-  for (const target of event.composedPath()) {
+function surfaceFromPath(path: EventTarget[]): Element | null {
+  for (const target of path) {
     if (!(target instanceof Element)) continue;
-    if (target.matches('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="alertdialog"], [role="menu"], [data-session-history-ignore]')) return false;
+    if (target.matches('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="alertdialog"], [role="menu"], [data-session-history-ignore]')) return null;
     const style = getComputedStyle(target);
-    if (/^(auto|scroll)$/.test(style.overflowX) && target.scrollWidth > target.clientWidth + 1) return false;
-    if (target.hasAttribute('data-session-history-surface')) return true;
+    if (/^(auto|scroll)$/.test(style.overflowX) && target.scrollWidth > target.clientWidth + 1) return null;
+    if (target.hasAttribute('data-session-history-surface')) return target;
   }
-  return false;
+  return null;
+}
+
+function resolveSwipeSurface(event: WheelEvent): Element | 'loading' | null {
+  const path = event.composedPath();
+  // A real descendant path is authoritative, including all its exclusions.
+  if (path.some((node) => node instanceof Element && node.hasAttribute('data-session-history-surface'))) {
+    const surface = surfaceFromPath(path);
+    return surface?.closest('[inert]') ? 'loading' : surface;
+  }
+  if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
+  const surface = document.querySelector('[data-session-history-surface]');
+  const target = path[0];
+  if (!surface || !(target instanceof Element) || !target.contains(surface)) return null;
+  const rect = surface.getBoundingClientRect();
+  if (event.clientX < rect.left || event.clientX >= rect.right
+    || event.clientY < rect.top || event.clientY >= rect.top + rect.height) return null;
+  // Chromium retargets wheel streams to a non-inert ancestor during Session
+  // replacement and can retain that target afterwards. Loading is a pause;
+  // once interactive, resolve the actual hit and apply the same exclusions.
+  if (surface.closest('[inert]')) return 'loading';
+  const livePath: Element[] = [];
+  for (let node = document.elementFromPoint(event.clientX, event.clientY); node; node = node.parentElement) livePath.push(node);
+  return surfaceFromPath(livePath);
 }
