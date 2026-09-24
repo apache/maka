@@ -922,7 +922,6 @@ export const Composer = forwardRef<
       || props.pendingAttachments?.length || props.pendingQuotes?.length || props.pendingSessionReferences?.length),
   });
   const suggestionLabel = copy.promptSuggestionLabel;
-  const suggestionAcceptLabel = copy.promptSuggestionAccept;
   function acceptNextPrompt() {
     if (!nextPrompt.text || compositionActiveRef.current || textPort.getValue().length) return;
     const value = nextPrompt.text;
@@ -1518,7 +1517,7 @@ export const Composer = forwardRef<
       if (event.key === 'Tab' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
         event.preventDefault(); acceptNextPrompt(); return;
       }
-      if (event.key === 'Escape') { event.preventDefault(); nextPrompt.dismiss(); return; }
+      if (event.key === 'Escape') { event.preventDefault(); setDragActive(false); nextPrompt.dismiss(); return; }
     }
     // Keystrokes made during an IME composition never reach this handler — the
     // native listener above takes them away from React entirely.
@@ -1850,7 +1849,7 @@ export const Composer = forwardRef<
     props.onPickAttachments || props.onPickDirectory || props.mentionSkills || props.onSetGoal,
   );
   const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
-  const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes || nextPrompt.service);
+  const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes || (nextPrompt.service && props.activeSession));
   const onNativeModelChange = async (
     target: Parameters<NonNullable<typeof props.onModelChange>>[0],
   ) => {
@@ -2115,17 +2114,9 @@ export const Composer = forwardRef<
               )}
               <div className="maka-composer-input-suggestion-wrap">
                 {nextPrompt.text ? (
-                  <UiButton
-                    type="button"
-                    variant="ghost"
-                    label={`${suggestionAcceptLabel}: ${nextPrompt.text}`}
-                    className="maka-composer-next-prompt"
-                    onClick={acceptNextPrompt}
-                    onMouseDown={(event) => event.preventDefault()}
-                    tooltip={`${nextPrompt.text} · ${suggestionAcceptLabel}`}
-                  >
+                  <span aria-hidden="true" className="maka-composer-next-prompt" style={{ maxHeight: (props.maxInputRows ?? COMPOSER_MAX_ROWS) * 22 }}>
                     <span className="maka-composer-next-prompt-text">{nextPrompt.text}</span>
-                  </UiButton>
+                  </span>
                 ) : null}
                 <ChatComposerInput
                   ref={inputRootRef}
@@ -2301,7 +2292,7 @@ export const Composer = forwardRef<
                         }}
                       />
                     ) : null}
-                    {nextPrompt.service ? (
+                    {nextPrompt.service && props.activeSession ? (
                       <DropdownMenuCheckboxItem label={suggestionLabel} value={nextPrompt.service.enabled}
                         endContent={nextPrompt.service.enabled ? <SelectionMark state="checked" size="sm" /> : undefined}
                         description={copy.promptSuggestionDescription}

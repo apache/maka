@@ -691,6 +691,9 @@ export const NextPromptSuggestion: Story = {
       return { rects: [...range.getClientRects()].map(({ x, y, width, height }) => ({ x, y, width, height })),
         font: style.font, letterSpacing: style.letterSpacing, whiteSpace: style.whiteSpace, wordBreak: style.wordBreak };
     };
+    expect(getComputedStyle(suggestion()!).pointerEvents).toBe('none');
+    await userEvent.click(input);
+    expect(input).toHaveTextContent('');
     const offered = metrics(suggestion()!.querySelector('.maka-composer-next-prompt-text')!);
     const text = suggestion()!.textContent;
     expect(input).toHaveTextContent('');

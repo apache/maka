@@ -45,6 +45,7 @@ test('Chinese without whitespace is valid; empty/meta/multiline/oversized sugges
   for (const raw of [
     '',
     'none',
+    '/unexpected-command',
     'no suggestion',
     '第一行\n第二行',
     'a'.repeat(81),
@@ -211,6 +212,9 @@ test('the permanent WorkHub coordinator is eligible; other agent and restricted 
     { collaborationMode: 'plan' },
     { backend: 'claude' },
     { labels: ['mode:side_conversation'] },
+    { labels: ['mode:bot'] },
+    { labels: ['mode:deep_research'] },
+    { labels: ['scheduled-task'] },
     { subagentParent: {} },
   ]) {
     assert.equal(
@@ -233,4 +237,38 @@ test('WorkHub prediction follows recent visible conversation without reviving an
   assert.doesNotMatch(prompt, /unrelated old task/);
   assert.match(prompt, /current task/);
   assert.match(prompt, /persistent WorkHub/);
+});
+
+test('a transient reconciliation read failure does not poison future requests', async () => {
+  let failRead = false;
+  const coordinator = new HostPromptSuggestionCoordinator({
+    readSource: async () => {
+      if (failRead) throw new Error('temporary read failure');
+      return source;
+    },
+    generate: async () => '补上测试',
+  });
+  assert.equal((await coordinator.generate('session-1', lease)).kind, 'generated');
+  failRead = true;
+  await coordinator.reconcile('session-1');
+  failRead = false;
+  assert.equal((await coordinator.generate('session-1', lease)).kind, 'generated');
+  await coordinator.close();
+});
+
+test('the deadline also bounds a stalled initial source read', async () => {
+  const coordinator = new HostPromptSuggestionCoordinator({
+    readSource: () => new Promise(() => {}),
+    generate: async () => {
+      assert.fail('must not call the model');
+    },
+  });
+  // Keep the event loop alive while the unrefed AbortSignal deadline runs.
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    assert.deepEqual(await coordinator.generate('session-1', lease), { kind: 'none' });
+  } finally {
+    clearInterval(keepAlive);
+    await coordinator.close();
+  }
 });

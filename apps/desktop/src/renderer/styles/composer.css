@@ -686,14 +686,14 @@
 .maka-composer-input-suggestion-wrap > .maka-composer-editor,
 .maka-composer-next-prompt { grid-area: 1 / 1; min-width: 0; }
 .maka-composer-next-prompt {
-  position: relative; z-index: 1; align-self: start;
+  position: relative; z-index: 1; align-self: start; overflow: hidden;
   display: block; width: 100%; height: auto; margin: 0; border: 0;
   /* Match ChatComposerInput's editable and placeholder typography tokens. */
   padding: var(--spacing-1);
   font-family: var(--font-family-body); font-size: var(--text-body-size);
   font-weight: inherit; font-style: inherit; letter-spacing: inherit; line-height: 22px;
   white-space: pre-wrap; word-break: break-word; text-align: start;
-  background: transparent; color: var(--color-text-secondary); cursor: text;
+  background: transparent; color: var(--color-text-secondary); pointer-events: none;
 }
 @media (pointer: coarse) {
   .maka-composer-next-prompt { font-size: max(1rem, var(--text-body-size)); }

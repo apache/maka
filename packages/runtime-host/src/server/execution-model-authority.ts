@@ -402,7 +402,7 @@ export function createHostPromptSuggestionModel(input: HostSessionEffectModelInp
       telemetrySessionId: source.sessionId,
       header: { ...source.header, thinkingLevel: 'off' },
       callKind: 'prompt_suggestion',
-      callId: `prompt_suggestion_${source.terminalEventId}`,
+      callId: `prompt_suggestion_${source.terminalEventId}_${authority.newId()}`,
       abortSignal,
       buildRequest: () => ({
         prompt: buildPromptSuggestionPrompt(

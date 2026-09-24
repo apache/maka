@@ -1453,7 +1453,15 @@ export async function createExecutionRuntimeHostComposition(
             return undefined;
           const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
           if (!supportsPromptSuggestion(sessionId, header)) return undefined;
+          await requireSessionManager(manager).ensureTranscriptLedgerForRead(sessionId);
           const view = await recapReadModel.getSessionView(sessionId);
+          if (
+            view.messages.some(
+              (message) =>
+                message.type === 'user' && message.turnId === turn.turnId && message.origin,
+            )
+          )
+            return undefined;
           return {
             sessionId,
             turnId: turn.turnId,

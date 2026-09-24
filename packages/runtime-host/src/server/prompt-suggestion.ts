@@ -23,6 +23,7 @@ import {
   type SessionHeader,
   type StoredMessage,
 } from '@maka/core/session';
+import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import type { PromptSuggestionResult } from '../protocol/index.js';
 import type { OperationHandlerMap, OperationResidency } from './operation-dispatcher.js';
 
@@ -42,7 +43,14 @@ export function supportsPromptSuggestion(sessionId: string, header: SessionHeade
         sessionId === WORKHUB_COORDINATION_SESSION_ID)) &&
     !header.subagentParent &&
     header.collaborationMode !== 'plan' &&
-    !header.labels.includes('mode:side_conversation') &&
+    !header.labels.some((label) =>
+      [
+        SIDE_CONVERSATION_SESSION_LABEL,
+        'mode:bot',
+        'mode:deep_research',
+        'scheduled-task',
+      ].includes(label),
+    ) &&
     header.backend === 'ai-sdk'
   );
 }
@@ -71,7 +79,13 @@ export function cleanPromptSuggestion(raw: string): string | undefined {
     .trim()
     .replace(/^["“]([^\n]+)["”]$/u, '$1')
     .trim();
-  if (!text || Array.from(text).length > 80 || /[\n\r\x00-\x1f<>`]/u.test(text)) return undefined;
+  if (
+    !text ||
+    text.startsWith('/') ||
+    Array.from(text).length > 80 ||
+    /[\n\r\x00-\x1f<>`]/u.test(text)
+  )
+    return undefined;
   if (
     /^(?:none|null|undefined|no suggestion|nothing to suggest|无|无需建议|不需要建议)[.!。]?$/iu.test(
       text,
@@ -81,6 +95,20 @@ export function cleanPromptSuggestion(raw: string): string | undefined {
   if (/^(?:(?:I'll|Let me|Here's|You should)\b|我来|让我|你可以|建议你)/iu.test(text))
     return undefined;
   return text;
+}
+
+async function beforeDeadline<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([task, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 /** Ephemeral, bounded, deduplicated effects; a result never becomes a user Message. */
@@ -108,7 +136,10 @@ export class HostPromptSuggestionCoordinator {
     acquireResidency: () => OperationResidency,
   ): Promise<PromptSuggestionResult> {
     if (this.#closed) return { kind: 'none' };
-    const source = await this.ports.readSource(sessionId).catch(() => undefined);
+    const deadline = AbortSignal.timeout(5000);
+    const source = await beforeDeadline(this.ports.readSource(sessionId), deadline).catch(
+      () => undefined,
+    );
     if (!source || this.#closed) return { kind: 'none' };
     const key = JSON.stringify([
       source.turnId,
@@ -127,12 +158,12 @@ export class HostPromptSuggestionCoordinator {
     }
     const abort = new AbortController();
     const residency = acquireResidency();
-    const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(5000)]);
+    const signal = AbortSignal.any([abort.signal, deadline]);
     const task = (async (): Promise<PromptSuggestionResult> => {
       try {
-        const raw = await this.ports.generate(source, signal);
+        const raw = await beforeDeadline(this.ports.generate(source, signal), signal);
         if (signal.aborted || this.#closed || !raw) return { kind: 'none' };
-        const current = await this.ports.readSource(sessionId);
+        const current = await beforeDeadline(this.ports.readSource(sessionId), signal);
         if (
           signal.aborted ||
           this.#closed ||
@@ -176,6 +207,7 @@ export class HostPromptSuggestionCoordinator {
       ]) !== entry.key
     ) {
       entry.abort.abort();
+      this.#entries.delete(sessionId);
     }
   }
   beginDrain(): void {

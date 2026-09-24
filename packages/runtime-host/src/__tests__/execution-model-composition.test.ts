@@ -4006,28 +4006,39 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       }),
       '## Goal',
     );
-    const suggestionModel = createHostPromptSuggestionModel(evaluatorInput);
-    assert.equal(
-      await suggestionModel(
-        {
-          sessionId: session.id,
-          turnId: 'suggestion-turn',
-          terminalEventId: 'suggestion-terminal',
-          header: session,
-          messages: [
-            {
-              type: 'user',
-              id: 'suggestion-user',
-              ts: 1,
-              turnId: 'suggestion-turn',
-              text: '先设计，再实现',
-            },
-          ],
-        },
-        new AbortController().signal,
-      ),
-      SUMMARY_TEXT,
+    let suggestionCall = 0;
+    const suggestionModel = createHostPromptSuggestionModel({
+      ...evaluatorInput,
+      newId: () => String(++suggestionCall),
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      assert.equal(
+        await suggestionModel(
+          {
+            sessionId: session.id,
+            turnId: 'suggestion-turn',
+            terminalEventId: 'suggestion-terminal',
+            header: session,
+            messages: [
+              {
+                type: 'user',
+                id: 'suggestion-user',
+                ts: 1,
+                turnId: 'suggestion-turn',
+                text: '先设计，再实现',
+              },
+            ],
+          },
+          new AbortController().signal,
+        ),
+        SUMMARY_TEXT,
+      );
+    }
+    const suggestionRows = (await usage.telemetry.logs({ range: 'all' })).rows.filter(
+      (row) => row.callKind === 'prompt_suggestion',
     );
+    assert.equal(suggestionRows.length, 2);
+    assert.equal(new Set(suggestionRows.map((row) => row.callId)).size, 2);
     const suggestionRequest = provider.requests.at(-1)!;
     assert.equal(suggestionRequest.authorization, `Bearer ${API_KEY}`);
     assert.equal((suggestionRequest.body as Record<string, unknown>).tools, undefined);
