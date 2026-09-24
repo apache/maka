@@ -441,18 +441,38 @@ mod tests {
                 super::super::Command::Toggle("m".into()),
             )));
             assert!(!app.management_enabled(&Manage::Save));
+            let draft = |app: &App| {
+                app.management
+                    .dialog
+                    .as_ref()
+                    .unwrap()
+                    .enabled_models
+                    .as_ref()
+                    .unwrap()
+                    .profile
+                    .as_ref()
+                    .unwrap()
+                    .fields
+                    .clone()
+            };
+            let advanced = draft(&app)
+                .iter()
+                .position(|field| *field == Field::Advanced)
+                .unwrap();
             // Opening advanced controls is presentation only and keeps drafts.
             app.apply(Action::Manage(Manage::EnabledModels(
-                super::super::Command::Profile(Command::Adjust(18, true)),
+                super::super::Command::Profile(Command::Adjust(advanced, true)),
             )));
             assert!(!app.management_enabled(&Manage::Save));
+            let count = draft(&app).len();
+            assert!(count > advanced + 1, "advanced settings are listed");
             for (width, height) in [(48, 22), (80, 24), (120, 40)] {
                 screen = Terminal::new(TestBackend::new(width, height)).unwrap();
                 screen
                     .draw(|frame| crate::view::draw(frame, &mut app))
                     .unwrap();
                 // Every setting, advanced ones included, can take focus and be seen.
-                for index in 0..37 {
+                for index in 0..count {
                     let path = format!("fields/rows/{index}");
                     app.layer.focus_path(&path);
                     screen
