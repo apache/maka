@@ -610,3 +610,38 @@ test('per-model ApplyPatch overrides survive persistence and reject non-booleans
     RuntimePolicyDomainDecodeError,
   );
 });
+
+test('Jev is an optional strict policy field and has a dedicated credential scope', () => {
+  const legacy = createDefaultRuntimePolicy();
+  assert.deepEqual(decodeCanonicalRuntimePolicy(legacy), legacy);
+  const enabled = { ...legacy, jev: { enabled: true } };
+  assert.deepEqual(decodeCanonicalRuntimePolicy(enabled), enabled);
+  assert.throws(
+    () => decodeCanonicalRuntimePolicy({ ...legacy, jev: { enabled: 'true' } }),
+    RuntimePolicyDomainDecodeError,
+  );
+  assert.throws(
+    () => decodeCanonicalRuntimePolicy({ ...legacy, jev: { enabled: true, apiKey: 'secret' } }),
+    RuntimePolicyDomainDecodeError,
+  );
+  const mutation = normalizeRuntimePolicyMutation({
+    expectedRevision: 0,
+    operation: { kind: 'set_jev', value: { enabled: false } },
+  });
+  assert.deepEqual(mutation.operation, { kind: 'set_jev', value: { enabled: false } });
+  const credential = normalizeSetCredentialInput({
+    locator: { scope: 'jev', kind: 'api_key' },
+    expected: null,
+    secret: 'key',
+  });
+  assert.deepEqual(credential.locator, { scope: 'jev', kind: 'api_key' });
+  assert.throws(
+    () =>
+      normalizeSetCredentialInput({
+        locator: { scope: 'jev', kind: 'password' },
+        expected: null,
+        secret: 'key',
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});

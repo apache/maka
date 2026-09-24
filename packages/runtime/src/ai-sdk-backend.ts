@@ -320,17 +320,7 @@ export class AiSdkBackend implements AgentBackend {
    */
   private readonly activeTurns = new Set<AiSdkTurn>();
   private readonly compaction: AiSdkCompaction;
-  /**
-   * The provider has been reported dropping context, for this backend.
-   *
-   * Not per send: the condition persists once a provider starts truncating, so
-   * a note on every later turn would repeat one fact the user has already been
-   * told. The scope is this backend's lifetime rather than the Session's, so a
-   * backend that is disposed and rebuilt may say it once more.
-   */
-  private readonly turnSessionState: AiSdkSessionState = {
-    contextProviderDroppingReported: false,
-  };
+  private readonly turnSessionState: AiSdkSessionState = {};
   constructor(input: AiSdkBackendInput) {
     this.input = input;
     this.sessionId = input.sessionId;

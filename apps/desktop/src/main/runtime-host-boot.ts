@@ -462,8 +462,7 @@ registerDesktopSessionLocalIpc({
 
 function localSessionTarget(state: RuntimeHostDesktopTargetState): DesktopSessionLocalTarget | undefined {
   if (runtimeHostProfileAccess(state.target.profile) !== 'owner') return undefined;
-  const hostId = state.readiness === 'ready' ? state.candidate.client.hostId
-    : state.hostId ?? (state.target.profile.kind === 'local' ? startupLocalStorageRoot!.rootId : state.target.profile.rootId);
+  const hostId = state.hostId;
   const partition = desktopSessionLocalPartition({ profileId: state.target.profile.id, hostId, incarnation: state.target.profileIncarnationId, credential: state.target.credential });
   return { partition, scope: { hostId, targetEpoch: state.epoch }, profileId: state.target.profile.id,
     ...(state.readiness === 'ready' ? { client: state.candidate.client, submit: (input) => state.candidate.submitLocalMessage(input) } : {}) };
@@ -984,6 +983,7 @@ const sessionCopyOwnerProcessId = randomUUID();
 const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
   {
     rootPath: workspaceRoot,
+    rootId: startupLocalStorageRoot.rootId,
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
     candidateLaunchBarrier: runtimeHostCandidateLaunchBarrier,
@@ -1168,16 +1168,13 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       }
       sessionLocal.wake();
       const profileAccess = runtimeHostProfileAccess(state.target.profile);
-      const hostId = state.readiness === "ready"
-        ? state.candidate.client.hostId
-        : state.hostId;
       mainWindowController.send("runtime-host-profiles:changed", {
         epoch: state.epoch,
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
         profileAccess,
-        ...(hostId ? { hostId } : {}),
+        hostId: state.hostId,
         readiness: state.readiness,
         isDefault:
           (runtimeHostManager?.defaultProfileId() ??
@@ -1193,7 +1190,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
             console.warn('[runtime-host] shared Session connection update failed:', error),
           );
       }
-      if (state.readiness === "unavailable" && state.hostId) {
+      if (state.readiness === "unavailable") {
         void browserIpc.retireTarget({
           hostId: state.hostId,
           targetEpoch: state.epoch,
@@ -1223,28 +1220,22 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     onTargetRemoved: (state) => {
       const localTarget = localSessionTarget(state);
       if (localTarget) sessionLocal.purge(localTarget);
-      const hostId = state.readiness === "ready"
-        ? state.candidate.client.hostId
-        : state.hostId;
       mainWindowController.send("runtime-host-profiles:changed", {
         epoch: state.epoch,
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
         profileAccess: runtimeHostProfileAccess(state.target.profile),
-        ...(hostId ? { hostId } : {}),
+        hostId: state.hostId,
         readiness: "unavailable",
         isDefault:
           (runtimeHostManager?.defaultProfileId() ??
             runtimeHostStartup.preferences.defaultProfileId) === state.target.profile.id,
         removed: true,
       });
-      const scope = hostId ? { hostId, targetEpoch: state.epoch } : undefined;
-      if (scope) {
-        void browserIpc.retireTarget(scope).catch((error) =>
-          console.error("[runtime-host] Browser target retirement failed:", error),
-        );
-      }
+      void browserIpc.retireTarget({ hostId: state.hostId, targetEpoch: state.epoch }).catch((error) =>
+        console.error("[runtime-host] Browser target retirement failed:", error),
+      );
     },
     onDefaultProfileChanged: (profileId) => {
       const state = runtimeHostManager?.entries().find(
@@ -1256,11 +1247,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
         profileName: state?.target.profile.name ?? profileId,
         profileKind: state?.target.profile.kind ?? "remote",
         profileAccess: state ? runtimeHostProfileAccess(state.target.profile) : "owner",
-        ...(state?.readiness === "ready"
-          ? { hostId: state.candidate.client.hostId }
-          : state?.readiness !== "unavailable" && state && "hostId" in state && state.hostId
-            ? { hostId: state.hostId }
-            : {}),
+        ...(state ? { hostId: state.hostId } : {}),
         readiness: state?.readiness ?? "unavailable",
         isDefault: true,
       });
@@ -1601,7 +1588,7 @@ function registerHostClientIpc(
   void capabilityBinding.aligned.catch((error) =>
     console.error("[runtime-host] MCP capability alignment failed:", error),
   );
-  registerMcpIpcMain({
+  const stopMcpIpc = registerMcpIpcMain({
     ipcMain: scopedIpc,
     store: mcpConfigStore,
     manager: mcpManager,
@@ -1631,6 +1618,7 @@ function registerHostClientIpc(
     preview: { service: managedArtifactPreview, scope: scope.targetEpoch, openExternal: (url) => shell.openExternal(url) },
   });
   registerExternalAgentSetupIpc({ ipcMain: scopedIpc, client, presentation: oauthPresentation,
+    onCatalogChanged: () => sendToRenderer('external-agents:catalog-changed'),
     selectExecutable: async () => {
       const result = await mainWindowController.showOpenDialog({ properties: ['openFile'] });
       return result.canceled ? undefined : result.filePaths[0];
@@ -1783,6 +1771,10 @@ function registerHostClientIpc(
     },
     listSessions: async () =>
       (await client.listSessions()).map(toDesktopHostSessionSummary),
+    getSession: async (sessionId) => {
+      const session = await client.getSession(sessionId);
+      return session === null ? null : toDesktopHostSessionSummary(session);
+    },
     getMilestones: async () =>
       (await settingsStore.get()).onboarding.milestones,
     upsertMilestone: (id, status) =>
@@ -1850,6 +1842,7 @@ function registerHostClientIpc(
     if (runtimePolicyTargetsByEpoch.get(scope.targetEpoch) === targetContext) {
       runtimePolicyTargetsByEpoch.delete(scope.targetEpoch);
     }
+    stopMcpIpc();
     capabilityBinding.dispose();
     await capabilityBinding.aligned.catch(() => undefined);
   };
@@ -1963,7 +1956,7 @@ function registerPersistentClientIpc(): void {
   });
   ipcMain.handle("runtime-host:activeIdentity", () => {
     const current = runtimeHostManager?.current();
-    if (!current?.hostId) {
+    if (!current) {
       throw new Error("Desktop Runtime Host identity is unavailable");
     }
     return projectRuntimeHostIdentity(
@@ -1976,10 +1969,8 @@ function registerPersistentClientIpc(): void {
   ipcMain.handle("runtime-host:identities", () =>
     (runtimeHostManager?.entries() ?? []).flatMap((state) => {
       if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') return [];
-      const hostId = state.readiness === "ready" ? state.candidate.client.hostId : state.hostId ?? localSessionTarget(state)?.scope.hostId;
-      if (!hostId) return [];
       return [
-        projectRuntimeHostIdentity(state.epoch, state.target, state.readiness === 'ready' ? 'ready' : 'reconnecting', hostId),
+        projectRuntimeHostIdentity(state.epoch, state.target, state.readiness === 'ready' ? 'ready' : 'reconnecting', state.hostId),
       ];
     }),
   );

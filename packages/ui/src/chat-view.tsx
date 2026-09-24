@@ -38,6 +38,7 @@ import { EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import {
   mergePromptAnchorRailTurns,
+  reusePromptAnchorRailTurns,
   PromptAnchorRail,
   type PromptAnchorRailTurn,
 } from './prompt-anchor-rail.js';
@@ -442,43 +443,28 @@ export function ChatView(props: {
     ),
     [props.messages],
   );
-  // One rail tick per turn that carries a user prompt. The rail's entries
-  // change only when a turn's persisted prompt/answer text does, but `turns`
-  // gets a new array on every delta. Handing the previous array back when
-  // nothing it reads moved keeps the memoized rail out of the streaming path.
-  // The per-entry comparison is O(1) per turn because an unaffected turn keeps
-  // its object identity, so its text is the same string reference.
-  const promptRailTurnsRef = useRef<ReadonlyArray<{ turnId: string; label: string; reply: string }>>([]);
-  const loadedPromptRailTurns = useMemo(() => {
-    const next = turns
-      .filter((turn) => (turn.user?.text ?? '').trim().length > 0)
-      .map((turn) => ({
-        turnId: turn.turnId,
-        label: turn.user?.text ?? '',
-        reply: finalAssistantReplyText(turn),
-      }));
-    const previous = promptRailTurnsRef.current;
-    if (
-      previous.length === next.length
-      && next.every((entry, index) => {
-        const prior = previous[index]!;
-        return prior.turnId === entry.turnId && prior.label === entry.label && prior.reply === entry.reply;
-      })
-    ) {
-      return previous;
-    }
-    promptRailTurnsRef.current = next;
-    return next;
-  }, [turns]);
+  // One rail tick per turn that carries a user prompt. `turns` and the
+  // streaming turn's reply change on every delta; reusing unchanged entries
+  // keeps every other tick from re-rendering.
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
+  const promptRailTurnsRef = useRef<readonly PromptAnchorRailTurn[]>([]);
   const promptRailTurns = useMemo(
     () => {
-      const merged = mergePromptAnchorRailTurns(loadedPromptRailTurns, props.transcriptTurnIndex, turnIds);
-      return props.promptRailDecorations
+      const loaded = turns
+        .filter((turn) => (turn.user?.text ?? '').trim().length > 0)
+        .map((turn) => ({
+          turnId: turn.turnId,
+          label: turn.user?.text ?? '',
+          reply: finalAssistantReplyText(turn),
+        }));
+      const merged = mergePromptAnchorRailTurns(loaded, props.transcriptTurnIndex, turnIds);
+      const decorated = props.promptRailDecorations
         ? merged.map((turn) => ({ ...turn, ...props.promptRailDecorations?.get(turn.turnId) }))
         : merged;
+      promptRailTurnsRef.current = reusePromptAnchorRailTurns(promptRailTurnsRef.current, decorated);
+      return promptRailTurnsRef.current;
     },
-    [loadedPromptRailTurns, props.transcriptTurnIndex, turnIds, props.promptRailDecorations],
+    [turns, props.transcriptTurnIndex, turnIds, props.promptRailDecorations],
   );
   // Turn identity and order only, so a streaming delta keeps the same array.
   const orderedTurnIdsRef = useRef<readonly string[]>([]);
@@ -557,7 +543,7 @@ export function ChatView(props: {
     turns,
   );
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
-  const { highlightedTurnId, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
+  const { highlightedTurnId, placed, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
     scrollRef,
     measureStartMargin,
     virtualizerRef,
@@ -812,7 +798,7 @@ export function ChatView(props: {
                 ? emptyContent
                 : null}
               {loadEarlierHistoryControl}
-              <div key={props.activeSession.id} ref={listRef} className="maka-chat-session-swap">
+              <div ref={listRef} className="maka-chat-session-swap" data-placed={placed || undefined}>
                 <Virtualizer
                   key={measurement.generation}
                   ref={virtualizerRef}

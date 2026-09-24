@@ -65,6 +65,7 @@ import {
   type ResponseFrame,
 } from './operations.js';
 import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
+import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export * from './access-authority.js';
 export * from './agent-graph.js';
@@ -96,12 +97,20 @@ export * from './session-todo.js';
 export * from './workspace.js';
 export * from './workhub-coordination.js';
 export * from './websocket-path.js';
+export { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 177 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 183 as const;
+// 183: Jev policy snapshots, set_jev mutation and credential locator require matching peers.
+// 182: Executor catalogs expose structured model families and thinking variant IDs.
+// 181: Canonical executor models and retained provider stop reasons after cancellation.
+// 180: Reject contradictory executor configuration and legacy model targets.
+// 179: Generic executor discovery and confirmed per-Session configuration.
+// 178: WorkHub result turns carry a Host-owned workhub_result origin. Older
+// Clients reject that origin and cannot render the result notification.
 // 177: External Session import input may carry an optional Host-resolved
 // workspace target. Epoch-176 peers reject the unknown `workspace` key.
 // 176: Session-scoped capability publication and MCP admission require compatible
@@ -456,7 +465,6 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 177 as const;
 // one transport message; narrower domains retain their own encoded limits.
 export const RUNTIME_HOST_MAX_MESSAGE_BYTES = 768 * 1024;
 export const RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS = 64;
-export const INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID = 'maka.interactive' as const;
 
 declare const encodedProtocolMessageBrand: unique symbol;
 

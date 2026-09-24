@@ -33,7 +33,7 @@
     "build:preload": "esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload/preload.cjs --external:electron",
     "build:overlay": "node ../../scripts/build-cursor-overlay.mjs",
     "build:renderer": "vite build && node scripts/check-renderer-entry-output.mjs && node ../../scripts/check-third-party-notices.mjs",
-    "build:workspace-deps": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build",
+    "build:workspace-deps": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/acp-executor-plugin run build && npm --workspace @maka/antigravity-acp-plugin run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build",
     "package:macos-arm64": "electron-builder --config electron-builder.config.mjs --mac dmg zip --arm64 --publish never",
     "package:macos-x64": "electron-builder --config electron-builder.config.mjs --mac dmg zip --x64 --publish never",
     "package:windows-x64": "electron-builder --config electron-builder.config.mjs --win nsis zip --x64 --publish never",
@@ -43,9 +43,10 @@
     "package:linux-deb-arm64": "electron-builder --config electron-builder.config.mjs --linux deb --arm64 --publish never",
     "typecheck": "tsc -p tsconfig.preload.json --noEmit && tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.storybook.json --noEmit",
     "typecheck:stories": "tsc -p tsconfig.storybook.json --noEmit",
-    "test:dist": "node --test --test-force-exit \"dist/main/**/*.test.js\" scripts/dev-app-runtime.test.mjs scripts/vite-workspace-packages.test.mjs scripts/vite-client-plugin-slots.test.mjs",
+    "test:dist": "node --test --test-force-exit \"dist/main/**/*.test.js\" scripts/dev-app-runtime.test.mjs scripts/vite-workspace-packages.test.mjs scripts/vite-client-plugin-slots.test.mjs scripts/build-executor-plugins.test.mjs",
     "e2e": "npm run build:with-deps && playwright test --config e2e/playwright.config.ts",
     "measure": "npm run build:with-deps && playwright test --config perf/playwright.config.ts",
+    "measure:onboarding": "node scripts/measure-onboarding-session-update.mjs",
     "build:with-deps": "npm run build:workspace-deps && npm run build",
     "smoke:real-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs",
     "smoke:programmatic-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",
@@ -72,7 +73,6 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@ant-design/icons-svg": "4.6.0",
     "@astryxdesign/core": "0.6.2",
     "@astryxdesign/theme-neutral": "0.6.2",
     "@babel/parser": "7.29.7",
@@ -100,7 +100,6 @@
   },
   "maka": {
     "rendererBundledDependencies": [
-      "@ant-design/icons-svg",
       "@astryxdesign/core",
       "@astryxdesign/theme-neutral",
       "@fontsource-variable/geist",

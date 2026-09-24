@@ -62,6 +62,29 @@ test('catalog transport preserves independent limits and their unmodified defaul
   assert.equal(decoded.defaultInputLimit, 32000);
 });
 
+test('GPT-6 Sol and Luna use GPT labels and expose supported thinking levels', () => {
+  const models = [{ id: 'gpt-6-sol' }, { id: 'gpt-6-luna' }];
+  for (const providerType of ['openai', 'openai-codex'] as const) {
+    const entries = buildModelCatalogEntries({ providerType, models, modelSource: 'fetched' });
+    assert.deepEqual(
+      entries.map(({ id, displayName, thinkingLevels }) => ({ id, displayName, thinkingLevels })),
+      [
+        {
+          id: 'gpt-6-sol',
+          displayName: 'GPT-6 Sol',
+          thinkingLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        },
+        {
+          id: 'gpt-6-luna',
+          displayName: 'GPT-6 Luna',
+          thinkingLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        },
+      ],
+      providerType,
+    );
+  }
+});
+
 test('a live inventory annotates a model it omits and preserves higher-priority failures', () => {
   const input = {
     providerType: 'zai-coding-plan' as const,

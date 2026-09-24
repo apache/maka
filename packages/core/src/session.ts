@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { ExecutorConfiguration } from './executor-catalog.js';
+
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
 import { isExecutorId } from './executor-id.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
@@ -299,6 +301,7 @@ export interface SessionHeader {
   backend: PersistedBackendKind;
   /** Named black-box executor contributed by a plugin. Present exactly for plugin-executor. */
   executorId?: string;
+  executorConfig?: ExecutorConfiguration;
   /** Immutable Connection entity identity. Optional only on legacy Session records. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
@@ -411,6 +414,7 @@ export interface SessionSummary {
   revisionState?: 'preparing' | 'committed';
   backend: PersistedBackendKind;
   executorId?: string;
+  executorConfig?: ExecutorConfiguration;
   /** Immutable Connection entity identity. Optional only on legacy summaries. */
   llmConnectionId?: string;
   llmConnectionSlug: string;
@@ -1054,6 +1058,8 @@ interface WorkHubCoordinationMessageEnvelope {
  */
 export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMessageEnvelope {
   kind: 'delegation_assigned';
+  /** New delegations opt into Host-owned asynchronous result delivery. */
+  returnResults?: true;
   delegationId: string;
   targetTurnId: string;
   targetMessageId: string;
@@ -1243,7 +1249,6 @@ export interface TurnRecord {
 export const RUNTIME_SYSTEM_NOTE_KINDS = [
   'context_compacted',
   'context_compaction_failed_open',
-  'context_provider_dropping',
   'context_window_suggestion',
   'context_window_overrun',
   'context_reported_window_exceeded',
@@ -1252,9 +1257,9 @@ export const RUNTIME_SYSTEM_NOTE_KINDS = [
 ] as const;
 
 /**
- * Notes only legacy transcripts carry, still decoded so those rows stay
- * readable. Nothing writes them: the Session header and the invocation's
- * opening and terminal facts already own what each of them said.
+ * Notes nothing writes any more, still decoded so old transcripts and run
+ * ledgers stay readable, and never shown. The session-level ones are owned by
+ * the Session header and the invocation's opening and terminal facts.
  */
 export const RETIRED_SYSTEM_NOTE_KINDS = [
   'session_start',
@@ -1263,6 +1268,7 @@ export const RETIRED_SYSTEM_NOTE_KINDS = [
   'model_change',
   'error',
   'abort',
+  'context_provider_dropping',
 ] as const;
 
 export type RuntimeSystemNoteKind = (typeof RUNTIME_SYSTEM_NOTE_KINDS)[number];
@@ -1270,6 +1276,12 @@ export type SystemNoteKind = RuntimeSystemNoteKind | (typeof RETIRED_SYSTEM_NOTE
 
 export function isRuntimeSystemNoteKind(kind: string): kind is RuntimeSystemNoteKind {
   return (RUNTIME_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind);
+}
+
+export function isSystemNoteKind(kind: string): kind is SystemNoteKind {
+  return (
+    isRuntimeSystemNoteKind(kind) || (RETIRED_SYSTEM_NOTE_KINDS as readonly string[]).includes(kind)
+  );
 }
 
 export interface SystemNoteMessage {
@@ -1402,6 +1414,7 @@ const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
     [
       'attachments',
       'targetAttachments',
+      'returnResults',
       'create',
       'steered',
       'replacesActionId',
@@ -1531,10 +1544,6 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
   ['text'],
   ['signature', 'providerOptions', 'parts'],
 );
-const SYSTEM_NOTE_KINDS = new Set<string>([
-  ...RUNTIME_SYSTEM_NOTE_KINDS,
-  ...RETIRED_SYSTEM_NOTE_KINDS,
-]);
 
 export function decodeCanonicalMessage(value: unknown): StoredMessage {
   return decodeMessage(value, decodeCanonicalToolResultContent);
@@ -1686,7 +1695,7 @@ function decodeMessage(
         hasExactShape(message, SYSTEM_NOTE_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, false) &&
         isOptionalString(message.turnId) &&
-        SYSTEM_NOTE_KINDS.has(message.kind as string)
+        isSystemNoteKind(message.kind as string)
       )
         return message as unknown as SystemNoteMessage;
       break;
@@ -1821,6 +1830,7 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.targetMessageId === 'string' &&
     typeof message.targetSessionName === 'string' &&
     message.targetSessionName.trim().length > 0 &&
+    (message.returnResults === undefined || message.returnResults === true) &&
     (message.steered === undefined || message.steered === true) &&
     ((message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION &&
       message.replacesActionId === undefined &&

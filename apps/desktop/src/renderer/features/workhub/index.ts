@@ -17,13 +17,11 @@
  * under the License.
  */
 
-export * from './model/anchor-rail.js';
 export {
   workHubLinkedWork,
   type WorkHubDelegationReference,
 } from './model/linked-work.js';
 export { projectWorkHubDelegationState, workHubTurnResultPreview } from './model/delegation-feedback.js';
-export { WorkHubNavigationRail } from './ui/workhub-navigation-rail.js';
 export type { WorkHubServices, WorkHubTranscriptSnapshot } from './ports.js';
 export { WorkHubServicesProvider } from './services.js';
 export { WorkHubRoot } from './ui/workhub-root.js';
@@ -36,4 +34,3 @@ export {
   WorkHubModelConfigurationRequiredError,
   type WorkHubCoordinationHostChange,
 } from '../../application/contracts/workhub-workspace/coordination-lifecycle.js';
-export { WorkHubReturnButton } from './ui/return-button.js';

@@ -28,7 +28,7 @@ import {
   type ModelCatalogEntry,
 } from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
-import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
+import { pickNewChatModel } from '../../renderer/features/conversation/index.js';
 import { buildCatalogDailyReviewModelOptions } from '../../renderer/model-catalog-choices.js';
 
 function connection(

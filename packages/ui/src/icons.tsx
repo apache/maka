@@ -149,6 +149,7 @@ export {
   Search,
   Share2,
   Settings,
+  Shield,
   ShieldAlert,
   ShieldCheck,
   Sparkles,

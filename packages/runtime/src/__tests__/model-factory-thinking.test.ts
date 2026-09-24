@@ -214,6 +214,28 @@ describe('buildProviderOptions: thinking level', () => {
     });
   });
 
+  test('GPT-6 Sol and Luna send selected reasoning effort on API and Codex paths', () => {
+    for (const modelId of ['gpt-6-sol', 'gpt-6-luna']) {
+      assert.deepEqual(buildProviderOptions(conn('openai'), modelId, 'max'), {
+        openai: {
+          store: false,
+          reasoningSummary: 'auto',
+          reasoningEffort: 'max',
+          parallelToolCalls: true,
+        },
+      });
+      assert.deepEqual(buildProviderOptions(conn('openai-codex'), modelId, 'max'), {
+        openai: {
+          store: false,
+          textVerbosity: 'medium',
+          reasoningSummary: 'auto',
+          reasoningEffort: 'max',
+          parallelToolCalls: true,
+        },
+      });
+    }
+  });
+
   test('openai-codex (gpt-5.5) preserves store:false / textVerbosity and merges reasoningEffort', () => {
     assert.deepEqual(buildProviderOptions(conn('openai-codex'), 'gpt-5.5'), {
       openai: {

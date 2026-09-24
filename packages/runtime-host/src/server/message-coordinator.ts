@@ -103,6 +103,8 @@ const EMPTY_SKILL_INVOCATION: SkillInvocationResult = {
 };
 
 export interface HostMessageSessionHeader {
+  readonly idleOnly?: boolean;
+  readonly supportsAttachments?: boolean;
   readonly isArchived: boolean;
   readonly unavailableReason?: string;
   /** A reserved Session accepts queued messages only while its dedicated root is active. */
@@ -1281,7 +1283,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         if (header.unavailableReason) {
           return failure('operation_unavailable', header.unavailableReason);
         }
+        if (header.supportsAttachments === false && payload.content.attachments?.length)
+          return failure(
+            'operation_unavailable',
+            'Remove unsupported attachments or choose another executor.',
+          );
         const rootState = await this.#root.readRootState(input.sessionId);
+        if (header.idleOnly && rootState.kind !== 'idle')
+          return failure('session_busy', 'External executor accepts messages only while idle');
         if (this.#failStopped) {
           return failure('host_draining', 'Runtime Host message authority has failed');
         }

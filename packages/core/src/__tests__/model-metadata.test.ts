@@ -156,11 +156,13 @@ describe('model-metadata vision capability', () => {
 });
 
 describe('openAiAdapterApiProtocol', () => {
-  it('routes a normalized gpt-5 family to the Responses wire', () => {
+  it('routes normalized GPT-5 and GPT-6 families to the Responses wire', () => {
     assert.equal(openAiAdapterApiProtocol(' GPT-5.6-sol '), 'openai-responses');
+    assert.equal(openAiAdapterApiProtocol('gpt-6-sol'), 'openai-responses');
+    assert.equal(openAiAdapterApiProtocol('gpt-6-luna'), 'openai-responses');
   });
 
-  it('keeps a non-gpt-5 OpenAI model on the Chat Completions wire', () => {
+  it('keeps an older OpenAI model on the Chat Completions wire', () => {
     assert.equal(openAiAdapterApiProtocol('gpt-4o'), 'openai-chat');
   });
 
@@ -203,10 +205,8 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     );
   });
 
-  it('keeps the model present in the deepseek shipped baseline', () => {
-    assert.ok(
-      providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-v4-flash-vision-exp'),
-    );
+  it('keeps the vision-capable baseline model in the deepseek shipped baseline', () => {
+    assert.ok(providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-flash'));
   });
 
   it('returns expected metadata from lookupModelMetadata', () => {

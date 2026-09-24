@@ -163,6 +163,7 @@ const APPLY_PATCH_MODELS: ReadonlySet<string> = new Set([
   'gpt-5.6-terra',
   'gpt-5.6-luna',
   'gpt-6-astra',
+  'deepseek-flash',
   'deepseek-v4-flash',
   'deepseek-v4-flash-vision-exp',
   'deepseek-v4-pro',

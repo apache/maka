@@ -20,7 +20,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isMcpStdioConfig, type McpServerStatus } from '@maka/core/mcp';
-import { MCP_CATALOG } from '../../renderer/mcp-catalog.js';
 import { AtomicFileWriteCommitUnknownError } from '@maka/storage/mcp-config-store';
 import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
 import {
@@ -28,9 +27,8 @@ import {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  presentMcpNegotiatedProtocol,
   mcpWriteFailureMessage,
-} from '../../renderer/mcp-page-model.js';
+} from '../../renderer/features/module-hub/testing.js';
 
 const copy = getMcpCopy('en');
 
@@ -162,18 +160,6 @@ test('kind changes preserve an explicit protocol choice and derive only unselect
   assert.equal(mcpDraftProtocolPreference(pinned), '2026-07-28');
 });
 
-test('the MCP catalog opts every bundled remote entry into auto negotiation', () => {
-  const remoteEntries = MCP_CATALOG.filter((entry) => !isMcpStdioConfig(entry.config));
-
-  assert.deepEqual(
-    remoteEntries.map((entry) => entry.id),
-    ['notion', 'vercel', 'supabase'],
-  );
-  for (const entry of remoteEntries) {
-    assert.equal(!isMcpStdioConfig(entry.config) && entry.config.protocol, 'auto');
-  }
-});
-
 test('an edit that does not touch OAuth preserves the block through save', () => {
   const stored = {
     enabled: true,
@@ -215,23 +201,14 @@ test('a stdio config round-trips through the command-line field', () => {
   assert.deepEqual(saved, { ...stored, protocol: 'legacy' });
 });
 
-test('status copy presents only a live connected negotiated protocol', () => {
-  const status: McpServerStatus = {
-    serverId: 'remote',
-    state: 'connected',
-    transport: 'streamable-http',
-    negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },
-    toolCount: 0,
-    tools: [],
-    updatedAt: 1,
+test('an untouched environment reads back unchanged, whatever its values hold', () => {
+  const env = {
+    PRIVATE_KEY: '-----BEGIN KEY-----\nSECOND=third\r\n-----END KEY-----',
+    WITH_EQUALS: 'a=b',
+    QUOTED: '"kept"',
+    PLAIN: 'secret',
   };
-
-  assert.equal(
-    presentMcpNegotiatedProtocol(status, copy),
-    'Modern · 2026-07-28',
-  );
-  assert.equal(
-    presentMcpNegotiatedProtocol({ ...status, state: 'disconnected' }, copy),
-    undefined,
-  );
+  const saved = mcpConfigFromDraft(mcpDraftFromConfig('local', { command: 'node', env }), copy);
+  assert.ok(isMcpStdioConfig(saved));
+  assert.deepEqual(saved.env, env);
 });
