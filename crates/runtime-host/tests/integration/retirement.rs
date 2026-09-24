@@ -244,7 +244,20 @@ async fn retirement_fences_admission_and_keeps_root_until_receipt_flushed_or_aba
             .await
             .unwrap();
         assert!(!server.is_finished(), "retirement receipt is still owned");
-        assert!(responses.try_recv().is_err(), "receipt has not flushed");
+        loop {
+            match responses.try_recv() {
+                // Catalog invalidations may arrive during retirement. They are
+                // not the gated request receipt whose ownership is under test.
+                Ok(frame) => assert!(
+                    frame.get("requestId").is_none(),
+                    "unflushed receipt: {frame}"
+                ),
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    panic!("receipt writer closed before flush")
+                }
+            }
+        }
         assert!(RootOwner::open(&root, &namespaces).is_err());
 
         let (other_requests, reader) = mpsc::unbounded_channel();

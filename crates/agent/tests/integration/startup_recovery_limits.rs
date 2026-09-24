@@ -48,6 +48,15 @@ async fn recovery_excludes_large_stream_history_but_bounds_execution_authority()
         log.close().await.unwrap();
     }
     let log = EventLog::open(&path).await.unwrap();
+    let mut foreign = invocation();
+    foreign.session_id = "unrelated".into();
+    assert!(
+        matches!(
+            log.invocation_recovery(&foreign, 100, 65536).await,
+            Err(StoreError::InvalidTransition(_))
+        ),
+        "an invocation ID cannot substitute another Session"
+    );
     assert!(matches!(
         log.unfinished_invocations(0).await,
         Err(StoreError::PrefixTooLarge)

@@ -105,6 +105,7 @@ pub fn decode_model_inventory(bytes: &[u8]) -> Result<Vec<ModelInfo>, Error> {
                     (High, "high"),
                     (Xhigh, "xhigh"),
                     (Max, "max"),
+                    (Ultra, "ultra"),
                 ]
                 .into_iter()
                 .filter_map(|(level, name)| {

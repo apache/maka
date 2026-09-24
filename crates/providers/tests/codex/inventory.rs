@@ -32,7 +32,7 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
         fail: false,
         response: json!({"models":[{
             "slug":"future-model", "context_window":272000,
-            "supported_reasoning_levels":[{"effort":"medium"},{"effort":"high"},{"effort":"max"}],
+            "supported_reasoning_levels":[{"effort":"medium"},{"effort":"high"},{"effort":"max"},{"effort":"ultra"}],
             "supports_reasoning_summary_parameter":false,
             "input_modalities":["text"], "supports_parallel_tool_calls":false
         }]}),
@@ -92,7 +92,7 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
         thinking_level: None,
     };
     let model = provider.resolve(request.clone()).await.unwrap();
-    assert_eq!(model.thinking_levels, vec![Medium, High, Max]);
+    assert_eq!(model.thinking_levels, vec![Medium, High, Max, Ultra]);
     assert_eq!(model.info.context_window, Some(272000));
     assert_eq!(model.info.capabilities.unwrap().vision, Some(false));
     assert_eq!(
@@ -102,17 +102,17 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
 
     let mut declared = request.clone();
     declared.overrides = Some(ModelOverride {
-        default_thinking_level: Some(Max),
+        default_thinking_level: Some(Ultra),
         ..Default::default()
     });
     let model = provider.resolve(declared.clone()).await.unwrap();
-    assert_eq!(model.provider_options["openai"]["reasoningEffort"], "max");
+    assert_eq!(model.provider_options["openai"]["reasoningEffort"], "ultra");
     assert!(
         model.provider_options["openai"]
             .get("reasoningSummary")
             .is_none()
     );
-    assert_eq!(wire(&model)["reasoning"], json!({"effort":"max"}));
+    assert_eq!(wire(&model)["reasoning"], json!({"effort":"ultra"}));
     declared.thinking_level = Some(High);
     assert_eq!(
         provider

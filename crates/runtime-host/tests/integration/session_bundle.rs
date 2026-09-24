@@ -34,6 +34,7 @@ async fn native_bundle_file_transfer_binds_local_authority_and_retries_after_res
     let destination = ClientFixture::new("maka-bundle-destination-");
     let log = source.log().await;
     seed(&log, &source).await;
+    fixtures::interrupt(&log).await;
     let inventory = log.preview_bundle("source").await.unwrap();
     log.close().await.unwrap();
     let path = source.workspace.join("history.maka-session");
@@ -69,6 +70,9 @@ async fn native_bundle_file_transfer_binds_local_authority_and_retries_after_res
     );
     assert_eq!(tokio::fs::read(&path).await.unwrap(), bytes);
     source_host.close().await;
+    let recovered = source.log().await;
+    fixtures::assert_interrupted(&recovered).await;
+    recovered.close().await.unwrap();
 
     let mut target = Running::open(&destination).await;
     configure(&target.client).await;
@@ -167,6 +171,7 @@ async fn native_bundle_file_transfer_binds_local_authority_and_retries_after_res
     target.close().await;
 
     let log = destination.log().await;
+    fixtures::assert_interrupted(&log).await;
     assert_eq!(
         log.preview_bundle("source").await.unwrap().sessions.len(),
         3

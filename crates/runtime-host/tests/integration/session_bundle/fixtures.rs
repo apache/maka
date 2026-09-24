@@ -141,3 +141,61 @@ pub(super) async fn configure(client: &Client) {
         .await
         .unwrap();
 }
+
+pub(super) async fn interrupt(log: &EventLog) {
+    let invocation = Invocation {
+        session_id: "managed".into(),
+        turn_id: "interrupted".into(),
+        run_id: "interrupted".into(),
+        invocation_id: "interrupted".into(),
+    };
+    for fact in [
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                content: "Interrupted work".into(),
+                source_messages: vec![],
+                request_fingerprint: None,
+            },
+        },
+        Fact::ToolDispatched {
+            operation_id: "uncertain".into(),
+            call: maka_runtime::tool_call::ToolCallIdentity::standalone("uncertain".into()),
+            name: "Shell".into(),
+            input: json!({"command":"must not run again"}),
+        },
+    ] {
+        log.append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
+            .await
+            .unwrap();
+    }
+}
+
+pub(super) async fn assert_interrupted(log: &EventLog) {
+    let events = log
+        .scoped_prefix(
+            LogScope::Session {
+                id: "managed".into(),
+            },
+            100,
+            65536,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        events
+            .events
+            .iter()
+            .filter(|event| matches!(event.event.fact, Fact::ToolDispatched { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        !events
+            .events
+            .iter()
+            .any(|event| matches!(event.event.fact, Fact::ToolSettled { .. }))
+    );
+    assert!(events.events.iter().any(|event| matches!(&event.event.fact,
+        Fact::InvocationEnded { outcome: InvocationOutcome::Failed { class, .. } } if class == "outcome_unknown")));
+}

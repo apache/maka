@@ -149,9 +149,26 @@ impl Manager {
     async fn recover(&self) {
         let mut delay = Duration::from_millis(250);
         loop {
+            // Subscribe before reading facts: changes are invalidations, never
+            // a second source of truth. A timer also covers restored consent.
+            let mut changes = if self
+                .assignments
+                .repository
+                .pending()
+                .await
+                .is_ok_and(|pending| !pending.is_empty())
+            {
+                self.coordinator
+                    .resolve()
+                    .await
+                    .ok()
+                    .and_then(|(_, commands)| commands.changes().ok())
+            } else {
+                None
+            };
             let retry = match self.recover_decisions().await {
                 Ok(report) => {
-                    let retry = report.retrying();
+                    let retry = report.retrying() || report.pending_results;
                     *self.report.lock().unwrap() = report;
                     retry
                 }
@@ -165,6 +182,13 @@ impl Manager {
             if retry {
                 tokio::select! {
                     _ = self.wake.notified() => { delay = Duration::from_millis(250); }
+                    _ = async { match &mut changes {
+                        Some(changes) => {
+                            if changes.changed().await.is_err() { std::future::pending::<()>().await; }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        None => std::future::pending().await,
+                    }} => { delay = Duration::from_millis(250); }
                     _ = tokio::time::sleep(delay) => { delay = (delay * 2).min(Duration::from_secs(30)); }
                 }
             } else {

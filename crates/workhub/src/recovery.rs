@@ -23,6 +23,7 @@ use serde::Serialize;
 #[derive(Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
+    pub pending_results: bool,
     pub failures: Vec<Failure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
@@ -52,15 +53,22 @@ impl crate::plugin::Manager {
                 }
                 Pending::Route(id) => {
                     let key = crate::assignment::key(&id)?;
-                    let request = self
+                    let assignment = self
                         .assignments
                         .repository
                         .read::<Assignment>(&key)
                         .await?
                         .ok_or(Error::Conflict)?
-                        .1
-                        .request;
-                    (id, self.assignments.route(request).await.map(|_| ()))
+                        .1;
+                    let result = async {
+                        if assignment.delivery.is_none() {
+                            self.assignments.route(assignment.request).await?;
+                        }
+                        report.pending_results |= self.assignments.return_result(&id).await?;
+                        Ok(())
+                    }
+                    .await;
+                    (id, result)
                 }
                 Pending::Control(id) => {
                     let key = crate::control::key(&id)?;

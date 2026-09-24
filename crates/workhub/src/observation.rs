@@ -33,6 +33,7 @@ pub struct View {
     pub delivery: Option<Delivery>,
     pub retired: bool,
     pub control: Option<String>,
+    pub result: Option<crate::results::Return>,
     pub observation: Observation,
 }
 #[derive(Serialize)]
@@ -85,7 +86,11 @@ impl Assignments {
         })
     }
 
-    pub async fn query(&self, operation: &str) -> Result<Option<View>, Error> {
+    pub async fn query(
+        &self,
+        operation: &str,
+        cursor: Option<maka_plugins::execution::AnswerCursor>,
+    ) -> Result<Option<View>, Error> {
         let Some((_, assignment)) = self
             .repository
             .read::<Assignment>(&crate::assignment::key(operation)?)
@@ -95,7 +100,7 @@ impl Assignments {
         };
         let observation = match &assignment.delivery {
             None => Observation::Unaccepted,
-            Some(delivery) => match self.observe(&assignment, delivery).await {
+            Some(delivery) => match self.observe(&assignment, delivery, cursor).await {
                 Ok(state) => Observation::Current { state },
                 Err(error) => Observation::Unavailable {
                     reason: error.to_string(),
@@ -108,13 +113,15 @@ impl Assignments {
             delivery: assignment.delivery,
             retired: assignment.retired,
             control: assignment.control,
+            result: assignment.result,
             observation,
         }))
     }
-    async fn observe(
+    pub(super) async fn observe(
         &self,
         assignment: &Assignment,
         delivery: &Delivery,
+        cursor: Option<maka_plugins::execution::AnswerCursor>,
     ) -> Result<MessageState, Error> {
         let (invocation, message_id) = match delivery {
             Delivery::Submitted { receipt } => (&receipt.invocation, &receipt.message_id),
@@ -125,6 +132,7 @@ impl Assignments {
             .read_message(SessionMessage {
                 session_id: invocation.session_id.clone(),
                 message_id: message_id.clone(),
+                cursor,
             })
             .await?
             .ok_or(Error::Execution(

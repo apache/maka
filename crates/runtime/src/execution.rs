@@ -42,6 +42,21 @@ pub enum ThinkingLevel {
     High,
     Xhigh,
     Max,
+    Ultra,
+}
+
+impl ThinkingLevel {
+    /// Display order; support still comes from the selected model's declaration.
+    pub const ALL: [Self; 8] = [
+        Self::Off,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::Xhigh,
+        Self::Max,
+        Self::Ultra,
+    ];
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -109,15 +109,6 @@ pub(super) struct Draft {
     focus: usize, // field identities, Back, Cancel, Save
     offset: usize,
 }
-const LEVELS: [ThinkingLevel; 7] = [
-    ThinkingLevel::Off,
-    ThinkingLevel::Minimal,
-    ThinkingLevel::Low,
-    ThinkingLevel::Medium,
-    ThinkingLevel::High,
-    ThinkingLevel::Xhigh,
-    ThinkingLevel::Max,
-];
 impl Draft {
     pub fn new(model: &Model, profile: ModelOverride) -> Self {
         use Field::*;
@@ -132,7 +123,7 @@ impl Draft {
             Boolean("applyPatch"),
             Protocol,
         ];
-        fields.extend(LEVELS.map(Level));
+        fields.extend(ThinkingLevel::ALL.map(Level));
         fields.extend([Text("description"), Text("knowledgeCutoff")]);
         fields.push(Advanced);
         let values = serde_json::to_value(profile).expect("model override");
@@ -240,7 +231,7 @@ impl Draft {
                     } else {
                         levels.push(level);
                     }
-                    let ordered: Vec<_> = LEVELS
+                    let ordered: Vec<_> = ThinkingLevel::ALL
                         .into_iter()
                         .filter(|level| levels.contains(level))
                         .collect();

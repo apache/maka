@@ -20,6 +20,7 @@
 use crate::codec::{count, exact, record, shaped, string};
 use crate::{ProtocolError, Result};
 use maka_runtime::configuration::{ConnectionCatalogEntry, ConnectionTarget, validation as v};
+use maka_runtime::execution::ThinkingLevel;
 use serde_json::{Value, json};
 
 // Stored inventory + independent overrides + enabled IDs + fallback + default.
@@ -220,9 +221,7 @@ fn model_entry(value: &Value) -> Result<()> {
     let mut seen = std::collections::BTreeSet::new();
     for level in levels {
         let level = level.as_str().ok_or_else(invalid)?;
-        if !["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&level)
-            || !seen.insert(level)
-        {
+        if serde_json::from_value::<ThinkingLevel>(json!(level)).is_err() || !seen.insert(level) {
             return Err(invalid());
         }
     }
@@ -233,9 +232,13 @@ fn model_override(value: &Value) -> Result<Value> {
     record(value, "model override")?;
     let mut result = json!({});
     if let Some(levels) = value["thinkingLevels"].as_array() {
-        let levels: Vec<_> = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        let selected: Vec<ThinkingLevel> = levels
+            .iter()
+            .filter_map(|level| serde_json::from_value(level.clone()).ok())
+            .collect();
+        let levels: Vec<_> = ThinkingLevel::ALL
             .into_iter()
-            .filter(|level| levels.iter().any(|v| v.as_str() == Some(level)))
+            .filter(|level| selected.contains(level))
             .collect();
         if !levels.is_empty() {
             result["thinkingLevels"] = json!(levels);

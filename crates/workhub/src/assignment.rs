@@ -78,6 +78,8 @@ pub(super) struct Assignment {
     /// A persisted control intent serializes correction, stop and resume across activations.
     pub control: Option<String>,
     pub retired: bool,
+    pub result: Option<crate::results::Return>,
+    pub observe_results: bool,
 }
 impl Assignment {
     fn new(request: Route) -> Self {
@@ -88,6 +90,8 @@ impl Assignment {
             owner: None,
             control: None,
             retired: false,
+            result: None,
+            observe_results: true,
         }
     }
 }
@@ -110,26 +114,28 @@ impl Assignments {
         }
         let key = key(&request.operation_id)?;
         let fingerprint = digest(&request)?;
-        let mut record = match self.repository.read::<Assignment>(&key).await? {
-            Some(record) => record,
-            None => {
-                match self
-                    .repository
-                    .transition(
-                        vec![crate::repository::mutation(
-                            &key,
-                            None,
-                            &Assignment::new(request.clone()),
-                        )?],
-                        crate::repository::Pending::Route(request.operation_id.clone()),
-                        true,
-                    )
-                    .await
-                {
-                    Ok(()) | Err(Error::Contended) => {}
-                    Err(error) => return Err(error),
+        let mut record = loop {
+            match self.repository.read::<Assignment>(&key).await? {
+                Some(record) => break record,
+                None => {
+                    match self
+                        .repository
+                        .transition(
+                            vec![crate::repository::mutation(
+                                &key,
+                                None,
+                                &Assignment::new(request.clone()),
+                            )?],
+                            crate::repository::Pending::Route(request.operation_id.clone()),
+                            true,
+                        )
+                        .await
+                    {
+                        Ok(()) | Err(Error::Contended) => {}
+                        Err(error) => return Err(error),
+                    }
+                    tokio::task::yield_now().await;
                 }
-                self.repository.read(&key).await?.ok_or(Error::Contended)?
             }
         };
         loop {
@@ -228,7 +234,7 @@ impl Assignments {
                         &assignment,
                     )?],
                     crate::repository::Pending::Route(assignment.request.operation_id.clone()),
-                    assignment.delivery.is_none(),
+                    true,
                 )
                 .await
             {

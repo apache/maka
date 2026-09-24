@@ -22,7 +22,7 @@ use futures_util::future::BoxFuture;
 use maka_plugins::{
     contributions::Staged,
     prompt::{self, Format, Section, SectionMode, Text},
-    session::{Behavior, ClientTools, Preparation, SessionBehavior},
+    session::{Behavior, Preparation, SessionBehavior},
 };
 use maka_runtime::execution::NativeToolSet;
 use std::{collections::BTreeSet, sync::Arc};
@@ -82,11 +82,9 @@ impl Behavior for Manager {
             }
             Ok(Preparation {
                 native_tools: NativeToolSet::Attachments,
-                required_clients: Some(ClientTools {
-                    required: CLIENT_TOOLS.into_iter().map(str::to_owned).collect(),
-                    optional: BROWSER_TOOLS.into_iter().map(str::to_owned).collect(),
-                    private: BTreeSet::new(),
-                }),
+                // UI capabilities are optional. A disconnected Desktop must
+                // not prevent background result delivery or task assessment.
+                required_clients: None,
                 tool_ceiling: Some(tool_ceiling()),
                 ..Default::default()
             })

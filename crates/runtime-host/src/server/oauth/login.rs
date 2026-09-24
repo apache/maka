@@ -344,9 +344,18 @@ mod tests {
                 .len(),
             1
         );
+        let mut configured = Vec::new();
+        loop {
+            match changes.try_recv() {
+                Ok(change) if change["kind"] == "configuration.changed" => configured.push(change),
+                Ok(_) => {} // Provider publication is independent of OAuth settlement.
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(error) => panic!("configuration notification lost: {error}"),
+            }
+        }
         assert_eq!(
-            changes.try_recv().unwrap(),
-            json!({"kind":"configuration.changed","revision":1})
+            configured,
+            [json!({"kind":"configuration.changed","revision":1})]
         );
         host.log.shutdown().await.unwrap();
         host.configuration.shutdown().await.unwrap();

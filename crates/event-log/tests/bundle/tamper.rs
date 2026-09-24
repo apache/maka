@@ -47,6 +47,25 @@ pub(super) async fn verify_original_proofs(
         staged.close().await.unwrap();
     }
     let mut changed = false;
+    let mismatched_dispatch = super::frames::rewrite_events(bytes, |event| {
+        if !changed && event["fact"]["kind"] == "tool_dispatched" {
+            event["fact"]["input"] = json!({"path":"different-source"});
+            changed = true;
+        }
+        true
+    });
+    assert!(changed);
+    // The transport is correctly checksummed; the dispatch still cannot
+    // authenticate different arguments from its original provider call.
+    bundle::inspect(mismatched_dispatch.as_slice())
+        .await
+        .unwrap();
+    let mut staged = StagedBundle::read(mismatched_dispatch.as_slice())
+        .await
+        .unwrap();
+    assert!(staged.validate_history().await.is_err());
+    staged.close().await.unwrap();
+    let mut changed = false;
     let stale = super::frames::rewrite_events(bytes, |event| {
         if !changed && event["fact"]["kind"] == "model_requested" {
             event["fact"]["source_high_water"] = json!(0);

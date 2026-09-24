@@ -31,6 +31,13 @@ around unchanged Host business logic does not complete a migration.
 
 ## Boundary
 
+Execution semantics absorbed from main through `9082cf144`:
+
+- Each logical request freezes its output cap against model capacity and matching usage. Compaction recovery uses at most 8,000 output tokens without rewriting model settings; physical retries keep the same cap.
+- `ultra` is a public reasoning level. Account inventory or explicit model declarations enable it; native Responses sends it unchanged.
+- WorkHub returns terminal results and pending-interaction notices through public execution commands. Notifications are bounded and mark omitted observations explicitly. Frozen plugin intents and Host receipts prevent duplicate returns after restart. Owned Stop/correction withdraw observation; resume restores it. `workhub_tasks inspect` pages full answers with an invocation-fenced cursor; questions and approvals stay in their original Session. Desktop tools are optional.
+- Startup seals interrupted executions before serving exports. Copy/import preserve unknown effects and validate original dispatch evidence; neither rewrites tool arguments nor replays effects. Recovery and tool validation remain scoped to the selected invocation.
+
 Business policy belongs in plugins; accepting work and preserving its facts belong in Host.
 A feature needing durable data is not automatically a core feature: Graph and Scheduler already
 own business state and recovery through built-in plugins.

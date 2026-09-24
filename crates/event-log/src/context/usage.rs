@@ -270,6 +270,7 @@ mod tests {
             sequence: 3,
             recorded_at: SystemTime::UNIX_EPOCH,
             model_id: "model".into(),
+            route_identity: "route".into(),
             connection_id: Some("connection".into()),
             checkpoint_event_id: None,
             context: Some(ModelRequestContext {

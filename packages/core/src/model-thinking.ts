@@ -44,7 +44,15 @@ import { lookupModelMetadata } from './model-metadata.js';
  * Not every model supports every level — call `thinkingVariantsForModel` for
  * the model-specific subset.
  */
-export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
 
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'off',
@@ -54,6 +62,7 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   'high',
   'xhigh',
   'max',
+  'ultra',
 ];
 
 /**
