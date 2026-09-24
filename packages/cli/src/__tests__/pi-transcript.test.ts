@@ -3986,7 +3986,7 @@ describe('Maka Pi TUI transcript', () => {
     const modelOutput = read.toModelOutput!({ toolCallId: 'read-bg', input: args, output: result });
     assert.equal(modelOutput?.type, 'json');
     if (modelOutput?.type === 'json') {
-      assert.ok(JSON.stringify(modelOutput.value).length <= 7_500);
+      assert.ok(Buffer.byteLength(JSON.stringify(modelOutput.value)) <= 7_500);
       assert.ok((modelOutput.value as { next: unknown }).next);
     }
     applyMakaSessionEventToTranscript(
