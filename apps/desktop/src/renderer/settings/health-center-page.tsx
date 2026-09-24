@@ -78,8 +78,9 @@ export function HealthCenterPage(props: {
     window.maka.health
       .getSnapshot(host)
       .then((next) => {
-        if (cancelled) return;
+        // Keep successful reads in this Host's cache after navigation.
         props.onSnapshot(runtimeHostSettingsKey(host), next);
+        if (cancelled) return;
         setSnapshot(next);
         setLoading(false);
       })

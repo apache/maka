@@ -133,11 +133,12 @@ export function PermissionCenterPage(props: {
       window.maka.capabilities.getSnapshot(host),
     ])
       .then(([perm, caps]) => {
-        if (cancelled) return;
+        // Keep complete reads in this Host's cache after navigation.
         props.onSnapshot(runtimeHostSettingsKey(host), {
           permissions: perm,
           capabilities: caps,
         });
+        if (cancelled) return;
         setPermissions(perm);
         setCapabilities(caps);
         setLoading(false);
