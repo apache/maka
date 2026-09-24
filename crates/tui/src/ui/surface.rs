@@ -528,6 +528,12 @@ impl<M: Clone> Surface<M> {
                     };
                 };
                 let id = item.id.clone();
+                // Pressing a button beside a text field leaves the typing
+                // where it was, as on the Mac; anything else takes focus.
+                let typing = committed.items.iter().any(|field| {
+                    field.slot && field.enabled && Some(&field.id) == self.focus.as_ref()
+                });
+                let keep = typing && item.role.is_some() && matches!(item.on, On::Activate(_));
                 let outcome = match &item.on {
                     // Clicking into a field or a viewer places focus; only
                     // Enter submits.
@@ -542,7 +548,9 @@ impl<M: Clone> Surface<M> {
                         Outcome::handled(true)
                     }
                 };
-                self.set_focus(id);
+                if !keep {
+                    self.set_focus(id);
+                }
                 outcome
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if inside => {

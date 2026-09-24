@@ -21,7 +21,7 @@ mod view;
 use super::draft::Input;
 use maka_protocol::turn::{StorageRef, TurnStartMessage};
 use serde::{Deserialize, Serialize};
-pub(super) use view::{draw, input};
+pub(super) use view::rows;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -36,10 +36,6 @@ pub enum Resource {
 #[derive(Default)]
 pub(super) struct Browser {
     pub visible: bool,
-    pub selected: usize,
-    pub top: usize,
-    pub area: Option<ratatui::layout::Rect>,
-    pub dragging: bool,
 }
 
 impl Input {

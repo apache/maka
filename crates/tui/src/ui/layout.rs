@@ -522,8 +522,19 @@ fn wrap(spans: &[(String, Tone)], width: u16) -> Vec<Vec<(String, Tone)>> {
             for grapheme in safe.graphemes(true) {
                 let cells = grapheme.width();
                 if used + cells > width && used > 0 {
+                    // An overlong word may split, but a closing mark never
+                    // starts a line: the grapheme before it moves along.
+                    let carried = grapheme
+                        .chars()
+                        .all(closing)
+                        .then(|| last_grapheme(lines.last_mut().unwrap(), width - cells))
+                        .flatten();
                     lines.push(vec![]);
                     used = 0;
+                    if let Some((text, tone)) = carried {
+                        used = text.width();
+                        lines.last_mut().unwrap().push((text, tone));
+                    }
                 }
                 let line: &mut Vec<(String, Tone)> = lines.last_mut().unwrap();
                 match line.last_mut() {
@@ -537,10 +548,30 @@ fn wrap(spans: &[(String, Tone)], width: u16) -> Vec<Vec<(String, Tone)>> {
     lines
 }
 
+fn closing(c: char) -> bool {
+    ",.!?:;%)]}、。，．！？：；％）］｝〉》」』】〕〗〙〛’”»".contains(c)
+}
+
+/// Takes the last grapheme off a line that keeps others, if it fits in
+/// `room` cells.
+fn last_grapheme(line: &mut Vec<(String, Tone)>, room: usize) -> Option<(String, Tone)> {
+    let alone = line.len() == 1;
+    let (text, tone) = line.last_mut()?;
+    let (index, grapheme) = text.grapheme_indices(true).next_back()?;
+    if grapheme.width() > room || (index == 0 && alone) {
+        return None;
+    }
+    let tone = *tone;
+    let grapheme = text.split_off(index);
+    if text.is_empty() {
+        line.pop();
+    }
+    Some((grapheme, tone))
+}
+
 /// Word boundaries, with closing punctuation kept on its preceding word
 /// (including a single CJK character) so no line starts with it.
 fn words(text: &str) -> Vec<String> {
-    let closing = |c: char| ",.!?:;%)]}、。，．！？：；％）］｝〉》」』】〕〗〙〛’”»".contains(c);
     let mut words: Vec<String> = vec![];
     for word in text.split_word_bounds() {
         match words.last_mut() {
@@ -619,5 +650,33 @@ mod tests {
             ["a  [31m"],
             "terminal controls are neutralized"
         );
+    }
+
+    #[test]
+    fn wrapping_keeps_cjk_with_latin_and_closing_punctuation_with_its_word() {
+        let lines = |source: &str, width: u16| -> Vec<String> {
+            wrap(&[(source.to_owned(), Tone::Normal)], width)
+                .into_iter()
+                .map(|line| line.into_iter().map(|(text, _)| text).collect())
+                .collect()
+        };
+        let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        let source =
+            "Host 上的目录。 Existing sessions and files remain. abcdefghijklmn e\u{301}🦀";
+        let texts = lines(source, 12);
+        assert!(texts.iter().all(|line| line.width() <= 12));
+        assert_eq!(compact(&texts.concat()), compact(source));
+        assert!(texts.iter().any(|s| s.contains("Existing")));
+        assert!(
+            texts[0].contains("Host 上"),
+            "CJK shares the line with Latin"
+        );
+        for width in [4, 8, 12, 44] {
+            let source = "后续请求使用新密钥。保存不会测试。 Words, words. abcdefghijklmnop。";
+            let texts = lines(source, width);
+            assert!(texts.iter().all(|s| s.width() <= usize::from(width)));
+            assert!(texts.iter().all(|s| !s.starts_with(['。', ',', '.'])));
+            assert_eq!(compact(&texts.concat()), compact(source));
+        }
     }
 }

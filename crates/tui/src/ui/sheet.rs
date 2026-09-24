@@ -197,13 +197,18 @@ impl<M> Sheet<M> {
 }
 
 /// Takes up to `excess` rows from the capped viewers (scrolling areas sized
-/// `Upto`) of a column, each keeping at least `VIEWER` rows: a short
-/// terminal shows less of a list rather than no sheet at all.
+/// `Upto`) and multi-row fields (which scroll their own text) of a column,
+/// each keeping at least `VIEWER` rows: a short terminal shows less of a
+/// list or a draft rather than no sheet at all.
 fn yield_rows<M>(node: &mut Node<M>, width: u16, excess: &mut u16) {
     if let (Kind::Scroll(_), Size::Upto(most)) = (&node.kind, node.size) {
         let shown = layout::height(node, width).min(most);
         let given = shown.saturating_sub(VIEWER).min(*excess);
         node.size = Size::Upto(shown - given);
+        *excess -= given;
+    } else if let (Kind::Slot, Size::Fixed(rows)) = (&node.kind, node.size) {
+        let given = rows.saturating_sub(VIEWER).min(*excess);
+        node.size = Size::Fixed(rows - given);
         *excess -= given;
     } else if let Kind::Column { children, .. } = &mut node.kind {
         for child in children {

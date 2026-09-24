@@ -117,6 +117,7 @@ impl App {
             Overlay::Theme => crate::theme::editor::sheet(self),
             Overlay::Onboarding => crate::pages::onboarding::sheet(self),
             Overlay::Attachments => crate::pages::attachments::sheet(self),
+            Overlay::Revision => crate::pages::revision::sheet(self),
             _ => None,
         }
     }
@@ -146,6 +147,7 @@ impl App {
                 }
             }
             Overlay::Attachments => self.attachments.presented(shown),
+            Overlay::Revision => self.revision.presented(shown),
             _ => {}
         }
     }
@@ -193,8 +195,8 @@ impl App {
             | Overlay::Skills
             | Overlay::Theme
             | Overlay::Onboarding
-            | Overlay::Attachments => unreachable!("presented as sheets"),
-            Overlay::Revision => self.revision_input(event),
+            | Overlay::Attachments
+            | Overlay::Revision => unreachable!("presented as sheets"),
             Overlay::Interactions => self.interactions_overlay_input(event),
             Overlay::Palette => self.palette_input(event),
         }
@@ -219,6 +221,7 @@ impl App {
             Overlay::Theme => self.theme_sheet_input(&event),
             Overlay::Onboarding => self.onboarding_sheet_input(&event),
             Overlay::Attachments => self.attachment_sheet_input(&event),
+            Overlay::Revision => self.revision_sheet_input(&event),
             _ => None,
         };
         if let Some(outcome) = owned {
@@ -304,6 +307,7 @@ pub(crate) fn draw(
             Overlay::Theme => crate::theme::editor::draw_field(frame, app),
             Overlay::Onboarding => pages::onboarding::draw_field(frame, app),
             Overlay::Attachments => pages::attachments::draw_field(frame, app),
+            Overlay::Revision => pages::revision::draw_field(frame, app),
             _ => {}
         }
         app.layer.repaint_chooser(frame, context);
@@ -334,8 +338,8 @@ pub(crate) fn draw(
         | Overlay::Skills
         | Overlay::Theme
         | Overlay::Onboarding
-        | Overlay::Attachments => unreachable!("presented as sheets"),
-        Overlay::Revision => pages::revision::draw(frame, app, area, base),
+        | Overlay::Attachments
+        | Overlay::Revision => unreachable!("presented as sheets"),
         Overlay::Interactions => pages::interactions::draw(frame, app, area, base),
         Overlay::Palette => pages::commands::draw(frame, app, area, base),
     }

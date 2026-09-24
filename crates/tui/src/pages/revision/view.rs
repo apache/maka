@@ -17,150 +17,419 @@
  * under the License.
  */
 
-use super::{Action, App, Command, Phase};
-use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+use super::{Action, App, Command, Phase, resources};
+use crate::{
+    ui::{Node, On, Role, Sheet, Size, Tone},
+    view::safe,
 };
-use ratatui::{
-    Frame,
-    layout::{Alignment, Margin, Rect},
-    style::Style,
-    widgets::{Block, BorderType, Paragraph, Wrap},
-};
-use unicode_width::UnicodeWidthStr;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
+use ratatui::Frame;
 
-fn buttons(app: &App) -> Vec<Command> {
+/// The input's text, a field its owner draws.
+const EDITOR: &str = "editor";
+/// Host detail of a blocked turn, a read-only viewer.
+const PROBLEM: &str = "problem";
+const RESOURCES: &str = "resources/rows";
+
+fn action(command: Command) -> Action {
+    Action::Revision(command)
+}
+
+/// Revising a turn: page through its inputs, edit each one's text or
+/// choose which of its resources go along, then run it in a new session.
+/// Resource pickers for the input sit under it; what can be done about
+/// the note (retry, details) under the note; Discard at the bottom left,
+/// confirmed in its own step.
+pub(crate) fn sheet(app: &App) -> Option<Sheet<Action>> {
     let state = &app.revision;
-    let mut buttons = vec![Command::Close];
-    if state.phase == Phase::Editing && !state.confirm_discard {
-        buttons.push(Command::Directories);
-        buttons.push(Command::Skills);
-        buttons.push(if state.resources.visible {
-            Command::Content
+    if !state.visible {
+        return None;
+    }
+    let enabled = |command: &Command| app.revision_enabled(command);
+    if state.confirm_discard {
+        return Some(
+            Sheet::new("revision:discard", app.i18n.text("revision-discard"))
+                .text(
+                    "note",
+                    &app.i18n.text("revision-discard-note"),
+                    Tone::Subtle,
+                )
+                .back(action(Command::Keep))
+                .button(
+                    "cancel",
+                    app.i18n.text("session-cancel"),
+                    Role::Normal,
+                    action(Command::Keep),
+                    true,
+                )
+                .button(
+                    "discard",
+                    app.i18n.text("revision-discard"),
+                    Role::Destructive,
+                    action(Command::ConfirmDiscard),
+                    enabled(&Command::ConfirmDiscard),
+                )
+                .focus("cancel"),
+        );
+    }
+    let editing = state.phase == Phase::Editing;
+    let listing = editing && state.resources.visible;
+    let step = if state.show_problem {
+        "details"
+    } else if listing {
+        "resources"
+    } else {
+        match state.phase {
+            Phase::Editing => "edit",
+            Phase::Uploading | Phase::Ready => "ready",
+            Phase::Busy | Phase::Loading => "wait",
+            Phase::UnknownCopy | Phase::UnknownTurn | Phase::Failed => "unknown",
+            Phase::Done | Phase::Retained => "done",
+        }
+    };
+    let mut sheet = Sheet::new(format!("revision:{step}"), app.i18n.text("revision-title"));
+    let width = crate::ui::content_width(app.frame_size.map_or(80, |(width, _)| width));
+    let height = app.frame_size.map_or(24, |(_, height)| height);
+    let selected = state.selected;
+    let input = state
+        .saved
+        .as_ref()
+        .and_then(|saved| saved.inputs.get(selected));
+    let count = state.saved.as_ref().map_or(0, |saved| saved.inputs.len());
+    if state.show_problem {
+        sheet = sheet.text("heading", &app.i18n.text("revision-details"), Tone::Warning);
+    } else if let Some(input) = input {
+        let tool = |key: &'static str, glyph: (&'static str, &'static str), command: Command| {
+            let enabled = enabled(&command);
+            Node::button(
+                key,
+                app.chrome.symbol(glyph.0, glyph.1).to_owned(),
+                Role::Normal,
+            )
+            .on(On::Activate(action(command)))
+            .enabled(enabled)
+        };
+        let mut pager = vec![
+            tool(
+                "previous",
+                ("‹", "<"),
+                Command::Select(selected.saturating_sub(1)),
+            )
+            .enabled(
+                selected
+                    .checked_sub(1)
+                    .is_some_and(|previous| enabled(&Command::Select(previous))),
+            ),
+            Node::text(
+                "position",
+                vec![(
+                    format!(
+                        "{}  {} / {count}",
+                        app.i18n.text("revision-input"),
+                        selected + 1
+                    ),
+                    Tone::Muted,
+                )],
+            ),
+            tool("next", ("›", ">"), Command::Select(selected + 1)),
+            Node::text("space", vec![]).size(Size::Fill),
+        ];
+        if input.content.display_text.is_some() {
+            pager.push(
+                Node::button(
+                    "display",
+                    app.i18n.text(if state.display {
+                        "revision-text"
+                    } else {
+                        "revision-display"
+                    }),
+                    Role::Normal,
+                )
+                .on(On::Activate(action(Command::Display)))
+                .enabled(enabled(&Command::Display)),
+            );
+        }
+        let message = input.message();
+        let content = &message.content;
+        let counts = [
+            (
+                "revision-attachments",
+                content.attachments.as_ref().map_or(0, Vec::len),
+            ),
+            (
+                "revision-references",
+                content.quotes.as_ref().map_or(0, Vec::len)
+                    + content.directory_references.as_ref().map_or(0, Vec::len)
+                    + content.inline_references.as_ref().map_or(0, Vec::len),
+            ),
+            (
+                "revision-selections",
+                message.input_selections.values().map(Vec::len).sum(),
+            ),
+        ]
+        .into_iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(key, n)| app.i18n.format(key, &[("count", &n.to_string())]))
+        .collect::<Vec<_>>()
+        .join(" · ");
+        let mut about = vec![Node::row("pager", pager).gap(1)];
+        if !counts.is_empty() {
+            about.push(Node::text("counts", vec![(counts, Tone::Subtle)]).clip());
+        }
+        sheet = sheet.body(Node::column("about", about));
+    }
+    if state.show_problem {
+        let rows = state
+            .problem
+            .as_ref()
+            .map_or(3, |problem| problem.rows(width))
+            .clamp(3, 15);
+        // Enter in the viewer leaves it for the text again.
+        sheet = sheet.body(Node::slot(PROBLEM, rows).on(On::Activate(action(Command::Details))));
+    } else if let Some(input) = input {
+        if listing {
+            sheet = sheet.body(
+                Node::scroll(
+                    "resources",
+                    Node::column("rows", resources::rows(app, input)),
+                )
+                .size(Size::Upto(height.saturating_sub(12).max(4))),
+            );
         } else {
-            Command::Resources
-        });
+            let rows = state.editor.rows(width).clamp(3, 15);
+            sheet = sheet.body(
+                Node::slot(EDITOR, rows)
+                    .on(On::Activate(action(Command::Send)))
+                    .enabled(editing),
+            );
+        }
+        sheet = tools(app, input, sheet);
+    }
+    let key = state.error.unwrap_or(match state.phase {
+        Phase::Editing if listing => "revision-resources-note",
+        Phase::Editing => "revision-note",
+        Phase::Ready => "revision-prepared",
+        Phase::Done => "revision-started",
+        Phase::Retained => "revision-retained",
+        Phase::UnknownCopy | Phase::UnknownTurn | Phase::Failed => "revision-unknown",
+        Phase::Busy | Phase::Loading => "revision-wait",
+        Phase::Uploading => "attachments-uploading",
+    });
+    let tone = if state.error.is_some() {
+        Tone::Warning
+    } else {
+        Tone::Subtle
+    };
+    let mut lines: Vec<_> = app
+        .i18n
+        .text(key)
+        .lines()
+        .enumerate()
+        .map(|(index, line)| Node::text(index.to_string(), vec![(line.to_owned(), tone)]))
+        .collect();
+    if !state.show_problem
+        && key == "revision-blocked"
+        && let Some(problem) = &state.problem
+    {
+        // Full Host detail stays opt-in and scrollable; a preview of two
+        // rows cannot displace the controls.
+        lines.extend(
+            problem
+                .text()
+                .lines()
+                .take(2)
+                .enumerate()
+                .map(|(index, line)| {
+                    Node::text(format!("preview-{index}"), vec![(safe(line), Tone::Subtle)]).clip()
+                }),
+        );
+    }
+    let mut notes = vec![Node::column("text", lines)];
+    let mut actions = vec![];
+    if matches!(state.phase, Phase::UnknownCopy | Phase::UnknownTurn) {
+        actions.push(
+            Node::button("retry", app.i18n.text(Command::Retry.label()), Role::Normal)
+                .on(On::Activate(action(Command::Retry)))
+                .enabled(enabled(&Command::Retry)),
+        );
+    }
+    if state.problem.is_some() {
+        actions.push(
+            Node::button(
+                "details",
+                app.i18n.text(Command::Details.label()),
+                Role::Normal,
+            )
+            .on(On::Activate(action(Command::Details)))
+            .enabled(enabled(&Command::Details))
+            .current(state.show_problem),
+        );
+    }
+    if !actions.is_empty() {
+        notes.push(Node::row("actions", actions).gap(2));
+    }
+    sheet = sheet.body(Node::column("note", notes));
+    if state.saved.is_some() {
+        sheet = sheet.aside(
+            "discard",
+            app.i18n.text(Command::Discard.label()),
+            action(Command::Discard),
+            enabled(&Command::Discard),
+        );
+    }
+    sheet = sheet.button(
+        "close",
+        app.i18n.text(Command::Close.label()),
+        Role::Normal,
+        action(Command::Close),
+        true,
+    );
+    if let Some(primary) = state.primary() {
+        let enabled = enabled(&primary);
+        sheet = sheet.button(
+            "primary",
+            app.i18n.text(primary.label()),
+            Role::Primary,
+            action(primary),
+            enabled,
+        );
+    }
+    Some(match step {
+        "edit" => sheet.focus_node(EDITOR),
+        "details" => sheet.focus_node(PROBLEM),
+        "resources" => sheet.focus_node(format!("{RESOURCES}/0")),
+        _ => sheet.focus("close"),
+    })
+}
+
+/// What the input carries, each with its picker: Host directories, Skills
+/// and files, and the switch between its text and its resources.
+fn tools(app: &App, input: &super::draft::Input, sheet: Sheet<Action>) -> Sheet<Action> {
+    let state = &app.revision;
+    let counted = |icon: &str, count: usize| {
+        if count > 0 {
+            format!("{icon} {count}")
+        } else {
+            icon.to_owned()
+        }
+    };
+    let button = |key: &'static str, label: String, command: Command| {
+        let enabled = app.revision_enabled(&command);
+        Node::button(key, label, Role::Normal)
+            .on(On::Activate(action(command)))
+            .enabled(enabled)
+    };
+    let mut tools = vec![];
+    if state.phase == Phase::Editing {
+        tools.push(button(
+            "directories",
+            counted(app.chrome.symbol("▱", "/"), input.directories.len()),
+            Command::Directories,
+        ));
+        tools.push(button(
+            "skills",
+            counted(app.chrome.symbol("✧", "*"), input.skills.len()),
+            Command::Skills,
+        ));
     }
     if matches!(
         state.phase,
         Phase::Editing | Phase::Uploading | Phase::Ready
-    ) && !state.confirm_discard
-    {
-        buttons.push(Command::Attachments);
-    }
-    if state.problem.is_some() && !state.confirm_discard {
-        buttons.push(Command::Details);
-    }
-    if state.saved.is_some() && !state.confirm_discard {
-        buttons.push(Command::Discard);
-    }
-    if matches!(state.phase, Phase::UnknownCopy | Phase::UnknownTurn) && !state.confirm_discard {
-        buttons.push(Command::Retry);
-    }
-    if let Some(primary) = state.primary() {
-        buttons.push(primary);
-    }
-    buttons.retain(|command| app.revision_enabled(command));
-    buttons
-}
-impl App {
-    pub fn revision_input(&mut self, event: Event) -> (bool, Option<Action>) {
-        if let Some(command) = super::resources::input(self, &event) {
-            return (
-                true,
-                command.and_then(|command| self.apply(Action::Revision(command))),
-            );
-        }
-        let mut command = None;
-        let controls = buttons(self);
-        match &event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return (true, Some(Action::Quit));
-                }
-                KeyCode::Esc => command = Some(Command::Close),
-                KeyCode::Tab | KeyCode::BackTab => {
-                    let count = controls.len() + 1;
-                    self.revision.focus = if key.code == KeyCode::BackTab {
-                        (self.revision.focus + count - 1) % count
-                    } else {
-                        (self.revision.focus + 1) % count
-                    };
-                }
-                KeyCode::PageUp | KeyCode::PageDown
-                    if !self.revision.show_problem && !self.revision.resources.visible =>
-                {
-                    let index = if key.code == KeyCode::PageUp {
-                        self.revision.selected.saturating_sub(1)
-                    } else {
-                        self.revision.selected + 1
-                    };
-                    command = Some(Command::Select(index));
-                }
-                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    command = Some(if self.revision.resources.visible {
-                        Command::Content
-                    } else {
-                        Command::Resources
-                    })
-                }
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
-                    command = Some(Command::Display)
-                }
-                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    command = Some(Command::Send)
-                }
-                KeyCode::Enter if self.revision.focus > 0 => {
-                    command = controls.get(self.revision.focus - 1).cloned()
-                }
-                _ => {
-                    self.revision_edit(&event);
-                }
+    ) {
+        let files = input.files.len();
+        let add = app.i18n.text("inputs-add");
+        tools.push(button(
+            "files",
+            if files > 0 {
+                format!("{add} · {files}")
+            } else {
+                add
             },
-            Event::Paste(_) => {
-                self.revision_edit(&event);
-            }
-            Event::Mouse(mouse) => {
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                    command = self.hits.iter().find_map(|hit| match &hit.action {
-                        Action::Revision(command)
-                            if hit.area.contains((mouse.column, mouse.row).into()) =>
-                        {
-                            Some(command.clone())
-                        }
-                        _ => None,
-                    });
-                    if self
-                        .revision
-                        .editor
-                        .contains((mouse.column, mouse.row).into())
-                        || self
-                            .revision
-                            .problem
-                            .as_ref()
-                            .is_some_and(|e| e.contains((mouse.column, mouse.row).into()))
-                    {
-                        self.revision.focus = 0;
-                    }
-                }
-                if command.is_none() {
-                    self.revision_edit(&event);
-                }
-            }
-            _ => {}
-        }
-        (
-            true,
-            command.and_then(|command| self.apply(Action::Revision(command))),
-        )
+            Command::Attachments,
+        ));
     }
-    fn revision_edit(&mut self, event: &Event) {
+    if state.phase == Phase::Editing && !input.resources().is_empty() {
+        let command = if state.resources.visible {
+            Command::Content
+        } else {
+            Command::Resources
+        };
+        tools.push(button("view", app.i18n.text(command.label()), command));
+    }
+    if tools.is_empty() {
+        sheet
+    } else {
+        sheet.body(Node::row("tools", tools).gap(2))
+    }
+}
+
+/// Paints the input's text, or the Host detail, over the drawn sheet.
+pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
+    let editor = app.layer.rect(EDITOR).filter(|rect| !rect.is_empty());
+    let problem = app.layer.rect(PROBLEM).filter(|rect| !rect.is_empty());
+    let focused = app.layer.focused_path() == Some(EDITOR);
+    let colors = app.theme.colors();
+    let state = &mut app.revision;
+    let editing = state.phase == Phase::Editing;
+    match editor {
+        Some(rect) => state.editor.draw(frame, rect, editing && focused, colors),
+        None => state.editor.invalidate_geometry(),
+    }
+    if let Some(viewer) = &mut state.problem {
+        match problem {
+            Some(rect) => viewer.draw(frame, rect, false, colors),
+            None => viewer.invalidate_geometry(),
+        }
+    }
+}
+
+impl App {
+    /// Shortcuts and the owner-drawn text taken before the sheet: Ctrl+S
+    /// runs, Alt+A switches text and resources, Alt+D the display text,
+    /// PgUp/PgDn the input; the focused editor takes its keys (Enter breaks
+    /// the line), and the Host detail only scrolls.
+    pub(crate) fn revision_sheet_input(&mut self, event: &Event) -> Option<(bool, Option<Action>)> {
+        if !self.revision.rendered {
+            return None;
+        }
+        let focused = self.layer.focused_path().map(str::to_owned);
+        let in_editor = focused.as_deref() == Some(EDITOR);
+        let in_problem = focused.as_deref() == Some(PROBLEM);
         let state = &mut self.revision;
-        if state.rendered && state.show_problem && state.focus == 0 && !state.confirm_discard {
-            if let Some(problem) = &mut state.problem {
-                match event {
-                    Event::Key(key)
-                        if matches!(
+        let command = match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                let control = key.modifiers.contains(KeyModifiers::CONTROL);
+                let alt = key.modifiers.contains(KeyModifiers::ALT);
+                match key.code {
+                    KeyCode::Char('s') if control => Command::Send,
+                    KeyCode::Char('a') if alt => {
+                        if state.resources.visible {
+                            Command::Content
+                        } else {
+                            Command::Resources
+                        }
+                    }
+                    KeyCode::Char('d') if alt => Command::Display,
+                    KeyCode::PageUp | KeyCode::PageDown
+                        if !state.show_problem && !state.resources.visible =>
+                    {
+                        Command::Select(if key.code == KeyCode::PageUp {
+                            state.selected.saturating_sub(1)
+                        } else {
+                            state.selected + 1
+                        })
+                    }
+                    _ if matches!(key.code, KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab)
+                        || (control && key.code == KeyCode::Char('q')) =>
+                    {
+                        return None;
+                    }
+                    _ if in_editor => {
+                        self.revision_edit(event);
+                        return Some((true, None));
+                    }
+                    _ if in_problem
+                        && matches!(
                             key.code,
                             KeyCode::Left
                                 | KeyCode::Right
@@ -168,25 +437,53 @@ impl App {
                                 | KeyCode::Down
                                 | KeyCode::Home
                                 | KeyCode::End
-                                | KeyCode::PageUp
-                                | KeyCode::PageDown
                         ) =>
                     {
-                        problem.key(*key);
+                        let changed = state
+                            .problem
+                            .as_mut()
+                            .is_some_and(|problem| problem.key(*key));
+                        return Some((changed, None));
                     }
-                    Event::Mouse(mouse) => {
-                        problem.mouse(*mouse);
-                    }
-                    _ => {}
+                    _ => return None,
                 }
             }
-            return;
-        }
-        if !state.rendered
-            || state.phase != Phase::Editing
-            || state.focus != 0
+            Event::Paste(_) if in_editor => {
+                self.revision_edit(event);
+                return Some((true, None));
+            }
+            // The Host detail is read only.
+            Event::Paste(_) if in_problem => return Some((false, None)),
+            Event::Mouse(mouse) => {
+                let press = matches!(mouse.kind, MouseEventKind::Down(_));
+                if state.editor.takes(mouse) && state.phase == Phase::Editing {
+                    self.revision_edit(event);
+                    if press {
+                        self.layer.focus_path(EDITOR);
+                    }
+                    return Some((true, None));
+                }
+                let problem = state
+                    .problem
+                    .as_mut()
+                    .filter(|problem| problem.takes(mouse))?;
+                let changed = problem.mouse(*mouse);
+                if press {
+                    self.layer.focus_path(PROBLEM);
+                }
+                return Some((changed || press, None));
+            }
+            _ => return None,
+        };
+        Some((true, self.apply(action(command))))
+    }
+
+    fn revision_edit(&mut self, event: &Event) {
+        let state = &mut self.revision;
+        if state.phase != Phase::Editing
             || state.confirm_discard
             || state.resources.visible
+            || state.show_problem
         {
             return;
         }
@@ -228,298 +525,5 @@ impl App {
             }
         }
         state.trim_history();
-    }
-}
-
-pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect, base: Style) {
-    app.hits.clear();
-    if area.width < 44 || area.height < 20 {
-        app.revision.invalidate_geometry();
-        crate::view::clear_overlay(frame, area);
-        frame.render_widget(
-            Paragraph::new(app.i18n.text("terminal-small")).wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
-    }
-    let width = area.width.saturating_sub(4).min(88);
-    let inner_width = width.saturating_sub(4);
-    app.revision.rendered = true;
-    let key = app
-        .revision
-        .error
-        .unwrap_or(if app.revision.confirm_discard {
-            "revision-discard-note"
-        } else {
-            match app.revision.phase {
-                Phase::Editing if app.revision.resources.visible => "revision-resources-note",
-                Phase::Editing => "revision-note",
-                Phase::Ready => "revision-prepared",
-                Phase::Done => "revision-started",
-                Phase::Retained => "revision-retained",
-                Phase::UnknownCopy | Phase::UnknownTurn | Phase::Failed => "revision-unknown",
-                Phase::Busy | Phase::Loading => "revision-wait",
-                Phase::Uploading => "attachments-uploading",
-            }
-        });
-    let controls = buttons(app);
-    let labels: Vec<_> = controls
-        .iter()
-        .map(|c| {
-            let count = app
-                .revision
-                .saved
-                .as_ref()
-                .map_or(0, |s| s.inputs[app.revision.selected].files.len());
-            if *c == Command::Skills {
-                let count = app
-                    .revision
-                    .saved
-                    .as_ref()
-                    .map_or(0, |s| s.inputs[app.revision.selected].skills.len());
-                let icon = app.chrome.symbol("✧", "*");
-                if count > 0 {
-                    format!("{icon} {count}")
-                } else {
-                    icon.into()
-                }
-            } else if *c == Command::Directories {
-                let count = app
-                    .revision
-                    .saved
-                    .as_ref()
-                    .map_or(0, |s| s.inputs[app.revision.selected].directories.len());
-                let icon = app.chrome.symbol("▱", "/");
-                if count > 0 {
-                    format!("{icon} {count}")
-                } else {
-                    icon.into()
-                }
-            } else if *c == Command::Attachments && count > 0 {
-                format!("{} · {count}", app.i18n.text("inputs-add"))
-            } else {
-                app.i18n.text(c.label())
-            }
-        })
-        .collect();
-    let mut rows: Vec<Vec<(Command, String, u16, usize)>> = vec![vec![]];
-    let mut used = 0;
-    for (index, (command, label)) in controls.into_iter().zip(labels).enumerate() {
-        let width = (label.width() as u16 + 2).min(inner_width);
-        if used > 0 && used + 1 + width > inner_width {
-            rows.push(vec![]);
-            used = 0;
-        }
-        if used > 0 {
-            used += 1;
-        }
-        used += width;
-        rows.last_mut()
-            .unwrap()
-            .push((command, label, width, index));
-    }
-    let mut note = crate::pages::manage::view::note_lines(&app.i18n.text(key), inner_width);
-    if !app.revision.confirm_discard
-        && !app.revision.show_problem
-        && key == "revision-blocked"
-        && let Some(problem) = &app.revision.problem
-    {
-        // Full Host detail stays opt-in and scrollable; it cannot displace the controls.
-        let preview = crate::view::safe(problem.text());
-        let mut lines = crate::pages::manage::view::note_lines(&preview, inner_width);
-        if lines.len() > 2 {
-            lines.truncate(2);
-        }
-        note.extend(lines);
-    }
-    let note_height = note.len() as u16;
-    let footer = rows.len() as u16;
-    let fixed = 9 + note_height + footer;
-    let available = area.height.saturating_sub(2 + fixed);
-    if available == 0 {
-        app.revision.invalidate_geometry();
-        crate::view::clear_overlay(frame, area);
-        frame.render_widget(Paragraph::new(app.i18n.text("terminal-small")), area);
-        return;
-    }
-    let editor = if app.revision.show_problem {
-        app.revision.problem.as_mut().unwrap()
-    } else {
-        &mut app.revision.editor
-    };
-    let editor_rows = if app.revision.resources.visible && !app.revision.show_problem {
-        app.revision.saved.as_ref().map_or(3, |saved| {
-            (saved.inputs[app.revision.selected].resources().len() * 3).clamp(3, 15) as u16
-        })
-    } else {
-        editor.preferred_height(width.saturating_sub(8), 15).max(3)
-    }
-    .min(available);
-    let height = fixed + editor_rows;
-    let popup = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    app.modal_area = Some(popup);
-    crate::view::clear_overlay(frame, popup);
-    let colors = app.theme.colors();
-    let block = Block::bordered()
-        .title(app.i18n.text("revision-title"))
-        .title_alignment(Alignment::Center)
-        .border_type(if app.chrome.ascii {
-            BorderType::Plain
-        } else {
-            BorderType::Rounded
-        })
-        .style(base)
-        .border_style(Style::default().fg(colors.accent));
-    let inner = block.inner(popup).inner(Margin::new(1, 0));
-    frame.render_widget(block, popup);
-    app.revision.rendered = true;
-    let editing = app.revision.phase == Phase::Editing
-        && !app.revision.confirm_discard
-        && !app.revision.show_problem;
-    let selected = app.revision.selected;
-    let count = app.revision.saved.as_ref().map_or(0, |s| s.inputs.len());
-    if app.revision.show_problem {
-        frame.render_widget(
-            Paragraph::new(app.i18n.text("revision-details"))
-                .style(Style::default().fg(colors.warning)),
-            Rect::new(inner.x, inner.y + 1, inner.width, 1),
-        );
-    } else if count > 0 {
-        let label = format!(
-            "{}  {} / {}",
-            app.i18n.text("revision-input"),
-            selected + 1,
-            count
-        );
-        frame.render_widget(
-            Paragraph::new(label).style(Style::default().fg(colors.muted)),
-            Rect::new(inner.x + 3, inner.y + 1, inner.width.saturating_sub(15), 1),
-        );
-        crate::view::button(
-            frame,
-            app,
-            Rect::new(inner.x, inner.y + 1, 2, 1),
-            if app.chrome.ascii { "<" } else { "‹" },
-            Action::Revision(Command::Select(selected.saturating_sub(1))),
-            false,
-        );
-        crate::view::button(
-            frame,
-            app,
-            Rect::new(inner.right() - 2, inner.y + 1, 2, 1),
-            if app.chrome.ascii { ">" } else { "›" },
-            Action::Revision(Command::Select(selected + 1)),
-            false,
-        );
-        let display = app.revision.saved.as_ref().unwrap().inputs[selected]
-            .content
-            .display_text
-            .is_some();
-        if display {
-            let label = app.i18n.text(if app.revision.display {
-                "revision-text"
-            } else {
-                "revision-display"
-            });
-            let w = (label.width() as u16 + 2).min(inner.width / 2);
-            crate::view::button(
-                frame,
-                app,
-                Rect::new(inner.right() - w - 3, inner.y + 1, w, 1),
-                &label,
-                Action::Revision(Command::Display),
-                false,
-            );
-        }
-    }
-    let body = Rect::new(inner.x, inner.y + 3, inner.width, editor_rows + 2);
-    if !app.revision.show_problem
-        && let Some(input) = app
-            .revision
-            .saved
-            .as_ref()
-            .and_then(|s| s.inputs.get(selected))
-    {
-        let message = input.message();
-        let content = &message.content;
-        let counts = [
-            (
-                "revision-attachments",
-                content.attachments.as_ref().map_or(0, Vec::len),
-            ),
-            (
-                "revision-references",
-                content.quotes.as_ref().map_or(0, Vec::len)
-                    + content.directory_references.as_ref().map_or(0, Vec::len)
-                    + content.inline_references.as_ref().map_or(0, Vec::len),
-            ),
-            (
-                "revision-selections",
-                message.input_selections.values().map(Vec::len).sum(),
-            ),
-        ];
-        let label = counts
-            .into_iter()
-            .filter(|(_, n)| *n > 0)
-            .map(|(key, n)| app.i18n.format(key, &[("count", &n.to_string())]))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        frame.render_widget(
-            Paragraph::new(label).style(Style::default().fg(colors.muted)),
-            Rect::new(inner.x, inner.y + 2, inner.width, 1),
-        );
-    }
-    let editor_block = Block::bordered().border_style(Style::default().fg(if editing {
-        colors.accent
-    } else {
-        colors.muted
-    }));
-    let text_area = editor_block.inner(body).inner(Margin::new(1, 0));
-    frame.render_widget(editor_block, body);
-    if app.revision.show_problem {
-        app.revision
-            .problem
-            .as_mut()
-            .unwrap()
-            .draw(frame, text_area, false, colors);
-    } else if count > 0 && app.revision.resources.visible {
-        super::resources::draw(frame, app, text_area, editing);
-    } else if count > 0 {
-        app.revision
-            .editor
-            .draw(frame, text_area, editing && app.revision.focus == 0, colors);
-    }
-    frame.render_widget(
-        Paragraph::new(note)
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(if app.revision.error.is_some() {
-                colors.warning
-            } else {
-                colors.muted
-            })),
-        Rect::new(inner.x, body.bottom() + 1, inner.width, note_height),
-    );
-    let first = inner.bottom().saturating_sub(rows.len() as u16);
-    for (row, buttons) in rows.into_iter().enumerate() {
-        let total = buttons.iter().map(|(_, _, w, _)| w).sum::<u16>()
-            + buttons.len().saturating_sub(1) as u16;
-        let mut x = inner.x + (inner.width - total) / 2;
-        for (command, label, width, index) in buttons {
-            crate::view::button(
-                frame,
-                app,
-                Rect::new(x, first + row as u16, width, 1),
-                &label,
-                Action::Revision(command.clone()),
-                app.revision.focus == index + 1
-                    || (command == Command::Details && app.revision.show_problem),
-            );
-            x += width + 1;
-        }
     }
 }

@@ -278,9 +278,9 @@ fn revision_edits_ordered_inputs_preserves_attachments_and_reopens_without_resub
     recovered.wait_for("Result not confirmed.");
     recovered.click_text("Check result");
     recovered.wait_for("Revision accepted.");
-    recovered.click_text("Discard revision");
+    recovered.click_last_text("Discard");
     recovered.wait_for("Discard these edits?");
-    recovered.click_text("Discard revision");
+    recovered.click_last_text("Discard");
     recovered.wait_for("This revision has been used and was kept.");
     recovered.click_text("Open revised session");
     recovered.wait_for("Revised reply.");

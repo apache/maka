@@ -71,7 +71,6 @@ impl State {
         self.resources = Default::default();
         self.selected = selected;
         self.display = display;
-        self.focus = 0;
         self.load_editor();
         self.trim_history();
     }

@@ -43,7 +43,7 @@ use request::Job;
 pub use request::{Output, Request, execute};
 pub use saved::Checkpoint;
 use saved::Stage;
-pub use view::draw;
+pub(crate) use view::{draw_field, sheet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -54,6 +54,8 @@ pub enum Command {
     Query,
     Discard,
     ConfirmDiscard,
+    /// Keeps the revision after asking to discard it.
+    Keep,
     Visit,
     Close,
     Select(usize),
@@ -75,6 +77,7 @@ impl Command {
             Self::Retry => "revision-retry",
             Self::Query => "branch-query",
             Self::Discard | Self::ConfirmDiscard => "revision-discard",
+            Self::Keep => "session-cancel",
             Self::Visit => "revision-open",
             Self::Close => "session-remove-close",
             Self::Select(_) => "revision-input",
@@ -121,7 +124,6 @@ pub struct State {
     show_problem: bool,
     resources: resources::Browser,
     editors: std::collections::VecDeque<((usize, bool), Editor)>,
-    focus: usize,
     confirm_discard: bool,
     uploading: bool,
 }
@@ -150,10 +152,12 @@ impl State {
         self.load_editor();
         self.visible = false;
     }
+    /// The sheet reports whether it is on screen; its commands need it.
+    pub(crate) fn presented(&mut self, shown: bool) {
+        self.rendered = shown;
+    }
     pub fn invalidate_geometry(&mut self) {
         self.rendered = false;
-        self.resources.area = None;
-        self.resources.dragging = false;
         self.editor.invalidate_geometry();
         if let Some(problem) = &mut self.problem {
             problem.invalidate_geometry();
@@ -215,6 +219,7 @@ impl App {
                 && matches!(state.phase, Phase::UnknownCopy | Phase::UnknownTurn)
                 && state.saved.as_ref().is_some_and(|s| s.stage != Stage::Draft),
             Command::Discard => available && state.saved.is_some() && !state.confirm_discard,
+            Command::Keep => state.visible && state.confirm_discard,
             Command::ConfirmDiscard => available && state.confirm_discard
                 && state.saved.as_ref().is_some_and(|s| s.stage == Stage::Draft || same_root),
             Command::Visit => available && same_root && matches!(state.phase, Phase::Done | Phase::Retained)
@@ -291,13 +296,11 @@ impl App {
                 state.visible = true;
                 state.selected = 0;
                 state.display = false;
-                state.focus = 0;
                 state.invalidate_geometry();
             }
             Command::Resume => {
                 state.visible = true;
                 state.confirm_discard = false;
-                state.focus = 0;
                 state.invalidate_geometry();
             }
             Command::Close => {
@@ -308,21 +311,15 @@ impl App {
             Command::Resources | Command::Content => {
                 state.resources.visible = matches!(command, Command::Resources);
                 state.show_problem = false;
-                state.focus = 0;
                 state.invalidate_geometry();
             }
             Command::ToggleResource(resource) => {
                 let input = &mut state.saved.as_mut()?.inputs[state.selected];
-                if let Some(index) = input.resources().iter().position(|key| key == &resource) {
-                    state.resources.selected = index;
-                }
                 input.toggle(&resource);
-                state.focus = 0;
                 state.error = None;
             }
             Command::Details => {
                 state.show_problem = !state.show_problem;
-                state.focus = 0;
                 state.invalidate_geometry();
             }
             Command::Select(index) => {
@@ -333,9 +330,9 @@ impl App {
             }
             Command::Discard => {
                 state.confirm_discard = true;
-                state.focus = 1;
                 state.error = None;
             }
+            Command::Keep => state.confirm_discard = false,
             Command::ConfirmDiscard => {
                 let saved = state.saved.as_mut()?;
                 if saved.stage == Stage::Draft {
@@ -443,7 +440,6 @@ impl App {
         };
         state.pending = Some(request.clone());
         state.phase = Phase::Busy;
-        state.focus = 0;
         Some(request)
     }
     pub fn revision_after_checkpoint(
@@ -492,7 +488,6 @@ impl App {
             state.disconnect();
             return;
         }
-        state.focus = 0;
         state.problem = None;
         state.show_problem = false;
         match result {
@@ -645,12 +640,7 @@ mod tests {
 
     pub(super) fn frame(app: &mut App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|f| {
-                app.hits.clear();
-                draw(f, app, f.area(), app.theme.colors().base());
-            })
-            .unwrap();
+        terminal.draw(|f| crate::view::draw(f, app)).unwrap();
         terminal
             .backend()
             .buffer()
@@ -682,20 +672,13 @@ mod tests {
         assert!(!load.needs_checkpoint());
         app.revision_completed(load, Ok(Output::Sources(sources("source"))));
         frame(&mut app, 80, 24);
-        let footer: Vec<_> = app
-            .hits
-            .iter()
-            .filter(|hit| {
-                matches!(
-                    hit.action,
-                    Action::Revision(Command::Close | Command::Discard | Command::Send)
-                )
-            })
+        let footer: Vec<_> = ["footer/discard", "footer/close", "footer/primary"]
+            .into_iter()
+            .map(|path| app.layer.rect(path).unwrap())
             .collect();
-        assert_eq!(footer.len(), 3);
         assert!(
-            footer.iter().all(|hit| hit.area.y == footer[0].area.y),
-            "wide dialog keeps its compact centered action row"
+            footer.iter().all(|rect| rect.y == footer[0].y),
+            "Discard, Close and Run share the action row"
         );
         app.input(Event::Paste("中文".into()));
         assert_eq!(
@@ -845,11 +828,12 @@ mod tests {
         app.revision_completed(retry, Ok(Output::Started));
         frame(&mut app, 80, 24);
         app.apply(Action::Revision(Command::Discard));
-        assert_eq!(
-            app.revision.focus, 1,
-            "close is default for destructive confirmation"
-        );
         frame(&mut app, 80, 24);
+        assert_eq!(
+            app.layer.focused_path(),
+            Some("footer/cancel"),
+            "cancel is default for destructive confirmation"
+        );
         app.apply(Action::Revision(Command::ConfirmDiscard));
         let abandon = app.revision_request().unwrap();
         assert!(app.revision_after_checkpoint(&abandon, &Ok(())));

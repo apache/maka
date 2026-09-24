@@ -520,16 +520,7 @@ mod tests {
         app.apply(Action::Revision(Command::Resume));
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
-        terminal
-            .draw(|f| {
-                crate::pages::revision::draw(
-                    f,
-                    &mut app,
-                    f.area(),
-                    ratatui::style::Style::default(),
-                )
-            })
-            .unwrap();
+        terminal.draw(|f| crate::view::draw(f, &mut app)).unwrap();
         app.apply(Action::Revision(Command::Send));
         let request = app.revision_request().unwrap();
         let (release, blocked) = gate(&state).await;

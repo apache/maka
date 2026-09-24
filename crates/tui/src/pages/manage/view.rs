@@ -22,66 +22,7 @@ use crate::{
     app::{Action, App},
     ui::{Role, Sheet, Tone},
 };
-use ratatui::{Frame, text::Line};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
-
-// Localized prose: keep Latin words together without treating a whole CJK
-// sentence as one word. Measure and draw these same lines, with no second wrap.
-pub(crate) fn note_lines(text: &str, width: u16) -> Vec<Line<'static>> {
-    let width = usize::from(width.max(1));
-    let mut lines = Vec::new();
-    for source in text.lines() {
-        let mut line = String::new();
-        let mut cells = 0;
-        // Keep closing punctuation with its preceding word, including CJK words.
-        let closing =
-            |c: char| ",.!?:;%)]}、。，．！？：；％）］｝〉》」』】〕〗〙〛’”»".contains(c);
-        let mut words: Vec<String> = Vec::new();
-        for word in source.split_word_bounds() {
-            if word.chars().all(closing)
-                && let Some(previous) = words.last_mut()
-            {
-                previous.push_str(word);
-            } else {
-                words.push(word.into());
-            }
-        }
-        for word in words {
-            if cells > 0 && cells + word.width() > width {
-                lines.push(Line::from(std::mem::take(&mut line)));
-                cells = 0;
-            }
-            if cells == 0 && word.trim().is_empty() {
-                continue;
-            }
-            for grapheme in word.graphemes(true) {
-                if cells > 0 && cells + grapheme.width() > width {
-                    // An overlong word may still split; carry its last grapheme
-                    // rather than starting the next line with punctuation alone.
-                    let carry = grapheme
-                        .chars()
-                        .all(closing)
-                        .then(|| line.grapheme_indices(true).next_back().map(|(i, _)| i))
-                        .flatten()
-                        .filter(|i| *i > 0 && line[*i..].width() + grapheme.width() <= width);
-                    if let Some(index) = carry {
-                        let tail = line.split_off(index);
-                        lines.push(Line::from(std::mem::replace(&mut line, tail)));
-                        cells = line.width();
-                    } else {
-                        lines.push(Line::from(std::mem::take(&mut line)));
-                        cells = 0;
-                    }
-                }
-                line.push_str(grapheme);
-                cells += grapheme.width();
-            }
-        }
-        lines.push(Line::from(line));
-    }
-    lines
-}
+use ratatui::Frame;
 
 /// Every management dialog without a sub-view of its own: confirmations
 /// (archive, restore, connection test, model fetch, enable, disable, remove),
@@ -348,39 +289,4 @@ pub(crate) fn draw_field(frame: &mut Frame<'_>, app: &mut App) {
     };
     let focused = focused && editable && !dialog.blocked;
     dialog.editor.draw(frame, rect, focused, colors);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn notes_wrap_latin_words_and_cjk_without_losing_unicode() {
-        let source =
-            "Host 上的目录。 Existing sessions and files remain. abcdefghijklmn e\u{301}🦀";
-        let lines = note_lines(source, 12);
-        let texts: Vec<String> = lines
-            .iter()
-            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        assert!(texts.iter().all(|line| line.width() <= 12));
-        let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
-        assert_eq!(compact(&texts.concat()), compact(source));
-        assert!(texts.iter().any(|s| s.contains("Existing")));
-        assert!(texts.iter().any(|s| s.contains("sessions")));
-        assert!(
-            texts[0].contains("Host 上"),
-            "CJK must share the line with the Latin prefix"
-        );
-        for width in [4, 8, 12, 44] {
-            let source = "后续请求使用新密钥。保存不会测试。 Words, words. abcdefghijklmnop。";
-            let lines = note_lines(source, width);
-            let texts: Vec<String> = lines
-                .iter()
-                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-                .collect();
-            assert!(texts.iter().all(|s| s.width() <= usize::from(width)));
-            assert!(texts.iter().all(|s| !s.starts_with(['。', ',', '.'])));
-            assert_eq!(compact(&texts.concat()), compact(source));
-        }
-    }
 }

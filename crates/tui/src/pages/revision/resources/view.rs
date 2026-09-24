@@ -19,235 +19,111 @@
 
 use super::Resource;
 use crate::{
-    app::{Action, App, Hit},
-    pages::revision::Command,
+    app::{Action, App},
+    pages::revision::{Command, draft::Input},
+    ui::{Node, On, Tone},
     view::safe,
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::Style,
-    widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
-};
 
-pub(in crate::pages::revision) fn input(app: &mut App, event: &Event) -> Option<Option<Command>> {
-    let state = &mut app.revision;
-    if !state.rendered
-        || !state.resources.visible
-        || state.show_problem
-        || state.confirm_discard
-        || state.phase != super::super::Phase::Editing
-    {
-        return None;
-    }
-    let resources = state.saved.as_ref()?.inputs[state.selected].resources();
-    let browser = &mut state.resources;
-    let area = browser.area?;
-    let capacity = usize::from(area.height / 3).max(1);
-    let last = resources.len().saturating_sub(1);
-    match event {
-        Event::Key(key) if key.kind != KeyEventKind::Release && state.focus == 0 => {
-            match key.code {
-                KeyCode::Up => browser.selected = browser.selected.saturating_sub(1),
-                KeyCode::Down => browser.selected = (browser.selected + 1).min(last),
-                KeyCode::PageUp => browser.selected = browser.selected.saturating_sub(capacity),
-                KeyCode::PageDown => browser.selected = (browser.selected + capacity).min(last),
-                KeyCode::Home => browser.selected = 0,
-                KeyCode::End => browser.selected = last,
-                KeyCode::Char(' ') | KeyCode::Enter => {
-                    return Some(
-                        resources
-                            .get(browser.selected)
-                            .cloned()
-                            .map(Command::ToggleResource),
-                    );
-                }
-                _ => return None,
-            }
-        }
-        Event::Mouse(mouse) => match mouse.kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if area.contains((mouse.column, mouse.row).into()) =>
-            {
-                state.focus = 0;
-                browser.selected = if mouse.kind == MouseEventKind::ScrollUp {
-                    browser.selected.saturating_sub(2)
-                } else {
-                    (browser.selected + 2).min(last)
-                };
-            }
-            MouseEventKind::Down(MouseButton::Left)
-                if resources.len() > capacity
-                    && mouse.column == area.right() - 1
-                    && area.contains((mouse.column, mouse.row).into()) =>
-            {
-                browser.dragging = true;
-            }
-            MouseEventKind::Drag(MouseButton::Left) if browser.dragging => {}
-            MouseEventKind::Up(MouseButton::Left) if browser.dragging => {
-                browser.dragging = false;
-                return Some(None);
-            }
-            _ => return None,
-        },
-        _ => return None,
-    }
-    if let Event::Mouse(mouse) = event
-        && browser.dragging
-    {
-        let fraction = usize::from(
-            mouse
-                .row
-                .saturating_sub(area.y)
-                .min(area.height.saturating_sub(1)),
-        );
-        browser.top = fraction * resources.len().saturating_sub(capacity)
-            / usize::from(area.height.saturating_sub(1).max(1));
-        browser.selected = browser.top;
-        state.focus = 0;
-    }
-    Some(None)
+/// One row per resource of the input: a checkbox deciding whether it goes
+/// into the revision, and what it is. Inline references stay, since their
+/// token lives in the text.
+pub(in crate::pages::revision) fn rows(app: &App, input: &Input) -> Vec<Node<Action>> {
+    input
+        .resources()
+        .into_iter()
+        .enumerate()
+        .map(|(index, resource)| {
+            let included = input.included(&resource);
+            let immutable = matches!(resource, Resource::Inline { .. });
+            let (title, detail) = describe(app, input, &resource);
+            let mark = if immutable {
+                "·"
+            } else if included {
+                app.chrome.symbol("✓", "x")
+            } else {
+                " "
+            };
+            let text = if immutable {
+                format!(" {mark}  {}", safe(&title))
+            } else {
+                format!("[{mark}] {}", safe(&title))
+            };
+            let command = Command::ToggleResource(resource);
+            Node::column(
+                index.to_string(),
+                vec![
+                    Node::text(
+                        "title",
+                        vec![(text, if included { Tone::Normal } else { Tone::Muted })],
+                    )
+                    .clip(),
+                    Node::text(
+                        "detail",
+                        vec![(format!("    {}", safe(&detail)), Tone::Muted)],
+                    )
+                    .clip(),
+                ],
+            )
+            .enabled(app.revision_enabled(&command))
+            .on(On::Activate(Action::Revision(command)))
+        })
+        .collect()
 }
 
-pub(in crate::pages::revision) fn draw(
-    frame: &mut Frame<'_>,
-    app: &mut App,
-    area: Rect,
-    enabled: bool,
-) {
-    let state = &mut app.revision;
-    let input = &state.saved.as_ref().unwrap().inputs[state.selected];
-    let resources = input.resources();
-    let browser = &mut state.resources;
-    browser.area = enabled.then_some(area);
-    browser.selected = browser.selected.min(resources.len().saturating_sub(1));
-    let capacity = usize::from(area.height / 3).max(1);
-    browser.top = browser
-        .top
-        .min(browser.selected)
-        .max(browser.selected.saturating_sub(capacity - 1))
-        .min(resources.len().saturating_sub(capacity));
-    let colors = app.theme.colors();
-    for (index, resource) in resources
-        .iter()
-        .enumerate()
-        .skip(browser.top)
-        .take(capacity)
-    {
-        let included = input.included(resource);
-        let immutable = matches!(resource, Resource::Inline { .. });
-        let (title, detail) = match resource {
-            Resource::Attachment { index } => {
-                let file = &input.original.content.attachments.as_ref().unwrap()[*index];
-                let size = if file.bytes < 1024 {
-                    format!("{} B", file.bytes)
-                } else if file.bytes < 1024 * 1024 {
-                    format!("{:.1} KiB", file.bytes as f64 / 1024.0)
-                } else {
-                    format!("{:.1} MiB", file.bytes as f64 / (1024.0 * 1024.0))
-                };
-                let mut detail = format!("{} · {size}", file.mime_type);
-                match &file.storage_ref {
-                    maka_protocol::turn::StorageRef::WorkspaceFile { relative_path } => {
-                        detail.push_str(&format!(" · {relative_path}"))
-                    }
-                    maka_protocol::turn::StorageRef::ExternalFile { absolute_path } => {
-                        detail.push_str(&format!(" · {absolute_path}"))
-                    }
-                    _ => {}
-                }
-                (file.name.clone(), detail)
-            }
-            Resource::Quote { index } => {
-                let quote = &input.original.content.quotes.as_ref().unwrap()[*index];
-                (
-                    quote
-                        .label
-                        .clone()
-                        .unwrap_or_else(|| app.i18n.text("revision-resource-quote")),
-                    quote.text.clone(),
-                )
-            }
-            Resource::Directory { index } => {
-                let directory = &input
-                    .original
-                    .content
-                    .directory_references
-                    .as_ref()
-                    .unwrap()[*index];
-                (directory.path.clone(), directory.host_id.clone())
-            }
-            Resource::Selection { provider, index } => (
-                input.original.input_selections[provider][*index].clone(),
-                provider.clone(),
-            ),
-            Resource::Inline { index } => {
-                let reference = &input.content.inline_references.as_ref().unwrap()[*index];
-                (
-                    reference.label.clone(),
-                    app.i18n.text("revision-resource-inline"),
-                )
-            }
-        };
-        let rect = Rect::new(
-            area.x,
-            area.y + ((index - browser.top) * 3) as u16,
-            area.width.saturating_sub(2),
-            2.min(area.height),
-        );
-        let selected = enabled && state.focus == 0 && browser.selected == index;
-        let base = if selected {
-            colors.selected()
-        } else {
-            colors.base()
-        };
-        let mark = if immutable {
-            "·"
-        } else if included {
-            app.chrome.symbol("✓", "x")
-        } else {
-            " "
-        };
-        let text = if immutable {
-            format!(" {mark}  {}", safe(&title))
-        } else {
-            format!("[{mark}] {}", safe(&title))
-        };
-        frame.render_widget(
-            Paragraph::new(text).style(base.fg(if included {
-                colors.foreground
+fn describe(app: &App, input: &Input, resource: &Resource) -> (String, String) {
+    match resource {
+        Resource::Attachment { index } => {
+            let file = &input.original.content.attachments.as_ref().unwrap()[*index];
+            let size = if file.bytes < 1024 {
+                format!("{} B", file.bytes)
+            } else if file.bytes < 1024 * 1024 {
+                format!("{:.1} KiB", file.bytes as f64 / 1024.0)
             } else {
-                colors.muted
-            })),
-            Rect::new(rect.x, rect.y, rect.width, 1),
-        );
-        if area.height > 1 {
-            frame.render_widget(
-                Paragraph::new(format!("    {}", safe(&detail))).style(base.fg(colors.muted)),
-                Rect::new(rect.x, rect.y + 1, rect.width, 1),
-            );
+                format!("{:.1} MiB", file.bytes as f64 / (1024.0 * 1024.0))
+            };
+            let mut detail = format!("{} · {size}", file.mime_type);
+            match &file.storage_ref {
+                maka_protocol::turn::StorageRef::WorkspaceFile { relative_path } => {
+                    detail.push_str(&format!(" · {relative_path}"))
+                }
+                maka_protocol::turn::StorageRef::ExternalFile { absolute_path } => {
+                    detail.push_str(&format!(" · {absolute_path}"))
+                }
+                _ => {}
+            }
+            (file.name.clone(), detail)
         }
-        if enabled && !immutable {
-            app.hits.push(Hit {
-                area: rect,
-                action: Action::Revision(Command::ToggleResource(resource.clone())),
-            });
+        Resource::Quote { index } => {
+            let quote = &input.original.content.quotes.as_ref().unwrap()[*index];
+            (
+                quote
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| app.i18n.text("revision-resource-quote")),
+                quote.text.clone(),
+            )
         }
-    }
-    if resources.len() > capacity {
-        let mut scroll = ScrollbarState::new(resources.len())
-            .position(browser.top)
-            .viewport_content_length(capacity);
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_style(Style::default().fg(colors.subtle))
-                .thumb_style(Style::default().fg(colors.accent)),
-            area,
-            &mut scroll,
-        );
+        Resource::Directory { index } => {
+            let directory = &input
+                .original
+                .content
+                .directory_references
+                .as_ref()
+                .unwrap()[*index];
+            (directory.path.clone(), directory.host_id.clone())
+        }
+        Resource::Selection { provider, index } => (
+            input.original.input_selections[provider][*index].clone(),
+            provider.clone(),
+        ),
+        Resource::Inline { index } => {
+            let reference = &input.content.inline_references.as_ref().unwrap()[*index];
+            (
+                reference.label.clone(),
+                app.i18n.text("revision-resource-inline"),
+            )
+        }
     }
 }
 
@@ -258,7 +134,9 @@ mod tests {
         Output,
         tests::{frame, sources},
     };
-    use crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     #[test]
     fn resource_list_scrolls_toggles_and_keeps_edits_without_touching_inline_tokens() {
         let (mut app, basis) = crate::pages::branch::tests::fixture();
@@ -292,31 +170,28 @@ mod tests {
                 index: 11
             }]
         );
-        let area = app.revision.resources.area.unwrap();
+        // The thumb, just right of the rows, dragged back to the top of the
+        // viewport.
+        let shown: Vec<_> = (0..13)
+            .filter_map(|index| app.layer.rect(&format!("resources/rows/{index}")))
+            .filter(|rect| !rect.is_empty())
+            .collect();
+        let top = shown.iter().map(|rect| rect.y).min().unwrap();
+        let bar = shown[0].right();
         for kind in [
             MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Up(MouseButton::Left),
         ] {
             app.input(Event::Mouse(MouseEvent {
                 kind,
-                column: area.right() - 1,
-                row: area.y,
+                column: bar,
+                row: top,
                 modifiers: KeyModifiers::NONE,
             }));
         }
         frame(&mut app, 80, 30);
-        assert_eq!(app.revision.resources.top, 0);
-        let hit = app
-            .hits
-            .iter()
-            .find(|hit| {
-                matches!(
-                    hit.action,
-                    Action::Revision(Command::ToggleResource(Resource::Attachment { index: 0 }))
-                )
-            })
-            .unwrap()
-            .area;
+        let hit = app.layer.rect("resources/rows/0").unwrap();
+        assert!(!hit.is_empty(), "the first resource is back in view");
         app.input(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: hit.x + 6,
