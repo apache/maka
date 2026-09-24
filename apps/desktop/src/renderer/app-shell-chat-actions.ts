@@ -151,7 +151,7 @@ export function createAppShellChatActions(deps: {
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   messageRetryPending: SessionPendingClaim;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
-  activateSessionForFirstSend: (sessionId: string) => Promise<void>;
+  activateSessionForFirstSend: (session: DesktopSessionSummary) => Promise<void>;
   retireSession: (sessionId: string) => void;
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
   addTransientMessage: (
@@ -396,7 +396,7 @@ export function createAppShellChatActions(deps: {
         });
         // Main owns observation-before-dispatch. This only selects the local
         // surface; saving a draft never waits for the Host's event stream.
-        await activateSessionForFirstSend(session.id);
+        await activateSessionForFirstSend(session);
         if (activeIdRef.current !== session.id) {
           removeTransientMessage(session.id, messageId);
           await discardUnsentSession();

@@ -477,7 +477,7 @@ describe('busy-raced send settlement', () => {
     try {
       const actions = createAppShellChatActions({
         ...createActionsDeps(), activeIdRef,
-        activateSessionForFirstSend: async (sessionId) => { activeIdRef.current = sessionId; },
+        activateSessionForFirstSend: async (session) => { activeIdRef.current = session.id; },
         addTransientMessage: (_sessionId, message) => {
           const current = transient.get(message.id);
           transient.set(message.id, current ? mergeTransientMessageProjection(current, message) : message);
@@ -492,7 +492,7 @@ describe('busy-raced send settlement', () => {
   it('keeps the new-chat message through navigation when a raced Host queues it', async () => {
     const activeIdRef = { current: undefined as string | undefined };
     const transientState = createTransientState();
-    const activated: string[] = [];
+    const activated: unknown[] = [];
     const removed: string[] = [];
     const restoreWindow = installWindow({
       newTasks: {
@@ -519,9 +519,9 @@ describe('busy-raced send settlement', () => {
       const actions = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
-        activateSessionForFirstSend: async (sessionId) => {
-          activated.push(sessionId);
-          activeIdRef.current = sessionId;
+        activateSessionForFirstSend: async (session) => {
+          activated.push(session);
+          activeIdRef.current = session.id;
         },
         retireSession: (sessionId: string) => {
           if (activeIdRef.current === sessionId) activeIdRef.current = undefined;
@@ -529,7 +529,7 @@ describe('busy-raced send settlement', () => {
         ...transientState.deps,
       });
       assert.equal(await actions.send('also check the tests'), true);
-      assert.deepEqual(activated, ['session-new']);
+      assert.deepEqual(activated, [{ id: 'session-new' }], 'the created summary is what the surface activates');
       assert.equal(transientState.rows.size, 1);
       assert.deepEqual(removed, []);
     } finally {
@@ -560,8 +560,8 @@ describe('busy-raced send settlement', () => {
       const actions = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
-        activateSessionForFirstSend: async (sessionId) => {
-          activeIdRef.current = sessionId;
+        activateSessionForFirstSend: async (session) => {
+          activeIdRef.current = session.id;
         },
         retireSession: (sessionId: string) => {
           if (activeIdRef.current === sessionId) activeIdRef.current = undefined;
