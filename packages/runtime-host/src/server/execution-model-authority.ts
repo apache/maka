@@ -25,6 +25,7 @@ import {
   PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
+import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { declaredModelApiProtocol } from '@maka/core/model-thinking';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
@@ -404,13 +405,22 @@ export function createHostPromptSuggestionModel(input: HostSessionEffectModelInp
       callKind: 'prompt_suggestion',
       callId: `prompt_suggestion_${source.terminalEventId}_${authority.newId()}`,
       abortSignal,
-      buildRequest: () => ({
-        prompt: buildPromptSuggestionPrompt(
-          source.messages,
-          source.header.role === 'workhub_coordination',
-        ),
-        maxOutputTokens: 128,
-      }),
+      buildRequest: (target) => {
+        const variants = thinkingVariantsForConnection(target.connection, target.model);
+        if (variants.length && !variants.includes('off')) {
+          throw new AuxiliaryModelCallConfigurationError(
+            'Prompt suggestions require a model that can disable reasoning',
+          );
+        }
+        return {
+          prompt: buildPromptSuggestionPrompt(
+            source.messages,
+            source.header.role === 'workhub_coordination',
+          ),
+          maxOutputTokens: 128,
+          maxRetries: 0,
+        };
+      },
     });
     return result.finishReason === 'length' ? undefined : result.text;
   };

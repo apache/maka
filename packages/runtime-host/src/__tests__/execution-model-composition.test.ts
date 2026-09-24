@@ -6169,3 +6169,131 @@ function closeServer(server: Server): Promise<void> {
     server.close((error) => (error ? reject(error) : resolve()));
   });
 }
+
+test('prompt suggestions enforce reasoning-off, reject truncation, do not retry and skip reasoning-only models', async () => {
+  const MODEL_ID = 'gpt-5.2';
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'goal-evaluator-provider',
+        name: 'Goal evaluator provider',
+        providerType: 'openai',
+        modelOverrides: { [MODEL_ID]: { apiProtocol: 'openai-chat' } },
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'goal-evaluator-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    const evaluatorInput = {
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
+      readSessionHeader: (sessionId: string) =>
+        execution.sessionStore.readHeaderSnapshot(sessionId),
+      newId: () => 'call-1',
+    };
+
+    let fetches = 0;
+    let mode = 'length';
+    let requestBody: Record<string, unknown> = {};
+    const suggest = createHostPromptSuggestionModel({
+      ...evaluatorInput,
+      newId: () => `suggestion-${fetches}`,
+      createFetchTransport: () => ({
+        close: async () => {},
+        fetch: (async (_url, init) => {
+          fetches++;
+          requestBody = JSON.parse(String(init?.body));
+          if (mode === 'failure') return new Response('unavailable', { status: 503 });
+          return Response.json({
+            id: 'reply',
+            object: 'chat.completion',
+            created: 1,
+            model: MODEL_ID,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'partial' },
+                finish_reason: 'length',
+              },
+            ],
+            usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+          });
+        }) as typeof fetch,
+      }),
+    });
+    const source = {
+      sessionId: session.id,
+      turnId: 'turn',
+      terminalEventId: 'terminal',
+      header: session,
+      messages: [],
+    };
+    assert.equal(await suggest(source, new AbortController().signal), undefined);
+    assert.equal(requestBody.reasoning_effort, 'none');
+    assert.equal(fetches, 1);
+    mode = 'failure';
+    await assert.rejects(suggest(source, new AbortController().signal));
+    assert.equal(fetches, 2, 'a failed paid call must not retry');
+    const currentConnection = (await policy.connectionCatalog.getSnapshot()).connections.find(
+      (entry) => entry.connectionId === connection.connectionId,
+    )!;
+    const changed = await policy.connectionCatalog.update({
+      expected: { connectionId: connection.connectionId, revision: currentConnection.revision },
+      changes: {
+        name: connection.name,
+        enabled: true,
+        enabledModelIds: ['gpt-5'],
+      },
+    });
+    assert.equal(changed.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, 'gpt-5');
+    await assert.rejects(
+      suggest({ ...source, header: { ...session, model: 'gpt-5' } }, new AbortController().signal),
+      /disable reasoning/,
+    );
+    assert.equal(fetches, 2, 'unsupported off must not reach the provider');
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});

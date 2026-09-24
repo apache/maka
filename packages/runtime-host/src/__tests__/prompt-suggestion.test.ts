@@ -39,15 +39,21 @@ const source = {
 } as unknown as PromptSuggestionSource;
 const lease = () => ({ release() {} }) as OperationResidency;
 
-test('Chinese without whitespace is valid; empty/meta/multiline/oversized suggestions are discarded', () => {
+test('cleans visible output while rejecting empty, meta, assistant-voice and oversized suggestions', () => {
   assert.equal(cleanPromptSuggestion('补上测试'), '补上测试');
+  assert.equal(
+    cleanPromptSuggestion('<think>private reasoning</think>\nrun `pnpm test`'),
+    'run `pnpm test`',
+  );
+  assert.equal(cleanPromptSuggestion('第一行\n第二行'), '第一行');
+  for (const voice of ["I'll implement it", 'Let me help', '我来实现', '建议你测试'])
+    assert.equal(cleanPromptSuggestion(voice), undefined);
   assert.equal(cleanPromptSuggestion('“按这个方案实现”'), '按这个方案实现');
   for (const raw of [
     '',
     'none',
     '/unexpected-command',
     'no suggestion',
-    '第一行\n第二行',
     'a'.repeat(81),
     '<tool>run</tool>',
   ])
@@ -239,25 +245,31 @@ test('WorkHub prediction follows recent visible conversation without reviving an
   assert.match(prompt, /persistent WorkHub/);
 });
 
-test('a transient reconciliation read failure does not poison future requests', async () => {
+test('a transient reconciliation read failure permits a fresh generation', async () => {
   let failRead = false;
+  let calls = 0;
   const coordinator = new HostPromptSuggestionCoordinator({
     readSource: async () => {
       if (failRead) throw new Error('temporary read failure');
       return source;
     },
-    generate: async () => '补上测试',
+    generate: async () => {
+      calls++;
+      return '补上测试';
+    },
   });
   assert.equal((await coordinator.generate('session-1', lease)).kind, 'generated');
   failRead = true;
   await coordinator.reconcile('session-1');
   failRead = false;
   assert.equal((await coordinator.generate('session-1', lease)).kind, 'generated');
+  assert.equal(calls, 2);
   await coordinator.close();
 });
 
 test('the deadline also bounds a stalled initial source read', async () => {
   const coordinator = new HostPromptSuggestionCoordinator({
+    timeoutMs: 10,
     readSource: () => new Promise(() => {}),
     generate: async () => {
       assert.fail('must not call the model');
@@ -270,5 +282,69 @@ test('the deadline also bounds a stalled initial source read', async () => {
   } finally {
     clearInterval(keepAlive);
     await coordinator.close();
+  }
+});
+
+test('Skill content uses only the user-facing invocation text', () => {
+  const prompt = buildPromptSuggestionPrompt([
+    { type: 'user', text: 'SECRET SKILL BODY', displayText: '/skill fix login' } as StoredMessage,
+  ]);
+  assert.match(prompt, /fix login/);
+  assert.doesNotMatch(prompt, /SECRET SKILL BODY/);
+});
+
+for (const change of [
+  { turnId: 'different' },
+  { terminalEventId: 'different' },
+  { header: { ...source.header, model: 'different' } },
+  { header: { ...source.header, llmConnectionSlug: 'different' } },
+])
+  test(`post-generation source change rejects stale output: ${JSON.stringify(change)}`, async () => {
+    let reads = 0;
+    const coordinator = new HostPromptSuggestionCoordinator({
+      readSource: async () => (++reads === 1 ? source : { ...source, ...change }),
+      generate: async () => '补上测试',
+    });
+    assert.deepEqual(await coordinator.generate('session-1', lease), { kind: 'none' });
+    await coordinator.close();
+  });
+
+test('deadline response does not release residency or close before model cleanup', async () => {
+  let finish!: (value: string) => void;
+  let released = false;
+  const coordinator = new HostPromptSuggestionCoordinator({
+    timeoutMs: 10,
+    readSource: async () => source,
+    generate: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    assert.deepEqual(
+      await coordinator.generate(
+        's',
+        () =>
+          ({
+            release: () => {
+              released = true;
+            },
+          }) as OperationResidency,
+      ),
+      { kind: 'none' },
+    );
+    assert.equal(released, false);
+    let closed = false;
+    const closing = coordinator.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closed, false);
+    finish('done');
+    await closing;
+    assert.equal(released, true);
+  } finally {
+    clearInterval(keepAlive);
   }
 });

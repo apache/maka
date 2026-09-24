@@ -58,6 +58,7 @@ export interface ConversationServices extends Pick<
   readonly promptSuggestions?: {
     generate(sessionId: string): Promise<string | undefined>;
     readEnabled(): boolean;
+    subscribeEnabled?(handler: () => void): () => void;
     writeEnabled(enabled: boolean): void;
   };
   readonly sessions: {

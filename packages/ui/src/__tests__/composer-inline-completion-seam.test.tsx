@@ -27,7 +27,8 @@
  * A real Chromium sweep on 2026-09-22 covered 2,040 natural layout/edit cases
  * without errors. Artificial alternating geometry caused repeated DOM updates
  * but did not reproduce React error 185 either. See
- * docs/reports/prompt-suggestion-repro/README.md for evidence and limitations.
+ * https://github.com/ARE404/maka-agent/blob/d5ae5b88d11f223fe006f073058f12273ee39411/docs/reports/prompt-suggestion-repro/README.md
+ * for evidence and limitations.
  *
  * Keep the removed history-to-inline-engine wiring closed. Next-prompt
  * prediction uses an independent overlay with no layout-driven state effects.

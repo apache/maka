@@ -20,6 +20,10 @@
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ConversationServices } from '../../features/conversation/index.js';
 
+import { safeLocalStorageGet, safeLocalStorageSet } from '../../browser-storage.js';
+
+const PROMPT_SUGGESTIONS_KEY = 'maka.promptSuggestions.enabled';
+
 export function createDesktopConversationServices(
   bridge: Pick<
     MakaBridge,
@@ -33,12 +37,14 @@ export function createDesktopConversationServices(
         const result = await bridge.sessions.generatePromptSuggestion(sessionId);
         return result.kind === 'generated' ? result.text : undefined;
       },
-      readEnabled: () => {
-        try { return localStorage.getItem('maka.promptSuggestions.enabled') === 'true'; }
-        catch { return false; }
-      },
-      writeEnabled: (enabled) => {
-        try { localStorage.setItem('maka.promptSuggestions.enabled', String(enabled)); } catch { /* Private storage can be unavailable. */ }
+      readEnabled: () => safeLocalStorageGet(PROMPT_SUGGESTIONS_KEY) === 'true',
+      writeEnabled: (enabled) => safeLocalStorageSet(PROMPT_SUGGESTIONS_KEY, String(enabled)),
+      subscribeEnabled: (handler) => {
+        const onStorage = (event: StorageEvent) => {
+          if (event.key === null || event.key === PROMPT_SUGGESTIONS_KEY) handler();
+        };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
       },
     },
     sessions: bridge.sessions,

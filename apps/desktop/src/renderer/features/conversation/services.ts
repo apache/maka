@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createElement, useMemo, useState, type ReactNode } from 'react';
+import { createElement, useMemo, useState, useEffect, type ReactNode } from 'react';
 import { ComposerPromptSuggestionProvider } from '@maka/ui';
 import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { ConversationServices } from './ports.js';
@@ -26,6 +26,12 @@ const context = createServicesContext<ConversationServices>('ConversationService
 export function ConversationServicesProvider(props: { services: ConversationServices; children: ReactNode }) {
   const port = props.services.promptSuggestions;
   const [enabled, setEnabled] = useState(() => port?.readEnabled() ?? false);
+  useEffect(() => {
+    const refresh = () => setEnabled(port?.readEnabled() ?? false);
+    const unsubscribe = port?.subscribeEnabled?.(refresh);
+    refresh();
+    return unsubscribe;
+  }, [port]);
   const service = useMemo(() => port ? {
     enabled,
     setEnabled: (next: boolean) => { port.writeEnabled(next); setEnabled(next); },

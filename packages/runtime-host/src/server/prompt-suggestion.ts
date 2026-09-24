@@ -18,11 +18,14 @@
  */
 
 import {
+  userFacingText,
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
   type SessionHeader,
   type StoredMessage,
 } from '@maka/core/session';
+import { firstGeneratedLine, unquoteGeneratedText } from './generated-text.js';
+import { abortable } from '../client/wait-for-ready.js';
 import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import type { PromptSuggestionResult } from '../protocol/index.js';
 import type { OperationHandlerMap, OperationResidency } from './operation-dispatcher.js';
@@ -62,7 +65,14 @@ export function buildPromptSuggestionPrompt(
 ): string {
   const visible = messages.flatMap((message) =>
     (message.type === 'user' || message.type === 'assistant') && typeof message.text === 'string'
-      ? [{ role: message.type, text: Array.from(message.text).slice(-2000).join('') }]
+      ? [
+          {
+            role: message.type,
+            text: Array.from(message.type === 'user' ? userFacingText(message) : message.text)
+              .slice(-2000)
+              .join(''),
+          },
+        ]
       : [],
   );
   const recent = visible.slice(-6);
@@ -75,15 +85,12 @@ export function buildPromptSuggestionPrompt(
 }
 
 export function cleanPromptSuggestion(raw: string): string | undefined {
-  const text = raw
-    .trim()
-    .replace(/^["“]([^\n]+)["”]$/u, '$1')
-    .trim();
+  const text = unquoteGeneratedText(firstGeneratedLine(raw) ?? '');
   if (
     !text ||
     text.startsWith('/') ||
     Array.from(text).length > 80 ||
-    /[\n\r\x00-\x1f<>`]/u.test(text)
+    /[\n\r\x00-\x1f<>]/u.test(text)
   )
     return undefined;
   if (
@@ -95,20 +102,6 @@ export function cleanPromptSuggestion(raw: string): string | undefined {
   if (/^(?:(?:I'll|Let me|Here's|You should)\b|我来|让我|你可以|建议你)/iu.test(text))
     return undefined;
   return text;
-}
-
-async function beforeDeadline<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
-  let onAbort!: () => void;
-  const aborted = new Promise<never>((_, reject) => {
-    onAbort = () => reject(signal.reason);
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-  try {
-    return await Promise.race([task, aborted]);
-  } finally {
-    signal.removeEventListener('abort', onAbort);
-  }
 }
 
 /** Ephemeral, bounded, deduplicated effects; a result never becomes a user Message. */
@@ -123,9 +116,11 @@ export class HostPromptSuggestionCoordinator {
     string,
     { key: string; abort: AbortController; task: Promise<PromptSuggestionResult> }
   >();
+  readonly #pending = new Set<Promise<string | undefined>>();
   #closed = false;
   constructor(
     private readonly ports: {
+      timeoutMs?: number;
       readSource(sessionId: string): Promise<PromptSuggestionSource | undefined>;
       generate(source: PromptSuggestionSource, signal: AbortSignal): Promise<string | undefined>;
     },
@@ -136,8 +131,8 @@ export class HostPromptSuggestionCoordinator {
     acquireResidency: () => OperationResidency,
   ): Promise<PromptSuggestionResult> {
     if (this.#closed) return { kind: 'none' };
-    const deadline = AbortSignal.timeout(5000);
-    const source = await beforeDeadline(this.ports.readSource(sessionId), deadline).catch(
+    const deadline = AbortSignal.timeout(this.ports.timeoutMs ?? 5000);
+    const source = await abortable(() => this.ports.readSource(sessionId), deadline).catch(
       () => undefined,
     );
     if (!source || this.#closed) return { kind: 'none' };
@@ -161,9 +156,17 @@ export class HostPromptSuggestionCoordinator {
     const signal = AbortSignal.any([abort.signal, deadline]);
     const task = (async (): Promise<PromptSuggestionResult> => {
       try {
-        const raw = await beforeDeadline(this.ports.generate(source, signal), signal);
+        // Residency follows actual transport/usage cleanup, not the deadline race.
+        const running = Promise.resolve().then(() => this.ports.generate(source, signal));
+        this.#pending.add(running);
+        const release = () => {
+          this.#pending.delete(running);
+          residency.release();
+        };
+        void running.then(release, release);
+        const raw = await abortable(() => running, signal);
         if (signal.aborted || this.#closed || !raw) return { kind: 'none' };
-        const current = await beforeDeadline(this.ports.readSource(sessionId), signal);
+        const current = await abortable(() => this.ports.readSource(sessionId), signal);
         if (
           signal.aborted ||
           this.#closed ||
@@ -185,8 +188,6 @@ export class HostPromptSuggestionCoordinator {
           : { kind: 'none' };
       } catch {
         return { kind: 'none' };
-      } finally {
-        residency.release();
       }
     })();
     this.#entries.set(sessionId, { key, abort, task });
@@ -217,6 +218,7 @@ export class HostPromptSuggestionCoordinator {
   async close(): Promise<void> {
     this.beginDrain();
     await Promise.all([...this.#entries.values()].map((entry) => entry.task));
+    await Promise.allSettled([...this.#pending]);
     this.#entries.clear();
   }
 }
