@@ -2369,7 +2369,6 @@ function StreamingTailHarness({ pendingUser = false }: { pendingUser?: boolean }
         transientMessages: pendingUser && question && !settled ? [{
           id: 'msg-tail-1', text: question, ts: NOW - 30_000,
           transientPlacement: 'current_turn', hostTurnId: 'turn-tail',
-          deliveryStatus: '已接收',
         }] : [],
         viewportNavigation,
         messages: [
