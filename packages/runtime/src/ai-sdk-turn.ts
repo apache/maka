@@ -1844,9 +1844,9 @@ export class AiSdkTurn {
               }
               // Nothing declared, and the provider accepted a request past
               // the window this model reports. Every other signal in this
-              // design stays dark there: no rejection to recover from, no
-              // plateau to read, and no declaration to arm the proactive
-              // threshold, so the session degrades quietly and
+              // design stays dark there: no rejection to recover from and
+              // no declaration to arm the proactive threshold, so the
+              // session degrades quietly and
               // indefinitely (#4634). Report the two real numbers and
               // leave the decision with the user: a reported window is a
               // hint, and Maka still declares nothing on their behalf.
