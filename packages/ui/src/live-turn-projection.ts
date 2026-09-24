@@ -19,6 +19,7 @@
 
 import {
   decodeToolStepProgress,
+  foldAssistantDelta,
   type MessageContent,
   type ProviderRetryEvent,
   type SessionEvent,
@@ -72,13 +73,6 @@ export interface LiveTurnStepProjection {
    * (`steering:`-prefixed stepIds collide with no real stepId).
    */
   steering?: LiveSteeringProjection;
-  /**
-   * A steering boundary can split a step mid-flight; the continuation slice
-   * keeps the same durable stepId. Replayed deltas trim against the earlier
-   * slice's source length through these baselines instead of re-appending it.
-   */
-  continuedThinkingEndOffset?: number;
-  continuedTextEndOffset?: number;
   thinking?: LiveThinkingProjection;
   text?: LiveTextProjection;
   tools: ToolActivityItem[];
@@ -330,26 +324,23 @@ function projectLiveTurnEvent(
         || event.stepId === existingToolStep.stepId
       ? prior.steps.indexOf(existingToolStep)
       : sameStepIndex;
-  const continuedFrom = stepIndex < 0 && sameStepIndex >= 0 ? prior.steps[sameStepIndex]! : undefined;
-  const continuedThinkingEnd = continuedFrom?.thinking?.sourceEndOffset ?? continuedFrom?.continuedThinkingEndOffset;
-  const continuedTextEnd = continuedFrom?.text?.sourceEndOffset ?? continuedFrom?.continuedTextEndOffset;
   const step: LiveTurnStepProjection = stepIndex < 0
-    ? {
-        stepId,
-        startedAt: event.ts,
-        tools: [],
-        ...(continuedThinkingEnd === undefined
-          ? {}
-          : { continuedThinkingEndOffset: continuedThinkingEnd }),
-        ...(continuedTextEnd === undefined
-          ? {}
-          : { continuedTextEndOffset: continuedTextEnd }),
-      }
+    ? { stepId, startedAt: event.ts, tools: [] }
     : prior.steps[stepIndex]!;
+  // Slices of one step share a source stream; each begins where the earlier
+  // slices of its step stopped. A completion carries the full source text, or
+  // a replacement that lands whole in the last slice.
+  const sliceStart = (kind: 'thinking' | 'text'): number => {
+    const before = stepIndex < 0 ? prior.steps.length : stepIndex;
+    return prior.steps.findLast((candidate, index) =>
+      index < before && candidate.stepId === stepId && candidate[kind] !== undefined,
+    )?.[kind]?.sourceEndOffset ?? 0;
+  };
   let nextStep: LiveTurnStepProjection;
   if (event.type === 'thinking_delta') {
-    const delta = replaySafeDelta(step.thinking?.sourceEndOffset ?? step.continuedThinkingEndOffset, event);
-    const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.text, {
+    const delta = foldAssistantDelta(step.thinking?.sourceEndOffset ?? sliceStart('thinking'), event);
+    if (!delta) return confirmed(prior);
+    const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.tail, {
       locale,
       ...(step.thinking?.redactionState === undefined
         ? {}
@@ -361,9 +352,7 @@ function projectLiveTurnEvent(
         text: applied.text,
         truncated: (step.thinking?.truncated ?? false) || applied.truncated,
         complete: false,
-        ...(delta.sourceEndOffset === undefined
-          ? {}
-          : { sourceEndOffset: delta.sourceEndOffset }),
+        sourceEndOffset: delta.endOffset,
         ...(applied.redactionState === undefined
           ? {}
           : { redactionState: applied.redactionState }),
@@ -371,7 +360,7 @@ function projectLiveTurnEvent(
     };
   } else if (event.type === 'thinking_complete') {
     const applied = applyThinkingComplete(
-      completionRemainder(prior, step, 'thinking', event.text),
+      event.replaced ? event.text : event.text.slice(sliceStart('thinking')),
       { locale },
     );
     nextStep = {
@@ -380,14 +369,13 @@ function projectLiveTurnEvent(
         text: applied.text,
         truncated: applied.truncated,
         complete: true,
-        ...((step.thinking?.sourceEndOffset ?? step.continuedThinkingEndOffset) === undefined
-          ? {}
-          : { sourceEndOffset: event.text.length }),
+        sourceEndOffset: event.text.length,
       },
     };
   } else if (event.type === 'text_delta') {
-    const delta = replaySafeDelta(step.text?.sourceEndOffset ?? step.continuedTextEndOffset, event);
-    const applied = applyAssistantDelta(step.text?.text ?? '', delta.text, {
+    const delta = foldAssistantDelta(step.text?.sourceEndOffset ?? sliceStart('text'), event);
+    if (!delta) return confirmed(prior);
+    const applied = applyAssistantDelta(step.text?.text ?? '', delta.tail, {
       locale,
       ...(step.text?.redactionState === undefined
         ? {}
@@ -399,9 +387,7 @@ function projectLiveTurnEvent(
         text: applied.text,
         truncated: (step.text?.truncated ?? false) || applied.truncated,
         complete: false,
-        ...(delta.sourceEndOffset === undefined
-          ? {}
-          : { sourceEndOffset: delta.sourceEndOffset }),
+        sourceEndOffset: delta.endOffset,
         ...(applied.redactionState === undefined
           ? {}
           : { redactionState: applied.redactionState }),
@@ -409,7 +395,7 @@ function projectLiveTurnEvent(
     };
   } else if (event.type === 'text_complete') {
     const applied = applyAssistantComplete(
-      completionRemainder(prior, step, 'text', event.text),
+      event.replaced ? event.text : event.text.slice(sliceStart('text')),
       { locale },
     );
     nextStep = {
@@ -419,9 +405,7 @@ function projectLiveTurnEvent(
         text: applied.text,
         truncated: applied.truncated,
         complete: true,
-        ...((step.text?.sourceEndOffset ?? step.continuedTextEndOffset) === undefined
-          ? {}
-          : { sourceEndOffset: event.text.length }),
+        sourceEndOffset: event.text.length,
       },
     };
   } else if (event.type === 'tool_start') {
@@ -588,48 +572,6 @@ function projectLiveTurnEvent(
 
 function liveSteeringMessages(current: LiveTurnProjection): LiveSteeringProjection[] {
   return current.steps.flatMap((step) => (step.steering ? [step.steering] : []));
-}
-
-/**
- * A completion's full text shares the delta stream's coordinates only when it
- * extends the already-rendered prefix — a provider summary replaces the
- * streamed text outright (`reasoningSummaryText` adoption), so a bare offset
- * would cut real content. Trim only on a verified prefix; otherwise land the
- * payload whole.
- */
-function completionRemainder(
-  prior: LiveTurnProjection,
-  step: LiveTurnStepProjection,
-  kind: 'thinking' | 'text',
-  fullText: string,
-): string {
-  const rendered = prior.steps.flatMap((candidate) =>
-    candidate !== step && candidate.stepId === step.stepId && candidate[kind]
-      ? [candidate[kind]!.text]
-      : []);
-  const prefix = rendered.join('');
-  return fullText.startsWith(prefix) ? fullText.slice(prefix.length) : fullText;
-}
-
-function replaySafeDelta(
-  currentEndOffset: number | undefined,
-  event: Extract<SessionEvent, { type: 'text_delta' | 'thinking_delta' }>,
-): { text: string; sourceEndOffset?: number } {
-  if (event.startOffset === undefined) {
-    return {
-      text: event.text,
-      sourceEndOffset: (currentEndOffset ?? 0) + event.text.length,
-    };
-  }
-  const endOffset = event.startOffset + event.text.length;
-  if (currentEndOffset === undefined || event.startOffset > currentEndOffset) {
-    return { text: event.text, sourceEndOffset: endOffset };
-  }
-  const overlapLength = Math.min(currentEndOffset - event.startOffset, event.text.length);
-  return {
-    text: event.text.slice(overlapLength),
-    sourceEndOffset: Math.max(currentEndOffset, endOffset),
-  };
 }
 
 /**

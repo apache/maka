@@ -18,16 +18,16 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import type {
-  ActiveInteractionRequestEvent,
-  ContextCompactionStartedEvent,
-  SessionEvent,
+import {
+  type ActiveInteractionRequestEvent,
+  type ContextCompactionStartedEvent,
+  foldAssistantDelta,
+  type SessionEvent,
 } from '@maka/core/events';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
   InteractionPendingSnapshot,
   SessionContinuitySnapshot,
-  SessionAssistantDelta,
   SessionAssistantStreamIdentity,
   SessionMessageQueueProjection,
   SessionSteeringEvent,
@@ -44,7 +44,8 @@ interface AssistantAccumulator {
   messageId: string;
   text: string;
   complete: boolean;
-  replacing: boolean;
+  /** A Host reset replaced the streamed text; its deltas are withheld until completion. */
+  replaced: boolean;
 }
 
 export interface RuntimeHostSessionProjectionSeed {
@@ -123,7 +124,7 @@ export class RuntimeHostSessionProjector {
           messageId: message.id,
           text: message.thinking.text,
           complete: true,
-          replacing: false,
+          replaced: false,
         });
       }
       if (message.text || message.interrupted) {
@@ -134,7 +135,7 @@ export class RuntimeHostSessionProjector {
           text: message.text,
           ...(message.interrupted ? { interrupted: true } : {}),
           complete: true,
-          replacing: false,
+          replaced: false,
         });
       }
     }
@@ -148,7 +149,7 @@ export class RuntimeHostSessionProjector {
         messageId: stream.messageId,
         text: current?.text ?? '',
         complete: false,
-        replacing: false,
+        replaced: false,
       });
     }
   }
@@ -363,7 +364,7 @@ export class RuntimeHostSessionProjector {
       const key = accumulatorKey(delta.kind, delta.messageId);
       const current = this.#accumulators.get(key);
       const folded = foldRuntimeHostAssistantDelta(delta.reset ? '' : (current?.text ?? ''), delta);
-      const replacing = delta.reset === true || (current?.replacing ?? false);
+      const replaced = delta.reset === true || (current?.replaced ?? false);
       this.#accumulators.set(key, {
         kind: delta.kind,
         turnId: delta.turnId,
@@ -371,7 +372,7 @@ export class RuntimeHostSessionProjector {
         text: folded.text,
         ...(delta.interrupted ? { interrupted: true } : {}),
         complete: delta.complete === true,
-        replacing: delta.complete === true ? false : replacing,
+        replaced,
       });
       if (delta.complete === true) {
         events.push({
@@ -382,8 +383,9 @@ export class RuntimeHostSessionProjector {
           ts: this.#now(),
           text: folded.text,
           ...(delta.interrupted ? { interrupted: true } : {}),
+          ...(replaced ? { replaced: true } : {}),
         });
-      } else if (folded.tail && !replacing) {
+      } else if (folded.tail && !replaced) {
         events.push({
           type: delta.kind === 'text' ? 'text_delta' : 'thinking_delta',
           id: frameIdentity(frame),
@@ -490,6 +492,7 @@ export class RuntimeHostSessionProjector {
         ts: this.#now(),
         text: accumulator.text,
         ...(accumulator.interrupted ? { interrupted: true } : {}),
+        ...(accumulator.replaced ? { replaced: true } : {}),
       });
     }
     if (root.status === 'completed') {
@@ -706,19 +709,16 @@ function projectSessionEvent(
 
 export function foldRuntimeHostAssistantDelta(
   current: string,
-  delta: Pick<SessionAssistantDelta, 'startOffset' | 'text'>,
+  delta: { readonly startOffset?: number; readonly text: string },
 ): { text: string; tail: string } {
-  if (delta.startOffset > current.length) throw new Error('Runtime Host assistant delta has a gap');
-  const overlapLength = Math.min(current.length - delta.startOffset, delta.text.length);
-  if (
-    overlapLength > 0 &&
-    current.slice(delta.startOffset, delta.startOffset + overlapLength) !==
-      delta.text.slice(0, overlapLength)
-  ) {
+  const folded = foldAssistantDelta(current.length, delta);
+  if (!folded) throw new Error('Runtime Host assistant delta has a gap');
+  const startOffset = delta.startOffset ?? current.length;
+  const overlap = delta.text.slice(0, delta.text.length - folded.tail.length);
+  if (current.slice(startOffset, startOffset + overlap.length) !== overlap) {
     throw new Error('Runtime Host assistant delta conflicts with prior output');
   }
-  const tail = delta.text.slice(overlapLength);
-  return { text: current + tail, tail };
+  return { text: current + folded.tail, tail: folded.tail };
 }
 
 function newlyPendingInteractions(
