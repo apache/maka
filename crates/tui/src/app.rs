@@ -47,6 +47,7 @@ pub enum Action {
     Back,
     Forward,
     Palette,
+    ClosePalette,
     Connect,
     Refresh,
     ToggleTheme,
@@ -164,7 +165,6 @@ pub struct App {
     pub palette: Option<usize>,
     pub command_palette: crate::pages::commands::State,
     pub hits: Vec<Hit>,
-    pub modal_area: Option<Rect>,
     pub hover: Option<Action>,
     pub hover_area: Option<Rect>,
     pub(crate) hover_since: Option<Instant>,
@@ -219,7 +219,6 @@ impl App {
             palette: None,
             command_palette: Default::default(),
             hits: Vec::new(),
-            modal_area: None,
             hover: None,
             hover_area: None,
             hover_since: None,
@@ -486,7 +485,6 @@ impl App {
             reader.text_selection.begin_frame();
         }
         self.hits.clear();
-        self.modal_area = None;
         self.queue.area = None;
         self.chat.area = None;
         self.frame_size = Some((area.width, area.height));
@@ -643,7 +641,10 @@ impl App {
                 self.sync_route();
                 self.enter_page();
             }
+            Action::ClosePalette => self.palette = None,
             Action::Palette => {
+                // A new palette session: nothing of the last one carries over.
+                self.layer.close();
                 self.invalidate_editor_geometry();
                 self.hover = None;
                 // Background updates may disable an action, never move its hit target.
@@ -1051,13 +1052,11 @@ impl App {
     pub fn invalidate_editor_geometry(&mut self) {
         self.layer.invalidate();
         self.extensions.invalidate_geometry();
-        self.modal_area = None;
         if let Some(editor) = &mut self.theme.editor {
             editor.invalidate();
         }
         self.management.invalidate_geometry();
         self.skills.invalidate_geometry();
-        self.command_palette.invalidate();
         self.management.oauth.invalidate_identity_geometry();
         self.branch.invalidate_geometry();
         self.recap.invalidate_geometry();
@@ -1132,30 +1131,7 @@ impl App {
         if keyboard && let Some(reader) = self.chat.reader_mut() {
             reader.text_selection.end_drag();
         }
-        // Modal handlers own activation/focus, but all shared controls need the
-        // same hover feedback. Only the top overlay's rendered hits are eligible.
-        let mut hover_changed = false;
-        if self.modal_area.is_some()
-            && let Event::Mouse(mouse) = &event
-            && mouse.kind == MouseEventKind::Moved
-        {
-            let point = Position::new(mouse.column, mouse.row);
-            let hit = self.hits.iter().rev().find(|hit| {
-                self.modal_area.is_some_and(|area| area.contains(point))
-                    && hit.area.contains(point)
-                    && self.enabled(&hit.action)
-            });
-            let target = hit.map(|hit| hit.action.clone());
-            let area = hit.map(|hit| hit.area);
-            hover_changed = self.hover != target || self.hover_area != area;
-            if hover_changed {
-                self.hover = target;
-                self.hover_area = area;
-                self.hover_since = None; // Feedback, not an unsolicited tooltip.
-            }
-        }
-        let mut outcome = self.dispatch_input(event);
-        outcome.0 |= hover_changed;
+        let outcome = self.dispatch_input(event);
         if mouse
             && outcome.0
             && self.focus == Focus::Transcript

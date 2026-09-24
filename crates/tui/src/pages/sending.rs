@@ -432,15 +432,16 @@ mod tests {
             terminal
                 .draw(|frame| crate::view::draw(frame, &mut app))
                 .unwrap();
-            let hit = app
-                .hits
-                .iter()
-                .find(|hit| hit.action == Action::RetrySubmission)
+            let row = format!("list/rows/{index}");
+            app.layer.reveal(&row);
+            terminal
+                .draw(|frame| crate::view::draw(frame, &mut app))
                 .unwrap();
+            let hit = app.layer.rect(&row).unwrap();
             let click = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-                column: hit.area.x,
-                row: hit.area.y,
+                column: hit.x,
+                row: hit.y,
                 modifiers: crossterm::event::KeyModifiers::NONE,
             });
             assert_eq!(app.input(click).1, Some(Action::RetrySubmission));

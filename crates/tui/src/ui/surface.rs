@@ -358,6 +358,19 @@ impl<M: Clone> Surface<M> {
         self.set_focus(id);
     }
 
+    /// Brings a node the last frame had scrolled out back into view,
+    /// leaving the focus alone.
+    pub fn reveal_item(&mut self, id: &str) {
+        if let Some((scroller, top, height)) = self
+            .committed
+            .as_ref()
+            .and_then(|committed| committed.items.iter().find(|item| item.id == id))
+            .map(|item| (item.scroller, item.top, item.height))
+        {
+            self.reveal(scroller, top, height);
+        }
+    }
+
     /// Moves focus as the reader would, bringing a target that the last
     /// frame had scrolled out back into view.
     pub fn move_focus(&mut self, id: String) {

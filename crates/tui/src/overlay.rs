@@ -24,10 +24,10 @@ use crate::{
     app::{Action, App},
     ui::{Context, Sheet},
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Alignment, Position, Rect},
+    layout::{Alignment, Rect},
     style::Style,
     widgets::{Paragraph, Wrap},
 };
@@ -54,12 +54,12 @@ pub(crate) enum Overlay {
 
 impl Overlay {
     /// What an outside click or Esc asks of this layer.
-    fn dismiss(self) -> Option<Action> {
+    fn dismiss(self) -> Action {
         use crate::pages::{
             attachments, branch, extensions, interactions, manage, onboarding, queue, recap,
             resume, revision, skills,
         };
-        Some(match self {
+        match self {
             Self::Shutdown => Action::CancelQuit,
             Self::Consent => Action::Extension(extensions::Command::DismissConsent),
             Self::Theme => Action::Theme(crate::theme::editor::Command::Close),
@@ -73,8 +73,8 @@ impl Overlay {
             Self::Onboarding => Action::Onboard(onboarding::Command::Close),
             Self::Interactions => Action::Interaction(interactions::Command::Close),
             Self::QueueEdit => Action::Queue(queue::Command::Close),
-            Self::Palette => return None,
-        })
+            Self::Palette => Action::ClosePalette,
+        }
     }
 }
 
@@ -103,7 +103,8 @@ impl App {
         .find_map(|(overlay, open)| open.then_some(overlay))
     }
 
-    /// The kernel sheet presenting this overlay, for overlays migrated to it.
+    /// The kernel sheet presenting this overlay; none while its state is
+    /// still being set up.
     fn overlay_sheet(&self, overlay: Overlay) -> Option<Sheet<Action>> {
         match overlay {
             Overlay::Shutdown => crate::shutdown::sheet(self),
@@ -119,7 +120,7 @@ impl App {
             Overlay::Attachments => crate::pages::attachments::sheet(self),
             Overlay::Revision => crate::pages::revision::sheet(self),
             Overlay::Interactions => crate::pages::interactions::sheet(self),
-            _ => None,
+            Overlay::Palette => crate::pages::commands::sheet(self),
         }
     }
 
@@ -161,46 +162,9 @@ impl App {
         overlay: Overlay,
         event: Event,
     ) -> (bool, Option<Action>) {
-        if let Some(sheet) = self.overlay_sheet(overlay) {
-            return self.sheet_input(overlay, event, sheet.escape());
-        }
-        if overlay != Overlay::Shutdown
-            && let Event::Mouse(mouse) = &event
-            && mouse.kind == MouseEventKind::Down(MouseButton::Left)
-            && self
-                .modal_area
-                .is_some_and(|area| !area.contains(Position::new(mouse.column, mouse.row)))
-        {
-            // Dismiss only the displayed overlay. Never forward this press to the page.
-            if overlay == Overlay::Palette {
-                self.palette = None;
-            }
-            self.hover = None;
-            self.hover_area = None;
-            self.hover_since = None;
-            self.modal_area = None;
-            self.hits.clear();
-            return (
-                true,
-                overlay.dismiss().and_then(|action| self.apply(action)),
-            );
-        }
-        match overlay {
-            Overlay::Shutdown
-            | Overlay::Consent
-            | Overlay::Reference
-            | Overlay::Management
-            | Overlay::QueueEdit
-            | Overlay::Resume
-            | Overlay::Recap
-            | Overlay::Branch
-            | Overlay::Skills
-            | Overlay::Theme
-            | Overlay::Onboarding
-            | Overlay::Attachments
-            | Overlay::Revision
-            | Overlay::Interactions => unreachable!("presented as sheets"),
-            Overlay::Palette => self.palette_input(event),
+        match self.overlay_sheet(overlay) {
+            Some(sheet) => self.sheet_input(overlay, event, sheet.escape()),
+            None => (false, None),
         }
     }
 
@@ -210,9 +174,7 @@ impl App {
         event: Event,
         back: Option<Action>,
     ) -> (bool, Option<Action>) {
-        let Some(dismiss) = overlay.dismiss() else {
-            return (false, None);
-        };
+        let dismiss = overlay.dismiss();
         // The sheet's owner takes its fields' keys, pastes and pointer first,
         // unless a chooser is open over them.
         let owned = match overlay {
@@ -225,6 +187,7 @@ impl App {
             Overlay::Attachments => self.attachment_sheet_input(&event),
             Overlay::Revision => self.revision_sheet_input(&event),
             Overlay::Interactions => self.interaction_sheet_input(&event),
+            Overlay::Palette => self.palette_sheet_input(&event),
             _ => None,
         };
         if let Some(outcome) = owned {
@@ -249,7 +212,13 @@ impl App {
             self.hover = None;
             self.hover_area = None;
         }
-        let action = outcome.message.and_then(|action| self.apply(action));
+        let action = outcome.message.and_then(|action| {
+            // A launcher closes as it launches.
+            if overlay == Overlay::Palette {
+                self.palette = None;
+            }
+            self.apply(action)
+        });
         (outcome.redraw || action.is_some(), action)
     }
 }
@@ -287,6 +256,7 @@ pub(crate) fn draw(
             Overlay::Attachments => pages::attachments::draw_field(frame, app),
             Overlay::Revision => pages::revision::draw_field(frame, app),
             Overlay::Interactions => pages::interactions::draw_field(frame, app),
+            Overlay::Palette => pages::commands::draw_field(frame, app),
             _ => {}
         }
         app.layer.repaint_chooser(frame, context);
@@ -302,24 +272,6 @@ pub(crate) fn draw(
         }
         return;
     }
-    // A sub-view (a directory browser opened from a sheet) suspends the
-    // sheet rather than closing it: returning focuses what opened it.
+    // Nothing to present yet; no stale geometry stays clickable.
     app.layer.invalidate();
-    match overlay {
-        Overlay::Shutdown
-        | Overlay::Consent
-        | Overlay::Reference
-        | Overlay::Management
-        | Overlay::QueueEdit
-        | Overlay::Resume
-        | Overlay::Recap
-        | Overlay::Branch
-        | Overlay::Skills
-        | Overlay::Theme
-        | Overlay::Onboarding
-        | Overlay::Attachments
-        | Overlay::Revision
-        | Overlay::Interactions => unreachable!("presented as sheets"),
-        Overlay::Palette => pages::commands::draw(frame, app, area, base),
-    }
 }

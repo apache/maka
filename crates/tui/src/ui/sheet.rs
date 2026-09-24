@@ -188,10 +188,13 @@ impl<M> Sheet<M> {
     fn tree(self) -> Node<M> {
         let mut children = vec![Node::text("title", vec![(self.title, Tone::Strong)])];
         children.extend(self.body);
-        let mut footer = self.aside;
-        footer.push(Node::text("space", vec![]).size(Size::Fill));
-        footer.extend(self.buttons);
-        children.push(Node::row("footer", footer).gap(2));
+        // A sheet of choices alone (a launcher) has no action row.
+        if !(self.aside.is_empty() && self.buttons.is_empty()) {
+            let mut footer = self.aside;
+            footer.push(Node::text("space", vec![]).size(Size::Fill));
+            footer.extend(self.buttons);
+            children.push(Node::row("footer", footer).gap(2));
+        }
         Node::column(ROOT, children).gap(1)
     }
 }
@@ -349,6 +352,12 @@ impl<M: Clone> Layer<M> {
         self.surface.focused() == Some(&format!("{ROOT}/{key}/{INPUT}"))
     }
 
+    /// Scrolls the node at `path` into view without moving the focus: a
+    /// highlight the owner moves while typing stays in a field.
+    pub fn reveal(&mut self, path: &str) {
+        self.surface.reveal_item(&format!("{ROOT}/{path}"));
+    }
+
     /// The owner took a pointer press into field `key`.
     pub fn focus(&mut self, key: &str) {
         self.surface.move_focus(format!("{ROOT}/{key}/{INPUT}"));
@@ -390,6 +399,12 @@ impl<M: Clone> Layer<M> {
                 },
             );
         }
+    }
+
+    /// The content changed under the pointer: nothing inside is clickable
+    /// until the next draw, while a press outside still dismisses.
+    pub fn retire(&mut self) {
+        self.surface.invalidate();
     }
 
     /// Geometry changed: nothing is clickable until the next draw.
