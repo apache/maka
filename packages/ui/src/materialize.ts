@@ -192,18 +192,23 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
 export function materializeTools(
   messages: readonly StoredMessage[],
 ): ToolActivityItem[] {
-  const results = new Map(
-    messages
-      .filter((message) => message.type === "tool_result")
-      .map((message) => [message.toolUseId, message]),
-  );
+  const resultsByTurnId = new Map<
+    string,
+    Map<string, Extract<StoredMessage, { type: "tool_result" }>>
+  >();
+  for (const message of messages) {
+    if (message.type !== "tool_result") continue;
+    const turnResults = resultsByTurnId.get(message.turnId);
+    if (turnResults) turnResults.set(message.toolUseId, message);
+    else resultsByTurnId.set(message.turnId, new Map([[message.toolUseId, message]]));
+  }
   const turnStatusById = new Map(
     deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
   );
   return messages
     .filter((message) => message.type === "tool_call")
     .map((call) => {
-      const result = results.get(call.id);
+      const result = resultsByTurnId.get(call.turnId)?.get(call.id);
       return {
         toolUseId: call.id,
         toolName: call.toolName,
@@ -794,16 +799,7 @@ export function materializeTurns(
     }
   }
 
-  // Second pass: build the canonical tool map. Live tools are applied
-  // separately by overlayLiveTurn so streaming deltas never force settled
-  // history to rematerialize.
-  const toolItemByUseId = new Map<string, ToolActivityItem>(
-    foldShellRunToolActivities(materializeTools(messages)).map((tool) => [
-      tool.toolUseId,
-      tool,
-    ]),
-  );
-  // Third pass: rebuild each turn's render timeline from its storage-ordered
+  // Second pass: rebuild each turn's render timeline from its storage-ordered
   // messages, interleaving a step's thinking/text with its paired tools. The
   // timeline is the turn's only tool authority; `tools` is flattened out of it
   // so the two can never disagree about which tools a turn holds (a tool_call
@@ -811,10 +807,14 @@ export function materializeTurns(
   // reaches exactly one timeline).
   for (const turnId of order) {
     const turn = byId.get(turnId)!;
-    turn.timeline = buildTurnTimeline(
-      messagesByTurn.get(turnId) ?? [],
-      toolItemByUseId,
+    const turnMessages = messagesByTurn.get(turnId) ?? [];
+    const toolItemByUseId = new Map<string, ToolActivityItem>(
+      foldShellRunToolActivities(materializeTools(turnMessages)).map((tool) => [
+        tool.toolUseId,
+        tool,
+      ]),
     );
+    turn.timeline = buildTurnTimeline(turnMessages, toolItemByUseId);
     turn.tools = timelineTools(turn.timeline);
   }
 

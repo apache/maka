@@ -1067,14 +1067,16 @@ function storedMessagesToTranscriptEntries(
   messages: readonly StoredMessage[],
 ): MakaPiTranscriptEntry[] {
   const entries: MakaPiTranscriptEntry[] = [];
-  const resultsByToolUseId = new Map(
-    messages
-      .filter(
-        (message): message is Extract<StoredMessage, { type: 'tool_result' }> =>
-          message.type === 'tool_result',
-      )
-      .map((message) => [message.toolUseId, message]),
-  );
+  const resultsByTurnId = new Map<
+    string,
+    Map<string, Extract<StoredMessage, { type: 'tool_result' }>>
+  >();
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue;
+    const turnResults = resultsByTurnId.get(message.turnId);
+    if (turnResults) turnResults.set(message.toolUseId, message);
+    else resultsByTurnId.set(message.turnId, new Map([[message.toolUseId, message]]));
+  }
   const turnStatusById = new Map(
     deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
   );
@@ -1112,7 +1114,7 @@ function storedMessagesToTranscriptEntries(
         entries.push(
           storedToolToTranscriptEntry(
             message,
-            resultsByToolUseId.get(message.id),
+            resultsByTurnId.get(message.turnId)?.get(message.id),
             turnStatusById.get(message.turnId),
           ),
         );

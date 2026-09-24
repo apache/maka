@@ -1419,6 +1419,60 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('scopes stored tool results to their turn when opaque call ids repeat', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'tool_call',
+        id: 'call-1',
+        turnId: 'turn-1',
+        ts: 1,
+        toolName: 'Read',
+        args: { path: 'first.txt' },
+      },
+      {
+        type: 'tool_result',
+        id: 'result-1',
+        turnId: 'turn-1',
+        ts: 2,
+        toolUseId: 'call-1',
+        isError: false,
+        outcome: 'success',
+        content: { kind: 'text', text: 'first result' },
+      },
+      {
+        type: 'tool_call',
+        id: 'call-1',
+        turnId: 'turn-2',
+        ts: 3,
+        toolName: 'Read',
+        args: { path: 'second.txt' },
+      },
+      {
+        type: 'tool_result',
+        id: 'result-2',
+        turnId: 'turn-2',
+        ts: 4,
+        toolUseId: 'call-1',
+        isError: true,
+        outcome: 'aborted',
+        content: { kind: 'text', text: 'second result' },
+      },
+    ] satisfies StoredMessage[]);
+
+    const tools = state.entries.filter((entry): entry is MakaPiToolEntry => entry.kind === 'tool');
+    assert.deepEqual(
+      tools.map((tool) => ({
+        status: toolStatus(tool),
+        result: tool.result,
+      })),
+      [
+        { status: 'done', result: { kind: 'text', text: 'first result' } },
+        { status: 'aborted', result: { kind: 'text', text: 'second result' } },
+      ],
+    );
+  });
+
   test('explains a stored tool call whose turn ended without a result', () => {
     const state = createMakaPiTranscriptState();
     replaceTranscriptWithStoredMessages(state, [
