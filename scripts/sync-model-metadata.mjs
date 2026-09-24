@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
@@ -38,6 +39,10 @@ const SOURCE_URL = projection.MODELS_DEV_SOURCE_URL;
 export const PROVIDERS = projection.MODELS_DEV_PROVIDERS;
 export const toMetadata = projection.projectModelsDevModel;
 const DEFAULT_SNAPSHOT = 'scripts/model-metadata/models-dev-api.snapshot.json';
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const BIOME_ENTRY = fileURLToPath(
+  new URL('../node_modules/@biomejs/biome/bin/biome', import.meta.url),
+);
 const DEFAULT_OUTPUT = 'packages/core/src/model-metadata.generated.ts';
 const DEFAULT_PRICING_OUTPUT = 'packages/runtime/src/telemetry/model-pricing.generated.ts';
 // models.dev cost fields describe the catalog provider's public API. They are
@@ -251,8 +256,23 @@ async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
     projection,
     snapshotDigest: snapshot.projectionSha256,
     snapshotLabel: snapshotPath,
-    snapshotWrite: { path: snapshotPath, text: `${JSON.stringify(snapshot, null, 2)}\n` },
+    snapshotWrite: { path: snapshotPath, text: formatSnapshot(JSON.stringify(snapshot, null, 2)) },
   };
+}
+
+// The committed snapshot is under the Biome format gate, and the upkeep
+// workflow commits this output without a format pass. Biome keeps an object
+// expanded when its input is, so the caller's indented input is what
+// reproduces the committed layout.
+function formatSnapshot(text) {
+  const result = spawnSync(
+    process.execPath,
+    [BIOME_ENTRY, 'format', `--stdin-file-path=${DEFAULT_SNAPSHOT}`],
+    { cwd: REPO_ROOT, input: text, encoding: 'utf8', maxBuffer: 8 * text.length },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`biome format failed:\n${result.stderr}`);
+  return result.stdout;
 }
 
 function assertProjectionDoesNotShrink(previous, next) {
@@ -608,7 +628,7 @@ function normalizeRuntimeOverrides(provider, overrides) {
         reasoningReplay: 'none',
       },
     },
-    '@ai-sdk/openai-compatible': { kind: 'openai-compatible', name: 'provider' },
+    '@ai-sdk/openai-compatible': { kind: 'openai-compatible' },
   };
   return Object.fromEntries(
     Object.entries(overrides).map(([modelId, override]) => {

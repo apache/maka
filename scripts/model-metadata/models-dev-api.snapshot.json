@@ -3,11 +3,11 @@
   "sourceUrl": "https://models.dev/api.json",
   "origin": {
     "kind": "models-dev-response",
-    "retrievedAt": "2026-09-23T16:22:44.000Z",
-    "etag": "W/\"9ae55393e3711189a9fe8b32bd22d218\"",
-    "responseSha256": "9ae55393e3711189a9fe8b32bd22d218319de11c5c25fb27768ba8273f915eb7"
+    "retrievedAt": "2026-09-24T06:11:50.000Z",
+    "etag": "W/\"77d4151ecf0d131df2065a364735aa2f\"",
+    "responseSha256": "77d4151ecf0d131df2065a364735aa2f982341f37a4ccb1b13c98646ee04ac68"
   },
-  "projectionSha256": "c115e4fb78ec39b05ae3fcd25bd792cc31bf25a050e6c28279a817a6a699584a",
+  "projectionSha256": "e8fcffb6db0d7995b515c29585fbddfcfef7dbf396147a6a36973317619cf27b",
   "projection": {
     "metadata": {
       "anthropic": {
@@ -1322,7 +1322,7 @@
           "description": "Qwen frontier model tuned for agent frameworks, coding assistants, and long tasks",
           "lifecycle": "active",
           "contextWindow": 1000000,
-          "maxOutputTokens": 65536,
+          "maxOutputTokens": 131072,
           "lastUpdated": "2026-05-21",
           "capabilities": {
             "vision": false,
@@ -1342,7 +1342,7 @@
           "description": "Multimodal Qwen workhorse for long-context agents, visual inputs, and coding",
           "lifecycle": "active",
           "contextWindow": 1000000,
-          "maxOutputTokens": 65536,
+          "maxOutputTokens": 131072,
           "knowledgeCutoff": "2025-04",
           "lastUpdated": "2026-06-04",
           "capabilities": {
@@ -6698,6 +6698,7 @@
           "lifecycle": "active",
           "contextWindow": 524288,
           "maxOutputTokens": 1048576,
+          "structuredOutput": true,
           "lastUpdated": "2026-07-15",
           "capabilities": {
             "vision": true,
@@ -6768,6 +6769,48 @@
           },
           "modalities": {
             "input": ["text", "audio"],
+            "output": ["text"]
+          }
+        },
+        "XiaomiMiMo/MiMo-V2.6-Flash": {
+          "displayName": "MiMo-V2.6-Flash",
+          "description": "MiMo Flash model for multimodal coding agents and long-context automation",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-22",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image", "audio", "video"],
+            "output": ["text"]
+          }
+        },
+        "XiaomiMiMo/MiMo-V2.6-Pro": {
+          "displayName": "MiMo-V2.6-Pro",
+          "description": "Stronger MiMo Pro tier for multimodal reasoning and coding-agent execution",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-22",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image", "audio", "video"],
             "output": ["text"]
           }
         },
@@ -6949,7 +6992,7 @@
           "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
           "lifecycle": "active",
           "contextWindow": 1000000,
-          "maxOutputTokens": 384000,
+          "maxOutputTokens": 393216,
           "knowledgeCutoff": "2025-05",
           "structuredOutput": true,
           "lastUpdated": "2026-09-10",
@@ -6972,7 +7015,7 @@
           "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
           "lifecycle": "deprecated",
           "contextWindow": 1000000,
-          "maxOutputTokens": 384000,
+          "maxOutputTokens": 393216,
           "knowledgeCutoff": "2025-05",
           "structuredOutput": true,
           "lastUpdated": "2026-09-10",
@@ -6995,7 +7038,7 @@
           "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
           "lifecycle": "deprecated",
           "contextWindow": 1000000,
-          "maxOutputTokens": 384000,
+          "maxOutputTokens": 393216,
           "knowledgeCutoff": "2025-05",
           "structuredOutput": true,
           "lastUpdated": "2026-09-10",
@@ -7018,7 +7061,7 @@
           "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
           "lifecycle": "active",
           "contextWindow": 1000000,
-          "maxOutputTokens": 384000,
+          "maxOutputTokens": 393216,
           "structuredOutput": true,
           "lastUpdated": "2026-08-22",
           "capabilities": {
@@ -7143,6 +7186,27 @@
           },
           "thinkingOptions": {
             "efforts": ["low", "high", "max"],
+            "toggle": true
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        "accounts/fireworks/models/ember-1": {
+          "displayName": "Ember-1",
+          "description": "Specialized model from Fireworks built on Kimi K3, producing shorter reasoning traces with approximately 40% fewer tokens while maintaining comparable quality",
+          "lifecycle": "active",
+          "contextWindow": 1048576,
+          "maxOutputTokens": 131072,
+          "lastUpdated": "2026-09-22",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "max"],
             "toggle": true
           },
           "modalities": {
@@ -8487,8 +8551,8 @@
           "displayName": "Gemini 2.5 Computer Use Preview 10-2025",
           "description": "Specialized Gemini 2.5 model for browser-control agents that automate UI tasks",
           "lifecycle": "active",
-          "contextWindow": 131072,
-          "maxOutputTokens": 65536,
+          "contextWindow": 128000,
+          "maxOutputTokens": 64000,
           "knowledgeCutoff": "2025-01",
           "lastUpdated": "2025-10-07",
           "capabilities": {
@@ -8644,7 +8708,7 @@
           "displayName": "Nano Banana Pro",
           "description": "Nano Banana Pro for higher-fidelity image generation and design-heavy edits",
           "lifecycle": "active",
-          "contextWindow": 131072,
+          "contextWindow": 65536,
           "maxOutputTokens": 32768,
           "knowledgeCutoff": "2025-01",
           "lastUpdated": "2026-05-28",
@@ -8683,8 +8747,8 @@
           "displayName": "Nano Banana 2",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
           "lifecycle": "active",
-          "contextWindow": 65536,
-          "maxOutputTokens": 65536,
+          "contextWindow": 131072,
+          "maxOutputTokens": 32768,
           "knowledgeCutoff": "2025-01",
           "lastUpdated": "2026-05-28",
           "capabilities": {
@@ -8748,7 +8812,7 @@
           "description": "Fastest, most cost-efficient Gemini image model for high-volume 1K generation and editing",
           "lifecycle": "active",
           "contextWindow": 65536,
-          "maxOutputTokens": 65536,
+          "maxOutputTokens": 4096,
           "knowledgeCutoff": "2025-01",
           "structuredOutput": false,
           "lastUpdated": "2026-06-30",
@@ -11193,7 +11257,7 @@
           "displayName": "MiniMax-M3",
           "description": "MiniMax multimodal model for long-context coding, perception, and agent planning",
           "lifecycle": "active",
-          "contextWindow": 1048576,
+          "contextWindow": 1000000,
           "maxOutputTokens": 512000,
           "lastUpdated": "2026-06-25",
           "capabilities": {
@@ -11317,7 +11381,7 @@
           "displayName": "MiniMax-M3",
           "description": "MiniMax multimodal coding model for long-context reasoning and agent tasks",
           "lifecycle": "active",
-          "contextWindow": 1048576,
+          "contextWindow": 1000000,
           "maxOutputTokens": 512000,
           "lastUpdated": "2026-06-25",
           "capabilities": {
@@ -12166,7 +12230,7 @@
           "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
           "lifecycle": "active",
           "contextWindow": 1048576,
-          "maxOutputTokens": 131072,
+          "maxOutputTokens": 1048576,
           "structuredOutput": true,
           "lastUpdated": "2026-07-16",
           "capabilities": {
@@ -12250,7 +12314,7 @@
           "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
           "lifecycle": "active",
           "contextWindow": 1048576,
-          "maxOutputTokens": 131072,
+          "maxOutputTokens": 1048576,
           "structuredOutput": true,
           "lastUpdated": "2026-07-16",
           "capabilities": {
@@ -18236,6 +18300,29 @@
             "output": ["text"]
           }
         },
+        "gpt-6-luna": {
+          "displayName": "GPT-6 Luna",
+          "description": "OpenAI's most efficient model for focused, high-volume tasks",
+          "lifecycle": "active",
+          "contextWindow": 1050000,
+          "inputLimit": 922000,
+          "maxOutputTokens": 128000,
+          "knowledgeCutoff": "2026-05-18",
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-22",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          }
+        },
         "grok-4.5": {
           "displayName": "Grok 4.5",
           "description": "xAI's Grok model for chat, coding, agentic tools, and lower hallucination risk",
@@ -18947,7 +19034,7 @@
           "description": "Flagship DeepSeek model for coding, reasoning, and agentic work",
           "lifecycle": "active",
           "contextWindow": 1048576,
-          "maxOutputTokens": 393216,
+          "maxOutputTokens": 943718,
           "structuredOutput": true,
           "lastUpdated": "2026-09-14",
           "capabilities": {
@@ -19187,7 +19274,7 @@
           "description": "GLM vision model for visual reasoning, documents, and multimodal agents",
           "lifecycle": "active",
           "contextWindow": 1310720,
-          "maxOutputTokens": 131072,
+          "maxOutputTokens": 128000,
           "structuredOutput": true,
           "lastUpdated": "2026-08-27",
           "capabilities": {
@@ -20416,7 +20503,7 @@
           "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
           "lifecycle": "active",
           "contextWindow": 1048576,
-          "maxOutputTokens": 943718,
+          "maxOutputTokens": 131072,
           "knowledgeCutoff": "2025-05",
           "structuredOutput": true,
           "lastUpdated": "2026-09-10",
@@ -21269,30 +21356,9 @@
           "displayName": "Ling 3.0 Flash VL",
           "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
           "lifecycle": "active",
-          "contextWindow": 131072,
-          "maxOutputTokens": 32768,
-          "structuredOutput": true,
-          "lastUpdated": "2026-09-10",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text", "image", "video"],
-            "output": ["text"]
-          }
-        },
-        "inclusionai/ling-3.0-flash-vl:free": {
-          "displayName": "Ling 3.0 Flash VL (free)",
-          "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
-          "lifecycle": "active",
           "contextWindow": 262144,
           "maxOutputTokens": 32768,
-          "structuredOutput": false,
+          "structuredOutput": true,
           "lastUpdated": "2026-09-10",
           "capabilities": {
             "vision": true,
@@ -21782,7 +21848,7 @@
           "description": "Efficient open MiniMax model built for coding agents and tool-heavy workflows",
           "lifecycle": "active",
           "contextWindow": 204800,
-          "maxOutputTokens": 131072,
+          "maxOutputTokens": 176947,
           "structuredOutput": true,
           "lastUpdated": "2025-10-27",
           "capabilities": {
@@ -21897,25 +21963,6 @@
           "knowledgeCutoff": "2025-03-31",
           "structuredOutput": true,
           "lastUpdated": "2025-08-01",
-          "capabilities": {
-            "vision": false,
-            "reasoning": false,
-            "functionCalling": true
-          },
-          "modalities": {
-            "input": ["text", "pdf"],
-            "output": ["text"]
-          }
-        },
-        "mistralai/devstral-2512": {
-          "displayName": "Devstral 2",
-          "description": "Mistral coding agent model for repository tasks and software engineering workflows",
-          "lifecycle": "active",
-          "contextWindow": 262144,
-          "maxOutputTokens": 209715,
-          "knowledgeCutoff": "2025-12",
-          "structuredOutput": true,
-          "lastUpdated": "2025-12-09",
           "capabilities": {
             "vision": false,
             "reasoning": false,
@@ -22409,51 +22456,9 @@
             "output": ["text"]
           }
         },
-        "nex-agi/nex-n2.5-mini": {
-          "displayName": "Nex-N2.5-Mini",
-          "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
-          "lifecycle": "active",
-          "contextWindow": 262144,
-          "maxOutputTokens": 235929,
-          "structuredOutput": true,
-          "lastUpdated": "2026-09-08",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": false
-          },
-          "thinkingOptions": {
-            "efforts": ["none", "medium", "high"]
-          },
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          }
-        },
         "nex-agi/nex-n2.5-mini:free": {
           "displayName": "Nex-N2.5-Mini (free)",
           "description": "Efficient model for low-latency assistance, extraction, and routine automation",
-          "lifecycle": "active",
-          "contextWindow": 262144,
-          "maxOutputTokens": 235929,
-          "structuredOutput": true,
-          "lastUpdated": "2026-09-08",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "efforts": ["none", "medium", "high"]
-          },
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          }
-        },
-        "nex-agi/nex-n2.5-pro": {
-          "displayName": "Nex-N2.5-Pro",
-          "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
           "lifecycle": "active",
           "contextWindow": 262144,
           "maxOutputTokens": 235929,
@@ -24860,7 +24865,7 @@
           "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
           "lifecycle": "active",
           "contextWindow": 262144,
-          "maxOutputTokens": 16384,
+          "maxOutputTokens": 235929,
           "knowledgeCutoff": "2025-04",
           "structuredOutput": true,
           "lastUpdated": "2025-09",
@@ -25471,6 +25476,27 @@
             "output": ["text"]
           }
         },
+        "qwen/qwen3.8-max-prime": {
+          "displayName": "Qwen 3.8 Max Prime",
+          "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-23",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high", "xhigh"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video"],
+            "output": ["text"]
+          }
+        },
         "qwen/qwen3.8-omni-flash": {
           "displayName": "Qwen3.8 Omni Flash",
           "description": "Qwen omni model for text, vision, audio, and multimodal agent tasks",
@@ -25707,6 +25733,27 @@
             "output": ["text"]
           }
         },
+        "stealth/space-bunny-alpha": {
+          "displayName": "Space Bunny Alpha",
+          "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 524288,
+          "structuredOutput": false,
+          "lastUpdated": "2026-09-23",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
+          },
+          "modalities": {
+            "input": ["text", "image", "video"],
+            "output": ["text"]
+          }
+        },
         "stepfun/step-3.5-flash": {
           "displayName": "Step 3.5 Flash",
           "description": "StepFun flash lane for quick multimodal reasoning and coding assistance",
@@ -25793,7 +25840,7 @@
           "displayName": "Hy-MT2-30B-A3B",
           "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
           "lifecycle": "active",
-          "contextWindow": 8192,
+          "contextWindow": 32768,
           "maxOutputTokens": 4096,
           "structuredOutput": true,
           "lastUpdated": "2026-08-20",
@@ -26724,6 +26771,27 @@
           },
           "modalities": {
             "input": ["text", "image", "video"],
+            "output": ["text"]
+          }
+        },
+        "z-ai/glm-5.3-prime": {
+          "displayName": "GLM 5.3 Prime",
+          "description": "Flagship GLM model for hybrid reasoning, coding, and agentic engineering",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 131072,
+          "structuredOutput": false,
+          "lastUpdated": "2026-09-23",
+          "capabilities": {
+            "vision": false,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high", "max"]
+          },
+          "modalities": {
+            "input": ["text"],
             "output": ["text"]
           }
         },
@@ -27925,7 +27993,7 @@
           "lifecycle": "active",
           "contextWindow": 1000000,
           "inputLimit": 1000000,
-          "maxOutputTokens": 1000000,
+          "maxOutputTokens": 65536,
           "structuredOutput": true,
           "lastUpdated": "2026-09-20",
           "capabilities": {
@@ -28096,9 +28164,9 @@
           "displayName": "Step 5 Preview",
           "description": "StepFun's next-generation flagship base model for coding and professional knowledge work, with native text, image, and video input and a 1M-token context window",
           "lifecycle": "active",
-          "contextWindow": 1000000,
-          "inputLimit": 1000000,
-          "maxOutputTokens": 1000000,
+          "contextWindow": 1024000,
+          "inputLimit": 1024000,
+          "maxOutputTokens": 65536,
           "structuredOutput": true,
           "lastUpdated": "2026-09-20",
           "capabilities": {
@@ -28233,7 +28301,7 @@
           "lifecycle": "active",
           "contextWindow": 1000000,
           "inputLimit": 1000000,
-          "maxOutputTokens": 1000000,
+          "maxOutputTokens": 65536,
           "structuredOutput": true,
           "lastUpdated": "2026-09-20",
           "capabilities": {
@@ -28323,7 +28391,7 @@
           "lifecycle": "active",
           "contextWindow": 1000000,
           "inputLimit": 1000000,
-          "maxOutputTokens": 1000000,
+          "maxOutputTokens": 65536,
           "structuredOutput": true,
           "lastUpdated": "2026-09-20",
           "capabilities": {
@@ -28441,7 +28509,7 @@
           "displayName": "DeepSeek V4 Flash 0731",
           "description": "Official DeepSeek V4 Flash release with enhanced agentic capabilities and integrated DSpark speculative decoding",
           "lifecycle": "active",
-          "contextWindow": 1000000,
+          "contextWindow": 1048576,
           "maxOutputTokens": 384000,
           "knowledgeCutoff": "2025-05",
           "structuredOutput": true,
@@ -28652,9 +28720,9 @@
         },
         "MiniMaxAI/MiniMax-M2.7": {
           "displayName": "MiniMax-M2.7",
-          "description": "MiniMax model for chat, coding, office work, and agentic tasks",
+          "description": "Open MiniMax flagship for coding agents, office automation, and complex environments",
           "lifecycle": "active",
-          "contextWindow": 202752,
+          "contextWindow": 196608,
           "maxOutputTokens": 131072,
           "structuredOutput": true,
           "lastUpdated": "2026-03-18",
@@ -29066,7 +29134,7 @@
           "displayName": "GLM-5.2",
           "description": "Open flagship GLM for long-horizon coding agents and million-token context work",
           "lifecycle": "active",
-          "contextWindow": 512000,
+          "contextWindow": 1048575,
           "maxOutputTokens": 164000,
           "structuredOutput": true,
           "lastUpdated": "2026-06-16",
@@ -29417,6 +29485,9 @@
             "vision": false,
             "reasoning": true,
             "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -29786,7 +29857,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -29807,7 +29878,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -29849,7 +29920,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -29869,6 +29940,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -29887,7 +29961,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text"],
@@ -29908,7 +29982,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -29971,6 +30045,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
+            "efforts": ["low", "medium", "xhigh"],
             "toggle": true
           },
           "modalities": {
@@ -29991,7 +30066,8 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "xhigh"]
+            "efforts": ["low", "medium", "xhigh"],
+            "toggle": true
           },
           "modalities": {
             "input": ["text", "image"],
@@ -30019,6 +30095,27 @@
             "output": ["text"]
           }
         },
+        "alibaba/qwen3.8-max-prime": {
+          "displayName": "Qwen 3.8 Max Prime",
+          "description": "High-throughput edition of Qwen3.8 Max for coding, professional work, multimodal understanding, and long-running agent workflows",
+          "lifecycle": "active",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 131072,
+          "structuredOutput": true,
+          "lastUpdated": "2026-09-23",
+          "capabilities": {
+            "vision": true,
+            "reasoning": true,
+            "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
         "alibaba/qwen3.8-omni-flash": {
           "displayName": "Qwen 3.8 Omni Flash",
           "description": "Qwen omni model for text, vision, audio, and multimodal agent tasks",
@@ -30032,7 +30129,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "low", "medium", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -30314,8 +30411,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30336,7 +30432,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30377,6 +30473,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "toggle": true
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -30396,7 +30495,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30417,8 +30516,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30439,8 +30537,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30461,8 +30558,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30483,8 +30579,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30505,7 +30600,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30526,7 +30621,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30588,6 +30683,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "toggle": true
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -30626,8 +30724,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30648,8 +30745,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -30662,11 +30758,14 @@
           "lifecycle": "active",
           "contextWindow": 262100,
           "maxOutputTokens": 80000,
-          "lastUpdated": "2026-04-03",
+          "lastUpdated": "2026-05-28",
           "capabilities": {
             "vision": false,
             "reasoning": true,
             "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -30903,7 +31002,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -31192,7 +31291,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -31213,7 +31312,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -31252,6 +31351,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text"],
             "output": ["text"]
@@ -31272,8 +31374,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -31294,6 +31395,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text"],
             "output": ["text"]
@@ -31313,8 +31417,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -31336,8 +31439,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "high", "max"]
           },
           "modalities": {
             "input": ["text"],
@@ -31358,8 +31460,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "high", "max"]
           },
           "modalities": {
             "input": ["text"],
@@ -31381,8 +31482,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "high", "max"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -31504,7 +31604,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -31544,7 +31644,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["minimal", "low", "medium", "high"]
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -31583,7 +31683,7 @@
             "functionCalling": false
           },
           "thinkingOptions": {
-            "efforts": ["minimal", "high"]
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -31604,7 +31704,7 @@
             "functionCalling": false
           },
           "thinkingOptions": {
-            "efforts": ["minimal", "high"]
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -31626,7 +31726,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["minimal", "low", "medium", "high"]
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -31646,6 +31746,9 @@
             "vision": true,
             "reasoning": true,
             "functionCalling": false
+          },
+          "thinkingOptions": {
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -31667,7 +31770,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high"]
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -31689,7 +31792,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["minimal", "low", "medium", "high"]
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -31711,7 +31814,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["minimal", "low", "medium", "high"]
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -31763,7 +31866,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["minimal", "low", "medium", "high"]
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -31785,7 +31888,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high"]
+            "efforts": ["low", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -31805,9 +31908,42 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["low", "high"]
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
+          }
+        },
+        "google/gemini-3.8-flash-lite-tts": {
+          "displayName": "Gemini 3.8 Flash-Lite TTS",
+          "description": "Speech generation model for controllable voice, narration, and audio delivery",
+          "lifecycle": "active",
+          "lastUpdated": "2026-09-23",
+          "capabilities": {
+            "vision": false,
+            "reasoning": false,
+            "functionCalling": false
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["audio"]
+          }
+        },
+        "google/gemini-3.8-flash-tts": {
+          "displayName": "Gemini 3.8 Flash TTS",
+          "description": "Speech generation model for controllable voice, narration, and audio delivery",
+          "lifecycle": "active",
+          "lastUpdated": "2026-09-23",
+          "capabilities": {
+            "vision": false,
+            "reasoning": false,
+            "functionCalling": false
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["audio"]
           }
         },
         "google/gemini-3.8-live": {
@@ -31885,6 +32021,9 @@
             "vision": true,
             "reasoning": true,
             "functionCalling": false
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -32105,6 +32244,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "toggle": true
+          },
           "modalities": {
             "input": ["text"],
             "output": ["text"]
@@ -32162,6 +32304,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text"],
             "output": ["text"]
@@ -32179,6 +32324,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text"],
             "output": ["text"]
@@ -32186,26 +32334,6 @@
         },
         "inclusionai/ling-3.0-flash-vl": {
           "displayName": "Ling 3.0 Flash VL",
-          "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
-          "lifecycle": "active",
-          "contextWindow": 256000,
-          "maxOutputTokens": 32000,
-          "lastUpdated": "2026-09-08",
-          "capabilities": {
-            "vision": true,
-            "reasoning": true,
-            "functionCalling": true
-          },
-          "thinkingOptions": {
-            "toggle": true
-          },
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          }
-        },
-        "inclusionai/ling-3.0-flash-vl-free": {
-          "displayName": "Ling 3.0 Flash VL (Free)",
           "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
           "lifecycle": "active",
           "contextWindow": 256000,
@@ -32503,7 +32631,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"]
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -32559,6 +32687,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["minimal", "low", "medium", "high", "xhigh"]
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -32598,7 +32729,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["minimal", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -32661,7 +32792,6 @@
           "lifecycle": "active",
           "contextWindow": 205000,
           "maxOutputTokens": 205000,
-          "knowledgeCutoff": "2024-10",
           "lastUpdated": "2025-10-27",
           "capabilities": {
             "vision": false,
@@ -32787,9 +32917,6 @@
             "vision": true,
             "reasoning": true,
             "functionCalling": true
-          },
-          "thinkingOptions": {
-            "toggle": true
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33023,6 +33150,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text"],
             "output": ["text"]
@@ -33086,6 +33216,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -33105,6 +33238,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -33122,6 +33258,9 @@
             "vision": true,
             "reasoning": true,
             "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "high", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33142,7 +33281,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "high", "max"]
+            "efforts": ["none", "low", "medium", "high", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33216,7 +33355,7 @@
             "functionCalling": false
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "low", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -33236,7 +33375,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "toggle": true
+            "efforts": ["none", "medium", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -33745,7 +33884,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high"]
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33768,7 +33907,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"]
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33791,7 +33930,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high"]
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33813,11 +33952,11 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
-            "output": ["text", "image"]
+            "output": ["text"]
           }
         },
         "openai/gpt-5.1-thinking-fast": {
@@ -33833,6 +33972,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -33845,7 +33987,7 @@
           "contextWindow": 400000,
           "inputLimit": 272000,
           "maxOutputTokens": 128000,
-          "knowledgeCutoff": "2024-10",
+          "knowledgeCutoff": "2025-08-31",
           "structuredOutput": true,
           "lastUpdated": "2025-12-11",
           "capabilities": {
@@ -33854,7 +33996,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33877,7 +34019,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"]
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33900,7 +34042,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33946,7 +34088,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33969,7 +34111,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -33992,7 +34134,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34015,7 +34157,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34038,7 +34180,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34061,7 +34203,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34084,7 +34226,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34107,7 +34249,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34130,7 +34272,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34153,7 +34295,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34245,7 +34387,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34268,7 +34410,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34291,7 +34433,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34314,7 +34456,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34337,7 +34479,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -34359,7 +34501,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["low", "medium", "high", "xhigh", "max"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -35270,6 +35412,21 @@
             "output": ["image"]
           }
         },
+        "recraft/recraft-v4.1-flash": {
+          "displayName": "Recraft V4.1 Flash",
+          "description": "Image model for prompt-driven generation, editing, and visual design workflows",
+          "lifecycle": "active",
+          "lastUpdated": "2026-09-23",
+          "capabilities": {
+            "vision": false,
+            "reasoning": false,
+            "functionCalling": false
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["image"]
+          }
+        },
         "recraft/recraft-v4.1-pro": {
           "displayName": "Recraft V4.1 Pro",
           "description": "Image model for prompt-driven generation, editing, and visual design workflows",
@@ -35328,7 +35485,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "xhigh", "max"]
+            "efforts": ["high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -35348,6 +35505,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["high", "xhigh"]
+          },
           "modalities": {
             "input": ["text", "image"],
             "output": ["text"]
@@ -35366,7 +35526,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "xhigh", "max"]
+            "efforts": ["high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -35384,6 +35544,9 @@
             "vision": true,
             "reasoning": true,
             "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -35420,6 +35583,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -35437,6 +35603,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -35453,6 +35622,9 @@
             "vision": true,
             "reasoning": true,
             "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -35505,6 +35677,9 @@
             "reasoning": true,
             "functionCalling": true
           },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
+          },
           "modalities": {
             "input": ["text", "image", "pdf"],
             "output": ["text"]
@@ -35521,6 +35696,9 @@
             "vision": true,
             "reasoning": true,
             "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image", "pdf"],
@@ -35584,7 +35762,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high"]
+            "efforts": ["low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -35606,7 +35784,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "medium", "high"]
+            "efforts": ["low", "medium", "high", "xhigh"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -35625,6 +35803,9 @@
             "vision": true,
             "reasoning": true,
             "functionCalling": true
+          },
+          "thinkingOptions": {
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -36200,7 +36381,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "minimal", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -36220,7 +36401,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "minimal", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -36240,7 +36421,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            "efforts": ["none", "minimal", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text", "image"],
@@ -36470,8 +36651,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "high", "max"]
           },
           "modalities": {
             "input": ["text"],
@@ -36492,8 +36672,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["high", "xhigh"],
-            "toggle": true
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -36535,7 +36714,7 @@
             "functionCalling": true
           },
           "thinkingOptions": {
-            "efforts": ["low", "high", "max"]
+            "efforts": ["none", "low", "medium", "high"]
           },
           "modalities": {
             "input": ["text"],
@@ -39370,7 +39549,7 @@
           "description": "Compact GPT model for low-latency assistance and high-volume workloads",
           "lifecycle": "active",
           "contextWindow": 400000,
-          "inputLimit": 400000,
+          "inputLimit": 272000,
           "maxOutputTokens": 128000,
           "knowledgeCutoff": "2025-12-01",
           "structuredOutput": true,
@@ -41822,6 +42001,18 @@
         "cacheReadUsdPer1M": 0.2
       },
       {
+        "modelKey": "deepinfra:XiaomiMiMo/MiMo-V2.6-Flash",
+        "inputUsdPer1M": 0.14,
+        "outputUsdPer1M": 0.28,
+        "cacheReadUsdPer1M": 0.0028
+      },
+      {
+        "modelKey": "deepinfra:XiaomiMiMo/MiMo-V2.6-Pro",
+        "inputUsdPer1M": 0.435,
+        "outputUsdPer1M": 0.87,
+        "cacheReadUsdPer1M": 0.0036
+      },
+      {
         "modelKey": "deepinfra:zai-org/GLM-4.6",
         "inputUsdPer1M": 0.5,
         "outputUsdPer1M": 2,
@@ -41859,7 +42050,7 @@
       },
       {
         "modelKey": "deepinfra:zai-org/GLM-5.3",
-        "inputUsdPer1M": 1.2,
+        "inputUsdPer1M": 0.9,
         "outputUsdPer1M": 4,
         "cacheReadUsdPer1M": 0.2
       },
@@ -41922,6 +42113,12 @@
         "inputUsdPer1M": 0.22,
         "outputUsdPer1M": 0.66,
         "cacheReadUsdPer1M": 0.007
+      },
+      {
+        "modelKey": "fireworks-ai:accounts/fireworks/models/ember-1",
+        "inputUsdPer1M": 3,
+        "outputUsdPer1M": 15,
+        "cacheReadUsdPer1M": 0.3
       },
       {
         "modelKey": "fireworks-ai:accounts/fireworks/models/glm-5p2",
@@ -44421,15 +44618,15 @@
       },
       {
         "modelKey": "openrouter:~deepseek/deepseek-flash-latest",
-        "inputUsdPer1M": 0.1,
-        "outputUsdPer1M": 0.5,
-        "cacheReadUsdPer1M": 0.01
+        "inputUsdPer1M": 0.05,
+        "outputUsdPer1M": 0.25,
+        "cacheReadUsdPer1M": 0.005
       },
       {
         "modelKey": "openrouter:~deepseek/deepseek-pro-latest",
-        "inputUsdPer1M": 0.39996,
-        "outputUsdPer1M": 1.19988,
-        "cacheReadUsdPer1M": 0.012726
+        "inputUsdPer1M": 0.39,
+        "outputUsdPer1M": 2.9,
+        "cacheReadUsdPer1M": 0.25
       },
       {
         "modelKey": "openrouter:~deepseek/deepseek-v4-flash-latest",
@@ -44446,8 +44643,8 @@
       },
       {
         "modelKey": "openrouter:~moonshotai/kimi-latest",
-        "inputUsdPer1M": 1.4989,
-        "outputUsdPer1M": 10.758,
+        "inputUsdPer1M": 1.4,
+        "outputUsdPer1M": 10.75,
         "cacheReadUsdPer1M": 0.3
       },
       {
@@ -44458,15 +44655,15 @@
       },
       {
         "modelKey": "openrouter:~z-ai/glm-flash-latest",
-        "inputUsdPer1M": 0.075,
-        "outputUsdPer1M": 0.25,
-        "cacheReadUsdPer1M": 0.015
+        "inputUsdPer1M": 0.045,
+        "outputUsdPer1M": 0.14,
+        "cacheReadUsdPer1M": 0.01
       },
       {
         "modelKey": "openrouter:~z-ai/glm-latest",
-        "inputUsdPer1M": 0.5614,
-        "outputUsdPer1M": 1.7644,
-        "cacheReadUsdPer1M": 0.10426
+        "inputUsdPer1M": 0.5625,
+        "outputUsdPer1M": 2.5,
+        "cacheReadUsdPer1M": 0.125
       },
       {
         "modelKey": "openrouter:aion-labs/aion-2.0",
@@ -44713,14 +44910,14 @@
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4-flash",
-        "inputUsdPer1M": 0.08246,
-        "outputUsdPer1M": 0.16492,
-        "cacheReadUsdPer1M": 0.016492
+        "inputUsdPer1M": 0.088606,
+        "outputUsdPer1M": 0.177212,
+        "cacheReadUsdPer1M": 0.017721
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4-flash-0731",
         "inputUsdPer1M": 0.04,
-        "outputUsdPer1M": 0.64,
+        "outputUsdPer1M": 0.32,
         "cacheReadUsdPer1M": 0.016
       },
       {
@@ -44731,9 +44928,9 @@
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4-pro",
-        "inputUsdPer1M": 0.953172,
-        "outputUsdPer1M": 1.906344,
-        "cacheReadUsdPer1M": 0.079431
+        "inputUsdPer1M": 0.9396,
+        "outputUsdPer1M": 1.8792,
+        "cacheReadUsdPer1M": 0.0783
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4-pro-0813",
@@ -44743,9 +44940,9 @@
       },
       {
         "modelKey": "openrouter:deepseek/deepseek-v4.1-flash",
-        "inputUsdPer1M": 0.1,
-        "outputUsdPer1M": 0.5,
-        "cacheReadUsdPer1M": 0.01
+        "inputUsdPer1M": 0.14,
+        "outputUsdPer1M": 0.42,
+        "cacheReadUsdPer1M": 0.0042
       },
       {
         "modelKey": "openrouter:dots-studio/dots-3-note-preview:free",
@@ -44968,11 +45165,6 @@
         "cacheReadUsdPer1M": 0.012
       },
       {
-        "modelKey": "openrouter:inclusionai/ling-3.0-flash-vl:free",
-        "inputUsdPer1M": 0,
-        "outputUsdPer1M": 0
-      },
-      {
         "modelKey": "openrouter:inference-net/schematron-v2-small",
         "inputUsdPer1M": 0.05,
         "outputUsdPer1M": 0.23,
@@ -45105,8 +45297,8 @@
       },
       {
         "modelKey": "openrouter:minimax/minimax-m2",
-        "inputUsdPer1M": 0.255,
-        "outputUsdPer1M": 1.02
+        "inputUsdPer1M": 0.3,
+        "outputUsdPer1M": 1.2
       },
       {
         "modelKey": "openrouter:minimax/minimax-m2-her",
@@ -45143,12 +45335,6 @@
         "inputUsdPer1M": 0.3,
         "outputUsdPer1M": 0.9,
         "cacheReadUsdPer1M": 0.03
-      },
-      {
-        "modelKey": "openrouter:mistralai/devstral-2512",
-        "inputUsdPer1M": 0.4,
-        "outputUsdPer1M": 2,
-        "cacheReadUsdPer1M": 0.04
       },
       {
         "modelKey": "openrouter:mistralai/ministral-14b-2512",
@@ -45292,21 +45478,9 @@
         "outputUsdPer1M": 1.9
       },
       {
-        "modelKey": "openrouter:nex-agi/nex-n2.5-mini",
-        "inputUsdPer1M": 0.025,
-        "outputUsdPer1M": 0.1,
-        "cacheReadUsdPer1M": 0.0025
-      },
-      {
         "modelKey": "openrouter:nex-agi/nex-n2.5-mini:free",
         "inputUsdPer1M": 0,
         "outputUsdPer1M": 0
-      },
-      {
-        "modelKey": "openrouter:nex-agi/nex-n2.5-pro",
-        "inputUsdPer1M": 0.075,
-        "outputUsdPer1M": 0.25,
-        "cacheReadUsdPer1M": 0.015
       },
       {
         "modelKey": "openrouter:nex-agi/nex-n2.5-pro:free",
@@ -45797,8 +45971,9 @@
       },
       {
         "modelKey": "openrouter:qwen/qwen3-next-80b-a3b-instruct",
-        "inputUsdPer1M": 0.09,
-        "outputUsdPer1M": 1.1
+        "inputUsdPer1M": 0.1,
+        "outputUsdPer1M": 1.1,
+        "cacheReadUsdPer1M": 0.07
       },
       {
         "modelKey": "openrouter:qwen/qwen3-next-80b-a3b-thinking",
@@ -45924,6 +46099,12 @@
         "cacheWriteUsdPer1M": 2.5
       },
       {
+        "modelKey": "openrouter:qwen/qwen3.8-max-prime",
+        "inputUsdPer1M": 4,
+        "outputUsdPer1M": 12,
+        "cacheReadUsdPer1M": 0.5
+      },
+      {
         "modelKey": "openrouter:qwen/qwen3.8-omni-flash",
         "inputUsdPer1M": 0.15,
         "outputUsdPer1M": 0.47,
@@ -45975,6 +46156,11 @@
         "modelKey": "openrouter:sao10k/l3.3-euryale-70b",
         "inputUsdPer1M": 0.65,
         "outputUsdPer1M": 0.75
+      },
+      {
+        "modelKey": "openrouter:stealth/space-bunny-alpha",
+        "inputUsdPer1M": 0,
+        "outputUsdPer1M": 0
       },
       {
         "modelKey": "openrouter:stepfun/step-3.5-flash",
@@ -46214,7 +46400,13 @@
         "modelKey": "openrouter:z-ai/glm-5.3-flashx",
         "inputUsdPer1M": 0.37,
         "outputUsdPer1M": 1.25,
-        "cacheReadUsdPer1M": 0.075
+        "cacheReadUsdPer1M": 0.09
+      },
+      {
+        "modelKey": "openrouter:z-ai/glm-5.3-prime",
+        "inputUsdPer1M": 2.8,
+        "outputUsdPer1M": 8.8,
+        "cacheReadUsdPer1M": 0.56
       },
       {
         "modelKey": "openrouter:z-ai/glm-5v-turbo",
@@ -46952,6 +47144,12 @@
         "cacheWriteUsdPer1M": 2.5
       },
       {
+        "modelKey": "vercel:alibaba/qwen3.8-max-prime",
+        "inputUsdPer1M": 4,
+        "outputUsdPer1M": 12,
+        "cacheReadUsdPer1M": 0.5
+      },
+      {
         "modelKey": "vercel:alibaba/qwen3.8-omni-flash",
         "inputUsdPer1M": 0.15,
         "outputUsdPer1M": 0.47,
@@ -47099,7 +47297,7 @@
       {
         "modelKey": "vercel:arcee-ai/trinity-large-thinking",
         "inputUsdPer1M": 0.25,
-        "outputUsdPer1M": 0.8999999999999999
+        "outputUsdPer1M": 0.9
       },
       {
         "modelKey": "vercel:bytedance/seed-2.1-turbo",
@@ -47265,6 +47463,18 @@
         "cacheReadUsdPer1M": 0.075
       },
       {
+        "modelKey": "vercel:google/gemini-3.8-flash-lite-tts",
+        "inputUsdPer1M": 0.5,
+        "outputUsdPer1M": 6,
+        "cacheReadUsdPer1M": 0.125
+      },
+      {
+        "modelKey": "vercel:google/gemini-3.8-flash-tts",
+        "inputUsdPer1M": 0.5,
+        "outputUsdPer1M": 9,
+        "cacheReadUsdPer1M": 0.125
+      },
+      {
         "modelKey": "vercel:google/gemini-3.8-live",
         "inputUsdPer1M": 0.75,
         "outputUsdPer1M": 4.5
@@ -47335,13 +47545,9 @@
       },
       {
         "modelKey": "vercel:inclusionai/ling-3.0-flash-vl",
-        "inputUsdPer1M": 0,
-        "outputUsdPer1M": 0
-      },
-      {
-        "modelKey": "vercel:inclusionai/ling-3.0-flash-vl-free",
-        "inputUsdPer1M": 0,
-        "outputUsdPer1M": 0
+        "inputUsdPer1M": 0.075,
+        "outputUsdPer1M": 0.22,
+        "cacheReadUsdPer1M": 0.015
       },
       {
         "modelKey": "vercel:inference-net/schematron-v2-small",
@@ -49424,6 +49630,9 @@
       },
       "opencode-go": {
         "gpt-5.6-luna": {
+          "npm": "@ai-sdk/openai"
+        },
+        "gpt-6-luna": {
           "npm": "@ai-sdk/openai"
         },
         "grok-4.5": {

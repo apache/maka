@@ -2324,7 +2324,7 @@ export const Composer = forwardRef<
               {props.onPermissionModeChange ? (
                 <PermissionModeSelect
                   appearance="icon"
-                  activeMode={props.permissionMode ?? 'ask'}
+                  activeMode={props.permissionMode}
                   onSelect={(mode) => {
                     void props.onPermissionModeChange?.(mode);
                   }}

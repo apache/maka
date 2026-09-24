@@ -3652,12 +3652,13 @@ const makaBridge = {
   },
   notifications: {
     // Fire-and-forget signal that an agent turn reached a terminal
-    // state. `title` is the session name, `body` the start of the reply
-    // (or the error message); main sanitizes both and falls back to
-    // generic copy when blank. Main gates on the product toggle + window
-    // focus before raising a native OS notification.
+    // state or is waiting on the user. `title` is the session name, `body`
+    // the start of the reply, the error message, or the question; main
+    // sanitizes both and falls back to generic copy when blank. Main gates
+    // on the product toggle + window focus before raising a native OS
+    // notification.
     runEnded(payload: {
-      kind: 'completed' | 'errored';
+      kind: 'completed' | 'errored' | 'waiting';
       title?: string;
       body?: string;
     }): Promise<void> {

@@ -140,7 +140,7 @@ export function buildScheduledTaskTool(deps: {
       'Create and manage global scheduled tasks (定时任务). ' +
       'Use for every recurring or one-shot task. All tasks appear in the desktop Scheduled tasks page. ' +
       'The default session_resume effect continues this conversation; use agent_run for independent work. ' +
-      'Times are epoch milliseconds. Every result reports the current Host time and time zone; ' +
+      'Times are epoch milliseconds. Only the list and create results report the current Host time and time zone; ' +
       'call mode=list first when you need it to compute runAt or startAt.',
     parameters: schema,
     impl: async (raw, ctx) => {
