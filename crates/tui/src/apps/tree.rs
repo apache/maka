@@ -39,6 +39,8 @@ pub enum Intent {
     Pick(String, String),
     /// Return in a one-line text field: the field's default action.
     Commit(String),
+    /// Open a Maka session the view names.
+    Open(String),
 }
 
 /// A text field's well in the laid-out tree; its owner paints the editor.
@@ -308,6 +310,7 @@ impl<M> Builder<'_, M> {
                 let (intent, chevron) = match target {
                     Target::Route { route } => (Intent::Navigate(route.clone()), true),
                     Target::Action { action } => (Intent::Submit(action.clone()), false),
+                    Target::Session { session } => (Intent::Open(session.clone()), true),
                 };
                 let mut head = vec![
                     Node::text("title", vec![(title.clone(), tone(*item_tone))])

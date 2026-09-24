@@ -167,6 +167,7 @@ struct Work {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Execution {
+    session_id: String,
     state: String,
     result_record_id: Option<String>,
 }
@@ -678,6 +679,23 @@ fn detail_view(
             "state",
             vec![(format!("{glyph} "), tone), (label, tone)],
         ));
+        if let Some(execution) = &work.execution {
+            children.push(Node::Item {
+                key: "session".into(),
+                title: words.t(
+                    "Open the agent's session",
+                    "打开该智能体的会话",
+                    "開啟該智慧體的工作階段",
+                ),
+                detail: String::new(),
+                meta: String::new(),
+                tone: Tone::Normal,
+                current: false,
+                target: view::Target::Session {
+                    session: execution.session_id.clone(),
+                },
+            });
+        }
     }
     if let Some(detail) = detail {
         children.push(stack(
@@ -1032,6 +1050,7 @@ mod tests {
                     instruction: format!("Step {index}\nmore detail"),
                     status: "requested".into(),
                     execution: Some(Execution {
+                        session_id: format!("agent-{index}"),
                         state: (*state).into(),
                         result_record_id: None,
                     }),

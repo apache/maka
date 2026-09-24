@@ -19,6 +19,7 @@
 
 mod remote;
 mod session;
+mod terminal;
 mod tools;
 
 use crate::{Access, Coordinator, Repository, assignment::Assignments};

@@ -164,6 +164,8 @@ pub enum Target {
     Route { route: Value },
     /// Submit a declared action.
     Action { action: String },
+    /// Open a Maka session in the shell, such as one a plugin started.
+    Session { session: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -652,6 +654,7 @@ impl View {
             Target::Route { route: value } => route(value),
             Target::Action { action } if actions.contains(action.as_str()) => Ok(()),
             Target::Action { .. } => Err(invalid()),
+            Target::Session { session } => identifier(session),
         }
     }
 

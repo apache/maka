@@ -947,6 +947,9 @@ impl App {
             }
             Command::CancelConfirm => apps.confirming = None,
             Command::View(Intent::Navigate(route)) => instance.navigate(route, &locale),
+            Command::View(Intent::Open(session)) => {
+                return self.apply(Action::Visit(Route::Session(session)));
+            }
             Command::View(Intent::Submit(id)) => {
                 if asks(instance, &id) {
                     apps.confirming = Some((key, id));
@@ -1026,15 +1029,18 @@ impl App {
             })
             .collect()
     }
-    /// A session changed (a turn settled, its metadata moved): its views on
-    /// screen that follow no changes stream of their own read again.
+    /// A session changed (a turn settled, its metadata moved): its views,
+    /// and application views that may track sessions, read again when on
+    /// screen and following no changes stream of their own.
     pub fn apps_session_changed(&mut self, session: &str) {
         let locale = self.apps.locale.clone();
         let visible: Vec<_> = self
             .apps
             .instances
             .keys()
-            .filter(|key| key.session.as_deref() == Some(session) && self.app_visible(key))
+            .filter(|key| {
+                key.session.as_deref().is_none_or(|own| own == session) && self.app_visible(key)
+            })
             .cloned()
             .collect();
         for key in visible {
@@ -2222,5 +2228,38 @@ pub(crate) mod tests {
             !instance.remedies().contains(&Command::Retry),
             "a submission missing its key can be checked, never resent"
         );
+    }
+
+    #[test]
+    fn a_view_opens_a_session_it_names_without_losing_its_draft() {
+        use maka_plugins::terminal_ui::view::{Node, Target};
+        let mut app = app();
+        {
+            let instance = instance_mut(&mut app);
+            let view = instance.view.as_mut().unwrap();
+            view.root = Node::Column {
+                key: "root".into(),
+                gap: 0,
+                children: vec![Node::Item {
+                    key: "worker".into(),
+                    title: "Open the worker".into(),
+                    detail: String::new(),
+                    meta: String::new(),
+                    tone: Tone::Normal,
+                    current: false,
+                    target: Target::Session {
+                        session: "worker".into(),
+                    },
+                }],
+            };
+            view.validate().unwrap();
+        }
+        instance_mut(&mut app)
+            .drafts
+            .insert("enabled".into(), json!(false));
+        draw(&mut app, 90, 26);
+        click(&mut app, "app/body/frame/content/root/worker");
+        assert_eq!(app.navigation.current(), Route::Session("worker".into()));
+        assert_eq!(instance(&app).drafts["enabled"], json!(false));
     }
 }

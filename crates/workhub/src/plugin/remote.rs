@@ -37,6 +37,7 @@ pub(super) fn publish(
     package: &str,
     digest: &str,
 ) -> Result<(), String> {
+    super::terminal::publish(staged, manager.clone(), package)?;
     for (name, action) in [
         ("authorize", Action::Authorize),
         ("consent", Action::Consent),
@@ -78,7 +79,7 @@ pub(super) fn publish(
     Ok(())
 }
 #[derive(Clone, Copy)]
-enum Action {
+pub(super) enum Action {
     Authorize,
     Consent,
     Template,
@@ -103,9 +104,9 @@ enum Action {
     Configure,
     Enqueue,
 }
-struct Call {
-    manager: Arc<Manager>,
-    action: Action,
+pub(super) struct Call {
+    pub(super) manager: Arc<Manager>,
+    pub(super) action: Action,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -79,7 +79,9 @@ export type TerminalTarget =
   /** Read another route of this view; Back returns. */
   | { kind: 'route'; route: Json }
   /** Submit a declared action. */
-  | { kind: 'action'; action: string };
+  | { kind: 'action'; action: string }
+  /** Open a Maka session in the shell, such as one the plugin started. */
+  | { kind: 'session'; session: string };
 
 /** Keys are unique among siblings, contain no `/`, and stay stable across reads. */
 export type TerminalNode =

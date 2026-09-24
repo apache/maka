@@ -60,7 +60,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 pub const PROTOCOL_VERSION: u64 = 0;
-pub const COMPATIBILITY_EPOCH: u64 = 189;
+pub const COMPATIBILITY_EPOCH: u64 = 190;
 pub const COMPOSITION_ID: &str = "maka.interactive";
 pub const MAX_MESSAGE_BYTES: usize = 768 * 1024;
 pub const MAX_IN_FLIGHT_DOMAIN_REQUESTS: usize = 64;
