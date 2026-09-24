@@ -53,7 +53,7 @@ pub(crate) struct Well {
     pub placeholder: String,
 }
 
-pub(crate) struct Env<'a> {
+pub(crate) struct Env<'a, M> {
     pub key: &'a super::Key,
     pub drafts: &'a BTreeMap<String, Value>,
     pub ascii: bool,
@@ -62,6 +62,16 @@ pub(crate) struct Env<'a> {
     pub offered: &'a dyn Fn(&Intent) -> bool,
     /// The action whose last submission was applied, for a check mark.
     pub applied: Option<&'a str>,
+    /// What fills a slot: the views placed in it, given the slot's name,
+    /// its path in this view, its kernel path and width.
+    pub slots: &'a Slots<'a, M>,
+}
+
+pub(crate) type Slots<'a, M> = dyn Fn(&str, &str, &str, u16) -> (Vec<Node<M>>, Vec<Well>) + 'a;
+
+/// Fills no slot, for places a view shows only in part.
+pub(crate) fn unfilled<M>(_: &str, _: &str, _: &str, _: u16) -> (Vec<Node<M>>, Vec<Well>) {
+    (vec![], vec![])
 }
 
 /// Below this width a split stacks its panes.
@@ -72,7 +82,7 @@ pub(crate) const AREA_ROWS: u16 = 3;
 /// The view's root under `parent` (the kernel path of its container).
 pub(crate) fn build<M>(
     view: &View,
-    env: &Env<'_>,
+    env: &Env<'_, M>,
     parent: &str,
     width: u16,
     wrap: &dyn Fn(Intent) -> M,
@@ -85,6 +95,7 @@ pub(crate) fn build<M>(
         view,
         env,
         wrap,
+        wire: vec![],
         label_width: widest.map_or(0, |widest| (widest as u16 + 2).min(width * 2 / 5)),
         wells: vec![],
     };
@@ -138,6 +149,26 @@ pub(crate) fn prose(view: &View) -> String {
     out.join("\n")
 }
 
+/// Every slot a view declares: its path in the view, name and context.
+pub(crate) fn slots(view: &View) -> Vec<(String, String, Value)> {
+    fn walk(node: &wire::Node, path: String, out: &mut Vec<(String, String, Value)>) {
+        let path = if path.is_empty() {
+            node.key().to_owned()
+        } else {
+            format!("{path}/{}", node.key())
+        };
+        if let wire::Node::Slot { name, context, .. } = node {
+            out.push((path.clone(), name.clone(), context.clone()));
+        }
+        for child in node.children() {
+            walk(child, path.clone(), out);
+        }
+    }
+    let mut out = vec![];
+    walk(&view.root, String::new(), &mut out);
+    out
+}
+
 /// Actions bound to primary buttons, in reading order.
 pub(crate) fn primary_actions(view: &View) -> Vec<&str> {
     fn walk<'a>(node: &'a wire::Node, out: &mut Vec<&'a str>) {
@@ -173,8 +204,10 @@ enum Axis {
 
 struct Builder<'a, M> {
     view: &'a View,
-    env: &'a Env<'a>,
+    env: &'a Env<'a, M>,
     wrap: &'a dyn Fn(Intent) -> M,
+    /// Keys from the root to the node being built: its path in the view.
+    wire: Vec<String>,
     label_width: u16,
     wells: Vec<Well>,
 }
@@ -186,6 +219,13 @@ impl<M> Builder<'_, M> {
     }
 
     fn node(&mut self, node: &wire::Node, path: String, width: u16, parent: Axis) -> Node<M> {
+        self.wire.push(node.key().to_owned());
+        let built = self.place(node, path, width, parent);
+        self.wire.pop();
+        built
+    }
+
+    fn place(&mut self, node: &wire::Node, path: String, width: u16, parent: Axis) -> Node<M> {
         let key = node.key().to_owned();
         match node {
             wire::Node::Column { gap, children, .. } => {
@@ -297,8 +337,12 @@ impl<M> Builder<'_, M> {
             } => self.progress(key, *value, *max, label, width),
             wire::Node::Markdown { text, .. } => Node::column(key, markdown(text, self.env.ascii)),
             wire::Node::Code { text, .. } => Node::column(key, code(text, self.env.ascii)),
-            // Composition fills slots; an unfilled slot takes no room.
-            wire::Node::Slot { .. } => Node::column(key, vec![]),
+            // An unfilled slot takes no room.
+            wire::Node::Slot { name, .. } => {
+                let (fillers, wells) = (self.env.slots)(name, &self.wire.join("/"), &path, width);
+                self.wells.extend(wells);
+                Node::column(key, fillers).gap(1)
+            }
         }
     }
 

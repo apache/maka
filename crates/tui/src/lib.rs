@@ -225,6 +225,7 @@ where
     let mut client: Option<Client> = None;
     let mut notifications: Option<mpsc::Receiver<Notification>> = None;
     let mut oauth_service: Option<maka_client::OAuthPresentationService> = None;
+    let (mut watches, mut changes) = apps::io::Watches::new();
     let mut effect = app.apply(Action::Connect);
     let mut dirty = true;
     let mut flushed = false;
@@ -494,6 +495,7 @@ where
                     Completed::Session(request, result)
                 });
             }
+            watches.reconcile(client, app.apps_watches());
             for request in app.apps_requests() {
                 if request.needs_checkpoint() {
                     if let Some(state) = &mut state {
@@ -724,6 +726,7 @@ where
                     app.attachments.disconnect();
                     app.skills.disconnect();
                     app.apps.disconnect();
+                    watches.stop();
                     app.recap.disconnect();
                     app.resume.disconnect();
                     app.branch.disconnect();
@@ -758,6 +761,7 @@ where
                     app.attachments.disconnect();
                     app.skills.disconnect();
                     app.apps.disconnect();
+                    watches.stop();
                     app.recap.disconnect();
                     app.resume.disconnect();
                     app.creating = false;
@@ -1310,6 +1314,7 @@ where
                 app.attachments.disconnect();
                 app.skills.disconnect();
                 app.apps.disconnect();
+                watches.stop();
                 app.recap.disconnect();
                 app.resume.disconnect();
                 app.abandon_management();
@@ -1327,6 +1332,14 @@ where
                 app.chat.error = Some(error.to_string());
                 dirty = true;
             }
+            change = changes.recv() => {
+                match change {
+                    Some(apps::io::Change::Stale(watch)) => app.apps_changed(&watch),
+                    Some(apps::io::Change::Ended(watch)) => watches.ended(&watch),
+                    None => {}
+                }
+                dirty = true;
+            }
             _ = termination_signal(
                 #[cfg(unix)]
                 &mut terminate
@@ -1336,6 +1349,7 @@ where
     app.attachments.disconnect();
     app.skills.disconnect();
     app.apps.disconnect();
+    watches.stop();
     app.recap.disconnect();
     app.resume.disconnect();
     attachment_jobs.abort_all();

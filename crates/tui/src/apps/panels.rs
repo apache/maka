@@ -282,6 +282,7 @@ fn status(app: &App, key: &Key, width: u16) -> Node<Message> {
             ascii: app.chrome.ascii,
             offered: &offered,
             applied: instance.applied.as_deref(),
+            slots: &tree::unfilled,
         };
         let wrap = |intent| Message::Instance(key.clone(), Command::View(intent));
         let parent = format!("status/{node}/line");

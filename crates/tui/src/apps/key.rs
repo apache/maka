@@ -63,6 +63,14 @@ impl Key {
             .as_ref()
             .map_or(0, |within| within.0.depth() + 1)
     }
+    /// Whether this key or one of the instances around it is served by `entry`.
+    pub(super) fn contains(&self, entry: &TerminalViewProjection) -> bool {
+        self.serves(entry)
+            || self
+                .within
+                .as_ref()
+                .is_some_and(|within| within.0.contains(entry))
+    }
     /// A stable node key: the kernel joins keys with `/`.
     pub(crate) fn node(&self) -> String {
         format!("{}:{}", self.package, self.method).replace('/', ":")

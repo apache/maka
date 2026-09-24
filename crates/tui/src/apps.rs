@@ -229,6 +229,80 @@ impl Apps {
         }
         self.instances.get_mut(key).unwrap()
     }
+    /// Keys of the views filling one slot of `host`'s view, whether open or not.
+    fn filling(&self, host: &Key, name: &str, wire: &str) -> Vec<(Key, TerminalViewProjection)> {
+        if host.depth() >= key::NESTING {
+            return vec![];
+        }
+        self.directory
+            .iter()
+            .filter(|entry| {
+                matches!(&entry.descriptor.placement, Placement::Slot { name: slot } if slot == name)
+                    // A view never fills a slot of itself or of what holds it.
+                    && !host.contains(entry)
+            })
+            .filter_map(|entry| {
+                let session = match entry.descriptor.context {
+                    Context::Application => None,
+                    Context::Session => Some(host.session.clone()?),
+                };
+                let key = Key {
+                    package: entry.package_id.clone(),
+                    method: entry.method.clone(),
+                    session,
+                    within: Some(Box::new((host.clone(), wire.to_owned()))),
+                };
+                Some((key, entry.clone()))
+            })
+            .collect()
+    }
+    /// The open views filling one slot, in the directory's order.
+    pub(super) fn fillers(&self, host: &Key, name: &str, wire: &str) -> Vec<Key> {
+        self.filling(host, name, wire)
+            .into_iter()
+            .map(|(key, _)| key)
+            .filter(|key| self.instances.contains_key(key))
+            .collect()
+    }
+    /// Opens the views filling `host`'s slots, starts over any whose slot's
+    /// context changed, and closes clean ones whose slot is gone.
+    fn fill(&mut self, host: &Key) {
+        let Some(view) = self
+            .instances
+            .get(host)
+            .and_then(|instance| instance.view.as_ref())
+        else {
+            return;
+        };
+        let wanted: Vec<_> = tree::slots(view)
+            .into_iter()
+            .flat_map(|(wire, name, context)| {
+                self.filling(host, &name, &wire)
+                    .into_iter()
+                    .map(move |(key, entry)| (key, entry, context.clone()))
+            })
+            .collect();
+        let locale = self.locale.clone();
+        for (key, entry, context) in &wanted {
+            match self.instances.get_mut(key) {
+                Some(instance) if instance.origin != *context && !instance.keeps() => {
+                    instance.restart(context.clone(), &locale)
+                }
+                Some(_) => {}
+                None => {
+                    let mut instance = Instance::new(Some(entry.clone()), context.clone());
+                    instance.read(&locale);
+                    self.instances.insert(key.clone(), instance);
+                    self.recent.push(key.clone());
+                }
+            }
+        }
+        self.instances.retain(|key, instance| {
+            key.within.as_ref().is_none_or(|within| &within.0 != host)
+                || wanted.iter().any(|(wanted, ..)| wanted == key)
+                || instance.keeps()
+        });
+    }
     /// Closes clean instances beyond the limit, least recently used first.
     fn prune(&mut self) {
         while self.instances.len() > INSTANCES {
@@ -290,6 +364,16 @@ impl Apps {
                 }
                 _ => {}
             }
+        }
+        // New entries may fill slots of views already open.
+        let hosts: Vec<_> = self
+            .instances
+            .iter()
+            .filter(|(_, instance)| instance.view.is_some())
+            .map(|(key, _)| key.clone())
+            .collect();
+        for host in hosts {
+            self.fill(&host);
         }
     }
 }
@@ -467,6 +551,7 @@ impl App {
                 if instance.stale {
                     instance.read(&locale);
                 }
+                self.apps.fill(&key);
             }
             Ok(Output::Reply(Reply::Consent { request: proposal })) => {
                 // A retry needing consent does not settle an earlier lost write.
@@ -780,7 +865,10 @@ impl App {
                     },
                 });
             }
-            Command::ApplyDraft => instance.accept_draft(),
+            Command::ApplyDraft => {
+                instance.accept_draft();
+                apps.fill(&key);
+            }
             Command::CancelDraft => {
                 instance.review = None;
                 instance.message = Some(Notice::Local("extensions-restored"));
@@ -897,6 +985,46 @@ impl App {
             Command::Refresh => instance.read(&locale),
         }
         None
+    }
+}
+
+impl App {
+    /// The changes streams the views on screen declared.
+    pub fn apps_watches(&self) -> std::collections::BTreeSet<io::Watch> {
+        self.apps
+            .instances
+            .iter()
+            .filter(|(key, _)| self.app_visible(key))
+            .filter_map(|(key, instance)| {
+                let entry = instance.entry.as_ref()?;
+                Some(io::Watch {
+                    package: entry.package_id.clone(),
+                    method: entry.descriptor.changes.clone()?,
+                    session: key.session.clone(),
+                })
+            })
+            .collect()
+    }
+    /// A changes stream said its views are stale: those on screen and
+    /// untouched read again; the rest read once they can.
+    pub fn apps_changed(&mut self, watch: &io::Watch) {
+        let locale = self.apps.locale.clone();
+        for (key, instance) in &mut self.apps.instances {
+            let Some(entry) = &instance.entry else {
+                continue;
+            };
+            if entry.package_id != watch.package
+                || entry.descriptor.changes.as_deref() != Some(watch.method.as_str())
+                || key.session != watch.session
+            {
+                continue;
+            }
+            if instance.idle() && !instance.keeps() && instance.view.is_some() {
+                instance.read(&locale);
+            } else {
+                instance.stale = true;
+            }
+        }
     }
 }
 
@@ -1863,5 +1991,134 @@ pub(crate) mod tests {
         // Narrow, every category is a section of one list, the pane included.
         let screen = draw(&mut app, 50, 40);
         assert!(screen.contains("Web search") && screen.contains("A plugin-owned"));
+    }
+
+    #[test]
+    fn views_compose_through_slots_that_follow_their_context_and_never_hold_themselves() {
+        use maka_plugins::terminal_ui::view::build::*;
+        let host = TerminalViewProjection {
+            package_id: "example.board".into(),
+            method: "board".into(),
+            descriptor: Descriptor::new(Text::plain("Board"), Context::Application),
+            ..projection()
+        };
+        let filler = TerminalViewProjection {
+            package_id: "example.goal".into(),
+            method: "card".into(),
+            descriptor: Descriptor::new(Text::plain("Goal"), Context::Application).placement(
+                Placement::Slot {
+                    name: "board.card".into(),
+                },
+            ),
+            ..projection()
+        };
+        let mut app = App::new(
+            "/test".into(),
+            I18n::new(
+                LocalePreference::Explicit(crate::i18n::Locale::En),
+                crate::i18n::Locale::En,
+            ),
+        );
+        app.connection = ConnectionState::Connected {
+            root_id: "root".into(),
+            epoch: "epoch".into(),
+        };
+        app.apply(Action::Visit(Route::Workspace));
+        list(&mut app, vec![(vec![host.clone(), filler.clone()], None)]);
+        let board = Key::of(&host, None).unwrap();
+        app.apps_action(Message::Open(board.clone()));
+        let view = |card: u64| View {
+            version: maka_plugins::terminal_ui::VERSION,
+            title: "Board".into(),
+            revision: format!("r{card}"),
+            fields: vec![],
+            actions: vec![],
+            root: column(
+                "root",
+                vec![
+                    heading("title", "Launch"),
+                    slot("card", "board.card", json!({"card": card})),
+                ],
+            ),
+        };
+        let read = app.apps_requests().pop().unwrap();
+        app.apps_complete(read, Ok(Output::Reply(Reply::View { view: view(1) })));
+        // The slot opens its filler at the slot's context.
+        let reads = app.apps_requests();
+        assert_eq!(reads.len(), 1);
+        let card = reads[0].key.clone().unwrap();
+        assert_eq!(card.within.as_ref().unwrap().0, board);
+        assert!(matches!(
+            &reads[0].work,
+            Work::Call { input: Input::Read { route, .. }, .. } if route == &json!({"card": 1})
+        ));
+        let mut goal = form();
+        goal.title = "Goal".into();
+        // A filler declaring the same slot is never filled by its host again.
+        goal.root = column(
+            "root",
+            vec![
+                text("body", "Ship the board", Tone::Normal),
+                input("enabled", "enabled", "Enabled"),
+                slot("nested", "board.card", json!(null)),
+            ],
+        );
+        app.apps_complete(
+            reads.into_iter().next().unwrap(),
+            Ok(Output::Reply(Reply::View { view: goal })),
+        );
+        assert!(app.apps_requests().is_empty(), "no view fills itself");
+        let screen = draw(&mut app, 110, 30);
+        assert!(
+            screen.contains("Launch") && screen.contains("│ Goal"),
+            "{screen}"
+        );
+        assert!(screen.contains("│ Ship the board"));
+        // Its fields work where it is shown, as its own instance.
+        let path = format!(
+            "app/body/frame/content/root/card/{}/body/content/root/enabled",
+            card.node()
+        );
+        click(&mut app, &path);
+        assert_eq!(app.apps.instances[&card].drafts["enabled"], json!(false));
+        // A new context starts a clean filler over at the slot's new place.
+        app.apps
+            .instances
+            .get_mut(&card)
+            .unwrap()
+            .drafts
+            .insert("enabled".into(), json!(true));
+        app.apps_action(Message::Instance(board.clone(), Command::Refresh));
+        let read = app.apps_requests().pop().unwrap();
+        app.apps_complete(read, Ok(Output::Reply(Reply::View { view: view(2) })));
+        assert!(matches!(
+            &app.apps_requests().pop().unwrap().work,
+            Work::Call { input: Input::Read { route, .. }, .. } if route == &json!({"card": 2})
+        ));
+    }
+
+    #[test]
+    fn a_changes_stream_refreshes_untouched_views_on_screen_and_leaves_drafts_alone() {
+        let mut app = app();
+        let mut entry = instance(&app).entry.clone().unwrap();
+        entry.descriptor = entry.descriptor.changes("notes-changed");
+        instance_mut(&mut app).entry = Some(entry);
+        let watch = io::Watch {
+            package: "example.notes".into(),
+            method: "notes-changed".into(),
+            session: Some("session".into()),
+        };
+        assert_eq!(app.apps_watches(), [watch.clone()].into());
+        app.apps_changed(&watch);
+        let read = next(&mut app).expect("an untouched view reads again");
+        app.apps_complete(read, Ok(Output::Reply(Reply::View { view: form() })));
+        // A draft is never replaced under the reader; the read waits.
+        app.apps_action(command(Command::View(Intent::Toggle("enabled".into()))));
+        app.apps_changed(&watch);
+        assert!(next(&mut app).is_none());
+        assert!(instance(&app).stale);
+        // Off screen, the stream closes.
+        app.apply(Action::Visit(Route::Workspace));
+        assert!(app.apps_watches().is_empty());
     }
 }

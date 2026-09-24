@@ -223,6 +223,17 @@ impl Instance {
         self.arrive();
         self.read(locale);
     }
+    /// A slot's context changed under this filler: start over there.
+    pub(super) fn restart(&mut self, origin: Value, locale: &str) {
+        self.origin = origin.clone();
+        self.route = origin;
+        self.history.clear();
+        self.view = None;
+        self.drafts.clear();
+        self.editors.clear();
+        self.message = None;
+        self.read(locale);
+    }
     pub(super) fn submit(&mut self, id: &str, locale: &str) {
         let Some(view) = &self.view else {
             return;

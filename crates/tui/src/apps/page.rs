@@ -98,12 +98,16 @@ fn page(app: &App, key: &Key, width: u16) -> (Node<Message>, Vec<tree::Well>) {
         (super::drafts::nodes(app, key), vec![])
     } else if let Some(view) = &instance.view {
         let offered = |intent: &Intent| instance.offered(intent);
+        let slots = |name: &str, wire: &str, path: &str, width: u16| {
+            fill(app, key, name, wire, path, width)
+        };
         let env = tree::Env {
             key,
             drafts: &instance.drafts,
             ascii: app.chrome.ascii,
             offered: &offered,
             applied: instance.applied.as_deref(),
+            slots: &slots,
         };
         let wrap = |intent| message(Command::View(intent));
         let (node, wells) = tree::build(view, &env, CONTENT, width, &wrap);
@@ -477,15 +481,61 @@ pub(crate) fn pane(
         return (children, vec![]);
     };
     let offered = |intent: &Intent| instance.offered(intent);
+    let slots =
+        |name: &str, wire: &str, path: &str, width: u16| fill(app, key, name, wire, path, width);
     let env = tree::Env {
         key,
         drafts: &instance.drafts,
         ascii: app.chrome.ascii,
         offered: &offered,
         applied: instance.applied.as_deref(),
+        slots: &slots,
     };
     let wrap = |intent| Message::Instance(key.clone(), Command::View(intent));
     let (view, wells) = tree::build(view, &env, &format!("{path}/content"), width, &wrap);
     children.push(Node::column("content", vec![view]));
     (children, wells)
+}
+
+/// The views filling one slot of `host`'s view, each behind a quiet edge
+/// that says whose it is.
+fn fill(
+    app: &App,
+    host: &Key,
+    name: &str,
+    wire: &str,
+    path: &str,
+    width: u16,
+) -> (Vec<Node<Message>>, Vec<tree::Well>) {
+    let locale = app.i18n.locale().id();
+    let mut nodes = vec![];
+    let mut wells = vec![];
+    for key in app.apps.fillers(host, name, wire) {
+        let node = key.node();
+        let Some(instance) = app.apps.instances.get(&key) else {
+            continue;
+        };
+        let body = format!("{path}/{node}/body");
+        let (mut children, found) = pane(app, &key, &body, width.saturating_sub(2));
+        children.insert(
+            0,
+            Node::text(
+                "caption",
+                vec![(instance.title(locale).unwrap_or_default(), Tone::Subtle)],
+            )
+            .clip(),
+        );
+        wells.extend(found);
+        nodes.push(
+            Node::row(
+                node,
+                vec![
+                    Node::rule("edge"),
+                    Node::column("body", children).gap(1).size(Size::Fill),
+                ],
+            )
+            .gap(1),
+        );
+    }
+    (nodes, wells)
 }

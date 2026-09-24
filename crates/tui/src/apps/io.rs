@@ -196,6 +196,154 @@ async fn call(
     Ok(Output::Reply(reply))
 }
 
+/// A changes stream a view declared: the package's stream method, for one
+/// session or for the application.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Watch {
+    pub package: String,
+    pub method: String,
+    pub session: Option<String>,
+}
+
+pub enum Change {
+    /// The stream said its views are stale.
+    Stale(Watch),
+    /// The stream ended or failed; it may start again when still wanted.
+    Ended(Watch),
+}
+
+/// Changes streams kept open while a view that declared one is on screen.
+/// Each runs in its own task; dropping its sender cancels it, and it closes
+/// its stream and document on the way out.
+pub struct Watches {
+    running: std::collections::HashMap<Watch, tokio::sync::oneshot::Sender<()>>,
+    changes: tokio::sync::mpsc::UnboundedSender<Change>,
+}
+
+/// A stream that ends or fails waits this long before it may start again.
+const RESTART: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl Watches {
+    pub fn new() -> (Self, tokio::sync::mpsc::UnboundedReceiver<Change>) {
+        let (changes, receiver) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Self {
+                running: Default::default(),
+                changes,
+            },
+            receiver,
+        )
+    }
+    /// Starts what is wanted and not running; stops what no longer is.
+    pub fn reconcile(&mut self, client: &Client, wanted: std::collections::BTreeSet<Watch>) {
+        self.running.retain(|watch, _| wanted.contains(watch));
+        for watch in wanted {
+            if self.running.contains_key(&watch) {
+                continue;
+            }
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            self.running.insert(watch.clone(), stop);
+            tokio::spawn(follow(client.clone(), watch, self.changes.clone(), stopped));
+        }
+    }
+    pub fn ended(&mut self, watch: &Watch) {
+        self.running.remove(watch);
+    }
+    pub fn stop(&mut self) {
+        self.running.clear();
+    }
+}
+
+async fn follow(
+    client: Client,
+    watch: Watch,
+    changes: tokio::sync::mpsc::UnboundedSender<Change>,
+    mut stopped: tokio::sync::oneshot::Receiver<()>,
+) {
+    let binding = RemoteBinding::Package {
+        package_id: watch.package.clone(),
+        method: watch.method.clone(),
+        session_id: watch.session.clone(),
+    };
+    let opened = async {
+        let RemoteResult::Bound {
+            target,
+            handler: RemoteKind::Stream,
+        } = client
+            .plugin_remote(RemoteRequest::Bind {
+                binding: binding.clone(),
+            })
+            .await
+            .ok()?
+        else {
+            return None;
+        };
+        let RemoteResult::Document { document } = client
+            .plugin_remote(RemoteRequest::OpenDocument)
+            .await
+            .ok()?
+        else {
+            return None;
+        };
+        match client
+            .plugin_remote(RemoteRequest::Open {
+                binding: binding.clone(),
+                target,
+                document,
+                input: serde_json::Value::Null,
+            })
+            .await
+        {
+            Ok(RemoteResult::Opened { stream }) => Some((document, Some(stream))),
+            _ => Some((document, None)),
+        }
+    };
+    let opened = tokio::select! {
+        _ = &mut stopped => return,
+        opened = opened => opened,
+    };
+    let stopped_early = if let Some((document, Some(stream))) = opened {
+        let stopped_early = loop {
+            let next = tokio::select! {
+                _ = &mut stopped => break true,
+                next = client.plugin_remote(RemoteRequest::Next { document, stream }) => next,
+            };
+            match next {
+                Ok(RemoteResult::Item { .. }) => {
+                    if changes.send(Change::Stale(watch.clone())).is_err() {
+                        break true;
+                    }
+                }
+                Ok(RemoteResult::Pending) => {}
+                _ => break false,
+            }
+        };
+        let _ = client
+            .plugin_remote(RemoteRequest::Close { document, stream })
+            .await;
+        let _ = client
+            .plugin_remote(RemoteRequest::CloseDocument { document })
+            .await;
+        stopped_early
+    } else {
+        if let Some((document, None)) = opened {
+            let _ = client
+                .plugin_remote(RemoteRequest::CloseDocument { document })
+                .await;
+        }
+        false
+    };
+    if stopped_early {
+        return;
+    }
+    tokio::select! {
+        _ = &mut stopped => {}
+        _ = tokio::time::sleep(RESTART) => {
+            let _ = changes.send(Change::Ended(watch));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
