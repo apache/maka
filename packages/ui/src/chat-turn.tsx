@@ -18,10 +18,10 @@
  */
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { ICON_SIZE, Ban, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, GitBranch, Pencil, RefreshCcw, Timer } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
-import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
+import { formatTurnDuration } from './chat-display-helpers.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { isTimeDrivenMotionEnabled } from './streaming-presentation.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';

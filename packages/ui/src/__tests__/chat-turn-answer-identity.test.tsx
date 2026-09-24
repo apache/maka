@@ -170,7 +170,9 @@ test('offers Safe resume in the Desktop Stop outcome notice', async () => {
   );
 
   const statusbar = container.querySelector('.maka-turn-statusbar');
-  const button = container.querySelector('button');
+  const button = [...container.querySelectorAll('button')].find(
+    (candidate) => candidate.textContent?.trim() === 'Continue this turn',
+  );
   assert.ok(statusbar, 'the existing turn status row remains the single outcome indicator');
   assert.ok(button, 'the action stays attached to the stopped turn it continues');
   assert.equal(button.textContent, 'Continue this turn');
