@@ -284,7 +284,10 @@ async fn execute_once(
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }
-    let prepared = prepare_request(input, prompt, definitions, purpose)?;
+    let max_output_tokens = surface
+        .as_ref()
+        .map_or(Some(8000), |surface| surface.max_output_tokens);
+    let prepared = prepare_request(input, prompt, definitions, max_output_tokens)?;
     let (binding, composition) = match surface {
         Some(surface) => (surface.adapter.clone(), surface.evidence.clone()),
         None => {
@@ -383,12 +386,8 @@ pub(super) fn prepare_request(
     input: &RunInput,
     prompt: Vec<Message>,
     definitions: Vec<ToolDefinition>,
-    purpose: ModelPurpose,
+    max_output_tokens: Option<u64>,
 ) -> Result<PreparedRequest, RunError> {
-    let max_output_tokens = match purpose {
-        ModelPurpose::Main => input.main_output_limit,
-        ModelPurpose::Summary => Some(8000),
-    };
     let prompt = if input.supports_vision
         && matches!(
             &input.provider.kind,

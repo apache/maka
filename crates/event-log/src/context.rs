@@ -80,6 +80,7 @@ pub struct AcceptedMainContext {
     pub sequence: u64,
     pub recorded_at: std::time::SystemTime,
     pub model_id: String,
+    pub route_identity: String,
     pub connection_id: Option<String>,
     pub checkpoint_event_id: Option<String>,
     pub context: Option<ModelRequestContext>,

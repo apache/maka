@@ -195,6 +195,8 @@ pub(super) async fn run(
                     &request_tools,
                     &inner.model,
                     input,
+                    &source,
+                    compaction == CompactionBudget::Reshaped,
                     cancellation,
                     unknown_notice.as_deref(),
                 )

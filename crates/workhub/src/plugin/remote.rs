@@ -380,12 +380,13 @@ impl Method for Call {
                     #[serde(rename_all = "camelCase", deny_unknown_fields)]
                     struct Inspect {
                         assignment_id: String,
+                        cursor: Option<maka_plugins::execution::AnswerCursor>,
                     }
                     let input: Inspect = decode(input)?;
                     encode(
                         manager
                             .assignments
-                            .query(&input.assignment_id)
+                            .query(&input.assignment_id, input.cursor)
                             .await
                             .map_err(failure)?,
                     )

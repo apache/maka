@@ -51,7 +51,29 @@ async fn scenario() {
     ));
     let holding = hold.clone();
     let replies = tokio::spawn(async move {
+        let mut long_answer_sent = false;
         while let Some(request) = requests.recv().await {
+            if result_notification(&request.body).is_some() {
+                let _ = request.reply.send(
+                    json!({"index":0,"delta":{"content":"Result received"},"finish_reason":"stop"}),
+                );
+                continue;
+            }
+            if !long_answer_sent
+                && request.body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "user")
+                    .is_some_and(|message| {
+                        message["content"].to_string().contains("Delegated work")
+                    })
+            {
+                long_answer_sent = true;
+                let _ = request.reply.send(json!({"index":0,"delta":{"content":"阅读🦀\0\n".repeat(6000)},"finish_reason":"stop"}));
+                continue;
+            }
             if let Some(send) = holding.lock().unwrap().take() {
                 assert!(send.send(request).is_ok());
                 continue;
@@ -101,6 +123,7 @@ async fn scenario() {
     let mut controls = Vec::<Value>::new();
     let mut repair_intent = Value::Null;
     let mut repaired = Value::Null;
+    let mut returned = Value::Null;
     for reopened in [false, true] {
         let host = Host::open_with_options(
             fixture.owner(),
@@ -156,8 +179,6 @@ async fn scenario() {
                 .await,
         )["document"]
             .clone();
-        let offer = super::plugin_clients::publication("desktop_workhub", "control");
-        success(peer.rpc("client.capability.replace", offer).await);
         if !reopened {
             let workspace = approve(
                 &mut peer,
@@ -313,6 +334,46 @@ async fn scenario() {
             .await;
             assert_eq!(original["kind"], "submitted");
             wait_assignment(&mut peer, &client, &document, "route-once").await;
+            let first = remote(
+                &mut peer,
+                &client,
+                &document,
+                None,
+                "inspect",
+                json!({"assignmentId":"route-once"}),
+            )
+            .await;
+            let mut answer = first["observation"]["state"]["answer"].clone();
+            assert_eq!(answer["complete"], false);
+            let mut text = answer["text"].as_str().unwrap().to_owned();
+            let cursor = answer["next"].clone();
+            while !answer["next"].is_null() {
+                let view = remote(
+                    &mut peer,
+                    &client,
+                    &document,
+                    None,
+                    "inspect",
+                    json!({"assignmentId":"route-once", "cursor":answer["next"]}),
+                )
+                .await;
+                answer = view["observation"]["state"]["answer"].clone();
+                text.push_str(answer["text"].as_str().unwrap());
+            }
+            assert_eq!(answer["complete"], true);
+            assert_eq!(text, "阅读🦀\0\n".repeat(6000));
+            let mut foreign = cursor;
+            foreign["invocationId"] = json!("another-execution");
+            let rejected = remote(
+                &mut peer,
+                &client,
+                &document,
+                None,
+                "inspect",
+                json!({"assignmentId":"route-once", "cursor":foreign}),
+            )
+            .await;
+            assert_eq!(rejected["observation"]["kind"], "unavailable");
             let discovery = success(peer.rpc("plugin.authorization", json!({"client":client,"scope":"profile","command":{"kind":"approve","request":{
                 "operationId":uuid::Uuid::new_v4(),"title":"Discover work","target":{"kind":"profile"},"capabilities":["read_sessions"]
             }}})).await)["grant"].clone();
@@ -711,6 +772,7 @@ async fn scenario() {
             )
             .await;
             wait_assignment(&mut peer, &client, &document, "repair-root").await;
+            returned = wait_result(&mut peer, &client, &document, "repair-root").await;
         } else {
             assert_eq!(
                 remote(
@@ -724,15 +786,65 @@ async fn scenario() {
                 .await,
                 repaired
             );
+            assert_eq!(
+                wait_result(&mut peer, &client, &document, "repair-root").await,
+                returned
+            );
         }
         peer.close().await;
         stop.cancel();
         server.await.unwrap().unwrap();
         cleanup.disarm();
         drop(host);
+        if !reopened {
+            // Crash cut: Host accepted the notification, but the plugin did
+            // not record its receipt. Restore only the pre-receipt outbox;
+            // leave Host facts intact, then reopen through normal activation.
+            use sqlx::Connection;
+            let mut db = sqlx::SqliteConnection::connect_with(
+                &sqlx::sqlite::SqliteConnectOptions::new().filename(&database_path),
+            )
+            .await
+            .unwrap();
+            let (scope, key): (String, String) = sqlx::query_as(
+                "SELECT scope_id,key FROM plugin_data WHERE package_id='z.workhub'
+                 AND key LIKE 'assignments/%' AND json_extract(value_json,'$.request.operationId')='repair-root'",
+            ).fetch_one(&mut db).await.unwrap();
+            sqlx::query("UPDATE plugin_data SET value_json=json_set(value_json,'$.result.receipt',json('null'))
+                WHERE package_id='z.workhub' AND scope_id=? AND key=?")
+                .bind(&scope).bind(key).execute(&mut db).await.unwrap();
+            let raw: String = sqlx::query_scalar("SELECT value_json FROM plugin_data WHERE package_id='z.workhub' AND scope_id=? AND key='pending'")
+                .bind(&scope).fetch_one(&mut db).await.unwrap();
+            let mut pending: Vec<Value> = serde_json::from_str(&raw).unwrap();
+            let recovery = json!({"kind":"route","operationId":"repair-root"});
+            assert!(!pending.contains(&recovery));
+            pending.push(recovery);
+            sqlx::query("UPDATE plugin_data SET value_json=? WHERE package_id='z.workhub' AND scope_id=? AND key='pending'")
+                .bind(serde_json::to_string(&pending).unwrap()).bind(scope).execute(&mut db).await.unwrap();
+            db.close().await.unwrap();
+        }
     }
     // Original, shared/selected and repaired work; no replayed admission after restart.
-    let requests = provider.requests.lock().unwrap();
+    let all_requests = provider.requests.lock().unwrap();
+    let notifications: Vec<_> = all_requests
+        .iter()
+        .filter_map(result_notification)
+        .collect();
+    assert!(
+        !notifications.is_empty(),
+        "delegated work never returned to its coordinator"
+    );
+    let mut unique = std::collections::HashSet::new();
+    for notification in &notifications {
+        assert!(
+            unique.insert(notification.to_string()),
+            "notification was delivered twice across recovery"
+        );
+    }
+    let requests: Vec<_> = all_requests
+        .iter()
+        .filter(|request| result_notification(request).is_none())
+        .collect();
     assert_eq!(requests.len(), 13);
     let advertised = |request: &Value| {
         request["tools"].as_array().is_some_and(|tools| {
@@ -741,12 +853,43 @@ async fn scenario() {
                 .any(|tool| tool["function"]["name"] == "workhub_tasks")
         })
     };
-    assert!(advertised(&requests[0]));
+    assert!(advertised(requests[0]));
     assert!(
-        !advertised(&requests[1]),
+        !advertised(requests[1]),
         "WorkHub tools leaked into an ordinary Session"
     );
     replies.abort();
+}
+fn result_notification(request: &Value) -> Option<&Value> {
+    request["messages"]
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "user")
+        .map(|message| &message["content"])
+        .filter(|content| {
+            content
+                .to_string()
+                .contains("WorkHub notification: delegated work")
+        })
+}
+
+async fn wait_result(peer: &mut Peer, client: &Value, document: &Value, id: &str) -> Value {
+    loop {
+        let view = remote(
+            peer,
+            client,
+            document,
+            None,
+            "inspect",
+            json!({"assignmentId":id}),
+        )
+        .await;
+        if !view["result"]["receipt"].is_null() {
+            return view["result"].clone();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 fn setup() -> Setup {
     let id = "z.workhub";
@@ -778,7 +921,19 @@ async fn remote(
     method: &str,
     input: Value,
 ) -> Value {
-    success(remote_result(peer, client, document, session, method, input).await)["value"].clone()
+    loop {
+        let reply = remote_result(peer, client, document, session, method, input.clone()).await;
+        // Background notifications are real coordinator Turns. A concurrent
+        // user submission retries the same operation, never invents another ID.
+        if method == "answer"
+            && reply["error"]["message"] == "remote provider failed: Session is busy"
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            continue;
+        }
+        assert_eq!(reply["ok"], true, "{method} {input}: {reply}");
+        return reply["result"]["value"].clone();
+    }
 }
 async fn remote_result(
     peer: &mut Peer,

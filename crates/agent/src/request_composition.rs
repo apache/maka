@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) struct Surface {
     pub adapter: maka_plugins::model::Binding,
+    pub max_output_tokens: Option<u64>,
     prompt: Resolved,
     pub evidence: Arc<FrozenComposition>,
 }
@@ -36,6 +37,8 @@ impl Surface {
         tools: &RequestTools<'_>,
         models: &maka_model::ModelExecutor,
         input: &RunInput,
+        source: &maka_event_log::context::ModelContextSource,
+        reshaped: bool,
         cancellation: &CancellationToken,
         prior_unknown_notice: Option<&str>,
     ) -> Result<Self, RunError> {
@@ -76,19 +79,21 @@ impl Surface {
         if let Some(source) = &input.model_revision {
             prompt.sources.push(source.clone());
         }
+        let max_output_tokens = crate::auto_context::output_limit(input, source, reshaped)?;
         let evidence = RequestComposition {
             system_prompt: prompt.system.clone(),
             dynamic_context: prompt.contexts.clone(),
             tool_catalog_digest: tools.catalog_digest().into(),
             tools: tools.definitions(),
             provider_options: Some(input.provider_options.clone()),
-            max_output_tokens: input.main_output_limit,
+            max_output_tokens,
             sources: prompt.sources.clone(),
         }
         .freeze()
         .map_err(|error| RunError::Internal(error.into()))?;
         Ok(Self {
             adapter,
+            max_output_tokens,
             prompt,
             evidence: Arc::new(evidence),
         })

@@ -102,7 +102,7 @@ impl Assignments {
         let control_key = key(&request.operation_id)?;
         let fingerprint = digest(&request)?;
         let mut record = self.repository.read::<Record>(&control_key).await?;
-        if record.is_none() {
+        while record.is_none() {
             let (revision, mut assignment) = self
                 .repository
                 .read::<Assignment>(&assignment_key)
@@ -127,7 +127,7 @@ impl Assignments {
             }
             assignment.control = Some(request.operation_id.clone());
             let control = Record {
-                request,
+                request: request.clone(),
                 selection,
                 stopped: None,
                 outcome: None,
@@ -148,6 +148,7 @@ impl Assignments {
                 Err(error) => return Err(error),
             }
             record = self.repository.read(&control_key).await?;
+            tokio::task::yield_now().await;
         }
         let (mut revision, mut record) = record.ok_or(Error::Contended)?;
         if digest(&record.request)? != fingerprint {
@@ -250,6 +251,36 @@ impl Assignments {
                 assignment.retired = matches!(record.request.action, Action::Correct { .. });
             }
             assignment.control = None;
+            assignment.observe_results = matches!(
+                record.outcome,
+                Some(
+                    Outcome::Resumed { .. }
+                        | Outcome::Stopped {
+                            disposition: Disposition::Shared
+                        }
+                )
+            );
+            if matches!(record.request.action, Action::Resume) {
+                // Resume may happen long after the previous result left the
+                // index. Stage observation before closing the control intent.
+                loop {
+                    match self
+                        .repository
+                        .transition(
+                            Vec::new(),
+                            crate::repository::Pending::Route(
+                                assignment.request.operation_id.clone(),
+                            ),
+                            true,
+                        )
+                        .await
+                    {
+                        Ok(()) => break,
+                        Err(Error::Contended) => tokio::task::yield_now().await,
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
             match self
                 .repository
                 .transition(
@@ -287,6 +318,7 @@ async fn select(
         .read_message(SessionMessage {
             session_id: invocation.session_id.clone(),
             message_id: message.clone(),
+            cursor: None,
         })
         .await?
         .ok_or(Error::Execution(CommandError::NotFound))?;

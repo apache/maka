@@ -240,7 +240,8 @@ pub(super) fn replay(
             "continuation requires stable user/tool replay boundaries",
         ));
     }
-    let request = model_attempt::prepare_request(input, prompt, definitions, ModelPurpose::Main)?;
+    let request =
+        model_attempt::prepare_request(input, prompt, definitions, input.main_output_limit)?;
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }

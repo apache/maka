@@ -95,6 +95,7 @@ capture 收到不含秘密的 `model`：选定模型 ID、生效的能力和可�
 - `call.history.sources({ sessionId, turnId })` 按顺序读取准备前的原始输入，包括已接受的队列编辑和自有附件。最多返回 64 条消息／64 KiB 文本，超限报错，不静默截断。它们不是合并展示行或准入证明；重新提交须使用新身份并重新准备。
 - `call.history.copySession(target, { source, root })` 使用独立的根会话创建能力建立自有历史副本。目标须使用同一工作区；受管理来源只能由所属包／作用域复制。持久保存 operation ID 和源 revision 以精确重试；`target.restoreRoot` 可恢复已接受目标，不重放创建。继承历史不赋予源执行权限。
 - `target.abandonRevision(operationId)` 仅删除未使用的自有修订。已接受工作会保留会话；重试及重启后返回持久决定。删除草稿只关闭其订阅，不断开连接。
+- `readMessage({ sessionId, messageId, cursor? })` 在同一快照中返回精确投递链、终态答复摘要和待处理交互的 ID／类型。沿 `answer.next` 读取最多 16 KiB 的 UTF-8 分页；游标绑定 invocation，执行变化时拒绝混读。交互提示不授予代答或批准权限。
 - `executions.submit({ orchestrationMode })` 仅选择该次执行的模式，不改变 Session 默认值。`query()` 的 `attentionId` 标识当前阻塞交互集合或交接暂停，不随无关日志写入变化。
 - `call.clients.tools()` 仅列出调用准入时冻结的客户端工具；`call.clients.call({ name, input })` 复用 Host 权限、审批／表单、取消和持久化结算。Model 与 Executor 遵守同一边界，后续发布能力或放宽权限不会扩张它。
 - 存储按包和范围隔离，提供 CAS revision 与原子批次。删除保留 revision；业务迁移由插件负责。

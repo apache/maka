@@ -252,6 +252,7 @@ pub(crate) fn thinking_key(level: Option<ThinkingLevel>) -> &'static str {
         Some(ThinkingLevel::High) => "thinking-high",
         Some(ThinkingLevel::Xhigh) => "thinking-xhigh",
         Some(ThinkingLevel::Max) => "thinking-max",
+        Some(ThinkingLevel::Ultra) => "thinking-ultra",
     }
 }
 

@@ -481,6 +481,7 @@ thinking-medium = 中
 thinking-high = 高
 thinking-xhigh = 極高
 thinking-max = 最高
+thinking-ultra = 極致
 session-model-empty = Host 清單中沒有已啟用的聊天模型。
 session-model-page-empty = 此頁沒有已啟用的聊天模型。
 session-model-loading = 正在讀取模型…

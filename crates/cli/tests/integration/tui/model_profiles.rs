@@ -37,6 +37,28 @@ fn set(tui: &mut Pty, label: &str, value: &str) {
     tui.send(value.as_bytes());
     tui.wait_for(value);
 }
+fn focus(tui: &mut Pty, label: &str) {
+    for _ in 0..32 {
+        if tui.screen.snapshot().unwrap().screen.contains(label) {
+            tui.click_text(label);
+            return;
+        }
+        tui.output.clear();
+        tui.send(b"\t");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            tui.read();
+            if !tui.output.is_empty() && tui.frames.ready() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "model field navigation did not render"
+            );
+        }
+    }
+    panic!("model field {label:?} is unreachable");
+}
 fn overrides(items: &[Value]) -> serde_json::Map<String, Value> {
     items
         .iter()
@@ -113,13 +135,28 @@ fn model_profiles_preserve_full_table_validate_inherited_limits_and_reject_concu
         items[0].clone()
     });
     open(&mut tui);
-    tui.send(&b"\t".repeat(18));
+    focus(&mut tui, "Advanced");
     tui.send(b"\r"); // Expand Advanced, retaining the existing draft.
-    tui.send(&b"\t".repeat(4));
+    tui.wait_until(|screen| {
+        screen
+            .lines()
+            .any(|line| line.contains("Advanced") && line.contains('⌄'))
+    });
+    focus(&mut tui, "Parallel tools");
     tui.send(b"  "); // Parallel tool calls: explicit false -> inherit -> true.
-    tui.send(&b"\t".repeat(11));
+    tui.wait_until(|screen| {
+        screen
+            .lines()
+            .any(|line| line.contains("Parallel tools") && line.contains("Enabled"))
+    });
+    focus(&mut tui, "Output · Audio");
     tui.send(b" "); // Add output audio, preserving both original modality lists.
-    tui.send(&b"\t".repeat(3));
+    tui.wait_until(|screen| {
+        screen
+            .lines()
+            .any(|line| line.contains("Output · Audio") && line.contains("[✓]"))
+    });
+    focus(&mut tui, "Service tier");
     tui.send(b" "); // Explicit fast service tier.
     tui.wait_for("fast");
     tui.click_last_text("Save");

@@ -19,6 +19,7 @@
 
 import type { Interaction, InteractionOutcome, InteractionPrompt } from './interaction.js';
 import type { Json } from './host.js';
+import type { ThinkingLevel } from './providers.js';
 
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 
@@ -91,8 +92,17 @@ export interface MessageObservation {
         invocation: Invocation;
         exclusive: boolean;
         progress: ExecutionObservation['progress'];
-        answer: { text: string; complete: boolean } | null;
+        answer: { text: string; complete: boolean; next: AnswerCursor | null } | null;
+        interactions: {
+          requestId: string;
+          kind: 'question' | 'form' | 'permissions' | 'client_capability';
+        }[];
       };
+}
+export interface AnswerCursor {
+  invocationId: string;
+  /** UTF-8 byte offset within the exact terminal answer. */
+  offset: number;
 }
 export interface WorkspacePatch {
   artifactId: string;
@@ -133,14 +143,14 @@ export type ExecutionTarget =
   | {
       kind: 'model';
       model: { connection_id: string; connection_slug: string; model: string };
-      thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+      thinkingLevel?: ThinkingLevel | null;
     }
   | { kind: 'executor'; executorId: string; settings?: ExecutorSettings };
 
 /** Selection belongs to the executor; no Host model connection is implied. */
 export type ExecutorSettings = {
   model?: string;
-  thinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  thinkingLevel?: ThinkingLevel;
 };
 export interface SessionConfiguration {
   sessionId: string;
@@ -216,6 +226,7 @@ export interface Executions {
   readMessage(input: {
     sessionId: string;
     messageId: string;
+    cursor?: AnswerCursor | null;
   }): Promise<MessageObservation['state'] | null>;
   /** Exact owner; a finished Run never turns this request into new root work. */
   enqueue(input: Enqueue): Promise<MessageReceipt>;

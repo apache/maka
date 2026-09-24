@@ -91,13 +91,41 @@ pub enum MessageState {
         exclusive: bool,
         progress: Box<Progress>,
         answer: Option<Excerpt>,
+        /// Pending questions and approvals for this exact execution. Reading is
+        /// not authority to answer or approve them on someone else's behalf.
+        interactions: Vec<PendingInteraction>,
     },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingInteraction {
+    pub request_id: String,
+    pub kind: InteractionKind,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionKind {
+    Question,
+    Form,
+    Permissions,
+    ClientCapability,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Excerpt {
     pub text: String,
     pub complete: bool,
+    pub next: Option<AnswerCursor>,
+}
+
+/// UTF-8 byte offset, fenced to the immutable terminal answer's owner.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnswerCursor {
+    #[schemars(length(min = 1, max = 256))]
+    pub invocation_id: String,
+    #[schemars(range(max = 9007199254740991_u64))]
+    pub offset: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -111,11 +139,19 @@ pub struct MessageObservation {
 pub struct SessionMessage {
     pub session_id: String,
     pub message_id: String,
+    pub cursor: Option<AnswerCursor>,
 }
 impl SessionMessage {
     pub fn validate(&self) -> Result<(), Error> {
         name(&self.session_id)?;
-        name(&self.message_id)
+        name(&self.message_id)?;
+        if let Some(cursor) = &self.cursor {
+            name(&cursor.invocation_id)?;
+            if cursor.offset > 9_007_199_254_740_991 {
+                return Err(Error::Invalid("invalid answer cursor".into()));
+            }
+        }
+        Ok(())
     }
 }
 

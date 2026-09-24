@@ -481,6 +481,7 @@ thinking-medium = Medium
 thinking-high = High
 thinking-xhigh = Extra high
 thinking-max = Maximum
+thinking-ultra = Ultra
 session-model-empty = No enabled chat models in the Host catalog.
 session-model-page-empty = No enabled chat models on this page.
 session-model-loading = Loading models…

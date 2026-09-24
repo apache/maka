@@ -4981,6 +4981,7 @@ dependencies = [
  "maka-runtime",
  "maka-sandbox",
  "rustix 1.1.4",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",

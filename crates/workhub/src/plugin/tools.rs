@@ -98,6 +98,8 @@ enum Read {
     Inspect {
         #[schemars(length(min = 1, max = 256))]
         assignment_id: String,
+        /// Use answer.next to continue reading the same execution's terminal answer.
+        cursor: Option<maka_plugins::execution::AnswerCursor>,
     },
 }
 impl ToolPreparer for Tasks {
@@ -146,10 +148,13 @@ impl ToolPreparer for Tasks {
                             manager.assignments.list(after).await.map_err(failure)?,
                         )
                         .map_err(failed),
-                        Input::Read(Read::Inspect { assignment_id }) => serde_json::to_value(
+                        Input::Read(Read::Inspect {
+                            assignment_id,
+                            cursor,
+                        }) => serde_json::to_value(
                             manager
                                 .assignments
-                                .query(&assignment_id)
+                                .query(&assignment_id, cursor)
                                 .await
                                 .map_err(failure)?,
                         )

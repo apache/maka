@@ -20,7 +20,15 @@
 import type { Awaitable, Cancellation, Json, Registration } from './host.js';
 import type { ModelRequest, ModelTransport } from './models.js';
 
-export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ThinkingLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
 export type ApiProtocol = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 export type Modality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
 export interface ModelCapabilities {

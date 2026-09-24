@@ -290,6 +290,35 @@ async fn session_binding_missing_payload_and_corrupt_raw_fail_closed() {
             .await
             .is_err()
     );
+    // Damaged payload authority stays local. Another Session can append and
+    // inspect its own recovery scope without hydrating the broken history.
+    let other = Invocation {
+        session_id: "other".into(),
+        turn_id: "other".into(),
+        run_id: "other".into(),
+        invocation_id: "other".into(),
+    };
+    log.append(
+        &EventWrite::plain(RuntimeEvent::new(
+            other.clone(),
+            Fact::InvocationOpened {
+                configuration: None,
+                input: maka_runtime::input::InvocationInput::Code {
+                    source: "independent".into(),
+                },
+            },
+        ))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        log.invocation_recovery(&other, 1, 1024)
+            .await
+            .unwrap()
+            .uncertain_operations
+            .is_empty()
+    );
     assert!(
         log.resolve_tool_result("session", &outcome.event().id)
             .await

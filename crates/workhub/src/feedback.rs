@@ -52,7 +52,7 @@ impl Assignments {
         let mut result = Vec::with_capacity(ids.len());
         for id in ids {
             let mut preview = None;
-            let state = match self.query(&id).await?.map(|view| view.observation) {
+            let state = match self.query(&id, None).await?.map(|view| view.observation) {
                 Some(Observation::Unaccepted) => State::Accepted,
                 None | Some(Observation::Unavailable { .. }) => State::Recovering,
                 Some(Observation::Current { state }) => match state {

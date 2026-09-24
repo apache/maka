@@ -488,7 +488,7 @@ function makaRunHelpText(cliCommand: string): string {
     '  --host <profile-id>       Connect through a saved Runtime Host profile',
     '  --project <project-id>    Select an existing Project on a remote Host',
     '  --model <id>              Model to use',
-    '  --thinking <level>        off|minimal|low|medium|high|xhigh|max|default',
+    '  --thinking <level>        off|minimal|low|medium|high|xhigh|max|ultra|default',
     '  --timeout <seconds>       Invocation timeout',
     '  --max-steps <count>       Tool-step cap',
     '  --yolo                    Give this task full access to your files and network',

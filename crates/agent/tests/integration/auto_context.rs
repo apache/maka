@@ -36,7 +36,7 @@ fn context(window: Option<u64>) -> Option<ModelRequestContext> {
     Some(ModelRequestContext {
         provider_id: "openai".into(),
         context_window: Some(170),
-        model_context_window: None,
+        model_context_window: Some(200_000),
         declared_window: window,
     })
 }
@@ -82,6 +82,7 @@ async fn declaration_and_matching_latest_main_route_are_required_for_preturn() {
         old.context = context(None);
         worker.run(old, CancellationToken::new()).await.unwrap();
         let mut next = fixture::input(&base, "next", false);
+        next.main_output_limit = Some(200_000);
         next.context = context(declared);
         if !matching {
             next.configuration.model.as_mut().unwrap().connection_id = "different".into();
@@ -89,6 +90,16 @@ async fn declaration_and_matching_latest_main_route_are_required_for_preturn() {
         worker.run(next, CancellationToken::new()).await.unwrap();
         worker.drain().await;
         let requests = server.await.unwrap();
+        assert_eq!(
+            requests.last().unwrap()["max_tokens"],
+            if expected {
+                8000
+            } else if matching {
+                191_930 // 200K capacity, 70 observed retained tokens, 8K growth reserve.
+            } else {
+                200_000 // Another connection's usage is not a budget for this request.
+            }
+        );
         let prefix = log.prefix(100, 128 * 1024).await.unwrap();
         let checkpoints: Vec<_> = prefix
             .events

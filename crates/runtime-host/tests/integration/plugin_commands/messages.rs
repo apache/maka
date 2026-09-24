@@ -104,6 +104,7 @@ pub(super) async fn replay(commands: &dyn Commands, queued: &Queued) {
             .read_message(maka_plugins::execution::SessionMessage {
                 session_id: "ungranted".into(),
                 message_id: queued.receipt.message_id.clone(),
+                cursor: None,
             })
             .await,
         Err(CommandError::Denied)
@@ -113,13 +114,15 @@ pub(super) async fn replay(commands: &dyn Commands, queued: &Queued) {
             .read_message(maka_plugins::execution::SessionMessage {
                 session_id: queued.receipt.invocation.session_id.clone(),
                 message_id: queued.receipt.message_id.clone(),
+                cursor: None,
             })
             .await
             .unwrap(),
         Some(MessageState::Delivered {
             exclusive: false,
+            interactions,
             ..
-        })
+        }) if interactions.is_empty()
     ));
     let observed = commands
         .retract(queued.steer.operation_id.clone())

@@ -26,8 +26,8 @@ pub use attachment::CopyAttachment;
 mod interaction;
 mod message;
 pub use message::{
-    Enqueue, Excerpt, MessageObservation, MessageReceipt, MessageResult, MessageState,
-    SessionMessage,
+    AnswerCursor, Enqueue, Excerpt, InteractionKind, MessageObservation, MessageReceipt,
+    MessageResult, MessageState, PendingInteraction, SessionMessage,
 };
 mod removal;
 mod root;

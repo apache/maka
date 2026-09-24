@@ -323,7 +323,29 @@ async fn scenario() {
                 active.body
             );
             queued = Some(messages::admit(commands.as_ref(), receipt.invocation.clone()).await);
-            offered = Some(interaction::offer(commands.as_ref(), receipt.invocation).await);
+            offered = Some(interaction::offer(commands.as_ref(), receipt.invocation.clone()).await);
+            let observed = commands
+                .read_message(maka_plugins::execution::SessionMessage {
+                    session_id: receipt.invocation.session_id.clone(),
+                    message_id: receipt.message_id.clone(),
+                    cursor: None,
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            let maka_plugins::execution::MessageState::Delivered { interactions, .. } = observed
+            else {
+                panic!("accepted input lost its running owner");
+            };
+            assert_eq!(interactions.len(), 1);
+            assert_eq!(
+                interactions[0].request_id,
+                offered.as_ref().unwrap().1.request_id
+            );
+            assert!(matches!(
+                interactions[0].kind,
+                maka_plugins::execution::InteractionKind::Question
+            ));
             assert!(
                 active.body["messages"]
                     .as_array()

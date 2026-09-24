@@ -65,7 +65,8 @@ async fn overflow_recovers_once_only_without_output_and_with_remaining_main_budg
             fixture::read_request(&mut old).await;
             fixture::respond(&mut old, "old-answer", "stop").await;
             let (mut rejected, _) = listener.accept().await.unwrap();
-            fixture::read_request(&mut rejected).await;
+            let rejected_request = fixture::read_request(&mut rejected).await;
+            assert_eq!(rejected_request["max_tokens"], 128_000);
             overflow(&mut rejected, observed).await;
             if recover {
                 let (mut summary, _) = listener.accept().await.unwrap();
@@ -79,6 +80,7 @@ async fn overflow_recovers_once_only_without_output_and_with_remaining_main_budg
                 let (mut next, _) = listener.accept().await.unwrap();
                 let request = fixture::read_request(&mut next).await;
                 assert!(request["messages"].to_string().contains("summary-marker"));
+                assert_eq!(request["max_tokens"], 8000);
                 fixture::respond(&mut next, "done", "stop").await;
             }
         });
@@ -91,6 +93,7 @@ async fn overflow_recovers_once_only_without_output_and_with_remaining_main_budg
             .await
             .unwrap();
         let mut next = fixture::input(&base, "overflow", false);
+        next.main_output_limit = Some(128_000);
         if let RunWork::Message { max_steps, .. } = &mut next.work {
             *max_steps = budget;
         }

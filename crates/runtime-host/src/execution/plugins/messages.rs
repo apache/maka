@@ -44,10 +44,28 @@ impl BoundCommands {
         self.authorize(&host, &message.session_id).await?;
         let observation = host
             .log
-            .message_observation(&message.session_id, &message.message_id)
+            .message_observation(
+                &message.session_id,
+                &message.message_id,
+                message.cursor.as_ref().map_or(0, |cursor| cursor.offset),
+            )
             .await
             .map_err(storage)?;
-        Ok(project(observation))
+        if let Some(cursor) = &message.cursor {
+            let invocation = match &observation.execution {
+                MessageExecution::Owned(boundary) | MessageExecution::Shared(boundary) => {
+                    &boundary.invocation
+                }
+                _ => return Err(Error::Conflict),
+            };
+            if invocation.invocation_id != cursor.invocation_id {
+                return Err(Error::Conflict);
+            }
+        }
+        Ok(project(
+            observation,
+            message.cursor.as_ref().map_or(0, |cursor| cursor.offset),
+        ))
     }
 
     pub(super) async fn enqueue_message(&self, request: Enqueue) -> Result<MessageReceipt, Error> {
@@ -242,15 +260,18 @@ impl BoundCommands {
 async fn observe(host: &Executions, receipt: MessageReceipt) -> Result<MessageObservation, Error> {
     let observation = host
         .log
-        .message_observation(&receipt.invocation.session_id, &receipt.message_id)
+        .message_observation(&receipt.invocation.session_id, &receipt.message_id, 0)
         .await
         .map_err(storage)?;
-    let state = project(observation)
+    let state = project(observation, 0)
         .ok_or_else(|| Error::Host("accepted message has no canonical owner".into()))?;
     Ok(MessageObservation { receipt, state })
 }
 
-fn project(observation: maka_event_log::observation::MessageObservation) -> Option<MessageState> {
+fn project(
+    observation: maka_event_log::observation::MessageObservation,
+    offset: u64,
+) -> Option<MessageState> {
     let exclusive = matches!(observation.execution, MessageExecution::Owned(_));
     let state = match observation.execution {
         MessageExecution::Pending => MessageState::Pending,
@@ -258,6 +279,7 @@ fn project(observation: maka_event_log::observation::MessageObservation) -> Opti
         MessageExecution::Missing => return None,
         MessageExecution::Owned(boundary) | MessageExecution::Shared(boundary) => {
             use maka_event_log::turns::InvocationState;
+            let invocation = boundary.invocation;
             let progress = match boundary.state {
                 InvocationState::Admitted | InvocationState::Running => Progress::Running,
                 InvocationState::WaitingForUser => Progress::WaitingForUser,
@@ -268,10 +290,35 @@ fn project(observation: maka_event_log::observation::MessageObservation) -> Opti
                 InvocationState::Ended { outcome, .. } => Progress::Ended { outcome },
             };
             MessageState::Delivered {
-                invocation: boundary.invocation,
+                invocation: invocation.clone(),
                 exclusive,
                 progress: Box::new(progress),
+                interactions: observation
+                    .interactions
+                    .into_iter()
+                    .map(|record| {
+                        use maka_plugins::execution::{InteractionKind, PendingInteraction};
+                        use maka_runtime::interaction::InteractionRequest;
+                        PendingInteraction {
+                            request_id: record.request_id,
+                            kind: match record.request {
+                                InteractionRequest::Question { .. } => InteractionKind::Question,
+                                InteractionRequest::Form { .. } => InteractionKind::Form,
+                                InteractionRequest::Permissions { .. } => {
+                                    InteractionKind::Permissions
+                                }
+                                InteractionRequest::ClientCapability { .. } => {
+                                    InteractionKind::ClientCapability
+                                }
+                            },
+                        }
+                    })
+                    .collect(),
                 answer: observation.answer.map(|answer| Excerpt {
+                    next: (!answer.complete).then(|| maka_plugins::execution::AnswerCursor {
+                        invocation_id: invocation.invocation_id,
+                        offset: offset + answer.text.len() as u64,
+                    }),
                     text: answer.text,
                     complete: answer.complete,
                 }),

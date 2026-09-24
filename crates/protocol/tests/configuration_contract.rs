@@ -53,7 +53,7 @@ fn connection_input_preserves_opaque_configuration_and_three_state_updates() {
         Patch::Clear
     ));
     input["changes"]["modelOverrides"] = json!({"m":{
-        "thinkingLevels":["off","minimal","max"],"serviceTier":"fast"
+        "thinkingLevels":["off","minimal","max","ultra"],"serviceTier":"fast"
     }});
     let Patch::Set(profiles) = decode_update_connection_input(&input)
         .unwrap()
@@ -68,7 +68,8 @@ fn connection_input_preserves_opaque_configuration_and_three_state_updates() {
         Some(vec![
             ThinkingLevel::Off,
             ThinkingLevel::Minimal,
-            ThinkingLevel::Max
+            ThinkingLevel::Max,
+            ThinkingLevel::Ultra
         ])
     );
     assert_eq!(profiles["m"].service_tier, Some(RelayServiceTier::Fast));

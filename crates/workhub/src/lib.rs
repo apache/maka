@@ -31,6 +31,7 @@ mod plugin;
 mod queue;
 mod recovery;
 mod repository;
+mod results;
 mod selection;
 
 use access::Access;

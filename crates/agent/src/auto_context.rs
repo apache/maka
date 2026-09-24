@@ -26,6 +26,69 @@ use maka_runtime::{
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+/// A cap on this request, never a mutation of the configured model limit.
+pub(super) fn output_limit(
+    input: &RunInput,
+    source: &ModelContextSource,
+    reshaped: bool,
+) -> Result<Option<u64>, RunError> {
+    const RECOVERY_OUTPUT: u64 = 8000;
+    let limit = input.main_output_limit;
+    if reshaped {
+        return Ok(Some(limit.unwrap_or(RECOVERY_OUTPUT).min(RECOVERY_OUTPUT)));
+    }
+    let Some((limit, window)) = limit.zip(
+        input
+            .context
+            .as_ref()
+            .and_then(|context| context.model_context_window),
+    ) else {
+        return Ok(limit);
+    };
+    let LatestMainContext::Selected(latest) = &source.latest_main else {
+        return Ok(Some(limit));
+    };
+    let connection = input
+        .configuration
+        .model
+        .as_ref()
+        .map(|model| model.connection_id.as_str());
+    if connection.is_none()
+        || latest.connection_id.as_deref() != connection
+        || latest.model_id != input.provider.model
+        || latest.route_identity != crate::model_attempt::route_identity(input)?
+        || !latest.projection_current
+        || latest.checkpoint_event_id.as_deref()
+            != source
+                .baseline
+                .as_ref()
+                .map(|baseline| baseline.event_id.as_str())
+    {
+        return Ok(Some(limit));
+    }
+    let Some(tokens) = latest.usage.input_tokens.filter(|tokens| *tokens > 0) else {
+        return Ok(Some(limit));
+    };
+    let retained = tokens.saturating_add(latest.usage.output_tokens.unwrap_or(0));
+    let thinking = input
+        .provider_options
+        .pointer("/anthropic/thinking")
+        .filter(|thinking| thinking["type"] == "enabled")
+        .and_then(|thinking| thinking["budgetTokens"].as_u64())
+        .unwrap_or(0);
+    Ok(Some(cap_output(limit, window, retained, thinking)))
+}
+
+fn cap_output(limit: u64, window: u64, retained: u64, thinking: u64) -> u64 {
+    // Leave room for newly appended input. This is not a tokenizer or a proof
+    // the next request fits: a useful floor preserves reactive recovery.
+    let available = window
+        .saturating_sub(retained)
+        .saturating_sub(8000)
+        .saturating_sub(thinking);
+    available.min(limit).max(limit.min(8000))
+}
+
 pub(super) fn due(input: &RunInput, source: &ModelContextSource) -> bool {
     let Some(ModelRequestContext {
         declared_window: Some(window),
@@ -139,7 +202,15 @@ pub(super) async fn attempt(
 
 #[cfg(test)]
 mod tests {
-    use super::threshold;
+    use super::{cap_output, threshold};
+    #[test]
+    fn output_reserve_keeps_a_useful_floor_without_exceeding_the_selected_limit() {
+        assert_eq!(cap_output(128_000, 200_000, 100_000, 0), 92_000);
+        assert_eq!(cap_output(128_000, 200_000, 100_000, 1024), 90_976);
+        assert_eq!(cap_output(128_000, 200_000, 191_999, 0), 8000);
+        assert_eq!(cap_output(128_000, 200_000, u64::MAX, u64::MAX), 8000);
+        assert_eq!(cap_output(4096, 200_000, 199_999, 0), 4096);
+    }
     #[test]
     fn actual_usage_threshold_preserves_unknown_and_caps_reply_reserve() {
         assert!(!threshold(None, Some(5000), 1));
