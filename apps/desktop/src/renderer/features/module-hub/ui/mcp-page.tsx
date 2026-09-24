@@ -72,7 +72,6 @@ import {
 import {
   Globe,
   ICON_SIZE,
-  MousePointer2,
   Plus,
   RefreshCcw,
   Search,
@@ -109,14 +108,14 @@ type EditorState = {
 
 type McpEditConflict = 'changed' | 'removed' | null;
 
-type McpMarkSource = { image: string } | { mask: string } | 'feishu' | 'chrome';
+type McpMarkSource = { image: string } | { mask: string } | 'feishu';
 // The Chrome suggestion has no URL: its command comes from main.
 type McpSuggestion = { id: keyof McpCopy['page']['suggestions']; url?: string; mark: McpMarkSource };
 
-// Notion's mark paints its own white page, so it stays an image; the
+// Chrome's and Notion's marks paint their own colours, so they stay images; the
 // single-colour Linear and MCP marks are masks that take the plate's ink.
 const MCP_SUGGESTIONS: readonly McpSuggestion[] = [
-  { id: 'chrome', mark: 'chrome' },
+  { id: 'chrome', mark: { image: new URL('../../../assets/provider-brands/chrome.svg', import.meta.url).href } },
   { id: 'notion', url: 'https://mcp.notion.com/mcp', mark: { image: new URL('../../../assets/provider-brands/notion.svg', import.meta.url).href } },
   { id: 'linear', url: 'https://mcp.linear.app/mcp', mark: { mask: new URL('../../../assets/provider-brands/linear.svg', import.meta.url).href } },
   { id: 'feishu', url: 'https://mcp.feishu.cn/mcp', mark: 'feishu' },
@@ -514,15 +513,14 @@ function mcpImportFailureMessage(
 
 function McpMark(props: { server: McpServerConfig; isChrome: boolean } | { suggestion: McpSuggestion }) {
   const suggestion = 'suggestion' in props ? props.suggestion
-    : props.isChrome ? MCP_SUGGESTIONS.find((candidate) => candidate.mark === 'chrome')
+    : props.isChrome ? MCP_SUGGESTIONS.find((candidate) => candidate.id === 'chrome')
     : MCP_SUGGESTIONS.find((candidate) => candidate.url && hostOf(candidate) === hostOf(props.server));
   const mark = suggestion?.mark;
   // Feishu's mark is already an app-icon tile, so it takes the plate's place.
   if (mark === 'feishu') return <BotBrandLogo provider="feishu" width={ICON_SIZE.plate} height={ICON_SIZE.plate} className="maka-mcp-mark" aria-hidden="true" />;
   return (
     <span className="maka-module-market-icon maka-mcp-mark" aria-hidden="true">
-      {mark === 'chrome' ? <MousePointer2 size={ICON_SIZE.empty} />
-        : mark && 'image' in mark ? <img src={mark.image} alt="" />
+      {mark && 'image' in mark ? <img src={mark.image} alt="" />
         : mark ? <span className="providerAssetMask" style={{ maskImage: `url("${mark.mask}")`, WebkitMaskImage: `url("${mark.mask}")` }} />
         : 'server' in props && isMcpStdioConfig(props.server) ? <Terminal size={ICON_SIZE.empty} />
         : <Globe size={ICON_SIZE.empty} />}
