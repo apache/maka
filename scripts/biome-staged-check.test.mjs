@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { checkStagedWithBiome } from './biome-staged-check.mjs';
+import { checkStagedWithBiome, resolveBiomePath } from './biome-staged-check.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const biomePath = join(
@@ -33,6 +33,17 @@ const biomePath = join(
   '.bin',
   process.platform === 'win32' ? 'biome.cmd' : 'biome',
 );
+
+test('uses the native Biome executable on Windows', () => {
+  assert.equal(
+    resolveBiomePath('/repo', 'win32', 'x64'),
+    '/repo/node_modules/@biomejs/cli-win32-x64/biome.exe',
+  );
+  assert.equal(
+    resolveBiomePath('/repo', 'win32', 'arm64'),
+    '/repo/node_modules/@biomejs/cli-win32-arm64/biome.exe',
+  );
+});
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'maka-biome-staged-'));
