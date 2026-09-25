@@ -1344,6 +1344,44 @@ export const ExtensionsMcpRecommended: Story = {
   },
 };
 
+// Real path: sidebar → 扩展 → MCP → 推荐 → Chrome +. The same click sends the
+// user to install the extension; the detail keeps a way back until it connects.
+const chromeConnects: string[] = [];
+export const ExtensionsMcpChrome: Story = {
+  decorators: [withMcpServices(configuredMcpConfig, configuredMcpStatuses, {
+    connectChrome: async () => { chromeConnects.push('connect'); },
+  })],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    chromeConnects.length = 0;
+    await waitForStoryText(canvasElement, 'filesystem');
+    (await waitForStoryButton(canvasElement, (button) => button.getAttribute('aria-label') === '添加 Chrome')).click();
+    await waitForStoryText(canvasElement, '还没连上 Chrome');
+    await waitForStoryButton(canvasElement, (button) => button.textContent?.trim() === '连接 Chrome' && !button.disabled);
+    if (chromeConnects.length !== 1) throw new Error('Adding Chrome must start connecting it once');
+    if (canvasElement.querySelector('[aria-label="添加 Chrome"]')) {
+      throw new Error('An added Chrome connection must leave 推荐');
+    }
+  },
+};
+
+// Real path: sidebar → 扩展 → MCP after adding Chrome, before the extension is
+// installed. The server itself is up and lists its tools.
+export const ExtensionsMcpChromeWaiting: Story = {
+  decorators: [withMcpServices(
+    { version: MCP_CONFIG_VERSION, mcpServers: { chrome: { enabled: true, command: '/opencli-mcp' } } },
+    [{ serverId: 'chrome', state: 'connected', transport: 'stdio', toolCount: 16, tools: [], updatedAt: NOW }],
+  )],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, '等待 Chrome');
+    await waitForStoryText(canvasElement, '1 个需要处理');
+    if (canvasElement.textContent?.includes('16 个工具')) {
+      throw new Error('Chrome must not look ready before its extension connects');
+    }
+  },
+};
+
 // Real path: sidebar → 扩展 → MCP → 添加 MCP, before choosing optional settings.
 export const ExtensionsMcpAdd: Story = {
   decorators: [withConfiguredMcpBridge],

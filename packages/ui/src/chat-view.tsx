@@ -34,6 +34,7 @@ import {
   ICON_SIZE,
   AlertTriangle,
 } from './icons.js';
+import { FormInteractionHistory } from './form-interaction-history.js';
 import { EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import {
@@ -288,7 +289,7 @@ export function ChatView(props: {
   /** Loads `messages` back to the start of an indexed Turn. */
   onLoadTranscriptTurn?(turn: { turnId: string; sequence: number }): void | Promise<void>;
   /** Optional identity decorations shared with a host's work navigation. */
-  promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
+  promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'accentBackground' | 'highlighted'>>;
   onPromptRailHighlight?(turnId: string | undefined): void;
   /**
    * PR109f: when the active session is a branched session
@@ -503,14 +504,21 @@ export function ChatView(props: {
     (sessionId: string) => onOpenLinkedSessionRef.current?.(sessionId),
     [],
   );
+  const conversationItems = useMemo(() => [
+    ...(props.conversationItems ?? []),
+    ...props.messages.flatMap((message) => message.type === 'form_interaction' ? [{
+      id: `interaction:${message.id}`, afterTurnId: message.turnId, renderWhenAnchorMissing: false,
+      content: <FormInteractionHistory message={message} />,
+    }] : []),
+  ], [props.conversationItems, props.messages]);
   const conversationItemPlacement = useMemo(() => placeChatConversationItems(
-    (props.conversationItems ?? []).map((item) => ({
+    conversationItems.map((item) => ({
       afterTurnId: item.afterTurnId,
       renderWhenAnchorMissing: item.renderWhenAnchorMissing,
       value: { id: item.id, content: item.content },
     })),
     turnIds,
-  ), [props.conversationItems, turnIds]);
+  ), [conversationItems, turnIds]);
   const chatLayout = useChatLayoutContext();
   if (!chatLayout) {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
@@ -613,7 +621,7 @@ export function ChatView(props: {
   );
 
   if (!props.activeSession) {
-    const conversationItems = props.conversationItems ?? [];
+
     // A side conversation forks lazily: its first send arms the optimistic
     // bubble (and, after the rising-edge delay, the running-status line) BEFORE
     // the fork commits, so there is no session yet. Render that optimistic
@@ -820,7 +828,11 @@ export function ChatView(props: {
                         data-turn-accent={decoration?.accentColor ? 'true' : undefined}
                         style={{
                           // The list's row gap does not reach inside the virtualizer.
-                          paddingBlockEnd: index < turns.length - 1 ? 'var(--spacing-4)' : undefined,
+                          // A tail transient is the next Turn before it lands, outside
+                          // the virtualizer, where that gap supplies part of the space.
+                          paddingBlockEnd: index < turns.length - 1
+                            ? 'var(--space-10)'
+                            : tailTransientMessages.length > 0 ? 'calc(var(--space-10) - var(--spacing-4))' : undefined,
                           ...(decoration?.accentColor
                             ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined),
                         }}

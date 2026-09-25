@@ -122,6 +122,18 @@ export function createMemoryInteractionStore(
         assertId(requestId);
         return interactions(s).get(requestId);
       }),
+    listTurnInteractions: async (sessionId, turnId) =>
+      a.read((s) => {
+        assertId(sessionId);
+        assertId(turnId);
+        return [...interactions(s).values()]
+          .filter((r) => r.request.sessionId === sessionId && r.request.turnId === turnId)
+          .sort(
+            (a, b) =>
+              a.request.createdAt - b.request.createdAt ||
+              a.request.requestId.localeCompare(b.request.requestId),
+          );
+      }),
     listSessionPending: async (sessionId) => store.listPending({ sessionId }),
     listPending: async (filter = {}) =>
       a.read((s) => {

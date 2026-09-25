@@ -252,6 +252,7 @@ import type {
   McpServerConfig,
   McpServerStatus,
   McpTestResult,
+  OpencliChromeStatus,
 } from '@maka/core/mcp';
 import type {
   AgentGraphClientSnapshot,
@@ -539,14 +540,6 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly hostId?: string;
   readonly isDefault: boolean;
   readonly removed?: boolean;
-}
-
-export interface DesktopRuntimeHostIdentity extends DesktopRuntimeHostRef {
-  readonly targetEpoch: string;
-  readonly profileName: string;
-  readonly profileKind: RuntimeHostProfileKind;
-  readonly profileAccess: RuntimeHostProfileAccess;
-  readonly readiness: 'ready' | 'reconnecting';
 }
 
 export type DesktopLocalRuntimeHostRemoteAccessSnapshot =
@@ -1254,6 +1247,8 @@ export interface MakaBridge {
       command: {
         messageId: string;
         text: string;
+        /** Local presentation before the Host assigns a Turn or queue entry. */
+        localDisplayPlacement?: 'current_turn' | 'next_turn';
         displayText?: string;
         skillIds?: string[];
         turnOrchestration?: TurnOrchestration;
@@ -1314,6 +1309,8 @@ export interface MakaBridge {
       }) => void,
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
+    /** Request a bounded next-prompt prediction for this Session. */
+    generatePromptSuggestion(sessionId: string): Promise<import('@maka/runtime-host/protocol').PromptSuggestionResult>;
     /** Read a bounded, redacted tail from another same-Host Session. */
     readSnapshot(sessionId: string, options?: { maxChars?: number }): Promise<SessionSnapshot>;
     /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
@@ -1605,6 +1602,8 @@ export interface MakaBridge {
     /** Ends an in-flight login round; resolves false when none is active. */
     cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
     logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
+    chromeStatus(host?: DesktopRuntimeHostRef): Promise<OpencliChromeStatus>;
+    connectChrome(host?: DesktopRuntimeHostRef): Promise<void>;
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;
   };
   externalAgents: {

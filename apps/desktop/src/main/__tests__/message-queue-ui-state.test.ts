@@ -37,6 +37,7 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     sessionId: 'session-1', messageId, createdAt: 1, state: 'unknown', canCancel: false,
     text: messageId, attachments: [], inlineReferences: [],
     placement: messageId === 'steering' ? 'current_turn' : 'next_turn',
+    ...(messageId === 'root' ? { localDisplayPlacement: 'current_turn' as const } : {}),
   }));
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(ConversationServicesProvider, { services: {
@@ -60,6 +61,8 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
     }) }),
   })));
   assert.equal(transient.get('steering')?.deliveryActions?.length, 1, 'unconfirmed sends retain their receipt check');
+  assert.equal(transient.get('root')?.transientPlacement, 'current_turn', 'a restored ordinary send stays in the transcript');
+  assert.equal(transient.get('followup')?.transientPlacement, 'next_turn', 'an explicit follow-up stays queued');
   messages = messages.map((message) => ({ ...message, state: 'accepted', ...(message.messageId === 'root' ? { turnId: 'started-turn' } : {}) }));
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root']);

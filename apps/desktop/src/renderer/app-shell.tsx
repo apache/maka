@@ -93,8 +93,8 @@ import * as TaskEntry from './features/task-entry';
 import type { TaskEntryShellProjection } from './features/task-entry';
 import * as Overlays from './features/overlays/index.js';
 import type { OverlaysShellProjection } from './features/overlays/index.js';
-import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
+import type { SessionCollaborationDialogProjection } from './features/session-collaboration';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import {
   desktopSlashCommandAvailability,
@@ -145,7 +145,7 @@ import { derivePetActivityState } from './custom-pet-companion-model';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
-} from './default-runtime-host-operation.js';
+} from './platform/desktop/default-runtime-host-operation.js';
 import { useAppShellProjectContext } from './use-project-context';
 import {
   createAppShellSessionDisplayBatch,
@@ -210,7 +210,6 @@ type ComposerImportOwner = {
  * assistant stream slot when the primary post-commit signal is missed.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
-const { useSessionCollaborationDialog } = SessionCollaboration;
 export function AppShell() {
   const [uiLocalePreference, setUiLocalePreference] = useState<UiLocalePreference>('auto');
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
@@ -248,9 +247,13 @@ export function AppShell() {
                 {(taskEntry) => (
                   <Overlays.OverlaysRoot>
                     {(overlays) => (
-                      <AppShellContent
-                        {...{ taskEntry, overlays, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
-                      />
+                      <SessionCollaboration.SessionCollaborationDialogRoot>
+                        {(sharedSessionDialog) => (
+                          <AppShellContent
+                            {...{ taskEntry, overlays, sharedSessionDialog, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                          />
+                        )}
+                      </SessionCollaboration.SessionCollaborationDialogRoot>
                     )}
                   </Overlays.OverlaysRoot>
                 )}
@@ -277,6 +280,7 @@ const SESSION_RAIL = <SessionListPanel />;
 function AppShellContent({
   taskEntry,
   overlays,
+  sharedSessionDialog,
   uiLocale,
   uiLocaleOverride,
   setUiLocaleOverride,
@@ -284,13 +288,13 @@ function AppShellContent({
 }: {
   taskEntry: TaskEntryShellProjection;
   overlays: OverlaysShellProjection;
+  sharedSessionDialog: SessionCollaborationDialogProjection;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
   const toastApi = useToast();
-  const sharedSessionDialog = useSessionCollaborationDialog();
   const previousInterruptionShownRef = useRef(false);
   const {
     authoritativeSessionIds,
@@ -2637,12 +2641,6 @@ function AppShellContent({
       <Goals.GoalHost />
       <TaskEntry.TaskEntryHost />
       <RuntimeHostSshTerminalDialog />
-      <SessionCollaborationDialog
-        target={sharedSessionDialog.target}
-        onOpenRemoteAccessSettings={() => openSettingsSection('projects')}
-        onClose={sharedSessionDialog.close}
-      />
-
       <AppShellOverlays
         closeSettings={closeSettings}
         themePref={themePref}

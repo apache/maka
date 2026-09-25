@@ -80,7 +80,7 @@ test('delegated result previews select the exact Turn and stay character-bounded
   assert.doesNotMatch(preview ?? '', /wrong result/u);
 });
 
-test('a shared coordination turn keeps every Work label without assigning one Work color to the whole turn', async () => {
+test('a shared coordination turn divides its clickable identity rail equally between Works', async () => {
   const markup = await renderTranscriptMarkup(createElement(LocaleProvider, { locale: 'en', children: null },
     createElement(ChatSurfaceLayout, { composer: null, children: null }, createElement(WorkHubConversation, {
       activeSession: { id: 'coordination', name: 'WorkHub', status: 'active', labels: [], isFlagged: false, isArchived: false, hasUnread: false, backend: 'ai-sdk', llmConnectionSlug: 'test', connectionLocked: false, model: 'test', permissionMode: 'ask' },
@@ -91,7 +91,11 @@ test('a shared coordination turn keeps every Work label without assigning one Wo
   ));
   assert.match(markup, /Workspace \/ Alpha/);
   assert.match(markup, /Workspace \/ Beta/);
-  assert.doesNotMatch(markup, /data-turn-accent/);
+  assert.match(markup, /data-turn-accent="true"/);
+  assert.match(markup, /inset-block-start:0%;inset-block-end:auto;height:50%/);
+  assert.match(markup, /inset-block-start:50%;inset-block-end:auto;height:50%/);
+  assert.match(markup, /Filter conversation by Work: Alpha/);
+  assert.match(markup, /Filter conversation by Work: Beta/);
 });
 
 
@@ -101,4 +105,32 @@ test('WorkHub workspace display names handle Host paths independently of rendere
   assert.equal(workspaceNameFromCwd('C:\\projects\\maka\\'), 'maka');
   assert.equal(workspaceNameFromCwd(undefined), undefined);
   assert.equal(workspaceNameFromCwd('/'), undefined);
+});
+
+
+test('stop and resume keep their scoped Session identity through pending, success and failure', () => {
+  const target = JSON.stringify(['host-a', 'task-a']);
+  const coordination = JSON.stringify(['host-a', 'maka_workhub_coordination']);
+  const catalog = [{ id: target, name: 'Login UI', cwd: '/projects/login' }, { id: JSON.stringify(['host-b', 'task-a']), name: 'Other host' }];
+  for (const operation of ['stop', 'resume'] as const) {
+    const call: ToolCallMessage = { type: 'tool_call', id: operation, turnId: 'control-turn', ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation, targetSessionId: 'task-a' } } };
+    const pending = workHubLinkedWork([call], catalog, 'Work', coordination);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.targetSessionId, target);
+    assert.equal(pending[0]?.operationState, 'pending');
+    const failed: ToolResultMessage = { type: 'tool_result', id: 'failure', turnId: call.turnId, ts: 2, toolUseId: call.id, isError: true, content: { kind: 'text', text: 'Safe-boundary resume is disabled' } };
+    const link = workHubLinkedWork([call, failed], catalog, 'Work', coordination)[0]!;
+    assert.equal(link.targetSessionId, target);
+    assert.equal(link.operationState, 'failed');
+    const markup = renderToStaticMarkup(createElement(WorkHubDelegationStatus, { work: link, locale: 'en' }));
+    assert.match(markup, /Failed/);
+    assert.doesNotMatch(markup, /Accepted|Resume started/);
+    const success: ToolResultMessage = { ...failed, isError: false, content: { kind: 'json', value: { disposition: `${operation}_work`, targetSessionKey: target, outcome: operation === 'stop' ? 'stop_delivered' : 'resume_started' } } };
+    const links = workHubLinkedWork([call, success], catalog, 'Work', coordination);
+    assert.equal(links.length, 1);
+    assert.equal(links[0]?.operationState, 'succeeded');
+    assert.equal(links[0]?.targetSessionId, target);
+    assert.deepEqual(workHubLinkedWork([call, failed], catalog, 'Work'), []);
+    assert.deepEqual(workHubLinkedWork([{ ...call, toolName: 'unrelated' }, success], catalog, 'Work', coordination), []);
+  }
 });

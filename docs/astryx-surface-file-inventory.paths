@@ -65,6 +65,8 @@ apps/desktop/src/renderer/features/session-bundle/session-bundle-tasks.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-alias-action.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-dialog-root.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-dialog.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-navigation.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-guest-turn-actions.tsx
@@ -110,7 +112,6 @@ apps/desktop/src/renderer/onboarding-hero.tsx
 apps/desktop/src/renderer/plan-mode-panel.tsx
 apps/desktop/src/renderer/reference-shell.css
 apps/desktop/src/renderer/remote-project-directory-dialog.tsx
-apps/desktop/src/renderer/session-collaboration-dialog.tsx
 apps/desktop/src/renderer/settings/about-settings-page.tsx
 apps/desktop/src/renderer/settings/appearance-settings-page.tsx
 apps/desktop/src/renderer/settings/bot-chat-detail.tsx
@@ -242,6 +243,7 @@ packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/directory-reference-chip.tsx
 packages/ui/src/executor-model-picker.tsx
+packages/ui/src/form-interaction-history.tsx
 packages/ui/src/form-interaction-prompt.tsx
 packages/ui/src/icons.tsx
 packages/ui/src/inline-reference.tsx
@@ -266,6 +268,7 @@ packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/stat-tile.tsx
 packages/ui/src/progress-card.tsx
 packages/ui/src/prompt-anchor-rail.tsx
+packages/ui/src/prompt-suggestion.tsx
 packages/ui/src/quote-ref-chip.tsx
 packages/ui/src/relative-time.tsx
 packages/ui/src/running-indicator.tsx
