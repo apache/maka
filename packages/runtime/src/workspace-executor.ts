@@ -201,6 +201,7 @@ export interface WorkspaceGlobInput {
   cwd: string;
   pattern: string;
   limit?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface WorkspaceGlobResult {

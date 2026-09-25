@@ -669,6 +669,7 @@ function createWorkspaceFilesystemExecutor(
             cwd: base,
             pattern: operation.pattern,
             ...(operation.limit !== undefined ? { limit: operation.limit } : {}),
+            ...(abortSignal ? { abortSignal } : {}),
           });
           return { kind: 'glob', files, truncated };
         }

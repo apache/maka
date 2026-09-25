@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { executeFilesystemOperation } from '../filesystem-worker/operations.js';
+import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 import { globFiles } from '../glob-search.js';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
 
@@ -197,6 +198,71 @@ test('Glob reports a complete result when the limit is met exactly', async (t) =
 
   assert.equal(result.files.length, 3);
   assert.equal(result.truncated, false);
+});
+
+test('a local Glob stops when cancelled during an overflow probe', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-glob-abort-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (let index = 0; index < 200; index++) {
+    await writeFile(join(root, `match-${String(index).padStart(3, '0')}.txt`), '');
+  }
+  const later = join(root, 'later');
+  await mkdir(later);
+  await writeFile(join(later, 'hidden.txt'), '');
+
+  const originalReaddir = nodeFs.readdir;
+  let entered!: () => void;
+  const laterEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let releaseReaddir: (() => void) | undefined;
+  t.mock.method(nodeFs, 'readdir', ((
+    path: string,
+    options: { withFileTypes: true },
+    callback: (error: NodeJS.ErrnoException | null, entries: nodeFs.Dirent[]) => void,
+  ) => {
+    if (String(path) === later) {
+      releaseReaddir = () => originalReaddir(path, options, callback);
+      entered();
+      return;
+    }
+    originalReaddir(path, options, callback);
+  }) as typeof nodeFs.readdir);
+  syncBuiltinESMExports();
+
+  const abort = new AbortController();
+  const filesystem = createBoundaryFilesystemExecutor({ workspace: new LocalWorkspaceExecutor() });
+  const search = filesystem.execute({
+    operation: { kind: 'glob', path: '.', pattern: '**/*.txt', limit: 200 },
+    cwd: root,
+    executionBoundary: { kind: 'bypass', revision: 0 },
+    abortSignal: abort.signal,
+  });
+  try {
+    await laterEntered;
+    // The directory remains blocked after the 200 root matches. Cancellation
+    // must settle the search without waiting for its readdir callback.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    abort.abort(new Error('Glob stopped'));
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await assert.rejects(
+        Promise.race([
+          search,
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error('Glob did not stop')), 1000);
+          }),
+        ]),
+        /Glob stopped/,
+      );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  } finally {
+    releaseReaddir?.();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });
 
 test('Glob marks a capped result incomplete when overflow probing hits a filesystem error', async (t) => {

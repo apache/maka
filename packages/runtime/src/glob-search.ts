@@ -25,6 +25,7 @@ export async function globFiles(input: {
   cwd: string;
   pattern: string;
   limit?: number;
+  abortSignal?: AbortSignal;
 }): Promise<{ files: string[]; truncated: boolean }> {
   let failure: NodeJS.ErrnoException | undefined;
   const directories = new Set([resolve(input.cwd)]);
@@ -43,6 +44,7 @@ export async function globFiles(input: {
   let truncated = false;
   for await (const file of globIterate(input.pattern, {
     cwd: input.cwd,
+    signal: input.abortSignal,
     ignore: { childrenIgnored: (entry) => entry.isSymbolicLink() },
     fs: {
       readdir(path, options, callback) {
