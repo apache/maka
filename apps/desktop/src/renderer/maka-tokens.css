@@ -749,7 +749,7 @@
   /* ICON_SIZE in @maka/ui's icons.tsx is the icon scale; components pass it as
      a prop. These two rungs exist only for the sites that size a glyph from
      CSS — add a rung here when a CSS site needs one, not to mirror the TS. */
-  --icon-meta: 13px;
+  --icon-meta: 12px;
   --icon-control: 14px;
 
   /* === motion ===
