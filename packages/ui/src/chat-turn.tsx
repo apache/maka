@@ -486,7 +486,7 @@ export const TurnView = memo(function TurnView(props: {
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
   const answerContext = accessibleActionContext(
     turn.user?.text ?? finalReply?.text ?? '',
-    turn.startedAt,
+    turn.startedAt > MIN_PLAUSIBLE_TURN_TS ? turn.startedAt : undefined,
     locale,
   );
   // A recorded conversational terminal turn owns presentation beyond its
@@ -1002,9 +1002,8 @@ function TurnStatusRow(props: TurnStatusRowProps): ReactNode {
   return <span className="maka-turn-statusbar-text">{label}</span>;
 }
 
-/** Standalone status row for a turn with no process disclosure to carry it —
- *  and for the pre-turn cue before the transcript contains the turn. */
-export function TurnStatusBar(props: TurnStatusRowProps) {
+/** Standalone status row for a turn with no process disclosure to carry it. */
+function TurnStatusBar(props: TurnStatusRowProps) {
   return (
     <div className="maka-turn-statusbar" data-turn-status={props.status}>
       <TurnStatusRow {...props} />

@@ -102,6 +102,18 @@ test('ChatView shows the empty state when there is neither a bubble nor a runnin
   assert.match(markup, /empty-state-marker/);
 });
 
+test('a prompt on its way to the Host holds its Turn place beside a copy that did not send', () => {
+  const failed = { ...OPTIMISTIC_BUBBLE, id: 'failed', deliveryStatus: 'Failed' };
+  const render = (transientMessages: TransientUserMessageProjection[]) =>
+    parseHTML(renderChatView({ transientMessages })).document;
+
+  const document = render([failed, { ...OPTIMISTIC_BUBBLE, id: 'fresh' }]);
+  const answer = document.querySelector('.maka-pending-turn[data-awaiting-host] .maka-assistant-answer');
+  assert.ok(answer, 'the answer row is laid out ahead of the Host');
+  assert.doesNotMatch(answer?.getAttribute('aria-label') ?? '', /1970/, 'no answer time is claimed before the Host starts one');
+  assert.equal(render([failed]).querySelector('.maka-pending-turn'), null, 'nothing is on its way');
+});
+
 test('ordinary sends stay in ChatView while queued prompts stay in the composer', () => {
   const render = (message: TransientUserMessageProjection) => parseHTML(renderChatView({
     activeSession: {

@@ -76,6 +76,11 @@ export function presentSessionStatus(
   };
 }
 
+/** The stored name stays: the Host titles only a Session still carrying it. */
+export function presentSessionName(name: string, locale: UiLocale): string {
+  return name === DEFAULT_SESSION_NAME ? getConversationCopy(locale).sessions.untitled : name;
+}
+
 /**
  * The canonical translation of a blocked reason, and the contract that a UI
  * label never exposes the raw `SessionBlockedReason` identifier (@kenji review).
@@ -83,11 +88,6 @@ export function presentSessionStatus(
  * reads as `unknown` — which is the intended failure, not a silent leak of the
  * enum string into the interface.
  */
-/** The stored name stays: the Host titles only a Session still carrying it. */
-export function presentSessionName(name: string, locale: UiLocale): string {
-  return name === DEFAULT_SESSION_NAME ? getConversationCopy(locale).sessions.untitled : name;
-}
-
 export function describeBlockedReason(
   reason: SessionBlockedReason | undefined,
   locale: UiLocale,

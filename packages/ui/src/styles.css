@@ -240,6 +240,8 @@
 }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
+/* Holds the answer's place, unseen and unannounced, until the Host names the Turn. */
+.maka-pending-turn[data-awaiting-host] .maka-assistant-answer { visibility: hidden; }
 .maka-subagent-session-label,
 .maka-subagent-session-end {
   display: flex;

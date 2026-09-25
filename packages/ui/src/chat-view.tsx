@@ -509,7 +509,7 @@ export function ChatView(props: {
   // Rendered as the Turn it becomes, so the handoff moves nothing. Not in `turns`.
   const awaitingHost = props.activeTurn === undefined
     && tailTransientMessages.length > 0
-    && tailTransientMessages.every((message) => message.deliveryStatus === undefined);
+    && tailTransientMessages.some((message) => message.deliveryStatus === undefined);
   const pendingTurnId = tailTurnId !== undefined && !hasRenderedLiveTurn ? tailTurnId
     : awaitingHost ? tailTransientMessages[0]!.hostTurnId ?? tailTransientMessages[0]!.id : undefined;
   const pendingTurn: TurnViewModel | undefined = pendingTurnId === undefined ? undefined : {
