@@ -24,7 +24,7 @@ import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 
-import { buildProviderOptions, getAIModel } from '../model-factory.js';
+import { buildProviderOptions, getAIModel, leastReasoningThinkingLevel } from '../model-factory.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
@@ -1279,5 +1279,71 @@ describe('buildProviderOptions: Command Code thinking level', () => {
   test('an unknown model exposes nothing and sends nothing', () => {
     assert.deepEqual([...thinkingVariantsForModel('commandcode', 'not-a-model')], []);
     assert.deepEqual(buildProviderOptions(conn('commandcode'), 'not-a-model', 'high'), {});
+  });
+});
+
+describe('leastReasoningThinkingLevel', () => {
+  test('asks for the lowest declared effort where a dropped off would leave provider-default reasoning', () => {
+    const cases: ReadonlyArray<
+      readonly [LlmConnection['providerType'], string, ThinkingLevel, Record<string, unknown>]
+    > = [
+      ['openai', 'gpt-5', 'minimal', { openai: { reasoningEffort: 'minimal' } }],
+      ['openai', 'o3', 'low', { openai: { reasoningEffort: 'low' } }],
+      ['openai', 'gpt-6-sol', 'low', { openai: { reasoningEffort: 'low' } }],
+      ['openai-codex', 'gpt-6-astra', 'low', { openai: { reasoningEffort: 'low' } }],
+      ['openai', 'gpt-5.5', 'off', { openai: { reasoningEffort: 'none' } }],
+      [
+        'google',
+        'gemini-3.5-flash',
+        'minimal',
+        { google: { thinkingConfig: { thinkingLevel: 'minimal' } } },
+      ],
+      ['google', 'gemini-2.5-flash', 'off', { google: { thinkingConfig: { thinkingBudget: 0 } } }],
+    ];
+    for (const [providerType, modelId, level, wire] of cases) {
+      const connection = conn(providerType);
+      assert.equal(
+        leastReasoningThinkingLevel(connection, modelId),
+        level,
+        `${providerType}/${modelId}`,
+      );
+      const options = buildProviderOptions(connection, modelId, level) as Record<
+        string,
+        Record<string, unknown>
+      >;
+      for (const [namespace, expected] of Object.entries(wire)) {
+        for (const [key, value] of Object.entries(expected as Record<string, unknown>)) {
+          assert.deepEqual(
+            key === 'thinkingConfig'
+              ? Object.fromEntries(
+                  Object.keys(value as object).map((field) => [
+                    field,
+                    (options[namespace]?.thinkingConfig as Record<string, unknown> | undefined)?.[
+                      field
+                    ],
+                  ]),
+                )
+              : options[namespace]?.[key],
+            value,
+            `${providerType}/${modelId} must send ${namespace}.${key} explicitly`,
+          );
+        }
+      }
+    }
+  });
+
+  test('keeps off where an omitted parameter already means no extended reasoning', () => {
+    // Anthropic Messages effort models: omitting effort/thinking is non-thinking,
+    // while the lowest effort would switch adaptive thinking on.
+    const anthropic = conn('anthropic');
+    assert.equal(leastReasoningThinkingLevel(anthropic, 'claude-opus-4-8'), 'off');
+    const options = buildProviderOptions(anthropic, 'claude-opus-4-8', 'off').anthropic as Record<
+      string,
+      unknown
+    >;
+    assert.equal(options.effort, undefined);
+    assert.equal(options.thinking, undefined);
+    // Models with no declared levels keep the previous request unchanged.
+    assert.equal(leastReasoningThinkingLevel(conn('openai'), 'gpt-4o'), 'off');
   });
 });

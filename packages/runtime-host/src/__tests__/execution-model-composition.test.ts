@@ -6170,7 +6170,7 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-test('prompt suggestions enforce reasoning-off, reject truncation, do not retry and skip reasoning-only models', async () => {
+test('prompt suggestions use the least reasoning each model accepts, reject truncation and do not retry', async () => {
   const MODEL_ID = 'gpt-5.2';
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
   const provider = await startProvider();
@@ -6239,10 +6239,30 @@ test('prompt suggestions enforce reasoning-off, reject truncation, do not retry 
       newId: () => `suggestion-${fetches}`,
       createFetchTransport: () => ({
         close: async () => {},
-        fetch: (async (_url, init) => {
+        fetch: (async (url, init) => {
           fetches++;
           requestBody = JSON.parse(String(init?.body));
           if (mode === 'failure') return new Response('unavailable', { status: 503 });
+          if (String(url).endsWith('/responses')) {
+            return Response.json({
+              id: 'reply',
+              object: 'response',
+              created_at: 1,
+              model: 'gpt-5',
+              status: 'incomplete',
+              incomplete_details: { reason: 'max_output_tokens' },
+              output: [
+                {
+                  type: 'message',
+                  id: 'message',
+                  role: 'assistant',
+                  status: 'incomplete',
+                  content: [{ type: 'output_text', text: 'partial', annotations: [] }],
+                },
+              ],
+              usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+            });
+          }
           return Response.json({
             id: 'reply',
             object: 'chat.completion',
@@ -6286,11 +6306,25 @@ test('prompt suggestions enforce reasoning-off, reject truncation, do not retry 
     });
     assert.equal(changed.kind, 'committed');
     await publishConnectionModel(policy, connection.connectionId, 'gpt-5');
-    await assert.rejects(
-      suggest({ ...source, header: { ...session, model: 'gpt-5' } }, new AbortController().signal),
-      /disable reasoning/,
+    mode = 'length';
+    assert.equal(
+      await suggest(
+        { ...source, header: { ...session, model: 'gpt-5' } },
+        new AbortController().signal,
+      ),
+      undefined,
     );
-    assert.equal(fetches, 2, 'unsupported off must not reach the provider');
+    assert.equal(fetches, 3);
+    assert.equal(
+      (requestBody.reasoning as { effort?: unknown } | undefined)?.effort,
+      'minimal',
+      'a model without off must be asked for its least effort, not left on the provider default',
+    );
+    assert.equal(
+      requestBody.max_output_tokens,
+      1_024,
+      'reasoning at the least effort needs room before the visible line',
+    );
   } finally {
     await owner.close();
     await provider.close();
