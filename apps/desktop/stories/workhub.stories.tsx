@@ -218,6 +218,7 @@ export const FullConversationAndWorkIdentity: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/END_OF_FULL_RESPONSE/)).toBeInTheDocument());
     await waitFor(() => expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('已完成'));
+    expect(getComputedStyle(canvasElement.querySelector('.workhub-delegation-status')!.closest('.maka-message-meta')!).opacity).toBe('1');
     expect(canvasElement.querySelector('.workhub-result-card')).toBeNull();
     await userEvent.click(canvasElement.querySelector('.workhub-turn-label') as HTMLElement);
     await waitFor(() => expect(writes.open).toHaveBeenCalledWith(targetId));

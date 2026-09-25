@@ -1640,6 +1640,16 @@ export const NativeConversation: Story = {
       gap: Math.round(row.rect.top - rows[index]!.rect.bottom),
     }));
     await expect(gaps).toEqual(gaps.map(({ between }) => ({ between, gap: rowGap })));
+
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    const metadataRows = [
+      ...canvasElement.querySelectorAll<HTMLElement>('.maka-user-message .maka-message-meta, .maka-turn-footer'),
+    ];
+    await expect(metadataRows.length).toBeGreaterThan(1);
+    await waitFor(() => expect(metadataRows.map((row) => getComputedStyle(row).opacity)).toEqual(metadataRows.map(() => '0')));
+    const footer = canvasElement.querySelector<HTMLElement>('.maka-turn-footer')!;
+    footer.querySelector('button')!.focus();
+    await waitFor(() => expect(getComputedStyle(footer).opacity).toBe('1'));
   },
 };
 

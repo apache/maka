@@ -296,6 +296,21 @@
   margin-top: var(--space-1-5);
 }
 
+/* Times and actions answer a reader already pointing at the message, so they
+   stay hidden until then. A delivery or Work status is news and stays visible.
+   Rows keep their space so the transcript does not move, and only opacity
+   hides them: the buttons must stay focusable for :focus-within to reveal
+   them. */
+.maka-user-message .maka-message-meta:not(:has(.maka-message-delivery, .maka-message-status-time)),
+.maka-assistant-answer .maka-turn-footer {
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+.maka-user-message:is(:hover, :focus-within) .maka-message-meta,
+.maka-assistant-answer:is(:hover, :focus-within) .maka-turn-footer {
+  opacity: 1;
+}
+
 /* Turn summary / lineage rows / footer measure column folded into the
    `@maka/ui` Marker chat primitive's own variants (issue #332 PR2 —
    packages/ui/src/primitives/chat.tsx); the layout is now location-
