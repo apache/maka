@@ -704,13 +704,14 @@ export const PromptSentBeforeTurnLands: Story = {
       session={{ status: 'running', streaming: true, lastMessageAt: NOW - 3_000 }}
       chat={{
         activeTurn: { turnId: 'turn-sent' },
-        messages: [],
+        messages: conversation.slice(0, 2),
         transientMessages: [{
           id: 'msg-sent',
           text: '刚发出的问题：这一轮的耗时是怎么算出来的？',
           ts: NOW,
           transientPlacement: 'current_turn',
           hostTurnId: 'turn-sent',
+          deliveryStatus: '已接收',
         }],
       }}
     />
@@ -719,6 +720,16 @@ export const PromptSentBeforeTurnLands: Story = {
     await expect(canvasElement.querySelector('.maka-turn-processing')).not.toBeNull();
     // No clock before the Turn's own start arrives.
     await expect(canvasElement.querySelector('.maka-turn-elapsed')).toBeNull();
+    // The pending prompt already sits a Turn's distance below the last Turn,
+    // so it does not move when its Turn lands.
+    const pending = canvasElement.querySelector<HTMLElement>('.maka-chat-session-swap + .maka-turn')!;
+    await waitFor(() => {
+      const lastTurn = canvasElement.querySelector('.maka-transcript-turn > .maka-turn')!;
+      expect(Math.round(pending.getBoundingClientRect().top - lastTurn.getBoundingClientRect().bottom)).toBe(40);
+    });
+    // Delivery is news, so its row stays up at rest.
+    (canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur();
+    await expect(getComputedStyle(pending.querySelector('.maka-message-meta')!).opacity).toBe('1');
   },
 };
 

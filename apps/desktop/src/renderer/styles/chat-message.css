@@ -300,15 +300,20 @@
    stay hidden until then. A delivery or Work status is news and stays visible.
    Rows keep their space so the transcript does not move, and only opacity
    hides them: the buttons must stay focusable for :focus-within to reveal
-   them. */
-.maka-user-message .maka-message-meta:not(:has(.maka-message-delivery, .maka-message-status-time)),
-.maka-assistant-answer .maka-turn-footer {
-  opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-standard);
-}
-.maka-user-message:is(:hover, :focus-within) .maka-message-meta,
-.maka-assistant-answer:is(:hover, :focus-within) .maka-turn-footer {
-  opacity: 1;
+   them. A tap must not land on a control it cannot see, and without hover
+   nothing would ever reveal them, so this is for hover pointers only. */
+@media (hover: hover) {
+  .maka-user-message .maka-message-meta:not(:has(.maka-message-delivery, .maka-message-status-time)),
+  .maka-assistant-answer .maka-turn-footer {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-fast) var(--ease-standard);
+  }
+  .maka-user-message:is(:hover, :focus-within) .maka-message-meta,
+  .maka-assistant-answer:is(:hover, :focus-within) .maka-turn-footer {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* Turn summary / lineage rows / footer measure column folded into the
