@@ -339,6 +339,24 @@ export const ConversationStates: Story = {
       })} />
     </StoryFrame>
   ),
+  play: async ({ canvasElement }) => {
+    // The ring, every status dot and the ⋯ that replaces them on hover share
+    // one vertical axis.
+    const centerX = (element: Element | null) => {
+      if (!element) throw new Error('trailing element is missing');
+      const box = element.getBoundingClientRect();
+      return box.x + box.width / 2;
+    };
+    const axis = centerX(
+      canvasElement.querySelector('[data-session-id="status-running"] .maka-running-indicator'),
+    );
+    for (const row of canvasElement.querySelectorAll<HTMLElement>('.maka-session-row')) {
+      expect(Math.abs(centerX(row.querySelector('[data-session-status]')) - axis)).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(centerX(row.querySelector(':scope > .maka-session-row-action')) - axis),
+      ).toBeLessThanOrEqual(1);
+    }
+  },
 };
 
 // Real path: switching between two ordinary Sessions in a populated rail. The

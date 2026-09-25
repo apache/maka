@@ -404,11 +404,20 @@
 .maka-session-row-signal {
   display: inline-flex;
   align-items: center;
-  /* The ring, the dot and the time all end on the row's padding edge. */
+  /* The ring and the time end on the row's padding edge. */
   justify-content: flex-end;
   flex: none;
   min-width: var(--h-control-sm, 24px);
   min-height: var(--h-control-sm, 24px);
+}
+
+.maka-session-row {
+  /* The sm Spinner's box. The dot and the ⋯ center on the ring's axis. */
+  --_ring-box: 14px;
+}
+
+.maka-session-row-signal > [data-session-status]:not(.maka-running-indicator) {
+  margin-inline-end: calc((var(--_ring-box) - 8px) / 2);
 }
 
 .maka-session-row-time-label {
@@ -446,7 +455,7 @@
    aside to sit next to it. */
 @media (hover: none) {
   .maka-session-row[data-actionable="true"] .maka-session-row-end {
-    margin-inline-end: calc(var(--h-control-sm, 24px) + var(--space-1));
+    margin-inline-end: calc((var(--h-control-sm, 24px) + var(--_ring-box)) / 2 + var(--space-1));
   }
 }
 
@@ -465,6 +474,10 @@
   align-items: center;
   justify-content: center;
   width: var(--h-control-sm, 24px);
+}
+
+.maka-session-row > .maka-session-row-action {
+  inset-inline-end: calc(var(--space-2) - (var(--h-control-sm, 24px) - var(--_ring-box)) / 2);
 }
 
 /* A collapsible project keeps Astryx's 24px disclosure after endContent. Match
