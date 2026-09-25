@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -138,6 +138,49 @@ describe('ExternalSessionImporter', () => {
     }
   });
 
+  for (const [label, directory] of [
+    ['decomposed Unicode', 'cafe\u0301'],
+    ['a zero-width joiner', 'a\u200Db'],
+  ]) {
+    test(`preserves a target cwd containing ${label} after reopening storage`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-external-session-target-unicode-'));
+      const storageRoot = join(root, 'storage');
+      const sessions = createSessionStore(storageRoot);
+      const importer = new ExternalSessionImporter(
+        new ExternalSessionAdapterRegistry([
+          fakeAdapter({ metadata: { name: 'Source name', cwd: '/source' }, messages: [message()] }),
+        ]),
+        sessions,
+      );
+
+      try {
+        const workspace = join(root, directory);
+        await mkdir(workspace);
+        const cwd = await realpath(workspace);
+        const header = await importer.import({
+          adapterId: 'fake',
+          sourceSessionId: 'source-1',
+          target: target({ cwd }),
+        });
+
+        assert.equal(header.cwd, cwd);
+        await sessions.close?.();
+        const reopened = createSessionStore(storageRoot);
+        try {
+          const persisted = await reopened.readHeaderSnapshot(header.id);
+          assert.equal(persisted.cwd, cwd);
+          assert.ok((await stat(persisted.cwd)).isDirectory());
+          assert.deepEqual(await reopened.readMessages(header.id), [message()]);
+        } finally {
+          await reopened.close?.();
+        }
+      } finally {
+        await sessions.close?.();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+
   test('canonicalizes adapter metadata before entering persistence', async () => {
     let persistedInput: Parameters<SessionAuthorityStore['createImportedSession']>[0] | undefined;
     const importer = new ExternalSessionImporter(
@@ -145,7 +188,7 @@ describe('ExternalSessionImporter', () => {
         fakeAdapter({
           metadata: {
             name: '  token sk-live-abcdefghijklmnop\nwork  ',
-            cwd: `/repo\u0000/${'界'.repeat(5_000)}`,
+            cwd: `/repo\u0000/cafe\u0301\u200D/${'界'.repeat(5_000)}`,
           },
           messages: [message()],
         }),
@@ -163,6 +206,7 @@ describe('ExternalSessionImporter', () => {
     assert.ok(persistedInput);
     assert.doesNotMatch(persistedInput.name ?? '', /sk-live-/);
     assert.doesNotMatch(persistedInput.cwd, /\u0000/);
+    assert.ok(persistedInput.cwd.startsWith('/repo/caf\u00e9/'));
     assert.ok(Buffer.byteLength(persistedInput.cwd, 'utf8') <= 4 * 1024);
   });
 
