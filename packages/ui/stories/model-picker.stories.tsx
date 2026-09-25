@@ -524,32 +524,104 @@ export const ManyConnections: Story = {
   },
 };
 
-// Real path: a custom relay connection exposing verbose model identifiers with
-// a long user-set connection name — very long text in the trigger, the option
-// labels, and the descriptions at once.
+const SUFFIX_CHOICES = ['low', 'high'].map((suffix) => ({
+  ...LONG_CHOICES[0]!,
+  model: `${LONG_CHOICES[0]!.model}-${suffix}`,
+  label: `${LONG_CHOICES[0]!.label}-${suffix}`,
+}));
+
+function LongModelNameComposer({ existing }: { existing: boolean }) {
+  const [selected, setSelected] = useState(SUFFIX_CHOICES[0]!);
+  const onPick = (input: { model: string }) => {
+    const next = SUFFIX_CHOICES.find((candidate) => candidate.model === input.model);
+    if (next) setSelected(next);
+  };
+  const target = {
+    llmConnectionId: selected.connectionId,
+    llmConnectionSlug: selected.connectionSlug,
+    model: selected.model,
+  };
+  const session = {
+    ...target,
+    id: 'storybook-long-model',
+    name: 'Long model name',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    connectionLocked: false,
+    permissionMode: 'ask',
+  } satisfies SessionSummary;
+  return (
+    <section aria-label={existing ? 'Existing conversation' : 'New conversation'}>
+      <Composer
+        activeSession={existing ? session : undefined}
+        activeModelLabel={selected.label}
+        activeProviderType="custom"
+        newChatModel={target}
+        newChatProviderType="custom"
+        modelLabel={selected.label}
+        modelChoices={SUFFIX_CHOICES}
+        renderProviderMark={providerMark}
+        onModelChange={onPick}
+        onPickNewChatModel={onPick}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </section>
+  );
+}
+
+// Real path: a custom relay exposes two path-like model IDs differing only in
+// their suffix. Each panel uses the production Composer that owns the trigger's
+// width cap: an existing native session and the standalone new-chat fallback.
+// The stacked arrangement is a review scaffold, not a single application screen.
 export const LongModelNames: Story = {
   render: () => (
-    <div style={{ width: 460, maxWidth: '100%' }}>
-      <NewChatModelPicker
-        label={LONG_CHOICES[0]!.label}
-        choices={LONG_CHOICES}
-        currentValue={choiceValue(LONG_CHOICES[0]!)}
-        currentProviderType="custom"
-        renderProviderMark={providerMark}
-        onPick={() => undefined}
-      />
+    <div style={{ width: 460, maxWidth: '100%', display: 'grid', gap: 24 }}>
+      <LongModelNameComposer existing />
+      <LongModelNameComposer existing={false} />
     </div>
   ),
   play: async ({ canvasElement }) => {
-    const trigger = within(canvasElement).getByRole('button', {
-      name: /选择新任务模型|Choose a model for the new task/,
-    });
-    await userEvent.click(trigger);
-    // Verifies the long-id model is reachable as an option; the label
-    // ellipsizing at its start inside the capped popup is a visual check.
-    await within(document.body).findByRole('option', {
-      name: /deepseek-v4-flash-0731/,
-    });
+    await document.fonts.ready;
+    for (const name of ['Existing conversation', 'New conversation']) {
+      const panel = within(canvasElement).getByRole('region', { name });
+      const trigger = within(panel).getByRole('button', {
+        name: /切换当前任务模型|Switch model for this task|选择新任务模型|Choose a model for the new task/,
+      });
+      const expectVisibleSuffix = async (suffix: string) => {
+        await expect(trigger).toHaveTextContent(suffix);
+        await expect(trigger.querySelector('.modelPickerProviderMark')).toBeNull();
+        const label = trigger.querySelector<HTMLElement>('.modelPickerOptionLabel, .maka-composer-model-label');
+        if (!label) throw new Error('Missing selected model label');
+        await expect(getComputedStyle(label).textAlign).toBe('left');
+        await expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
+        const text = document.createTreeWalker(label, NodeFilter.SHOW_TEXT).nextNode();
+        if (!text?.textContent) throw new Error('Missing model label text');
+        const range = document.createRange();
+        range.setStart(text, text.textContent.length - suffix.length);
+        range.setEnd(text, text.textContent.length);
+        const tail = range.getBoundingClientRect();
+        const clip = label.getBoundingClientRect();
+        // Text content alone passes even when the identifying suffix is clipped.
+        // Chromium must place the entire suffix inside the visible label box.
+        await expect(tail.width).toBeGreaterThan(0);
+        await expect(tail.left).toBeGreaterThanOrEqual(clip.left - 1);
+        await expect(tail.right).toBeLessThanOrEqual(clip.right + 1);
+      };
+      await expectVisibleSuffix('-low');
+      await userEvent.click(trigger);
+      const option = await within(document.body).findByRole('option', {
+        name: new RegExp(SUFFIX_CHOICES[1]!.label),
+      });
+      await expect(option.querySelector('.modelPickerProviderMark')).not.toBeNull();
+      await userEvent.click(option);
+      await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+      await expectVisibleSuffix('-high');
+    }
   },
 };
 

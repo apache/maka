@@ -47,6 +47,7 @@ import {
   providerMarkIcon,
   renderChatModelPickerOption,
   renderModelPickerOption,
+  renderModelPickerValue,
 } from './model-picker-internals.js';
 import { type ProviderType } from '@maka/core/llm-connections';
 import { type SessionSummary } from '@maka/core/session';
@@ -67,7 +68,7 @@ const SWITCH_WARNING_VALUE = '__maka_model_switch_warning__';
 
 /** Composer triggers show only the model name; provider marks belong in the menu. */
 function renderComposerModelValue(option: SelectorOptionData): ReactNode {
-  return <span className="maka-composer-model-label">{option.label ?? option.value}</span>;
+  return renderModelPickerValue({ ...option, icon: undefined });
 }
 
 const exactChoiceValue = (choice: ChatModelChoice) =>
