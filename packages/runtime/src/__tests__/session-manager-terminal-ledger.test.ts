@@ -2305,10 +2305,6 @@ class TinySessionStore implements SessionStore {
     return clone(header);
   }
 
-  async setExecutionBoundaryKind(): Promise<never> {
-    throw new Error('not implemented');
-  }
-
   async readExecutionBoundary(): Promise<never> {
     throw new Error('not implemented');
   }

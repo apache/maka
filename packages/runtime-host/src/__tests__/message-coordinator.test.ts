@@ -3826,6 +3826,39 @@ test('canonical retry omits redundant display text and empty ordered refs', asyn
   fixture.coordinator.completeIdle(batch);
 });
 
+for (const scenario of ['attachments', 'busy', 'history_only'] as const) {
+  test(`external executor admission rejects ${scenario} without creating or queuing a Turn`, async () => {
+    const fixture = createFixture();
+    fixture.root.readSessionHeader = async () => ({
+      isArchived: false,
+      idleOnly: true,
+      supportsAttachments: false,
+      ...(scenario === 'history_only' ? { unavailableReason: 'Start a new task' } : {}),
+    });
+    if (scenario !== 'busy') fixture.setRootState({ kind: 'idle' });
+    const result = await submitContent(
+      fixture,
+      'external-message',
+      {
+        text: 'keep my instructions',
+        ...(scenario === 'attachments'
+          ? { attachments: [attachment('external', 'proof.png')] }
+          : {}),
+      },
+      'next_turn',
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok)
+      assert.equal(
+        result.error.code,
+        scenario === 'busy' ? 'session_busy' : 'operation_unavailable',
+      );
+    assert.equal(fixture.startCalls(), 0);
+    assert.equal(fixture.readMessageAdmission('external-message'), undefined);
+    assert.equal(fixture.drainRequests(), 0);
+  });
+}
+
 function createFixture(
   onProjectionChanged?: (sessionId: string) => void,
   preflightSessionSnapshot: HostMessageCoordinatorOptions['preflightSessionSnapshot'] = () => true,
@@ -4007,6 +4040,7 @@ function createFixture(
   coordinator = new HostMessageCoordinator(options);
   return {
     coordinator,
+    root,
     admissions,
     sessionAdmission,
     setRootState: (state: HostMessageRootState) => {

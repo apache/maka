@@ -59,6 +59,7 @@ import {
   type RuntimeMessageRunIdentity,
 } from '@maka/runtime/message-authority';
 import {
+  isHostedInteractionRequestEvent,
   isShutdownCancelledInteractionAdmission,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
@@ -380,7 +381,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     private readonly directoryHostId?: string,
     private readonly prepareWorkHubRoutingDecision?: (
       input: HostWorkHubRoutingDecisionPreparation,
-    ) => Promise<WorkHubRoutingDecision>,
+    ) => Promise<WorkHubRoutingDecision | undefined>,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -1509,9 +1510,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       };
       if (!(await this.bindRecoveryCapabilities(input.sessionId, execution)))
         return { deferred: true };
-      execution = await this.prepareFreshWorkHubExecution(header, turnId, input.content, execution);
       const unavailableReason = runtimeHostExecutionUnavailableReason(header, execution);
       if (unavailableReason) return { error: unavailableReason };
+      execution = await this.prepareFreshWorkHubExecution(header, turnId, input.content, execution);
       const reservation = this.reserveRootTurn(input.sessionId);
       if (!reservation) return { error: 'Another root Turn is being admitted' };
       try {
@@ -1569,19 +1570,18 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (
       execution.kind !== 'workhub_coordination' ||
       execution.feedback ||
+      execution.operation === 'action' ||
       !this.prepareWorkHubRoutingDecision
     ) {
       return execution;
     }
-    return {
-      ...execution,
-      routingDecision: await this.prepareWorkHubRoutingDecision({
-        header,
-        turnId,
-        content,
-        ...(inputClosedSignal ? { inputClosedSignal } : {}),
-      }),
-    };
+    const routingDecision = await this.prepareWorkHubRoutingDecision({
+      header,
+      turnId,
+      content,
+      ...(inputClosedSignal ? { inputClosedSignal } : {}),
+    });
+    return routingDecision === undefined ? execution : { ...execution, routingDecision };
   }
 
   prepareMessage(input: HostMessagePreparationInput): Promise<
@@ -3074,7 +3074,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             await this.continuity.acceptRuntimeEvent(input.sessionId, active.runId, event);
           } else if (isInteractionAnswerAck(event)) {
             await this.continuity.refreshCanonical(input.sessionId);
-          } else if (event.type === 'user_question_request' || event.type === 'form_request') {
+          } else if (isHostedInteractionRequestEvent(event)) {
             this.continuity.enqueueCanonicalRefresh(input.sessionId);
           }
         }

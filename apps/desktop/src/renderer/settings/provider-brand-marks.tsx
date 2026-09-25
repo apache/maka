@@ -17,14 +17,16 @@
  * under the License.
  */
 
-// Official provider brand marks.
+// Provider brand marks used to identify configured services.
 //
 // Most SVG paths are vendored from `@lobehub/icons-static-svg` (MIT-licensed,
 // https://github.com/lobehub/lobe-icons) — the React package was NOT
 // adopted because its peerDependencies pull in antd + @lobehub/ui, which
 // we don't use. We copy only the handful of marks we render, so there is
-// zero runtime dependency. MiniMax comes from Simple Icons (CC0-1.0). Each brand logo remains the
-// trademark of its owner and is used here only to identify the provider.
+// zero runtime dependency. MiniMax comes from Simple Icons; that icon has
+// individual usage terms, so the collection's CC0 license is not its license.
+// Each brand logo remains the trademark of its owner and is used here only
+// to identify the provider.
 //
 // Color marks keep their brand fill; monochrome marks use `currentColor`
 // so they inherit the containing product slot's foreground color and stay
@@ -396,13 +398,10 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'opencode-free':
       return <ProviderAssetMask src={opencodeBrandMark} />;
     case 'anthropic':
-    case 'anthropic-compatible':
     case 'claude-subscription':
       return <Claude />;
     case 'openai':
     case 'openai-codex':
-    case 'openai-compatible':
-    case 'openai-responses-compatible':
       return <OpenAI />;
     case 'github-copilot':
       // Primer Octicons does not license GitHub logos under its MIT terms.

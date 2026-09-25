@@ -34,6 +34,7 @@
 //   login CAPTURES the authorization URL for the caller to open.
 
 import type {
+  OAuthClientInformationContext,
   OAuthClientMetadata,
   OAuthClientProvider,
   OAuthDiscoveryState,
@@ -41,6 +42,32 @@ import type {
   StoredOAuthTokens,
 } from '@modelcontextprotocol/client';
 import type { McpOAuthConfig } from '@maka/core/mcp';
+import { createHash } from 'node:crypto';
+
+export type McpAuthorizationCallback = ({ code: string } | { error: string }) & {
+  iss?: string;
+  state?: string;
+};
+
+const OAUTH_ERROR_CODES = new Set([
+  'invalid_request',
+  'unauthorized_client',
+  'access_denied',
+  'unsupported_response_type',
+  'invalid_scope',
+  'server_error',
+  'temporarily_unavailable',
+  'invalid_client',
+  'invalid_grant',
+  'unsupported_grant_type',
+  'interaction_required',
+  'login_required',
+  'consent_required',
+]);
+
+export function authorizationCallbackError(code: string): Error {
+  return new Error(`Authorization failed: ${OAUTH_ERROR_CODES.has(code) ? code : 'unknown_error'}`);
+}
 
 /** Everything the provider persists for one server, as one JSON document. */
 export interface McpOAuthRecord {
@@ -61,6 +88,9 @@ export interface McpOAuthRecord {
    * a different endpoint. Absent only on records written before this field
    * existed; they bind on their next save. */
   serverUrl?: string;
+  /** Binds static registration material across offline config edits without
+   * copying its client secret into the credential record. Absent for DCR. */
+  clientConfigHash?: string;
   tokens?: StoredOAuthTokens;
   clientInformation?: StoredOAuthClientInformation;
   /** RFC 9728 / AS metadata discovered on a previous round — including the
@@ -113,6 +143,23 @@ export function createMemoryMcpOAuthStorage(): McpOAuthStorage {
       records.delete(serverId);
     },
   };
+}
+
+function mcpOAuthClientConfigHash(config?: McpOAuthConfig): string | undefined {
+  if (!config?.clientId) return undefined;
+  return createHash('sha256')
+    .update(JSON.stringify([config.issuer, config.clientId, config.clientSecret]))
+    .digest('hex');
+}
+
+export function mcpOAuthRecordBoundTo(
+  record: McpOAuthRecord,
+  serverUrl: string,
+  config?: McpOAuthConfig,
+): boolean {
+  return (
+    record.serverUrl === serverUrl && record.clientConfigHash === mcpOAuthClientConfigHash(config)
+  );
 }
 
 /** Thrown (via the SDK's UnauthorizedError path) when a background connect
@@ -173,6 +220,10 @@ export class McpOAuthProvider implements OAuthClientProvider {
     if (state) this.state = () => state;
   }
 
+  private get clientConfigHash(): string | undefined {
+    return mcpOAuthClientConfigHash(this.options.config);
+  }
+
   get redirectUrl(): string {
     return this.options.interactive?.redirectUrl ?? BACKGROUND_REDIRECT_URL;
   }
@@ -193,10 +244,23 @@ export class McpOAuthProvider implements OAuthClientProvider {
     };
   }
 
-  async clientInformation(): Promise<StoredOAuthClientInformation | undefined> {
+  async clientInformation(
+    context?: OAuthClientInformationContext,
+  ): Promise<StoredOAuthClientInformation | undefined> {
     const configured = this.options.config;
     if (configured?.clientId) {
+      if (!configured.issuer) {
+        throw new Error(
+          `MCP server "${this.options.serverId}" requires oauth.issuer for its pre-registered client`,
+        );
+      }
+      if (context && context.issuer !== configured.issuer) {
+        throw new Error(
+          `MCP server "${this.options.serverId}" discovered a different OAuth issuer; reconfigure its client credentials`,
+        );
+      }
       return {
+        issuer: configured.issuer,
         client_id: configured.clientId,
         ...(configured.clientSecret ? { client_secret: configured.clientSecret } : {}),
       };
@@ -219,7 +283,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async tokens(): Promise<StoredOAuthTokens | undefined> {
-    return (await this.read()).tokens;
+    if (this.options.config?.clientId) await this.clientInformation();
+    const record = await this.read();
+    const tokens = record.tokens;
+    if (this.options.config?.issuer && tokens?.issuer !== this.options.config.issuer)
+      return undefined;
+    return tokens;
   }
 
   async saveTokens(tokens: StoredOAuthTokens): Promise<void> {
@@ -264,9 +333,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
       // A dynamically registered client belongs to the authorization server
       // that issued it. When discovery moves the resource to a DIFFERENT
       // authorization server, carrying the old registration over would send
-      // one AS's client credentials (and any secret) to another. Static
-      // config-supplied clients are unaffected — they never live in the
-      // record.
+      // one AS's client credentials (and any secret) to another.
       const previousIssuer = record.discovery?.authorizationServerUrl;
       const nextIssuer = state.authorizationServerUrl;
       if (previousIssuer && nextIssuer && `${previousIssuer}` !== `${nextIssuer}`) {
@@ -337,7 +404,10 @@ export class McpOAuthProvider implements OAuthClientProvider {
       record.pendingRedirectUrl ||
       record.pendingServerUrl ||
       record.pendingState;
-    return Boolean(boundable) && record.serverUrl !== this.options.serverUrl;
+    return (
+      Boolean(boundable) &&
+      !mcpOAuthRecordBoundTo(record, this.options.serverUrl, this.options.config)
+    );
   }
 
   /** The same fail-closed binding rule as read(), applied to a mutation
@@ -358,6 +428,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
     const stamp = (record: McpOAuthRecord): McpOAuthRecord => {
       apply(record);
       record.serverUrl = this.options.serverUrl;
+      if (this.clientConfigHash) record.clientConfigHash = this.clientConfigHash;
+      else delete record.clientConfigHash;
       return record;
     };
     // The coordinator-provided storage view makes read-apply-write one

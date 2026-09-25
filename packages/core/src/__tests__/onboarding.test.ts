@@ -55,12 +55,26 @@ function derive(input: Partial<DeriveOnboardingStateInput> = {}): OnboardingStat
   return deriveOnboardingState({
     connections: input.connections ?? [],
     defaultSlug: input.defaultSlug,
-    sessions: input.sessions ?? [],
+    hasHistory: input.hasHistory ?? false,
     secrets: input.secrets ?? {},
   });
 }
 
 describe('deriveOnboardingState', () => {
+  it('uses history presence without requiring a full Session list', () => {
+    assert.deepEqual(
+      derive({
+        connections: [realConnection()],
+        secrets: { 'anthropic-live': true },
+        hasHistory: true,
+      }),
+      {
+        kind: 'ready_with_history',
+        connectionSlug: 'anthropic-live',
+        model: 'claude-sonnet-4-5-20250929',
+      },
+    );
+  });
   it('routes the current default to the exact actionable fix', () => {
     const cases: Array<[LlmConnection, Record<string, boolean>, OnboardingState]> = [
       [

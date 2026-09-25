@@ -813,7 +813,6 @@ export class AiSdkCompaction {
     if (persisted) {
       state.baselineTokens = persisted.inputTokens + (persisted.outputTokens ?? 0);
       state.lastAcceptedTotalTokens = state.baselineTokens;
-      state.priorAcceptedInputTokens = persisted.inputTokens;
     }
     if (persisted) state.replyReserveTokens = replyReserveTokens(persisted.outputTokens);
     return state;
@@ -1382,11 +1381,10 @@ export class MidTurnCapacityCompactState {
   }
   /**
    * What has reshaped the request since the last one a provider accepted. The
-   * turn clears it at that acceptance, every shaper records itself here, and
-   * every consumer reads it here — an empty set is the only proof that the next
-   * request is a pure append of its predecessor.
+   * turn clears it at that acceptance; overflow recovery reads it so a request
+   * that was already folded or stripped of images is not reshaped again.
    */
-  readonly stepShaping = new Set<'fold' | 'prune' | 'omit_images' | 'tools'>();
+  readonly stepShaping = new Set<'fold' | 'omit_images'>();
   /**
    * finish-step boundaries the event pump has flushed into the session-event
    * queue. The capacity hook's durability wait needs it: only after the pump
@@ -1398,14 +1396,6 @@ export class MidTurnCapacityCompactState {
   omittedImageToolResults = new Map<string, HistoricalImageToolResult>();
   /** Malformed summaries spend one bounded repair budget for this whole Turn. */
   summarizerFailure: string | undefined;
-  /**
-   * Input tokens of the last request a provider accepted before this send.
-   *
-   * Input against input, across the send boundary: the first request of a send
-   * has no earlier step to compare with, and `baselineTokens` counts the reply
-   * too, which the next request does not always carry.
-   */
-  priorAcceptedInputTokens: number | undefined;
 
   constructor(
     readonly headAnchor: RuntimeEvent,

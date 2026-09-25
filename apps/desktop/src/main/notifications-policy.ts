@@ -20,20 +20,20 @@
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
- * Pure decision + copy helpers for desktop run-completion notifications.
+ * Pure decision + copy helpers for desktop turn notifications.
  *
  * Kept free of any `electron` import so the gating logic can be unit
  * tested under plain `node --test` (the IPC glue in
  * `notifications-ipc-main.ts` owns everything Electron-shaped). The
- * renderer only reports *that* a turn ended; the main process decides
- * whether to actually raise an OS notification.
+ * renderer only reports *that* a turn ended or parked on the user; the main
+ * process decides whether to actually raise an OS notification.
  */
 
-/** Terminal states a turn can reach that are worth notifying about. */
-export type RunNotificationKind = 'completed' | 'errored';
+/** Turn states worth pulling the user back for: it ended, or it waits on them. */
+export type RunNotificationKind = 'completed' | 'errored' | 'waiting';
 
 export function isRunNotificationKind(value: unknown): value is RunNotificationKind {
-  return value === 'completed' || value === 'errored';
+  return value === 'completed' || value === 'errored' || value === 'waiting';
 }
 
 export interface RunNotificationGate {
@@ -81,14 +81,17 @@ const RUN_NOTIFICATION_COPY = {
   'zh-CN': {
     errored: { title: '任务出错', body: '本轮回答未能完成，点击查看详情。' },
     completed: { title: '回答已生成', body: 'Maka 已完成本轮回答，点击查看。' },
+    waiting: { title: '等你回答', body: 'Maka 需要你的回答才能继续，点击查看。' },
   },
   'zh-TW': {
     errored: { title: '任務發生錯誤', body: '本次回答未能完成，按一下以檢視詳細資料。' },
     completed: { title: '回答已產生', body: 'Maka 已完成本次回答，按一下以檢視。' },
+    waiting: { title: '等你回答', body: 'Maka 需要你的回答才能繼續，按一下以檢視。' },
   },
   en: {
     errored: { title: 'Conversation error', body: 'This response did not finish. Click to view details.' },
     completed: { title: 'Response ready', body: 'Maka finished this response. Click to view it.' },
+    waiting: { title: 'Waiting for you', body: 'Maka needs your answer to continue. Click to view it.' },
   },
 } satisfies UiCatalog<Record<RunNotificationKind, RunNotificationCopy>>;
 

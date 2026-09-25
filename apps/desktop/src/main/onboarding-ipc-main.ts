@@ -38,6 +38,12 @@ export function registerOnboardingIpc(deps: OnboardingIpcDeps): void {
   handleReconnectableRead(target, 'onboarding:getSnapshot', async () =>
     deps.onboardingService.getSnapshot(),
   );
+  handleReconnectableRead(target, 'onboarding:getSessionUpdate', async (_event, sessionId: unknown) => {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      throw new Error('INVALID_SESSION_ID');
+    }
+    return deps.onboardingService.getSessionUpdate(sessionId);
+  });
   target.handle('onboarding:setMilestone', async (_event, id: unknown, status: unknown) => {
     // Service throws INVALID_MILESTONE_ID / INVALID_MILESTONE_STATUS
     // for bad inputs; let the error propagate so the renderer sees

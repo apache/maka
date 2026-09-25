@@ -85,6 +85,9 @@ export interface ConversationCopy {
     headlineFallback: (greeting: string, tail: string) => string;
   };
   composer: {
+    promptSuggestionLabel: string;
+    promptSuggestionAccept: string;
+    promptSuggestionDescription: string;
     placeholder: string;
     textareaAriaLabel: string;
     pastedQuoteLabel: string;
@@ -155,6 +158,7 @@ export interface ConversationCopy {
     thinkingUnsupported: string;
     changeThinkingLevel: string;
     defaultLevel: string;
+    chooseThinkingLevel: string;
     level: Record<ThinkingLevel, string>;
     switching: string;
     model: string;
@@ -170,6 +174,7 @@ export interface ConversationCopy {
   permissions: {
     mode: Record<PermissionMode, { label: string; hint: string }>;
     modeAriaLabel: (label: string) => string;
+    modeUnavailable: string;
   };
   sandboxBoundary: {
     title: string;
@@ -321,7 +326,6 @@ export interface ConversationCopy {
       contextCompactionUnobserved: string;
       contextCompacted: string;
       contextCompactionFailedOpen: string;
-      contextProviderDropping: (used: number, prior: number) => string;
       contextWindowSuggestion: (tokens: number, declared: number | undefined) => string;
       contextWindowOverrun: (used: number, declared: number) => string;
       contextReportedWindowExceeded: (used: number, reported: number) => string;
@@ -447,6 +451,7 @@ const CONVERSATION_COPY = {
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做点什么？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
     },
     composer: {
+      promptSuggestionLabel: '下一步输入建议', promptSuggestionAccept: 'Tab 接受建议', promptSuggestionDescription: '将首条用户消息及最近六条可见消息（各最多 2,000 字符）发给当前模型；WorkHub 仅发最近消息。费用计入当前会话。不支持关闭思考的推理模型跳过。',
       placeholder: '描述任务，@ 引用文件或会话，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
@@ -470,7 +475,7 @@ const CONVERSATION_COPY = {
       noModelHint: '还没有可用的模型连接，无法发送。', noModelAction: '前往模型设置', noModelSendTitle: '先添加一个模型连接才能发送。',
     },
     model: {
-      thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认',
+      thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认', chooseThinkingLevel: '选择思考级别',
       // Short single-token labels — trigger + popout size to content.
       // Canonical per-chat ladder: 默认 (model default, overriding Settings) / 关 / 低 / 中 / 高 / 超高
       // (minimal/max when offered).
@@ -488,6 +493,7 @@ const CONVERSATION_COPY = {
         bypass: { label: '完全权限', hint: '直接访问文件和网络，仅限可信任务。' },
       },
       modeAriaLabel: (label) => `权限模式：${label}`,
+      modeUnavailable: '不可用',
     },
     sandboxBoundary: {
       title: '允许访问工作区以外的内容？',
@@ -525,8 +531,6 @@ const CONVERSATION_COPY = {
         contextCompactionUnobserved: '上下文压缩状态暂不可用',
         contextCompacted: '已压缩较早的上下文。',
         contextCompactionFailedOpen: '上下文压缩失败。',
-        contextProviderDropping: (used, prior) =>
-          `追加内容后，供应商报告的输入 token 数没有增长，可能发生了上下文裁剪或改写（${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长）。如果持续出现，请检查模型实际支持的上下文容量与连接设置是否一致。`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供应商拒绝了这次请求。该模型未声明上下文窗口；上次成功的用量约 ${tokens} tokens，可将窗口设为该值让 Maka 先行压缩。`
@@ -573,6 +577,7 @@ const CONVERSATION_COPY = {
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做點什麼？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
     },
     composer: {
+      promptSuggestionLabel: '下一步輸入建議', promptSuggestionAccept: 'Tab 接受建議', promptSuggestionDescription: '將首條使用者訊息及最近六條可見訊息（各最多 2,000 字元）傳給目前模型；WorkHub 僅傳最近訊息。費用計入目前對話。無法關閉思考的推理模型略過。',
       placeholder: '描述任務，@ 引用檔案，/ 選擇技能…', textareaAriaLabel: '訊息輸入框', pastedQuoteLabel: '貼上的文本', selectedSkillsAriaLabel: '已選擇的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你確認權限…',
       sending: '正在傳送…', importing: '正在匯入…', sendLabel: '傳送',
       queuedMessagesAriaLabel: (count) => `${count} 條待發送訊息`,
@@ -596,7 +601,7 @@ const CONVERSATION_COPY = {
       noModelHint: '還沒有可用的模型連線，無法傳送。', noModelAction: '前往模型設定', noModelSendTitle: '先新增一個模型連線才能傳送。',
     },
     model: {
-      thinkingLevel: '思考級別', thinkingUnsupported: '目前模型不支援思考級別切換', changeThinkingLevel: '切換目前模型的思考級別', defaultLevel: '預設',
+      thinkingLevel: '思考級別', thinkingUnsupported: '目前模型不支援思考級別切換', changeThinkingLevel: '切換目前模型的思考級別', defaultLevel: '預設', chooseThinkingLevel: '選擇思考級別',
       // Short single-token labels — trigger + popout size to content.
       // Canonical per-chat ladder: 預設 (model default, overriding Settings) / 關 / 低 / 中 / 高 / 超高
       // (minimal/max when offered).
@@ -614,6 +619,7 @@ const CONVERSATION_COPY = {
         bypass: { label: '完全權限', hint: '直接存取檔案和網路，僅限可信任務。' },
       },
       modeAriaLabel: (label) => `權限模式：${label}`,
+      modeUnavailable: '無法使用',
     },
     sandboxBoundary: {
       title: '允許存取工作區以外的內容？',
@@ -651,8 +657,6 @@ const CONVERSATION_COPY = {
         contextCompactionUnobserved: '上下文壓縮狀態暫不可用',
         contextCompacted: '已壓縮較早的上下文。',
         contextCompactionFailedOpen: '上下文壓縮失敗。',
-        contextProviderDropping: (used, prior) =>
-          `追加內容後，供應商回報的輸入 token 數沒有成長，可能發生了上下文裁剪或改寫（${used.toLocaleString('zh-TW')} tokens，與之前的 ${prior.toLocaleString('zh-TW')} 相比沒有成長）。如果持續出現，請檢查模型實際支援的上下文容量與連線設定是否一致。`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供應商拒絕了這次請求。該模型未宣告上下文視窗；上次成功的用量約 ${tokens} tokens，可將視窗設為該值讓 Maka 先行壓縮。`
@@ -699,6 +703,7 @@ const CONVERSATION_COPY = {
       headlineWithLabel: (greeting, label) => `${greeting} ${label} — what shall we tackle today?`, headlineFallback: (greeting, tail) => `${greeting} — ${tail}.`,
     },
     composer: {
+      promptSuggestionLabel: 'Next prompt suggestions', promptSuggestionAccept: 'Tab to accept', promptSuggestionDescription: 'Sends the first user message and six recent visible messages (up to 2,000 characters each) to this model; WorkHub sends recent messages only. Costs count toward this session. Reasoning models without an off setting are skipped.',
       placeholder: 'Describe a task, @ to reference files or sessions, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
@@ -722,7 +727,7 @@ const CONVERSATION_COPY = {
       noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
     },
     model: {
-      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default',
+      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default', chooseThinkingLevel: 'Choose thinking level',
       level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
       switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this task',
       switchWarning: 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.',
@@ -737,6 +742,7 @@ const CONVERSATION_COPY = {
         bypass: { label: 'Full access', hint: 'Direct file and network access. Trust-only tasks.' },
       },
       modeAriaLabel: (label) => `Permission mode: ${label}`,
+      modeUnavailable: 'Unavailable',
     },
     sandboxBoundary: {
       title: 'Allow access outside the workspace?',
@@ -774,8 +780,6 @@ const CONVERSATION_COPY = {
         contextCompactionUnobserved: 'Context compaction status unavailable',
         contextCompacted: 'Earlier context compacted.',
         contextCompactionFailedOpen: 'Context compaction failed.',
-        contextProviderDropping: (used, prior) =>
-          `After content was appended, the provider-reported input token count did not grow; context may have been truncated or rewritten (${used.toLocaleString('en-US')} tokens versus ${prior.toLocaleString('en-US')} before). If this persists, check that the model's actual context capacity and the connection settings agree.`,
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `The provider rejected this request. No context window is declared for this model; the last accepted usage was about ${tokens} tokens — set the window to that value so Maka compacts first.`

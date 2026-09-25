@@ -309,7 +309,7 @@ test('rejects a semantically invalid onboarding endpoint in Storage before disco
     assert.deepEqual(
       await coordinator.handlers['connection.onboarding.verify'](
         {
-          target: { kind: 'create', providerType: 'openai-compatible' },
+          target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
           apiKey: 'relay-secret',
           baseUrl: 'ftp://relay.example.test/v1',
         },
@@ -572,7 +572,7 @@ test('onboards a custom relay end to end: rejects a missing endpoint, discovers 
     assert.deepEqual(
       await coordinator.handlers['connection.onboarding.verify'](
         {
-          target: { kind: 'create', providerType: 'openai-compatible' },
+          target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
           apiKey: 'relay-secret',
           baseUrl: null,
         },
@@ -584,7 +584,7 @@ test('onboards a custom relay end to end: rejects a missing endpoint, discovers 
 
     const saved = await coordinator.handlers['connection.onboarding.save'](
       {
-        target: { kind: 'create', providerType: 'openai-compatible' },
+        target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
         apiKey: 'relay-secret',
         baseUrl: 'https://relay.example.test/v1',
         enabledModelIds: ['relay/model'],
@@ -592,11 +592,11 @@ test('onboards a custom relay end to end: rejects a missing endpoint, discovers 
       context,
     );
     assertSaved(saved);
-    assert.equal(saved.result.connection.slug, 'openai-compatible');
+    assert.equal(saved.result.connection.slug, 'custom');
     assert.equal(observedBaseUrl, 'https://relay.example.test/v1');
 
     const connection = (await stores.connectionCatalog.getSnapshot()).connections.find(
-      ({ slug }) => slug === 'openai-compatible',
+      ({ slug }) => slug === 'custom',
     );
     assert.equal(connection?.baseUrl, 'https://relay.example.test/v1');
     // Re-verifying with a blank endpoint now reuses the persisted one.
@@ -623,7 +623,7 @@ test('re-onboarding by connection identity edits a Desktop custom-slug relay in 
     // connection's identity and must edit it, not derive a second connection
     // at the canonical slug (#3467 review).
     const connection = await createConnection(stores, 0, {
-      ...connectionDraft('my-relay', 'openai-compatible'),
+      ...connectionDraft('my-relay', 'custom'),
       baseUrl: 'https://relay-a.example.test/v1',
       enabledModelIds: ['relay/model'],
     });
@@ -711,7 +711,7 @@ test('a save whose connection changed between discovery and commit is superseded
     // the commit, and the save must NOT persist relay B with the model
     // inventory relay A produced.
     const connection = await createConnection(stores, 0, {
-      ...connectionDraft('openai-compatible', 'openai-compatible'),
+      ...connectionDraft('custom', 'custom'),
       baseUrl: 'https://relay-a.example.test/v1',
       enabledModelIds: ['relay/original'],
     });
@@ -814,7 +814,7 @@ test('a save whose connection changed between discovery and commit is superseded
 test('provider state identity follows endpoint, credential, and request-header ownership', async () => {
   await withFixture(async ({ stores }) => {
     const connection = await createConnection(stores, 0, {
-      ...connectionDraft('identity-relay', 'openai-compatible'),
+      ...connectionDraft('identity-relay', 'custom'),
       baseUrl: 'https://relay-a.example.test/v1',
     });
     await setConnectionCredential(stores, connection, 'key-a');
@@ -873,6 +873,20 @@ test('provider state identity follows endpoint, credential, and request-header o
     assert.equal(headers.kind, 'committed');
     const afterHeaders = await resolveIdentity();
     assert.notEqual(afterHeaders, afterCredential);
+
+    const current = (await stores.connectionCatalog.getSnapshot()).connections[0]!;
+    const rewired = await stores.connectionCatalog.update({
+      expected: { connectionId: current.connectionId, revision: current.revision },
+      changes: {
+        name: current.name,
+        baseUrl: current.baseUrl,
+        enabled: true,
+        enabledModelIds: current.enabledModelIds,
+        modelOverrides: { 'gpt-5': { apiProtocol: 'openai-responses' } },
+      },
+    });
+    assert.equal(rewired.kind, 'committed');
+    assert.notEqual(await resolveIdentity(), afterHeaders);
   });
 });
 
@@ -884,7 +898,7 @@ test('onboarding probes with the custom request headers the models path sends, a
     // models.fetch reaches fine (#3467 review).
     const headerSecret = 'header-secret-must-not-escape';
     const connection = await createConnection(stores, 0, {
-      ...connectionDraft('header-relay', 'openai-compatible'),
+      ...connectionDraft('header-relay', 'custom'),
       baseUrl: 'https://relay.example.test/v1',
       enabledModelIds: ['relay/model'],
       requestBodyOverlay: { tenant: 'acme' },
@@ -1231,7 +1245,7 @@ test('invalidates a verified result when onboarding rotates only the credential'
 test('onboarding keeps models its wizard never offered and clears profiles on endpoint changes', async () => {
   await withFixture(async ({ stores }) => {
     const connection = await createConnection(stores, 0, {
-      ...connectionDraft('openai-compatible', 'openai-compatible'),
+      ...connectionDraft('custom', 'custom'),
       baseUrl: 'https://relay.example.test/v1',
       enabledModelIds: ['kept-model', 'dropped-model'],
       modelOverrides: {
@@ -1266,7 +1280,7 @@ test('onboarding keeps models its wizard never offered and clears profiles on en
     // The real failure was on the next read, not on the write.
     assert.deepEqual(
       (await stores.connectionCatalog.getSnapshot()).connections.map(({ slug }) => slug),
-      ['openai-compatible'],
+      ['custom'],
     );
 
     // Declarations are endpoint-keyed, like the update path enforces: a
@@ -1293,7 +1307,7 @@ test('onboarding keeps models its wizard never offered and clears profiles on en
 test('onboarding preserves parameters for a model the user unchecked', async () => {
   await withFixture(async ({ stores }) => {
     const connection = await createConnection(stores, 0, {
-      ...connectionDraft('openai-compatible', 'openai-compatible'),
+      ...connectionDraft('custom', 'custom'),
       baseUrl: 'https://relay.example.test/v1',
       enabledModelIds: ['kept-model', 'unchecked-model'],
       modelOverrides: {
@@ -1791,6 +1805,7 @@ function connectionDraft(
     slug,
     name: slug,
     providerType,
+    ...(providerType === 'custom' ? { defaultApiProtocol: 'openai-chat' as const } : {}),
     enabled: true,
     enabledModelIds: ['gpt-5'],
   };

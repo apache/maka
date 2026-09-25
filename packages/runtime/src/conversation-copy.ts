@@ -85,7 +85,7 @@ import {
   readToolResultPage,
   readableToolResult,
   resolveReadInput,
-  READ_PAGE_MAX_CHARS,
+  READ_PAGE_MAX_BYTES,
 } from './read-page.js';
 
 export interface ConversationCopySlice {
@@ -1360,7 +1360,7 @@ function cloneModelProjectionTransition(
       rewritten.page = readToolResultPage(
         serialized,
         { path: rewritten.resourceRef! },
-        READ_PAGE_MAX_CHARS - JSON.stringify(rewritten).length - 32,
+        READ_PAGE_MAX_BYTES - Buffer.byteLength(JSON.stringify(rewritten)) - 32,
       );
     }
     references.ledgerArchives?.set(
