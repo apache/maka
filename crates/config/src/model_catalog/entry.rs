@@ -18,90 +18,9 @@
  */
 
 use super::wire_limit;
-use crate::{ConfigError, Result};
-use maka_runtime::{
-    configuration::{ConnectionCatalogEntry, ModelInfo, ModelModality, validation},
-    execution::ThinkingLevel,
+use maka_runtime::configuration::{
+    ConnectionCatalogEntry, ModelCatalogEntry, ModelInfo, ModelModality,
 };
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ModelCatalogEntry {
-    /// Effective facts for execution; the catalog's metadata remains the wire authority.
-    #[serde(skip)]
-    pub capabilities: maka_runtime::configuration::ModelCapabilities,
-    pub id: String,
-    pub can_use_as_chat_default: bool,
-    pub is_default: bool,
-    pub supports_vision: bool,
-    pub thinking_levels: Vec<ThinkingLevel>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_thinking_level: Option<ThinkingLevel>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_supports_vision: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_context_window: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_input_limit: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_limit: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compaction_threshold: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knowledge_cutoff: Option<String>,
-}
-
-impl ModelCatalogEntry {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            can_use_as_chat_default: true,
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn validate(&self) -> Result<()> {
-        validation::text(&self.id, 512, true).map_err(ConfigError::Invalid)?;
-        for (value, max) in [
-            (self.display_name.as_deref(), 512),
-            (self.description.as_deref(), 2048),
-            (self.knowledge_cutoff.as_deref(), 2048),
-        ] {
-            if let Some(value) = value {
-                validation::text(value, max, false).map_err(ConfigError::Invalid)?;
-            }
-        }
-        for value in [self.context_window, self.input_limit]
-            .into_iter()
-            .flatten()
-        {
-            validation::revision(value, true).map_err(ConfigError::Invalid)?;
-        }
-        for (index, level) in self.thinking_levels.iter().enumerate() {
-            if self.thinking_levels[..index].contains(level) {
-                return Err(ConfigError::Invalid(
-                    "duplicate catalog thinking level".into(),
-                ));
-            }
-        }
-        if self
-            .default_thinking_level
-            .is_some_and(|level| !self.thinking_levels.contains(&level))
-        {
-            return Err(ConfigError::Invalid(
-                "unsupported default thinking level".into(),
-            ));
-        }
-        Ok(())
-    }
-}
 
 pub(super) fn resolve(
     row: &ConnectionCatalogEntry,

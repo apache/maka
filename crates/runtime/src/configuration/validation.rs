@@ -112,47 +112,44 @@ pub fn profiles(values: &BTreeMap<String, ModelOverride>) -> ValidationResult {
         return Err("too many model overrides".into());
     }
     for (id, p) in values {
-        text(id, 512, true)?;
-        if let Some(adapter) = &p.adapter {
-            text(adapter, 256, true)?;
-            if adapter.chars().any(char::is_control) {
-                return Err("invalid model adapter name".into());
-            }
+        model_override(id, p)?;
+    }
+    Ok(())
+}
+
+pub fn model_override(id: &str, p: &ModelOverride) -> ValidationResult {
+    text(id, 512, true)?;
+    if let Some(adapter) = &p.adapter {
+        text(adapter, 256, true)?;
+        if adapter.chars().any(char::is_control) {
+            return Err("invalid model adapter name".into());
         }
-        if let Some(levels) = &p.thinking_levels
-            && (levels.is_empty()
-                || levels
-                    .iter()
-                    .enumerate()
-                    .any(|(index, level)| levels[..index].contains(level)))
-        {
-            return Err("invalid relay thinking levels".into());
-        }
-        for n in [
-            p.context_window,
-            p.input_limit,
-            p.compaction_threshold,
-            p.max_output_tokens,
-        ]
+    }
+    if let Some(levels) = &p.thinking_levels
+        && (levels.is_empty()
+            || levels
+                .iter()
+                .enumerate()
+                .any(|(index, level)| levels[..index].contains(level)))
+    {
+        return Err("invalid relay thinking levels".into());
+    }
+    for n in [
+        p.context_window,
+        p.input_limit,
+        p.compaction_threshold,
+        p.max_output_tokens,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        revision(n, true)?;
+    }
+    for value in [&p.display_name, &p.description, &p.knowledge_cutoff]
         .into_iter()
         .flatten()
-        {
-            revision(n, true)?;
-        }
-        for value in [&p.display_name, &p.description].into_iter().flatten() {
-            text(value, 2048, false)?;
-        }
-        let mut facts = serde_json::json!({"id":id});
-        if let Some(value) = &p.knowledge_cutoff {
-            facts["knowledgeCutoff"] = serde_json::json!(value);
-        }
-        if let Some(value) = &p.capabilities {
-            facts["capabilities"] = serde_json::to_value(value).map_err(|e| e.to_string())?;
-        }
-        if let Some(value) = &p.modalities {
-            facts["modalities"] = serde_json::to_value(value).map_err(|e| e.to_string())?;
-        }
-        connection_model(&facts)?;
+    {
+        text(value, 2048, false)?;
     }
     Ok(())
 }

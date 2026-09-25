@@ -169,7 +169,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         let color = if activity == activity::Activity::Waiting {
             app.theme.colors().warning
         } else {
-            tone::accent(app.theme.colors())
+            app.theme.colors().accent
         };
         Line::from(vec![
             ratatui::text::Span::styled(face, Style::default().fg(color)),
@@ -797,12 +797,12 @@ fn control(
             .fg(app.theme.colors().subtle)
             .add_modifier(Modifier::DIM)
     } else if focused || app.hover.as_ref() == Some(&action) {
-        tone::selection(app.theme.colors()).fg(if destructive {
+        app.theme.colors().focused().fg(if destructive {
             app.theme.colors().error
         } else if caution {
             app.theme.colors().warning
         } else {
-            tone::accent(app.theme.colors())
+            app.theme.colors().accent
         })
     } else if destructive {
         Style::default().fg(app.theme.colors().error)
@@ -812,7 +812,7 @@ fn control(
         action,
         Action::SendMessage | Action::SteerMessage | Action::StopTurn(_)
     ) {
-        Style::default().fg(tone::accent(app.theme.colors()))
+        Style::default().fg(app.theme.colors().accent)
     } else {
         Style::default().fg(app.theme.colors().muted)
     };

@@ -34,11 +34,11 @@ fn mixed_page() -> Value {
         {"kind":"model","connectionIndex":0,"itemIndex":0,
          "model":{"id":"model","contextWindow":128000,"capabilities":{"chat":true}}},
         {"kind":"catalog_entry","connectionIndex":0,"itemIndex":0,
-         "modelOverride":{"thinkingLevels":["low","high"],"vision":false},
+         "modelOverride":{"adapter":"external.responses","defaultThinkingLevel":"high","thinkingLevels":["low","high"],"vision":false},
          "entry":{"id":"model","displayName":"Model","description":"A model",
           "contextWindow":128000,"knowledgeCutoff":"2025-01","canUseAsChatDefault":true,
           "isDefault":false,"supportsVision":false,"thinkingLevels":["off","low","high"],
-          "defaultSupportsVision":false}}
+          "defaultSupportsVision":false,"defaultThinkingLevel":"high"}}
     ]})
 }
 
@@ -127,10 +127,13 @@ fn strict_public_shapes_reject_nulls_private_fields_and_invalid_models() {
             json!(["contextWindow"]),
         ),
         ("/items/3/entry", "apiProtocol", json!("openai-chat")),
+        ("/items/3/entry", "capabilities", json!({"chat":true})),
         ("/items/3/entry", "thinkingLevels", json!(["low", "low"])),
         ("/items/3/entry", "thinkingLevels", json!(["unknown"])),
         ("/items/3/entry", "thinkingLevels", Value::Null),
         ("/items/3/entry", "supportsVision", json!(1)),
+        ("/items/3/entry", "defaultThinkingLevel", json!("medium")),
+        ("/items/3/entry", "defaultThinkingLevel", Value::Null),
     ] {
         let mut value = page.clone();
         value.pointer_mut(pointer).unwrap()[key] = bad;
@@ -138,6 +141,19 @@ fn strict_public_shapes_reject_nulls_private_fields_and_invalid_models() {
             decode_catalog_query_result(&value).is_err(),
             "{pointer}/{key}"
         );
+    }
+    for field in [
+        "contextWindow",
+        "inputLimit",
+        "compactionThreshold",
+        "defaultContextWindow",
+        "defaultInputLimit",
+    ] {
+        for bad in [Value::Null, json!(0), json!(9007199254740992_u64)] {
+            let mut value = page.clone();
+            value["items"][3]["entry"][field] = bad;
+            assert!(decode_catalog_query_result(&value).is_err(), "{field}");
+        }
     }
 }
 
@@ -184,15 +200,13 @@ fn pages_enforce_bounds_and_forward_progress_without_requiring_whole_connections
 }
 
 #[test]
-fn model_override_sanitization_matches_source_and_empty_overlay_is_omitted() {
+fn model_overrides_are_preserved_or_rejected_and_empty_overlay_is_omitted() {
     let mut page = mixed_page();
-    page["items"][3]["modelOverride"] = json!({"thinkingLevels":["high","off","low","low"],
-        "vision":null,"contextWindow":-1,"serviceTier":"fast","unknown":true});
     page["items"][0]["requestBodyOverlay"] = json!({});
     let result = decode_catalog_query_result(&page).unwrap();
     assert_eq!(
         result["items"][3]["modelOverride"],
-        json!({"thinkingLevels":["off","low","high"],"serviceTier":"fast"})
+        page["items"][3]["modelOverride"]
     );
     assert!(result["items"][0].get("requestBodyOverlay").is_none());
     page["items"][3]["modelOverride"] = json!({"thinkingLevels":["off"]});
@@ -205,6 +219,24 @@ fn model_override_sanitization_matches_source_and_empty_overlay_is_omitted() {
         decode_catalog_query_result(&page).unwrap()["items"][3]["modelOverride"],
         json!({})
     );
+    for profile in [
+        json!({"thinkingLevels":["low","low"]}),
+        json!({"thinkingLevels":["unknown"]}),
+        json!({"thinkingLevels":[]}),
+        json!({"vision":null}),
+        json!({"adapter":""}),
+        json!({"adapter":"unsafe\nname"}),
+        json!({"defaultThinkingLevel":"unknown"}),
+        json!({"contextWindow":-1}),
+        json!({"inputLimit":0}),
+        json!({"maxOutputTokens":9007199254740992_u64}),
+        json!({"capabilities":{"chat":"yes"}}),
+        json!({"modalities":{"input":["text"],"output":["unknown"]}}),
+        json!({"unknown":true}),
+    ] {
+        page["items"][3]["modelOverride"] = profile;
+        assert!(decode_catalog_query_result(&page).is_err());
+    }
 }
 
 #[test]

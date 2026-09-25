@@ -331,6 +331,10 @@ fn real_host_catalog_subscription_and_remote_updates_reach_clients() {
         Some(directory.path()),
     );
     tui.wait_for(&first[0].name);
+    // Plugin pages pin below the list and change its viewport when they arrive.
+    for page in ["WorkHub", "Scheduled tasks", "Recall"] {
+        tui.wait_for(page);
+    }
     // The sidebar keeps loading older sessions at the end of its list.
     tui.wheel_at(&first[0].name, true, 12);
     tui.wait_for("Load more…");

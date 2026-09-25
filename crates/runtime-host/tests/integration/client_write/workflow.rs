@@ -52,7 +52,8 @@ pub(super) async fn run(fixture: &ClientFixture, reopened: bool) -> (Vec<Value>,
         Host::open_with_global_instructions(fixture.owner(), Some(fixture.workspace.join(".maka")))
             .await
             .unwrap();
-    let (peer, hello) = Peer::handshake(host.clone(), "write-identity").await;
+    let (mut peer, hello) = Peer::handshake(host.clone(), "write-identity").await;
+    peer.wait_for_plugins().await;
     peer.close().await;
     #[cfg(unix)]
     let endpoint = fixture.workspace.parent().unwrap().join("h.sock");

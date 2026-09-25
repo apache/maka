@@ -1008,7 +1008,7 @@ impl Transcript {
             Kind::Thinking | Kind::Steps => {
                 let mut line = line;
                 for span in &mut line.spans {
-                    span.style.fg = Some(crate::view::tone::thinking(self.colors));
+                    span.style.fg = Some(self.colors.thinking);
                     span.style = span.style.remove_modifier(Modifier::BOLD);
                 }
                 line

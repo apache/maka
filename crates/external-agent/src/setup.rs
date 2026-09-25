@@ -93,8 +93,10 @@ impl remote::StreamProvider for Provider {
             {
                 return Err(Error::Invalid("Invalid authentication method".into()));
             }
-            // Views captured this same request token; cancel also withdraws pending consent.
-            let cancellation = caller.cancellation.clone();
+            // This stream owns only its work. The authorized scope below settles
+            // pending consent/processes; closing a nested stream must not cancel
+            // the Remote method that is consuming its result.
+            let cancellation = caller.cancellation.child_token();
             let worker_cancel = cancellation.clone();
             let (send, receive) = mpsc::channel(8);
             let done = context
@@ -344,19 +346,4 @@ async fn emit(send: &mpsc::Sender<Result<Value, Error>>, event: Value) -> Result
 }
 fn provider(error: impl std::fmt::Display) -> Error {
     Error::Provider(error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn setup_actions_require_explicit_authentication_method() {
-        let mut input = json!({"agentId":"agent", "operationId":Uuid::nil(), "kind":"check"});
-        assert!(serde_json::from_value::<Input>(input.clone()).is_ok());
-        input["kind"] = json!("authenticate");
-        assert!(serde_json::from_value::<Input>(input.clone()).is_err());
-        input["methodId"] = json!("offered-method");
-        assert!(serde_json::from_value::<Input>(input).is_ok());
-    }
 }

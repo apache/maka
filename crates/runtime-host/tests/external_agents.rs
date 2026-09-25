@@ -766,11 +766,29 @@ async fn acp_setup_stream_authenticates_filters_urls_and_closes_cancelled_proces
             success(running.peer.rpc("plugin.remote", json!({"kind":"close","document":document,"stream":stream})).await);
             process_closed(&mut process).await;
         }
+        // The terminal action consumes the setup stream inside a live Remote
+        // method. Closing that child must not cancel the containing action.
+        let terminal = json!({"packageId":"acceptance.acp-package","method":"terminal"});
+        let terminal_target = success(running.peer.rpc("plugin.remote",
+            json!({"kind":"bind","binding":terminal})).await)["target"].clone();
+        let view = success(running.peer.rpc("plugin.remote", json!({
+            "kind":"call","binding":terminal,"target":terminal_target,"document":document,
+            "input":{"kind":"read","route":{"agent":"test.acp"},"locale":"en"}
+        })).await)["value"]["view"].clone();
+        let checked = success(running.peer.rpc("plugin.remote", json!({
+            "kind":"call","binding":terminal,"target":terminal_target,"document":document,
+            "input":{"kind":"submit","route":{"agent":"test.acp"},"revision":view["revision"],
+                "action":"check","fields":{},"locale":"en"}
+        })).await)["value"].clone();
+        assert_eq!(checked["kind"], "applied", "{checked}");
+        assert!(checked["route"]["checked"].as_str().is_some_and(|text| !text.is_empty()));
+        let mut process = fixture.process().await;
+        process_closed(&mut process).await;
         success(running.peer.rpc("plugin.remote", json!({"kind":"close_document","document":document})).await);
         running.close().await;
         let records = fixture.records();
         let versions = records.iter().filter(|row| row["method"] == "initialize").map(|row| row["params"]["protocolVersion"].clone()).collect::<Vec<_>>();
-        assert_eq!(versions, if protocol != 2 { [json!(2), json!(1)].into_iter().cycle().take(8).collect::<Vec<_>>() } else { vec![json!(2); 4] });
+        assert_eq!(versions, if protocol != 2 { [json!(2), json!(1)].into_iter().cycle().take(10).collect::<Vec<_>>() } else { vec![json!(2); 5] });
         assert_eq!(records.iter().filter(|row| row["method"] == "spawn").count(), versions.len());
         assert_eq!(records.iter().filter(|row| row["method"] == if protocol != 2 { "authenticate" } else { "auth/login" }).count(), 3);
         assert!(!records.iter().any(|row| row["method"] == "session/new" || row["method"] == "session/prompt"));

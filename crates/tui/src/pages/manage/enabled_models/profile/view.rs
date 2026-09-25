@@ -23,7 +23,7 @@ use crate::{
     app::{Action, App},
     pages::manage::Dialog,
     ui::{Node, On, Role, Sheet, Size, Tone},
-    view::{safe, tone},
+    view::safe,
 };
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{
@@ -282,7 +282,7 @@ pub(in crate::pages::manage::enabled_models) fn draw(frame: &mut Frame<'_>, app:
         frame.buffer_mut().set_style(label, colors.base());
         frame.render_widget(
             Paragraph::new(labels[index].as_str()).style(Style::default().fg(if here {
-                tone::accent(colors)
+                colors.accent
             } else {
                 colors.muted
             })),

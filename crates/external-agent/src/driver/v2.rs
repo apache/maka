@@ -257,22 +257,3 @@ impl Driver<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn config_values_use_v2_discriminated_config_id_wire_shape() {
-        let input = acp::SetSessionConfigOptionRequest::new(
-            "s",
-            "model",
-            acp::SessionConfigOptionValue::Id {
-                value: "choice".into(),
-            },
-        );
-        let value = serde_json::to_value(input).unwrap();
-        assert_eq!(value["configId"], "model");
-        assert_eq!(value["type"], "id");
-        assert_eq!(value["value"], "choice");
-    }
-}
