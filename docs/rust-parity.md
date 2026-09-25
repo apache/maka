@@ -21,9 +21,10 @@
 
 [简体中文](rust-parity.zh-CN.md)
 
-Baseline: Rust `c6874775d`, main `f02ac9433` (2026-09-18).
-This records known functional gaps and the whole-domain built-in plugin migration plan, not a
-complete acceptance audit. Target ownership and API extensions below are not claims of implementation.
+Implementation status: 2026-09-25. Upstream features have been selectively
+absorbed through main `9082cf144`; main has not been merged in full.
+This records implemented capabilities, known gaps and explicit limits, not a complete acceptance
+audit. Target ownership and proposed API extensions are not claims of implementation.
 
 Use our own business modules to develop the plugin API: migrate an existing domain and complete
 its missing behavior together, then remove its special-purpose Host path. Registering a wrapper
@@ -69,11 +70,13 @@ Client changes are allowed when they remove an obsolete path, as with Graph.
 | **Session checklist:** `maka.todo` owns `todo_read`/`todo_write`, typed documents and a live composer Client. | Public namespaced storage provides revision-checked replacement; Remote streams page complete snapshots for the caller's Session. Disable/restart preserves data. No Todo-specific Host service or Desktop IPC remains. |
 | **Graph/Swarm:** built-in plugins; behavior selection uses an open typed identity. Graph uses public authorized Session/execution commands, scoped data and read-only preferences, without private Host handles. | Preserve existing orchestration and wakeup behavior. Reuse narrow commands where semantics match; typed domain repositories remain legitimate. |
 | **Scheduler:** the plugin owns schedules, frozen triggers, misfire/retry policy and notification withdrawal. Activation receives public scoped storage, authorization, execution and notification capabilities, not scheduling-specific Host services. | Host resolves authorization and admits execution/native delivery. Pausing withdraws unadmitted notifications, including late provider acceptance; accepted executions remain Host-owned. Recovery reuses exact Fire identities and never replays uncertain notifications. Existing Desktop operations remain thin adapters to the plugin. |
+| **Jev:** `maka.jev` publishes `maka.jev.evaluate` to native/JSON plugins through admitted scopes, with settings for the full URL, model, timeout, API key and custom headers. | Host owns authorized HTTP, namespaced credentials and settlement. The plugin owns the System One protocol, probability validation and endpoint credential isolation. Returned token metadata is not yet part of Host model accounting. |
 | **Web:** `maka.web` owns browserless WebFetch, Tavily search, source selection, credential checks and the settings Client. Native search binds through the public provider-tool contract at each model step. | Host owns authorized HTTP, proxy policy, resource settlement and namespaced credentials. Rust and JS share bindings; provider results/citations remain canonical facts. The old Web RPC, global settings and Tavily vault slot are removed. |
 | **Recall:** `maka.recall` owns Unicode literal matching, BM25 ranking, Session diversity and RecallMore passage expansion. | Public Rust/JS history supplies fixed-fence UTF-8 pages and archived metadata. Host owns access checks and the SQLx-managed text projection; no Recall-specific Host service or V8 is required. Incognito withdraws tools; unread sources and clipped passages are explicit. |
-| **Code Mode:** mode selection, nested dispatch and history projection cross several crates. | After the first domain migrations, move its user-facing tool and mode policy where a real contribution boundary helps. Keep V8 ownership, nested-call permissions, dispatch/settlement and canonical history in the runtime. Do not invent a universal executor hook merely to move `exec`. |
+| **Code Mode:** execution is implemented; Code Mode and ApplyPatch have independent per-model settings. Nested dispatch and history projection cross several crates. | Move tool assembly only where it removes concrete coupling. Keep V8 ownership, nested-call permissions, dispatch/settlement and canonical history in the runtime. No universal executor hook is needed to move `exec`. |
 | **Files and Shell tools:** registrations are assembled in Host over existing filesystem/process owners. | Tool definitions and assembly can become built-in contributions. Resource ownership, write coordination and PTY cancellation remain Host services. Defer this structural migration until it removes concrete coupling; a plugin per tool adds no value. |
-| **Client Capability / MCP, providers and transport** | Keep their current resource/authority boundaries. Desktop-owned MCP does not move into Host, and model vendors do not each require a plugin. Complete their functional gaps independently of structural migrations. |
+| **Client Capability / MCP:** Session-scoped publication and lifecycle are wired through the public capability contract. | Keep client-owned MCP in the client. Host owns capability selection, authorization and settlement. |
+| **Model providers and adapters:** public Rust/JS registrations support provider authentication/discovery/request policy and protocol adapters. Bundled API providers and ChatGPT subscription consume them; native Responses coexists with AI SDK adapters. | Providers own vendor policy; adapters encode protocols. Host owns connections, credentials, proxy routing, per-step snapshots, admission and accounting. Catalog discovery does not imply inference support. |
 
 Any authorized plugin can request managed ownership with `createRoot({ managed: true, ... })`.
 Host commits package/scope ownership and creation identity atomically. Ordinary mutations and other
@@ -86,28 +89,36 @@ Reuse SQLx migrations and domain stores; changing ownership does not require cha
 moving all data into KV, or creating a crate per plugin. Runtime contracts must not depend on plugin
 implementations; wire adapters may retain existing client vocabulary.
 
-## Missing functionality and placement
+## Capabilities, gaps and placement
 
 “Plugin + Host” identifies separate responsibilities, not permission to defer either half.
+An explicit unsupported surface is not an automatic implementation commitment. Replaced TS RPCs
+do not require compatibility routes when current consumers use public plugin contracts.
 
-| Domain | Remaining functionality | Target owner / necessary boundary |
+| Domain | Current capability / remaining work | Target owner / necessary boundary |
 | --- | --- | --- |
-| Plan | State and durable receipts are complete: revision/abandonment, version and replan-source checks, frozen submissions, progress/interruption/resume/cancellation, exact retries and fixed-watermark history pages. Tools, Behavior, Remote/Desktop and live execution observation remain unwired. Non-Agent collaboration mode still fails admission. | **Plugin + Host.** The plugin owns workflow and records through public storage. Approving a plan grants no sandbox permissions; Host retains authorization and Turn admission. Without a Host receipt, execution is awaiting admission, not running. |
-| Goal | Query/arm/control, continuation, termination, budget and recovery semantics. | **Plugin + Host.** Goal policy owns subsequent submissions; Host enforces admitted hard limits and records usage. Retiring the plugin must close future submission admission. |
-| Session recap | `maka.session-recap` provides manual generation, durable idempotent receipts, Desktop Session Inspector and native Rust TUI access. The TUI checkpoints original operation identity before generation and explicitly retries that identity after reconnect. Automatic idle generation and the old `session.recap.generate` route remain absent. | **Plugin.** Uses authorized history and the Session model. Recaps are derived data and do not rewrite canonical history or Session metadata. |
+| Plan | `maka.plan` now provides planning/execution behaviors, SubmitPlan/update_plan/cancel_plan, standalone Remote controls, versioned approvals, durable dispatch, Host settlement observation, explicit resume and restart/retirement recovery. Planning enforces a tool ceiling; completion requires successful Host execution as well as reported step completion. UI is deferred. | **Plugin + Host.** Public storage and execution capabilities own the workflow. Approval grants no sandbox permissions. Unknown cancellation retains the original operation without resubmission or idle keepalive; renewed consent can reconcile its receipt. Sealed Host handoffs use public Session resume controls. |
+| Goal | `maka.goal` provides Session Inspector, Remote read/arm/start/pause/cancel, durable continuation and exact-operation recovery. `GoalStatus` takes effect after its owned Invocation completes normally. Saved goals require explicit start; automatic adoption of user Turns and an independent evaluator are absent. | **Plugin + Host.** The plugin owns goals and bounded iteration policy; Host owns authorization, receipts and accounting. The token threshold stops future scheduling based on observed Session usage, including other Session activity; it is not a hard token or aggregate-step cap. |
+| Session recap | `maka.session-recap` provides manual generation, durable idempotent receipts, Desktop Session Inspector and native Rust TUI access. The TUI checkpoints original operation identity before generation and explicitly retries that identity after reconnect. Automatic idle generation remains absent. | **Plugin.** Uses authorized bounded text history and the Session model; structured tool-result projection is absent. Recaps are derived data and do not rewrite canonical history or Session metadata. Remote replaces the old protocol route. |
 | Daily review | Daily-review query/mutate and scheduled review remain. | **Plugin + Host.** Reuse Scheduler and authorized history/model services. |
-| External agents | `maka.external-agent` provides ACP v1 execution, scoped configuration, Desktop setup/authentication, official Antigravity installation, text/thought/tool streaming and file/permission callbacks. Processes survive between turns; advertised `session/load` restores known identities after restart. Unknown outcomes are fenced. Attachments, opaque conversation forks and terminal callbacks/authentication are explicitly unsupported. | **Plugin + Host.** The shipped adapter consumes public Executor, process, HTTP, storage and interaction capabilities. Host owns admission and facts. History copying requires the destination Executor's explicit `historyCopy` capability, not merely an Executor registration. |
+| Inbound ACP | `maka acp` uses official SDK 2.2.0 with experimental v2: Session create/list/resume/close, configuration, text/images/resources, canonical replay, streaming, permissions, negotiated forms and exact cancellation. Client MCP servers, additional workspace directories, arbitrary replay cursors and ACP authentication are unsupported. Resume requires an idle Host Session; at most eight Sessions attach per connection. | **Public Client + Host.** The adapter uses public deployment/Client APIs only. Host owns admission and durable facts; late original admission receipts remain owned through cancellation and bounded shutdown. Unknown work is never resubmitted. |
+| External agents | `maka.external-agent` uses the official SDK, preferring experimental v2 and negotiating v1. Scoped configuration, setup/authentication, official Antigravity installation, text/thought/tool updates and permission callbacks are implemented; filesystem callbacks use v1. Processes persist across turns; restart uses advertised v1 `session/load` or v2 `session/resume` for the known identity. Attachments, opaque conversation forks and terminal callbacks/authentication remain unsupported. | **Plugin + Host.** The adapter consumes public Executor, process, HTTP, storage and interaction capabilities. Host owns admission and facts. Unknown outcomes prevent continuation; v2 replacement/clear updates preserve message identity. History copying requires an Executor's explicit `historyCopy` capability; this adapter cannot clone an opaque external conversation. |
 | Usage / Pricing | Physical Agent and auxiliary SDK accounting, frozen valuation, public Rust/JS scoped mixed model/tool activity paging, and shared native/plugin pricing query/CAS edits are implemented. Consistent summaries include complete bounded breakdowns and missing-data coverage; The Insights plugin provides settings reports, filtering, pagination, persisted views and rate editing; Session Inspector uses the public Session-bound Client slot. | **Plugin + Host.** Reports and rebuildable projections may be an Insights domain; Host records usage independently of plugin availability and provides consistent reads. Missing usage must not become zero. |
-| Background health | BackgroundTaskHealth process and endpoint checks. | **Plugin + Host.** Health interpretation and Tool in a plugin; Host exposes authorized resource observations and bounded probes. A stored PID is not resource ownership. |
+| Background health | `maka.background-health` provides the `BackgroundTaskHealth` Agent tool, displayed through existing Desktop tool results. Process state and optional HTTP endpoint checks are separate; logs are omitted by default. | **Plugin + Host.** Uses authorized `Read(ref)` and HTTP, with HEAD/GET fallback and no redirects. Network consent is outside the plugin timeout. Restarted orphaned tasks remain explicit; a healthy endpoint does not prove that process owns its port. |
 | Session lineage | Public Rust/JS history copying and source reads, native branch/revision create/abandon, independent inherited pruning, Desktop canonical-input editing and complete durable drafts are implemented. Regeneration is removed; edits use revision and resend. | **Host.** One transactional lineage and workspace authority; plugins request changes through commands, not private lineage storage. |
 | Session lifecycle | Native and public plugin removal/preview/receipt APIs, atomic family retirement and queued cancellation, restart cleanup and shared-worktree ownership are implemented. Unreferenced conversation bodies, tool payloads and request surfaces are reclaimed in restartable batches while accounting, receipts and referenced history survive. Shared Session queries remain. | **Host.** Preserve referenced history and accepted receipts; unknown process cleanup must not delete its workspace. Shared queries require real collaboration authorization. |
-| Session transfer | Public Rust/JS historical import supports bounded staging, exact retries, current-ceiling checks and atomic publication. The built-in plugin owns Codex, Claude Code and OpenCode conversion, catalogs, source configuration and durable intents. Its Desktop settings page and standalone Remote share destination reauthorization and receipt recovery. Native bundles preserve original history/proofs, archived output, attachments and accounting through bounded compression and atomic import receipts. Desktop uses Host inventory confirmation and an explicitly chosen destination workspace; source permissions, plugin ownership and pending work are not restored. Dedicated TUI import UI remains. | **Plugin + Host.** Adapters own discovery and parsing; Host owns canonical material, identities and publication. Imported conversation participates in history, branching and compaction without claiming local execution or usage. Native bundle format remains a Host contract. |
-| Runtime policy | Shell consumers and ordinary named tool profiles remain; external-agent settings are consumed by the ACP plugin. | **Split.** Shell launch policy and capability ceilings stay in Host. Profiles contribute definitions; Host applies the intersection at admission and per-step capture. Storing settings alone is insufficient. |
+| Session transfer | Public Rust/JS historical import supports bounded staging, exact retries, current-ceiling checks and atomic publication. The built-in plugin owns Codex, Claude Code and OpenCode conversion, catalogs, source configuration and durable intents. Its Desktop settings page and standalone Remote share destination reauthorization and receipt recovery. Native bundles preserve original history/proofs, archived output, attachments and accounting through bounded compression and atomic import receipts. Desktop uses Host inventory confirmation and an explicitly chosen destination workspace; source permissions, plugin ownership and pending work are not restored. The native TUI provides source management and import through the public terminal app. | **Plugin + Host.** Adapters own discovery and parsing; Host owns canonical material, identities and publication. Imported conversation participates in history, branching and compaction without claiming local execution or usage. Native bundle format remains a Host contract. |
+| Runtime policy | Legacy shell policy mutations and ordinary named tool profiles remain unwired; production Shell selection and sandboxing are implemented. External-agent settings are consumed by the ACP plugin. | **Split.** Shell launch policy and capability ceilings stay in Host. Profiles contribute definitions; Host applies the intersection at admission and per-step capture. Storing settings alone is insufficient. |
 | Access / collaboration | Credential rotation prepare/revoke; principal revoke; collaboration access, invitation, grant revoke, principal rename/revoke; Turn-request create/query/decide/acknowledge/withdraw. | **Host.** Reuse credential and durable admission authority. Plugins may provide workflows/UI but cannot decide grants, bypass revocation or own canonical accepted Turn requests. |
 | Peer Mesh | Create/query/invite/join/leave/remove/close/reconcile, rename/display-name and transit control. | **Host for this rewrite.** Identity, routing and transport recovery must work during plugin recovery/unavailability. Do not add a transport-plugin platform to complete these protocols. |
 | Credential export | `configuration.credentials.export`. | **Host.** Explicitly authorized export from the real vault; plugin-scoped credentials are not blanket vault access. |
-| Model providers | Google/Cohere; remaining declared auth, reasoning/usage/options behavior; runtime models.dev refresh; Copilot/xAI inference and credential-backed verification. | **Model/Host layer initially.** Keep shared transport, streaming, retries, metering and request snapshots. Metadata-source policies can later be contributions; no one-plugin-per-vendor mandate. Command Code CLI execution belongs with Executors above. |
+| Model providers | Provider and adapter registration, ChatGPT subscription authentication and native Responses are implemented. Google/Cohere inference remains unavailable despite catalog/discovery support. Remaining declared auth/reasoning/usage/options behavior, runtime models.dev refresh and Copilot/xAI credential-backed verification remain. | **Plugin + Host.** Public provider/adapter contracts are already in use. Extend the relevant provider or adapter while retaining Host credential authority, transport, snapshots and metering. |
 | Diagnostics / hosted runs | `execution.inspect.query`, `host.resources.query`, `hosted.execution.start/cancel`. | **Host**, with optional plugin presentation/orchestration. Inspection reads canonical evidence; hosted execution must preserve environment, ownership and cancellation. It is not merely another Executor name. |
+
+Antigravity's v1-envelope response to typed v2 initialization permits exactly one fresh native v1
+connection only when that initialize records a `ParseError`. Close the owned probe process first
+and retain the same outer 30-second deadline. Never rewrite responses or retry session/auth/prompt
+work, and never fall back on generic network/authentication failures.
 
 ## Consumer-driven API work
 
@@ -122,11 +133,12 @@ Original TS plugins are not source-compatible with the new SDK.
 | WorkHub / Graph / Plan: selectable behavior | Open `BehaviorId` selects a typed Contribution; Graph/Swarm register independently. Host acceptance covers a non-builtin business. Preserve Session defaults and durable per-Turn choices; a requested unavailable behavior fails explicitly. Behavior preparation and input preparation are separate contracts, not one hook bus. |
 | Skills / Web / Recall / Insights: authorized services | Public history provides fixed-fence text paging and archived Session metadata to Rust and JS. Admitted Agent calls may read the trusted profile; Remote/background callers retain scoped history authorization. Public Usage reads expose scoped model/tool attempts and refusals without conversation bodies. Fixed-fence summaries and bounded breakdowns are available; Insights consumes them through public Remote and Client APIs; Session Inspector uses the public Session-bound Client slot. Domain catalog/mutation APIs can be typed plugin Services rather than new kernel methods. |
 | Skills / WorkHub / default behavior: business UI and prompt context | Published Clients own the actual Skills picker/management and WorkHub surface through Slots and Remote. Native adapters validate the originating Host and document; connection replacement revokes old Remote leases without replay. Prompt Contributions own business instructions. Inactive features remain visibly unavailable without blocking ordinary chat. |
-| Other TS extension services | New SDK lacks equivalent public registrations/services for LSP routing, commands, Skills/Goals queries, shell environment contributions, Settings definitions, authorization flows and LLM adapter registration; questions/forms and source-input/attachment-copy contracts are public; permission approvals remain Host-owned. Implement domain registries as plugin services where possible, retaining Host authority for sensitive actions. `llm.generate` is not adapter registration. |
+| Model providers / adapters | `ctx.modelProviders` and `ctx.modelAdapters` provide public JS registrations alongside typed Rust contracts, including provider authentication and refresh. Protocol streams, resource ownership and canonical settlement share Host semantics. `call.llm.generate` consumes the selected model; it is separate from registration. |
+| Other TS extension services | Public LSP/Commands routes, shell environment Contributions and declarative Settings definitions still need consumer-level assessment. Skills/Goals queries belong to domain Services/Remote; existing public questions/forms, explicit authorization and source-input/attachment copying must be reused. Permission decisions remain Host-owned. |
 
 These are functional extension points to assess and implement, not a promise to copy every TS method.
-TS LLM adapter registration serves plugin model calls; it does not itself register a main Session transport.
-Do not prebuild a generic provider framework, event bus or universal repository for them.
+Current model adapter registrations serve main Session requests and authorized auxiliary calls.
+Use existing provider/adapter contracts; do not add a parallel framework, event bus or universal repository.
 
 Built-in Rust uses typed calls directly, not a JSON/V8 round trip. Rust and JS adapters share
 capability semantics, authorization and retirement guarantees; public JS bindings are added for
@@ -144,11 +156,10 @@ it does not reinterpret uncertain work using current policy or defaults.
    the same scoped contracts as external plugins. Maintain Rust/JS parity as new consumers appear.
 2. **External acceptance:** the JS workflow fixture exercises UI consent, durable background work,
    exact receipts, disable/reactivation and revocation across Host restart.
-3. **Missing business domains:** complete Plan/Goal and review;
-   finish external adapters and Insights/health. Reuse the domain boundaries rather than first
-   implementing new business logic in Host and moving it later.
-4. **Remaining core parity:** complete Session lifecycle/lineage/transfer, policy, access/collaboration,
-   Peer Mesh, providers and diagnostics. Pull required core commands into their consumer's earlier
+3. **Missing business workflows:** implement automatic recap and Daily review through public
+   capabilities. Plan backend is complete; its UI remains outside the current scope.
+4. **Remaining core parity:** complete shared Session queries, policy consumers, access/collaboration,
+   Peer Mesh, provider inference gaps and diagnostics/hosted execution. Pull required core commands into their consumer's earlier
    stage; core work is not blocked on all plugins or a marketplace. Assess Code Mode/tool assembly
    migration after the first domains establish a useful boundary, not as a prerequisite to parity.
 
@@ -159,7 +170,7 @@ to justify an abstraction. Update the SDK contract in the same slice when it cha
 API needs arbitrary Host access, a second authority or many business exceptions, revise the boundary.
 
 Every domain must cover its mutation/query surface, error distinctions, authorization, cancellation,
-lost replies, restart recovery and actual Desktop consumers before being marked complete.
+lost replies, restart recovery and its required real client consumers before being marked complete.
 Use a few end-to-end acceptance cases including retirement and reactivation; a registered Tool or
 passing schema test is not acceptance.
 
@@ -187,17 +198,26 @@ shared/dedicated plugin V8s, scoped storage/credentials/files/HTTP/process/PTY/m
 Executors and Client Remote; Graph/Swarm and Scheduler are implemented.
 Old `agent.graph.*` RPCs were replaced by the plugin route, not left as a second Graph implementation.
 
-Memory and redaction are excluded; OS sandboxing is deferred. Copilot/xAI live adaptation is deferred
-until suitable credentials. Packaging/deployment is not full product parity: native CLI operators do
-not replace the TS interactive CLI/ACP surface or migrate legacy TS state roots automatically.
-Those product/data migration decisions must not be hidden inside a plugin.
-The TS client/TUI need not be rewritten in Rust; its native-Host compatibility still needs acceptance.
+OS sandboxing is implemented on macOS, Linux and Windows, including approval, full bypass and
+Windows setup. Platform-specific filesystem limits remain documented in `maka-sandbox`.
+Host PTY state uses `alacritty_terminal`, not Node `@xterm/headless`. Native Responses HTTP/WebSocket,
+provider plugins and independent per-model Code Mode/ApplyPatch settings are implemented.
+
+Memory and redaction are excluded. Copilot/xAI credential-backed verification remains deferred.
+Native TUI and inbound/outbound ACP now exist. The TUI team owns its remaining UI acceptance;
+Desktop work is limited to native Host connectivity and required call boundaries pending its redesign.
 Legacy state-root migration is a separate scope decision, not implicitly authorized by parity work.
+
+Latest ACP SDK changes have macOS arm64 focused and CLI smoke verification, but have not been
+rerun on Linux/Windows. The official Antigravity test covered installation/initialization without
+login. Earlier cross-platform evidence does not validate this newer SDK slice.
 
 ## Evidence
 
 - [Host registry](../crates/runtime-host/src/server/operations.rs), [dispatch](../crates/runtime-host/src/server/dispatch.rs), [operation vocabulary](../crates/protocol/src/operation.rs).
-- [Execution preparation](../crates/runtime-host/src/execution/prepare/environment.rs), [tool assembly](../crates/runtime-host/src/execution/tools.rs), [policy consumers](../crates/runtime-host/src/server/configuration/policy.rs), [provider routing](../crates/runtime-host/src/provider_route.rs).
+- [Execution preparation](../crates/runtime-host/src/execution/prepare/environment.rs), [tool assembly](../crates/runtime-host/src/execution/tools.rs), [policy consumers](../crates/runtime-host/src/server/configuration/policy.rs), [provider binding](../crates/runtime-host/src/execution/provider.rs), [provider routing](../crates/providers/src/api/route.rs).
 - [Skills domain](../crates/skills/src/lib.rs), [input preparation](../crates/runtime-host/src/execution/input/prepared.rs), [WorkHub workflow](../crates/workhub/src/control.rs), [Host commands](../crates/runtime-host/src/execution/plugins.rs), [business transactions](../crates/workhub/src/repository.rs), [default prompt](../crates/assistant/src/prompt.rs), [Graph wiring](../crates/runtime-host/src/plugins/graph.rs).
-- [SDK contracts](../packages/plugin-sdk/README.md), [execution services](../crates/plugins/src/execution.rs), [Session behavior](../crates/plugins/src/session.rs), [Scheduler router](../crates/runtime-host/src/server/scheduler.rs).
+- [SDK contracts](../packages/plugin-sdk/README.md), [execution services](../crates/plugins/src/execution.rs), [Session behavior](../crates/plugins/src/session.rs), [Scheduler](../crates/scheduler/src/lib.rs).
+- [ACP](../crates/acp/README.md), [external agents](../crates/external-agent/README.md), [model providers](../crates/providers/README.md), [Responses](../crates/responses/README.md).
+- [Plan backend](../crates/assistant/README.md), [Goal](../crates/goal/README.md), [Session recap](../crates/session-recap/README.md), [Jev](../crates/jev/README.md), [background health](../crates/background-health/README.md), [sandbox](../crates/sandbox/README.md).
 - TS [composition](../packages/runtime-host/src/server/execution-composition.ts), [interactive tools](../packages/runtime-host/src/server/interactive-run-composer.ts), [inspection](../packages/runtime-host/src/server/execution-inspect-coordinator.ts), [external imports](architecture/external-session-import-design.md).

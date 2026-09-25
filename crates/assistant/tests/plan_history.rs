@@ -36,6 +36,7 @@ async fn advance(repository: &Repository, state: &mut Snapshot, id: &str, comman
 fn approval(state: &Snapshot) -> Command {
     let p = state.proposal.as_ref().unwrap();
     Command::Approve {
+        grant: maka_plugins::authorization::Id(uuid::Uuid::from_u128(1)),
         proposal_id: p.id.clone(),
         proposal_revision: p.revision,
         behavior: Default::default(),
@@ -101,6 +102,7 @@ async fn revisions_replanning_and_admission_recovery_do_not_reuse_stale_authorit
         &repository,
         &state,
         Command::Approve {
+            grant: maka_plugins::authorization::Id(uuid::Uuid::from_u128(1)),
             proposal_id: old.id,
             proposal_revision: old.revision,
             behavior: Default::default(),
@@ -134,13 +136,10 @@ async fn revisions_replanning_and_admission_recovery_do_not_reuse_stale_authorit
     advance(&repository, &mut state, "approve", approve).await;
     let execution = state.execution.clone().unwrap();
     let id = execution.id.clone();
-    // An unknown admission cannot be cancelled, replanned, or assigned a new request.
+    // Pending admission cannot be replanned or assigned a new request.
     for command in [
-        Command::Cancel {
-            execution_id: id.clone(),
-            reason: "cancel".into(),
-        },
         Command::Resume {
+            grant: maka_plugins::authorization::Id(uuid::Uuid::from_u128(1)),
             execution_id: id.clone(),
         },
         Command::Propose {
@@ -189,6 +188,7 @@ async fn revisions_replanning_and_admission_recovery_do_not_reuse_stale_authorit
         &repository,
         &state,
         Command::Resume {
+            grant: maka_plugins::authorization::Id(uuid::Uuid::from_u128(1)),
             execution_id: id.clone(),
         },
     )
@@ -198,6 +198,7 @@ async fn revisions_replanning_and_admission_recovery_do_not_reuse_stale_authorit
         &mut state,
         "cancel_source",
         Command::Cancel {
+            grant: None,
             execution_id: id,
             reason: "withdraw original work".into(),
         },
@@ -258,6 +259,7 @@ async fn revisions_replanning_and_admission_recovery_do_not_reuse_stale_authorit
         &mut state,
         "resume",
         Command::Resume {
+            grant: maka_plugins::authorization::Id(uuid::Uuid::from_u128(1)),
             execution_id: id.clone(),
         },
     )

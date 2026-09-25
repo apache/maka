@@ -43,7 +43,8 @@ pub(super) async fn run(
         input.configuration.tool_mode,
         inner.cells.clone(),
     )
-    .with_model(input.provider.tool_context());
+    .with_model(input.provider.tool_context())
+    .with_behavior(input.configuration.orchestration_mode.clone());
     let result = std::panic::AssertUnwindSafe(async {
         use maka_runtime::handoff::CompactionBudget;
         let mut compaction = CompactionBudget::Available;

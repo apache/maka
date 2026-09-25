@@ -56,7 +56,7 @@ impl BindingProvider for Provider {
             let value = callbacks::invoke(
                 &callback.module,
                 callback.id,
-                json!({"invocation":request.invocation, "cwd":request.cwd, "tools":request.tools, "model":request.model}),
+                json!({"invocation":request.invocation, "behavior":request.behavior, "cwd":request.cwd, "tools":request.tools, "model":request.model}),
                 json!({"readView":view.id}),
                 request.cancellation,
             )

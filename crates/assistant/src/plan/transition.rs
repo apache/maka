@@ -89,6 +89,7 @@ impl Snapshot {
                 proposal_id,
                 proposal_revision,
                 behavior,
+                grant,
             } => {
                 let proposal = self
                     .proposal
@@ -132,13 +133,19 @@ impl Snapshot {
                         orchestration_mode: Some(behavior.clone()),
                     },
                     phase: Phase::AwaitingAdmission,
+                    grant: *grant,
+                    dispatched: false,
+                    cancellation: None,
                     updated_at: now,
                 };
                 execution.freeze_request()?;
                 proposal.status = ProposalStatus::Approved;
                 self.execution = Some(execution);
             }
-            Command::Resume { execution_id } => {
+            Command::Resume {
+                execution_id,
+                grant,
+            } => {
                 let execution = self.execution(execution_id)?;
                 if !matches!(execution.phase, Phase::Interrupted { .. }) {
                     return Err(Error::Conflict);
@@ -152,6 +159,48 @@ impl Snapshot {
                 execution.request.operation_id = format!("plan_{operation}");
                 execution.freeze_request()?;
                 execution.phase = Phase::AwaitingAdmission;
+                execution.grant = *grant;
+                execution.dispatched = false;
+                execution.cancellation = None;
+                execution.updated_at = now;
+            }
+            Command::Dispatch { execution_id } => {
+                let execution = self.execution_mut(execution_id)?;
+                if !matches!(execution.phase, Phase::AwaitingAdmission)
+                    || execution.dispatched
+                    || execution.cancellation.is_some()
+                {
+                    return Err(Error::Conflict);
+                }
+                execution.dispatched = true;
+                execution.updated_at = now;
+            }
+            Command::Reconcile {
+                execution_id,
+                grant,
+            } => {
+                let execution = self.execution_mut(execution_id)?;
+                if !matches!(
+                    execution.phase,
+                    Phase::AwaitingAdmission | Phase::Active { .. }
+                ) {
+                    return Err(Error::Conflict);
+                }
+                execution.grant = *grant;
+                execution.updated_at = now;
+            }
+            Command::Defer { execution_id } => {
+                let execution = self.execution_mut(execution_id)?;
+                if !matches!(execution.phase, Phase::AwaitingAdmission) {
+                    return Err(Error::Conflict);
+                }
+                execution.dispatched = false;
+                if let Some(reason) = &execution.cancellation {
+                    execution.phase = Phase::Cancelled {
+                        receipt: None,
+                        reason: reason.clone(),
+                    };
+                }
                 execution.updated_at = now;
             }
             Command::Accept {
@@ -190,9 +239,15 @@ impl Snapshot {
                 {
                     return Err(Error::Conflict);
                 }
-                execution.phase = Phase::Interrupted {
-                    receipt: None,
-                    reason: reason.clone(),
+                execution.phase = match &execution.cancellation {
+                    Some(reason) => Phase::Cancelled {
+                        receipt: None,
+                        reason: reason.clone(),
+                    },
+                    None => Phase::Interrupted {
+                        receipt: None,
+                        reason: reason.clone(),
+                    },
                 };
                 execution.updated_at = now;
             }
@@ -202,16 +257,13 @@ impl Snapshot {
                 steps,
             } => {
                 let execution = self.execution_mut(execution_id)?;
-                let receipt = execution.active(invocation)?.clone();
+                execution.active(invocation)?;
+                if execution.cancellation.is_some() {
+                    return Err(Error::Conflict);
+                }
                 execution.artifact.progress(steps)?;
                 execution.steps = steps.clone();
                 execution.updated_at = now;
-                if steps
-                    .iter()
-                    .all(|s| matches!(s.status, StepStatus::Completed | StepStatus::Skipped))
-                {
-                    execution.phase = Phase::Completed { receipt };
-                }
             }
             Command::Interrupt {
                 execution_id,
@@ -230,18 +282,30 @@ impl Snapshot {
             Command::Cancel {
                 execution_id,
                 reason,
+                grant,
             } => {
                 text(reason, 1024)?;
                 let execution = self.execution_mut(execution_id)?;
-                let Phase::Interrupted { receipt, .. } = &execution.phase else {
-                    // Resolve uncertain admission or stop the exact Host invocation
-                    // first. A domain mutation cannot undo already accepted work.
-                    return Err(Error::Conflict);
+                match &execution.phase {
+                    Phase::Interrupted { receipt, .. } => {
+                        execution.phase = Phase::Cancelled {
+                            receipt: receipt.clone(),
+                            reason: reason.clone(),
+                        };
+                    }
+                    Phase::AwaitingAdmission if !execution.dispatched => {
+                        execution.phase = Phase::Cancelled {
+                            receipt: None,
+                            reason: reason.clone(),
+                        };
+                    }
+                    Phase::AwaitingAdmission | Phase::Active { .. } => {}
+                    _ => return Err(Error::Conflict),
                 };
-                execution.phase = Phase::Cancelled {
-                    receipt: receipt.clone(),
-                    reason: reason.clone(),
-                };
+                execution.cancellation = Some(reason.clone());
+                if let Some(grant) = grant {
+                    execution.grant = *grant;
+                }
                 execution.updated_at = now;
                 if let Some(proposal) = &mut self.proposal
                     && proposal.source_execution_id.as_ref() == Some(execution_id)
@@ -249,6 +313,44 @@ impl Snapshot {
                 {
                     proposal.status = ProposalStatus::RevisionRequested;
                 }
+            }
+            Command::Settle {
+                execution_id,
+                invocation,
+                outcome,
+            } => {
+                let execution = self.execution_mut(execution_id)?;
+                let receipt = execution.active(invocation)?.clone();
+                execution.phase = if let Some(reason) = &execution.cancellation {
+                    Phase::Cancelled {
+                        receipt: Some(receipt),
+                        reason: reason.clone(),
+                    }
+                } else {
+                    match outcome {
+                        Settlement::Completed
+                            if execution.steps.iter().all(|step| {
+                                matches!(step.status, StepStatus::Completed | StepStatus::Skipped)
+                            }) =>
+                        {
+                            Phase::Completed { receipt }
+                        }
+                        Settlement::Completed => Phase::Interrupted {
+                            receipt: Some(receipt),
+                            reason:
+                                "Host execution ended before every Plan step was reported complete"
+                                    .into(),
+                        },
+                        Settlement::Interrupted { reason } => {
+                            text(reason, 1024)?;
+                            Phase::Interrupted {
+                                receipt: Some(receipt),
+                                reason: reason.clone(),
+                            }
+                        }
+                    }
+                };
+                execution.updated_at = now;
             }
         }
         Ok(())

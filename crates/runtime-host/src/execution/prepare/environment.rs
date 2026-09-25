@@ -90,6 +90,11 @@ impl Executions {
         let mut session = record.configuration;
         if let Some(mode) = &orchestration {
             session.orchestration_mode = mode.clone();
+        } else {
+            session.orchestration_mode = session
+                .orchestration_mode
+                .for_collaboration(session.collaboration_mode)
+                .map_err(internal)?;
         }
         if record.archived {
             return Err(failure(Code::SessionArchived, "Session is archived"));
@@ -111,13 +116,13 @@ impl Executions {
         .map_err(internal)?
         .map_err(internal)?;
         use maka_protocol::session::CollaborationMode;
-        if session.collaboration_mode != CollaborationMode::Agent {
-            return Err(failure(
-                Code::OperationUnavailable,
-                "Plan execution is not installed",
-            ));
-        }
         if let crate::session::SessionTarget::Executor { executor_id, .. } = &session.target {
+            if session.collaboration_mode != CollaborationMode::Agent {
+                return Err(failure(
+                    Code::OperationUnavailable,
+                    "Executor does not support native collaboration modes",
+                ));
+            }
             let (bindings, _) = self
                 .capabilities
                 .prepare_tools(

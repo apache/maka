@@ -34,6 +34,7 @@ pub(crate) mod javascript;
 pub(crate) mod jev;
 pub(crate) mod models;
 mod owner;
+pub(crate) mod plan;
 mod pricing;
 mod process;
 pub(crate) mod recall;

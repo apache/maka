@@ -184,6 +184,16 @@ Summary `durationMs` totals observed model/tool execution time, excluding unknow
 
 `ctx.pricing.query({ kind: 'start' })` reads the public rate catalog during activation. Continue with the returned revision and `nextOffset`; `revision_changed` requires a new scan. `call.pricing.update({ expectedRevision, mutation })` requires explicit profile `manage_pricing` consent. Edits share the native CAS and configuration notices, affect future admissions only, and finish after admission even if the caller stops waiting. A lost reply can yield `revision_conflict` on retry; query before choosing another edit.
 
+## Behavior selection
+
+Tool capture receives a frozen `behavior` identity, or `null` when unavailable. It is
+observation for tool visibility, not execution authority. Native and JS bindings share this field.
+
+Ordinary Session selection qualifies behavior registrations by collaboration mode: Agent uses
+the configured name, Plan uses `<name>:plan` (for example `default:plan`). Missing registrations
+fail admission. An authorized explicit per-Turn behavior selects its registered name directly;
+the actual selected identity is frozen with execution and restored on continuation.
+
 ## Model adapters
 
 `ctx.modelAdapters.register(name, open)` publishes a protocol adapter. `open('request' | 'conversation')` returns `stream(request, context)` and optional `confirm(history)`. Rust uses `maka_plugins::model::ProviderAdapter` and the same typed events, HTTP and WebSocket contracts. Model overrides select an adapter by `adapter`; defaults are `responses`, `chat-completions` and `anthropic-messages`.
