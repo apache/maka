@@ -18,6 +18,12 @@
  */
 
 import katex from 'katex';
+import type { MarkdownInlinePlugin } from '@astryxdesign/core/Markdown';
+
+const TOKEN_START = '\uE000MAKA_MATH:';
+const TOKEN_END = '\uE001';
+const TOKEN_PATTERN = /\uE000MAKA_MATH:([012]):([0-9a-f]+)\uE001/g;
+const LITERAL_TOKEN_PATTERN = /^\uE000MAKA_MATH:[012]:[0-9a-f]+\uE001/;
 
 /**
  * Renders upstream `components.math` nodes through KaTeX. The delimiter-free
@@ -68,13 +74,39 @@ export function prepareMarkdownMath(
   // keeps the scanner on the changing tail; it does not make the full-string
   // identity check itself incremental.
   const extendsPrevious = source.startsWith(cache.source);
+  if (!extendsPrevious) {
+    pendingLabelScans.delete(cache);
+  } else {
+    const pending = pendingLabelScans.get(cache);
+    if (pending !== undefined) {
+      // The unfinished label is the only unsettled business: resume its scan
+      // over the appended bytes instead of re-walking from its opener.
+      const continued = scanLabel(source, pending);
+      if (continued.kind === 'pending') {
+        pendingLabelScans.set(cache, continued.state);
+        cache.text += source.slice(cache.source.length);
+        cache.source = source;
+        return cache.text;
+      }
+      pendingLabelScans.delete(cache);
+    }
+  }
   const sourceStart = extendsPrevious ? cache.safeSourceEnd : 0;
   const textStart = extendsPrevious ? cache.safeTextEnd : 0;
-  const translatedTail = translateMarkdownMath(
-    source.slice(sourceStart),
-    sourceStart === 0 || source[sourceStart - 1] === '\n',
-    cache.text[textStart - 1],
-  );
+  const translatedTail = translateMarkdownMath(source.slice(sourceStart), {
+    startsAtLineStart: sourceStart === 0 || source[sourceStart - 1] === '\n',
+    priorTextChar: cache.text[textStart - 1],
+    leadingBackslashes: countPrecedingBackslashes(source, sourceStart),
+    onLabelPending: (state) => {
+      // The scan ran on the sliced tail, so its positions are relative to
+      // sourceStart; the continuation resumes on the full source and needs
+      // absolute positions.
+      state.index += sourceStart;
+      if (state.runStart !== null) state.runStart += sourceStart;
+      state.codeSearchFrom += sourceStart;
+      pendingLabelScans.set(cache, state);
+    },
+  });
   const text = `${extendsPrevious ? cache.text.slice(0, textStart) : ''}${translatedTail.text}`;
 
   cache.source = source;
@@ -84,8 +116,45 @@ export function prepareMarkdownMath(
   return text;
 }
 
+export const MARKDOWN_MATH_PLUGINS = [{
+  pattern: TOKEN_PATTERN,
+  render: (match, key) => {
+    const formula = decodeFormula(match[2] ?? '');
+    if (match[1] === '2') return formula;
+    const displayMode = match[1] === '1';
+    const html = katex.renderToString(formula, {
+      displayMode,
+      output: 'htmlAndMathml',
+      strict: 'warn',
+      throwOnError: false,
+      trust: false,
+    });
+    return (
+      <span
+        key={key}
+        className={
+          displayMode
+            ? 'maka-math maka-math-display'
+            : 'maka-math maka-math-inline'
+        }
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  },
+}] satisfies MarkdownInlinePlugin[];
+
 const ZWSP = '\u200B';
 const WORD_CHAR = /[\w$]/;
+
+type TranslateMarkdownMathOptions = {
+  startsAtLineStart?: boolean;
+  priorTextChar?: string;
+  allowDisplayMath?: boolean;
+  protectEscapedBrackets?: boolean;
+  isFinalSegment?: boolean;
+  leadingBackslashes?: number;
+  onLabelPending?: (state: LabelScanState) => void;
+};
 
 /**
  * Translate Maka's math delimiters into the upstream grammar and neutralize
@@ -100,8 +169,15 @@ const WORD_CHAR = /[\w$]/;
  */
 function translateMarkdownMath(
   source: string,
-  startsAtLineStart = true,
-  priorTextChar?: string,
+  {
+    startsAtLineStart = true,
+    priorTextChar,
+    allowDisplayMath = true,
+    protectEscapedBrackets = false,
+    isFinalSegment = false,
+    leadingBackslashes = 0,
+    onLabelPending,
+  }: TranslateMarkdownMathOptions = {},
 ): {
   text: string;
   safeSourceEnd: number;
@@ -123,6 +199,8 @@ function translateMarkdownMath(
     const fence = atLineStart ? readFence(source, index) : undefined;
     if (fence?.kind === 'pending') {
       text += source.slice(index);
+      index = source.length;
+      if (isFinalSegment) markSafe();
       break;
     }
     if (fence?.kind === 'match') {
@@ -131,6 +209,35 @@ function translateMarkdownMath(
       atLineStart = source[index - 1] === '\n';
       if (fence.closed) markSafe();
       else break;
+      continue;
+    }
+
+    // Hide escaped label brackets from both the math delimiter scan and the
+    // Markdown bracket matcher, then restore them through the literal plugin.
+    if (
+      protectEscapedBrackets
+      && source[index] === '\\'
+      && (source[index + 1] === '[' || source[index + 1] === ']')
+    ) {
+      text += transportToken(source[index + 1] ?? '', '2');
+      index += 2;
+      atLineStart = false;
+      markSafe();
+      continue;
+    }
+
+    const literalToken = readLiteralToken(source, index);
+    if (literalToken?.kind === 'pending') {
+      text += source.slice(index);
+      index = source.length;
+      if (isFinalSegment) markSafe();
+      break;
+    }
+    if (literalToken?.kind === 'match') {
+      text += transportToken(literalToken.source, '2');
+      index = literalToken.end;
+      atLineStart = false;
+      markSafe();
       continue;
     }
 
@@ -143,7 +250,11 @@ function translateMarkdownMath(
         text += run;
         index = runEnd;
         atLineStart = false;
-        canMarkSafe = false;
+        if (isFinalSegment) {
+          markSafe();
+        } else {
+          canMarkSafe = false;
+        }
         continue;
       }
       const end = close + run.length;
@@ -151,6 +262,83 @@ function translateMarkdownMath(
       index = end;
       atLineStart = source[index - 1] === '\n';
       markSafe();
+      continue;
+    }
+
+    const link = readMarkdownLink(source, index, leadingBackslashes);
+    if (link?.kind === 'pending') {
+      // Remember the scan only when everything before its opener already
+      // settled: an earlier unresolved backtick or math opener must be
+      // reparsed together with later chunks, and resuming just the label
+      // would skip it forever.
+      if (link.labelState !== undefined && safeSourceEnd === index) {
+        onLabelPending?.(link.labelState);
+      }
+      text += source.slice(index, link.end);
+      index = link.end;
+      atLineStart = false;
+      if (isFinalSegment) {
+        markSafe();
+      } else {
+        canMarkSafe = false;
+      }
+      continue;
+    }
+    if (link?.kind === 'match') {
+      // A bare closed label with nothing after it can still grow an inline
+      // or reference tail, so it must not settle: resuming after it would
+      // scan that tail without the label context. Once any byte follows the
+      // label the link question is decided and settling is safe again.
+      const mayGrowTail = link.end === link.labelEnd + 1 && link.end >= source.length;
+      // Display math renders as a block, which cannot live inside an inline
+      // link label, and Markdown reads `\[` / `\]` there as literal escaped
+      // brackets. Re-run every closed label with display math disabled so
+      // escaped brackets survive for Markdown to unescape; inline math still
+      // renders inside. Astryx decides later whether the label is an inline
+      // link, reference use, shortcut, image, or definition, so all forms
+      // must share this representation. Image alt text included:
+      // Astryx keeps alt as a raw string, and the image component restores
+      // literal tokens, so no private-use characters reach the DOM.
+      const translatedLabel = translateMarkdownMath(source.slice(link.labelStart, link.labelEnd), {
+        startsAtLineStart: false,
+        priorTextChar: source[link.labelStart - 1],
+        allowDisplayMath: false,
+        protectEscapedBrackets: true,
+        isFinalSegment: true,
+      });
+      // The explicit identifier of a full reference must go through the same
+      // transform, or use-site and definition IDs diverge and the link breaks.
+      let translatedRefText = '';
+      let refSafe = true;
+      if (link.refLabelStart !== undefined && link.refLabelEnd !== undefined) {
+        const translatedRef = translateMarkdownMath(
+          source.slice(link.refLabelStart, link.refLabelEnd),
+          {
+            startsAtLineStart: false,
+            priorTextChar: source[link.refLabelStart - 1],
+            allowDisplayMath: false,
+            protectEscapedBrackets: true,
+            isFinalSegment: true,
+          },
+        );
+        translatedRefText = translatedRef.text;
+        refSafe = translatedRef.safeSourceEnd >= link.refLabelEnd - link.refLabelStart;
+      }
+      const refStart = link.refLabelStart ?? link.end;
+      const refEnd = link.refLabelEnd ?? link.end;
+      text += source.slice(index, link.labelStart)
+        + translatedLabel.text
+        + source.slice(link.labelEnd, refStart)
+        + translatedRefText
+        + source.slice(refEnd, link.end);
+      index = link.end;
+      atLineStart = source[index - 1] === '\n';
+      const labelSafe = translatedLabel.safeSourceEnd >= link.labelEnd - link.labelStart;
+      if (labelSafe && refSafe && !mayGrowTail) {
+        markSafe();
+      } else {
+        canMarkSafe = false;
+      }
       continue;
     }
 
@@ -193,13 +381,17 @@ function translateMarkdownMath(
 
     const delimited =
       readDelimitedMath(source, index, '\\(', '\\)', false)
-      ?? readDelimitedMath(source, index, '\\[', '\\]', true)
-      ?? readDelimitedMath(source, index, '$$', '$$', true);
+      ?? (allowDisplayMath ? readDelimitedMath(source, index, '\\[', '\\]', true) : undefined)
+      ?? (allowDisplayMath ? readDelimitedMath(source, index, '$$', '$$', true) : undefined);
     if (delimited?.kind === 'pending') {
       text += source.slice(index, delimited.end);
       index = delimited.end;
       atLineStart = false;
-      canMarkSafe = false;
+      if (isFinalSegment) {
+        markSafe();
+      } else {
+        canMarkSafe = false;
+      }
       continue;
     }
     if (delimited?.kind === 'match') {
@@ -219,7 +411,7 @@ function translateMarkdownMath(
       // the span stays uncommitted: the next chunk rescans from the opener
       // and decides the closing guard with the neighbor in hand.
       const next = source[delimited.end];
-      if (next === undefined) markSafe();
+      if (isFinalSegment || next === undefined) markSafe();
       text += inlineMathSource(
         delimited.formula,
         text.length > 0 ? text[text.length - 1] : priorTextChar,
@@ -227,12 +419,12 @@ function translateMarkdownMath(
       );
       index = delimited.end;
       atLineStart = source[index - 1] === '\n';
-      if (next !== undefined) markSafe();
+      if (isFinalSegment || next !== undefined) markSafe();
       continue;
     }
 
     const character = source[index] ?? '';
-    if (character === '$' && !isEscaped(source, index)) {
+    if (character === '$' && !isEscaped(source, index, leadingBackslashes)) {
       text += '\\$';
     } else {
       text += character;
@@ -240,8 +432,9 @@ function translateMarkdownMath(
     index++;
     atLineStart = character === '\n';
     if (
-      index < source.length ||
-      (character !== '\\' && character !== '$' && character !== '`')
+      isFinalSegment
+      || index < source.length
+      || (character !== '\\' && character !== '$' && character !== '`')
     ) {
       markSafe();
     }
@@ -422,6 +615,34 @@ function readFence(
   return { kind: 'match', end: source.length, closed: false };
 }
 
+function readLiteralToken(
+  source: string,
+  index: number,
+):
+  | { kind: 'match'; source: string; end: number }
+  | { kind: 'pending' }
+  | undefined {
+  if (source[index] !== TOKEN_START[0]) return undefined;
+  if (!source.startsWith(TOKEN_START, index)) {
+    const tail = source.slice(index);
+    return tail.length < TOKEN_START.length && TOKEN_START.startsWith(tail)
+      ? { kind: 'pending' }
+      : undefined;
+  }
+  const tokenEnd = source.indexOf(TOKEN_END, index + TOKEN_START.length);
+  if (tokenEnd < 0) {
+    const payload = source.slice(index + TOKEN_START.length);
+    return /^(?:[012](?::[0-9a-f]*)?)?$/.test(payload)
+      ? { kind: 'pending' }
+      : undefined;
+  }
+  const candidate = source.slice(index, tokenEnd + TOKEN_END.length);
+  const match = LITERAL_TOKEN_PATTERN.exec(candidate);
+  if (!match) return undefined;
+  const token = match[0];
+  return { kind: 'match', source: token, end: index + token.length };
+}
+
 function readDelimitedMath(
   source: string,
   index: number,
@@ -457,6 +678,286 @@ function readDelimitedMath(
   return { kind: 'match', formula, display, end: close + closing.length };
 }
 
+const MAX_LINK_LABEL_DEPTH = 32;
+// NOTE: label scans deliberately have no length cap (tails keep theirs).
+// Finding a close is linear, settling is permanent, and per-chunk rescan cost
+// while a label is still open matches the base behaviour for unclosed math.
+// Capping labels instead degrades complete long labels to literal text,
+// which both breaks the link and pushes a giant literal run downstream that
+// renders far slower than the structured link would have.
+const MAX_LINK_TAIL_DEPTH = 32;
+const MAX_LINK_TAIL_LENGTH = 65536;
+
+type MarkdownLinkScan =
+  | {
+      kind: 'match';
+      labelStart: number;
+      labelEnd: number;
+      end: number;
+      refLabelStart?: number;
+      refLabelEnd?: number;
+    }
+  | { kind: 'pending'; end: number; labelState?: LabelScanState }
+  | undefined;
+
+// Resume state for an unfinished first-label scan, keyed by the owning cache.
+// Only the top-level scan stores here: nested scans re-derive on the next
+// full pass, and any closure funnels through a full reprocess anyway.
+const pendingLabelScans = new WeakMap<MarkdownMathCache, LabelScanState>();
+
+/**
+ * Recognize a bounded Markdown label starting at `index` so its contents can
+ * be re-scanned without display math. Astryx resolves whether a closed label
+ * is an inline link, reference use, shortcut, or definition after this pass;
+ * treating all of them alike keeps reference identities stable.
+ */
+function readMarkdownLink(
+  source: string,
+  index: number,
+  leadingBackslashes: number,
+): MarkdownLinkScan {
+  let openerEnd: number;
+  if (source[index] === '!') {
+    // A trailing `!` may yet become an image opener once `[` arrives; caching
+    // it as safe would lose the `!` context and mistype the label as a link.
+    if (index + 1 >= source.length) return { kind: 'pending', end: index + 1 };
+    if (source[index + 1] !== '[') return undefined;
+    if (isEscaped(source, index, leadingBackslashes)) return undefined;
+    openerEnd = index + 2;
+  } else if (source[index] === '[') {
+    if (isEscaped(source, index, leadingBackslashes)) return undefined;
+    openerEnd = index + 1;
+  } else {
+    return undefined;
+  }
+
+  const firstScan = scanLabel(source, initialLabelScanState(openerEnd));
+  if (firstScan.kind === 'pending') {
+    return { kind: 'pending', end: source.length, labelState: firstScan.state };
+  }
+  if (firstScan.kind === 'invalid') return { kind: 'pending', end: firstScan.end };
+  const labelEnd = firstScan.end;
+
+  const match = (end: number) => ({
+    kind: 'match' as const,
+    labelStart: openerEnd,
+    labelEnd,
+    end,
+  });
+
+  const tail = source[labelEnd + 1] ?? '';
+  if (tail === '(') {
+    const tailEnd = findInlineTailEnd(source, labelEnd + 1);
+    if (tailEnd === 'pending') return { kind: 'pending', end: source.length };
+    if (typeof tailEnd !== 'number') return match(tailEnd.end);
+    return match(tailEnd);
+  }
+  if (tail === '[') {
+    // The identifier scan resumes the same way the first label does: its
+    // pending state is forwarded so streamed updates continue it instead of
+    // restarting at the reference opener on every update. An invalid
+    // identifier is definitive, so it keeps the old match-and-settle path.
+    const refScan = scanLabel(source, initialLabelScanState(labelEnd + 2));
+    if (refScan.kind === 'pending') {
+      return { kind: 'pending', end: source.length, labelState: refScan.state };
+    }
+    if (refScan.kind === 'invalid') return match(refScan.end);
+    return {
+      ...match(refScan.end + 1),
+      refLabelStart: labelEnd + 2,
+      refLabelEnd: refScan.end,
+    };
+  }
+  return match(labelEnd + 1);
+}
+
+function countPrecedingBackslashes(source: string, pos: number): number {
+  let count = 0;
+  let i = pos - 1;
+  while (i >= 0 && source[i] === '\\') {
+    count++;
+    i--;
+  }
+  return count;
+}
+
+/** Whether the character at `pos` is backslash-escaped (odd run before it). */
+function isEscaped(
+  source: string,
+  pos: number,
+  leadingBackslashes = 0,
+): boolean {
+  let count = countPrecedingBackslashes(source, pos);
+  if (pos - count === 0) count += leadingBackslashes;
+  return count % 2 === 1;
+}
+
+/**
+ * Resumable scan for the `]` closing a link label, skipping escapes, code
+ * spans, and nested labels. Absolute positions stay valid across streaming
+ * appends, so an unfinished scan can continue over new bytes instead of
+ * re-walking from the opener on every update.
+ */
+type LabelScanState = {
+  index: number;
+  depth: number;
+  escapeNext: boolean;
+  checkBlank: boolean;
+  runStart: number | null;
+  codeDelimLen: number;
+  codeSearchFrom: number;
+};
+
+function initialLabelScanState(from: number): LabelScanState {
+  return {
+    index: from,
+    depth: 0,
+    escapeNext: false,
+    checkBlank: false,
+    runStart: null,
+    codeDelimLen: 0,
+    codeSearchFrom: 0,
+  };
+}
+
+type LabelScanResult =
+  | { kind: 'pending'; state: LabelScanState }
+  | { kind: 'closed'; end: number }
+  | { kind: 'invalid'; end: number };
+
+/**
+ * Find the `]` closing a link label opened before `from`, skipping escapes,
+ * code spans, and nested labels. Blank lines and excessive nesting can never
+ * form a label here; running out of input means more text may still complete
+ * it. There is deliberately no length bound: a close found anywhere resolves
+ * and settles, so incomplete input is the only case that rescans per chunk.
+ * Both the first label and reference identifiers scan through here, so a
+ * pending second label resumes the same way the first one does.
+ */
+function scanLabel(source: string, st: LabelScanState): LabelScanResult {
+  const pending = (): LabelScanResult => ({ kind: 'pending', state: st });
+  while (st.index < source.length) {
+    if (st.escapeNext) {
+      // A trailing backslash left this pending; the pair only exists once the
+      // escaped character has arrived. Skip both together, exactly as a fresh
+      // scan would.
+      if (st.index + 1 >= source.length) return pending();
+      st.escapeNext = false;
+      st.index += 2;
+      continue;
+    }
+    if (st.checkBlank) {
+      st.checkBlank = false;
+      // The newline at st.index was already seen; only a second newline
+      // makes it a blank line. Otherwise consume it as an ordinary char and
+      // process the new character normally below.
+      if (st.index + 1 >= source.length) {
+        st.checkBlank = true;
+        return pending();
+      }
+      if (source[st.index + 1] === '\n') return { kind: 'invalid', end: st.index };
+      st.index++;
+    }
+    if (st.runStart !== null || source[st.index] === '`') {
+      if (st.runStart === null) st.runStart = st.index;
+      while (source[st.index] === '`') st.index++;
+      if (st.index >= source.length) return pending();
+      st.codeDelimLen = st.index - st.runStart;
+      st.runStart = null;
+      st.codeSearchFrom = st.index;
+    }
+    if (st.codeDelimLen > 0) {
+      const close = source.indexOf('`'.repeat(st.codeDelimLen), st.codeSearchFrom);
+      if (close < 0) {
+        st.codeSearchFrom = Math.max(st.codeSearchFrom, source.length - (st.codeDelimLen - 1));
+        return pending();
+      }
+      st.index = close + st.codeDelimLen;
+      st.codeDelimLen = 0;
+      st.codeSearchFrom = 0;
+      continue;
+    }
+    const ch = source[st.index] ?? '';
+    if (ch === '\n') {
+      if (st.index + 1 >= source.length) {
+        st.checkBlank = true;
+        return pending();
+      }
+      if (source[st.index + 1] === '\n') return { kind: 'invalid', end: st.index };
+      st.index++;
+      continue;
+    }
+    if (ch === '\\') {
+      if (st.index + 1 >= source.length) {
+        st.escapeNext = true;
+        return pending();
+      }
+      st.index += 2;
+      continue;
+    }
+    if (ch === '[') {
+      st.depth++;
+      if (st.depth > MAX_LINK_LABEL_DEPTH) {
+        return { kind: 'invalid', end: findInvalidLinkBoundary(source, st.index) };
+      }
+      st.index++;
+      continue;
+    }
+    if (ch === ']') {
+      if (st.depth === 0) return { kind: 'closed', end: st.index };
+      st.depth--;
+      st.index++;
+      continue;
+    }
+    st.index++;
+  }
+  return pending();
+}
+
+/**
+ * Find the end of an inline `(destination)` tail starting at its `(`. A
+ * pending tail consumes the remaining source in one pass; resuming at the
+ * opener would rescan the same suffix for every `[label](` in a stream.
+ */
+function findInlineTailEnd(
+  source: string,
+  from: number,
+): number | 'pending' | { kind: 'invalid'; end: number } {
+  let depth = 1;
+  let i = from + 1;
+  while (i < source.length) {
+    if (i - from >= MAX_LINK_TAIL_LENGTH) {
+      return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
+    }
+    const ch = source[i] ?? '';
+    if (ch === '\n' && source[i + 1] === '\n') return { kind: 'invalid', end: i };
+    if (ch === '\\') {
+      if (i + 1 >= source.length) return 'pending';
+      i += 2;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      if (depth > MAX_LINK_TAIL_DEPTH) {
+        return { kind: 'invalid', end: findInvalidLinkBoundary(source, i) };
+      }
+      i++;
+      continue;
+    }
+    if (ch === ')') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+    i++;
+  }
+  return 'pending';
+}
+
+function findInvalidLinkBoundary(source: string, from: number): number {
+  const blankLine = source.indexOf('\n\n', from);
+  return blankLine >= 0 ? blankLine : source.length;
+}
+
 function findPendingFenceBoundary(source: string, from: number): number {
   const fenceMatch = /(?:^|\n) {0,3}(?:`{3,}|~{3,})/g;
   fenceMatch.lastIndex = from;
@@ -464,12 +965,37 @@ function findPendingFenceBoundary(source: string, from: number): number {
   return fence ? fence.index + (source[fence.index] === '\n' ? 1 : 0) : -1;
 }
 
-function isEscaped(source: string, index: number): boolean {
-  let backslashes = 0;
-  let i = index - 1;
-  while (i >= 0 && source[i] === '\\') {
-    backslashes++;
-    i--;
+function transportToken(value: string, kind: '0' | '1' | '2'): string {
+  return `${TOKEN_START}${kind}:${encodeFormula(value)}${TOKEN_END}`;
+}
+
+const TRANSPORT_TOKEN_RESTORE_PATTERN = /\uE000MAKA_MATH:[012]:([0-9a-f]+)\uE001/g;
+
+/**
+ * Restore transport tokens in image alt text to plain text. Astryx keeps alt
+ * as a raw string, so tokens that survive preprocessing would otherwise leak
+ * private-use characters into the DOM. Literal tokens decode to their
+ * characters; math tokens decode to their formula text, since KaTeX cannot
+ * render inside an attribute.
+ */
+export function restoreTransportTokens(text: string): string {
+  return text.replace(TRANSPORT_TOKEN_RESTORE_PATTERN, (_, encoded: string) =>
+    decodeFormula(encoded),
+  );
+}
+
+function encodeFormula(formula: string): string {
+  let encoded = '';
+  for (const byte of new TextEncoder().encode(formula)) {
+    encoded += byte.toString(16).padStart(2, '0');
   }
-  return backslashes % 2 === 1;
+  return encoded;
+}
+
+function decodeFormula(encoded: string): string {
+  const bytes = new Uint8Array(encoded.length / 2);
+  for (let index = 0; index < bytes.length; index++) {
+    bytes[index] = Number.parseInt(encoded.slice(index * 2, index * 2 + 2), 16);
+  }
+  return new TextDecoder().decode(bytes);
 }
