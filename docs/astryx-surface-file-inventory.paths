@@ -245,7 +245,6 @@ packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/directory-reference-chip.tsx
 packages/ui/src/executor-model-picker.tsx
-packages/ui/src/form-interaction-history.tsx
 packages/ui/src/form-interaction-prompt.tsx
 packages/ui/src/icons.tsx
 packages/ui/src/inline-reference.tsx

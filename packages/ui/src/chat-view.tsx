@@ -34,7 +34,6 @@ import {
   ICON_SIZE,
   AlertTriangle,
 } from './icons.js';
-import { FormInteractionHistory } from './form-interaction-history.js';
 import { EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
 import {
@@ -92,29 +91,10 @@ import {
  * left to push the reader. virtua's default is 200px and a wheel notch travels
  * 600, so a row went from unmounted to straddling within one notch and was
  * always measured too late: reading upwards through the 24-Turn geometry scene
- * jumped 13 times, by 5 to 194px.
- *
- * 2000px fixed the tall-Turn cases it was measured against but not the tallest
- * ones: a Turn whose real height exceeds the margin still reaches the reader
- * unmeasured, and the correction that lands then is the one virtua does not
- * absorb. On the 24-Turn geometry scene that row is ~3000px, so the cold sweep
- * slipped twice, displacing the reading anchor by 365px — and the gate caught it
- * in most runs, not rarely.
- *
- * The value is bounded on BOTH sides, which is why it is 4000 and not "as large
- * as possible". Under the tallest Turn, the gate fails as described. Far above
- * it — 6000 made the first upward reader step mount enough rows at once to move
- * the anchor by a full step (`per-step drift: -200` in
- * `upward-traversal-holds-turn-geometry`, a story that walks the transcript in
- * 200px reader steps). 4000 leaves the tall Turn measured before the reader
- * arrives while the first step still mounts a viewport's worth of rows, not a
- * page: the gate now slips at most once and displaces the anchor by ≤25px, and
- * the traversal story stays within its 1px budget.
- *
- * Mounting further ahead costs layout but not responsiveness: the gate's own
- * `layoutMs` reads 27–33ms here, no higher than at 2000px.
+ * jumped 13 times, by 5 to 194px. Mounting 2000px ahead leaves the measurement
+ * room to land before the row reaches the reader.
  */
-const MEASURE_AHEAD_MARGIN = 4000;
+const MEASURE_AHEAD_MARGIN = 2000;
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -504,21 +484,14 @@ export function ChatView(props: {
     (sessionId: string) => onOpenLinkedSessionRef.current?.(sessionId),
     [],
   );
-  const conversationItems = useMemo(() => [
-    ...(props.conversationItems ?? []),
-    ...props.messages.flatMap((message) => message.type === 'form_interaction' ? [{
-      id: `interaction:${message.id}`, afterTurnId: message.turnId, renderWhenAnchorMissing: false,
-      content: <FormInteractionHistory message={message} />,
-    }] : []),
-  ], [props.conversationItems, props.messages]);
   const conversationItemPlacement = useMemo(() => placeChatConversationItems(
-    conversationItems.map((item) => ({
+    (props.conversationItems ?? []).map((item) => ({
       afterTurnId: item.afterTurnId,
       renderWhenAnchorMissing: item.renderWhenAnchorMissing,
       value: { id: item.id, content: item.content },
     })),
     turnIds,
-  ), [conversationItems, turnIds]);
+  ), [props.conversationItems, turnIds]);
   const chatLayout = useChatLayoutContext();
   if (!chatLayout) {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
@@ -621,7 +594,7 @@ export function ChatView(props: {
   );
 
   if (!props.activeSession) {
-
+    const conversationItems = props.conversationItems ?? [];
     // A side conversation forks lazily: its first send arms the optimistic
     // bubble (and, after the rising-edge delay, the running-status line) BEFORE
     // the fork commits, so there is no session yet. Render that optimistic

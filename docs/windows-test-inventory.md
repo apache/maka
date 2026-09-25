@@ -16,16 +16,17 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 38 |
+| portable-candidate | 39 |
 | platform-contract | 38 |
 
-Total Windows-excluded declarations: **103**
+Total Windows-excluded declarations: **104**
 
 ## Inventory
 
 | Classification | Test | Skip expression |
 |---|---|---|
 | platform-contract | `apps/desktop/scripts/check-renderer-architecture.test.mjs` handles read-only POSIX permissions on the checker directory according to --strict-base | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
+| portable-candidate | `apps/desktop/scripts/dev-worktree.test.mjs` a symlink to a worktree uses the same data directory | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP remove reconciles a live manager after the real store publishes then fails directory sync | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP update reconciles the reread authority including an intervening writer without replaying its mutation | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP published write explicitly reports out-of-sync when reconciliation ${phase} fails | `process.platform === 'win32'` |

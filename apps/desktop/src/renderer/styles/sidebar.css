@@ -385,6 +385,14 @@
   min-height: var(--h-control-sm, 24px);
 }
 
+.maka-session-row {
+  /* One trailing column for the signal slot and the ⋯ that covers it on
+     hover. Fixed so the ring, the dot, the timestamp and the menu all share
+     the column's center axis; wide enough for the longest scan token
+     ("59min" ≈ 41px). */
+  --_trailing-column: calc(var(--spacing) * 11); /* 44px */
+}
+
 /*
  * The signal slot: the row's state at rest, or its timestamp when it has no
  * state; the ⋯ menu on hover or keyboard focus.
@@ -406,15 +414,18 @@
   align-items: center;
   justify-content: center;
   flex: none;
-  min-width: var(--h-control-sm, 24px);
+  width: var(--_trailing-column);
   min-height: var(--h-control-sm, 24px);
 }
 
 .maka-session-row-time-label {
-  margin-inline-start: auto;
   color: var(--muted-foreground);
   font: var(--typography-caption);
   white-space: nowrap;
+  /* Blink centers the font's em box and SF's digit mass hangs ~0.5px below
+     its center, so next to the geometrically centered running ring the time
+     reads low. Nudge the ink; the slot stays put. */
+  transform: translateY(-0.5px);
 }
 
 @media (hover: hover) {
@@ -443,10 +454,13 @@
 }
 
 /* Nothing here can reveal the menu later, so it stays up and the slot moves
-   aside to sit next to it. */
+   aside to sit next to it. The margin clears the menu's new left edge: column
+   axis inset plus its 24px and the cluster gap. */
 @media (hover: none) {
   .maka-session-row[data-actionable="true"] .maka-session-row-end {
-    margin-inline-end: calc(var(--h-control-sm, 24px) + var(--space-1));
+    margin-inline-end: calc(
+      (var(--_trailing-column) + var(--h-control-sm, 24px)) / 2 + var(--space-1)
+    );
   }
 }
 
@@ -465,6 +479,14 @@
   align-items: center;
   justify-content: center;
   width: var(--h-control-sm, 24px);
+}
+
+/* On a task row the menu covers the trailing column, so it takes the column's
+   center axis — the same line the ring, the dot and the timestamp sit on. */
+.maka-session-row > .maka-session-row-action {
+  inset-inline-end: calc(
+    var(--space-2) + (var(--_trailing-column) - var(--h-control-sm, 24px)) / 2
+  );
 }
 
 /* A collapsible project keeps Astryx's 24px disclosure after endContent. Match

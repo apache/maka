@@ -201,7 +201,7 @@ for (const lastMessageAt of [undefined, Date.UTC(2026, 6, 24)]) {
         </LocaleProvider>,
       ));
 
-      assert.equal(document.querySelector('.maka-session-row-time-label')?.textContent, 'just now');
+      assert.equal(document.querySelector('.maka-session-row-time-label')?.textContent, 'now');
     } finally {
       Date.now = originalDateNow;
     }

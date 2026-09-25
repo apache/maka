@@ -20,14 +20,6 @@
 import type { ExecutorConfiguration } from './executor-catalog.js';
 
 import { isWorkHubActionReceipt, type WorkHubActionReceipt } from './workhub-action-result.js';
-import {
-  decodeInteractionRequest,
-  decodeInteractionCanonicalOutcome,
-  isInteractionCanonicalOutcomeValidForRequest,
-  type InteractionFormRequest,
-  type InteractionQuestionRequest,
-  type InteractionCanonicalOutcome,
-} from './interaction.js';
 import { isExecutorId } from './executor-id.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 
@@ -782,7 +774,6 @@ export type StoredMessage =
   | AssistantMessage
   | ToolCallMessage
   | ToolResultMessage
-  | FormInteractionMessage
   | PermissionDecisionMessage
   | TokenUsageMessage
   | TurnStateMessage
@@ -925,19 +916,6 @@ export interface ToolResultMessage {
   modelVisibility?: 'visible' | 'hidden';
   parentToolCallId?: string;
   parentOperationId?: string;
-}
-
-/** Read projection of a canonical answered or closed form or question, never model-authored text. */
-export interface FormInteractionMessage {
-  type: 'form_interaction';
-  id: string;
-  turnId: string;
-  ts: number;
-  request: InteractionFormRequest | InteractionQuestionRequest;
-  outcome: Extract<
-    InteractionCanonicalOutcome,
-    { kind: 'form_answer' | 'question_answer' | 'closure' }
-  >;
 }
 
 export interface PermissionDecisionMessage {
@@ -1369,10 +1347,6 @@ const TOOL_RESULT_MESSAGE_SHAPE = defineObjectShape<ToolResultMessage>()(
     'parentOperationId',
   ],
 );
-const FORM_INTERACTION_MESSAGE_SHAPE = defineObjectShape<FormInteractionMessage>()(
-  ['type', 'id', 'turnId', 'ts', 'request', 'outcome'],
-  [],
-);
 const PERMISSION_DECISION_MESSAGE_SHAPE = defineObjectShape<PermissionDecisionMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolUseId', 'toolName', 'decision'],
   ['rememberForTurn', 'reviewer', 'rationale', 'riskLevel', 'hint'],
@@ -1672,23 +1646,6 @@ function decodeMessage(
         isToolActivityIdentity(message)
       )
         return message as unknown as ToolResultMessage;
-      break;
-    case 'form_interaction':
-      if (
-        hasMessageEnvelope(message, true) &&
-        hasExactShape(message, FORM_INTERACTION_MESSAGE_SHAPE)
-      ) {
-        const request = decodeInteractionRequest(message.request);
-        const outcome = decodeInteractionCanonicalOutcome(message.outcome);
-        if (
-          (request.kind === 'form' || request.kind === 'question') &&
-          (outcome.kind === 'form_answer' ||
-            outcome.kind === 'question_answer' ||
-            outcome.kind === 'closure') &&
-          isInteractionCanonicalOutcomeValidForRequest(request, outcome)
-        )
-          return { ...message, request, outcome } as unknown as FormInteractionMessage;
-      }
       break;
     case 'permission_decision':
       if (
