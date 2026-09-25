@@ -451,8 +451,19 @@ export default async function (ctx) {
               try {
                 await resource.write(terminal ? 'quit\r' : 'quit\n');
                 const outcome = await resource.wait();
-                if ('kind' in outcome ? outcome.kind !== 'completed' : !outcome.success)
-                  throw new Error('managed plugin process did not enforce metadata protection');
+                if ('kind' in outcome ? outcome.kind !== 'completed' : !outcome.success) {
+                  const output = [];
+                  for (;;) {
+                    const chunk = await resource.next();
+                    if (chunk === null || ('kind' in chunk && chunk.kind === 'closed')) break;
+                    output.push(
+                      'bytes' in chunk ? new TextDecoder().decode(chunk.bytes) : chunk.text,
+                    );
+                  }
+                  throw new Error(
+                    `Managed plugin ${terminal ? 'terminal' : 'process'} failed: ${JSON.stringify(outcome)}\n${output.join('')}`,
+                  );
+                }
               } finally {
                 await resource.close();
               }

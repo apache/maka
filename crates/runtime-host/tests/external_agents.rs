@@ -184,7 +184,10 @@ impl Fixture {
     fn records(&self) -> Vec<Value> {
         std::fs::read_to_string(&self.trace)
             .unwrap()
-            .lines()
+            .split_inclusive('\n')
+            // The agent may still be appending its last record. Inspect only
+            // complete records; malformed completed JSON must still fail.
+            .filter(|line| line.ends_with('\n'))
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
     }
